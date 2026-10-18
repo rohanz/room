@@ -5,7 +5,6 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { sessionDirectory } from '../src/session.js'
-import { createWriteIntentReader } from '../src/hooks-bridge.js'
 
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
 const SID = 'port-shell-session'
@@ -112,14 +111,14 @@ describe('0.16.38 shell write classifier in the redesign hook', () => {
     ['PowerShell', 'patch --check api/tax.py < fix.diff', false],
     ['PowerShell', 'patch -C api/tax.py < fix.diff', false],
     ['PowerShell', 'patch -p1 < fix.diff', false],
-  ] as const)('warns only for target writes: %s %s', async (tool_name, command, warn) => {
-    const out = await run(command, tool_name)
-    expect(out.includes('Claim before editing'), command).toBe(warn)
-    if (warn) expect(out).toContain('Kieran changed api/tax.py')
+  ] as const)('classifies target writes: %s %s', async (tool_name, command, warn) => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf(tool_name, { command }, dir).includes('api/tax.py'), command).toBe(warn)
   })
 
   it.each(['cp app.py api/tax.py >/dev/null', 'git checkout HEAD api/tax.py', 'git checkout main api/tax.py', 'git checkout api/tax.py', 'cd api && git checkout tax.py'])('names the file operand: %s', async command => {
-    expect(await run(command, 'Bash')).toContain('Kieran changed api/tax.py')
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { command }, dir)).toContain('api/tax.py')
   })
 
   it.each([
@@ -129,17 +128,14 @@ describe('0.16.38 shell write classifier in the redesign hook', () => {
     'sed -i "s/x/y/" api/tax.py >run.log', 'perl -pi -e "s/x/y/" api/tax.py 2>&1',
     'truncate -s 0 api/tax.py >run.log', 'git mv app.py api/tax.py >run.log',
     'git rm api/tax.py 2>/dev/null', 'git restore api/tax.py >run.log',
-  ])('warns and records redirected file operands: %s', async command => {
-    const out = await run(command, 'Bash')
-    expect(out, command).toContain('Kieran changed api/tax.py')
-    const read = createWriteIntentReader(dir, () => sessionDirectory(join(dir, '.git'), SID))
-    expect(read('api/tax.py'), command).toBe(true)
+  ])('classifies redirected file operands: %s', async command => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { command }, dir), command).toContain('api/tax.py')
   })
 
-  it.each(['git checkout main', 'git checkout feature/x', 'git checkout -b x', 'git switch api/tax.py'])('does not warn or record a branch checkout: %s', async command => {
-    expect(await run(command, 'Bash')).toBe('')
-    const read = createWriteIntentReader(dir, () => sessionDirectory(join(dir, '.git'), SID))
-    expect(read('api/tax.py'), command).not.toBe(true)
+  it.each(['git checkout main', 'git checkout feature/x', 'git checkout -b x', 'git switch api/tax.py'])('ignores a branch checkout: %s', async command => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { command }, dir)).toEqual([])
   })
 
   it.each([
@@ -154,11 +150,17 @@ describe('0.16.38 shell write classifier in the redesign hook', () => {
     ['PowerShell', 'Move-Item api/tax.py old.py'],
     ['PowerShell', 'Rename-Item -Path api/tax.py -NewName old.py'],
     ['Bash', "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: api/tax.py\n@@\n-x = 1\n+x = 2\n*** End Patch\nEOF"],
-  ] as const)('warns and records the first file operand: %s %s', async (tool_name, command) => {
-    const out = await run(command, tool_name)
-    expect(out, command).toContain('Kieran changed api/tax.py')
-    const read = createWriteIntentReader(dir, () => sessionDirectory(join(dir, '.git'), SID))
-    expect(read('api/tax.py'), command).toBe(true)
+  ] as const)('classifies the first file operand: %s %s', async (tool_name, command) => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf(tool_name, { command }, dir), command).toContain('api/tax.py')
+  })
+})
+
+describe('shell classifier integration', () => {
+  it.each([['Bash', 'cp app.py api/tax.py >/dev/null'], ['PowerShell', 'Set-Content -Path api/tax.py -Value x']])('warns and records %s writes', async (tool, command) => {
+    expect(await run(command, tool)).toContain('Kieran changed api/tax.py')
+    const file = join(sessionDirectory(join(dir, '.git'), SID), 'write-intents.json')
+    expect(JSON.parse(readFileSync(file, 'utf8')).writes).toContainEqual({ path: join(dir, 'api/tax.py'), at: expect.any(Number) })
   })
 })
 

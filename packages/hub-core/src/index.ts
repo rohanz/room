@@ -1,3 +1,5 @@
 export * from './protocol.js'
 export * from './hub.js'
 export * from './doc-cap.js'
+export * from './http.js'
+export * from './incarnation-file.js'

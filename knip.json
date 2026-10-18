@@ -6,7 +6,9 @@
   ],
   "workspaces": {
     ".": {
-      "ignoreDependencies": ["y-leveldb"],
+      "ignoreDependencies": [
+        "y-leveldb"
+      ],
       "entry": [
         "scripts/*.{mjs,mts}",
         "plugins/room/hooks/*.{mjs,mts}",
@@ -23,7 +25,7 @@
         "test/**/*.test.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "test/**/*.ts"
       ]
     },
@@ -32,7 +34,7 @@
         "test/**/*.test.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "test/**/*.ts"
       ]
     },
@@ -42,17 +44,18 @@
         "test/authority-child.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "test/**/*.ts"
       ]
     },
     "packages/room-mcp": {
       "entry": [
-        "src/parse/worker.ts",
+        "src/parse/worker.ts!",
+        "src/doctor.ts!",
         "test/**/*.test.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "test/**/*.ts"
       ]
     },
@@ -61,7 +64,7 @@
         "test/**/*.test.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "test/**/*.ts"
       ]
     },
@@ -70,7 +73,7 @@
         "test/**/*.test.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "test/**/*.ts"
       ]
     },
@@ -79,7 +82,7 @@
         "src/**/*.test.ts"
       ],
       "project": [
-        "src/**/*.ts"
+        "src/**/*.ts!"
       ]
     },
     "packages/web": {
@@ -88,7 +91,7 @@
         "scripts/*.ts"
       ],
       "project": [
-        "src/**/*.ts",
+        "src/**/*.ts!",
         "scripts/*.ts"
       ]
     }

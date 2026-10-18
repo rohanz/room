@@ -3,7 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
-import { execFileLimit, runInMergedTree, setPreviewCheckLimitsForTests } from '../src/tools/files.js'
+import { defs, handlers, execFileLimit, runInMergedTree, setPreviewCheckLimitsForTests } from '../src/tools/files.js'
+import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 
 // 2026-10-16 benchmark: a check stopped at its 5-minute limit replied only "merged-tree check failed: timed out after
@@ -24,7 +25,10 @@ for (const [kind, limits, cmd, limit] of [
       git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test')
       fs.writeFileSync(path.join(root, 'app.txt'), 'BASE\n'); git('add', '.'); git('commit', '-qm', 'base')
       setPreviewCheckLimitsForTests(limits)
-      const result = await runInMergedTree({ dir: root } as Session, git('rev-parse', 'HEAD'), new Map([['app.txt', 'NEW\n']]), cmd)
+      const session = { dir: root } as Session
+      const ancestor = git('rev-parse', 'HEAD')
+      const merged = new Map([['app.txt', 'NEW\n']])
+      const result = await runInMergedTree(session, ancestor, merged, cmd)
       expect(result.passed).toBe(false)
       expect(result.text).toMatch(new RegExp(`^merged-tree check did not finish: ".*" was stopped at ${limit.replace('.', '\\.')} \\(check \\d+ms\\); this is NOT a pass`))
       expect(result.text).toContain('line 30')
@@ -34,6 +38,40 @@ for (const [kind, limits, cmd, limit] of [
       expect(result.text).toMatch(/snapshot inputs sha256: [a-f0-9]{64}/)
       expect(result.text).toContain(`command: ${JSON.stringify(cmd)}`)
       expect(result.text).toContain('linked dependencies are not fingerprinted')
+      const repeat = await runInMergedTree(session, ancestor, merged, cmd)
+      if (kind === 'time limit') {
+        expect(result.text).toContain('Narrow the command to named tests or a single file')
+        expect(result.text).toContain('identical command on unchanged inputs will be refused next time')
+        expect(repeat.text).toContain('refusing repeated preview command')
+        expect(repeat.text).toContain(result.text)
+        const tool = handlers({ S: () => session } as unknown as HandlerState).room_preview_merge
+        expect(await tool({ run: cmd, allowSlow: 'true' })).toContain('allowSlow must be a boolean')
+        // Changed inputs are a new check: the worker may have fixed the hang.
+        const changed = await runInMergedTree(session, ancestor, new Map([['app.txt', 'FIXED\n']]), cmd)
+        expect(changed.text).toContain('merged-tree check did not finish')
+        expect(changed.text).not.toContain('refusing')
+        const overridden = await runInMergedTree(session, ancestor, merged, cmd, new Map(), undefined, true)
+        expect(overridden.text).toContain('merged-tree check did not finish')
+        expect(overridden.text).not.toContain('refusing')
+        const different = await runInMergedTree(session, ancestor, merged, 'echo "1 passed"')
+        expect(different.passed).toBe(true)
+        expect(different.text).toMatch(/check \d+ms/)
+        const otherSession = await runInMergedTree({ dir: root } as Session, ancestor, merged, cmd)
+        expect(otherSession.text).not.toContain('refusing')
+        // A run that finishes clears the refusal for those inputs: the slow command times out at 1.5 s,
+        // completes at 60 s with allowSlow, and is then runnable again without the override.
+        const slow = 'sleep 2.5; echo "1 passed"'
+        expect((await runInMergedTree(session, ancestor, merged, slow)).text).toContain('did not finish')
+        expect((await runInMergedTree(session, ancestor, merged, slow)).text).toContain('refusing')
+        setPreviewCheckLimitsForTests({ timeoutMs: 60_000, maxBuffer: 4 * 1024 * 1024 })
+        expect((await runInMergedTree(session, ancestor, merged, slow, new Map(), undefined, true)).passed).toBe(true)
+        setPreviewCheckLimitsForTests(limits)
+        expect((await runInMergedTree(session, ancestor, merged, slow)).text).toContain('did not finish')
+      } else {
+        expect(repeat.text).toContain('merged-tree check did not finish')
+        expect(repeat.text).not.toContain('refusing')
+        expect(result.text).not.toContain('identical command will be refused')
+      }
     } finally {
       if (oldCap === undefined) delete process.env.ROOM_PREVIEW_CACHE_GB
       else process.env.ROOM_PREVIEW_CACHE_GB = oldCap
@@ -48,4 +86,8 @@ it('classifies the Windows execFile limits the same way', () => {
   expect(execFileLimit({ code: null, killed: true }, limits)?.limit).toBe('the 5-minute time limit')
   expect(execFileLimit({ code: 3, killed: false }, limits)).toBeUndefined()
   expect(execFileLimit(null, limits)).toBeUndefined()
+})
+
+it('advertises the explicit retry override as a boolean', () => {
+  expect(defs.find(d => d.name === 'room_preview_merge')!.inputSchema.properties.allowSlow).toMatchObject({ type: 'boolean' })
 })

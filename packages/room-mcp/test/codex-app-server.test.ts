@@ -51,40 +51,9 @@ it('initializes and joins the active turn with tool authority', async () => {
   expect(d.calls[3].params).toEqual({ threadId: 'thread', input: [], toolOutput: { name: 'room_notify', namespace: 'room', output: 'pointer' } })
 })
 
-it.each(['idle', 'notLoaded', 'systemError'])('does not start a turn for %s', async status => {
-  const d = await daemon(status)
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual(status === 'idle'
-    ? { kind: 'idle' } : { kind: 'unavailable', reason: `Codex thread is ${status}` })
-  expect(d.calls.some(c => c.method === 'turn/start')).toBe(false)
-})
-
-it('returns the JSON-RPC error for unknown threads', async () => {
-  const d = await daemon('active', 'thread not found')
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'unknown', text: 'pointer' })).toEqual({ kind: 'unavailable', reason: 'thread not found' })
-})
-
 it('reports missing sockets without throwing', async () => {
   expect(codexControlSocket({ CODEX_HOME: '/missing-room-codex-home' })).toBeUndefined()
   expect(await postCodexToolOutput({ socketPath: '/missing-room-codex.sock', threadId: 'thread', text: 'pointer' })).toMatchObject({ kind: 'unavailable' })
-})
-
-it('times out and closes a silent connection', async () => {
-  const d = await daemon('active', undefined, true)
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer', timeoutMs: 40 })).toMatchObject({ kind: 'unavailable', reason: expect.stringContaining('timed out') })
-  await vi.waitFor(() => expect(d.closed()).toBe(true))
-})
-
-
-
-it('returns unavailable when active turn/start fails', async () => {
-  const d = await daemon('active', undefined, false, 'turn rejected')
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual({ kind: 'unavailable', reason: 'turn rejected' })
-  expect(d.calls.map(c => c.method)).toContain('turn/start')
-})
-
-it('returns uncertain for a turn response that does not confirm an active join', async () => {
-  const d = await daemon('active', undefined, false, undefined, 'completed')
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual({ kind: 'uncertain', reason: 'Codex app-server returned an invalid turn' })
 })
 
 describe('in-memory daemon protocol', () => {

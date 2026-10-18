@@ -180,11 +180,6 @@ export function filterAwareness(buf: Uint8Array, login: string, ownedClientIds?:
   }
 }
 
-export function isForeignIdentity(buf: Uint8Array, login: string): boolean {
-  const result = filterAwareness(buf, login)
-  return result.buf === null || result.stripped.length > 0
-}
-
 /** Filter inbound presence only; this is not document authorship verification. */
 export function bindIdentity(conn: EmitterLike, login: string, onDrop: (login: string, name: string) => void, clientOwners = new Map<number, string>()): void {
   const emit = conn.emit.bind(conn)

@@ -22,7 +22,7 @@ codex plugin add room@room
 
 In Codex, accept the Room hooks prompt, or trust Room in `/hooks`. Its session-start and before-edit hooks put relevant room context in the agent's path. Start your agent as usual inside your repository. You can simply work: the default **local room** stays on this machine. Say **“join the room”** when you want the team room.
 
-Sessions in one clone and its linked worktrees use the same local room by default; separate clones have separate local rooms. Claude normally connects when its Room MCP starts. Codex’s shared app-server waits until the first Room tool call supplies the session’s repository, so say **“show room state”** once to establish and verify its connection. Once connected, separate sessions in the same checkout count as company and receive eligible coordination notifications, just like sessions in linked worktrees. Shared file changes are still deduplicated. See [startup and wake behavior](docs/reference.md#rooms-and-destinations).
+Sessions in one clone and its linked worktrees use the same local room by default; separate clones have separate local rooms. Claude normally connects when its Room MCP starts. Codex’s shared app-server waits until the first Room tool call supplies the session’s repository, so say **“show room state”** once to establish and verify its connection. Once connected, separate sessions in the same checkout count as company and receive eligible coordination notifications, just like sessions in linked worktrees. Shared file changes are still deduplicated; explicit scopes and claims remain separate. Use linked worktrees to isolate substantial parallel edits. See [startup and wake behavior](docs/reference.md#rooms-and-destinations).
 
 The [defaults table](#defaults-and-how-to-change-them) shows what Room chooses and what to say to change it.
 
@@ -42,7 +42,7 @@ One team room covers **every branch of a repository**. You need push access to i
 
 Team rooms are self-hosted; Room has no default public server. Say **“join the room at wss://room.example.com”** to choose and remember your team’s server. Alternatively launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; its shared app-server daemon does not inherit shell `ROOM_*` variables. The agent explains what the clone will share on its first team join. Say **“share plans only”** or **“only my declared files”** to narrow sharing.
 
-[Documentation index](docs/README.md) · [Follow a first session](docs/onboarding.md) · [Reference and troubleshooting](docs/reference.md) · [Upgrade from 0.16](docs/upgrading.md)
+[Documentation index](docs/README.md) · [Coordinate a task](#coordinate-a-task) · [Reference and troubleshooting](docs/reference.md) · [Upgrade from 0.16](docs/upgrading.md)
 
 ## Defaults, and how to change them
 
@@ -57,7 +57,7 @@ Team rooms are self-hosted; Room has no default public server. Say **“join the
 | Carry uncommitted work | New workers receive eligible tracked and non-ignored untracked edits: at most **5 MiB per file** and **50 MiB total**. `.roomlinks` lists input paths linked into worker worktrees. | Ask **“start the worker from HEAD”** or pass `carry=false` to `room_spawn`; pass `link=[]` to disable `.roomlinks` for that worker. |
 | Collection ends worker resumption | Default apply collection brings output back uncommitted and unstaged, then retires the finished worker. Keep it available while follow-ups or requirement revisions remain. | Defer collection or use `room_collect(keep=true)` (apply only) to retain the worker for follow-ups; later collection applies only new changes. |
 | Worker dependencies linked, Room's variables kept out | A worker's `node_modules` links to your installed packages, with workspace packages pointing at the worker's own sources, so its tests run its code; the spawn reply warns when Room cannot link. The worker's shell commands do not see Room's `ROOM_*` variables. See [workers](docs/reference.md#workers-and-previews). | A worker can delete its linked `node_modules` and install its own. |
-| Automatic wake | Claude Code 2.1.224+ (2.1.234+ on native Windows) uses its cross-session inbox when available, then an admitted channel if needed. Codex's shared app-server delivers urgent messages mid-turn as tool output after the running tool finishes; idle threads, worker completion and unavailable mid-turn delivery use its queue. See [wake paths](docs/reference.md#wake-paths). | Set `ROOM_WAKE=channels` for the optional Claude channel path or `ROOM_WAKE=off` to stop wakes on both hosts (messages still wait in the inbox); `ROOM_WAKE=auto` restores the default. |
+| Automatic wake | Claude Code 2.1.224+ (2.1.234+ on native Windows) uses its cross-session inbox when available, then an admitted channel if needed. Codex's shared app-server delivers addressed questions, eligible interrupts and the lead’s own worker completions mid-turn as tool output after the running tool finishes; idle threads and unavailable mid-turn delivery use its queue. See [wake paths](docs/reference.md#wake-paths). | Set `ROOM_WAKE=channels` for the optional Claude channel path or `ROOM_WAKE=off` to stop wakes on both hosts (messages still wait in the inbox); `ROOM_WAKE=auto` restores the default. |
 | 30-minute idle lease | An unheld Codex app-server session is retired after 30 minutes idle. | Set `ROOM_IDLE_LEASE_MS` to a positive number of milliseconds. |
 | 4 GiB nominal preview cache | Merge previews with checks reuse a cached worktree. Eviction runs after a preview; active or locked entries and temporary checkouts can exceed the limit, so it is not a disk quota. `ROOM_PREVIEW_CACHE_GB=0` turns reuse off. | Set `ROOM_PREVIEW_CACHE_GB` to the desired GiB limit. |
 | Automatic name tag | When one login has more than one session, Room adds a clone or host tag such as `rohanz+claude` to keep identities separate. | Set `ROOM_TAG` before launching the agent. |
@@ -68,9 +68,15 @@ Team rooms are self-hosted; Room has no default public server. Say **“join the
 
 ## How people use it
 
-When you ask your agent to work on a feature, it can announce the files it expects to edit. If another agent is near that code, Room shows the overlap and the agents can claim separate lines or ask each other a question. An addressed question can wake an idle session. Before bringing work together, agents can preview the combined tree and run checks. Claims and coordination messages are advisory: delivering a requested pause does not guarantee the agent follows it. For a requested precollection review, a reviewer can establish an explicit [collection hold](docs/reference.md#workers-and-previews); ordinary batches need no hold. Commits and pushes remain your decision.
+### Coordinate a task
 
-Ask explicitly for **“Room workers”** or **“use Room to have Codex do half of this”**. Generic requests for another agent or background work use your host’s normal delegation. Room runs workers in their own Git worktrees and brings finished work back as uncommitted, unstaged edits. The spawn reply names each worker's host, model and effort when known. Room has no default worker model or effort: a request or worker environment setting can select one; otherwise the host chooses.
+Ask your agent to change a file while a teammate works nearby. It can declare its work with `room_scope`, claim lines with `room_claim`, and ask the other agent a question. Room reports overlaps and relevant changes; claims guide coordination but do not lock files. An addressed question can wake an idle session.
+
+For substantial parallel work, say **“use a couple of Room workers for this”** and name separate tasks; they may share files. Generic requests for another agent or background work use your host’s normal delegation. Each Room worker gets its own Git worktree, scopes and claims its work, then reports completion. The spawn reply names its host, model and effort when known; a request or worker environment setting can select them, otherwise the host chooses.
+
+Ask your agent to **preview the merge and run the relevant checks**. `room_preview_merge` combines current work in a scratch tree. When you ask to collect, `room_collect` brings finished output into your tree **uncommitted and unstaged**. A conflict leaves your files untouched and names the conflicting paths. You decide when to commit or push.
+
+Coordination messages are advisory: delivering a requested pause does not guarantee the agent follows it. For a requested precollection review, a reviewer can establish an explicit [collection hold](docs/reference.md#workers-and-previews); ordinary batches need no hold. See [wake paths and diagnostics](docs/reference.md#wake-paths) if a message seems missing.
 
 ![Room file viewer showing participants’ changes and activity](docs/img/room-v2-redesign.png)
 
@@ -84,15 +90,7 @@ Room has been used live with small teams, local rooms, mixed Claude Code and Cod
 
 Native Windows cannot yet inspect processes by their working directory. Worker collection can bring back edits but keeps the checkout; discard refuses to remove it, including with `force`. See [worker lifecycle and shell isolation](docs/reference.md#workers-and-previews) for cleanup and PowerShell limits.
 
-The [0.17.7 validation record](docs/superpowers/rehearsals/2026-10-06-self-hosting.md) covers explicit team servers, operator-approved repositories and a clean Docker Compose rehearsal.
-
-The [0.17.6 validation record](docs/superpowers/rehearsals/2026-10-06-wake-guidance.md) covers clarified worker wake instructions and a paired Claude comprehension check. Room’s wake behavior is unchanged.
-
-The [0.17.5 release record](docs/superpowers/rehearsals/2026-10-05-0175-release.md) tracks the plugin-only collection review-hold update and installation checks.
-
-The [0.17.4 validation record](docs/superpowers/rehearsals/2026-10-04-0174-release.md) covers eight-worker Python rehearsals, sharing and lifecycle recovery, independent review, release CI and an installed-plugin smoke test. These are bounded checks, not a guarantee of unattended reliability. If a worker outlives its launcher and its exit cannot be verified, collection retains its worktree for inspection.
-
-A [local TypeScript trial on historical Zod](docs/superpowers/rehearsals/2026-10-04-zod-historical.md) ran eight Codex workers and retained five independently matched historical fixes. One unresolved proposal was saved separately and two invalid task selections were rejected. The trial also recorded a delivered review-pause message that the lead ignored; passing project tests did not erase that coordination failure.
+The [development archive](docs/archive/README.md) records release validation and trials, including failures, recovery checks and limits of the evidence.
 
 Room began as an [“Agents leaving the chatbox” hackathon](RULES.md) entry. Its environment matters because an agent can respond to actual uncommitted files, Git bases, teammate plans and questions while you work.
 

@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { serializedStore, type HolderIn, type IncarnationStore, type LeaseStore, type StoredLease } from '@room/hub-core'
+import { incarnationFile as createIncarnationFile, type HolderIn, type IncarnationStore, type LeaseStore, type StoredLease } from '@room/hub-core'
 import { compareAndRelease, createExclusive, liveness, recover, writeAtomic, type InstanceToken } from './leases.js'
 import { pidAlive, probeProcess } from './process.js'
 
@@ -44,10 +44,7 @@ export class AuthorityLock {
 /** `<common>/room/hub/incarnation.json`, `{max}`, written durably (temp, fsync, rename, fsync-dir). */
 export function incarnationFile(commonDir: string): IncarnationStore {
   const file = path.join(hubDir(commonDir), 'incarnation.json')
-  return serializedStore({
-    read: async () => { const max = readJson(file)?.max; return typeof max === 'number' ? max : undefined },
-    write: async max => { writeAtomic(file, { max }) },
-  })
+  return createIncarnationFile(file, { nullIsMissing: true, read: file => fs.readFileSync(file, 'utf8'), write: writeAtomic })
 }
 
 /** Shared by successive relay owners of this clone. */

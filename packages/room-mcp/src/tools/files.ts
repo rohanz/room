@@ -34,7 +34,7 @@ export const defs: ToolDef[] = [
   { name: 'room_impact', annotations: RO, description: 'Find consumers before public API edits.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
   { name: 'room_preview_merge', annotations: RO, description: 'For "will our changes work together?" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.',
-    inputSchema: { type: 'object', properties: { people: strs('names; worker collect order'), person: str('one name'), includeOffline: { type: 'boolean', description: 'include offline' }, run: str('real test command; stops at 5 min/4 MB'), resolve: { type: 'boolean', description: 'superset resolution' } } } }
+    inputSchema: { type: 'object', properties: { people: strs('names; worker collect order'), person: { type: 'string' }, includeOffline: { type: 'boolean' }, run: str('tests; stops at 5 min/4 MB'), allowSlow: { type: 'boolean', description: 'retry timed-out command' }, resolve: { type: 'boolean', description: 'superset resolution' } } } }
 ]
 
 /** Suggest a test command for a preview whose combined tree was not tested. */
@@ -247,6 +247,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       // A new request replaces the evidence consumed by room_done, including refusals.
       recordPreview({ clean: false, complete: false, testsPassed: false })
+      if (a.allowSlow !== undefined && typeof a.allowSlow !== 'boolean') return 'error: allowSlow must be a boolean'
       const alias = typeof a.person === 'string' && a.person.trim() ? a.person.trim() : ''
       if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
       if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
@@ -354,7 +355,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const missing = !!ownLocalWorker && facts?.worktree === 'vanished' && ownLocalWorker.lead === caller.me.name
         if (missing) missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)
       }
-      const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
+      const run = typeof a.run === 'string' && a.run.trim() ? a.run : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       const movedReply = (moved: string[]) => {
         recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
@@ -409,7 +410,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               if (await settler.settle(result.settledWorkers())) continue
               return movedReply(result.moved())
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run, modes)
+            const verdict = await runInMergedTree(caller, ancestor, merged, run, modes, undefined, a.allowSlow === true)
             ranOk = verdict.passed
             const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join('; ')})`
               : !appliedFromOthers ? '; passed on your own tree only' : ''
@@ -634,13 +635,13 @@ export function setPreviewCheckLimitsForTests(limits?: { timeoutMs: number; maxB
 /** A tracked process stopped at its time limit or output cap; `out` keeps what it printed until then. */
 class PreviewProcessLimit extends Error {
   out = ''
-  constructor(message: string, readonly limit: string) { super(message) }
+  constructor(message: string, readonly limit: string, readonly kind: 'time' | 'output') { super(message) }
 }
 const outputTail = (out: string) => stripVTControlCharacters(out).trim().split('\n').slice(-25).join('\n')
 const plainDuration = (ms: number) => ms % 60_000 ? `${ms / 1000}-second` : `${ms / 60_000}-minute`
-const timeLimit = (ms: number) => new PreviewProcessLimit(`timed out after ${ms}ms`, `the ${plainDuration(ms)} time limit`)
+const timeLimit = (ms: number) => new PreviewProcessLimit(`timed out after ${ms}ms`, `the ${plainDuration(ms)} time limit`, 'time')
 const outputCap = (bytes: number) => new PreviewProcessLimit('output exceeded preview buffer',
-  `the ${bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`} output cap`)
+  `the ${bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`} output cap`, 'output')
 /** Which limit stopped a Windows execFile check: Node reports the output cap by code and the timeout as a kill. */
 export function execFileLimit(err: { code?: unknown; killed?: boolean } | null, limits: { timeoutMs: number; maxBuffer: number }): PreviewProcessLimit | undefined {
   return err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? outputCap(limits.maxBuffer) : err?.killed ? timeLimit(limits.timeoutMs) : undefined
@@ -1088,12 +1089,42 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
   return !!stat
 }
 
-/** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
-export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }): Promise<TestResult> {
-  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe))
+// Session ownership isolates participant/clone histories and releases them on session disposal.
+// A refusal is scoped to the command on the same inputs: changed files are a new check, and a run that
+// finishes clears its entry. The history is bounded in entries and in retained output.
+const stoppedPreviewChecks = new WeakMap<Session, Map<string, string>>()
+const STOPPED_PREVIEW_HISTORY = 8
+const STOPPED_PREVIEW_TEXT_BYTES = 4_096
+const narrowPreviewAdvice = 'Narrow the command to named tests or a single file so it finishes well under the limit. The identical command on unchanged inputs will be refused next time unless allowSlow: true is passed (the time limit still applies).'
+function previewCheckKey(ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>): string {
+  const hash = createHash('sha256').update(ancestor).update('\0').update(cmd)
+  for (const rel of [...merged.keys()].sort()) {
+    const text = merged.get(rel)
+    hash.update('\0').update(rel).update('\0').update(text === null ? 'deleted' : `${modes.get(rel) ?? ''}:${text}`)
+  }
+  return hash.digest('hex')
+}
+function stoppedPreviewReply(s: Session, key: string, cmd: string): TestResult | undefined {
+  const previous = stoppedPreviewChecks.get(s)?.get(key)
+  return previous !== undefined ? { passed: false, text: `refusing repeated preview command: ${JSON.stringify(cmd)} previously hit the time limit on these same inputs; check was not run. Previous stopped result (not current evidence):\n${previous}` } : undefined
+}
+function rememberStoppedPreview(s: Session, key: string, text: string): void {
+  let history = stoppedPreviewChecks.get(s)
+  if (!history) stoppedPreviewChecks.set(s, history = new Map())
+  history.delete(key)
+  history.set(key, text.length > STOPPED_PREVIEW_TEXT_BYTES ? `${text.slice(0, STOPPED_PREVIEW_TEXT_BYTES)}\n[stopped output truncated]` : text)
+  while (history.size > STOPPED_PREVIEW_HISTORY) history.delete(history.keys().next().value as string)
 }
 
-async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined): Promise<TestResult> {
+/** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
+export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }, allowSlow = false): Promise<TestResult> {
+  const key = previewCheckKey(ancestor, merged, cmd, modes)
+  const repeated = !allowSlow ? stoppedPreviewReply(s, key, cmd) : undefined
+  if (repeated) return repeated
+  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, key))
+}
+
+async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined, historyKey: string): Promise<TestResult> {
   let dir: string | undefined
   let release: (() => Promise<void>) | undefined
   let cached = false
@@ -1177,6 +1208,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
     checkMs = performance.now() - checkStart
+    stoppedPreviewChecks.get(s)?.delete(historyKey)
     completed = await previewPhase('collect', () => {
       const tail = outputTail(result.out)
       const verdict = testVerdict(result.out, result.code)
@@ -1186,7 +1218,12 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     if (stage === 'check' && error instanceof PreviewProcessLimit) {
-      return { passed: false, text: `merged-tree check did not finish: "${cmd}" was stopped at ${error.limit} (check ${Math.round(performance.now() - checkStart)}ms); this is NOT a pass.\n${evidence}\ncommand completion: incomplete\nLast output before it was stopped:\n${outputTail(error.out) || '(no output)'}` }
+      const stopped = { passed: false, text: `merged-tree check did not finish: "${cmd}" was stopped at ${error.limit} (check ${Math.round(performance.now() - checkStart)}ms); this is NOT a pass.\n${evidence}\ncommand completion: incomplete\nLast output before it was stopped:\n${outputTail(error.out) || '(no output)'}` }
+      if (error.kind === 'time') {
+        stopped.text += `\n${narrowPreviewAdvice}`
+        rememberStoppedPreview(s, historyKey, stopped.text)
+      }
+      return stopped
     }
     return { passed: false, text: `${stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}`}\n${evidence}\ncommand completion: ${stage === 'setup' ? 'not run' : 'incomplete'}` }
   } finally {

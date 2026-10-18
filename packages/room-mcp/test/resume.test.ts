@@ -483,9 +483,11 @@ describe('resumed worker boundaries', () => {
     const t = setup(1)
     await t.seed('busy', { status: 'running' })
     await t.seed('waiting')
+    const before = t.room.messages().length
     const reply = await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })
     expect(reply).toContain('worker capacity reached')
     expect(t.specs).toHaveLength(0)
+    expect(t.room.messages()).toHaveLength(before)
   })
 
   it('counts an unresolved worker against both spawn and resume capacity', async () => {
@@ -554,15 +556,6 @@ describe('resumed worker boundaries', () => {
     const before = t.room.messages().length
     expect(await t.tools.call('room_send', { type: 'note', to: 'vanished', text: 'again' })).toMatch(/error: cannot resume vanished: its worktree no longer exists$/)
     expect(t.specs).toHaveLength(0)
-    expect(t.room.messages()).toHaveLength(before)
-  })
-
-  it('does not post a message when resume cannot reserve a launch slot', async () => {
-    const t = setup(1)
-    await t.seed('busy', { status: 'running' })
-    await t.seed('waiting')
-    const before = t.room.messages().length
-    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toMatch(/error: worker capacity reached[^\n]*$/)
     expect(t.room.messages()).toHaveLength(before)
   })
 

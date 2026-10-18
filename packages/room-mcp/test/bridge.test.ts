@@ -356,7 +356,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     expect(map.size).toBe(1)
     expect(t.team.a.manifestHead.get(worker.name)?.coverage).toEqual({ kind: 'all' })
   })
-  it('F5 yields while preparing 3,000 B..C paths and does no map reads inside the atomic apply', async () => {
+  it.skipIf(process.env.TEST_SCALE !== '1')('F5 yields while preparing 3,000 B..C paths and does no map reads inside the atomic apply', async () => {
     const t = await setup({ start: false })
     git('checkout', '-q', C)
     for (let i = 0; i < 3000; i++) writeFileSync(join(dir, `many-${String(i).padStart(4, '0')}.py`), 'x\n')

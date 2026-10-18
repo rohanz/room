@@ -104,4 +104,4 @@ The re-review's M7 and S8 went back to `store` and were fixed in `456d45c`, each
 The brief allowed one re-review, so these were not re-reviewed. The lead reran typecheck, the full suite
 (1896/1896, 165 files, inside a Claude Code session) and `build:plugin` (no diff) on `456d45c`. L1–L4 stay as wave
 boundaries: L2 (evictStale goes when holders are written, wave 4) and L3 (the manifest joins the transition
-transaction, wave 2) are obligations for those waves. See [the wave-1 rehearsal](../../rehearsals/2026-09-28-wave1.md).
+transaction, wave 2) are obligations for those waves. See [the wave-1 rehearsal](../../superpowers/rehearsals/2026-09-28-wave1.md).

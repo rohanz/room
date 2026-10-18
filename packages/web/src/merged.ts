@@ -121,16 +121,6 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
 
 function asText(value: string[]): string { return value.join('\n') + (value.length ? '\n' : '') }
 
-/** Compatibility adapter: the two-party API is the N=2 model. */
-export function classifyThreeWay(base: string, a: string, b: string): MergedLine[] {
-  return classifyNWay(base, [{ name: 'a', text: a }, { name: 'b', text: b }]).map(line => {
-    const { a: aLine, b: bLine } = line.lineNumbers
-    const changedBy = line.changedBy.length === 2 ? 'both' : line.changedBy[0] as 'a' | 'b' | undefined
-    const side = line.conflict ? line.conflictOwner as 'a' | 'b' : changedBy && changedBy !== 'both' ? changedBy : 'common'
-    return { text: line.text, side, changedBy: changedBy ?? null, conflict: line.conflict, ...(aLine !== undefined ? { aLine } : {}), ...(bLine !== undefined ? { bLine } : {}) }
-  })
-}
-
 /** For each line of `after`, true when it is not present at that position in `before`. */
 function markAdded(before: string, after: string): boolean[] {
   const out: boolean[] = []

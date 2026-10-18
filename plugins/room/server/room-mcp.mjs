@@ -26059,6 +26059,55 @@ var init_doc_cap = __esm({
   }
 });
 
+// packages/hub-core/src/http.ts
+function safeUrl(target) {
+  if (!target || !target.startsWith("/") || target.startsWith("//") || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, "Bad Request");
+  try {
+    return new URL(target, "http://x");
+  } catch {
+    throw new HttpFailure(400, "Bad Request");
+  }
+}
+var HttpFailure;
+var init_http = __esm({
+  "packages/hub-core/src/http.ts"() {
+    "use strict";
+    HttpFailure = class extends Error {
+      constructor(status, message2) {
+        super(message2);
+        this.status = status;
+      }
+      status;
+    };
+  }
+});
+
+// packages/hub-core/src/incarnation-file.ts
+function incarnationFile(file, io) {
+  return serializedStore({
+    read: async () => {
+      try {
+        const record2 = JSON.parse(await io.read(file));
+        if (record2 === null && io.nullIsMissing) return void 0;
+        const max2 = record2.max;
+        return typeof max2 === "number" ? max2 : void 0;
+      } catch (e) {
+        if (e.code === "ENOENT") return void 0;
+        throw e;
+      }
+    },
+    write: async (max2) => {
+      await io.write(file, { max: max2 });
+    }
+  });
+}
+var init_incarnation_file = __esm({
+  "packages/hub-core/src/incarnation-file.ts"() {
+    "use strict";
+    init_hub();
+  }
+});
+
 // packages/hub-core/src/index.ts
 var init_src2 = __esm({
   "packages/hub-core/src/index.ts"() {
@@ -26066,6 +26115,8 @@ var init_src2 = __esm({
     init_protocol();
     init_hub();
     init_doc_cap();
+    init_http();
+    init_incarnation_file();
   }
 });
 
@@ -26278,17 +26329,9 @@ function readJson(file) {
     throw e;
   }
 }
-function incarnationFile(commonDir2) {
+function incarnationFile2(commonDir2) {
   const file = path9.join(hubDir(commonDir2), "incarnation.json");
-  return serializedStore({
-    read: async () => {
-      const max2 = readJson(file)?.max;
-      return typeof max2 === "number" ? max2 : void 0;
-    },
-    write: async (max2) => {
-      writeAtomic(file, { max: max2 });
-    }
-  });
+  return incarnationFile(file, { nullIsMissing: true, read: (file2) => fs11.readFileSync(file2, "utf8"), write: writeAtomic });
 }
 function relayLeaseFile(commonDir2, room) {
   const file = path9.join(commonDir2, "room", "hub-leases", `${createHash5("sha256").update(room).digest("hex")}.json`);
@@ -26662,8 +26705,13 @@ function localProofHeader(key2, method, path60, port, ts = Date.now(), nonce = c
   return `Room-Proof ${ts}.${nonce}.${mac2(key2, `client\0${method.toUpperCase()}\0${path60}\0${port}\0${ts}\0${nonce}`)}`;
 }
 async function relayIdentity(port, key2, timeoutMs2 = 800) {
+  const probe = await relayIdentityProbe(port, key2, timeoutMs2);
+  return probe.timedOut ? void 0 : probe.identity;
+}
+async function relayIdentityProbe(port, key2, timeoutMs2 = 800) {
   const nonce = crypto3.randomBytes(16).toString("hex");
-  return new Promise((resolve5) => {
+  return new Promise((done) => {
+    const resolve5 = (identity3) => done({ identity: identity3, timedOut: false });
     const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2, headers: { "x-room-nonce": nonce } }, (res) => {
       let body = "";
       res.on("data", (c) => {
@@ -26685,7 +26733,7 @@ async function relayIdentity(port, key2, timeoutMs2 = 800) {
     });
     req.on("timeout", () => {
       req.destroy();
-      resolve5(void 0);
+      done({ timedOut: true });
     });
     req.on("error", () => resolve5(void 0));
   });
@@ -26954,14 +27002,6 @@ import crypto5 from "node:crypto";
 import fs12 from "node:fs";
 import http2 from "node:http";
 import path10 from "node:path";
-function safeUrl(target) {
-  if (!target || !target.startsWith("/") || target.startsWith("//") || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, "Bad Request");
-  try {
-    return new URL(target, "http://x");
-  } catch {
-    throw new HttpFailure(400, "Bad Request");
-  }
-}
 async function observeTakeover(work, report) {
   try {
     await work();
@@ -27333,7 +27373,9 @@ function cloneId(commonDir2) {
   return crypto5.createHash("sha256").update(real).digest("hex");
 }
 async function probeRelay(port, commonDir2, key2, timeoutMs2 = 800) {
-  const identity3 = await relayIdentity(port, key2, timeoutMs2);
+  const probe = await relayIdentityProbe(port, key2, timeoutMs2);
+  if (probe.timedOut) return "slow";
+  const identity3 = probe.identity;
   const h = identity3?.health;
   if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return "none";
   return identity3.proven && h.clone === cloneId(commonDir2) ? "ours" : "foreign";
@@ -27361,7 +27403,7 @@ function startRelay(port, opts = {}) {
       docCap: opts.docCap,
       admission: opts.admission,
       awareness: awarenessLimits(opts.awareness),
-      ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
+      ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile2(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
     };
     const requestedTicketTtl = opts.ticketTtlMs ?? 6e4;
     const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(6e4, requestedTicketTtl)) : 6e4;
@@ -27687,6 +27729,9 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
   let stopped = false;
   let lost;
   let ticking = null;
+  const probeTimeoutMs = opts.probeTimeoutMs ?? LIVENESS_PROBE_TIMEOUT_MS;
+  const lostAfterMisses = Math.max(1, opts.lostAfterMisses ?? LIVENESS_MISSES_BEFORE_LOST);
+  let misses = 0;
   const tick = async () => {
     if (stopped) return;
     if (canonicalWarning) {
@@ -27694,13 +27739,19 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
       if (!canonicalRelayWarning(canonicalPort, commonDir2, identity3, readRelayInfo(commonDir2)).warning) canonicalWarning = void 0;
     }
     if (owned || lost) return;
-    const who2 = await probeRelay(port, commonDir2, key2);
-    if (stopped || who2 === "ours") return;
+    const who2 = await probeRelay(port, commonDir2, key2, probeTimeoutMs);
+    if (stopped) return;
+    if (who2 === "ours") {
+      misses = 0;
+      return;
+    }
     if (who2 === "foreign") {
       lost = `127.0.0.1:${port} is now another clone's relay`;
       log2(`local room ${room}: ${lost}; the session will join afresh`);
       return;
     }
+    misses = who2 === "slow" ? misses + 1 : lostAfterMisses;
+    if (misses < lostAfterMisses) return;
     if (opts.joinOnly) {
       lost = `the lead's local relay for ${room} is no longer running`;
       log2(`local room ${room}: ${lost}`);
@@ -27767,7 +27818,7 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
     }
   };
 }
-var HttpFailure, MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, handshakeCleanup, failedSockets, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, LOOPBACK, NoLocalRelay;
+var MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, handshakeCleanup, failedSockets, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, LIVENESS_PROBE_TIMEOUT_MS, LIVENESS_MISSES_BEFORE_LOST, LOOPBACK, NoLocalRelay;
 var init_src3 = __esm({
   "packages/relay/src/index.ts"() {
     "use strict";
@@ -27792,13 +27843,8 @@ var init_src3 = __esm({
     init_awareness2();
     init_secure();
     init_proof();
-    HttpFailure = class extends Error {
-      constructor(status, message2) {
-        super(message2);
-        this.status = status;
-      }
-      status;
-    };
+    init_src2();
+    init_src2();
     MSG_SYNC = 0;
     MSG_AWARENESS = 1;
     RELAY_STATE_REQUESTS_PER_MINUTE = 10;
@@ -27814,6 +27860,8 @@ var init_src3 = __esm({
     stateReservation = 0;
     hubBudget = new HubRequestBudget();
     LOCAL_FILE = path10.join("room", "relay.json");
+    LIVENESS_PROBE_TIMEOUT_MS = 2500;
+    LIVENESS_MISSES_BEFORE_LOST = 3;
     LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
     NoLocalRelay = class extends Error {
       constructor(room) {
@@ -32264,7 +32312,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.16",
+      version: "0.17.17",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -41301,6 +41349,7 @@ ${s.graph.contractCoverageNote}` : ""}`;
         if (previewGenerations.get(caller) === generation) caller.lastPreview = value2;
       };
       recordPreview({ clean: false, complete: false, testsPassed: false });
+      if (a.allowSlow !== void 0 && typeof a.allowSlow !== "boolean") return "error: allowSlow must be a boolean";
       const alias = typeof a.person === "string" && a.person.trim() ? a.person.trim() : "";
       if (a.people !== void 0 && !Array.isArray(a.people)) return "error: people must be an array of names";
       if (Array.isArray(a.people) && a.people.some((p) => typeof p !== "string" || !p.trim())) return "error: people must contain non-empty names";
@@ -41400,7 +41449,7 @@ ${s.graph.contractCoverageNote}` : ""}`;
         const missing2 = !!ownLocalWorker && facts?.worktree === "vanished" && ownLocalWorker.lead === caller.me.name;
         if (missing2) missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`);
       }
-      const run2 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
+      const run2 = typeof a.run === "string" && a.run.trim() ? a.run : "";
       const noTestsNote = run2 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
       const movedReply = (moved) => {
         recordPreview({ clean: false, complete: false, testsPassed: false, ...run2 ? { testsCommand: run2 } : {} });
@@ -41459,7 +41508,7 @@ ${text}--- end ${p} ---`);
                 if (await settler.settle(result2.settledWorkers())) continue;
                 return movedReply(result2.moved());
               }
-              const verdict = await runInMergedTree(caller, ancestor, merged, run2, modes);
+              const verdict = await runInMergedTree(caller, ancestor, merged, run2, modes, void 0, a.allowSlow === true);
               ranOk = verdict.passed;
               const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join("; ")})` : !appliedFromOthers ? "; passed on your own tree only" : "";
               verdictIndex = out.length;
@@ -42105,10 +42154,34 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   if (saved === void 0) await fs39.promises.writeFile(slotSettingsFile(dir), source.fingerprint, { flag: "wx", mode: 384 });
   return !!stat4;
 }
-async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map(), observe) {
-  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe));
+function previewCheckKey(ancestor, merged, cmd, modes) {
+  const hash3 = createHash15("sha256").update(ancestor).update("\0").update(cmd);
+  for (const rel of [...merged.keys()].sort()) {
+    const text = merged.get(rel);
+    hash3.update("\0").update(rel).update("\0").update(text === null ? "deleted" : `${modes.get(rel) ?? ""}:${text}`);
+  }
+  return hash3.digest("hex");
 }
-async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) {
+function stoppedPreviewReply(s, key2, cmd) {
+  const previous = stoppedPreviewChecks.get(s)?.get(key2);
+  return previous !== void 0 ? { passed: false, text: `refusing repeated preview command: ${JSON.stringify(cmd)} previously hit the time limit on these same inputs; check was not run. Previous stopped result (not current evidence):
+${previous}` } : void 0;
+}
+function rememberStoppedPreview(s, key2, text) {
+  let history = stoppedPreviewChecks.get(s);
+  if (!history) stoppedPreviewChecks.set(s, history = /* @__PURE__ */ new Map());
+  history.delete(key2);
+  history.set(key2, text.length > STOPPED_PREVIEW_TEXT_BYTES ? `${text.slice(0, STOPPED_PREVIEW_TEXT_BYTES)}
+[stopped output truncated]` : text);
+  while (history.size > STOPPED_PREVIEW_HISTORY) history.delete(history.keys().next().value);
+}
+async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map(), observe, allowSlow = false) {
+  const key2 = previewCheckKey(ancestor, merged, cmd, modes);
+  const repeated = !allowSlow ? stoppedPreviewReply(s, key2, cmd) : void 0;
+  if (repeated) return repeated;
+  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, key2));
+}
+async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, historyKey) {
   let dir;
   let release;
   let cached2 = false;
@@ -42196,6 +42269,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped };
     });
     checkMs = performance4.now() - checkStart;
+    stoppedPreviewChecks.get(s)?.delete(historyKey);
     completed = await previewPhase("collect", () => {
       const tail = outputTail(result2.out);
       const verdict = testVerdict(result2.out, result2.code);
@@ -42209,11 +42283,17 @@ ${verdict.text}${result2.stopped ? "\nstopped leftover processes from the check"
   } catch (error2) {
     const detail = error2 instanceof Error ? error2.message : String(error2);
     if (stage === "check" && error2 instanceof PreviewProcessLimit) {
-      return { passed: false, text: `merged-tree check did not finish: "${cmd}" was stopped at ${error2.limit} (check ${Math.round(performance4.now() - checkStart)}ms); this is NOT a pass.
+      const stopped = { passed: false, text: `merged-tree check did not finish: "${cmd}" was stopped at ${error2.limit} (check ${Math.round(performance4.now() - checkStart)}ms); this is NOT a pass.
 ${evidence}
 command completion: incomplete
 Last output before it was stopped:
 ${outputTail(error2.out) || "(no output)"}` };
+      if (error2.kind === "time") {
+        stopped.text += `
+${narrowPreviewAdvice}`;
+        rememberStoppedPreview(s, historyKey, stopped.text);
+      }
+      return stopped;
     }
     return { passed: false, text: `${stage === "setup" ? `merged-tree setup failed after ${Math.round(performance4.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}`}
 ${evidence}
@@ -42286,7 +42366,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     await fs39.promises.rm(index, { force: true });
   }
 }
-var defs2, previewGenerations, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, previewProcesses, previewProcessGate, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions;
+var defs2, previewGenerations, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, previewProcesses, previewProcessGate, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -42327,26 +42407,29 @@ var init_files = __esm({
         name: "room_preview_merge",
         annotations: RO,
         description: 'For "will our changes work together?" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.',
-        inputSchema: { type: "object", properties: { people: strs("names; worker collect order"), person: str("one name"), includeOffline: { type: "boolean", description: "include offline" }, run: str("real test command; stops at 5 min/4 MB"), resolve: { type: "boolean", description: "superset resolution" } } }
+        inputSchema: { type: "object", properties: { people: strs("names; worker collect order"), person: { type: "string" }, includeOffline: { type: "boolean" }, run: str("tests; stops at 5 min/4 MB"), allowSlow: { type: "boolean", description: "retry timed-out command" }, resolve: { type: "boolean", description: "superset resolution" } } }
       }
     ];
     previewGenerations = /* @__PURE__ */ new WeakMap();
     SETUP_TIMEOUT_MS = 10 * 6e4;
     checkLimits = { timeoutMs: 5 * 6e4, maxBuffer: 4 * 1024 * 1024 };
     PreviewProcessLimit = class extends Error {
-      constructor(message2, limit) {
+      constructor(message2, limit, kind) {
         super(message2);
         this.limit = limit;
+        this.kind = kind;
       }
       limit;
+      kind;
       out = "";
     };
     outputTail = (out) => stripVTControlCharacters2(out).trim().split("\n").slice(-25).join("\n");
     plainDuration = (ms2) => ms2 % 6e4 ? `${ms2 / 1e3}-second` : `${ms2 / 6e4}-minute`;
-    timeLimit = (ms2) => new PreviewProcessLimit(`timed out after ${ms2}ms`, `the ${plainDuration(ms2)} time limit`);
+    timeLimit = (ms2) => new PreviewProcessLimit(`timed out after ${ms2}ms`, `the ${plainDuration(ms2)} time limit`, "time");
     outputCap = (bytes) => new PreviewProcessLimit(
       "output exceeded preview buffer",
-      `the ${bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`} output cap`
+      `the ${bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`} output cap`,
+      "output"
     );
     previewProcesses = new AsyncLocalStorage2();
     previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"';
@@ -42365,6 +42448,10 @@ var init_files = __esm({
     warnedEntries = /* @__PURE__ */ new Set();
     previewMigrations = /* @__PURE__ */ new Set();
     previewEvictions = /* @__PURE__ */ new Set();
+    stoppedPreviewChecks = /* @__PURE__ */ new WeakMap();
+    STOPPED_PREVIEW_HISTORY = 8;
+    STOPPED_PREVIEW_TEXT_BYTES = 4096;
+    narrowPreviewAdvice = "Narrow the command to named tests or a single file so it finishes well under the limit. The identical command on unchanged inputs will be refused next time unless allowSlow: true is passed (the time limit still applies).";
   }
 });
 
@@ -43034,7 +43121,6 @@ __export(worker_registry_exports, {
   backgroundAtExit: () => backgroundAtExit,
   carriedFrom: () => carriedFrom,
   closeRegistryForDir: () => closeRegistryForDir,
-  discoverLegacyWorktrees: () => discoverLegacyWorktrees,
   localWorkerBaseline: () => localWorkerBaseline,
   localWorkers: () => localWorkers,
   ownWorkerNames: () => ownWorkerNames,

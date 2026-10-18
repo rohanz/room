@@ -119,7 +119,7 @@ describe('compaction at load', () => {
     expect(docGeneration(await load(process_(ok.provider, 100, 'c', { mono: 1e6, wall: 1 })))).toMatch(/^g/)
   })
 
-  it('keeps history bounded across repeated restarts under the soak mix (harness), and grows without it', async () => {
+  it.skipIf(process.env.TEST_SCALE !== '1')('keeps history bounded across repeated restarts under the soak mix (harness), and grows without it', async () => {
     const run = async (minDeleted: number) => {
       const { provider } = memoryStore()
       const clock = { mono: 1e6, wall: Date.UTC(2026, 9, 2) }

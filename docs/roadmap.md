@@ -5,6 +5,7 @@ between that and a fifty-engineer production repo, in priority order. Completed 
 Decide the order after the trial with real users; see "What decides the order" at the end.
 For current setup and behavior, use the [quickstart](../README.md#start-in-five-minutes)
 and [reference](reference.md); for the 0.16 cutover, use the [upgrade guide](upgrading.md).
+The [historical roadmap findings](archive/roadmap-history.md) retain the 0.16 fixes and 2026-09-27 notes.
 
 **Start here:** [the full review of 0.10.0](archive/reports/audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](archive/reports/audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](archive/reports/audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.
@@ -17,13 +18,16 @@ use broke and proposes the order of work.
 
 ## Post-0.17
 
+- A Room MCP process whose working directory is deleted (a removed worktree) keeps restarting its parser worker and logging "restart budget exhausted" every second at high CPU (seen 2026-10-18 on a two-day-old Codex session: 73% of a core). Stop indexing and say so once when the cwd is gone.
+- `before-edit.mjs` still records `write-intents.json`, but nothing reads it since the reader was removed in 0.17.17. Drop the recording or give it a consumer.
+
 - **Hosting across multiple machines (deferred, 2026-10-06).** 0.17.7 uses an explicitly selected, self-hosted team server with optional operator-approved repositories; GitHub collaborators still join through push access. Keep the current deployment on one machine. Before supporting automatic scale-out, design room routing, shared persistence and recovery, capacity admission and operator spending limits; increasing a provider's machine count alone is not a supported scaling strategy.
 
-- **Upgrades with sessions still running (Databricks, 2026-10-05).** A lead's Room process started on 28 September stayed alive after the plugin files were updated. A fresh `room_state(link=true)` call generated an old `?key=…` browser link, while that relay served newer browser assets from disk; the viewer correctly rejected the incompatible link but showed misleading empty files and timeline panels. Newly launched 0.17 workers (`balance`, `codeaudit`) also failed admission against the older lead, retrying ten times while appearing as running workers. Detect running-versus-installed version mismatches before spawning workers or issuing links, distinguish process activity from successful Room connection, and give explicit restart/reconnect guidance that preserves active worker progress. Keep viewer assets compatible with their serving process, and show a connection-error state rather than an apparently empty room. Add a regression covering an update on disk while the lead remains alive; this complements protocol negotiation below, not a request to accept incompatible clients.
+- **Upgrades with sessions still running (Databricks, 2026-10-05).** A lead's Room process started on 28 September stayed alive after the plugin files were updated. A fresh `room_state(link=true)` call generated an old `?key=…` browser link, while that relay served newer browser assets from disk; the viewer correctly rejected the incompatible link but showed misleading empty files and timeline panels. Newly launched 0.17 workers (`balance`, `codeaudit`) also failed admission against the older lead, retrying ten times while appearing as running workers. Partly shipped: `room_state` reports when the running bundle was updated on disk and asks for a session restart. Still open: check compatibility before spawning workers or issuing links, distinguish process activity from successful Room connection, and preserve active worker progress through restart/reconnect guidance. Keep viewer assets compatible with their serving process, and show a connection-error state rather than an apparently empty room. Add a regression covering an update on disk while the lead remains alive; this complements protocol negotiation below, not a request to accept incompatible clients.
 
 - **Review-hold diagnostics:** include the canonical destination in hold/status replies, exercise discard contention, and verify owner isolation for hosts that share an unbound MCP process. Fable 5.1 review on 2026-10-05 identified these follow-ups; separate-process ownership and recovery are tested.
 
-- **Requested collection checkpoints ([2026-10-04 TypeScript trial](superpowers/rehearsals/2026-10-04-zod-historical.md)).** A Codex lead collected all eight workers immediately after its preview response delivered a controller interrupt requesting a review pause. Delivery worked; the agent did not honor the checkpoint. Implemented an opt-in durable collection hold for explicitly requested reviews (unreleased); a reviewer in the destination checkout establishes and releases it. Messages alone remain advisory. Preserve the normal autonomous workflow when no such gate is requested. Passing project tests does not erase this coordination failure.
+- **Requested collection checkpoints ([2026-10-04 TypeScript trial](superpowers/rehearsals/2026-10-04-zod-historical.md)).** A Codex lead collected all eight workers immediately after its preview response delivered a controller interrupt requesting a review pause. Delivery worked; the agent did not honor the checkpoint. Shipped in 0.17.5: an opt-in durable collection hold for explicitly requested reviews; a reviewer in the destination checkout establishes and releases it. Messages alone remain advisory. Preserve the normal autonomous workflow when no such gate is requested. Passing project tests does not erase this coordination failure.
 - **Worker exit evidence after lead shutdown (2026-10-04 finding).** A worker that outlives its launcher can finish without a witnessed OS exit code. Collection integrates its output but retains its worktree for inspection. Consider a surviving exit observer with durable per-run receipts; never infer a clean exit from `room_done`, logs or process absence. A follow-up in the same retained thread, launched and witnessed by the current lead before collection, uses the existing cleanup path.
 - **Rooms without a repository (idea, 2026-10-03).** Let someone say “make a new room and give me the code,” then share that invitation code so other people and their agents can join and talk together. Support non-coding collaboration such as research, planning and writing without requiring a Git checkout or GitHub repository. Keep repository coordination as an optional capability. Design what participants share, who may join, and how invitations can expire or be revoked before implementation; this is a future direction, not part of the current release.
 - **Session identity and visibility — fixed in 0.17.1.** Automatic host labels stay with their host, retained worker names are skipped, and online sessions outside your area are visible separately from offline history. Regression tests cover real relay reconnects and confirm old completion messages do not become a fresh session’s status.
@@ -40,62 +44,15 @@ use broke and proposes the order of work.
 - **Per-person permissions** and validated operations.
 - **The rc2 deferred list:** [2026-09-30-rc2-deferred.md](superpowers/specs/2026-09-30-rc2-deferred.md).
 - **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew. Codex runs only the installed plugin (it has no `--plugin-dir`), so Codex workers of a lead on a development checkout run the installed version; the spawn reply warns on a mismatch. Codex's shared app-server daemon does not pass the shell's `ROOM_*` variables to Room, so `ROOM_SERVER` and similar settings need `codex --no-daemon`.
-- **Prune preview caches.** `room preview cache` worktrees under `.git/room-preview/` outlive the sessions that made them and are never pruned (rc9 dogfood).
+- **Preview-cache pruning — shipped in 0.17.0.** LRU eviction removes unused cached worktrees after previews; see the [cache limits and manual cleanup](reference.md#workers-and-previews).
 - **One disk pass per batch.** roomd runs `onDiskChange` once per changed path in a watcher batch (rc9 dogfood, low).
 - **Gate roomagent's wake path.** `packages/agent` keeps its own wake path, which the solo gate does not cover (rc9 dogfood, low).
 - **Say when room_claim clamps.** `room_claim to=561` on a 560-line file becomes 560 with no word (rc9 dogfood, low).
 - **Restart a worker that died before its first turn under its own tag.** It has no host session to resume, so the lead respawns into its worktree with `dir=` and two participants and registry entries share one worktree (2026-10-02 all-Codex rehearsal R5, low).
-- **Preview worktrees left locked after the lead quits** under `.git/room-preview/*/shared-*` (2026-10-02 all-Codex rehearsal R6, low).
+- **Preview worktree cleanup after a crash (partly open).** Normal eviction unlocks and removes cached Git worktrees. A crash can still leave registered worktrees under `.git/room-preview/*/shared-*` until a later eviction or manual cleanup; automatic cleanup at shutdown/crash remains open (2026-10-02 all-Codex rehearsal R6).
 - **Codex workers join twice** when the host session id arrives about 30 s after start and the MCP rebinds its leases (2026-10-02 all-Codex rehearsal R7, low).
 - **An idle lead with no company logs every minute** (`conflicts …: reconciled change`, and `pull requests: … no GitHub token` every two minutes) (2026-10-02 all-Codex rehearsal R8, low).
 - **Codex wake through MCP Events.** OpenAI announced support for the proposed MCP Events extension (the Triggers and Events working group) at DevDay on 2026-09-30, for ChatGPT plugin automations. Codex CLI 0.159.2 does not consume them yet. When a Codex release lists the feature (`codex features list`), have the MCP server push room events over its open connection (the push mode, `events/stream`), with the same wake rules as Claude, and retire the Codex wake workarounds and the daemon caveat above. Room's side is about a day; the webhook mode needs a public HTTPS endpoint and does not fit local rooms.
-
-## Fixed in 0.16.3
-
-- **Crash recovery lock race (0.16.1 audit finding 8):** automatic-name and choice locks now serialize stale-owner recovery with a reclaimable guard and re-read the owner before removing a lock.
-- **Worker port reservations (0.16.1 audit finding 9):** worker ports now include the parent, use machine-local reservations across leads, and release or reclaim reservations after worker exits.
-
-## Fixed in 0.16.4
-
-- **Worker wording and bookkeeping (0.16.x check):** Discarding a worker launched in an existing directory reports the stop and retained directory without an error. Its own model is shown, and the lead's edits are not counted as worker files. Worker counts match displayed rows, preview names use full room names, and a finished worker's resume reply says it was restarted.
-- **Leave, preview, and branch switch (0.16.x check):** Plain `room_leave` refuses while workers run; `force=true` dismisses them. Preview lists accept the lead's name alongside others, and a branch switch delivers one reply after joining the new room while marking the old room warning seen.
-
-## Fixed in 0.16.6
-
-- **Path safety (2026-09-24 cleanliness audit finding 14):** one repo-relative validator and one containment helper with explicit leaf policies for every read, write, carry, recovery and baseline path.
-- **Git-private state paths (2026-09-24 cleanliness audit finding 17):** one worktree-private and one common Git-directory resolver plus one carry-record accessor, parity-tested against the hook copy.
-
-## Fixed in 0.16.7
-
-- **Worker lifecycle (2026-09-24 cleanliness audit finding 18):** one real-state report and one decision table per lifecycle operation, and one launcher for fresh and resumed workers.
-- **Resume race (0.16.4 live check):** a message sent right after a worker finishes waits for the old process to exit and resumes the worker once, or says plainly that it was not delivered. It is never left on the bus twice.
-
-## Fixed in 0.16.8
-
-- **Proximity evidence (2026-09-24 cleanliness audit finding 16):** one `coordinationPaths` builder in `packages/shared/src/near.ts` for claim guidance, hook snapshots and room-state visibility; room_state now shows a participant whose changed paths alone made the claim hook warn.
-- **Graph refreshes (2026-09-24 cleanliness audit finding 21):** an overlay event refreshes only the paths it touched, and initial and incremental refreshes share one queue of 8.
-- **Stale base notices (rehearsal 2026-09-25, second run, finding 9):** a base notice whose commit is already in the recipient's HEAD is marked seen instead of delivered, on every delivery path.
-
-## Fixed in 0.16.10
-
-- **Workers in room_state (0.16.7 live check):** room_state shows the lead's current workers (running, finished but not collected, stopped) by default; retired history is listed with `all=true` and labelled collected, discarded or stopped (reason).
-- **Discard logs (0.16.x check):** discarding a worker whose worktree vanished now removes its `.log` and `.mcp.log`, through the same cleanup as a normal discard.
-- **Implicit answers (rehearsal 2026-09-25 finding 11):** an answer without `inReplyTo` answers the sender's one open question from the recipient, or lists the candidates.
-- **Carried edits (every live check):** workers build on the lead's carried edits without asking; they ask only before changing or removing the lead's own lines.
-
-## Fixed in 0.16.12
-
-From the [2026-09-26 triage](archive/reports/triage-2026-09-26-roadmap.md):
-
-- **Claims revalidated after HEAD moves (triage 1):** your own claims follow their lines to the new HEAD, or are released with a note naming the commit.
-- **Notes to nobody (triage 2; carry-wip "broadcast rulings went out as fyi"):** an unaddressed notify or interrupt note reaches every other participant's inbox.
-- **Preview without `run` (triage 5; tree-sitter "a clean merge preview hid a semantic break"):** the reply says no tests ran and suggests the repository's test command. Running them by default remains open.
-- **"git push" with no remote (triage 10; 0.8.0 "labels compare against the room's base"):** says "committed locally" and gives push advice only when the remote branch exists.
-- **Lingering process renames you (triage 3):** the temporary `+<host>` name is not remembered.
-- **Unreachable sharing ceiling (triage 6):** not cached; the local choice applies and it is fetched again on reconnect.
-- **Declared output lost on restart (triage 7; review finding 29):** retained declared paths persist per worktree.
-
-Proved fixed earlier by the triage and marked inline below: preview em dash (0.15.1), preview environment leak, exit-status verdict, note recipient display, bare worker tag, Codex hook message to a Claude lead (0.10.2), double wakes, stale eval mocks (0.15.1), directory claims (0.10.2), questions to busy workers (before-edit hook), recovery patches for landed work and the spawn-time hook warning (0.14.1), the sharing banner (0.10.1), real-repo measurement (`measure-room-perf.mts`). "A collected worker cannot take a fix-up" is by design since 0.15.0.
 
 ## Found 2026-09-29, left to the redesign
 
@@ -580,18 +537,6 @@ list waits.
 ## Known flaky tests (2026-09-27)
 
 - `graph-index.test.ts` "keeps a captured ready waiter pending through a base change and the queued ninth read" failed once in a full parallel run on 0.16.28. It passed 10 of 10 alone, so it is load-dependent. Make its waits condition-based when the graph index is next touched.
-
-## Found 2026-09-27, after the trial
-
-- **Receipts are per participant, not per session.** A hook receipt written by one session can hide a message from another session with the same participant name in the same worktree. This belongs to the delivery-ledger redesign in docs/archive/reports/audit-2026-09-27-design.md.
-- **An agent cannot reply to a note, only to a question.** In the httpx rerun, an agent could not acknowledge a status note. **Fixed in 0.16.33:** `inReplyTo` may name a note addressed to you; the reply goes to its author as a note with `inReplyTo` recorded and answers no question.
-- **Force-push recovery closes the room for everyone.** 0.16.29 lets `room_close` work unjoined, but a reset branch still needs close-and-reopen, and that drops the room's history. With repository-level rooms, re-base the room when its recorded base is gone from the remote (audit 2026-09-27, Fable 4).
-- **Duplicate delivery after a Codex queue wake.** Since 0.16.26 an agent can see a queued message twice. A registered prompt-submit hook could record receipts when Codex injects the message, but `hooks.json` is frozen, and changing it un-trusts the hooks for every Codex user.
-- **A worker's own preview flags its carried lead edits as a conflict.** A worker that starts from the lead's uncommitted work compares against the original base, so its `room_preview_merge` reports a conflict at the carried lines. The lead's preview and collect are correct; this is a false alarm that can waste the worker's time. The worker-side preview should use its carried base, as the lead side already does (`workerBaseline`). **Fixed in 0.16.33:** the pairing was already shared; the cause was the lead's side. With no overlay for a file, the worker read the lead at its pre-carry HEAD. When the lead's version still equals its HEAD, and that HEAD is an ancestor of the carried base, the lead's side is now the pair baseline.
-- **A fresh worker's startup context includes finished workers' scope history.** It is rendered as "earlier: … was on …", which is accurate but is noise for a new worker. Drop other workers' finished scope events from a worker's startup briefing.
-- **Previews at declared sharing can be partial while a teammate is mid-task.** In the Flask rehearsal, a preview had a teammate's new tests but not yet their fix. Show per teammate which declared files are not shared yet, or how old the shared ones are, so a partial preview is not read as a regression.
-- **Fixed in 0.16.33: name presence check missed a live peer.** Root cause: the symbol index blocked the event loop on a large repository, so presence heartbeats stopped. Original note: In the Codex-repo rehearsal, a session joining 42 s after another saw no presence for it. 0.16.32's machine-wide lock covers the same machine. For one user on two machines, reproduce against a running server with two separate joins and find why the temporary provider's awareness was empty.
-- **Merge preview git timeout on large repositories.** A three-way preview in an 86 MB repository failed on a git timeout. Scale the timeout with repository size, or make it adaptive. **Fixed in 0.16.33:** whole-tree git steps get 30 s + 15 ms per path, capped at 5 minutes; a preview that still times out names the step and says the combined code was not checked.
 
 ## Post-redesign
 

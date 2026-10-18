@@ -352,7 +352,7 @@ it('fetches a reachable participant anchor before explicit preview and honours R
   } finally { if (before === undefined) delete process.env.ROOM_AUTO_FETCH; else process.env.ROOM_AUTO_FETCH = before }
 })
 
-it('S1 keeps a manifest-overlapping peer when committed paths exceed the preview bound', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('S1 keeps a manifest-overlapping peer when committed paths exceed the preview bound', async () => {
   const { room, head, entries, session, state } = fixture()
   room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
   entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash('ben edit\n'), at: 1, fence: '1' })

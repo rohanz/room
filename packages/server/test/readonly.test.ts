@@ -134,6 +134,11 @@ describe('identity-bound connections', () => {
     expect(unpack(seen[0])).toEqual([own])
     expect(dropped).toEqual([])
     expect(filterAwareness(pack([own, foreign]), 'octo').stripped).toEqual(['kieran'])
+    // The owner field cannot vouch for a name outside the login's `login+label` family; a family name needs no owner.
+    const claimed = { clientID: 7, clock: 1, state: { user: { name: 'deploy-bot', owner: 'octo' } } }
+    const family = { clientID: 8, clock: 1, state: { user: { name: 'octo+label' } } }
+    expect(filterAwareness(pack([claimed, family]), 'octo').stripped).toEqual(['deploy-bot'])
+    expect(unpack(filterAwareness(pack([claimed, family]), 'octo').buf!)).toEqual([family])
   })
 
   it('drops foreign-only updates and reports the stripped name and login', () => {
@@ -208,20 +213,8 @@ describe('identity-bound connections', () => {
     encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(a, [doc.clientID]))
     return encoding.toUint8Array(enc)
   }
-  it('flags presence under another name, passes the login, null states and doc messages', async () => {
-    const { isForeignIdentity, bindIdentity } = await import('../src/readonly.js')
-    expect(isForeignIdentity(aw('octo'), 'octo')).toBe(false)
-    expect(isForeignIdentity(aw('kieran'), 'octo')).toBe(true)
-    expect(isForeignIdentity(aw(null), 'octo')).toBe(false)
-    // principals: the name must be one the login owns (login or login+label); a matching owner alone is not enough
-    expect(isForeignIdentity(aw('octo+codex', 'octo'), 'octo')).toBe(false)
-    expect(isForeignIdentity(aw('deploy-bot', 'octo'), 'octo')).toBe(true)
-    expect(isForeignIdentity(aw('octo+deploy', 'octo'), 'octo')).toBe(false)
-    expect(isForeignIdentity(aw('octo', 'kieran'), 'octo')).toBe(true)
-    expect(isForeignIdentity(aw('octo+codex'), 'octo')).toBe(false)
-    expect(isForeignIdentity(aw('kieran+codex', 'kieran'), 'octo')).toBe(true)
-    expect(isForeignIdentity(step1, 'octo')).toBe(false)
-    expect(isForeignIdentity(update, 'octo')).toBe(false)
+  it('binds presence to the login and passes document messages', async () => {
+    const { bindIdentity } = await import('../src/readonly.js')
     const conn = new EventEmitter()
     const seen: string[] = []; const dropped: string[] = []
     conn.on('message', () => seen.push('m'))

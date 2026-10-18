@@ -6,7 +6,7 @@
  * participant). The reverse direction renders the branch's room story as markdown for a
  * comment on the PR (room_pr_note / room_done pr_note).
  */
-import type { Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
+import type { Msg, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
 import { RoomDoc, acceptedGit, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -28,10 +28,6 @@ const PR_PREFIX = 'pr#'
 const PR_NOTE_MAX_JSON_BYTES = 3 * 1024 * 1024
 export const isPrName = (name: string): boolean => name.startsWith(PR_PREFIX)
 const prName = (number: number): string => `${PR_PREFIX}${number}`
-export function prIdentity(pr: PrInfo): Identity {
-  return { name: prName(pr.number), kind: 'bot', owner: pr.author, label: `PR #${pr.number}` }
-}
-
 /** The area a PR belongs to: the most common top-level directory of its files ("root" for bare files). */
 export function prArea(files: string[]): string {
   const counts = new Map<string, number>()

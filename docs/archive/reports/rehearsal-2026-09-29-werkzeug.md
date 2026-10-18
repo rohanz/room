@@ -12,7 +12,7 @@ plain words typed into three interactive sessions.
   - Hosted server on Fly v67.
   - Claude Code 2.1.284 (Opus 5.5, auto mode).
   - codex-cli 0.157.1 (GPT-6-Astra medium). **Its sessions run through the shared app-server daemon, which is 0.158.0** (`~/.codex/packages/app-server-daemon/releases/0.158.0…`, running since 2026-09-28).
-- **Repository:** private `rohanz/werkzeug-rehearsal`, with a new branch `rehearsal-0929` at the snapshot 9a5464f (upstream b5a33d286). Issues #1–#3 are cards A–C of [trial-plan.md](../../trial-plan.md).
+- **Repository:** private `rohanz/werkzeug-rehearsal`, with a new branch `rehearsal-0929` at the snapshot 9a5464f (upstream b5a33d286). Issues #1–#3 are cards A–C of [trial-plan.md](../trial-plan.md).
 - **Sessions:** three fresh clones at `/tmp/reh-werkzeug-{ana,ben,cy}`, each in its own tmux session:
   - Ana: Claude Code, issue #1.
   - Ben: Claude Code, issue #2.

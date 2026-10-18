@@ -14,8 +14,9 @@ vi.setConfig({ testTimeout: 60_000 })
 beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
 afterAll(() => { vi.unstubAllEnvs() })
 
-/** A vendored, gitignored tree (3,000 files, like a JUCE checkout; not named vendor/, which is pruned by name), a gitignored folder holding one
- * force-tracked file, and a few normal files. */
+/** A vendored, gitignored tree (3,000 files at TEST_SCALE=1, like a JUCE checkout; 300 by default; not named vendor/, which is pruned by
+ * name), a gitignored folder holding one force-tracked file, and a few normal files. The pruning rules are the same at either size. */
+const MODULES = process.env.TEST_SCALE === '1' ? 30 : 3
 function fixture(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ignored-tree-'))
   const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' })
@@ -24,7 +25,7 @@ function fixture(): string {
   put('.gitignore', 'libs/JUCE/\nthird_party/\nout-cache/\n')
   put('app.py', 'x = 1\n'); put('lib/util.py', 'def f():\n    return 1\n'); put('third_party/keep.h', '#define KEEP 1\n')
   git('add', '.'); git('add', '-f', 'third_party/keep.h'); git('commit', '-qm', 'base')
-  for (let m = 0; m < 30; m++) for (let s = 0; s < 10; s++) for (let f = 0; f < 10; f++) put(`libs/JUCE/modules/m${m}/src${s}/f${f}.cpp`, `// ${m}.${s}.${f}\n`)
+  for (let m = 0; m < MODULES; m++) for (let s = 0; s < 10; s++) for (let f = 0; f < 10; f++) put(`libs/JUCE/modules/m${m}/src${s}/f${f}.cpp`, `// ${m}.${s}.${f}\n`)
   for (let f = 0; f < 50; f++) put(`third_party/gen/g${f}.h`, `// ${f}\n`)
   return dir
 }
@@ -73,7 +74,7 @@ it('prunes a gitignored tree at the folder and logs its skip summary once per re
 
     // (b) Several cycles, with writes inside the ignored tree, log the summary exactly once.
     for (let cycle = 0; cycle < 3; cycle++) {
-      for (let f = 0; f < 20; f++) fs.writeFileSync(path.join(dir, 'libs', 'JUCE', 'modules', `m${f}`, 'src0', 'f0.cpp'), `// cycle ${cycle}\n`)
+      for (let f = 0; f < 20; f++) fs.writeFileSync(path.join(dir, 'libs', 'JUCE', 'modules', `m${f % MODULES}`, `src${Math.floor(f / MODULES) % 10}`, 'f0.cpp'), `// cycle ${cycle}\n`)
       fs.writeFileSync(path.join(dir, 'app.py'), `x = ${cycle + 2}\n`)
       await until(() => manifestText(daemon.roomDoc, 'app.py', 'Test') === `x = ${cycle + 2}\n`)
       await internals(daemon).refreshTracked()

@@ -12,7 +12,7 @@ import { handlers as fileHandlers } from '../src/tools/files.js'
 import { handlers as claimHandlers } from '../src/tools/claims.js'
 import type { HandlerState } from '../src/tools/context.js'
 
-it('keeps tools responsive through a 3,000-file Rust graph build', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('keeps tools responsive through a 3,000-file Rust graph build', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-rust-lag-'))
   const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: 'pipe' }).trim()
   const texts = new Map<string, string>()

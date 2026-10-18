@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { workerLine, type WorkerView } from '@room/shared'
-import { activityFromEvent, WorkerActivityTracker, ACTIVITY_MAX } from '../src/worker-activity.js'
+import { WorkerActivityTracker } from '../src/worker-activity.js'
 import { defaultSpawner } from '../src/worker-process.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'room-worker-activity-'))
@@ -12,6 +12,15 @@ const wt = '/repo/.room/workers/tax'
 const SECRET = 'TOPSECRET'
 const claudeTool = (name: string, input: object) => JSON.stringify({ type: 'assistant', session_id: 's', message: { content: [{ type: 'tool_use', id: 't', name, input }] } })
 const codexItem = (item: object, type = 'item.started') => JSON.stringify({ type, item: { id: 'item_1', ...item } })
+
+// Labels are observed the way production reads them: one stream line appended to a log, polled by a fresh tracker.
+const ACTIVITY_MAX = 80
+let lineNo = 0
+function activityFromEvent(line: string, host: 'claude' | 'codex', dir: string): string | undefined {
+  const file = path.join(tmp, `event-${lineNo++}.log`)
+  fs.writeFileSync(file, line + '\n')
+  return new WorkerActivityTracker().poll(file, host, dir, 10_000)?.label
+}
 
 describe('activityFromEvent (Claude stream-json)', () => {
   it('labels file tools with the worktree-relative path', () => {

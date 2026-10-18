@@ -67,12 +67,13 @@ it('queues a standalone idle thread when the daemon explicitly reports it not lo
 })
 
 it('does not retry uncertain mid-turn submissions or count them as confirmed wakes', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const post = vi.fn(async () => ({ kind: 'uncertain' as const, reason: 'connection lost after submit' }))
   const r = rig(true, { midTurn: createMidTurnSender({ env: {}, post }) })
   try {
     r.note()
     await vi.waitFor(() => expect(post).toHaveBeenCalledOnce())
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await vi.advanceTimersByTimeAsync(100)
     expect(post).toHaveBeenCalledOnce()
     expect(r.wakes.health()).toMatchObject({ handedToHost: 0, wakeRecorded: 0, uncertainWakeRecorded: 1,
       attempt: { outcome: 'uncertain' } })
@@ -313,12 +314,13 @@ it('keeps the last turn event across more than a tail of item lines, including a
 })
 
 it('leaves own-commit claim release owed without waking, but wakes for other release reasons', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const r = rig(false)
   try {
     const own = hubAppend<NoteMsg>(r.room, { name: 'room', kind: 'bot' }, {
       type: 'note', to: 'Pat', priority: 'notify', text: claimReleaseText('app.py', 3, 9, r.head),
     })
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.ledger.candidates(r.s).map(m => m.id)).toContain(own.id)
     expect(r.texts).toEqual([])
     const foreign = hubAppend<NoteMsg>(r.room, { name: 'room', kind: 'bot' }, {
@@ -352,6 +354,7 @@ it('wakeable does no synchronous child-process work for claim-release ancestry',
 })
 
 it('does not queue a mid-turn message that the hook then receipts', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async () => 'turn' as const)
   const r = rig(true, { midTurn })
   try {
@@ -362,31 +365,33 @@ it('does not queue a mid-turn message that the hook then receipts', async () => 
     expect(r.ledger.select(r.s, hook).map(x => x.id)).toContain(m.id)
     r.ledger.commit(hook)
     r.event('task_complete')
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toEqual([])
   } finally { r.close() }
 })
 
 it('queues exactly once after task_complete for a message still unseen', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const r = rig(true)
   try {
     r.note()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toEqual([])
     r.event('task_complete')
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
     expect(r.texts[0]).toContain('if it shows nothing new, they were already delivered: do nothing further')
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toHaveLength(1)
     expect(r.log.join('\n')).toContain(r.id)
   } finally { r.close() }
 })
 
 it('treats turn_aborted as idle', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const r = rig(true)
   try {
     r.note()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toEqual([])
     r.event('turn_aborted')
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
@@ -394,6 +399,7 @@ it('treats turn_aborted as idle', async () => {
 })
 
 it('rechecks a push against HEAD when the busy turn ends', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const r = rig(true)
   try {
     visiblePeer(r.room, 'Ana')
@@ -406,18 +412,19 @@ it('rechecks a push against HEAD when the busy turn ends', async () => {
     execFileSync('git', ['-C', r.s.dir, 'reset', '-q', '--hard', r.head])
     const notice = hubAppend<PushedMsg>(r.room, { name: 'Ana', kind: 'agent' }, { type: 'pushed', branch: 'main', upstream: 'origin/main', fromSha: r.head, toSha: pushed, commits: 1, paths: [], summary: 'next' })
     expect(r.ledger.candidates(r.s).map(m => m.id)).toContain(notice.id)
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toEqual([])
     execFileSync('git', ['-C', r.s.dir, 'reset', '-q', '--hard', pushed])
     expect(r.ledger.candidates(r.s).map(m => m.id)).not.toContain(notice.id)
     r.event('task_complete')
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toEqual([])
   } finally { r.close() }
 })
 
 
 it('joins notify once while busy, then queues each still-owed message once after idle', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   let sessionDir: string | undefined
   const r = rig(true, { midTurn, sessionDir: () => sessionDir })
@@ -438,17 +445,18 @@ it('joins notify once while busy, then queues each still-owed message once after
     expect(JSON.parse(readFileSync(join(r.dir, 'wakes.json'), 'utf8')).r[note.id].via).toBe('queue')
     r.event('task_complete')
     r.wakes.reconcile()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toHaveLength(1)
     r.event('task_started')
     r.wakes.reconcile()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(r.texts).toHaveLength(1)
     expect(midTurn).toHaveBeenCalledOnce()
   } finally { r.close() }
 })
 
 it('coalesces addressed own-worker completions during a busy turn, without progress or duplicate wakes', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   const r = rig(true, { midTurn, ownWorkers: () => new Set(['worker', 'worker2']), windowMs: 100 })
   try {
@@ -465,7 +473,7 @@ it('coalesces addressed own-worker completions during a busy turn, without progr
     expect(midTurn.mock.calls[0][1]).not.toMatch(/private|progress|other/)
     expect(r.ledger.candidates(r.s)).toHaveLength(5) // a wake is not a receipt
     r.wakes.reconcile()
-    await new Promise(resolve => setTimeout(resolve, 140))
+    await vi.advanceTimersByTimeAsync(140)
     expect(midTurn).toHaveBeenCalledOnce()
     r.event('task_complete')
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
@@ -494,13 +502,14 @@ it.each(['unavailable', 'throw'])('retries mid-turn %s without duplicate wakes a
 })
 
 it('coalesces urgent mid-turn wakes', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   const r = rig(true, { midTurn, windowMs: 200 })
   try {
     r.note()
     await vi.waitFor(() => expect(midTurn).toHaveBeenCalledOnce())
     r.note(); r.note()
-    await new Promise(resolve => setTimeout(resolve, 60))
+    await vi.advanceTimersByTimeAsync(60)
     expect(midTurn).toHaveBeenCalledOnce()
     await vi.waitFor(() => expect(midTurn).toHaveBeenCalledTimes(2))
     expect(midTurn.mock.calls[1][1]).toContain('2 things')
@@ -518,6 +527,7 @@ it('never calls the mid-turn sender for Claude', async () => {
 })
 
 it('ROOM_WAKE=off suppresses mid-turn transport', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const post = vi.fn()
   const env = { ROOM_WAKE: 'off' }
   const queue = vi.fn(async () => {})
@@ -526,22 +536,23 @@ it('ROOM_WAKE=off suppresses mid-turn transport', async () => {
   const r = rig(true, { midTurn, send })
   try {
     r.note()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(post).not.toHaveBeenCalled()
     r.event('task_complete')
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(queue).not.toHaveBeenCalled()
     expect(r.texts).toEqual([])
   } finally { r.close() }
 })
 
 it('rechecks the bound session after a busy probe', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   let bound = { id: 'initial', host: 'codex' as const }
   const r = rig(true, { midTurn, bound: () => bound, codexTurn: { busy: async () => { bound = { id: bound.id === 'initial' ? 'replacement' : 'initial', host: 'codex' }; return true } }, pollMs: 1000 })
   try {
     r.note()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.advanceTimersByTimeAsync(80)
     expect(midTurn).not.toHaveBeenCalled()
   } finally { r.close() }
 })

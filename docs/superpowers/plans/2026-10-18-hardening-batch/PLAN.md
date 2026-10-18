@@ -123,3 +123,18 @@ Rule: every shipped behaviour is described once, accurately, and nothing shipped
 Full suite (`env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test`, with the new scale env var set once), typecheck,
 `npx knip`, `npm run build:plugin`, plugin eval if tool descriptions changed, then `npm run bump -- 0.17.17`,
 CHANGELOG 0.17.17 entry, tag, reinstall on Codex, one Room benchmark arm on the frozen harness with the new plugin.
+
+## Pre-commit review (2026-10-18, after collection)
+
+Two independent reviews of the integrated tree before the task commit: Codex (gpt-6-astra) on the production diff, a fresh Claude reviewer on the test diff.
+
+Production findings, all fixed in the same commit:
+- Preview repeat refusal was keyed on the command string alone, so a fixed tree was still refused and a successful `allowSlow` retry never cleared it; the history also kept full stopped output with no bound. Now keyed on command plus preview inputs (ancestor, merged paths, modes), cleared when the command finishes, at most eight entries with a 4 KB tail each.
+- The three-miss liveness tolerance also delayed takeover when the owner's port was refused outright, past the 5 s retry budget of interrupted posts. A refused port is now decisive at the next tick; only timed-out probes count toward the tolerance (`probeRelay` returns `slow` for a timeout).
+
+Test findings:
+- Sixteen worker-activity label tests (command-argument and secret redaction, Codex item labels, malformed input, label cap) had gone out with a test-only wrapper; restored, driven through `WorkerActivityTracker.poll` on a log file.
+- The skills table had dropped four negative wording pins; restored as `absent` rows.
+- The ignored-tree pruning test was gated as scale although its assertions are correctness; it now runs by default on a 300-file tree and at 3,000 files with `TEST_SCALE=1`.
+- One awareness case added: an `owner` field cannot vouch for a name outside the login's `login+label` family.
+- Everything else in the test diff was a move or an audit-listed prune; gated tests have no hidden dependents; fixtures do not change isolation.

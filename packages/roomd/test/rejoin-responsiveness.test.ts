@@ -21,7 +21,7 @@ const provider = (doc: Y.Doc): WebsocketProvider => {
 // files, where the old path did 463,891 probes); a large one only made the test slow under suite load.
 const FILES = 1500
 
-it('rejoins a large tree without per-file synchronous scan probes', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('rejoins a large tree without per-file synchronous scan probes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-large-rejoin-'))
   const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim()
   const daemons: Awaited<ReturnType<typeof startRoomd>>[] = []

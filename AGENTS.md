@@ -13,7 +13,7 @@ are historical context, not constraints on current engineering decisions.
 - `docs/roadmap.md` — planned work; distinguish proposals from shipped behavior.
 - Relevant design documents and `docs/decisions.md` for rationale. Check historical
   decisions against current code, tests and documentation before relying on them.
-- `RULES.md` and `docs/submission.md` preserve the original hackathon brief and
+- `RULES.md` and `docs/archive/submission.md` preserve the original hackathon brief and
   submission history. Keep `RULES.md` unchanged; neither governs current priorities.
 
 ## Engineering priorities
@@ -59,7 +59,7 @@ RULES.md                 historical hackathon brief + rubric (do not edit)
 AGENTS.md                this file (CLAUDE.md -> AGENTS.md)
 docs/decisions.md        idea, scope, findings from live runs, what-was-built-when
 docs/prior-art.md        AgentRoom, Zed Delta, etc. and the gap we fill
-docs/submission.md       historical submission checklist + demo script
+docs/archive/submission.md       historical submission checklist + demo script
 docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
 packages/shared/         one Y.Doc schema: overlays, scopes, claims (with plans), rolling bus + ledger archive,
                          workers; messages.ts (every message kind: format/audience/wake/priority), views.ts
@@ -124,6 +124,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   A test worker whose event loop stands still for 120 s, or whose file runs past 15 minutes, is reported by
   `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
+- Deliberate scale and responsiveness tests are opt-in: `TEST_SCALE=1 npm test`. The default run skips these large synthetic repositories and soak cases; CI sets `TEST_SCALE=1` so they remain required coverage.
 - Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
   (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin and tag `v<version>`.
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web

@@ -1,6 +1,6 @@
 # Submission checklist
 
-Historical hackathon draft (September 2026). For current behavior and setup, see the [README](../README.md) and [onboarding](onboarding.md).
+Historical hackathon draft (September 2026). For current behavior and setup, see the [README](../../README.md) and [onboarding](../../README.md#coordinate-a-task).
 
 Deadline and timezone: **confirm in the hackathon portal**.
 Event partner handles: **confirm before publishing the social post**.

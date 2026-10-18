@@ -124,23 +124,19 @@ describe('opening requires user consent', () => {
       expect(explicit.requests.every(url => new URL(url).host === 'explicit-room.test:4403')).toBe(true)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
-  it.each(['room_join', 'room_create'])('%s where=team uses ROOM_SERVER', async tool => {
-    vi.stubEnv('ROOM_SERVER', 'ws://custom-room.test:4403')
+  it.each([
+    ['room_join', 'ROOM_SERVER', 'ws://custom-room.test:4403', 'custom-room.test:4403'],
+    ['room_create', 'ROOM_SERVER', 'ws://custom-room.test:4403', 'custom-room.test:4403'],
+    ['room_join', 'ROOM_URL', 'ws://runner-room.test:4403/o/r', 'runner-room.test:4403'],
+    ['room_create', 'ROOM_URL', 'ws://runner-room.test:4403/o/r', 'runner-room.test:4403'],
+  ])('%s where=team uses %s', async (tool, variable, value, host) => {
+    vi.stubEnv(variable, value)
     const { tools, requests } = server(false)
     const result = await tools.call(tool, { ...args, where: 'team', ...(tool === 'room_create' ? { confirm: true } : {}) })
-    if (tool === 'room_join') expect(result).toContain('custom-room.test:4403')
+    if (tool === 'room_join') expect(result).toContain(host)
     else expect(result).toBe('error: reached daemon.')
     expect(requests.length).toBeGreaterThan(0)
-    expect(requests.every(url => new URL(url).host === 'custom-room.test:4403')).toBe(true)
-  })
-  it.each(['room_join', 'room_create'])('%s where=team uses the server in ROOM_URL', async tool => {
-    vi.stubEnv('ROOM_URL', 'ws://runner-room.test:4403/o/r')
-    const { tools, requests } = server(false)
-    const result = await tools.call(tool, { ...args, where: 'team', ...(tool === 'room_create' ? { confirm: true } : {}) })
-    if (tool === 'room_join') expect(result).toContain('runner-room.test:4403')
-    else expect(result).toBe('error: reached daemon.')
-    expect(requests.length).toBeGreaterThan(0)
-    expect(requests.every(url => new URL(url).host === 'runner-room.test:4403')).toBe(true)
+    expect(requests.every(url => new URL(url).host === host)).toBe(true)
   })
   it.each([
     [{ ROOM_SERVER: 'ws://custom-room.test:4403' }, 'custom-room.test:4403'],

@@ -1,454 +1,28 @@
-import { publishFixture } from './fixtures/manifest.js'
-import { claudeWakeUnavailable } from '../src/prompt.js'
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { base, createTools, dir, fakeSession, ignore, lead, pair, realRepo, reportDone, setFixtureRepo, setupLead, workerId } from './workers-fixture.js'
+import type { Identity, Msg } from '@room/shared'
+import { manifestPaths, shouldWakeOnMsg } from '@room/shared'
+import { setParticipantBase } from '@room/shared/testing'
 import { execFileSync, spawn } from 'node:child_process'
-import fs, { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync, lstatSync, realpathSync, chmodSync } from 'node:fs'
+import fs, { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import * as Y from 'yjs'
+import { describe, expect, it, vi } from 'vitest'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, manifestPaths, shouldWakeOnMsg } from '@room/shared'
-import type { Identity, Msg } from '@room/shared'
-import { createTools as createRoomTools } from '../src/tools.js'
-import type { Session } from '../src/session.js'
+import * as Y from 'yjs'
 import { resolveConfig } from '../src/config.js'
-import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorkerLinks, prepareWorktree, cleanupPreparedWorktree } from '../src/worker-git.js'
-import { workerBudget, workerPriority, workerCommand, workerPrompt, validTag, workerEnv } from '../src/worker-config.js'
-import { CODEX_SHELL_FILTER } from '../src/worker-shell-env.js'
-import { workerLogTail, defaultSpawner, pidAlive, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, type SpawnSpec } from '../src/worker-process.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
-import { registerWorkers, workerByTag } from './registry-fixture.js'
-import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { claudeWakeUnavailable } from '../src/prompt.js'
+import type { Session } from '../src/session.js'
+import { workerBudget, workerCommand, workerEnv, workerPriority } from '../src/worker-config.js'
+import { cleanupPreparedWorktree, prepareWorkerLinks, prepareWorktree } from '../src/worker-git.js'
+import { defaultSpawner, pidAlive, probeProcess, workerLogTail, type SpawnSpec } from '../src/worker-process.js'
 import { projectWorkers } from '../src/worker-projector.js'
-import type { WorkerRecord } from '../src/worker-status.js'
-import { hubSeam } from './fixtures/hub.js'
-import { testPolicyStore } from './policy-fixture.js'
-import { hubAppend, setParticipantBase } from '@room/shared/testing'
+import { registryForDir } from '../src/worker-registry.js'
+import { CODEX_SHELL_FILTER } from '../src/worker-shell-env.js'
+import { publishFixture } from './fixtures/manifest.js'
+import { finishFixtureProcess, fixtureProbe, fixtureProcess, spawnFixtureProcess } from './fixtures/process-liveness.js'
 import { visiblePeer } from './fixtures/visible.js'
-import { clearFixtureProcesses, finishFixtureProcess, fixtureLiveness, fixtureProbe, fixtureProcess, spawnFixtureProcess } from './fixtures/process-liveness.js'
-import { workspaceRepo } from './fixtures/workspace-repo.js'
-
-vi.mock('../src/leases.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/leases.js')>()
-  return { ...actual, liveness: (identity: Parameters<typeof actual.liveness>[0]) => fixtureLiveness(identity, actual.liveness) }
-})
-
-// A different lead can see a fixture worker without owning its in-memory handle.
-// Keep the fallback signal path in the same synthetic process model as probes
-// and liveness; fixture PIDs may belong to unrelated processes on the test host.
-vi.mock('../src/worker-process.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/worker-process.js')>()
-  return { ...actual, signalWorker: (...args: Parameters<typeof actual.signalWorker>) => {
-    const [pid, , , , worker, probe] = args
-    if (probe === fixtureProbe) return !!worker && actual.pidIsOurWorker(pid, worker, probe)
-    return actual.signalWorker(...args)
-  } }
-})
-
-// Worker lifecycle tests exercise real worktrees and process-stop waits under concurrent suites.
-vi.setConfig({ testTimeout: 30_000 })
-// These sessions have synthetic publication; real daemon completion is covered in done-publication.test.ts.
-vi.mock('../src/worker-publication.js', () => ({ settleWorkerPublication: async () => {} }))
-
-/** No release notices to send here. */
-const ignore = () => {}
-
-/** The worker reports room_done for its current run (a done report), while its process may still be alive. */
-async function reportDone(tag: string, summary = ''): Promise<void> {
-  const registry = await registryForDir(dir)
-  const record = registry.list().find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))!, run = record.runs.at(-1)!
-  await registry.writeReport(record.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary, changed: [] } })
-}
-
-// Lifecycle workers and worktrees in this file are synthetic. Never scan host processes.
-const createTools = (ctx: Parameters<typeof createRoomTools>[0]) => {
-  const tools = createRoomTools({ listCwdProcesses: () => [], ...ctx })
-  return { ...tools, call: async (...args: Parameters<typeof tools.call>) => {
-    const session = ctx.getSession()
-    if (session && args[0] === 'room_done' && !ctx.config?.workerId && !process.env.ROOM_WORKER_ID) {
-      const registry = await registryForDir(session.dir)
-      const record = registry.list().find(record => record.name === session.me.name)
-      const run = record?.runs.at(-1)
-      if (record && run) {
-        if (!registry.reports(record.id).some(report => report.run === run.n)) await registry.admit({
-          id: record.id, run: run.n, nonce: run.nonce, dir: record.dir,
-          chain: [], hostSessionId: record.hostSessionId,
-        })
-        process.env.ROOM_WORKER_ID = record.id
-        try { return await tools.call(...args) }
-        finally { delete process.env.ROOM_WORKER_ID }
-      }
-    }
-    return tools.call(...args)
-  } }
-}
-
-// Disk cleanup and patch restoration are exercised with real worktrees in collect.test.ts.
-// These lifecycle tests use synthetic worker directories and controlled process callbacks.
-vi.mock('../src/worker-git.js', async importOriginal => ({
-  ...await importOriginal<typeof import('../src/worker-git.js')>(),
-  ignoredWorkerArtifacts: vi.fn(async () => []),
-  saveDiscardPatch: vi.fn(async () => undefined),
-  cleanupWorker: vi.fn(async () => true),
-}))
-
-let dir: string
-let base: string
-const scratchRepos: string[] = []
-const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
-const workerId: Identity = { name: 'rohanz+money', kind: 'agent', owner: 'rohanz', label: 'money' }
-
-const isRoomTestEnv = (key: string) => key.startsWith('ROOM_') || key === 'CLAUDE_CODE_MESSAGING_SOCKET' || key === 'CLAUDE_CODE_MESSAGING_TOKEN'
-let roomEnv: Record<string, string | undefined>
-beforeEach(() => {
-  clearFixtureProcesses()
-  roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => isRoomTestEnv(key)))
-  for (const key of Object.keys(roomEnv)) delete process.env[key]
-  const configHome = mkdtempSync(join(tmpdir(), 'room-worker-config-'))
-  scratchRepos.push(configHome)
-  vi.stubEnv('XDG_CONFIG_HOME', configHome)
-})
-afterEach(async () => {
-  vi.restoreAllMocks()
-  vi.unstubAllEnvs()
-  for (const key of Object.keys(process.env)) if (isRoomTestEnv(key)) delete process.env[key]
-  Object.assign(process.env, roomEnv)
-  for (const repo of scratchRepos.splice(0)) {
-    await closeRegistryForDir(repo).catch(() => {})
-    rmSync(repo, { recursive: true, force: true })
-  }
-  await closeRegistryForDir(dir)
-  rmSync(join(dir, '.git', 'room', 'registry'), { recursive: true, force: true })
-  const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
-  const worktrees = git('worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice(9))
-  for (const worktree of worktrees) if (!existsSync(worktree) || realpathSync(worktree) !== realpathSync(dir)) {
-    try { git('worktree', 'remove', '--force', worktree) } catch { /* a test may have removed it already */ }
-  }
-  git('worktree', 'prune')
-  for (const branch of git('for-each-ref', '--format=%(refname:short)', 'refs/heads/room').split('\n').filter(Boolean)) git('branch', '-D', branch)
-})
-
-function realRepo() {
-  const repo = mkdtempSync(join(tmpdir(), 'room-carry-'))
-  scratchRepos.push(repo)
-  const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
-  git('init', '-q', '-b', 'main')
-  git('config', 'user.email', 'test@test')
-  git('config', 'user.name', 'tester')
-  writeFileSync(join(repo, '.gitignore'), '.room/\nignored.txt\n')
-  writeFileSync(join(repo, 'modified.txt'), 'before\n')
-  writeFileSync(join(repo, 'staged.txt'), 'before\n')
-  writeFileSync(join(repo, 'deleted.txt'), 'before\n')
-  writeFileSync(join(repo, 'renamed.txt'), 'before\n')
-  writeFileSync(join(repo, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
-  writeFileSync(join(repo, 'executable.sh'), '#!/bin/sh\necho before\n', { mode: 0o755 })
-  git('add', '.'); git('commit', '-qm', 'initial')
-  return { repo, git, head: git('rev-parse', 'HEAD') }
-}
-
-function pair() {
-  const a = new Y.Doc(), b = new Y.Doc()
-  a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
-  b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
-  return { a: new RoomDoc(a), b: new RoomDoc(b) }
-}
-function fakeSession(room: RoomDoc, me: Identity, local = true, repoDir = dir, repoBase = base): Session {
-  const awareness = new Awareness(room.doc)
-  awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
-  const graph = new GraphIndex(room, me.name, repoDir); graph.start()
-  return {
-    graph, room, awareness, me, dir: repoDir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
-    ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir: repoDir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: repoBase, fence: 'test-fence' } as never,
-    shareMax: 'full', shareRequested: 'full',
-    ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
-  } as Session
-}
-
-beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'room-workers-'))
-  const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
-  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 'rohanz')
-  fs.appendFileSync(join(dir, '.git', 'info', 'exclude'), '.room/\n')
-  writeFileSync(join(dir, 'app.py'), 'x = 1\n')
-  git('add', '.'); git('commit', '-qm', 'init')
-  base = git('rev-parse', 'HEAD').trim()
-})
-
-describe('worker plumbing', () => {
-  it('validates tags and builds host commands', () => {
-    expect(validTag('money')).toBe('money'); expect(validTag('a b')).toBeUndefined(); expect(validTag('')).toBeUndefined()
-    const c = workerCommand('claude', 'claude-sonnet-5', 'do it')
-    expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args.slice(0, 2)).toEqual(['-p', 'do it'])
-    const x = workerCommand('codex', undefined, 'do it')
-    expect(x.cmd).toBe('codex'); expect(x.args.slice(0, 3)).toEqual(['exec', '-s', 'workspace-write'])
-    expect(x.args).toContain('--json')
-    const prompt = workerPrompt('rohanz', 'money', 'switch to cents')
-    expect(prompt).toContain('Ask the peer responsible for a dependency directly with room_send(type "question", to "<returned peer name>")')
-    expect(prompt).toContain('ask rohanz for scope decisions or unresolved ownership')
-    expect(prompt).toContain('Continue independent work while an answer is pending')
-    expect(prompt).toContain('TASK: switch to cents')
-  })
-
-  it('uses the resolved channel override and supports disabling it', async () => {
-    for (const channel of ['plugin:custom@market', '']) {
-      const config = await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: channel } })
-      const c = workerCommand('claude', undefined, 'task', config.claudeChannel)
-      expect(c.args.slice(0, 2)).toEqual(['-p', 'task'])
-      const channels = workerCommand('claude', undefined, 'task', config.claudeChannel, undefined, { wakeChannels: true })
-      expect(channels.args.slice(0, channel ? 4 : 2)).toEqual(channel ? ['--dangerously-load-development-channels', channel, '-p', 'task'] : ['-p', 'task'])
-      expect(workerCommand('codex', undefined, 'task', config.claudeChannel).args).not.toContain('--dangerously-load-development-channels')
-    }
-  })
-
-  it('creates a worktree on branch room/<tag> and refuses an unmanaged reuse', async () => {
-    const w1 = await prepareWorktree(dir, 'money')
-    expect(w1.base).toBe(base); expect(w1.created).toBe(true); expect(w1.branch).toBe('room/money'); expect(existsSync(join(w1.dir, 'app.py'))).toBe(true)
-    await expect(prepareWorktree(dir, 'money')).rejects.toThrow(/unmanaged/)
-  })
-
-  it('refuses a stale branch when a worker directory was deleted', async () => {
-    const first = await prepareWorktree(dir, 'deleted')
-    rmSync(first.dir, { recursive: true, force: true })
-    await expect(prepareWorktree(dir, 'deleted')).rejects.toThrow(/branch room\/deleted is unmanaged/)
-  })
-
-  it('carries tracked and non-ignored untracked work into a worker-local base commit', async () => {
-    const { repo, git, head } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'after\n')
-    writeFileSync(join(repo, 'staged.txt'), 'staged\n'); git('add', 'staged.txt')
-    rmSync(join(repo, 'deleted.txt'))
-    git('mv', 'renamed.txt', 'moved.txt')
-    writeFileSync(join(repo, 'binary.bin'), Buffer.from([0, 255, 1, 254, 0]))
-    writeFileSync(join(repo, 'executable.sh'), '#!/bin/sh\necho after\n'); chmodSync(join(repo, 'executable.sh'), 0o755)
-    writeFileSync(join(repo, 'new.sh'), '#!/bin/sh\necho new\n', { mode: 0o755 })
-    writeFileSync(join(repo, 'ignored.txt'), 'private')
-    mkdirSync(join(repo, '.room'), { recursive: true }); writeFileSync(join(repo, '.room', 'private'), 'private')
-    const leadStatus = git('status', '--porcelain')
-    const prepared = await prepareWorktree(repo, 'carry', 'rohanz')
-    expect(prepared.carried?.count).toBeGreaterThan(0)
-    expect(prepared.base).toBe(git('rev-parse', 'room/carry'))
-    expect(prepared.base).not.toBe(head)
-    expect(execFileSync('git', ['-C', prepared.dir, 'log', '-1', '--format=%s']).toString().trim()).toBe('room: carried-in uncommitted work from rohanz')
-    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('after\n')
-    expect(readFileSync(join(prepared.dir, 'staged.txt'), 'utf8')).toBe('staged\n')
-    expect(existsSync(join(prepared.dir, 'deleted.txt'))).toBe(false)
-    expect(existsSync(join(prepared.dir, 'moved.txt'))).toBe(true)
-    expect(existsSync(join(prepared.dir, 'renamed.txt'))).toBe(false)
-    expect(readFileSync(join(prepared.dir, 'binary.bin'))).toEqual(Buffer.from([0, 255, 1, 254, 0]))
-    expect(lstatSync(join(prepared.dir, 'new.sh')).mode & 0o111).toBeTruthy()
-    expect(prepared.carriedUntracked).toContainEqual({ path: 'new.sh', sha: git('hash-object', 'new.sh'), mode: 0o755 })
-    expect(git('ls-tree', 'refs/room/carry-untracked/carry', 'new.sh')).toContain('100755 blob')
-    expect(existsSync(join(prepared.dir, 'ignored.txt'))).toBe(false)
-    expect(existsSync(join(prepared.dir, '.room', 'private'))).toBe(false)
-    expect(execFileSync('git', ['-C', prepared.dir, 'status', '--porcelain']).toString().trim()).toBe('?? new.sh')
-    expect(git('status', '--porcelain')).toBe(leadStatus)
-  })
-
-  it('keeps carried untracked bytes out of every branch and push --all', async () => {
-    const { repo, git } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'tracked WIP\n')
-    writeFileSync(join(repo, 'private.txt'), 'untracked private bytes\n')
-    const prepared = await prepareWorktree(repo, 'private', 'rohanz')
-    expect(readFileSync(join(prepared.dir, 'private.txt'), 'utf8')).toBe('untracked private bytes\n')
-    expect(prepared.carriedUntracked).toEqual([{ path: 'private.txt', sha: git('hash-object', 'private.txt'), mode: lstatSync(join(repo, 'private.txt')).mode & 0o777 }])
-    expect(prepared.carried?.count).toBe(2)
-    expect(git('ls-tree', '-r', '--name-only', 'refs/heads/room/private')).not.toContain('private.txt')
-    const heads = git('for-each-ref', '--format=%(refname)', 'refs/heads').split('\n')
-    expect(heads).toContain('refs/heads/room/private')
-    expect(git('log', '--all', '--source', '--format=%H', '--', 'private.txt')).toBe('')
-    expect(git('rev-list', '--objects', ...heads)).not.toContain(prepared.carriedUntracked![0].sha)
-    expect(git('cat-file', '-p', prepared.carriedUntracked![0].sha)).toBe('untracked private bytes')
-    expect(git('ls-tree', '-r', '--name-only', 'refs/room/carry-untracked/private')).toBe('private.txt')
-    const remote = mkdtempSync(join(tmpdir(), 'room-carry-remote-')); scratchRepos.push(remote)
-    execFileSync('git', ['init', '--bare', '-q', remote])
-    git('push', '--all', remote)
-    expect(() => execFileSync('git', [`--git-dir=${remote}`, 'cat-file', '-e', 'refs/heads/room/private:private.txt'], { stdio: 'ignore' })).toThrow()
-    expect(execFileSync('git', [`--git-dir=${remote}`, 'for-each-ref', '--format=%(refname)']).toString()).not.toContain('refs/room/')
-  })
-
-  it('carries despite hostile diff config and suppresses every commit hook', async () => {
-    const { repo, git } = realRepo()
-    for (const [key, value] of Object.entries({ 'color.ui': 'always', 'diff.noprefix': 'true', 'diff.external': '/bin/echo', 'diff.mnemonicPrefix': 'true', 'core.autocrlf': 'true', 'commit.gpgsign': 'true' })) git('config', key, value)
-    for (const hook of ['prepare-commit-msg', 'post-commit', 'reference-transaction']) {
-      writeFileSync(join(repo, '.git', 'hooks', hook), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
-    }
-    writeFileSync(join(repo, 'modified.txt'), 'tracked WIP\r\n')
-    const prepared = await prepareWorktree(repo, 'configured', 'rohanz')
-    expect(prepared.carried?.commit).toBe(prepared.base)
-    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('tracked WIP\r\n')
-  })
-
-  it('does not make a carry commit for a clean lead and refuses unmanaged reuse', async () => {
-    const { repo, git, head } = realRepo()
-    const first = await prepareWorktree(repo, 'clean', 'rohanz')
-    expect(first).toMatchObject({ base: head, created: true })
-    expect(first.carried).toBeUndefined()
-    writeFileSync(join(repo, 'later.txt'), 'later')
-    await expect(prepareWorktree(repo, 'clean', 'rohanz')).rejects.toThrow(/unmanaged/)
-    expect(existsSync(join(first.dir, 'later.txt'))).toBe(false)
-    expect(git('rev-parse', 'room/clean')).toBe(head)
-  })
-
-  it('refuses another spawn into an existing worker worktree', async () => {
-    const { repo } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'lead WIP\n')
-    writeFileSync(join(repo, 'untracked.txt'), 'untracked WIP\n')
-    await prepareWorktree(repo, 'occupied', 'rohanz')
-    await expect(prepareWorktree(repo, 'occupied', 'rohanz')).rejects.toThrow(/unmanaged/)
-  })
-
-  it('skips linked inputs, oversized files, nested repos and escaping symlinks with names', async () => {
-    const { repo, git } = realRepo()
-    mkdirSync(join(repo, 'data')); writeFileSync(join(repo, 'data', 'input.txt'), 'linked')
-    writeFileSync(join(repo, 'large.bin'), Buffer.alloc(5 * 1024 * 1024 + 1))
-    mkdirSync(join(repo, 'vendor', 'nested'), { recursive: true })
-    execFileSync('git', ['init', '-q', join(repo, 'vendor', 'nested')])
-    const externalDir = mkdtempSync(join(tmpdir(), 'room-outside-')); scratchRepos.push(externalDir)
-    const outside = join(externalDir, 'outside.txt'); writeFileSync(outside, 'outside')
-    symlinkSync(outside, join(repo, 'escape.txt'))
-    symlinkSync(join(repo, 'modified.txt'), join(repo, 'absolute-internal.txt'))
-    symlinkSync('missing.txt', join(repo, 'dangling.txt'))
-    writeFileSync(join(repo, 'keep-new.txt'), 'small')
-    const prepared = await prepareWorktree(repo, 'skips', 'rohanz', ['data'])
-    expect(prepared.carried?.paths).toContain('keep-new.txt')
-    expect(prepared.skippedCarry?.map(x => x.path)).toEqual(expect.arrayContaining(['data/input.txt', 'large.bin', 'vendor/nested/', 'escape.txt', 'absolute-internal.txt', 'dangling.txt']))
-    for (const p of ['data', 'large.bin', 'vendor/nested', 'escape.txt', 'absolute-internal.txt', 'dangling.txt']) expect(existsSync(join(prepared.dir, p))).toBe(false)
-    expect(git('status', '--porcelain')).toContain('keep-new.txt')
-  })
-
-  it('stops untracked copying at the 50 MB total budget', async () => {
-    const { repo } = realRepo()
-    for (let i = 0; i < 11; i++) writeFileSync(join(repo, `part-${String(i).padStart(2, '0')}.bin`), Buffer.alloc(5 * 1024 * 1024, i))
-    const prepared = await prepareWorktree(repo, 'budget')
-    expect(prepared.carriedUntracked).toHaveLength(10)
-    expect(prepared.skippedCarry).toContainEqual({ path: 'part-10.bin', reason: 'size budget' })
-    expect(existsSync(join(prepared.dir, 'part-10.bin'))).toBe(false)
-  })
-
-  it('cleans a failed prepared spawn without removing lead work and retries fresh', async () => {
-    const { repo, git } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'first WIP\n')
-    const first = await prepareWorktree(repo, 'retry', 'rohanz')
-    await cleanupPreparedWorktree(repo, first)
-    expect(existsSync(first.dir)).toBe(false)
-    expect(git('branch', '--list', first.branch)).toBe('')
-    expect(() => git('rev-parse', '--verify', 'refs/room/carry/retry')).toThrow()
-    writeFileSync(join(repo, 'modified.txt'), 'second WIP\n')
-    const second = await prepareWorktree(repo, 'retry', 'rohanz')
-    expect(readFileSync(join(second.dir, 'modified.txt'), 'utf8')).toBe('second WIP\n')
-  })
-
-  it('keeps an existing branch and its unmerged commit when launch fails after recreating its checkout', async () => {
-    const { repo, git } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'carried input\n')
-    writeFileSync(join(repo, 'untracked-input.txt'), 'private input\n')
-    const first = await prepareWorktree(repo, 'survivor', 'rohanz')
-    writeFileSync(join(first.dir, 'worker.txt'), 'preserved worker work\n')
-    git('-C', first.dir, 'add', 'worker.txt')
-    git('-C', first.dir, 'commit', '-qm', 'preserve worker work')
-    const workerHead = git('rev-parse', 'room/survivor')
-    const carryHead = git('rev-parse', 'refs/room/carry/survivor')
-    const untrackedTree = git('rev-parse', 'refs/room/carry-untracked/survivor')
-    rmSync(first.dir, { recursive: true, force: true })
-
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, git('rev-parse', 'HEAD'))
-    let session: Session | null = fakeSession(a, lead)
-    session.dir = repo
-    const tools = createTools({
-      getSession: () => session, setSession: s => { session = s }, cwd: repo,
-      worktree: (root, tag) => prepareWorktree(root, tag, 'rohanz'),
-      spawner: () => { throw new Error('forced launch failure') },
-    })
-    try {
-      expect(await tools.call('room_spawn', { tag: 'survivor', task: 'continue work' })).toContain('unmanaged')
-      expect(git('rev-parse', '--verify', 'refs/heads/room/survivor')).toBe(workerHead)
-      expect(git('show', 'room/survivor:worker.txt')).toBe('preserved worker work')
-      expect(git('rev-parse', 'refs/room/carry/survivor')).toBe(carryHead)
-      expect(git('rev-parse', 'refs/room/carry-untracked/survivor')).toBe(untrackedTree)
-    } finally { await tools.shutdown() }
-  })
-
-  it('retries against a new HEAD when the lead commits during the snapshot', async () => {
-    const { repo, git } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'dirty\n')
-    writeFileSync(join(repo, 'new.txt'), 'new\n')
-    const copy = fs.promises.copyFile
-    let advanced = false
-    vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (src, dest, mode) => {
-      if (!advanced && String(src).endsWith('new.txt')) {
-        advanced = true
-        writeFileSync(join(repo, 'staged.txt'), 'committed mid-snapshot\n')
-        git('add', 'staged.txt'); git('commit', '-qm', 'advance')
-      }
-      return copy(src, dest, mode)
-    })
-    const prepared = await prepareWorktree(repo, 'moving', 'rohanz')
-    expect(prepared.carryFailed).toBeUndefined()
-    expect(readFileSync(join(prepared.dir, 'staged.txt'), 'utf8')).toBe('committed mid-snapshot\n')
-    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('dirty\n')
-    expect(git('rev-parse', `${prepared.base}^`)).toBe(git('rev-parse', 'HEAD'))
-  })
-
-  it('explains unborn HEAD and refuses a lead mid-merge', async () => {
-    const unborn = mkdtempSync(join(tmpdir(), 'room-unborn-')); scratchRepos.push(unborn)
-    execFileSync('git', ['init', '-q', '-b', 'main', unborn])
-    await expect(prepareWorktree(unborn, 'empty')).rejects.toThrow('make a first commit')
-    const { repo, git } = realRepo()
-    writeFileSync(join(repo, '.git', 'MERGE_HEAD'), 'f'.repeat(40) + '\n')
-    await expect(prepareWorktree(repo, 'merging')).rejects.toThrow('finish the merge or rebase')
-    expect(existsSync(join(repo, '.room', 'workers', 'merging'))).toBe(false)
-  })
-
-  it('spawns from detached HEAD and carries tracked and untracked work', async () => {
-    const { repo, git, head } = realRepo()
-    git('checkout', '--detach', '-q')
-    writeFileSync(join(repo, 'modified.txt'), 'detached tracked WIP\n')
-    writeFileSync(join(repo, 'detached-new.txt'), 'detached untracked WIP\n')
-    const leadStatus = git('status', '--porcelain')
-    const prepared = await prepareWorktree(repo, 'detached', 'rohanz')
-    expect(prepared).toMatchObject({ branch: 'room/detached', created: true })
-    expect(git('rev-parse', 'HEAD')).toBe(head)
-    expect(() => git('symbolic-ref', '-q', 'HEAD')).toThrow()
-    expect(git('rev-parse', `${prepared.base}^`)).toBe(head)
-    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('detached tracked WIP\n')
-    expect(readFileSync(join(prepared.dir, 'detached-new.txt'), 'utf8')).toBe('detached untracked WIP\n')
-    expect(prepared.carriedUntracked?.map(f => f.path)).toContain('detached-new.txt')
-    expect(git('status', '--porcelain')).toBe(leadStatus)
-  })
-
-  it('commits carry without git identity and despite a failing pre-commit hook', async () => {
-    const { repo, git } = realRepo()
-    git('config', '--unset', 'user.email'); git('config', '--unset', 'user.name')
-    const home = mkdtempSync(join(tmpdir(), 'room-empty-home-')); scratchRepos.push(home)
-    vi.stubEnv('HOME', home); vi.stubEnv('GIT_CONFIG_GLOBAL', join(home, 'empty')); vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1')
-    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
-    writeFileSync(join(repo, 'modified.txt'), 'carried\n')
-    const prepared = await prepareWorktree(repo, 'hooked', 'rohanz')
-    expect(prepared.carried?.commit).toBe(prepared.base)
-    expect(execFileSync('git', ['-C', prepared.dir, 'log', '-1', '--format=%an <%ae>']).toString().trim()).toBe('Room <room@localhost>')
-  })
-
-  it('rolls back a partial carry and leaves a clean HEAD worktree when copying fails', async () => {
-    const { repo, git, head } = realRepo()
-    writeFileSync(join(repo, 'modified.txt'), 'after\n')
-    writeFileSync(join(repo, 'new.txt'), 'new\n')
-    const copy = fs.promises.copyFile
-    vi.spyOn(fs.promises, 'copyFile').mockImplementation((src, dest, mode) => {
-      if (String(src).endsWith('new.txt')) throw new Error('forced copy failure')
-      return copy(src, dest, mode)
-    })
-    const prepared = await prepareWorktree(repo, 'fallback', 'rohanz')
-    expect(prepared).toMatchObject({ base: head, carryFailed: true })
-    expect(prepared.carried).toBeUndefined()
-    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('before\n')
-    expect(existsSync(join(prepared.dir, 'new.txt'))).toBe(false)
-    expect(execFileSync('git', ['-C', prepared.dir, 'status', '--porcelain']).toString()).toBe('')
-    expect(git('rev-parse', 'room/fallback')).toBe(head)
-  })
-})
+import { registerWorkers, workerByTag } from './registry-fixture.js'
 
 describe('room_spawn / room_done / room_collect discard', () => {
   function setup(worktree?: typeof prepareWorktree, maxWorkers = 2) {
@@ -652,7 +226,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
-  it('names each worker\'s carried files in its spawn reply', async () => {
+  it('reports carried file counts and records pending publication for each spawn', async () => {
     const t = setup(prepareWorktree)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
@@ -692,25 +266,6 @@ describe('room_spawn / room_done / room_collect discard', () => {
       expect(first).toContain(`note: carry=false: 1 uncommitted change in your clone is not in this worktree, which starts from HEAD ${base.slice(0, 10)}.`)
       expect(first).not.toContain('Commit them')
       for (const tag of ['head2', 'head3']) expect(await t.leadTools.call('room_spawn', { tag, task: 'b', carry: false })).not.toMatch(/uncommitted change/)
-    } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
-  })
-
-  it('refuses an unmanaged surviving branch without altering its worker commits or lead WIP', async () => {
-    const initial = await prepareWorktree(dir, 'reusedbranch', 'rohanz')
-    writeFileSync(join(initial.dir, 'branch.txt'), 'old worker work')
-    execFileSync('git', ['-C', initial.dir, 'add', 'branch.txt'])
-    execFileSync('git', ['-C', initial.dir, 'commit', '-qm', 'old worker change'])
-    const oldHead = execFileSync('git', ['-C', initial.dir, 'rev-parse', 'HEAD']).toString().trim()
-    rmSync(initial.dir, { recursive: true, force: true })
-    writeFileSync(join(dir, 'wip.txt'), 'lead WIP')
-    try {
-      const t = setup(prepareWorktree)
-      const out = await t.leadTools.call('room_spawn', { tag: 'reusedbranch', task: 'resume' })
-      expect(out).toContain('branch room/reusedbranch is unmanaged')
-      expect(workerByTag(dir, 'reusedbranch')).toBeUndefined()
-      expect(execFileSync('git', ['-C', dir, 'rev-parse', 'room/reusedbranch']).toString().trim()).toBe(oldHead)
-      expect(execFileSync('git', ['-C', dir, 'show', 'room/reusedbranch:branch.txt']).toString().trim()).toBe('old worker work')
-      expect(readFileSync(join(dir, 'wip.txt'), 'utf8')).toBe('lead WIP')
     } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
   })
 
@@ -987,384 +542,6 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(tested).toContain('The combined preview passed `npm test`.')
     expect(tested).not.toContain('caused by')
   })
-
-  it('a worker that exits without room_done is marked failed regardless of exit code; dismiss kills a running one', async () => {
-    const t = setup()
-    await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
-    await t.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
-    t.exits[0](1)
-    await vi.waitFor(() => expect(workerByTag(dir, 'a')).toMatchObject({ status: 'failed', exitCode: 1 }), { timeout: 15_000 })
-    await vi.waitFor(() => expect(t.a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && /worker a failed: exit 1/.test(m.text))).toBe(true), { timeout: 15_000 })
-    const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'b' })
-    await vi.waitFor(() => expect(t.killed).toHaveLength(1), { timeout: 10_000 })
-    t.exits[1](0)
-    const d = await discarding
-    expect(d).toContain('discarded b')
-    expect(t.killed).toHaveLength(1)
-    expect(workerByTag(dir, 'b')).toBeUndefined()
-    await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'b')).toBe(true), { timeout: 15_000 })
-  })
-})
-
-function setupLead(repoDir = dir, repoBase = base) {
-  const { a, b } = pair()
-  a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, repoBase)
-  let ls: Session | null = fakeSession(a, lead, true, repoDir, repoBase)
-  const specs: SpawnSpec[] = []
-  const exits: ((code: number | null) => void)[] = []
-  const killed: number[] = []
-  const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: repoDir, maxWorkers: 2, probe: fixtureProbe,
-    spawner: spec => { specs.push(spec); const pid = 4242 + specs.length; spawnFixtureProcess(pid)
-      const callbacks: ((code: number | null) => void)[] = []
-      exits.push(code => { finishFixtureProcess(pid); for (const callback of callbacks) callback(code) })
-      return { pid, started: Promise.resolve(), onExit: cb => { callbacks.push(cb) }, kill: () => { killed.push(1); return true } } },
-    worktree: (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
-  })
-  return { a, b, session: ls, leadTools, specs, exits, killed }
-}
-
-async function ownedLegacyWorker(room: RoomDoc, tag: string, status: 'running' | 'done' | 'failed' | 'dismissed', pid: number): Promise<void> {
-  // Finish the one-time discovery pass before creating a synthetic checkout. These
-  // records model launched workers; the migration adapter would import an unowned one.
-  await registryForDir(dir)
-  const prepared = await prepareWorktree(dir, tag, 'rohanz')
-  // Synthetic registry identity and liveness agree for every lifecycle reader.
-  await registerWorkers(fakeSession(room, lead), [{ tag, name: `rohanz+${tag}`, host: 'claude', task: 'x', dir: prepared.dir,
-    branch: prepared.branch, base: prepared.base, pid, startedAt: Date.now(), status, lead: 'rohanz' }])
-}
-
-describe('worker safety', () => {
-  it('keeps the test runner live even when the host process probe fails', () => {
-    const self = { pid: process.pid, startTime: 'host:runner', executable: 'node' }
-    expect(fixtureLiveness(self, () => 'dead')).toBe('alive')
-    fixtureProcess(process.pid, 'fixture:worker', 'claude')
-    expect(fixtureLiveness(self, () => 'dead')).toBe('alive')
-    expect(fixtureLiveness({ pid: process.pid, startTime: 'fixture:worker', executable: 'claude' }, () => 'dead')).toBe('alive')
-    finishFixtureProcess(process.pid)
-    expect(fixtureLiveness({ pid: process.pid, startTime: 'fixture:worker', executable: 'claude' }, () => 'dead')).toBe('dead')
-  })
-
-  it('uses exact OS start identity, host executable, and liveness after a lead restart', () => {
-    const rec = { host: 'claude' as const, processStartTime: 'linux:boot-a:12345', hostSessionId: 'session-1' }
-    const info = { startTime: rec.processStartTime, executable: '/usr/local/bin/claude' }
-    expect(workerProcessOwnership(process.pid, rec, () => info)).toBe('ours')
-    expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, startTime: 'linux:boot-a:12346' }))).toBe('not-ours')
-    expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, startTime: 'linux:boot-b:12345' }))).toBe('not-ours')
-    expect(workerProcessOwnership(process.pid, rec, () => ({ ...info, executable: '/usr/bin/vim' }))).toBe('not-ours')
-    expect(workerProcessOwnership(process.pid, { ...rec, processStartTime: undefined }, () => info)).toBe('unknown')
-    expect(workerProcessOwnership(process.pid, rec, () => ({}))).toBe('unknown')
-    expect(workerProcessOwnership(process.pid, rec, () => undefined)).toBe('not-ours')
-    expect(workerProcessOwnership(-1, rec, () => info)).toBe('not-ours')
-  })
-
-  it('ignores prompt and session text even when they contain the worker session id', () => {
-    const rec = { host: 'codex' as const, processStartTime: 'linux:boot-a:12345', hostSessionId: 'session-1' }
-    expect(workerProcessOwnership(process.pid, rec, () => ({ startTime: rec.processStartTime, executable: 'codex',
-      command: 'codex exec --json "please mention session-1"', args: ['codex', 'exec', '--json', 'session-1'] }))).toBe('ours')
-    expect(workerProcessOwnership(process.pid, rec, () => ({ startTime: 'linux:boot-a:12346', executable: 'codex',
-      command: 'codex exec resume session-1' }))).toBe('not-ours')
-    expect(workerProcessOwnership(process.pid, rec, () => ({ startTime: rec.processStartTime, executable: 'node' }))).toBe('ours')
-  })
-
-  it('reads Linux stat field 22 with an injected boot id and executable reader', () => {
-    const stat = `42 (worker with ) in name) S ${Array(18).fill('0').join(' ')} 987654 0`
-    const unreadable = (file: string): never => { throw new Error(`EACCES ${file}`) }
-    // comm and cmdline unreadable: the executable names it (the naming rule is in process-name.test.ts).
-    expect(probeProcess(42, { platform: 'linux', readFile: file => file.endsWith('/stat') ? stat : file.endsWith('/boot_id') ? 'boot-123\n' : unreadable(file),
-      readLink: () => '/usr/local/bin/codex', exec: () => { throw new Error('unexpected') } }))
-      .toEqual({ startTime: 'linux:boot-123:987654', executable: 'codex' })
-  })
-
-  it('reads macOS lstart to the second with an injected boot-time guard', () => {
-    const line = 'Mon Sep 21 12:34:56 2026'
-    expect(parsePsLstartUtc(line)).toBe(Date.UTC(2026, 8, 21, 12, 34, 56) / 1000)
-    expect(probeProcess(42, { platform: 'darwin', readFile: () => { throw new Error('unexpected') }, readLink: () => '',
-      exec: (file, args) => file === 'sysctl' ? '{ sec = 1234567, usec = 0 }' : args[1] === 'lstart=' ? line : '/opt/homebrew/bin/node' }))
-      .toEqual({ startTime: `darwin:1234567:${Date.UTC(2026, 8, 21, 12, 34, 56) / 1000}`, executable: 'node' })
-  })
-
-  it('keeps the worker record and disk stop reason untouched if shutdown dismissal errors', async () => {
-    const t = setupLead()
-    await t.leadTools.call('room_spawn', { tag: 'erroring', task: 'x' })
-    const before = { ...workerByTag(dir, 'erroring')! }
-    const post = t.session.post
-    vi.spyOn(t.session, 'post').mockImplementation(((...args: Parameters<typeof post>) => {
-      if ((args[1] as { type?: string }).type === 'note') throw new Error('note failed')
-      return post(...args)
-    }) as typeof post)
-    await t.leadTools.shutdown()
-    expect(t.killed).toEqual([1])
-    // §9: the durable stop is mirrored even though the note failed; §6 row 8 keeps it running.
-    expect(workerByTag(dir, 'erroring')).toEqual({ ...before, stopReason: 'lead-session-ended' })
-    expect((await registryForDir(dir)).read(before.id!)?.stop?.reason).toBe('lead-session-ended')
-  })
-
-  it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {
-    const { a, b } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    // a worker record left by a lead that has since restarted: pid 1 is alive but not ours
-    await registerWorkers(fakeSession(a, lead), [{ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' }])
-    let ls: Session | null = fakeSession(b, lead)
-    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir })
-    const out = await tools.call('room_collect', { discard: true, tag: 'ghost' })
-    expect(out).toContain('no local worker capability')
-    expect(workerByTag(dir, 'ghost')?.status).toBe('running') // nothing was signalled, so nothing changed
-  })
-
-  it('shutdown reports an unreadable live pid and preserves the running record', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    await ownedLegacyWorker(a, 'unknown', 'running', process.pid)
-    let session: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
-    await tools.shutdown()
-    expect(workerByTag(dir, 'unknown')?.status).toBe('running')
-    expect((await registryForDir(dir)).list().find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
-    expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify unknown's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
-  })
-
-  it.each(['done', 'failed', 'dismissed'] as const)('shutdown leaves a terminal %s worker without verified live identity alone', async status => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    await ownedLegacyWorker(a, 'finished', status, process.pid)
-    let session: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
-    await tools.shutdown()
-    expect(a.messages().some(m => m.type === 'note' && m.text.includes('dismissed worker finished'))).toBe(false)
-    expect(workerByTag(dir, 'finished')?.status).toBe(status)
-  })
-
-  it('leave does not signal a finished worker without verified live identity', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    await ownedLegacyWorker(a, 'finished', 'done', process.pid)
-    let session: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
-    expect(await tools.call('room_leave', {})).toContain('left local/x')
-    expect(workerByTag(dir, 'finished')?.status).toBe('done')
-  })
-
-  it('a registry transition with no mirror at its call site (reconcile, another writer) still reaches the Worker doc', async () => {
-    const t = setupLead()
-    await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
-    const id = workerByTag(dir, 'a')!.id
-    expect(workerByTag(dir, 'a')?.status).toBe('running')
-    const registry = await registryForDir(dir)
-    finishFixtureProcess(workerByTag(dir, 'a')!.pid)
-    await registry.writeExit(id, { run: 1, code: 3, witnessed: true, at: Date.now() })
-    // §6 row 14: a witnessed nonzero exit is `failed`.
-    expect(registry.status(id)?.status).toBe('failed')
-    expect(workerByTag(dir, 'a')).toMatchObject({ status: 'failed', exitCode: 3 })
-  })
-
-  it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {
-    const t = setupLead()
-    await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
-    const refused = await t.leadTools.call('room_leave', {})
-    expect(refused).toContain('error: 1 worker(s) still running: a')
-    expect(workerByTag(dir, 'a')?.status).toBe('running')
-    expect(t.killed).toHaveLength(0)
-    const left = await t.leadTools.call('room_leave', { force: true })
-    expect(left).toContain('left local/x')
-    expect(t.killed).toHaveLength(1)
-    // §9 / §6 row 8: stopping until the exit is witnessed.
-    expect(workerByTag(dir, 'a')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
-    expect(t.a.messages().some(m => m.type === 'note' && /dismissed worker a .*the lead left/.test((m as { text: string }).text))).toBe(true)
-    // shutdown path
-    const t2 = setupLead()
-    await t2.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
-    await t2.leadTools.shutdown()
-    expect(t2.killed).toHaveLength(1)
-    expect(workerByTag(dir, 'b')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
-    t2.exits[0](null)
-    await vi.waitFor(async () => {
-      const registry = await registryForDir(dir)
-      const record = registry.list().find(record => record.tag === 'b')!
-      expect(registry.exits(record.id)).toMatchObject([{ code: null, witnessed: true }])
-    }, { timeout: 15_000 })
-    expect(t2.a.messages().some(m => m.type === 'note' && m.text.includes('died'))).toBe(false)
-    const session = fakeSession(t2.a, lead)
-    const next = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
-    // Worker facts are this clone's registry, so the next session sees both stopped workers, a and b.
-    expect(await next.call('room_state', {})).toContain('workers (2):')
-    expect(await next.call('room_state', {})).toContain('stopped when your last session ended; its partial work is in its worktree')
-    expect(await next.call('room_state', { all: true })).toContain('stopped when your last session ended; its partial work is in its worktree')
-    await next.shutdown()
-  }, 30_000)
-
-  it('an asynchronous start failure leaves no worker record or launch message', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    let ls: Session | null = fakeSession(a, lead)
-    let failStart!: (error: Error) => void
-    let launchAttempted = false
-    const started = new Promise<void>((_, reject) => { failStart = reject })
-    const tools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
-      spawner: () => { launchAttempted = true; return { pid: -1, started, onExit: () => {}, kill: () => { throw new Error('must not signal') } } },
-      worktree: (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
-    })
-    const spawning = tools.call('room_spawn', { tag: 'nope', task: 'x', host: 'codex' })
-    await vi.waitFor(() => expect(launchAttempted).toBe(true), { timeout: 10_000 })
-    // The launcher's write-ahead record exists (registry §3); the room shows at most a starting worker, never a running one.
-    expect([undefined, 'starting']).toContain(a.workerViewOf('rohanz+nope')?.status)
-    failStart(new Error('spawn codex ENOENT'))
-    expect(await spawning).toContain('could not start codex: spawn codex ENOENT')
-    expect(workerByTag(dir, 'nope')).toBeUndefined()
-    expect(a.workerViewOf('rohanz+nope')).toBeUndefined()
-    expect(a.messages()).toHaveLength(0)
-  })
-
-  it('refuses an outside checkout before intent (S3)', async () => {
-    const t = setupLead()
-    const outside = mkdtempSync(join(tmpdir(), 'room-outside-'))
-    execFileSync('git', ['-C', outside, 'init', '-q', '-b', 'elsewhere'], { stdio: 'pipe' })
-    writeFileSync(join(outside, 'f.txt'), 'x\n')
-    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'], { stdio: 'pipe' })
-    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { stdio: 'pipe' })
-    const refused = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
-    expect(refused).toContain('another repository; a worker there cannot join this local room')
-    expect(t.specs).toHaveLength(0)
-    const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
-    expect(ok).toContain('another repository; a worker there cannot join this local room')
-    expect(t.specs).toHaveLength(0)
-    expect((await registryForDir(dir)).reserved('far')).toBeUndefined()
-  })
-  it('refuses plain and nested other repositories in a local room, but permits a sibling worktree of this clone', async () => {
-    const t = setupLead()
-    const plain = mkdtempSync(join(tmpdir(), 'room-plain-'))
-    scratchRepos.push(plain)
-    const nested = join(dir, 'nested-other-repo')
-    execFileSync('git', ['init', '-q', nested])
-    try {
-      for (const candidate of [plain, nested]) {
-        const reply = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: candidate, allowOutside: true })
-        expect(reply).toContain('another repository; a worker there cannot join this local room')
-      }
-      expect(t.specs).toHaveLength(0)
-      const sibling = join(mkdtempSync(join(tmpdir(), 'room-sibling-')), 'checkout')
-      scratchRepos.push(join(sibling, '..'))
-      execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'sibling', sibling])
-      const reply = await t.leadTools.call('room_spawn', { tag: 'near', task: 'x', dir: sibling, allowOutside: true })
-      expect(reply).toContain('spawned near')
-      expect(t.specs[0].cwd).toBe(sibling)
-    } finally { rmSync(nested, { recursive: true, force: true }) }
-  })
-
-  it('warns after creating a worker worktree when the project watcher excludes .room', async () => {
-    const t = setupLead()
-    writeFileSync(join(dir, 'vite.config.ts'), "export default { server: { watch: { ignored: ['**/.room/**'] } } }")
-    const reply = await t.leadTools.call('room_spawn', { tag: 'watch', task: 'x' })
-    expect(reply).toContain('warning: vite.config.ts appears to ignore .room')
-  })
-  it('keeps allowOutside for a team room', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    const other = mkdtempSync(join(tmpdir(), 'room-team-outside-'))
-    scratchRepos.push(other)
-    execFileSync('git', ['-C', other, 'init', '-q', '-b', 'main'])
-    writeFileSync(join(other, 'f.txt'), 'x\n')
-    execFileSync('git', ['-C', other, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'])
-    execFileSync('git', ['-C', other, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
-    let session: Session | null = { ...fakeSession(a, lead, false), roomName: 'github.com/o/x', roomUrl: 'ws://team.example/github.com%2Fo%2Fx' } as Session
-    const specs: SpawnSpec[] = []
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir,
-      spawner: spec => { specs.push(spec); return { pid: 4242, started: Promise.resolve(), onExit: () => {}, kill: () => true } },
-      probe: () => undefined })
-    expect(await tools.call('room_spawn', { tag: 'far', task: 'x', dir: other })).toContain('pass allowOutside=true')
-    expect(await tools.call('room_spawn', { tag: 'far', task: 'x', dir: other, allowOutside: true })).toContain('spawned far')
-    expect(specs[0].cwd).toBe(other)
-  })
-  it('room_spawn where=local from a team room refuses another repository before launch', async () => {
-    const team = pair(), local = pair()
-    team.a.setMeta({ repo: 'x' }); local.a.setMeta({ repo: 'x' })
-    let session: Session | null = { ...fakeSession(team.a, lead, false), roomName: 'github.com/rohanz/x',
-      roomUrl: 'wss://team.example/github.com%2Frohanz%2Fx' } as Session
-    const joins: string[] = [], specs: SpawnSpec[] = []
-    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir,
-      join: async options => { joins.push(options.server ?? ''); return fakeSession(local.a, lead) }, leave: async () => {},
-      spawner: spec => { specs.push(spec); return { pid: 99, started: Promise.resolve(), onExit: () => {}, kill: () => true } } })
-    const outside = mkdtempSync(join(tmpdir(), 'room-team-to-local-outside-'))
-    scratchRepos.push(outside)
-    execFileSync('git', ['-C', outside, 'init', '-q', '-b', 'main'])
-    writeFileSync(join(outside, 'f.txt'), 'x\n')
-    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'])
-    execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
-    try {
-      const reply = await tools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true, where: 'local' })
-      expect(reply).toContain('another repository; a worker there cannot join this local room')
-      expect(joins).toEqual(['local'])
-      expect(specs).toEqual([])
-      expect((await registryForDir(dir)).reserved('far')).toBeUndefined()
-    } finally { await tools.shutdown() }
-  })
-  it('refuses a supplied lead checkout before writing intent or starting a worker (S3)', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-    let ls: Session | null = fakeSession(a, lead)
-    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
-      spawner: () => { throw new Error('should not spawn') } })
-    const reply = await tools.call('room_spawn', { tag: 'existing', task: 'x', dir, host: 'codex' })
-    expect(reply).toContain('not an owned Room worktree')
-    expect(existsSync(dir)).toBe(true)
-    const registry = await registryForDir(dir)
-    expect(registry.reserved('existing')).toBeUndefined()
-    expect(registry.occupancy()).toBe(0)
-  })
-  it('collects the new worker after an abandoned record reused its tag (F-M4)', async () => {
-    const t = setupLead()
-    const registry = await registryForDir(dir)
-    const abandoned: WorkerRecord = {
-      v: 1, id: 'w_000_abandoned', tag: 'money', name: 'rohanz+money', mode: 'here', room: t.session!.roomName,
-      lead: { participant: 'rohanz', room: t.session!.roomName, instance: registry.instance },
-      host: 'codex', budget: { threads: 1, memGb: 1, nice: 10 }, share: 'intent', task: 'old',
-      dir: join(dir, '.room/workers/money'), outside: false, branch: 'room/money', prep: { step: 'plan' },
-      capabilities: { resume: true, signal: true, collect: 'delta' }, phase: 'intent',
-      runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'old', busFrontier: 0, promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
-      createdAt: 1, seq: 1,
-    }
-    await registry.writeIntent(abandoned)
-    await registry.abandonPreparation(abandoned.id)
-    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'new', host: 'codex' })).toContain('spawned money')
-    const current = registry.reserved('money')!
-    expect(current.id).not.toBe(abandoned.id)
-    t.exits[0](0)
-    await vi.waitFor(() => expect(workerByTag(dir, 'money')?.status).toBe('done'), { timeout: 15_000 })
-    expect(await t.leadTools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
-  })
-  it('does not relaunch a preexisting Room checkout as a new supplied-dir worker', async () => {
-    // The one-time migration scan must see the checkout. Other tests open and close the
-    // shared fixture registry, so use a fresh repository for this startup assertion.
-    const { repo, head } = realRepo()
-    const prepared = await prepareWorktree(repo, 'same', 'rohanz')
-    const t = setupLead(repo, head)
-    writeFileSync(join(repo, 'lead-only.txt'), 'lead edit')
-    try {
-      const registry = await registryForDir(repo)
-      await vi.waitFor(() => expect(registry.reserved('same')).toMatchObject({
-        tag: 'same', phase: 'active', runs: [{ launch: { outcome: 'imported' } }],
-      }), { timeout: 15_000 })
-      const reply = await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir: prepared.dir, host: 'codex', model: 'worker-model' })
-      expect(reply).toContain('tag in use: same')
-      expect(t.specs).toHaveLength(0)
-    } finally { rmSync(join(repo, 'lead-only.txt'), { force: true }) }
-  })
-  it('gives a new worktree its own workspace packages in node_modules, or tells the lead and the worker it could not', async () => {
-    const linked = workspaceRepo()
-    scratchRepos.push(linked.repo)
-    const t = setupLead(linked.repo, linked.head)
-    expect(await t.leadTools.call('room_spawn', { tag: 'deps', task: 'change a' })).toContain('node_modules: links to your install, with workspace packages @fx/a, @fx/b')
-    const worker = join(linked.repo, '.room', 'workers', 'deps')
-    expect(realpathSync(join(worker, 'node_modules', '@fx', 'a'))).toBe(join(worker, 'packages', 'a'))
-    expect(t.specs[0].args.join(' ')).toContain("node_modules here links the lead's installed packages")
-    const bare = workspaceRepo({ lockfile: false })
-    scratchRepos.push(bare.repo)
-    const u = setupLead(bare.repo, bare.head)
-    const warning = "cross-package tests in this worktree would run the lead's code for @fx/a, @fx/b"
-    expect(await u.leadTools.call('room_spawn', { tag: 'nodeps', task: 'change a' })).toContain(`warning: ${warning}`)
-    expect(u.specs[0].args.join(' ')).toContain(warning)
-  })
 })
 
 describe('review fixes: workers', () => {
@@ -1434,12 +611,15 @@ describe('review fixes: workers', () => {
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     await vi.waitFor(async () => expect((await registryForDir(dir)).read(firstId)?.stop?.reason).toBe('discarded'), { timeout: 10_000 })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('tag in use: money')
+    await vi.waitFor(() => expect(t.killed).toHaveLength(1), { timeout: 10_000 })
     t.exits[0](1)
     expect(await discarding).toContain('discarded money')
+    expect(t.killed).toHaveLength(1)
     await vi.waitFor(() => expect(workerByTag(dir, 'money')).toBeUndefined(), { timeout: 15_000 })
     // Retirement cleanup finished in the lead's only room (§12), releasing the tag; the respawn is refused only
     // by the worktree this file's mocked cleanupWorker leaves behind.
     expect((await registryForDir(dir)).read(firstId)?.phase).toBe('retired')
+    await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'money')).toBe(true), { timeout: 15_000 })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('worktree money is unmanaged')
     t.exits[0](1) // the first process finally dies
     expect((await registryForDir(dir)).read(firstId)).toMatchObject({ id: firstId, tag: 'money' })
@@ -1516,13 +696,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(merged.ROOM_URL).toBeUndefined(); expect(merged.ROOM_NAME).toBeUndefined(); expect(merged.ROOM_TOKEN).toBeUndefined()
     expect(merged).toMatchObject({ PATH: '/bin', ROOM_MAX_WORKERS: '3', ROOM_DIR: env.ROOM_DIR, ROOM_TAG: 'money' })
     expect(workerEnv({ ROOM_LEAD_CLONE: '/another-clone' }, {})).not.toHaveProperty('ROOM_LEAD_CLONE')
-    // The durable tag remains reserved until retirement cleanup finishes.
     t.exits[0](0)
-    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('tag in use: money')
-    await t.leadTools.call('room_collect', { discard: true, tag: 'money' })
-    // Retirement cleanup has finished (§12); only the worktree left by the mocked cleanupWorker refuses the tag now.
-    expect((await registryForDir(dir)).list().find(record => record.tag === 'money')?.phase).toBe('retired')
-    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('worktree money is unmanaged')
   })
 
   it('W2/W3: distinct tags route workers to their rooms; local reads and diffs use the workers room', async () => {
@@ -1639,7 +813,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
   it.each([true, false])('keeps a fresh worker checkout after cancellation following process start (stop confirmed: %s)', async stopped => {
     const { repo, head } = realRepo()
     const previousDir = dir, previousBase = base
-    dir = repo; base = head
+    setFixtureRepo(repo, head)
     const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     const controller = new AbortController()
@@ -1663,7 +837,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
       expect(readFileSync(join(checkout, 'partial.txt'), 'utf8')).toBe('keep me')
       // §9: an unconfirmed stop leaves it running ("stopping", §6 row 8).
       expect(workerByTag(dir, 'after-start')?.status).toBe(stopped ? 'dismissed' : 'running')
-    } finally { dir = previousDir; base = previousBase }
+    } finally { setFixtureRepo(previousDir, previousBase) }
   })
 
   it('W5: after a lead restart, an unreadable process identity is never signalled', async () => {
@@ -1683,6 +857,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(await tools.call('room_leave', {})).toContain('left local/x')
     expect(pidAlive(child.pid!)).toBe(true)
     expect((await registryForDir(dir)).list().find(r => r.tag === 'money')).toBeDefined()
+    expect(workerByTag(dir, 'money')?.status).toBe('done')
     process.kill(-child.pid!, 'SIGTERM')
     await exited
   })
@@ -1760,7 +935,6 @@ describe('review round 3', () => {
     expect(workerByTag(dir, 'money')).toMatchObject({ lead: 'kieran', status: 'running' })
   })
 })
-
 
 describe('worker compute budgets', () => {
   it('recounts concurrent spawns before budgeting and enforces capacity', async () => {

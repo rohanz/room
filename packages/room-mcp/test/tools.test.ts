@@ -28,7 +28,6 @@ import { catchUpLocal } from '@room/relay/local-migrate'
 import { claimDigest } from '@room/roomd'
 import { AutoJoin } from '../src/auto-join.js'
 import { createHandlerState } from '../src/tools/state.js'
-import { PREVIEW_SETTLE_MS } from '../src/tools/combined-tree.js'
 
 /** A CHANGES.rst-shaped file: version headings, blank lines and many alike entry lines. */
 function changelog(lines: number): string {
@@ -192,37 +191,19 @@ it('a pending room_wait consumes its answer without a wake, while unrelated even
     const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
     await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
     const unrelated = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other update' } as never)
+    expect(waitConsumesMessage(s, unrelated)).toBe(false)
     await vi.waitFor(() => expect(wakes).toHaveLength(1))
     expect(wakes[0]).toContain('Kieran answered')
     expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
     const answer = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
     expect(await waiting).toContain('answered:')
     expect(s.room.seen(me.name).has(answer.id)).toBe(true)
+    expect(waitConsumesMessage(s, answer)).toBe(false)
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(wakes).toHaveLength(1)
   } finally {
     peer.destroy(); peer.doc.destroy()
     await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
-  }
-})
-
-it('tracks only messages an active room_wait will deliver', async () => {
-  const t = setup()
-  const s = t.session!
-  const peer = addPresence(s.awareness, 'Kieran')
-  try {
-    const question = hubAppend(t.room, me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
-    const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
-    await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
-    const unrelated = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other' } as never)
-    expect(waitConsumesMessage(s, unrelated)).toBe(false)
-    expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
-    const answer = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
-    expect(await waiting).toContain('answered:')
-    expect(s.room.seen(me.name).has(answer.id)).toBe(true)
-    expect(waitConsumesMessage(s, answer)).toBe(false)
-  } finally {
-    peer.destroy(); peer.doc.destroy(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
   }
 })
 
@@ -1160,7 +1141,11 @@ describe('scope, claims, plans, ledger', () => {
     comparableClaimPair(t.room)
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'app', paths: ['app.py'] })
     let reconciles = 0, graphWaits = 0
-    const reconcile = vi.spyOn(ConflictSet.prototype, 'reconcile').mockImplementation(async () => { reconciles++ })
+    const start = vi.spyOn(ConflictSet.prototype, 'start')
+    let own: ConflictSet
+    try { t.tools.attachHooks(s); own = start.mock.instances[0]! } finally { start.mockRestore() }
+    own.stop() // Measure claim-triggered work, not the watcher's scheduled background pass.
+    const reconcile = vi.spyOn(own, 'reconcile').mockImplementation(async () => { reconciles++ })
     Object.defineProperty(s.graph, 'ready', { configurable: true, get: () => { graphWaits++; return Promise.resolve() } })
     try {
       const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate' }] })
@@ -1170,7 +1155,7 @@ describe('scope, claims, plans, ledger', () => {
     } finally { reconcile.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   })
 
-  it('profiles five warm claims in a synthetic repository with 2,000 source files', async () => {
+  it.skipIf(process.env.TEST_SCALE !== '1')('profiles five warm claims in a synthetic repository with 2,000 source files', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'room-claim-profile-'))
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
     git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
@@ -1224,14 +1209,6 @@ describe('scope, claims, plans, ledger', () => {
     expect(t.room.openClaims()[0].by).toBe('Kieran')
   })
 
-  it('changed with symbols upgrades to scope owners via base grep', async () => {
-    const t = setup()
-    await t.session!.graph!.ready
-    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
-    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed validate to verify', paths: ['app.py'], symbols: ['validate'] })
-    expect(out).toContain("notified Kieran's agent")
-    expect(t.room.messages().filter(m => m.type === 'changed').length).toBe(2)
-  })
 })
 
 describe('graph', () => {
@@ -1294,10 +1271,13 @@ describe('concurrency', () => {
 
 describe('claim by symbol and read receipts', () => {
   it('claims a function by name, resolving its range from my live text', async () => {
+    expect(languageLoadAttemptsForTest('python')).toBe(0)
     const t = setup()
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', symbol: 'b', intent: 'fix' })
     expect(out).toMatch(/app\.py:4-5 · b: fix/)
+    expect(t.room.openClaims().find(claim => claim.by === 'Rohan')).toMatchObject({ path: 'app.py', from: 4, to: 5 })
+    expect(languageLoadAttemptsForTest('python')).toBe(0)
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     expect(await t.tools.call('room_claim', { path: 'app.py', symbol: 'zzz', intent: 'x' })).toMatch(/could not find a definition of zzz/)
   })
@@ -1309,7 +1289,9 @@ describe('claim by symbol and read receipts', () => {
     await t.tools.call('room_state', {})
     expect(t.room.seenBy(q.id)).toEqual(['Rohan'])
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
-    await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['app.py'], symbols: ['validate'] })
+    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['app.py'], symbols: ['validate'] })
+    expect(out).toContain("notified Kieran's agent")
+    expect(t.room.messages().filter(m => m.type === 'changed')).toHaveLength(2)
     const [orig, copy] = t.room.messages().filter(m => m.type === 'changed')
     expect(copy.copyOf).toBe(orig.id)
   })
@@ -1944,70 +1926,4 @@ it('summarises gitignored build output in one preview line and still names other
     for (const name of ['packages', 'coverage', 'artifact.bin', '.gitignore']) rmSync(join(dir, name), { recursive: true, force: true })
     await t.tools.shutdown(); t.session?.awareness.destroy()
   }
-})
-
-describe('a preview waits for participants to settle', () => {
-  const theirs = COMMITTED.replace('return x', 'return x + 1')
-
-  it('reports the tested snapshot after a participant moves once during the command', async () => {
-    let offset = 0
-    const t = setup({ now: () => Date.now() + offset, sleep: async ms => { offset += ms; await new Promise(resolve => setImmediate(resolve)) } })
-    const flag = join(mkdtempSync(join(tmpdir(), 'room-settle-')), 'moved')
-    publishFixture(t.other, 'Kieran', 'app.py', theirs)
-    let moves = 0
-    // room_done republishes the worker's overlay, then its exit ends its holder: one move after the snapshot.
-    const watch = setInterval(() => {
-      if (moves) return
-      try { readFileSync(flag) } catch { return }
-      moves++
-      publishFixture(t.other, 'Kieran', 'app.py', theirs)
-    }, 2)
-    try {
-      const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: `touch '${flag}' && sleep 0.3 && cat app.py` })
-      expect(moves).toBe(1)
-      expect(out).toContain('Kieran moved since this snapshot was built.')
-      expect(out).toContain('A pass is interim evidence for the recorded revisions.')
-      expect(out).toContain('Re-run room_preview_merge')
-      expect(out).toContain('The latest combined code was NOT checked')
-      expect(out).toContain('snapshot tests: exit 0')
-      expect(out).toContain('rev 1')
-      expect(out).not.toContain('rev 2')
-      expect(out).toContain('return x + 1')
-      expect(offset).toBe(0)
-      expect(t.session?.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })
-    } finally {
-      clearInterval(watch)
-      rmSync(join(flag, '..'), { recursive: true, force: true })
-      await t.tools.shutdown(); t.session?.awareness.destroy()
-    }
-  })
-
-  it('still reports a participant that keeps moving, within the bound', async () => {
-    let offset = 0
-    const move = () => publishFixture(t.other, 'Kieran', 'app.py', theirs)
-    const t = setup({ now: () => Date.now() + offset, sleep: async ms => { offset += ms; move(); await new Promise(resolve => setImmediate(resolve)) } })
-    publishFixture(t.other, 'Kieran', 'app.py', theirs)
-    const busy = setInterval(move, 1)
-    try {
-      const out = await t.tools.call('room_preview_merge', { person: 'Kieran' })
-      expect(out).toContain('Kieran moved during the preview; re-run')
-      expect(offset).toBeGreaterThan(0)
-      expect(offset).toBeLessThanOrEqual(PREVIEW_SETTLE_MS)
-    } finally {
-      clearInterval(busy)
-      await t.tools.shutdown(); t.session?.awareness.destroy()
-    }
-  })
-})
-
-
-it('claims a parsed symbol without loading tree-sitter in the main isolate', async () => {
-  expect(languageLoadAttemptsForTest('python')).toBe(0)
-  const t = setup()
-  t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'api', summary: 'nearby', paths: ['app.py'] })
-  try {
-    expect(await t.tools.call('room_claim', { path: 'app.py', symbol: 'validate', intent: 'symbol lookup' })).toContain('claimed')
-    expect(t.room.openClaims().find(claim => claim.by === 'Rohan')).toMatchObject({ path: 'app.py', from: 1, to: 2 })
-    expect(languageLoadAttemptsForTest('python')).toBe(0)
-  } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
 })

@@ -1,4 +1,4 @@
-FIX ROUND 2 for the 0.17.0 release-readiness batch. Read common.md first, then docs/superpowers/specs/reviews/2026-09-30-release-review-r2.md (S1-S4; repro scripts under /tmp/room-review-r2-*.mts|mjs, recreate if missing). The lead fixes S3 and S4.
+FIX ROUND 2 for the 0.17.0 release-readiness batch. Read common.md first, then docs/archive/reviews/2026-09-30-release-review-r2.md (S1-S4; repro scripts under /tmp/room-review-r2-*.mts|mjs, recreate if missing). The lead fixes S3 and S4.
 
 TAG fx2cache: S1 (MUST).
 OWNED FILES: packages/room-mcp/src/preview-cache.ts, the preview/check path of packages/room-mcp/src/tools/files.ts, packages/room-mcp/test/preview-*.test.ts.

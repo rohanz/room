@@ -595,16 +595,18 @@
             "description": "names; worker collect order"
           },
           "person": {
-            "type": "string",
-            "description": "one name"
+            "type": "string"
           },
           "includeOffline": {
-            "type": "boolean",
-            "description": "include offline"
+            "type": "boolean"
           },
           "run": {
             "type": "string",
-            "description": "real test command; stops at 5 min/4 MB"
+            "description": "tests; stops at 5 min/4 MB"
+          },
+          "allowSlow": {
+            "type": "boolean",
+            "description": "retry timed-out command"
           },
           "resolve": {
             "type": "boolean",

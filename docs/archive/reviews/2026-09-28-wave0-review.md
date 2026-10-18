@@ -66,4 +66,4 @@ S3, S5 and S6 were sent back to `leases` and fixed in `48b95d1`, with failing-fi
 fsynced even after EEXIST; app-server is detected only as a Codex subcommand; the executable comes from process
 identity, so paths with spaces bind. Because no Must-fix item remained, they were not re-reviewed. The lead
 reran typecheck, the full suite and `build:plugin` on `16bd8fe`; see
-[the wave-0 rehearsal](../../rehearsals/2026-09-28-wave0.md).
+[the wave-0 rehearsal](../../superpowers/rehearsals/2026-09-28-wave0.md).

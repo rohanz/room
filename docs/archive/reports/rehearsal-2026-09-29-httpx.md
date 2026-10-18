@@ -10,7 +10,7 @@ A rerun of the httpx mixed-sharing rehearsal ([2026-09-27 rerun](rehearsal-2026-
   - Room 0.16.37, server on Fly v67.
   - Claude Code 2.1.284.
   - **codex-cli 0.158.0.** Homebrew upgraded it between the two runs; the Werkzeug run's TUI was 0.157.1, and the daemon was already 0.158.0.
-- **Repository:** private `rohanz/httpx-rehearsal`, with a new branch `rehearsal-0929` at the snapshot 88b5c0a (upstream 15d09a3). Issues #1–#3 were reopened. They are cards A–C of [rehearsal-httpx-plan.md](../../rehearsal-httpx-plan.md), with card A's clarified example.
+- **Repository:** private `rohanz/httpx-rehearsal`, with a new branch `rehearsal-0929` at the snapshot 88b5c0a (upstream 15d09a3). Issues #1–#3 were reopened. They are cards A–C of [rehearsal-httpx-plan.md](../rehearsal-httpx-plan.md), with card A's clarified example.
 - **Sessions:** three fresh clones at `/tmp/reh-httpx-{ana,ben,cy}`, one tmux session each. All three cards edit `httpx/_urlparse.py` and `tests/test_urlparse.py`.
 
 | Who | Host | Issue | Sharing | How it was asked |

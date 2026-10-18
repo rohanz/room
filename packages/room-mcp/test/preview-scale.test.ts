@@ -35,7 +35,7 @@ async function preview(shape: { ignored: number; untracked: number }, args: Reco
   return { result, ...counts }
 }
 
-it('spawns the same number of Git processes and opens the same files however large the ignored tree is', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('spawns the same number of Git processes and opens the same files however large the ignored tree is', async () => {
   const small = await preview({ ignored: 100, untracked: 0 })
   const large = await preview({ ignored: 2000, untracked: 0 })
   expect(large.result).toContain('both changed, merge cleanly: Source/part0/Unit0.cpp')
@@ -43,7 +43,7 @@ it('spawns the same number of Git processes and opens the same files however lar
   expect(large.opens).toBe(small.opens)
 }, 120_000)
 
-it('does not read or spawn Git per carried untracked file a worker left as spawn carried it', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('does not read or spawn Git per carried untracked file a worker left as spawn carried it', async () => {
   const few = await preview({ ignored: 100, untracked: 10 })
   const many = await preview({ ignored: 100, untracked: 120 })
   for (const { result } of [few, many]) {
@@ -57,7 +57,7 @@ it('does not read or spawn Git per carried untracked file a worker left as spawn
   expect(many.result).not.toMatch(/BinaryData(1|5|100)\.cpp/)
 }, 300_000)
 
-it('keeps per-file work bounded when the combined tree is built for a test run', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('keeps per-file work bounded when the combined tree is built for a test run', async () => {
   const few = await preview({ ignored: 100, untracked: 10 }, { run: 'true' })
   const many = await preview({ ignored: 100, untracked: 120 }, { run: 'true' })
   for (const { result } of [few, many]) expect(result).toContain('tests: exit 0')

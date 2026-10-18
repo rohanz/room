@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { boundSession, readSessionRecord, readSessionRuntime, sessionDirectory, syntheticSessionId, writeSessionRecord, writeSessionRuntime } from '../src/session.js'
+import { boundSession, readSessionRecord, sessionDirectory, syntheticSessionId, writeSessionRecord } from '../src/session.js'
 import type { ProcessIdentity } from '../src/leases.js'
 
 const dirs: string[] = []
@@ -15,16 +15,13 @@ function record(dir: string, id: string, host: 'claude' | 'codex', at: number, c
 }
 
 describe('host session binding', () => {
-  it('uses separate durable session directories and a typed runtime record', () => {
+  it('uses separate durable session directories', () => {
     const dir = common()
     record(dir, 'one', 'claude', 1, [parent])
     record(dir, 'two', 'claude', 2, [child])
-    writeSessionRuntime(dir, 'one', { model: 'claude-fable-5-1', effort: 'high', at: 3 })
     expect(sessionDirectory(dir, 'one')).not.toBe(sessionDirectory(dir, 'two'))
     expect(sessionDirectory(dir, 'one')).toContain(path.join('room', 'sessions'))
     expect(readSessionRecord(dir, 'one')?.session_id).toBe('one')
-    expect(readSessionRuntime(dir, 'one')).toMatchObject({ model: 'claude-fable-5-1', effort: 'high' })
-    expect(readSessionRuntime(dir, 'two')).toBeUndefined()
   })
 
   it('binds a macOS lead whose derived boot time moved by a second', () => {

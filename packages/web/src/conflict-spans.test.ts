@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
 import { colorFor, lineAnnotation, type Claim, type ConflictSpan, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
-import { classifyThreeWay } from './merged.ts'
+import { classifyNWay } from './merged.ts'
 import { conflictCard, renderCodeLines } from './panels.ts'
 
 const claims: Claim[] = ['money', 'tiers'].map((by, i) => ({ id: `c${i}`, by, byKind: 'agent', path: 'a.ts', from: 2, to: 7, intent: `update ${by}`, at: 1 }))
@@ -163,7 +163,7 @@ it('keeps earlier and current claim sessions separate even for one-claim edit co
 it('numbers merged rows once and uses participant-colored dots only on divergent rows', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
-  const lines = classifyThreeWay('same\nold\nend\n', 'same\nA\nend\n', 'same\nB\nend\n')
+  const lines = classifyNWay('same\nold\nend\n', [{ name: 'money', text: 'same\nA\nend\n' }, { name: 'tiers', text: 'same\nB\nend\n' }])
   renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'])
   expect(host.find('line-number').map(n => n.textContent)).toEqual(['1', '2', '3', '4'])
   const rows = host.find('code-line')
@@ -184,7 +184,7 @@ it.each(['identical', 'clean', 'conflicting'])('classifies %s text with overlapp
   const b = kind === 'conflicting' ? base.replace('two', 'B') : kind === 'clean' ? base.replace('seven', 'B') : base
   const cs = claims.map(c => ({ ...c, plans: [{ kind: 'add' as const, symbol: c.by + 'Helper' }] }))
   const spans = deriveConflictSpans([], cs)
-  renderCodeLines(host as unknown as HTMLElement, classifyThreeWay(base, a, b), ['money', 'tiers'],
+  renderCodeLines(host as unknown as HTMLElement, classifyNWay(base, [{ name: 'money', text: a }, { name: 'tiers', text: b }]), ['money', 'tiers'],
     (person, line) => cs.filter(c => c.by === person && c.from <= line && c.to >= line), spans)
   const tags = host.find('conflict-tag')
   const red = host.find('conflict-bar').filter(b => !b.className.includes('claim-overlap'))
@@ -206,7 +206,7 @@ it('tints all base-relative edits and keeps stronger conflict annotations', () =
   const base = Array.from({ length: 12 }, (_, i) => `line ${i + 1}\n`).join('')
   const a = base.replace('line 2\n', 'A only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'A ten\nA eleven\n')
   const b = base.replace('line 5\n', 'B only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'B ten\nB eleven\n')
-  const lines = classifyThreeWay(base, a, b)
+  const lines = classifyNWay(base, [{ name: 'rohanz+a', text: a }, { name: 'rohanz+tiers', text: b }])
   renderCodeLines(host as unknown as HTMLElement, lines, ['rohanz+a', 'rohanz+tiers'])
   const rows = host.find('code-line')
   for (const [index, author, color] of [[1, 'rohanz+a', colorFor('rohanz+a')], [4, 'rohanz+tiers', colorFor('rohanz+tiers')], [7, 'rohanz+a and rohanz+tiers', colorFor('rohanz+a')]] as const) {
@@ -217,7 +217,7 @@ it('tints all base-relative edits and keeps stronger conflict annotations', () =
     expect(rows[index].find('dot')[0].style.background).toBe(color)
   }
   lines.forEach((line, i) => {
-    if (line.changedBy !== null) return
+    if (line.changedBy.length) return
     expect(rows[i].className).not.toContain('changed-line')
     expect(rows[i].properties.has('--line-change-owner')).toBe(false)
     expect(rows[i].find('dot')).toHaveLength(0)

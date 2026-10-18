@@ -9,8 +9,10 @@
   },
   "dependencies": {
     "@room/shared": "*",
-    "lib0": "^0.2.117",
-    "yjs": "^13.6.32"
+    "lib0": "^0.2.117"
   },
-  "license": "PolyForm-Noncommercial-1.0.0"
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "devDependencies": {
+    "yjs": "^13.6.32"
+  }
 }

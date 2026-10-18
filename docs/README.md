@@ -5,7 +5,7 @@ Start with the current guides below. Dated audits, experiments and implementatio
 ## Use Room
 
 - [Install Room](../README.md#start-in-five-minutes) - plugin setup and defaults.
-- [First session](onboarding.md) - local and team room walkthroughs.
+- [Coordinate a task](../README.md#coordinate-a-task) - claims, Room workers, previews and collection.
 - [Reference and troubleshooting](reference.md) - tools, sharing, workers, previews, wake paths and limits.
 - [Upgrading from 0.16](upgrading.md) - the 0.17 data migration and rollback considerations.
 - [Self-host a team server](../deploy/self-hosting.md) - deployment, authentication and operator settings for your own server.

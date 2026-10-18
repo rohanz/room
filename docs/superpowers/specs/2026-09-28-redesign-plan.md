@@ -2,10 +2,10 @@
 
 Phase 1 output: four specs, each reviewed by Codex (gpt-6-astra, high), revised, re-reviewed where must-fix
 items remained, and checked against each other by the lead.
-- [ledger](2026-09-28-ledger.md): one delivery ledger ([review](reviews/2026-09-28-ledger-review.md))
-- [manifest](2026-09-28-manifest.md): one sharing policy value plus a manifest ([review](reviews/2026-09-28-manifest-review.md))
-- [registry](2026-09-28-registry.md): durable local worker registry and leases ([review](reviews/2026-09-28-registry-review.md))
-- [reporooms](2026-09-28-reporooms.md): repository-level rooms and derived conflicts ([review](reviews/2026-09-28-reporooms-review.md))
+- [ledger](2026-09-28-ledger.md): one delivery ledger ([review](../../archive/reviews/2026-09-28-ledger-review.md))
+- [manifest](2026-09-28-manifest.md): one sharing policy value plus a manifest ([review](../../archive/reviews/2026-09-28-manifest-review.md))
+- [registry](2026-09-28-registry.md): durable local worker registry and leases ([review](../../archive/reviews/2026-09-28-registry-review.md))
+- [reporooms](2026-09-28-reporooms.md): repository-level rooms and derived conflicts ([review](../../archive/reviews/2026-09-28-reporooms-review.md))
 
 The problem statement is [the 2026-09-27 audit synthesis](../../archive/reports/audit-2026-09-27-design.md).
 

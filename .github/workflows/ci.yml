@@ -91,6 +91,8 @@ jobs:
         run: npx knip
 
       - name: Run tests
+        env:
+          TEST_SCALE: '1'
         run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test
 
       - name: Build web

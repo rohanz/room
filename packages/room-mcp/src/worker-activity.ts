@@ -8,7 +8,7 @@ import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import type { WorkerHost } from './worker-config.js'
 
-export const ACTIVITY_MAX = 80
+const ACTIVITY_MAX = 80
 export interface WorkerActivity { label: string; at: number }
 
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
@@ -110,11 +110,6 @@ function codexItem(item: Record<string, unknown>, dir: string): string | undefin
     case 'web_search': return 'searching the web'
     default: return undefined
   }
-}
-
-/** The activity one stream line records, if any; malformed lines and text-only events yield undefined. */
-export function activityFromEvent(line: string, host: WorkerHost, dir: string): string | undefined {
-  return eventActivity(line, host, dir)?.label
 }
 
 /** An event's own time, when the host writes one (ISO string or epoch milliseconds). */

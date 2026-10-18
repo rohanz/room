@@ -13,7 +13,7 @@ The existing collections retain their paths so development references remain sta
 - [Rehearsals and release validation](../superpowers/rehearsals/) - bounded experiments, failures, recovery checks and release evidence.
 - [Host documentation snapshots](../host-snapshots/) - dated source material for host integration decisions.
 - [Decisions log](../decisions.md) - append-only decisions in chronological order.
-- [Prior-art research](../prior-art.md), [trial plan](../trial-plan.md) and [httpx rehearsal plan](../rehearsal-httpx-plan.md) - historical research and evaluation setup.
+- [Prior-art research](../prior-art.md), [trial plan](trial-plan.md) and [httpx rehearsal plan](rehearsal-httpx-plan.md) - historical research and evaluation setup.
 
 ## Audits, host surveys and early rehearsals
 
@@ -53,10 +53,12 @@ The existing collections retain their paths so development references remain sta
 
 ## Hackathon submission
 
-- [Original brief](../../RULES.md) and [submission checklist and demo draft](../submission.md).
+- [Original brief](../../RULES.md) and [submission checklist and demo draft](submission.md).
 - [Submission answers (Markdown)](submission/submission-answers.md).
 - [Submission answers (Word)](submission/submission-answers.docx), retained as a historical artifact alongside the text version.
 
 ## Operator-specific material
 
 The [Fly operations runbook](../../deploy/DEPLOYING.md) records the maintainer's deployment and cutover procedures. To host your own team room, use [self-hosting](../../deploy/self-hosting.md).
+
+- [Roadmap history](roadmap-history.md) — resolved 0.16.x issues and earlier findings.

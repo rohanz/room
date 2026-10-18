@@ -31,7 +31,7 @@ beforeAll(() => {
 
 afterAll(() => { if (repo) fs.rmSync(repo, { recursive: true, force: true }) }, 120_000)
 
-it('reuses the 5,000-file base and writes only two merged paths on a warm preview', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes only two merged paths on a warm preview', async () => {
   const counts = { firstBase: 0, secondBase: 0, secondWrites: [] as string[] }
   const first = await runInMergedTree(session(), ancestor, merged, command, new Map(), { baseMaterialized: () => counts.firstBase++ })
   const second = await runInMergedTree(session(), ancestor, merged, command, new Map(), {
@@ -43,7 +43,7 @@ it('reuses the 5,000-file base and writes only two merged paths on a warm previe
   expect(second.text).toMatch(/setup .*cached base.*check /)
 }, 120_000)
 
-it('keeps the event loop responsive throughout a preview with a check', async () => {
+it.skipIf(process.env.TEST_SCALE !== '1')('keeps the event loop responsive throughout a preview with a check', async () => {
   let maxDelay = 0
   let previous = performance.now()
   const timer = setInterval(() => { const now = performance.now(); maxDelay = Math.max(maxDelay, now - previous - 10); previous = now }, 10)
@@ -66,6 +66,8 @@ it('keeps the event loop responsive throughout a preview with a check', async ()
 
 it('repairs a dirty cache before the check and retains ignored build outputs', async () => {
   const cache = await previewCachePath(repo)
+  // The warm-preview test above materializes the cache when TEST_SCALE=1; in a default run do it here.
+  if (!fs.existsSync(path.join(cache, 'src/00/f00000.txt'))) expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   fs.writeFileSync(path.join(cache, 'src/00/f00000.txt'), 'dirty tracked\n')
   fs.writeFileSync(path.join(cache, 'scratch-leak'), 'dirty untracked\n')
   fs.mkdirSync(path.join(cache, 'target'), { recursive: true })

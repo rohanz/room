@@ -9,7 +9,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import * as Y from 'yjs'
 import { RoomDoc, gitBlobHash, manifestKey, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
-import { createWriteIntentReader, HooksBridge, hookHealthNote, hookReceiptPath, type HooksBridgeOptions } from '../src/hooks-bridge.js'
+import { HooksBridge, hookHealthNote, hookReceiptPath, type HooksBridgeOptions } from '../src/hooks-bridge.js'
 import { boundSession, sessionDirectory, type Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hasCompany } from '../src/company.js'
@@ -214,7 +214,9 @@ async function liveMcp(id = SID, me = { name: 'Rohan', kind: 'agent' as const },
   return { s, tools, arbitration, async close() { await arbitration.close(); await tools.shutdown(); s.awareness.destroy() } }
 }
 /** Let the bridge's debounced state.json write land. */
-const settle = () => new Promise(r => setTimeout(r, 250))
+const settle = (expected: { owedCount?: number; notices?: number } = { owedCount: 1 }) => vi.waitFor(() => {
+  expect(readSession('state.json')).toMatchObject(expected)
+}, { timeout: 5000, interval: 25 })
 /** A preload that kills the hook before its stdout write (`before`) or before its confirm (`after`). */
 function dies(when: 'before' | 'after') {
   const file = join(dir, `die-${when}.mjs`)
@@ -289,7 +291,11 @@ describe('shell edit hooks', () => {
   const shellNames = ['Bash', 'shell', 'local_shell', 'exec', 'exec_command', 'unified_exec']
   const claim = { by: 'Kieran', path: 'api/tax.py', from: 1, to: 1, intent: 'tax rules' }
   const state = (extra = {}, id = SID) => writeSessionFile('state.json', { at: Date.now(), company: true, claims: [claim], ...extra }, id)
-  const intents = (id: string, now?: () => number) => createWriteIntentReader(dir, () => sdir(id), now)
+  const intents = (id: string) => (file: string) => {
+    const record = join(sdir(id), 'write-intents.json')
+    if (!existsSync(record)) return undefined
+    return JSON.parse(readFileSync(record, 'utf8')).writes.some((write: { path: string }) => write.path === join(dir, file))
+  }
 
   it('records session-specific write intents with company, including new edit files', async () => {
     state({}, 'intent-lead'); state({}, 'intent-peer')
@@ -339,19 +345,16 @@ describe('shell edit hooks', () => {
     expect(pathsOf('PowerShell', { command: 'Copy-Item -Path app.py -Destination "api/new tax.py"' }, dir)).toContain('api/new tax.py')
   })
 
-  it('bounds intents to 200 entries, expires at two minutes, and drops ten-minute history', async () => {
+  it('bounds recorded intents to 200 entries and drops ten-minute history', async () => {
     const { recordWriteIntents } = await import(join(HOOKS, 'common.mjs'))
-    let clock = 1_000_000
-    const read = intents(SID, () => clock)
+    const clock = 1_000_000
     recordWriteIntents(sdir(), dir, Array.from({ length: 201 }, (_, i) => `f${i}`), clock)
-    expect(read('f0')).toBe(false)
-    expect(read('f200')).toBe(true)
-    clock += 120_000
-    expect(read('f200')).toBe(false)
-    clock += 600_000
-    recordWriteIntents(sdir(), dir, ['fresh'], clock)
-    expect(read('fresh')).toBe(true)
-    expect(read('f200')).toBe(false)
+    const writes = () => readSession('write-intents.json').writes
+    expect(writes()).toHaveLength(200)
+    expect(writes()[0].path).toBe(join(dir, 'f1'))
+    expect(writes().at(-1).path).toBe(join(dir, 'f200'))
+    recordWriteIntents(sdir(), dir, ['fresh'], clock + 600_000)
+    expect(writes()).toEqual([{ path: join(dir, 'fresh'), at: clock + 600_000 }])
   })
 
   it('shows directory claims for descendant writes only', async () => {
@@ -368,13 +371,9 @@ describe('shell edit hooks', () => {
     expect(await runHook('before-edit.mjs', input)).toBe('')
   })
 
-  it.each(shellNames)('%s matches Codex hooks and announces company only once', async tool_name => {
+  it.each(shellNames)('%s matches the Codex hook manifest', async tool_name => {
     const manifest = JSON.parse(readFileSync(join(HOOKS, '../hooks.json'), 'utf8'))
     expect(new RegExp(manifest.hooks.PreToolUse[0].matcher).test(tool_name)).toBe(true)
-    state({ company: true, others: ['Kieran'] })
-    const input = { tool_name, cwd: dir, tool_input: { command: 'git status' } }
-    expect(context(await runHook('before-edit.mjs', input))).toContain('[room] Kieran is here.')
-    expect(await runHook('before-edit.mjs', input)).toBe('')
   })
 
   it('matches Bash in the Claude hook manifest', () => {
@@ -388,15 +387,14 @@ describe('shell edit hooks', () => {
     'mv api/tax.py old.py', 'cp app.py api/tax.py', 'rm api/tax.py',
     'apply_patch api/tax.py', 'git checkout -- api/tax.py',
     'git restore api/tax.py', 'git stash -- api/tax.py',
-  ])('warns on likely shell write: %s', async cmd => {
-    state()
-    expect(context(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input: { cmd } }))).toContain("Kieran's agent holds api/tax.py:1-1")
+  ])('classifies likely shell write: %s', async cmd => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('exec', { cmd }, dir)).toContain('api/tax.py')
   })
 
-  it.each(['cat', 'ls', 'grep x', 'git status', 'git diff', 'git log', 'pytest', 'npm test'])('does not warn on claims for %s', async command => {
-    state()
-    writeSessionFile('hook.json', { companyTold: true })
-    expect(await runHook('before-edit.mjs', { tool_name: 'Bash', cwd: dir, tool_input: { command: command + ' api/tax.py' } })).toBe('')
+  it.each(['cat', 'ls', 'grep x', 'git status', 'git diff', 'git log', 'pytest', 'npm test'])('classifies %s as read-only', async command => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { command: command + ' api/tax.py' }, dir)).toEqual([])
   })
 
   it('bounds path candidates across input strings and supports shell argv', async () => {
@@ -480,7 +478,7 @@ describe('live arbitration through the MCP endpoint (ledger test 8)', () => {
       const peer = addPresence(mcp.s, 'Quinn')
       hubAppend<NoteMsg>(mcp.s.room, quinn, { type: 'note', to: 'Rohan', text: 'first' })
       hubAppend<NoteMsg>(mcp.s.room, quinn, { type: 'note', to: 'Rohan', text: 'second' })
-      await settle()
+      await settle({ owedCount: 2 })
       const later = context(await runHook('before-edit.mjs', edit))
       expect(later).toContain('first')
       expect(later).toContain('second')
@@ -510,7 +508,7 @@ describe('local notices are items (ledger test 9)', () => {
     const mcp = await liveMcp(SID, undefined, undefined, 200)
     try {
       mcp.tools.ledger.notice('sharing', 'note for your human: this clone now shares only your plans')
-      await settle()
+      await settle({ notices: 1 })
       expect(await runHook('before-edit.mjs', read, [], dies('before'))).toBe('')
       await new Promise(r => setTimeout(r, 250))
       expect(context(await runHook('before-edit.mjs', read))).toContain('note for your human: this clone now shares only your plans')
@@ -523,7 +521,7 @@ describe('local notices are items (ledger test 9)', () => {
     const mcp = await liveMcp()
     try {
       mcp.tools.ledger.notice('startup', 'Room is not connected: not logged in; use room_login.')
-      await settle()
+      await settle({ notices: 1 })
       const outs = await Promise.all([runHook('before-edit.mjs', read), runHook('before-edit.mjs', read)])
       expect(outs.filter(o => o.includes('Room is not connected'))).toHaveLength(1)
     } finally { await mcp.close() }
@@ -534,10 +532,10 @@ describe('local notices are items (ledger test 9)', () => {
     try {
       mcp.tools.ledger.notice('sharing', 'note for your human: tool first')
       expect(await mcp.tools.call('room_state', {})).toContain('note for your human: tool first')
-      await settle()
+      await settle({ notices: 0 })
       expect(await runHook('before-edit.mjs', read)).toBe('')
       mcp.tools.ledger.notice('sharing', 'note for your human: hook first')
-      await settle()
+      await settle({ notices: 1 })
       expect(context(await runHook('before-edit.mjs', read))).toContain('hook first')
       expect(await mcp.tools.call('room_state', {})).not.toContain('hook first')
       const receipts = readSession('notices.json')

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -68,6 +68,23 @@ describe('local relay', () => {
     expect(joiner.owned).toBe(false)
     expect(joiner.port).toBe(owner.port)
     await joiner.stop(); await owner.stop()
+  })
+
+  it('a joiner declares the relay lost only after consecutive probe misses', async () => {
+    const common = await makeCommonDir()
+    const owner = await ensureLocalRelay(common, 'local/a/main', { watchMs: 30_000 })
+    // A 1 ms probe timeout misses a healthy relay on every tick, as a loaded host can.
+    const brittle = await ensureLocalRelay(common, 'local/a/main', { watchMs: 40, joinOnly: true, probeTimeoutMs: 1, lostAfterMisses: 1 })
+    const patient = await ensureLocalRelay(common, 'local/a/main', { watchMs: 40, joinOnly: true, probeTimeoutMs: 1, lostAfterMisses: 1000 })
+    try {
+      await vi.waitFor(() => expect(brittle.lost).toContain('no longer running'), { timeout: 5000, interval: 20 })
+      await new Promise(r => setTimeout(r, 400))
+      expect(patient.lost).toBeUndefined()
+      expect(patient.port).toBe(owner.port)
+      // A refused port is the owner gone, not load: decisive on the next tick despite the miss tolerance.
+      await owner.stop()
+      await vi.waitFor(() => expect(patient.lost).toContain('no longer running'), { timeout: 2000, interval: 20 })
+    } finally { await patient.stop(); await brittle.stop() }
   })
 
   it('first joiner starts the relay, later joiners reuse it, and a survivor takes over the same port when the owner leaves', async () => {

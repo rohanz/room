@@ -333,7 +333,7 @@ function legacyDisplay(commonDir: string): Map<string, Pick<LegacySource, 'oldId
 }
 
 /** Conservative local discovery: only Git's own worktree list and canonical Room paths are imported. */
-export function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
+function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
   let output: string
   try { output = execFileSync('git', ['--git-dir', commonDir, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }) }
   catch { return [] }

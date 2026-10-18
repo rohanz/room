@@ -2,9 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type http from 'node:http'
 
-export class HttpFailure extends Error {
-  constructor(public status: number, message: string) { super(message) }
-}
+import { HttpFailure } from '@room/hub-core'
+export { HttpFailure, safeUrl } from '@room/hub-core'
 
 /** Attach before admission or storage awaits so an early disconnect cannot be missed. */
 export function requestCancellation(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -81,12 +80,6 @@ export function workPrincipal(identity: { id?: string; provider?: string; login?
 
 export function isAdminIdentity(st: { login: string; id?: string; provider?: 'github' | 'oidc' }, admins: ReadonlySet<string>): boolean {
   return st.provider === 'oidc' ? !!st.id && admins.has(st.id) : st.provider === 'github' && admins.has(st.login)
-}
-
-/** Node accepts some request targets that URL rejects. Parse once before routing or authentication. */
-export function safeUrl(target: string | undefined): URL {
-  if (!target || !target.startsWith('/') || target.startsWith('//') || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, 'Bad Request')
-  try { return new URL(target, 'http://x') } catch { throw new HttpFailure(400, 'Bad Request') }
 }
 
 export function staticFile(root: string, pathname: string): string | undefined {

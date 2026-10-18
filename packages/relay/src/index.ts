@@ -30,7 +30,7 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { DOC_SIZE_CAP_CODE, DocSizeMeter, HUB_ORIGIN, MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, sizeCapReason, sizeCapRefusal, startHub, type DocSizeMeterOptions, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
-import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
+import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayIdentityProbe, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
 import { RelayAdmission, type RelayAdmissionLimits } from './limits.js'
 import { RelayAwarenessBudget, awarenessLimits, type RelayAwarenessLimits } from './awareness.js'
@@ -38,11 +38,8 @@ export type { RelayAdmissionLimits } from './limits.js'
 export type { RelayAwarenessLimits } from './awareness.js'
 export { SecureSession } from './secure.js'
 export { localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
-class HttpFailure extends Error { constructor(public status: number, message: string) { super(message) } }
-export function safeUrl(target: string | undefined): URL {
-  if (!target || !target.startsWith('/') || target.startsWith('//') || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, 'Bad Request')
-  try { return new URL(target, 'http://x') } catch { throw new HttpFailure(400, 'Bad Request') }
-}
+import { HttpFailure, safeUrl } from '@room/hub-core'
+export { safeUrl } from '@room/hub-core'
 
 /** Convert a takeover failure into a reported, settled operation for the interval owner. */
 export async function observeTakeover(work: () => Promise<void>, report: (error: unknown) => void): Promise<void> {
@@ -386,8 +383,14 @@ export function cloneId(commonDir: string): string {
  * room relay for another clone or with another key (a stale or inconsistent discovery file); 'none' is
  * nothing, or something that is not a room relay.
  */
-export async function probeRelay(port: number, commonDir: string, key: string, timeoutMs = 800): Promise<'ours' | 'foreign' | 'none'> {
-  const identity = await relayIdentity(port, key, timeoutMs)
+/** Liveness probes tolerate a busy host: a longer timeout than discovery, and several consecutive misses before loss. */
+export const LIVENESS_PROBE_TIMEOUT_MS = 2500
+export const LIVENESS_MISSES_BEFORE_LOST = 3
+/** 'slow': nothing answered within timeoutMs; 'none': the port refused or answered with something that is not a Room relay. */
+export async function probeRelay(port: number, commonDir: string, key: string, timeoutMs = 800): Promise<'ours' | 'foreign' | 'none' | 'slow'> {
+  const probe = await relayIdentityProbe(port, key, timeoutMs)
+  if (probe.timedOut) return 'slow'
+  const identity = probe.identity
   const h = identity?.health
   if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return 'none'
   // A Room relay that did not prove this clone's key (another clone's, or one holding another key) is foreign.
@@ -617,7 +620,7 @@ export class NoLocalRelay extends Error {
   constructor(room: string) { super(`no running local relay for ${room}`); this.name = 'NoLocalRelay' }
 }
 
-export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array; joinOnly?: boolean } = {}): Promise<LocalRelay> {
+export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array; joinOnly?: boolean; probeTimeoutMs?: number; lostAfterMisses?: number } = {}): Promise<LocalRelay> {
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`))
   let owned: StartedRelay | null = null
   let port = 0
@@ -698,6 +701,13 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   let stopped = false
   let lost: string | undefined
   let ticking: Promise<void> | null = null
+  // A loaded machine makes a healthy relay miss a short probe (its event loop lagged 2-3 s with six
+  // workers running test suites on 2026-10-18). One timed-out probe means nothing; only consecutive ones mean
+  // the relay is gone, so joiners do not leave and rejoin, abandoning in-flight calls, every time the host is
+  // busy. A refused port is decisive at once: the owner's process is gone and callers are waiting on it.
+  const probeTimeoutMs = opts.probeTimeoutMs ?? LIVENESS_PROBE_TIMEOUT_MS
+  const lostAfterMisses = Math.max(1, opts.lostAfterMisses ?? LIVENESS_MISSES_BEFORE_LOST)
+  let misses = 0
   const tick = async () => {
     if (stopped) return
     if (canonicalWarning) {
@@ -705,13 +715,16 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
       if (!canonicalRelayWarning(canonicalPort, commonDir, identity, readRelayInfo(commonDir)).warning) canonicalWarning = undefined
     }
     if (owned || lost) return
-    const who = await probeRelay(port, commonDir, key)
-    if (stopped || who === 'ours') return
+    const who = await probeRelay(port, commonDir, key, probeTimeoutMs)
+    if (stopped) return
+    if (who === 'ours') { misses = 0; return }
     if (who === 'foreign') {
       lost = `127.0.0.1:${port} is now another clone's relay`
       log(`local room ${room}: ${lost}; the session will join afresh`)
       return
     }
+    misses = who === 'slow' ? misses + 1 : lostAfterMisses
+    if (misses < lostAfterMisses) return
     if (opts.joinOnly) {
       lost = `the lead's local relay for ${room} is no longer running`
       log(`local room ${room}: ${lost}`)

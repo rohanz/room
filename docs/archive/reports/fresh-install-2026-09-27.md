@@ -35,4 +35,4 @@ Claude Code 2.1.283, codex-cli 0.157.1, Node 22.14, git 2.45.
   both consistently.
 - **For the friend checklist:** Codex asks to trust Room's hooks on the first interactive run, and a
   declined prompt silently disables them. Claude Code does not trust-gate plugin hooks (verified on
-  2.1.281). The checklist in docs/trial-plan.md now says to accept the Codex prompt.
+  2.1.281). The checklist in docs/archive/trial-plan.md now says to accept the Codex prompt.

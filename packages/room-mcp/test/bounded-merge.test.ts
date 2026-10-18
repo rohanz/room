@@ -16,7 +16,7 @@ vi.mock('node-diff3', async importOriginal => {
 })
 
 import { gitMergeFile } from '../src/merge.js'
-import { classifyThreeWay } from '../../web/src/merged.js'
+import { classifyNWay } from '../../web/src/merged.js'
 
 afterEach(() => { vi.unstubAllEnvs(); mergeCalls.work.length = 0 })
 
@@ -36,9 +36,9 @@ it('keeps exact alternatives without invoking diff3 on repeated-line small edits
 
 it('keeps both exact alternatives without invoking diff3 on repeated-line small edits in web', () => {
   const base = 'same\n'.repeat(4000), a = base + 'a\n', b = 'b\n' + base
-  const out = classifyThreeWay(base, a, b)
-  expect(out.filter(line => line.conflict && line.side === 'a').map(line => line.text)).toEqual(a.trimEnd().split('\n'))
-  expect(out.filter(line => line.conflict && line.side === 'b').map(line => line.text)).toEqual(b.trimEnd().split('\n'))
+  const out = classifyNWay(base, [{ name: 'a', text: a }, { name: 'b', text: b }])
+  expect(out.filter(line => line.conflict && line.conflictOwner === 'a').map(line => line.text)).toEqual(a.trimEnd().split('\n'))
+  expect(out.filter(line => line.conflict && line.conflictOwner === 'b').map(line => line.text)).toEqual(b.trimEnd().split('\n'))
   expect(mergeCalls.work.every(work => work <= 2_000_000)).toBe(true)
 })
 
@@ -62,7 +62,7 @@ it('returns exact MCP alternatives for 50,000 repetitive lines under the publica
 
 it('returns both web alternatives for 150,000 repetitive lines under the publication cap', () => {
   const base = 'x\n'.repeat(150_000), a = base + 'a\n', b = 'b\n' + base
-  const out = classifyThreeWay(base, a, b)
-  expect(out.filter(line => line.conflict && line.side === 'a').map(line => line.text).join('\n') + '\n').toBe(a)
-  expect(out.filter(line => line.conflict && line.side === 'b').map(line => line.text).join('\n') + '\n').toBe(b)
+  const out = classifyNWay(base, [{ name: 'a', text: a }, { name: 'b', text: b }])
+  expect(out.filter(line => line.conflict && line.conflictOwner === 'a').map(line => line.text).join('\n') + '\n').toBe(a)
+  expect(out.filter(line => line.conflict && line.conflictOwner === 'b').map(line => line.text).join('\n') + '\n').toBe(b)
 })

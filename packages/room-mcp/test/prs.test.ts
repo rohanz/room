@@ -11,7 +11,7 @@ import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { exportRoomLedger, exportArchiveLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
+import { exportRoomLedger, exportArchiveLedger, isPrName, openPrs, prArea, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 import { visiblePeer } from './fixtures/visible.js'
@@ -71,8 +71,7 @@ describe('PR mirror in the doc', () => {
     expect(openPrs(b).map(p => p.number)).toEqual([7])
   })
 
-  it('identity, area and leader helpers', () => {
-    expect(prIdentity(PR7)).toEqual({ name: 'pr#7', kind: 'bot', owner: 'kieran', label: 'PR #7' })
+  it('PR name, area and leader helpers', () => {
     expect(isPrName('pr#7')).toBe(true); expect(isPrName('rohanz+prs')).toBe(false)
     expect(prArea(['a/x.py', 'b/y.py', 'a/z.py'])).toBe('a')
     expect(prArea([])).toBe('root')

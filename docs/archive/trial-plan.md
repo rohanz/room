@@ -1,7 +1,7 @@
 # First trial with real users: plan
 
 Status 2026-09-25: first hosted rehearsal completed with three agents on one shared branch
-([results](archive/reports/rehearsal-2026-09-25.md)); findings 1–6 are fixed in 0.16.1. A second rehearsal
+([results](reports/rehearsal-2026-09-25.md)); findings 1–6 are fixed in 0.16.1. A second rehearsal
 with an idle Fly machine and a second GitHub login is still to do. Trial date is not set.
 Rule: nothing big merges within 48 hours of the trial.
 
@@ -56,23 +56,23 @@ Keep the room's exported ledger and each person's notes.
 ## Freeze
 
 Frozen on 2026-09-27 (0.16.24, then the fixes a review and a mixed-sharing rerun found; see CHANGELOG through the latest 0.16.x), after these rehearsals:
-- [Werkzeug](archive/reports/rehearsal-2026-09-25.md);
-- [httpx at declared sharing](archive/reports/rehearsal-2026-09-26-httpx.md);
-- [click at full sharing](archive/reports/rehearsal-2026-09-27-click.md);
-- [httpx rerun at mixed sharing](archive/reports/rehearsal-2026-09-26-httpx.md#rerun-at-mixed-sharing-on-0162801629-2026-09-27): full, declared and plans only together.
+- [Werkzeug](reports/rehearsal-2026-09-25.md);
+- [httpx at declared sharing](reports/rehearsal-2026-09-26-httpx.md);
+- [click at full sharing](reports/rehearsal-2026-09-27-click.md);
+- [httpx rerun at mixed sharing](reports/rehearsal-2026-09-26-httpx.md#rerun-at-mixed-sharing-on-0162801629-2026-09-27): full, declared and plans only together.
 
-It is also frozen after the [design audit](archive/reports/audit-2026-09-27-design.md), whose post-trial work waits for after the trial. Nothing merges within 48 hours of the trial unless a rehearsal or live check blocks on it.
+It is also frozen after the [design audit](reports/audit-2026-09-27-design.md), whose post-trial work waits for after the trial. Nothing merges within 48 hours of the trial unless a rehearsal or live check blocks on it.
 
 ## Before the day
 
 - [ ] Rohan confirms the repo choice and creates the fork (public, under rohanz); `trial` branch at
       the base; three issues filed; Kieran and Hrishi added as collaborators (Room admits by push access).
 - [x] First hosted rehearsal: two Claude Code agents and one Codex agent, three clones, cards A–C
-      at the same time. All used the owner's GitHub login; see the [results](archive/reports/rehearsal-2026-09-25.md).
+      at the same time. All used the owner's GitHub login; see the [results](reports/rehearsal-2026-09-25.md).
 - [ ] Second hosted rehearsal: let the Fly machine idle first, then join with at least one other
       GitHub login to check wake-up and first-login behaviour.
 - [x] Fix only what the rehearsals find (done through 0.16.24), then the 48-hour quiet period.
-- [x] Fresh-install simulation up to login ([results](archive/reports/fresh-install-2026-09-27.md)).
+- [x] Fresh-install simulation up to login ([results](reports/fresh-install-2026-09-27.md)).
 - [ ] On the day, check `codex --version`. Codex 0.157 runs sessions through a shared app-server daemon; 0.16.24 handles it, but re-check it on newer versions.
 - [ ] Fly set to always-on the day before (`min_machines_running = 1`), back to stop-on-idle after.
 - [ ] Friend checklist sent: the two install commands per host; Claude Code 2.1.224 or later

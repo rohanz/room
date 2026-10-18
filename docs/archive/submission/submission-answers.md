@@ -2,7 +2,7 @@
 
 > Historical record. Findings and commands describe the version and environment at the time; they are not current setup instructions. See the [current documentation](../../README.md).
 
-Historical hackathon draft (September 2026). For current behavior and setup, see the [README](../../../README.md) and [onboarding](../../onboarding.md).
+Historical hackathon draft (September 2026). For current behavior and setup, see the [README](../../../README.md) and [onboarding](../../../README.md#coordinate-a-task).
 
 Copy each section into the matching form field. Deadline: today 4:30 PM SGT.
 

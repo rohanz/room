@@ -22,7 +22,7 @@ app-server daemon was 0.159.0). This rehearsal used real host sessions driven in
   Each session had `ROOM_SERVER=ws://127.0.0.1:1294` and its `ROOM_CREDENTIALS`. Claude sessions also had
   `--settings '{"enabledPlugins":{"room@room":false}}'` so that only the branch plugin loaded. cy had
   `ROOM_IDLE_LEASE_MS=120000`. No folder-trust prompt appeared for any clone.
-- **Cards.** These were the httpx plan's cards (`docs/rehearsal-httpx-plan.md`): ana A, ben C, cy B. ben's card also
+- **Cards.** These were the httpx plan's cards (`docs/archive/rehearsal-httpx-plan.md`): ana A, ben C, cy B. ben's card also
   asked him to improve `quote()`'s docstring, which sits in ana's lines, to provoke a claim conflict. Every card
   ended with the check command and "work from this repository only".
 - **Observer.** A read-only `y-websocket` client with the `obs` login and no awareness dumped the room document

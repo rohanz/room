@@ -7,7 +7,7 @@ import fsp, { type FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { HUB_ORIGIN, MSG_HUB, MAX_HUB_FRAME_BYTES, HubRequestBudget, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, hubReplyId, serializedStore, startHub, type Hub, type IncarnationStore, type LeaseStore, type StoredLease, type Principal, type Reply } from '@room/hub-core'
+import { HUB_ORIGIN, MSG_HUB, MAX_HUB_FRAME_BYTES, HubRequestBudget, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, hubReplyId, incarnationFile as createIncarnationFile, startHub, type Hub, type IncarnationStore, type LeaseStore, type StoredLease, type Principal, type Reply } from '@room/hub-core'
 import { RoomDoc, compactDoc, docGeneration, historyOf } from '@room/shared'
 import { ownsName, toBytes } from './readonly.js'
 
@@ -55,13 +55,7 @@ async function writeDurable(file: string, content: object): Promise<void> {
  */
 export function incarnationFile(dir: string | undefined, port: number): IncarnationStore {
   const file = dir ? path.join(dir, 'hub', 'incarnation.json') : path.join(os.tmpdir(), `room-server-hub-${port}`, 'incarnation.json')
-  return serializedStore({
-    read: async () => {
-      try { const max = (JSON.parse(await fsp.readFile(file, 'utf8')) as { max?: unknown }).max; return typeof max === 'number' ? max : undefined }
-      catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
-    },
-    write: max => writeDurable(file, { max }),
-  })
+  return createIncarnationFile(file, { read: file => fsp.readFile(file, 'utf8'), write: writeDurable })
 }
 
 const leaseFileWrites = new Map<string, Promise<void>>()

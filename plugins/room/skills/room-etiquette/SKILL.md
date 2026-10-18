@@ -44,7 +44,12 @@ While alone, work normally. With company:
    each part when its required interfaces are agreed. Test against peers' live work without
    waiting for an integrated checkout. When affected interfaces need combined validation, use
    `room_preview_merge(people=["<returned peer name>"], run="<focused test command>")`,
-   naming relevant peers, including finished ones. Choose task-appropriate evidence: focused
+   naming relevant peers, including finished ones. Name tests or a single file rather
+   than whole suites so a preview `run` finishes well under the 5-minute limit. Narrow
+   a command stopped at the time limit; do not repeat it on unchanged inputs. Room refuses
+   an identical timed-out command on the same inputs unless `allowSlow: true` is passed;
+   the limit still applies. Changed files are a new check.
+   Choose task-appropriate evidence: focused
    checks for changed behavior, source review or document checks where applicable. Whoever
    integrates owns comprehensive relevant validation of the integrated result, including
    the CI checks the change requires.
@@ -101,6 +106,8 @@ While alone, work normally. With company:
    can extend this up to 2 hours; `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`
    can raise the defaults/maximum. Check the installed host's documentation before relying
    on overrides or a longer run. A timeout, interruption or missing result is not a pass.
+   After required results are inspected, stop remaining background commands and monitors
+   you started before `room_done` and the final message so the host exits cleanly.
 
 Room never changes your files unless you ask it to bring in a worker's output; explicit
 exports write the ledger. `room_close` removes the repository room for everyone on every branch

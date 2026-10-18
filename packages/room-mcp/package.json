@@ -29,7 +29,8 @@
     "ws": "^8.21.3",
     "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",
-    "yjs": "^13.6.32"
+    "yjs": "^13.6.32",
+    "tsx": "^4.23.0"
   },
   "devDependencies": {
     "@room/web": "*",

@@ -3,7 +3,7 @@
 > Historical record. Findings and commands describe the version and environment at the time; they are not current setup instructions. See the [current documentation](../../README.md).
 
 Second codebase after Werkzeug (docs/archive/reports/rehearsal-2026-09-25.md), run at the tier below full sharing. Plan
-and cards: docs/rehearsal-httpx-plan.md. Room 0.16.13 (installed), server on Fly v66, Claude Code
+and cards: docs/archive/rehearsal-httpx-plan.md. Room 0.16.13 (installed), server on Fly v66, Claude Code
 2.1.283, codex-cli 0.157.1 (default model GPT-6-Astra medium).
 
 ## Setup

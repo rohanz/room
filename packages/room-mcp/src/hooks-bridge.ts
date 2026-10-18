@@ -17,21 +17,6 @@ import { workerText } from './tools/context.js'
 import { DISK_TEXT_LIMIT, readBoundedHistoricalText } from './tools/disk-text.js'
 import { git } from '@room/roomd/git'
 
-/** The bound session's write intents (recorded by before-edit.mjs): did this session write `p` in the last two minutes? */
-export function createWriteIntentReader(dir: string, sessionDir: () => string | undefined, now: () => number = Date.now): (p: string) => boolean | undefined {
-  return p => {
-    const root = sessionDir()
-    if (!root) return undefined
-    try {
-      const evidence = JSON.parse(fs.readFileSync(path.join(root, 'write-intents.json'), 'utf8'))
-      if (!Array.isArray(evidence.writes)) return undefined
-      const at = now(), target = path.resolve(dir, p)
-      return evidence.writes.some((w: { path?: unknown; at?: unknown }) => typeof w.path === 'string' &&
-        typeof w.at === 'number' && Number.isFinite(w.at) && w.at <= at && at - w.at < 120_000 && path.resolve(w.path) === target)
-    } catch { return undefined }
-  }
-}
-
 export interface HooksBridgeOptions {
   /** How many messages this participant is owed now (the ledger's selection, unreserved or not). */
   owedCount: () => number

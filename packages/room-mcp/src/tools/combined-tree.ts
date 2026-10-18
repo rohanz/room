@@ -19,7 +19,7 @@ interface PreviewGap { person: string; path?: string; why: string; kind?: 'prove
 type Participant = { person: string; session: Session }
 
 /** How long one preview waits for participants' published changes to settle before reporting a move. */
-export const PREVIEW_SETTLE_MS = 12_000
+const PREVIEW_SETTLE_MS = 12_000
 const SETTLE_QUIET_MS = 1_000, SETTLE_POLL_MS = 250
 
 export class PreviewMoved extends Error {

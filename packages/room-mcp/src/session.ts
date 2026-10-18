@@ -129,13 +129,6 @@ export interface SessionRecord {
   worker_id?: string
 }
 
-export interface SessionRuntime {
-  model?: string
-  effort?: string
-  transcript?: { path: string; mtimeMs: number; size: number }
-  at: number
-}
-
 /** The short component keeps host thread IDs out of local path names. */
 export function sessionDirectory(commonDir: string, sessionId: string): string {
   if (!sessionId) throw new Error('session ID is required')
@@ -155,14 +148,6 @@ export function writeSessionRecord(commonDir: string, record: SessionRecord): vo
 export function readSessionRecord(commonDir: string, sessionId: string): SessionRecord | undefined {
   const record = readSessionFile<SessionRecord>(commonDir, sessionId, 'session.json')
   return record?.session_id === sessionId ? record : undefined
-}
-
-export function writeSessionRuntime(commonDir: string, sessionId: string, runtime: SessionRuntime): void {
-  writeAtomic(join(sessionDirectory(commonDir, sessionId), 'runtime.json'), runtime)
-}
-
-export function readSessionRuntime(commonDir: string, sessionId: string): SessionRuntime | undefined {
-  return readSessionFile<SessionRuntime>(commonDir, sessionId, 'runtime.json')
 }
 
 function sessionRecords(commonDir: string): SessionRecord[] {

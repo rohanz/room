@@ -40,8 +40,15 @@ export class ProofVerifier {
  * our nonce. Undefined when nothing answers with a health line in time.
  */
 export async function relayIdentity(port: number, key: string, timeoutMs = 800): Promise<{ health: Record<string, unknown>; proven: boolean } | undefined> {
+  const probe = await relayIdentityProbe(port, key, timeoutMs)
+  return probe.timedOut ? undefined : probe.identity
+}
+
+/** relayIdentity plus whether the listener answered at all: a refused port is decisive, a timeout may be load. */
+export async function relayIdentityProbe(port: number, key: string, timeoutMs = 800): Promise<{ identity?: { health: Record<string, unknown>; proven: boolean }; timedOut: boolean }> {
   const nonce = crypto.randomBytes(16).toString('hex')
-  return new Promise(resolve => {
+  return new Promise<{ identity?: { health: Record<string, unknown>; proven: boolean }; timedOut: boolean }>(done => {
+    const resolve = (identity: { health: Record<string, unknown>; proven: boolean } | undefined) => done({ identity, timedOut: false })
     const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs, headers: { 'x-room-nonce': nonce } }, res => {
       let body = ''
       res.on('data', c => { body += c; if (body.length > 2048) req.destroy() })
@@ -53,7 +60,7 @@ export async function relayIdentity(port: number, key: string, timeoutMs = 800):
         } catch { resolve(undefined) }
       })
     })
-    req.on('timeout', () => { req.destroy(); resolve(undefined) })
+    req.on('timeout', () => { req.destroy(); done({ timedOut: true }) })
     req.on('error', () => resolve(undefined))
   })
 }

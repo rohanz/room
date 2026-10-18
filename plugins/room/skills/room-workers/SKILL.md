@@ -6,7 +6,9 @@ description: Use only when the user explicitly requests Room workers or Room for
 Use this workflow only for explicit Room delegation or its continuation. Installing or joining Room does not authorize Room workers. Otherwise use the host’s normal delegation.
 
 1. Split substantial work by task and dispatch independent investigation and implementation
-   early with short briefs.
+   early with short briefs. Size slices so none takes more than about twice another's
+   effort; split a large set by member across two owners, each told the same rule and
+   their members, with one owner responsible for finding and assigning unnamed members.
    Workers agree the names, inputs and outputs they need directly with the relevant peers;
    only dependent implementation waits for that agreement, not the whole task or team.
    Parts may share files: give each worker a function or area to change and let Room
@@ -27,7 +29,8 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    Keep each self-contained brief short by pointing at the source, not by paraphrasing it:
    the interfaces it uses, owned area, the spec sections or rules that are its slice,
    expected behavior and appropriate validation. A rule over a set ("every script that
-   re-queues a job", "all callers of X") goes to a worker as the rule with one owner:
+   re-queues a job", "all callers of X") goes to a worker as the rule with one owner,
+   or one owner per member set when it is partitioned:
    name the members you know as a starting point and say that anything else the rule
    reaches is theirs to find and report in room_done. Never write "if relevant" for a
    member of a set: assign it or decide it now. A test or review worker is pointed at the
@@ -79,7 +82,10 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    decisions stay with the human. A process-exit watcher cannot substitute for questions.
    While workers run, keep handling new input from your human or host as you would alone.
    Wait only on a specific dependency (an answer, the worker whose result you need next);
-   otherwise continue independent work. Give a finished worker more work only when useful.
+   otherwise continue independent work. If one worker finishes while another's slice is
+   far from done, ask the running worker what members remain and hand some to the
+   finished worker. Agree the handoff and release old claims before the new owner edits;
+   a message from the lead resumes a finished worker.
 4. If the human explicitly requests a review checkpoint before collection, establish it
    before dispatch or collection: from the destination checkout call
    `room_collect(checkpoint="hold", reason="<requested review>")` and wait for success.
@@ -98,7 +104,8 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    Choose task-appropriate evidence: focused tests for changed behavior, source review or
    document checks where applicable. Interim checks cover affected peer interfaces; the
    integrator owns full relevant validation after collection, including the CI checks the change requires. A preview `run` stops at 5 minutes or 4 MB of output and reports that it did
-   not finish, with its last output; keep interim commands well under that.
+   not finish, with its last output; name tests or a single file so interim commands finish
+   well under the limit. Narrow a timed-out command; do not repeat it on unchanged inputs.
    Include the lead when workers start from different kept or carried snapshots. Room
    anchors that preview on the lead and applies worker deltas in collection order.
    A stale or incomplete lead publication produces a gap; an addressed message to the
@@ -132,7 +139,13 @@ Use this workflow only for explicit Room delegation or its continuation. Install
 6. Run full relevant integration validation, including the CI checks the change requires, on the collected
    tree unless exact equivalence with a complete
    passing preview is independently established; a preview input hash alone cannot
-   establish it. Report the work and validation evidence.
+   establish it. After collection, on a host with verified background lifetime and
+   completion delivery (see room-etiquette), start the integrated test run in the
+   background and review diffs or write the summary while it runs. Otherwise keep it
+   in the foreground. Await completion and inspect the actual result before reporting
+   validation; a stopped check is not a pass. Stop remaining background commands and
+   monitors you started before the final message so the host exits cleanly.
+   Report the work and validation evidence.
    Never commit or push unless the human asked. If asked to commit, use plain git for one
    task commit with a normal message; worker details do not belong in the history.
 

@@ -1,12 +1,21 @@
 # Changelog
 
+## 0.17.17
+
+- Local relay liveness tolerates a busy host: the joiner's probe allows 2.5 s (was 0.8 s) and declares the lead's relay lost only after three consecutive timed-out probes; a refused port (the owner's process is gone) is still acted on at the next tick, so takeover and rejoin stay within the 5 s retry budget of interrupted posts. On 2026-10-18 six workers running test suites lagged a healthy relay by 2-3 s, so every worker left and rejoined and in-flight previews were abandoned.
+- `room_preview_merge`: a check stopped at the 5-minute time limit now tells the caller to narrow the command to named tests, and the same participant cannot rerun that identical command on the same inputs in the session (the previous stopped result is returned) unless `allowSlow: true` is passed; changed files or a run that finishes clear the refusal, and the limit itself is unchanged. The description text was shortened to stay within the tool budget.
+- Skills: briefs point at the spec sections and rules a worker owns instead of paraphrasing them; a rule over a set has one owner, test and review workers get the rule rather than an implementer's file list, "if relevant" is not a state. Slices are sized within about twice each other and work is handed to early finishers; previews name tests rather than whole suites and never repeat a timed-out command; the lead runs the integrated suite in the background on verified hosts and stops its background commands before exiting.
+- Test suite: the four largest files are split into eleven with shared fixtures; deliberate scale tests run only with `TEST_SCALE=1` (CI sets it); hook classifier tables run in-process; about sixty duplicate tests removed with their surviving equivalents named in the batch record; a flaky prototype-wide spy in the claims test now spies on its own instance.
+- Repository hygiene: six test-only production functions removed with their adapter tests, shared HTTP and participant-name helpers deduplicated into `@room/hub-core` and `@room/shared`, test-only dependencies moved to devDependencies, knip now checks production entry points, and historical plans, reviews and briefs moved under `docs/archive/` with links updated. Unreferenced images and a Cloud Run ignore file removed.
+- Documentation: roadmap marks shipped items shipped and moves its history to the archive, `room_open` and the implemented tool parameters are in the reference, onboarding is folded into the README, and the 0.17.16 notes describe the graph-retention change as the test change it was.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.16
 
-- Deliver the lead's own worker completions to active Codex turns as coalesced tool-output pointers. Prefer explicit host state, preserve unknown-state fallback, and bound transport retries without cancelling running commands.
-- Add bounded delivery diagnostics that distinguish configuration, pending messages, retained wake records and host handoff; report intentionally disabled wakes without a repair warning.
-
+- Extend 0.17.12's active-turn Codex delivery to the lead's own worker completions, coalescing tool-output pointers. Read explicit host state, distinguish unknown state from idle, and bound transport retries without cancelling running commands.
+- Add bounded `room_state(check=true)` delivery diagnostics separating configuration, pending messages, retained wake records and host handoff; normal state replies report degraded delivery concisely, and intentionally disabled wakes no longer suggest a repair.
 - Save local room snapshots through a writable file handle so Windows can flush them durably, including during local room migration.
-
 - `room_preview_merge` replies name present peers excluded for lack of overlap (with the `people:[...]` opt-in) and distinguish "nobody present", "nobody else in the room" and unknown overlap; the default selection is unchanged.
 - When participants move during a preview's test command, the result is reported for the snapshot that was tested (inputs, verdict, who moved since) instead of being discarded; `room_done` evidence still treats it as not current.
 - Identical peer additions or edits no longer raise CONFLICT notices; divergent same-path additions report the first differing line and "cleared" is sent only for reported conflicts.
@@ -23,7 +32,7 @@
 - A preview whose inputs move before its test command starts is rebuilt before running the command.
 - Skills, shared prompt and tool text describe the intended flow: early independent work, interfaces agreed per task, parallel dispatch with short briefs, concurrent implementation, named-peer previews with a real test command, findings to the owning peer, no copying of peer files, deferred or kept collection. Rebuilt eval mocks.
 - Refuse to open the worker registry when the Git common dir resolves to something that is not a Git directory, and reject an empty `git rev-parse --git-common-dir` answer. A silent `git` on PATH once made Room write `room/registry` into the working tree.
-- Two 3,000-path tests no longer fail on a loaded machine: the graph rebuild budget is CPU time, not wall-clock, and the bridge fixture emits the presence heartbeat its synchronous setup had starved. Both pass with every core saturated.
+- Two 3,000-path tests no longer fail on a loaded machine: the graph-retention test measures its rebuild assertion in process CPU time instead of wall-clock time (production budgets are unchanged), and the bridge fixture emits the presence heartbeat its synchronous setup had starved. Both pass with every core saturated.
 - Add `npm run bump <version>` to stamp the release version into both plugin manifests, the marketplace entry and the hooks stamp, with a test that they agree.
 
 Plugin-only update; restart sessions after updating. No server deployment or migration is needed.

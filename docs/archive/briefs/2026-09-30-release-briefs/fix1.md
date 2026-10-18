@@ -1,4 +1,4 @@
-FIX ROUND 1 for the 0.17.0 release-readiness batch. Read common.md first, then the review report docs/superpowers/specs/reviews/2026-09-30-release-review-r1.md (findings R1-R9, with repro scripts the reviewer described under /tmp/room-review-r1-*.mts; recreate them if missing). The lead fixes R6, R7 and R9 itself. Two workers:
+FIX ROUND 1 for the 0.17.0 release-readiness batch. Read common.md first, then the review report docs/archive/reviews/2026-09-30-release-review-r1.md (findings R1-R9, with repro scripts the reviewer described under /tmp/room-review-r1-*.mts; recreate them if missing). The lead fixes R6, R7 and R9 itself. Two workers:
 
 TAG fxcache: R1 (MUST) and R5.
 OWNED FILES: packages/room-mcp/src/preview-cache.ts, the preview path of packages/room-mcp/src/tools/files.ts (handler code only; descriptions belong to nobody this round), preview tests in packages/room-mcp/test/preview-*.test.ts.
