@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Skills: before spawning, the lead lists the spec's observable rules (states, fields, counters, events, return values) and puts each in exactly one brief; the test or review worker gets the whole list. A contract decision the spec does not state is marked "decided, not in spec" for the test worker to check against the spec's caller-visible text, and "do X instead" means a normal return with state X, not a thrown error. On 2026-10-18 a lead's contract turned "finish the job as cancelled instead" into a thrown error and left the attempt counter rule in no brief, costing a repair round.
+- Skills: the brief rules in room-workers are a before-spawning checklist. The lead lists the spec's observable rules (states, fields, counters, events, return values) and puts each in exactly one brief, marks a contract decision the spec does not state as "decided, not in spec", and gives the test or review worker the whole rule list and those decisions to check against the spec's caller-visible text. On 2026-10-18 a lead's contract turned "finish the job as cancelled instead" into a thrown error and left the attempt counter rule in no brief, costing a repair round.
 
 ## 0.17.17
 

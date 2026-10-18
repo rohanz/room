@@ -28,20 +28,19 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    any worker.
    Keep each self-contained brief short by pointing at the source, not by paraphrasing it:
    the interfaces it uses, owned area, the spec sections or rules that are its slice,
-   expected behavior and appropriate validation. A rule over a set ("every script that
-   re-queues a job", "all callers of X") goes to a worker as the rule with one owner,
-   or one owner per member set when it is partitioned:
-   name the members you know as a starting point and say that anything else the rule
-   reaches is theirs to find and report in room_done. Never write "if relevant" for a
-   member of a set: assign it or decide it now. A test or review worker is pointed at the
-   same spec rules, not at an implementer's file list, so it can find what that list
-   missed. Before spawning, list the spec's observable rules (states, fields, counters,
-   events, return values) and put each in exactly one brief; the test or review worker
-   gets the whole list and looks for rules no brief names. A contract decision the spec
-   does not state (throw or return, a payload shape, who increments a counter) is marked
-   "decided, not in spec" and the test worker checks it against the spec's caller-visible
-   text; where the spec says "do X instead", the call returns normally with state X, not
-   an error. What
+   expected behavior and appropriate validation. Before spawning:
+   - List the spec's observable rules (states, fields, counters, events, return values)
+     and put each in exactly one brief.
+   - A rule over a set ("every script that re-queues a job", "all callers of X") has one
+     owner, or one owner per member set when partitioned: name the members you know and
+     say that anything else the rule reaches is theirs to find and report in room_done.
+     Never write "if relevant" for a member of a set: assign it or decide it now.
+   - Mark a contract decision the spec does not state (throw or return, a payload shape,
+     who increments a counter) as "decided, not in spec".
+   - Point the test or review worker at the same spec rules, not at an implementer's file
+     list, with the whole rule list and the "decided, not in spec" items to check against
+     the spec's caller-visible text, so it finds what the briefs missed.
+   What
    Room does between them: shows who is near which file, warns before two edits collide,
    and when a worker changes a function's signature or removes a definition, tells the
    workers whose files use it (detected from the diff, no message needed). Workers
