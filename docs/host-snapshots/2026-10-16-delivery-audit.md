@@ -258,3 +258,25 @@ Round 0 nonetheless missed two base-spec cases and the ten-minute repair cycle c
 What this says about the brief-slices rule: pointing briefs at spec rules and naming members fixed the "unowned member" miss, and it held here. It does not cover two adjacent failure shapes. First, a lead-invented behaviour in the contract: a decision about caller-visible behaviour (throw versus return, event payloads, counters) that the spec does not state, written into every brief before anyone had read the spec against it. Second, a quantified field rule with no owner because the lead's rule inventory stopped at the headline rule. Solo made neither mistake in two runs because it read the whole section while implementing. As in the previous runs, the lead ended its final turn with its own integrated test run still going (a `Monitor` was waiting on it) and the controller closed input at the idle deadline; the independent validation ran that tree anyway.
 
 Limits: one run, same operator and grader, static correctness review plus the automated gates, same task. Evidence: `/tmp/room-coupled-benchmark-2026-10-18-hardening-t4/` (`control/evidence/room/`, `manual-review.json`, `preparation/` with `RUN-PLAN.md`, `harness-tests.log`, prepare and preflight logs, `make-attempt.mjs`).
+
+### Brief-checklist check: one Room arm on main at f5a40d05 (2026-10-18)
+
+After t4 the brief rules in `room-workers` were rewritten as a before-spawning checklist (every observable spec rule in exactly one brief; a contract decision the spec does not state marked "decided, not in spec"; the test or review worker gets the whole rule list and those decisions to check against the spec's caller-visible text). Claude's installed plugin reads the repo checkout and the harness freezes the plugin from main, so one Room arm ran on the new skill text with the 0.17.17 bundle unchanged (`15abefe5…`). Everything else as before: byte-identical inputs from trial 1, Claude Code 2.1.300, Opus 5.5 medium, 92 acceptance cases. Harness self-tests 102/103: the one failure asserts the evidence directory does not yet exist and ran after prepare this time (operator ordering; the rejection assertions it also makes passed; harness code byte-identical to t4).
+
+| | Room t5 (checklist) | Room t4 (0.17.17) | Room t3 (edited skills) | Solo t1 | Solo t2 |
+|---|---:|---:|---:|---:|---:|
+| Lead first exit | 34:22 (code 0) | 25:27 (143) | 35:43 (143) | 35:05 | 40:18 |
+| Validation round 0 | pass, 92/92 | fail, 90/92 | pass, 92/92 | pass, 92/92 | pass, 92/92 |
+| Repair round | none | 3:05 | none | none | none |
+| Scored end | 41:20 | 42:36 | 42:32 | 41:44 | 46:56 |
+| Reported cost | $27.79 | $23.46 | $23.33 | $10.00 | $9.59 |
+| Workers | 6 | 5 | 6 | 0 | 0 |
+| Lead alone after the last worker | 9:55 | 1:12 | 14:38 | | |
+| Relay "no longer running" events | 0 | 0 | 28 | | |
+| Preview time-limit stops | 0 (50 previews) | 0 (30) | 1 | | |
+
+Round 0 was clean and the scored end is the first Room result under the better solo trial, by 24 seconds. The lead followed the checklist in its own shape: at T+2:35 it wrote a design contract in which every decision the spec does not state is tagged `[decided]`, kept the verbatim task brief beside it, and pointed both test workers at the verbatim brief as source of truth and at the `[decided]` items, with the spec sections each test worker owns listed. The two t4 misses did not recur: the contract says the attempt counter is incremented only when a job leaves `active`, and the requeue paths finish the job as cancelled rather than throwing. Existing tests changed only by `cancelled: 0` in two exact-count assertions; no skips added. Runtime again clean: no relay drops, no preview limit hits across 50 previews (longest check 130 s), no lead tool errors, no residual processes.
+
+The lead tail came back, for a different reason than t3. The last resumed worker finished at T+24:28 and the lead exited at T+34:22; about seven of those ten minutes were its own integrated build, lint and full suite (13:28:06 to 13:35:19), which it now awaits before exiting as the skill requires, so this is the first Room run with a clean exit code. The controller's validation then runs the same build, lint and suite again (6.5 minutes). In this harness that run is pure duplication; in real use it is the integrator's required validation and stays. The floor for Room on this task is therefore about 34 minutes plus validation, and the remaining lever is a lead that starts its integrated run while the last revision workers are still finishing, or trusts a complete passing preview of the final inputs, which the skill already permits only under exact equivalence.
+
+Limits: one run, same operator and grader, static correctness review plus the automated gates, same task; the cost is higher than t4 with one more worker. Evidence: `/tmp/room-coupled-benchmark-2026-10-18-checklist-t5/` (`control/evidence/room/`, `manual-review.json`, `preparation/` with `RUN-PLAN.md`, `harness-tests.log`, prepare and preflight logs, `make-attempt.mjs`).
