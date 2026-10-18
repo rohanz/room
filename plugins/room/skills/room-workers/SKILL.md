@@ -24,8 +24,15 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    their changes, then calls room_done.
    Steer it with room_send to the exact participant name returned by Room; collect it at the end like
    any worker.
-   Keep each self-contained brief short: the interfaces it uses, owned area,
-   expected behavior and appropriate validation. What
+   Keep each self-contained brief short by pointing at the source, not by paraphrasing it:
+   the interfaces it uses, owned area, the spec sections or rules that are its slice,
+   expected behavior and appropriate validation. A rule over a set ("every script that
+   re-queues a job", "all callers of X") goes to a worker as the rule with one owner:
+   name the members you know as a starting point and say that anything else the rule
+   reaches is theirs to find and report in room_done. Never write "if relevant" for a
+   member of a set: assign it or decide it now. A test or review worker is pointed at the
+   same spec rules, not at an implementer's file list, so it can find what that list
+   missed. What
    Room does between them: shows who is near which file, warns before two edits collide,
    and when a worker changes a function's signature or removes a definition, tells the
    workers whose files use it (detected from the diff, no message needed). Workers
@@ -36,7 +43,7 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    and can trigger conflict notices. Use the preview scratch tree instead.
 2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
    only when requested. Give each worker a self-contained task, functions or areas to
-   change, and appropriate validation. Shared files are fine; ask workers to claim their regions.
+   change, the spec rules it owns, and appropriate validation. Shared files are fine; ask workers to claim their regions.
    Copy exact participant names from `room_spawn` replies or `room_state` for briefs,
    messages, reads and previews; never derive them from owner and tag. Pre-spawn briefs
    say to use the names the lead sends after spawn, and the lead sends those returned names.

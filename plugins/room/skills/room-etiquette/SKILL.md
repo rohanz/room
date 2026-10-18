@@ -68,7 +68,9 @@ While alone, work normally. With company:
    changes, failures or uncertain inputs; before `room_done`, verify the evidence is current.
    Do not skip checks solely because reported changed paths do not overlap.
 6. When your human asks you to push, push your current branch; Room tells teammates on that branch to catch up. Run git pull --ff-only --autostash to catch up on a shared branch. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
-7. Before finishing, get a current preview of relevant peers, including affected dependencies;
+7. A brief is a slice of the task, not its edge: when a rule you own reaches code your brief
+   does not name, handle it or ask the lead who owns it before finishing, and list what you
+   found in your summary. Before finishing, get a current preview of relevant peers, including affected dependencies;
    do not wait for them to finish. Resolve conflicts and run relevant tests, then call
    `room_done(summary)` with one line. Report the result and any unresolved blocker.
    Never commit or push unless asked; do not ask as a finishing ritual. Workers report
@@ -105,7 +107,8 @@ exports write the ledger. `room_close` removes the repository room for everyone 
 and requires your human's explicit request. `room_leave` ends participation when asked.
 
 Only when the human explicitly asks to delegate through Room, or continues an existing Room worker workflow, load [room-workers](../room-workers/SKILL.md). Generic requests for agents, parallel work or background work use the host’s normal delegation, even while joined to Room.
-Dispatch independent work early with short briefs; peers agree the interfaces each task
+Dispatch independent work early with short briefs that point at the spec rules each worker
+owns rather than paraphrasing them; peers agree the interfaces each task
 needs before implementing dependent parts. Claim the functions or line ranges you edit,
 ask about overlapping work, and preview combined changes while peers run. Sequence only
 same-line edits or work that truly needs a result first; workers may finish at different times.
