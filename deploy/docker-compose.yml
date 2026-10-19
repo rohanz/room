@@ -1,19 +1,22 @@
 # Self-hosted room server. See deploy/self-hosting.md.
 #
-#   cp deploy/.env.example deploy/.env   # fill in the values
-#   docker compose -f deploy/docker-compose.yml up -d
+#   mkdir room && cd room
+#   curl -fsSLO https://raw.githubusercontent.com/rohanz/room/main/deploy/docker-compose.yml
+#   curl -fsSL  https://raw.githubusercontent.com/rohanz/room/main/deploy/.env.example -o .env
+#   docker compose up -d
+#
+# Runs the published image ghcr.io/rohanz/room:<version>; `latest` follows the newest release.
+# Pin a version with ROOM_IMAGE_TAG=0.17.18 in .env. To build from a checkout instead:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
 #
 # Default: one container, state (LevelDB docs, registry, sessions, audit.log) on the `room_data` volume.
 # With Postgres for registry/sessions/audit:
-#   docker compose -f deploy/docker-compose.yml --profile postgres up -d
-# and set DATABASE_URL=postgres://room:room@postgres:5432/room in deploy/.env (docs stay on the volume).
+#   docker compose --profile postgres up -d
+# and set DATABASE_URL=postgres://room:room@postgres:5432/room in .env (docs stay on the volume).
 
 services:
   room:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    image: room-server:latest
+    image: ghcr.io/rohanz/room:${ROOM_IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - "${ROOM_PORT:-8080}:8080"

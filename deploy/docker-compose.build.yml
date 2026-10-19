@@ -1,0 +1,9 @@
+# Override: build the server image from this checkout instead of pulling ghcr.io/rohanz/room.
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
+services:
+  room:
+    image: room-server:latest
+    pull_policy: build
+    build:
+      context: ..
+      dockerfile: Dockerfile

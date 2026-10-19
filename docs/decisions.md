@@ -332,6 +332,10 @@ view inside the image, a GitHub Actions workflow publishing `ghcr.io/rohanz/room
 `v*` tags with `latest` following, compose pointing at the image with a build override for
 source users, runbook and Fly command updated. Not Docker Hub, not per-commit builds.
 
+## 2026-10-19 — Published server image, docs split by audience
+
+Un-parks the 2026-09-16 item. `.github/workflows/publish-image.yml` builds the root Dockerfile for linux/amd64 and linux/arm64 on every `v*` tag (or by hand for an existing tag) and pushes `ghcr.io/rohanz/room:<version>` with `latest` following; the tag must match the plugin manifest version. `deploy/docker-compose.yml` now runs that image, and `deploy/docker-compose.build.yml` is the override for building from a checkout. The self-hosting page was reorganised for a first-time operator: a two-file quick start, a short settings table, and the resource limits moved to an "advanced limits" section at the end. All 0.16 cutover material (Fly snapshot and rollback, migration budgets) moved into `docs/upgrading.md`; the Fly runbook and the self-hosting page link to it. Rohan's call: nobody is known to run a 0.16 server, so the cutover text is history, not a path new operators should read through.
+
 ## 2026-09-17 — License: PolyForm Noncommercial 1.0.0
 
 **Why:** MIT let anyone sell Room or host it for money. Rohan wants forks and contributions

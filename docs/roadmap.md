@@ -523,7 +523,7 @@ the code pane re-runs the merge for the open file each time (542 ms for a 2,523-
 
 - **Done in 0.7.0:** GitHub Actions runs typechecks, tests, web/plugin builds and committed
   plugin asset freshness checks on pushes and pull requests.
-- **Published server image** (see decisions, 2026-09-16): multi-stage Dockerfile, GHCR on tags.
+- **Done 2026-10-19:** published server image `ghcr.io/rohanz/room:<version>` on `v*` tags (see decisions, 2026-10-19).
 - **Hook at the point of decision** for built-in subagents: only if trials show agents picking
   built-in subagents for parallel edits. The phrasing check on 2026-09-21 was six of six after
   one tool-description change. A 0.16.40 lead, whose room-workers skill asked for "independent parts with
