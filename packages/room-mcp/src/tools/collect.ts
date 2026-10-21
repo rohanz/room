@@ -233,7 +233,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const unverifiedLive = async (s: Session, w: LocalWorker): Promise<string | undefined> => {
     if (!pidPresent(w.pid, state.ctx?.probe)) return undefined
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe })
-    return facts.process === 'ours' ? undefined : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
+    // 'not-ours' means the worker's process has exited and another process now holds its pid:
+    // nothing of ours is running, so nothing is left behind. Only an unreadable identity blocks.
+    return facts.process === 'unknown' ? `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped` : undefined
   }
   const ownership = (s: Session, w: Pick<LocalWorker, 'lead'>, discarding: Set<string>): { owned: boolean; liveLead?: string } => {
     const live = localWorkers(s.dir)

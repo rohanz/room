@@ -156,6 +156,20 @@ describe('room_collect', () => {
     expect(t.s.room.retiredWorkers()).toHaveLength(0)
   })
 
+  it('discards a finished worker whose pid now belongs to another process', async () => {
+    const t = setup()
+    t.set('test', { ...t.w, pid: process.pid, processStartTime: 'worker-start' })
+    t.state.ctx = { listCwdProcesses: () => [], probe: () => ({ startTime: 'stranger-start', executable: 'ContainerMetadataExtractor' }) } as never
+    // The runtime's dismissWorker refuses to signal a pid another process holds; the discard still completes.
+    t.state.dismissWorker = vi.fn(async () => `pid ${process.pid} belongs to another process; not signalled`) as never
+    const reply = await t.call({ tag: 'test', discard: true })
+    expect(reply).toContain('discarded test')
+    expect(reply).not.toContain('could not verify')
+    expect(pidAlive(process.pid)).toBe(true)
+    expect(workerByTag(lead, 'test')).toBeUndefined()
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+
   it('retires collected worker with ignored output and shows only its kept worktree', async () => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })

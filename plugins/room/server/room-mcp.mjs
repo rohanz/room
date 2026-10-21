@@ -62609,7 +62609,7 @@ function handlers9(state) {
   const unverifiedLive = async (s, w) => {
     if (!pidPresent(w.pid, state.ctx?.probe)) return void 0;
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe });
-    return facts.process === "ours" ? void 0 : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
+    return facts.process === "unknown" ? `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped` : void 0;
   };
   const ownership = (s, w, discarding) => {
     const live = localWorkers(s.dir);
