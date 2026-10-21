@@ -25,7 +25,7 @@ const temp: string[] = []
 afterEach(() => { for (const dir of temp.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
 function session(room: RoomDoc, dir: string, name: string): Session {
-  return { ...hubSeam(room), policyStore: testPolicyStore(), dir, me: { name, kind: 'agent' }, room, local: {}, roomName: 'local/shop',
+  return { ...hubSeam(room), policyStore: testPolicyStore(), dir, me: { name, kind: 'agent' }, room, local: {}, roomName: 'local/shop', roomUrl: 'ws://127.0.0.1:1/local%2Fshop',
     awareness: { getStates: () => new Map() }, daemon: { fence: 'test' } } as unknown as Session
 }
 
@@ -316,6 +316,30 @@ it('recovers the intentional shutdown reason for both worker levels after the re
     await registry.writeExit(record.id, { run: 1, code: null, at: Date.now(), witnessed: false })
     expect((await registryForDir(lead.dir)).read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
   }
+})
+
+it('force discard of a lead detaches a grand-worker that borrows another grand-worker checkout', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-borrower-'))); temp.push(root)
+  git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
+  put(root, '.gitignore', '.room/\n'); put(root, 'catalog.py', 'base\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
+  const lead = await prepareWorktree(root, 'lead', 'rohanz', [], undefined)
+  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], undefined)
+  const room = new RoomDoc(new Y.Doc())
+  const worker = (tag: string, owner: string, dir: string, branch: string, base: string): FixtureWorker => (
+    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir, branch, base, pid: -1, startedAt: 1, status: 'done' })
+  await registerWorkers(session(room, root, 'rohanz'), [
+    worker('lead', 'rohanz', lead.dir, lead.branch, lead.base),
+    worker('cat', 'rohanz+lead', cat.dir, cat.branch, cat.base),
+    // catreview was spawned with dir= inside cat's checkout, as a review of cat's work.
+    { ...worker('catreview', 'rohanz+lead', cat.dir, cat.branch, cat.base), sharedWith: 'w_rohanz_lead_cat_1' },
+  ])
+  const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
+  expect(result).not.toContain('error')
+  expect(result).toContain('detached catreview; the worktree belongs to cat')
+  expect(result).toContain('discarded cat')
+  expect(result).toContain('discarded lead')
+  expect(localWorkers(root)).toEqual([])
+  expect(fs.existsSync(lead.dir)).toBe(false)
 })
 
 it('force discard saves a grand-worker patch and removes both levels of Git bookkeeping', async () => {

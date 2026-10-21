@@ -396,7 +396,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const childLead = { ...s, dir: fs.existsSync(w.dir) ? w.dir : s.dir, me: { ...s.me, name: w.name } } as Session
           const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]), childLead)
           childResults.push(result)
-          if (!result.startsWith('discarded ') && !result.startsWith('stopped ')) {
+          // A child's reply may start with the borrowers it detached first; its own
+          // outcome is the last line.
+          const own = result.slice(result.lastIndexOf('\n') + 1)
+          if (!own.startsWith('discarded ') && !own.startsWith('stopped ')) {
             await registry.interruptDiscard(lock, `could not dispose of nested worker ${child.tag}: ${result}`)
             return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
           }

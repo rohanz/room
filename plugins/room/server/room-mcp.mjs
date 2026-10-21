@@ -62777,7 +62777,8 @@ repeat with force=true to delete them`;
           const childLead = { ...s, dir: fs57.existsSync(w.dir) ? w.dir : s.dir, me: { ...s.me, name: w.name } };
           const result2 = await roomCollect({ tag: child.tag, discard: true, force: true }, /* @__PURE__ */ new Set([...discarding, w.name]), childLead);
           childResults.push(result2);
-          if (!result2.startsWith("discarded ") && !result2.startsWith("stopped ")) {
+          const own2 = result2.slice(result2.lastIndexOf("\n") + 1);
+          if (!own2.startsWith("discarded ") && !own2.startsWith("stopped ")) {
             await registry2.interruptDiscard(lock, `could not dispose of nested worker ${child.tag}: ${result2}`);
             return `error: could not dispose of nested worker ${child.tag}: ${result2}; retained ${w.dir}`;
           }
