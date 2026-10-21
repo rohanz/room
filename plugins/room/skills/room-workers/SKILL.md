@@ -69,15 +69,16 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    receive coalesced pointers for addressed questions, eligible interrupts and addressed
    completion from their own registered workers mid-turn as tool output. Delivery does
    not interrupt a running tool; idle `codex queue` remains a fallback. A wake is not
-   proof that content was read or acted on. With an
-   available wake path, an interactive lead can continue other work or wait for a wake
-   instead of polling or watching worker PIDs. Host settings can still block delivery.
-   room_wait observes Room dependencies only; use host task completion for your own commands.
-   When only your own command remains, use your host's own command completion instead.
-   Keep one room_wait at a time.
-   A headless lead must stay alive until supervision is complete. Continue independent
-   work pending results; when blocked or ready for results, use short room_wait calls
-   (at most 100 seconds), including when wakes are unavailable or disabled;
+   proof that content was read or acted on. Host settings can still block delivery.
+   An interactive lead with an available wake path does not poll: with nothing else to
+   do, end the turn; the wake brings the next worker result or question. room_wait
+   observes Room dependencies only: call it for a specific dependency (a questionId or
+   claimId), one room_wait at a time, and use host task completion for your own commands,
+   including one the host moved to the background.
+   The exception is a headless lead, which has no turn to return to: it must stay alive
+   until supervision is complete, continuing independent work pending results and using
+   short room_wait calls (at most 100 seconds) when blocked or ready for results, as
+   must any lead whose wakes are unavailable or disabled;
    messages also arrive on other Room tool replies and eligible before-edit hooks.
    If an expected wake is missing, inspect room_state(check=true) and room-mcp.log;
    do not infer that Room cannot wake sessions from the progress-note rule. Answer

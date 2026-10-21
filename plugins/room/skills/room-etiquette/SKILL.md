@@ -88,10 +88,10 @@ While alone, work normally. With company:
    and addressed completion from their own registered workers mid-turn as tool output.
    Delivery does not interrupt a running tool; idle `codex queue` remains a fallback.
    A wake is not proof that content was read or acted on; host settings can block delivery.
-   Continue independent work pending results. Interactive leads with an available wake
-   path need not poll; headless leads must stay alive until supervision is complete.
-   When blocked or ready for results, use short `room_wait` calls, including when wakes
-   are unavailable or disabled.
+   Continue independent work pending results. An interactive lead with an available wake
+   path does not poll: with nothing else to do, end the turn. A headless lead, or one
+   whose wakes are unavailable or disabled, stays alive until supervision is complete and
+   uses short `room_wait` calls when blocked or ready for results.
    For missing wakes, inspect `room_state(check=true)` and `room-mcp.log` before
    concluding that Room cannot wake the host.
    On Claude Code with documented background-command lifetime and completion delivery

@@ -32312,7 +32312,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.18",
+      version: "0.17.19",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -60604,7 +60604,11 @@ ${lines2.join("\n")}` };
       timer = setTimeout(() => {
         const running = [...new Map(rooms.all().flatMap((room) => myWorkers(room)).filter((w) => w.status === "running" && w.exitCode === void 0).map((w) => [w.name, w])).values()];
         const unread = state.inbox?.(s, batch) ?? "";
-        finish(capNotice + unread + (unread ? `timeout after ${timeoutMs2}ms: unread messages delivered above. Continue independent work or wait on the blocking dependency. A timeout is not an answer or approval.` : running.length ? `nothing yet; ${running.length} worker${running.length === 1 ? "" : "s"} still running (${running.map((w) => w.tag).join(", ")}); nothing in the room needs you. Continue independent work or wait for the needed result. A timeout is not an answer or approval.` : `timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ""}nothing new. Continue independent work or wait on the blocking dependency. A timeout is not an answer or approval.`));
+        const health = state.deliveryHealth?.();
+        const wakeAdvice = !questionId && !claimId && health?.host === "claude" && health.path?.availability === "configured" && health.degraded === void 0 ? "Nothing owed; this session is woken when a worker finishes or asks you something, so end your turn instead of calling room_wait again. Call room_wait only with a questionId or claimId. A command of your own (including one the host moved to the background) reports through the host, not through room_wait." : void 0;
+        const facts = unread ? `timeout after ${timeoutMs2}ms: unread messages delivered above.` : running.length ? `nothing yet; ${running.length} worker${running.length === 1 ? "" : "s"} still running (${running.map((w) => w.tag).join(", ")}); nothing in the room needs you.` : `timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ""}nothing new.`;
+        const advice = wakeAdvice ?? (running.length && !unread ? "Continue independent work or wait for the needed result." : "Continue independent work or wait on the blocking dependency.");
+        finish(`${capNotice}${unread}${facts} ${advice} A timeout is not an answer or approval.`);
       }, timeoutMs2);
       const onClaims = () => {
         if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`);

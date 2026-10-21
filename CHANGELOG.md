@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.19
+
+- `room_wait`: a bare wait (no questionId or claimId) that times out on a Claude Code session with a configured, undegraded wake path now says to end the turn, call `room_wait` only for a specific dependency, and await the session's own commands (including host-backgrounded ones) through the host. Other cases keep the previous wording. On 2026-10-21 an interactive lead polled `room_wait` seven times in thirteen minutes and waited 80 s on Room after Claude Code backgrounded its own preview, because the old reply suggested waiting again.
+- Skills: room-workers and room-etiquette state the interactive rule first (end the turn, the wake brings the next result) and the headless 100-second wait as the exception.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.18
 
 - `room_claim`: a file the claimant added (absent at its base) is claimed whole when no symbol or line range is given; base files still need a symbol or `from`/`to`. On 2026-10-18 two test workers were refused seven times claiming their own new test files before adding `from=1, to=<last line>`.

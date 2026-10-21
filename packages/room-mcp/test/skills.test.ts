@@ -92,6 +92,7 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
     ] },
     { sources: ['workers', 'etiquette'], phrases: [
       'room_wait observes Room dependencies only', 'use host task completion for your own commands', 'one room_wait at a time',
+      'with nothing else to do, end the turn',
       'message from its lead to a finished worker resumes its retained session',
       'output-limited runs do not validate the whole tree',
       'completion from their own registered workers mid-turn as tool output', 'not proof that content was read or acted on',

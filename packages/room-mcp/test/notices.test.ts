@@ -62,6 +62,7 @@ function fixture() {
     workerAlive: vi.fn(() => false), presences: vi.fn((x: Session) => Array.from(x.awareness.getStates().values())),
     upgrade: async () => [], setPresence: vi.fn(), forMe: () => false, scheduleInboxWrite: vi.fn(),
     ledger: new Ledger({ sessionId: () => 'test-session', route: () => ({}) }),
+    deliveryHealth: vi.fn<HandlerState['deliveryHealth']>(() => undefined),
   } as unknown as HandlerState
   close.push(() => sessions.forEach(x => { rooms.remove(x); x.awareness.destroy(); x.room.doc.destroy() }))
   return { s, rooms, state, makeSession, addWorker, retire, tools: handlers(state) }
@@ -264,6 +265,62 @@ describe('finishing claim notices', () => {
    const waiting = tools.room_wait({ timeoutMs: 10 })
    await vi.advanceTimersByTimeAsync(10)
    expect(await waiting).toContain('nothing yet; 3 workers still running (a, b, c); nothing in the room needs you')
+ })
+
+ const healthyClaude = {
+   host: 'claude' as const, path: { mode: 'auto' as const, transport: 'socket' as const, availability: 'configured' as const },
+   retainedAddressed: 0, pendingAddressed: 0, handedToHost: 0, answersRecorded: 0, wakeRecorded: 0, uncertainWakeRecorded: 0,
+ }
+
+ it.each(['running', 'empty', 'unread'] as const)('ends a bare wait with healthy Claude wake advice (%s)', async kind => {
+   vi.useFakeTimers()
+   const { s, state, addWorker, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(healthyClaude)
+   if (kind === 'running') for (const tag of ['a', 'b', 'c']) addWorker(s, worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
+   if (kind === 'unread') state.inbox = vi.fn(() => 'Unread notice.\n')
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   const reply = await waiting
+   const prefix = kind === 'running' ? 'nothing yet; 3 workers still running (a, b, c); nothing in the room needs you.'
+     : kind === 'unread' ? 'Unread notice.\ntimeout after 10ms: unread messages delivered above.' : 'timeout after 10ms: nothing new.'
+   expect(reply.startsWith(prefix)).toBe(true)
+   expect(reply).toContain('Nothing owed; this session is woken when a worker finishes or asks you something, so end your turn instead of calling room_wait again.')
+   expect(reply).toContain('Call room_wait only with a questionId or claimId.')
+   expect(reply).toContain('A command of your own (including one the host moved to the background) reports through the host, not through room_wait.')
+   expect(reply).toContain('A timeout is not an answer or approval.')
+   expect(reply).not.toContain('wait for the needed result')
+ })
+
+ it.each([
+   { ...healthyClaude, path: { ...healthyClaude.path, availability: 'off' as const } },
+   { ...healthyClaude, path: { ...healthyClaude.path, availability: 'unknown' as const } },
+   { ...healthyClaude, path: { ...healthyClaude.path, availability: 'unavailable' as const } },
+   { ...healthyClaude, degraded: 'transport-failed' as const },
+   { ...healthyClaude, path: undefined },
+   { ...healthyClaude, host: 'codex' as const },
+   { ...healthyClaude, host: 'unbound' as const },
+   undefined,
+ ])('preserves bare timeout advice without healthy Claude delivery (%j)', async health => {
+   vi.useFakeTimers()
+   const { s, state, addWorker, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(health)
+   for (const tag of ['a', 'b', 'c']) addWorker(s, worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   expect(await waiting).toBe('nothing yet; 3 workers still running (a, b, c); nothing in the room needs you. Continue independent work or wait for the needed result. A timeout is not an answer or approval.')
+ })
+
+ it.each(['questionId', 'claimId'] as const)('preserves targeted timeout advice with healthy Claude delivery (%s)', async target => {
+   vi.useFakeTimers()
+   const { s, state, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(healthyClaude)
+   s.room.colors.set('Ada', 0)
+   const id = target === 'questionId'
+     ? hubAppend(s.room, s.me, { type: 'question', to: 'Ada', text: 'Review?' }).id
+     : s.room.addClaim({ by: 'Ada', byKind: 'agent', path: 'a.ts', from: 1, to: 1, intent: 'fix' }).id
+   const waiting = tools.room_wait({ [target]: id, timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   expect(await waiting).toBe(`timeout after 10ms: ${target === 'questionId' ? `no answer to ${id}` : `${id} still held`}; nothing new. Continue independent work or wait on the blocking dependency. A timeout is not an answer or approval.`)
  })
 
  it('releases another worker selectively while preserving its scope and other owners', async () => {
