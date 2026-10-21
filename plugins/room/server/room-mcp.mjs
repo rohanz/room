@@ -62626,6 +62626,25 @@ function handlers9(state) {
     }
     return { owned: false };
   };
+  const orphanDiscardAllowed = (s, w) => {
+    const human = s.me.owner ?? s.me.name;
+    const registry2 = registrySnapshotForDir(s.dir);
+    const records = registry2.list();
+    const live = localWorkers(s.dir);
+    const visited = /* @__PURE__ */ new Set();
+    let record2 = registry2.read(w.id);
+    while (record2 && !visited.has(record2.id)) {
+      if (record2.name !== `${human}+${record2.tag}` || record2.lead.room !== s.roomName || record2.legacy?.unowned) return false;
+      visited.add(record2.id);
+      const leadName = record2.lead.participant;
+      if (pidPresent(record2.lead.instance.pid, state.ctx?.probe)) return false;
+      const parent = live.find((parent2) => parent2.name === leadName);
+      if (parent && (state.workerAlive(s, parent) || pidPresent(parent.pid, state.ctx?.probe))) return false;
+      record2 = records.find((parent2) => parent2.name === leadName);
+      if (!record2) return leadName === human || leadName.startsWith(human + "+");
+    }
+    return false;
+  };
   const descendants = (s, w) => {
     const out = [];
     const visit = (parent) => {
@@ -62715,11 +62734,14 @@ repeat with force=true to delete them`;
           await registry2.finishOperation(active.id);
         }
       }
-      const s = actingLead ?? holdingWorker(a.tag, lead);
+      let s = actingLead ?? holdingWorker(a.tag, lead);
       const w = localWorkers(s.dir, (record2) => record2.tag === a.tag)[0];
       if (!w) return "error: no worker " + a.tag + " owned by you";
       const owner = ownership(s, w, discarding);
-      if (!owner.owned) return "error: no worker " + a.tag + " owned by you";
+      if (!owner.owned) {
+        if (a.force !== true || !orphanDiscardAllowed(s, w)) return "error: no worker " + a.tag + " owned by you";
+        s = { ...s, me: { ...s.me, name: w.lead } };
+      }
       if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`;
       const workerRecord = registry2.read(w.id);
       const borrowedOwner = workerRecord && registry2.worktreeOwner(workerRecord);
@@ -62750,9 +62772,9 @@ retained worktree: ${w.dir}
 repeat with force=true to delete them`;
         await registry2.beginDiscard(lock, a.force === true, children.map((child) => child.id).filter(Boolean));
         const childResults = [];
-        for (const child of children) {
+        for (const child of children.filter((child2) => child2.lead === w.name)) {
           if (!localWorkers(s.dir).some((live) => live.id === child.id)) continue;
-          const childLead = { ...s, dir: w.dir, me: { ...s.me, name: w.name } };
+          const childLead = { ...s, dir: fs57.existsSync(w.dir) ? w.dir : s.dir, me: { ...s.me, name: w.name } };
           const result2 = await roomCollect({ tag: child.tag, discard: true, force: true }, /* @__PURE__ */ new Set([...discarding, w.name]), childLead);
           childResults.push(result2);
           if (!result2.startsWith("discarded ") && !result2.startsWith("stopped ")) {

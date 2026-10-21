@@ -111,7 +111,10 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    document checks where applicable. Interim checks cover affected peer interfaces; the
    integrator owns full relevant validation after collection, including the CI checks the change requires. A preview `run` stops at 5 minutes or 4 MB of output and reports that it did
    not finish, with its last output; name tests or a single file so interim commands finish
-   well under the limit. Narrow a timed-out command; do not repeat it on unchanged inputs.
+   well under the limit. Keep a preview `run` under two minutes: an interactive Claude Code
+   session moves a longer tool call to a background task (verified 2026-10-21; a headless
+   `claude -p` session does not), and the full suite belongs to the integrated tree after
+   collection, not to a preview. Narrow a timed-out command; do not repeat it on unchanged inputs.
    Include the lead when workers start from different kept or carried snapshots. Room
    anchors that preview on the lead and applies worker deltas in collection order.
    A stale or incomplete lead publication produces a gap; an addressed message to the

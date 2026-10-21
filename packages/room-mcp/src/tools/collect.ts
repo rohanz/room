@@ -250,6 +250,30 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
     return { owned: false }
   }
+  /** Explicit orphan recovery uses local registry identities, never replicated room ownership. */
+  const orphanDiscardAllowed = (s: Session, w: LocalWorker): boolean => {
+    const human = s.me.owner ?? s.me.name
+    const registry = registrySnapshotForDir(s.dir)
+    const records = registry.list()
+    const live = localWorkers(s.dir)
+    const visited = new Set<string>()
+    let record = registry.read(w.id)
+    while (record && !visited.has(record.id)) {
+      // Spawn names workers from the human owner plus the exact tag. Do not infer an
+      // owner by splitting arbitrary participant names or trusting room projections.
+      if (record.name !== `${human}+${record.tag}` || record.lead.room !== s.roomName || record.legacy?.unowned) return false
+      visited.add(record.id)
+      const leadName = record.lead.participant
+      // The terminal lead is often an ordinary session, not a worker. Its durable
+      // instance still protects it; an unreadable but present PID also blocks recovery.
+      if (pidPresent(record.lead.instance.pid, state.ctx?.probe)) return false
+      const parent = live.find(parent => parent.name === leadName)
+      if (parent && (state.workerAlive(s, parent) || pidPresent(parent.pid, state.ctx?.probe))) return false
+      record = records.find(parent => parent.name === leadName)
+      if (!record) return leadName === human || leadName.startsWith(human + '+')
+    }
+    return false
+  }
   const descendants = (s: Session, w: LocalWorker): LocalWorker[] => {
     const out: LocalWorker[] = []
     const visit = (parent: LocalWorker) => {
@@ -325,11 +349,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
         finally { await registry.finishOperation(active.id) }
       }
-      const s = actingLead ?? holdingWorker(a.tag as string, lead)
+      let s = actingLead ?? holdingWorker(a.tag as string, lead)
       const w = localWorkers(s.dir, record => record.tag === a.tag)[0]
       if (!w) return 'error: no worker ' + a.tag + ' owned by you'
       const owner = ownership(s, w, discarding)
-      if (!owner.owned) return 'error: no worker ' + a.tag + ' owned by you'
+      if (!owner.owned) {
+        if (a.force !== true || !orphanDiscardAllowed(s, w)) return 'error: no worker ' + a.tag + ' owned by you'
+        // Act for this dead lead only inside discard. The normal registry capability,
+        // operation lease, worktree ownership and process checks still apply below.
+        s = { ...s, me: { ...s.me, name: w.lead } }
+      }
       if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`
       const workerRecord = registry.read(w.id)
       const borrowedOwner = workerRecord && registry.worktreeOwner(workerRecord)
@@ -358,9 +387,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (ignoredBefore.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignoredBefore.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
         await registry.beginDiscard(lock, a.force === true, children.map(child => child.id!).filter(Boolean))
         const childResults: string[] = []
-        for (const child of children) {
+        // Recurse through each direct lead so deeper descendants retain their own
+        // lead's capability instead of being impersonated by the top-level worker.
+        for (const child of children.filter(child => child.lead === w.name)) {
           if (!localWorkers(s.dir).some(live => live.id === child.id)) continue
-          const childLead = { ...s, dir: w.dir, me: { ...s.me, name: w.name } } as Session
+          // Missing parents cannot resolve the common Git directory. Keep the surviving
+          // checkout as the registry/Git anchor; trusted() still checks the nested path.
+          const childLead = { ...s, dir: fs.existsSync(w.dir) ? w.dir : s.dir, me: { ...s.me, name: w.name } } as Session
           const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]), childLead)
           childResults.push(result)
           if (!result.startsWith('discarded ') && !result.startsWith('stopped ')) {

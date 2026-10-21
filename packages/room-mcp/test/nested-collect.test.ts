@@ -35,8 +35,9 @@ async function projectAll(s: Session): Promise<void> {
   for (const lead of new Set(registry.list().filter(r => r.room === s.roomName).map(r => r.lead.participant))) await projectWorkers(s, registry, lead, 'joined')
 }
 
-function collect(room: RoomDoc, dir: string, name: string, workerAlive: (w: LocalWorker) => boolean = () => false) {
+function collect(room: RoomDoc, dir: string, name: string, workerAlive: (w: LocalWorker) => boolean = () => false, options: Partial<Pick<Session, 'me' | 'roomName'>> = {}) {
   const s = session(room, dir, name)
+  Object.assign(s, options)
   const state = {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, project: () => projectAll(s),
       autoRetire: async () => {}, hasHandle: () => false, tracking: () => true, handle: () => undefined },
@@ -87,6 +88,109 @@ it('keeps a live lead-worker responsible for its finished grand-worker, includin
   expect(read(root, 'cat.txt')).toBe('base cat\n')
   expect(workerByTag(root, 'cat')).toBeDefined()
   expect(fs.existsSync(cat.dir)).toBe(true)
+})
+
+it('force discards a vanished lead and its nested records, but requires force first', async () => {
+  const { root, lead, room, registry } = await batch()
+  fs.rmSync(lead.dir, { recursive: true, force: true })
+  const run = collect(room, root, 'rohanz')
+  expect(await run({ tag: 'lead', discard: true })).toContain('lead has nested workers: cat; collect or discard them first, or repeat with force=true')
+  expect(localWorkers(root)).toHaveLength(2)
+  const result = await run({ tag: 'lead', discard: true, force: true })
+  expect(result).toContain('discarded lead; its worktree was already gone')
+  expect(result).toContain('discarded cat; its worktree was already gone')
+  expect(localWorkers(root)).toEqual([])
+  expect(registry.list().every(record => record.phase === 'retired')).toBe(true)
+  expect(room.workerViews.size).toBe(0)
+  expect(git(root, 'worktree', 'list', '--porcelain')).not.toContain('room/workers')
+  for (const tag of ['lead', 'cat']) expect(git(root, 'branch', '--list', `room/${tag}`)).toBe('')
+})
+
+/** Model records left by a different, now-dead session of the same human in a team room. */
+async function orphanBatch(withCat = true) {
+  const b = await batch({ lead: 'rohanz+old' }, withCat)
+  if (!withCat) git(b.root, 'worktree', 'remove', '--force', b.cat.dir)
+  const roomName = 'github.com/team/shop'
+  for (const record of b.registry.list()) await b.registry.update(record.id, old => ({
+    ...old, room: roomName, lead: { ...old.lead, room: roomName,
+      instance: { ...old.lead.instance, pid: 0, startTime: 'dead-session' } }, seq: old.seq + 1,
+  }))
+  const run = (owner = 'rohanz', workerAlive: (w: LocalWorker) => boolean = () => false) =>
+    collect(b.room, b.root, `${owner}+current`, workerAlive, { roomName, me: { name: `${owner}+current`, kind: 'agent', owner } })
+  return { ...b, run }
+}
+
+it.each([false, true])('force discards same-human orphan workers with nested children=%s', async withCat => {
+  const { root, lead, cat, registry, run } = await orphanBatch(withCat)
+  const result = await run()({ tag: 'lead', discard: true, force: true })
+  expect(result).toContain('discarded lead')
+  if (withCat) expect(result).toContain('discarded cat')
+  expect(localWorkers(root)).toEqual([])
+  expect(registry.list().every(record => record.phase === 'retired')).toBe(true)
+  expect(fs.existsSync(lead.dir)).toBe(false)
+  if (withCat) expect(fs.existsSync(cat.dir)).toBe(false)
+  const patches = fs.readdirSync(path.join(root, '.git/room/registry/patches')).map(name => read(root, '.git/room/registry/patches/' + name))
+  expect(patches.some(patch => patch.includes('partial lead'))).toBe(true)
+  if (withCat) expect(patches.some(patch => patch.includes('finished cat'))).toBe(true)
+})
+
+it('refuses same-human orphan discard without force and leaves apply/copy unchanged', async () => {
+  const { root, run } = await orphanBatch()
+  for (const args of [{ discard: true }, { force: true }, { mode: 'copy', paths: ['lead.txt'], force: true }]) {
+    expect(await run()({ tag: 'lead', ...args })).toBe('error: no worker lead owned by you')
+  }
+  expect(localWorkers(root)).toHaveLength(2)
+})
+
+it('refuses force discard of another human\'s orphan workers in a team room', async () => {
+  const { root, lead, run } = await orphanBatch()
+  expect(await run('someone-else')({ tag: 'lead', discard: true, force: true })).toBe('error: no worker lead owned by you')
+  expect(localWorkers(root)).toHaveLength(2)
+  expect(read(lead.dir, 'lead.txt')).toBe('partial lead\n')
+})
+
+it('refuses orphan recovery while an intermediate lead still has a live handle', async () => {
+  const { root, run } = await orphanBatch()
+  const result = await run('rohanz', w => w.tag === 'lead')({ tag: 'cat', discard: true, force: true })
+  expect(result).toMatch(/^error:/)
+  expect(localWorkers(root)).toHaveLength(2)
+})
+
+it('refuses orphan recovery while the original lead session process is still alive', async () => {
+  const { root, registry, run } = await orphanBatch()
+  const record = registry.list().find(record => record.tag === 'lead')!
+  await registry.update(record.id, old => ({ ...old, lead: { ...old.lead, instance: registry.instance }, seq: old.seq + 1 }))
+  expect(await run()({ tag: 'lead', discard: true, force: true })).toMatch(/^error:/)
+  expect(localWorkers(root)).toHaveLength(2)
+})
+
+it('force discards a same-human orphan whose lead and child directories have vanished', async () => {
+  const { root, lead, run } = await orphanBatch()
+  fs.rmSync(lead.dir, { recursive: true, force: true })
+  const result = await run()({ tag: 'lead', discard: true, force: true })
+  expect(result).toContain('discarded lead; its worktree was already gone')
+  expect(result).toContain('discarded cat; its worktree was already gone')
+  expect(localWorkers(root)).toEqual([])
+})
+
+it.each([false, true])('force discards three worker levels with missing directories=%s', async missing => {
+  const { root, lead, cat, room, registry } = await batch()
+  const kitten = await prepareWorktree(cat.dir, 'kitten', 'rohanz+cat')
+  put(kitten.dir, 'cat.txt', 'third-level output\n')
+  await registerWorkers(session(room, root, 'rohanz'), [{
+    tag: 'kitten', name: 'rohanz+kitten', lead: 'rohanz+cat', host: 'codex', task: 'kitten',
+    dir: kitten.dir, branch: kitten.branch, base: kitten.base, pid: -1, startedAt: 1,
+    status: 'done', finishedAt: 2, exitCode: 0,
+  }])
+  if (missing) fs.rmSync(lead.dir, { recursive: true, force: true })
+  const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
+  for (const tag of ['lead', 'cat', 'kitten']) expect(result).toContain(`discarded ${tag}`)
+  expect(localWorkers(root)).toEqual([])
+  expect(registry.list().every(record => record.phase === 'retired')).toBe(true)
+  if (!missing) {
+    const patches = fs.readdirSync(path.join(root, '.git/room/registry/patches')).map(name => read(root, '.git/room/registry/patches/' + name))
+    expect(patches.some(patch => patch.includes('third-level output'))).toBe(true)
+  }
 })
 
 it('denies direct orphaned grand-worker collect and explains the parent discard path', async () => {
