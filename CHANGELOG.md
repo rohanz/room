@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.20
+
+- `room_collect`: a worker whose pid is now held by another process (the common case after a reboot) no longer blocks collection or discard with "could not verify ... left running, not stopped"; only an unreadable process identity does. A forced discard of a lead also disposes of its nested workers when the lead's worktree is already gone, detaches nested workers that borrowed a sibling's checkout instead of failing on their "detached" line, and accepts a record whose lead chain ends at a dead session of the same human. On 2026-10-21 and 2026-10-22 three stale lead records needed four attempts to clear, and a bare `room_collect` refused outright while one of them remained.
+- Skills: room-workers says to keep a preview `run` under two minutes, because an interactive Claude Code session moves a longer tool call to a background task (verified 2026-10-21); the full suite belongs to the integrated tree after collection.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.19
 
 - `room_wait`: a bare wait (no questionId or claimId) that times out on a Claude Code session with a configured, undegraded wake path now says to end the turn, call `room_wait` only for a specific dependency, and await the session's own commands (including host-backgrounded ones) through the host. Other cases keep the previous wording. On 2026-10-21 an interactive lead polled `room_wait` seven times in thirteen minutes and waited 80 s on Room after Claude Code backgrounded its own preview, because the old reply suggested waiting again.
