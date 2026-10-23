@@ -32312,7 +32312,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.20",
+      version: "0.17.21",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -64234,6 +64234,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 init_src4();
 init_leases2();
 init_worker_process();
+init_process();
 init_session();
 init_worker_registry();
 import fs60 from "node:fs";
@@ -64317,13 +64318,31 @@ async function releaseIdleHeld(s, idleEpoch, idleMs, monotonicMs, pendingOnly = 
     registry2.close();
   }
 }
-async function hostSessionAlive(dir) {
-  const bound = boundSession({ cwd: dir });
-  if (!bound) return void 0;
-  const record2 = readSessionRecord(await gitCommonDir(dir), bound.id);
-  if (!record2?.hostPid) return void 0;
+function attachingParentReader(probe = probeProcess, ppid = process.ppid) {
+  let parent;
+  return () => {
+    if (!parent && ppid > 1) {
+      const info = probe(ppid);
+      if (info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable };
+    }
+    return parent;
+  };
+}
+function hostRecordAlive(record2, parent, probe = probeProcess) {
   const identity3 = record2.chain?.find((member) => member.pid === record2.hostPid);
-  return identity3 ? liveness(identity3) !== "dead" : pidAlive(record2.hostPid);
+  const hostAlive = identity3 ? liveness(identity3, probe) !== "dead" : pidAlive(record2.hostPid);
+  if (hostAlive) return { alive: true };
+  if (parent && liveness(parent, probe) !== "dead") {
+    return { alive: void 0, stale: `recorded host pid ${record2.hostPid} is gone but this session's host (pid ${parent.pid}, ${parent.executable}) still runs; ending on stdin close instead` };
+  }
+  return { alive: false };
+}
+async function hostSessionAlive(dir, parent) {
+  const bound = boundSession({ cwd: dir });
+  if (!bound) return { alive: void 0 };
+  const record2 = readSessionRecord(await gitCommonDir(dir), bound.id);
+  if (!record2?.hostPid) return { alive: void 0 };
+  return hostRecordAlive(record2, parent);
 }
 var MINUTE = 6e4;
 var IDLE_LEASE_MS = 30 * MINUTE;
@@ -64358,6 +64377,7 @@ var PresenceEnd = class {
   episodeId;
   published;
   left = false;
+  lastStale;
   ticking;
   timer;
   stop() {
@@ -64397,7 +64417,13 @@ var PresenceEnd = class {
   }
   async run() {
     this.publish();
-    if (await this.options.hostAlive() === false) {
+    const host = await this.options.hostAlive();
+    const verdict = typeof host === "object" ? host : { alive: host };
+    if (verdict.stale !== this.lastStale) {
+      this.lastStale = verdict.stale;
+      if (verdict.stale) this.options.log?.(`host liveness: ${verdict.stale}`);
+    }
+    if (verdict.alive === false) {
       this.options.hostEnded("host session ended");
       return;
     }
@@ -64558,13 +64584,14 @@ async function main() {
         }
       };
       const presenceHostKind = hostKind();
+      const attachingParent = attachingParentReader();
       const idleLeaseMs = resolveIdleLeaseMs(process.env.ROOM_IDLE_LEASE_MS);
       presence = new PresenceEnd({
         hostKind: presenceHostKind,
         idleLeaseMs,
         tickMs: idleLeaseTickMs(idleLeaseMs),
         ...presenceHostKind === "shared-app-server" ? { episodeId: await nextIdleEpisode(await gitCommonDir(dir)) } : {},
-        hostAlive: () => hostSessionAlive(dir),
+        hostAlive: () => hostSessionAlive(dir, attachingParent()),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
         waiting: () => tools.waiting(),

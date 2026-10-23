@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { liveness, withGuard, writeAtomic, type ProcessIdentity } from './leases.js'
 import { pidAlive } from './worker-process.js'
+import { probeProcess, type ProcessProbe } from '@room/relay/process'
 import { boundSession, readSessionRecord, type Session } from './session.js'
 import { WorkerRegistry, registrySnapshotForDir } from './worker-registry.js'
 import type { NoteMsg } from '@room/shared'
@@ -91,14 +92,47 @@ export async function releaseIdleHeld(s: Session, idleEpoch: string, idleMs: num
   } finally { registry.close() }
 }
 
-/** False once the bound host session's process (its `session.json` hostPid) is gone; undefined when unbound. */
-export async function hostSessionAlive(dir: string): Promise<boolean | undefined> {
+/** The verdict on a bound host: `stale` explains an `undefined` verdict for a gone host pid that was not decisive. */
+export interface HostLiveness { alive: boolean | undefined; stale?: string }
+
+/**
+ * Reads the identity of the process that attached this MCP (its parent) once it is readable: a slow first probe
+ * (Windows CIM) must not fix it as unknown for the whole session. Returns the same identity thereafter.
+ */
+export function attachingParentReader(probe: ProcessProbe = probeProcess, ppid = process.ppid): () => ProcessIdentity | undefined {
+  let parent: ProcessIdentity | undefined
+  return () => {
+    if (!parent && ppid > 1) {
+      const info = probe(ppid)
+      if (info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable }
+    }
+    return parent
+  }
+}
+
+/**
+ * Whether the recorded host is still running. A gone host pid is decisive only when the process that attached this
+ * MCP is gone too: a record can name a pid that was never this session's host (a transient launcher shell on Windows,
+ * or a record from before the host restarted), and an interactive host still ends by stdin EOF.
+ */
+export function hostRecordAlive(record: { hostPid: number; chain?: ProcessIdentity[] }, parent: ProcessIdentity | undefined,
+  probe: ProcessProbe = probeProcess): HostLiveness {
+  const identity = record.chain?.find(member => member.pid === record.hostPid)
+  const hostAlive = identity ? liveness(identity, probe) !== 'dead' : pidAlive(record.hostPid)
+  if (hostAlive) return { alive: true }
+  if (parent && liveness(parent, probe) !== 'dead') {
+    return { alive: undefined, stale: `recorded host pid ${record.hostPid} is gone but this session's host (pid ${parent.pid}, ${parent.executable}) still runs; ending on stdin close instead` }
+  }
+  return { alive: false }
+}
+
+/** The bound host session's liveness from its `session.json` hostPid; `alive: undefined` when unbound or stale. */
+export async function hostSessionAlive(dir: string, parent: ProcessIdentity | undefined): Promise<HostLiveness> {
   const bound = boundSession({ cwd: dir })
-  if (!bound) return undefined
+  if (!bound) return { alive: undefined }
   const record = readSessionRecord(await gitCommonDir(dir), bound.id)
-  if (!record?.hostPid) return undefined
-  const identity: ProcessIdentity | undefined = record.chain?.find(member => member.pid === record.hostPid)
-  return identity ? liveness(identity) !== 'dead' : pidAlive(record.hostPid)
+  if (!record?.hostPid) return { alive: undefined }
+  return hostRecordAlive(record, parent)
 }
 
 const MINUTE = 60_000
@@ -123,7 +157,7 @@ export function idleLeaseTickMs(leaseMs: number): number {
 export interface PresenceEndOptions {
   hostKind: HostKind
   /** False once the bound host session's process is gone (its `session.json` hostPid); undefined when unbound. */
-  hostAlive(): Promise<boolean | undefined> | boolean | undefined
+  hostAlive(): Promise<HostLiveness | boolean | undefined> | HostLiveness | boolean | undefined
   /** This session holds scope or claims in any of its rooms. */
   holds(): boolean
   /** It leads a non-terminal worker (`projectable(me).write` is not empty). */
@@ -156,6 +190,7 @@ export class PresenceEnd {
   private readonly episodeId: string
   private published?: number
   private left = false
+  private lastStale?: string
   private ticking?: Promise<void>
   private readonly timer?: ReturnType<typeof setInterval>
 
@@ -202,7 +237,10 @@ export class PresenceEnd {
 
   private async run(): Promise<void> {
     this.publish()
-    if (await this.options.hostAlive() === false) { this.options.hostEnded('host session ended'); return }
+    const host = await this.options.hostAlive()
+    const verdict: HostLiveness = typeof host === 'object' ? host : { alive: host }
+    if (verdict.stale !== this.lastStale) { this.lastStale = verdict.stale; if (verdict.stale) this.options.log?.(`host liveness: ${verdict.stale}`) }
+    if (verdict.alive === false) { this.options.hostEnded('host session ended'); return }
     if (this.options.hostKind !== 'shared-app-server' || this.left) return
     try { await this.options.replayPending?.() }
     catch (error) { this.options.log?.(`idle claim notice replay pending: ${error instanceof Error ? error.message : String(error)}`); return }

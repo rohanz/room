@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, attachingParentReader, hostRecordAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import type { ProcessInfo } from '@room/relay/process'
 import type { Session } from '../src/session.js'
 
 const MIN = 60_000
@@ -113,6 +114,71 @@ describe('presence end and the idle lease (registry §18)', () => {
     state.hostAlive = false
     await at(31_000)
     expect(events).toEqual(['ended: host session ended'])
+  })
+
+  it('logs a stale host verdict once and keeps presence; ends when the verdict turns false', async () => {
+    const log: string[] = []
+    const { events, state, at } = fixture('interactive', { log: line => log.push(line) })
+    const stale = { alive: undefined, stale: 'recorded host pid 9 is gone but this session\'s host (pid 7, codex) still runs; ending on stdin close instead' }
+    ;(state as { hostAlive: unknown }).hostAlive = stale
+    await at(31_000)
+    await at(61_000)
+    expect(events).toEqual([])
+    expect(log).toEqual(['host liveness: ' + stale.stale])
+    ;(state as { hostAlive: unknown }).hostAlive = { alive: false }
+    await at(91_000)
+    expect(events).toEqual(['ended: host session ended'])
+  })
+
+  it('reads the attaching parent identity until it is readable, then keeps it', () => {
+    const reads: number[] = []
+    let readable = false
+    const read = attachingParentReader(pid => { reads.push(pid); return readable ? { startTime: 'linux:boot:1', executable: 'codex' } : {} }, 7)
+    expect(read()).toBeUndefined()
+    readable = true
+    expect(read()).toEqual({ pid: 7, startTime: 'linux:boot:1', executable: 'codex' })
+    readable = false
+    expect(read()).toEqual({ pid: 7, startTime: 'linux:boot:1', executable: 'codex' })
+    expect(reads).toEqual([7, 7])
+  })
+
+  describe('a recorded host pid that is gone', () => {
+    // pid 7 is the MCP's parent, alive throughout; pid 9 is the pid the session record named as the host.
+    const parent = { pid: 7, startTime: 'linux:boot:100', executable: 'codex' }
+    const probeWith = (table: Record<number, ProcessInfo | undefined>) => (pid: number) => table[pid]
+
+    it('is reported alive while its recorded identity still runs', () => {
+      const probe = probeWith({ 7: parent, 9: { startTime: 'linux:boot:50', executable: 'codex' } })
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
+      expect(hostRecordAlive(record, parent, probe)).toEqual({ alive: true })
+    })
+
+    it('does not end the session while the process that attached the MCP still runs (Windows launcher or stale record)', () => {
+      const probe = probeWith({ 7: parent, 9: undefined })
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'cmd' }] }
+      const verdict = hostRecordAlive(record, parent, probe)
+      expect(verdict.alive).toBeUndefined()
+      expect(verdict.stale).toContain('recorded host pid 9 is gone')
+      expect(verdict.stale).toContain('pid 7, codex')
+    })
+
+    it('treats a reused host pid like a gone one', () => {
+      const probe = probeWith({ 7: parent, 9: { startTime: 'linux:boot:900', executable: 'ContainerMetadataExtractor' } })
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
+      expect(hostRecordAlive(record, parent, probe).alive).toBeUndefined()
+    })
+
+    it('ends the session once the attaching parent is gone too', () => {
+      const probe = probeWith({ 7: undefined, 9: undefined })
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
+      expect(hostRecordAlive(record, parent, probe)).toEqual({ alive: false })
+    })
+
+    it('ends the session on a gone host when the parent identity was never readable', () => {
+      const probe = probeWith({ 9: undefined })
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
+      expect(hostRecordAlive(record, undefined, probe)).toEqual({ alive: false })
+    })
   })
 
   it('H1: an app-server session holding claims releases them at 8 h, once, then leaves on the idle lease (row 28)', async () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.21
+
+- Presence: a gone or reused host pid in the session record no longer ends an interactive session on its own. It ends the session only when the process that started the MCP is gone too; otherwise Room logs `host liveness: recorded host pid N is gone but this session's host ... still runs` once and keeps the session, which still ends on stdin close. A Windows Codex user on 0.17.20 reported `stopping: host session ended` about 40 s after `room_join` with Codex still running, because the record named a pid that was not the live host.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.20
 
 - `room_collect`: a worker whose pid is now held by another process (the common case after a reboot) no longer blocks collection or discard with "could not verify ... left running, not stopped"; only an unreadable process identity does. A forced discard of a lead also disposes of its nested workers when the lead's worktree is already gone, detaches nested workers that borrowed a sibling's checkout instead of failing on their "detached" line, and accepts a record whose lead chain ends at a dead session of the same human. On 2026-10-21 and 2026-10-22 three stale lead records needed four attempts to clear, and a bare `room_collect` refused outright while one of them remained.
