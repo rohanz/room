@@ -116,12 +116,15 @@ export function attachingParentReader(probe: ProcessProbe = probeProcess, ppid =
  * or a record from before the host restarted), and an interactive host still ends by stdin EOF.
  */
 export function hostRecordAlive(record: { hostPid: number; chain?: ProcessIdentity[] }, parent: ProcessIdentity | undefined,
-  probe: ProcessProbe = probeProcess): HostLiveness {
+  probe: ProcessProbe = probeProcess, ppid = process.ppid, alive: (pid: number) => boolean = pidAlive): HostLiveness {
   const identity = record.chain?.find(member => member.pid === record.hostPid)
-  const hostAlive = identity ? liveness(identity, probe) !== 'dead' : pidAlive(record.hostPid)
+  const hostAlive = identity ? liveness(identity, probe) !== 'dead' : alive(record.hostPid)
   if (hostAlive) return { alive: true }
-  if (parent && liveness(parent, probe) !== 'dead') {
-    return { alive: undefined, stale: `recorded host pid ${record.hostPid} is gone but this session's host (pid ${parent.pid}, ${parent.executable}) still runs; ending on stdin close instead` }
+  // An unreadable parent identity (a slow Windows CIM read) is not evidence of death: fall back to pid existence.
+  const parentAlive = parent ? liveness(parent, probe) !== 'dead' : ppid > 1 && alive(ppid)
+  if (parentAlive) {
+    const who = parent ? `pid ${parent.pid}, ${parent.executable}` : `pid ${ppid}, identity unread`
+    return { alive: undefined, stale: `recorded host pid ${record.hostPid} is gone but this session's host (${who}) still runs; ending on stdin close instead` }
   }
   return { alive: false }
 }

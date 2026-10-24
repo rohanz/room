@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.22
+
+- Presence: when the identity of the process that started the MCP cannot be read (a Windows CIM query past its three-second limit, seen on a repository under OneDrive), a gone recorded host pid no longer ends the session; Room falls back to whether the parent pid still exists. 0.17.21 failed closed there and the same Windows Codex session still stopped about a minute after `room_join`.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.21
 
 - Presence: a gone or reused host pid in the session record no longer ends an interactive session on its own. It ends the session only when the process that started the MCP is gone too; otherwise Room logs `host liveness: recorded host pid N is gone but this session's host ... still runs` once and keeps the session, which still ends on stdin close. A Windows Codex user on 0.17.20 reported `stopping: host session ended` about 40 s after `room_join` with Codex still running, because the record named a pid that was not the live host.

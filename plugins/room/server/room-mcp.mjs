@@ -32312,7 +32312,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.21",
+      version: "0.17.22",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -64328,12 +64328,14 @@ function attachingParentReader(probe = probeProcess, ppid = process.ppid) {
     return parent;
   };
 }
-function hostRecordAlive(record2, parent, probe = probeProcess) {
+function hostRecordAlive(record2, parent, probe = probeProcess, ppid = process.ppid, alive = pidAlive) {
   const identity3 = record2.chain?.find((member) => member.pid === record2.hostPid);
-  const hostAlive = identity3 ? liveness(identity3, probe) !== "dead" : pidAlive(record2.hostPid);
+  const hostAlive = identity3 ? liveness(identity3, probe) !== "dead" : alive(record2.hostPid);
   if (hostAlive) return { alive: true };
-  if (parent && liveness(parent, probe) !== "dead") {
-    return { alive: void 0, stale: `recorded host pid ${record2.hostPid} is gone but this session's host (pid ${parent.pid}, ${parent.executable}) still runs; ending on stdin close instead` };
+  const parentAlive = parent ? liveness(parent, probe) !== "dead" : ppid > 1 && alive(ppid);
+  if (parentAlive) {
+    const who2 = parent ? `pid ${parent.pid}, ${parent.executable}` : `pid ${ppid}, identity unread`;
+    return { alive: void 0, stale: `recorded host pid ${record2.hostPid} is gone but this session's host (${who2}) still runs; ending on stdin close instead` };
   }
   return { alive: false };
 }

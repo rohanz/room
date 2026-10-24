@@ -174,10 +174,18 @@ describe('presence end and the idle lease (registry §18)', () => {
       expect(hostRecordAlive(record, parent, probe)).toEqual({ alive: false })
     })
 
-    it('ends the session on a gone host when the parent identity was never readable', () => {
+    it('with an unreadable parent identity, keeps the session while the parent pid exists (slow Windows CIM reads)', () => {
       const probe = probeWith({ 9: undefined })
       const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
-      expect(hostRecordAlive(record, undefined, probe)).toEqual({ alive: false })
+      const verdict = hostRecordAlive(record, undefined, probe, 7, pid => pid === 7)
+      expect(verdict.alive).toBeUndefined()
+      expect(verdict.stale).toContain('pid 7, identity unread')
+    })
+
+    it('with an unreadable parent identity, ends the session once the parent pid is gone', () => {
+      const probe = probeWith({ 9: undefined })
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
+      expect(hostRecordAlive(record, undefined, probe, 7, () => false)).toEqual({ alive: false })
     })
   })
 
