@@ -311,7 +311,7 @@ export async function stopWorkerWithEscalation(options: {
   return wait()
 }
 
-export { pidAlive, parsePsLstartUtc, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+export { pidAlive, parsePsLstartUtc, probeOwnProcess, probeProcess, probeProcessAsync, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
@@ -345,6 +345,11 @@ function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): Proce
 
 export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): boolean {
   return workerProcessOwnership(pid, w, probe) === 'ours'
+}
+
+/** Ours, or a live pid whose identity the shared probe is still reading (Windows): an unread identity is not an exit. */
+export function workerProcessLive(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): boolean {
+  return pidIsOurWorker(pid, w, probe) || probe(pid)?.pending === true
 }
 
 interface CwdProcess { pid: number; cwd: string; command: string }

@@ -122,7 +122,7 @@ export interface SessionRecord {
   at: number
   source?: string
   chain: ProcessIdentity[]
-  hostPid: number
+  hostPid?: number
   transcript_path?: string
   model?: string
   effort?: string

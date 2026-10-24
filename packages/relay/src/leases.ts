@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { pidAlive, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
+import { pidAlive, probeOwnProcess, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
 export interface InstanceToken extends ProcessIdentity { sessionId: string; nonce: string }
@@ -80,7 +80,7 @@ function writeTemp(file: string, content: object): string {
   const dir = path.dirname(file)
   ensureDurableDirectory(dir)
   cleanupOrphanTemps(dir)
-  const start = probeProcess(process.pid)?.startTime
+  const start = probeOwnProcess()?.startTime
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : 'u'}-n${randomUUID()}.tmp`
   const fd = fs.openSync(temp, 'wx', 0o600)
   try { fs.writeFileSync(fd, JSON.stringify(content) + '\n'); fs.fsyncSync(fd) }
@@ -121,7 +121,7 @@ function leaseToken(value: Record<string, unknown>): InstanceToken | undefined {
 }
 
 function ownToken(): InstanceToken {
-  const current = probeProcess(process.pid)
+  const current = probeOwnProcess()
   return { pid: process.pid, startTime: current?.startTime ?? '', executable: current?.executable ?? '', sessionId: `mcp:${process.pid}:${current?.startTime ?? 'unknown'}`, nonce: randomUUID() }
 }
 

@@ -7,7 +7,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { incarnationFile as createIncarnationFile, type HolderIn, type IncarnationStore, type LeaseStore, type StoredLease } from '@room/hub-core'
 import { compareAndRelease, createExclusive, liveness, recover, writeAtomic, type InstanceToken } from './leases.js'
-import { pidAlive, probeProcess } from './process.js'
+import { pidAlive, probeOwnProcess } from './process.js'
 
 export const hubDir = (commonDir: string): string => path.join(commonDir, 'room', 'hub')
 
@@ -23,7 +23,7 @@ export class AuthorityLock {
   /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
   static take(commonDir: string): AuthorityLock | undefined {
     const file = path.join(hubDir(commonDir), 'authority.lock')
-    const own = probeProcess(process.pid)
+    const own = probeOwnProcess()
     const token: InstanceToken = { pid: process.pid, startTime: own?.startTime ?? '', executable: own?.executable ?? '', sessionId: `relay:${process.pid}`, nonce: randomUUID() }
     if (createExclusive(file, token)) return new AuthorityLock(file, token)
     try { if (recover(file, () => true) && createExclusive(file, token)) return new AuthorityLock(file, token) }

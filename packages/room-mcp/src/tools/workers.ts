@@ -1,6 +1,6 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidPresent, pidIsOurWorker, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
+import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
 import { WORKER_EFFORTS } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
@@ -383,7 +383,7 @@ export function registryRunningWorkers(s: Session, rooms: import('../registry.js
 export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
   const { ctx, rooms, doJoin, doLeave, log, cleanupMine, now } = deps
   const myWorkers = (s: Session): LocalWorker[] => localWorkers(s.dir, record => record.lead.participant === s.me.name && record.room === s.roomName)
-  const workerAlive = (s: Session, w: LocalWorker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
+  const workerAlive = (s: Session, w: LocalWorker): boolean => rooms.hasHandle(s, w) || workerProcessLive(w.pid, w, ctx.probe)
   const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
       if (lead.local) return lead
       const have = rooms.workers()

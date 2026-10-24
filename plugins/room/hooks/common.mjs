@@ -125,8 +125,8 @@ export function writeStdout(text) {
  * This hook's ancestor processes as `{pid, startTime, executable}`, the identity room-mcp's probeProcess
  * reads (relay/src/process.ts), so the MCP can find the record whose chain holds its host (registry §17).
  */
-export function processChain(start = process.ppid, depth = 8, readers = systemProcessReaders) {
-  const table = processTable(readers)
+export function processChain(start = process.ppid, depth = 8, readers = systemProcessReaders, onReadError = () => {}) {
+  const table = processTable(readers, onReadError)
   const chain = [], seen = new Set()
   for (let pid = start; pid > 1 && chain.length < depth; pid = table.get(pid)?.ppid ?? 0) {
     if (seen.has(pid)) break
@@ -203,9 +203,13 @@ export function readWindowsProcessTable(readers, pid) {
   return parseWindowsProcessTable(readers.exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }))
 }
 
-function processTable(readers) {
+function processTable(readers, onReadError) {
   const table = new Map()
   try {
+    // Failure injection is restricted to test subprocesses; inherited ROOM_* is scrubbed by test setup.
+    if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_PROCESS_TABLE === 'fail') {
+      throw Object.assign(new Error('forced process-table failure'), { code: 'ROOM_TEST_PROCESS_TABLE' })
+    }
     if (readers.platform === 'linux') {
       const bootId = readers.readFile('/proc/sys/kernel/random/boot_id').trim()
       for (const name of readers.readDir('/proc')) {
@@ -236,7 +240,7 @@ function processTable(readers) {
         table.set(Number(m[1]), { ppid: Number(m[2]), startTime: `darwin:${boot}:${seconds}`, executable: () => executable })
       }
     }
-  } catch { /* no identity: the session binds by other means (registry §17) */ }
+  } catch (error) { onReadError(error) /* no identity: bind by other means (registry §17) */ }
   return table
 }
 

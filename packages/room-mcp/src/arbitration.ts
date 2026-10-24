@@ -10,7 +10,7 @@ import net from 'node:net'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { writeAtomic } from './leases.js'
-import { probeProcess } from './worker-process.js'
+import { probeOwnProcess } from './worker-process.js'
 import type { SessionBinding } from './binding.js'
 import { HOOK_LEASE_MS, type Batch, type Ledger } from './ledger.js'
 import type { HookItem } from './tools/index.js'
@@ -86,7 +86,7 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
   })
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve() }) })
   const port = (server.address() as net.AddressInfo).port
-  const self = probeProcess(process.pid)
+  const self = probeOwnProcess()
   let written: string | undefined
   const publish = () => {
     const dir = o.binding.dir()

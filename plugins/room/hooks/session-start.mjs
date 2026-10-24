@@ -19,11 +19,16 @@ if (!root || typeof id !== 'string' || !id) {
 }
 const dir = sessionDir(root, id)
 const now = Date.now()
-const chain = processChain()
+let readError
+const chain = processChain(undefined, undefined, undefined, error => { readError = error?.code ?? error?.name ?? 'unknown' })
 const hostName = new RegExp(`^${host}(?:[.-]|$)`, 'i')
+const hostPid = chain.find(p => hostName.test(p.executable ?? ''))?.pid
+if (hostPid === undefined) {
+  try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: host could not be identified; host=${host} chain length=${chain.length} read error=${readError ?? 'none; no matching ancestor'}\n`) } catch { /* ignore */ }
+}
 writeJsonAtomic(path.join(dir, 'session.json'), {
   session_id: id, host, cwd: ev.cwd, at: now, chain,
-  hostPid: chain.find(p => hostName.test(p.executable ?? ''))?.pid ?? chain[0]?.pid ?? process.ppid,
+  ...(hostPid === undefined ? {} : { hostPid }),
   ...(typeof ev.source === 'string' ? { source: ev.source } : {}),
   ...(process.env.ROOM_WORKER_ID ? { worker_id: process.env.ROOM_WORKER_ID } : {}),
   ...(host === 'claude' && typeof ev.transcript_path === 'string' && ev.transcript_path ? { transcript_path: ev.transcript_path } : {}),

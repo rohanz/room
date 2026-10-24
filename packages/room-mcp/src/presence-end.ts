@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { liveness, withGuard, writeAtomic, type ProcessIdentity } from './leases.js'
 import { pidAlive } from './worker-process.js'
-import { probeProcess, type ProcessProbe } from '@room/relay/process'
+import { probeProcess, probeProcessAsync, type ProcessProbe } from '@room/relay/process'
 import { boundSession, readSessionRecord, type Session } from './session.js'
 import { WorkerRegistry, registrySnapshotForDir } from './worker-registry.js'
 import type { NoteMsg } from '@room/shared'
@@ -99,12 +99,26 @@ export interface HostLiveness { alive: boolean | undefined; stale?: string }
  * Reads the identity of the process that attached this MCP (its parent) once it is readable: a slow first probe
  * (Windows CIM) must not fix it as unknown for the whole session. Returns the same identity thereafter.
  */
-export function attachingParentReader(probe: ProcessProbe = probeProcess, ppid = process.ppid): () => ProcessIdentity | undefined {
+export function attachingParentReader(probe: ProcessProbe = probeProcess, ppid = process.ppid,
+  asyncProbe: ((pid: number) => Promise<ReturnType<ProcessProbe>>) | undefined =
+    process.platform === 'win32' && probe === probeProcess ? probeProcessAsync : undefined): () => ProcessIdentity | undefined {
   let parent: ProcessIdentity | undefined
+  let pending = false
+  const remember = (info: ReturnType<ProcessProbe>) => {
+    if (!parent && info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable }
+  }
   return () => {
     if (!parent && ppid > 1) {
       const info = probe(ppid)
-      if (info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable }
+      remember(info)
+      // A tick is slower than the Windows cache TTL. Latch the completed read directly so a
+      // later tick need not find a still-fresh cache entry; never wait on CIM from the tick.
+      if (!parent && info && asyncProbe && !pending) {
+        pending = true
+        void Promise.resolve().then(() => asyncProbe(ppid)).then(remember).catch(() => {
+          // Unreadable identity is not death; the next tick may retry.
+        }).finally(() => { pending = false })
+      }
     }
     return parent
   }
@@ -131,11 +145,11 @@ export function hostRecordAlive(record: { hostPid: number; chain?: ProcessIdenti
 
 /** The bound host session's liveness from its `session.json` hostPid; `alive: undefined` when unbound or stale. */
 export async function hostSessionAlive(dir: string, parent: ProcessIdentity | undefined): Promise<HostLiveness> {
-  const bound = boundSession({ cwd: dir })
+  const bound = boundSession({ cwd: dir, parent })
   if (!bound) return { alive: undefined }
   const record = readSessionRecord(await gitCommonDir(dir), bound.id)
   if (!record?.hostPid) return { alive: undefined }
-  return hostRecordAlive(record, parent)
+  return hostRecordAlive({ ...record, hostPid: record.hostPid }, parent)
 }
 
 const MINUTE = 60_000

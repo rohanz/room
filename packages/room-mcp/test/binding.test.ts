@@ -4,7 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 
-vi.mock('../src/worker-process.js', () => ({ probeProcess: (pid: number) => ({ pid, startTime: 'birth', executable: 'codex' }) }))
+vi.mock('../src/worker-process.js', () => ({ probeOwnProcess: () => ({ startTime: 'birth', executable: 'codex' }),
+  probeProcessNow: (pid: number) => ({ pid, startTime: 'birth', executable: 'codex' }) }))
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return { ...actual, execFileSync: vi.fn((file, args, options) => file === 'ps' ? 'codex app-server --managed-daemon' : actual.execFileSync(file, args, options)) }

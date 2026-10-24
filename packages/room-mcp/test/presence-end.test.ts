@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, attachingParentReader, hostRecordAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
 import type { ProcessInfo } from '@room/relay/process'
-import type { Session } from '../src/session.js'
+import { writeSessionRecord, type Session } from '../src/session.js'
 
 const MIN = 60_000
 function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
@@ -28,6 +28,18 @@ function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
 }
 
 describe('presence end and the idle lease (registry §18)', () => {
+  it('keeps a bound session with a chain but no hostPid even when its processes are gone', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'presence-no-host-pid-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      vi.stubEnv('ROOM_HOST', 'claude')
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'no-host-pid')
+      writeSessionRecord(join(dir, '.git'), { session_id: 'no-host-pid', host: 'claude', cwd: dir, at: 1,
+        chain: [{ pid: 2147483647, startTime: 'gone', executable: 'sh' }] })
+      expect(await hostSessionAlive(dir, undefined)).toEqual({ alive: undefined })
+    } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('leaves after an overridden short lease on the timer', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
@@ -140,6 +152,31 @@ describe('presence end and the idle lease (registry §18)', () => {
     readable = false
     expect(read()).toEqual({ pid: 7, startTime: 'linux:boot:1', executable: 'codex' })
     expect(reads).toEqual([7, 7])
+  })
+
+  it('latches an async parent without blocking ticks or depending on the cache TTL', async () => {
+    let finish!: (info: ProcessInfo) => void
+    const asyncProbe = vi.fn(() => new Promise<ProcessInfo>(resolve => { finish = resolve }))
+    const read = attachingParentReader(() => ({}), 7, asyncProbe)
+    expect(read()).toBeUndefined()
+    expect(read()).toBeUndefined()
+    await Promise.resolve()
+    expect(asyncProbe).toHaveBeenCalledExactlyOnceWith(7)
+    finish({ startTime: 'windows:birth', executable: 'codex' })
+    await vi.waitFor(() => expect(read()).toEqual({ pid: 7, startTime: 'windows:birth', executable: 'codex' }))
+    expect(asyncProbe).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries an unreadable async parent on a later tick', async () => {
+    const asyncProbe = vi.fn().mockRejectedValueOnce(new Error('CIM unavailable'))
+      .mockResolvedValueOnce({ startTime: 'windows:birth', executable: 'codex' })
+    const read = attachingParentReader(() => ({}), 7, asyncProbe)
+    expect(read()).toBeUndefined()
+    // Let the failed read and its finally handler settle before the next tick.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(read()).toBeUndefined()
+    await vi.waitFor(() => expect(read()).toEqual({ pid: 7, startTime: 'windows:birth', executable: 'codex' }))
+    expect(asyncProbe).toHaveBeenCalledTimes(2)
   })
 
   describe('a recorded host pid that is gone', () => {

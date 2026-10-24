@@ -26,30 +26,34 @@ describe('Windows process identity (offline CIM fixtures)', () => {
     expect(args).toEqual(expect.arrayContaining(['-NoProfile', '-NonInteractive', '-Command']))
     expect(args.at(-1)).toContain('ProcessId = 42')
     expect(args.at(-1)).not.toMatch(/CommandLine|Environment|ExecutionPolicy/i)
-    expect(options).toMatchObject({ timeout: 3000, maxBuffer: 8 * 1024 * 1024 })
+    expect(options).toMatchObject({ timeout: 10_000, maxBuffer: 8 * 1024 * 1024 })
+    readWindowsProcessTable(r, 42)
+    expect(vi.mocked(r.exec).mock.calls[1][2]).toMatchObject({ timeout: 3000, maxBuffer: 8 * 1024 * 1024 })
     expect(readWindowsProcessTable(r, -1).size).toBe(0)
-    expect(vi.mocked(r.exec).mock.calls).toHaveLength(1)
+    expect(vi.mocked(r.exec).mock.calls).toHaveLength(2)
   })
   it('caches Windows probes but refreshes identity for signalling and a reused PID', () => {
     let now = 0, output = JSON.stringify(row)
     const r = { ...readers(output), exec: vi.fn(() => output), alive: () => true }
     const p = createProcessProbe(r, { now: () => now, wall: () => Date.parse(birth) + 60_000 })
+    expect(p.fresh(42)?.startTime).toBe(`windows:${birth}`)
     for (let n = 0; n < 100; n++) expect(p(42)?.startTime).toBe(`windows:${birth}`)
     expect(r.exec).toHaveBeenCalledTimes(1)
     output = JSON.stringify({ ...row, creationDate: '2026-10-06T01:23:45.1234568Z' })
     expect(p.fresh(42)?.startTime).not.toBe(`windows:${birth}`)
     now = 2500
-    p(42)
+    p.fresh(42)
     expect(r.exec).toHaveBeenCalledTimes(3)
   })
   it('briefly caches an unreadable Windows identity and retries without accepting it as ownership', () => {
     let now = 0
     const r = { ...readers(''), exec: vi.fn(() => { throw Error('PowerShell denied') }), alive: () => true }
     const p = createProcessProbe(r, { now: () => now })
+    expect(p.fresh(process.pid)).toEqual({})
     for (let n = 0; n < 100; n++) expect(p(process.pid)).toEqual({})
     expect(r.exec).toHaveBeenCalledTimes(1)
     now += 250
-    expect(p(process.pid)).toEqual({})
+    expect(p.fresh(process.pid)).toEqual({})
     expect(r.exec).toHaveBeenCalledTimes(2)
     expect(p.fresh(process.pid)).toEqual({})
     expect(r.exec).toHaveBeenCalledTimes(3)

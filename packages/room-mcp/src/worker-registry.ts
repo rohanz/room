@@ -9,7 +9,7 @@ import { completionId, completionMessage, participantRecord, RoomDoc, ROOM_DOC_M
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
-import { followUpAnswer, hostFailure, hostFailureLine, missingClaudeSession, probeProcess, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
+import { followUpAnswer, hostFailure, hostFailureLine, missingClaudeSession, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
@@ -84,7 +84,7 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
         void previous?.then(registry => registry.close()).catch(() => {})
       }
     }
-    const processInfo = probeProcess(process.pid)
+    const processInfo = probeOwnProcess()
     const identity: InstanceToken = { pid: process.pid, startTime: processInfo?.startTime ?? '',
       executable: processInfo?.executable ?? '', sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? 'unknown'}`,
       nonce: randomBytes(16).toString('hex') }
@@ -114,8 +114,9 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
   if (bound && bound.host !== record.host) throw new Error('worker host session mismatch')
   const hostSessionId = bound?.id ?? (record.host === 'claude' ? env.CLAUDE_CODE_SESSION_ID : env.CODEX_THREAD_ID)
   if (env.ROOM_REGISTRY && fs.realpathSync(path.resolve(env.ROOM_REGISTRY)) !== fs.realpathSync(registry.root)) throw new Error('this worker run was collected, discarded or superseded')
-  const processInfo = probeProcess(process.pid)
-  const parentInfo = probeProcess(process.ppid)
+  // The parent is recorded as this worker's host process: read it definitively, once per admission.
+  const processInfo = probeOwnProcess()
+  const parentInfo = probeProcessNow(process.ppid)
   const chain = [{ pid: process.pid, startTime: processInfo?.startTime ?? '', executable: processInfo?.executable ?? '' },
     ...(parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? '', executable: parentInfo.executable ?? '' }] : [])]
   try { await registry.admit({ id, run, nonce, dir, chain, hostProcess: chain[1] ?? null,

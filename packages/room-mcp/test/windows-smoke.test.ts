@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { joinSession, leaveSession, boundSession, readSessionRecord, sessionDirectory, type Session } from '../src/session.js'
+import { isolateTestEnv } from '../../shared/src/test-env.js'
 import { createTools } from '../src/tools.js'
 import { launchWorkerProcess } from '../src/worker-launch.js'
 import { defaultSpawner, resumeAccepted, stopWorkerWithEscalation, type SpawnedProcess, type SpawnSpec } from '../src/worker-process.js'
@@ -51,6 +52,84 @@ function track(proc: SpawnedProcess) {
 }
 
 describe('native OS smoke (fake Claude host)', () => {
+  it('scrubs the test-only process-table failure switch from inherited environments', () => {
+    const env = { ROOM_TEST_PROCESS_TABLE: 'fail' }
+    isolateTestEnv(env, os.tmpdir())
+    expect(env).not.toHaveProperty('ROOM_TEST_PROCESS_TABLE')
+  })
+
+  it.each([false, true])('identifies the host above a transient shell (table fails: %s)', failed => {
+    const dir = repo()
+    const hostDir = path.join(dir, 'fake host bin')
+    fs.mkdirSync(hostDir)
+    const executable = path.join(hostDir, process.platform === 'win32' ? 'claude.exe' : 'claude')
+    fs.copyFileSync(process.execPath, executable)
+    fs.chmodSync(executable, 0o755)
+    const script = path.join(hostDir, 'shell host.mjs')
+    // Run a real shell between the native fake host and the hook, retaining it until the hook exits.
+    fs.writeFileSync(script, String.raw`
+      import { spawnSync } from 'node:child_process';
+      const [node, hook, cwd] = process.argv.slice(2);
+      const quote = s => "'" + s.replaceAll("'", "'\"'\"'") + "'";
+      const win = process.platform === 'win32';
+      const command = win ? '""' + node + '" "' + hook + '" --host claude"'
+        : quote(node) + ' ' + quote(hook) + ' --host claude; exit $?';
+      const result = spawnSync(win ? 'cmd.exe' : 'sh', win ? ['/d', '/s', '/c', command] : ['-c', command], {
+        input: JSON.stringify({ cwd, session_id: 'shell-host' }), encoding: 'utf8',
+        windowsVerbatimArguments: win, timeout: 10000,
+      });
+      if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr);
+      console.log(JSON.stringify({ hostPid: process.pid, shellPid: result.pid }));
+    `)
+    // NODE_ENV gates this switch in the hook; shared setup removes inherited ROOM_* switches.
+    const output = execFileSync(executable, [script, process.execPath, hook, dir], {
+      encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, NODE_ENV: 'test', ROOM_TEST_PROCESS_TABLE: failed ? 'fail' : '',
+        TMPDIR: dir, TMP: dir, TEMP: dir },
+    })
+    const { hostPid, shellPid } = JSON.parse(output)
+    const record = readSessionRecord(path.join(dir, '.git'), 'shell-host')!
+    expect(record).toBeDefined()
+    expect(record.hostPid).not.toBe(shellPid)
+    if (failed) {
+      expect(record).not.toHaveProperty('hostPid')
+      expect(record.chain).toEqual([])
+      expect(fs.readFileSync(path.join(dir, 'room-hook.log'), 'utf8'))
+        .toContain('host could not be identified; host=claude chain length=0 read error=ROOM_TEST_PROCESS_TABLE')
+    } else {
+      expect(record.hostPid).toBe(hostPid)
+      expect(record.chain.some(p => p.pid === shellPid)).toBe(true)
+      expect(record.chain.some(p => p.pid === hostPid && p.executable === 'claude')).toBe(true)
+    }
+  }, 25000)
+
+  it.skipIf(process.platform !== 'win32')('reports native whole-table and PID-filtered ancestor walk durations', async () => {
+    const { readWindowsProcessTable } = await import('../../../plugins/room/hooks/common.mjs')
+    const readers = { exec: (file: string, args: string[], options: object) =>
+      execFileSync(file, args, { encoding: 'utf8', ...options }) }
+    // Measure the shipped table query against at most eight filtered ancestors. No timing assertion:
+    // native CI evidence, including failures, decides whether changing the hook is justified.
+    for (const mode of ['whole-table', 'pid-filtered-walk']) {
+      const start = performance.now()
+      let count = 0, error: string | undefined
+      try {
+        if (mode === 'whole-table') count = readWindowsProcessTable(readers).size
+        else {
+          // One PowerShell process, just like the table query: compare query strategies, not startup counts.
+          const filtered = { exec: (file: string, args: string[], options: object) => {
+            const walk = `& { $ancestorPid = ${process.ppid}; $seen = [System.Collections.Generic.HashSet[int]]::new(); `
+              + 'for ($i = 0; $i -lt 8 -and $ancestorPid -gt 1 -and $seen.Add($ancestorPid); $i++) { '
+              + '$entry = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestorPid"; '
+              + 'if (!$entry) { break }; $entry; $ancestorPid = [int]$entry.ParentProcessId } }'
+            return readers.exec(file, args.map(arg => arg.replace('Get-CimInstance Win32_Process', walk)), options)
+          } }
+          count = readWindowsProcessTable(filtered).size
+        }
+      } catch (e) { error = String(e) }
+      console.log(`[Windows hook timing] ${mode}: ${Math.round(performance.now() - start)} ms; entries=${count}; error=${error ?? 'none'}; limit=3000 ms/query, depth=8`)
+    }
+  }, 35000)
+
   it('starts the local relay and delivers an addressed question and answer between spaced worktrees', async () => {
     const dir = repo()
     const workerDir = path.join(dir, '.room', 'workers', 'message peer')

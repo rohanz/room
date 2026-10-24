@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { admitCodexThread, admittedCodexThread, boundSession, sessionDirectory, syntheticSessionId } from './session.js'
-import { probeProcess } from './worker-process.js'
+import { probeOwnProcess, probeProcessNow, type ProcessInfo } from './worker-process.js'
 import { migrateLocalState } from './local-migration.js'
 
 export interface SessionBinding {
@@ -35,12 +35,13 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
     }
     return commonDir ?? undefined
   }
-  const self = identity(process.pid)
+  const self = identity(probeOwnProcess(), process.pid)
   const bound = () => {
     const codexThreadId = admittedCodexThread()
     if (cached && cached.codexThreadId === codexThreadId && now() - cached.at < RECHECK_MS) return cached.value
     if (parent === undefined) {
-      parent = identity(process.ppid) ?? null
+      // Read once for the session: the cached probe answers a Windows miss as pending, which would fix it as unknown.
+      parent = identity(probeProcessNow(process.ppid), process.ppid) ?? null
       try { parentArgs = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { parentArgs = '' }
     }
     const dir = common()
@@ -69,7 +70,6 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   }
 }
 
-function identity(pid: number) {
-  const info = probeProcess(pid)
+function identity(info: ProcessInfo | undefined, pid: number) {
   return info?.startTime && info.executable ? { pid, startTime: info.startTime, executable: info.executable } : undefined
 }

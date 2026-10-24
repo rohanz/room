@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { boundSession, readSessionRecord, sessionDirectory, syntheticSessionId, writeSessionRecord } from '../src/session.js'
 import type { ProcessIdentity } from '../src/leases.js'
 
@@ -15,6 +15,28 @@ function record(dir: string, id: string, host: 'claude' | 'codex', at: number, c
 }
 
 describe('host session binding', () => {
+  it('binds records without hostPid through the chain or admitted Codex thread', () => {
+    const dir = common()
+    for (const [host, identity] of [['claude', parent], ['codex', child]] as const) {
+      writeSessionRecord(dir, { session_id: host + '-no-pid', host, cwd: dir, at: 1, chain: [identity] })
+      expect(boundSession({ commonDir: dir, host, parent: identity, parentArgs: 'codex exec', env: {} }))
+        .toEqual({ id: host + '-no-pid', host })
+    }
+    expect(boundSession({ commonDir: dir, host: 'codex', parent: child, appServer: true,
+      codexThreadId: 'codex-no-pid', env: {} })).toEqual({ id: 'codex-no-pid', host: 'codex' })
+  })
+
+  it('binds an admitted Codex thread to a hook record without hostPid', async () => {
+    vi.resetModules()
+    const session = await import('../src/session.js')
+    const dir = common()
+    session.writeSessionRecord(dir, { session_id: 'admitted-no-pid', host: 'codex', cwd: dir, at: 1, chain: [] })
+    session.admitCodexThread('admitted-no-pid')
+    expect(session.admittedCodexThread()).toBe('admitted-no-pid')
+    expect(session.boundSession({ commonDir: dir, host: 'codex', parent: child, appServer: true, env: {} }))
+      .toEqual({ id: 'admitted-no-pid', host: 'codex' })
+  })
+
   it('uses separate durable session directories', () => {
     const dir = common()
     record(dir, 'one', 'claude', 1, [parent])

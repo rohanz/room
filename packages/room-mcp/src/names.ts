@@ -10,7 +10,7 @@ import type { HolderIn } from '@room/hub-core'
 import { manifestPaths, participantRecord, type RoomDoc } from '@room/shared'
 import { compareAndRelease, createExclusive, liveness, recover, replace, type InstanceToken, type Liveness } from './leases.js'
 import { HubError, type HubClient } from './hub-client.js'
-import { probeProcess, type ProcessProbe } from './worker-process.js'
+import { probeOwnProcess, type ProcessProbe } from './worker-process.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 
 export interface NameLease {
@@ -91,8 +91,8 @@ async function releaseLocalName(file: string, token: InstanceToken): Promise<voi
 }
 
 /** This MCP process's instance token for a host session: the holder of its name and publisher leases. */
-export function processToken(sessionId: string, probe: ProcessProbe = probeProcess): InstanceToken {
-  const own = probe(process.pid)
+export function processToken(sessionId: string, probe?: ProcessProbe): InstanceToken {
+  const own = probe ? probe(process.pid) : probeOwnProcess()
   return { pid: process.pid, startTime: own?.startTime ?? '', executable: own?.executable ?? '', sessionId, nonce: randomUUID() }
 }
 

@@ -24660,7 +24660,7 @@ var init_memory2 = __esm({
 });
 
 // packages/relay/src/process.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFile as execFile3, execFileSync as execFileSync2 } from "node:child_process";
 import fs8 from "node:fs";
 import path6 from "node:path";
 function pidAlive(pid) {
@@ -24697,11 +24697,15 @@ function parseWindowsProcessTable(output) {
   }
   return table;
 }
-function readWindowsProcessTable(readers, pid) {
-  if (pid !== void 0 && (!Number.isSafeInteger(pid) || pid <= 0)) return /* @__PURE__ */ new Map();
+function windowsProcessCommand(pid) {
+  if (pid !== void 0 && (!Number.isSafeInteger(pid) || pid <= 0)) return void 0;
   const query2 = `Get-CimInstance Win32_Process${pid === void 0 ? "" : ` -Filter "ProcessId = ${pid}"`}`;
   const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @(${query2} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress`;
-  return parseWindowsProcessTable(readers.exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 3e3, maxBuffer: 8 * 1024 * 1024 }));
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+function readWindowsProcessTable(readers, pid, timeout = 3e3) {
+  const args2 = windowsProcessCommand(pid);
+  return args2 ? parseWindowsProcessTable(readers.exec("powershell.exe", args2, { timeout, maxBuffer: WINDOWS_MAX_BUFFER })) : /* @__PURE__ */ new Map();
 }
 function sameStartTime(a, b) {
   if (a === b) return true;
@@ -24757,7 +24761,7 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
       return { startTime: `linux:${bootId}:${startTicks}`, executable };
     }
     if (readers.platform === "win32") {
-      const info = readWindowsProcessTable(readers, pid).get(pid);
+      const info = readWindowsProcessTable(readers, pid, WINDOWS_SYNC_READ_MS).get(pid);
       return info ? { startTime: info.startTime, executable: info.executable } : unreadable();
     }
     if (readers.platform === "darwin") {
@@ -24779,25 +24783,56 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
 }
 function createProcessProbe(readers, options = {}) {
   if (readers.platform !== "darwin" && readers.platform !== "win32") {
-    const read3 = (pid) => probeUncached(pid, readers);
-    return Object.assign(read3, { confirm: read3, fresh: read3 });
+    const read4 = (pid) => probeUncached(pid, readers);
+    return Object.assign(read4, { confirm: read4, fresh: read4, read: async (pid) => read4(pid) });
   }
   const now = options.now ?? (() => performance.now()), wall = options.wall ?? Date.now, alive = readers.alive ?? pidAlive;
   const cache = /* @__PURE__ */ new Map();
+  let reads = 0;
   const confirmed = /* @__PURE__ */ new Map();
   let boot;
   const boottime = () => {
     if (!boot || now() - boot.at >= BOOTTIME_TTL_MS) boot = { text: readers.exec("sysctl", ["-n", "kern.boottime"]), at: now() };
     return boot.text;
   };
-  const fresh = (pid) => {
-    const info = probeUncached(pid, readers, boottime);
+  const store = (pid, info, read4) => {
     const started = startSeconds(info?.startTime);
     if (info && (readers.platform === "win32" || info.executable && Number.isFinite(started))) {
       if (cache.size >= 1024) cache.clear();
-      cache.set(pid, { info, until: now() + (info.executable && Number.isFinite(started) && wall() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
+      cache.set(pid, { info, read: read4, until: now() + (info.executable && Number.isFinite(started) && wall() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
     } else cache.delete(pid);
     return info;
+  };
+  const fresh = (pid) => {
+    const read4 = ++reads;
+    return store(pid, probeUncached(pid, readers, boottime), read4);
+  };
+  const inFlight = /* @__PURE__ */ new Map();
+  const readInBackground = (pid) => {
+    const pending = inFlight.get(pid);
+    if (pending) return pending;
+    const args2 = windowsProcessCommand(pid);
+    if (!args2 || !readers.execAsync || inFlight.size >= WINDOWS_MAX_IN_FLIGHT) return Promise.resolve({});
+    const started = ++reads, execAsync = readers.execAsync;
+    let settled = false;
+    const read4 = new Promise((resolve5) => {
+      const done = (error2, stdout) => {
+        if (settled) return;
+        settled = true;
+        inFlight.delete(pid);
+        const row = error2 ? void 0 : parseWindowsProcessTable(stdout).get(pid);
+        const info = row ? { startTime: row.startTime, executable: row.executable } : alive(pid) ? {} : void 0;
+        const current = cache.get(pid);
+        resolve5(current && current.read > started ? current.info : store(pid, info, started));
+      };
+      try {
+        execAsync("powershell.exe", args2, { timeout: WINDOWS_ASYNC_READ_MS, maxBuffer: WINDOWS_MAX_BUFFER }, done);
+      } catch (error2) {
+        done(error2, "");
+      }
+    });
+    if (!settled) inFlight.set(pid, read4);
+    return read4;
   };
   const probe = (pid) => {
     const hit = cache.get(pid);
@@ -24805,7 +24840,14 @@ function createProcessProbe(readers, options = {}) {
       cache.delete(pid);
       return void 0;
     }
-    return hit && now() < hit.until ? hit.info : fresh(pid);
+    if (hit && now() < hit.until) return hit.info;
+    if (readers.platform !== "win32") return fresh(pid);
+    void readInBackground(pid);
+    return { pending: true };
+  };
+  const read3 = async (pid) => {
+    const info = probe(pid);
+    return info?.pending ? readInBackground(pid) : info;
   };
   const confirm = (pid, recorded) => {
     if (!pid || pid <= 0 || !alive(pid)) return void 0;
@@ -24819,15 +24861,25 @@ function createProcessProbe(readers, options = {}) {
     } else confirmed.delete(key2);
     return info;
   };
-  return Object.assign(probe, { confirm, fresh });
+  return Object.assign(probe, { confirm, fresh, read: read3 });
 }
 function probeProcessNow(pid) {
   return systemProbe.fresh(pid);
 }
+function probeProcessAsync(pid) {
+  return systemProbe.read(pid);
+}
+function probeOwnProcess() {
+  if (ownIdentity?.startTime && ownIdentity.executable) return ownIdentity;
+  const info = ownRead ? systemProbe(process.pid) : systemProbe.fresh(process.pid);
+  ownRead = true;
+  if (info?.startTime && info.executable) ownIdentity = info;
+  return info?.pending ? {} : info;
+}
 function probeProcessConfirm(pid, recorded) {
   return systemProbe.confirm(pid, recorded);
 }
-var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, CONFIRMED_TTL_MS, startSeconds, agrees, systemProbe;
+var systemProcessReaders, WINDOWS_SYNC_READ_MS, WINDOWS_ASYNC_READ_MS, WINDOWS_MAX_BUFFER, WINDOWS_MAX_IN_FLIGHT, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, CONFIRMED_TTL_MS, startSeconds, agrees, systemProbe, ownIdentity, ownRead;
 var init_process = __esm({
   "packages/relay/src/process.ts"() {
     "use strict";
@@ -24841,8 +24893,15 @@ var init_process = __esm({
         timeout: 3e3,
         ...options,
         ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
-      })
+      }),
+      execAsync: (file, args2, options, done) => {
+        execFile3(file, args2, { encoding: "utf8", windowsHide: true, ...options }, (error2, stdout) => done(error2, stdout));
+      }
     };
+    WINDOWS_SYNC_READ_MS = 1e4;
+    WINDOWS_ASYNC_READ_MS = 15e3;
+    WINDOWS_MAX_BUFFER = 8 * 1024 * 1024;
+    WINDOWS_MAX_IN_FLIGHT = 4;
     PROBE_TTL_MS = 2e3;
     YOUNG_TTL_MS = 250;
     SETTLED_AFTER_S = 5;
@@ -24851,6 +24910,7 @@ var init_process = __esm({
     startSeconds = (startTime) => startTime?.startsWith("windows:") ? Date.parse(startTime.slice("windows:".length)) / 1e3 : Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? "")?.[1]);
     agrees = (info, recorded) => (!info.startTime || !recorded.startTime || sameStartTime(info.startTime, recorded.startTime)) && (!info.executable || !recorded.executable || info.executable === recorded.executable);
     systemProbe = createProcessProbe(systemProcessReaders);
+    ownRead = false;
   }
 });
 
@@ -26184,7 +26244,7 @@ function writeTemp(file, content) {
   const dir = path8.dirname(file);
   ensureDurableDirectory(dir);
   cleanupOrphanTemps(dir);
-  const start = probeProcess(process.pid)?.startTime;
+  const start = probeOwnProcess()?.startTime;
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
   const fd = fs10.openSync(temp, "wx", 384);
   try {
@@ -26238,7 +26298,7 @@ function leaseToken(value2) {
   return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
 }
 function ownToken() {
-  const current = probeProcess(process.pid);
+  const current = probeOwnProcess();
   return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
 }
 function acquireGuard(file, probe, depth = 0) {
@@ -26383,7 +26443,7 @@ var init_hub2 = __esm({
       /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
       static take(commonDir2) {
         const file = path9.join(hubDir(commonDir2), "authority.lock");
-        const own2 = probeProcess(process.pid);
+        const own2 = probeOwnProcess();
         const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
         if (createExclusive(file, token)) return new _AuthorityLock(file, token);
         try {
@@ -30461,7 +30521,7 @@ var init_checkout_watch = __esm({
 });
 
 // packages/roomd/src/base.ts
-import { execFile as execFile3 } from "node:child_process";
+import { execFile as execFile4 } from "node:child_process";
 async function isAncestor(dir, ancestor, descendant) {
   try {
     await git(dir, ["merge-base", "--is-ancestor", ancestor, descendant]);
@@ -30618,7 +30678,7 @@ async function pushedRange(dir, prev, next) {
 async function pushHistory(dir, remote, oldSha, newSha) {
   if (!await ensureCommit(dir, remote, oldSha) || !await ensureCommit(dir, remote, newSha)) return "unknown";
   return new Promise((resolve5) => {
-    execFile3("git", ["merge-base", "--is-ancestor", oldSha, newSha], { cwd: dir, timeout: 3e4 }, (error2) => {
+    execFile4("git", ["merge-base", "--is-ancestor", oldSha, newSha], { cwd: dir, timeout: 3e4 }, (error2) => {
       resolve5(!error2 ? "forward" : error2.code === 1 ? "yes" : "unknown");
     });
   });
@@ -30635,7 +30695,7 @@ async function ensureCommit(dir, remote, sha) {
   if (last2 !== void 0 && Date.now() - last2 < FETCH_RETRY_MS) return false;
   fetchAttempts.set(key2, Date.now());
   await new Promise((resolve5) => {
-    execFile3(
+    execFile4(
       "git",
       ["-c", "credential.interactive=never", "fetch", "--no-tags", "--no-write-fetch-head", remote, sha],
       { cwd: dir, timeout: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
@@ -32343,7 +32403,7 @@ var init_plugin = __esm({
 });
 
 // packages/room-mcp/src/worker-shell-env.ts
-import { execFile as execFile5 } from "node:child_process";
+import { execFile as execFile6 } from "node:child_process";
 import fs17 from "node:fs";
 import path16 from "node:path";
 function workerShellEnvScript(inherited) {
@@ -32381,7 +32441,7 @@ function codexShellFilterWarning(version3) {
   return void 0;
 }
 function installedCodexVersion() {
-  codexVersion ??= new Promise((resolve5) => execFile5(
+  codexVersion ??= new Promise((resolve5) => execFile6(
     "codex",
     ["--version"],
     { encoding: "utf8", timeout: 5e3 },
@@ -32860,6 +32920,9 @@ function ownershipBy(pid, w, probe) {
 }
 function pidIsOurWorker(pid, w, probe = probeProcess) {
   return workerProcessOwnership(pid, w, probe) === "ours";
+}
+function workerProcessLive(pid, w, probe = probeProcess) {
+  return pidIsOurWorker(pid, w, probe) || probe(pid)?.pending === true;
 }
 function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
   const resolved = (p) => {
@@ -34092,7 +34155,7 @@ var init_diff3 = __esm({
 });
 
 // packages/room-mcp/src/merge.ts
-import { execFile as execFile6 } from "node:child_process";
+import { execFile as execFile7 } from "node:child_process";
 import fs22 from "node:fs";
 import os6 from "node:os";
 import path21 from "node:path";
@@ -34121,7 +34184,7 @@ async function gitMergeFile(base, ours, theirs, labels) {
     fs22.writeFileSync(basePath, base);
     fs22.writeFileSync(theirsPath, theirs);
     const result2 = await new Promise((resolve5) => {
-      execFile6(
+      execFile7(
         "git",
         ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
         { cwd: dir, maxBuffer: 16 * 1024 * 1024, timeout: 1e4 },
@@ -34228,7 +34291,7 @@ var init_merge = __esm({
 
 // packages/room-mcp/src/tools/disk-text.ts
 import fs23 from "node:fs";
-import { execFile as execFile7 } from "node:child_process";
+import { execFile as execFile8 } from "node:child_process";
 function readBoundedDiskTextSync(file, limit = DISK_TEXT_LIMIT) {
   const fd = fs23.openSync(file, fs23.constants.O_RDONLY | (fs23.constants.O_NOFOLLOW ?? 0));
   try {
@@ -34284,7 +34347,7 @@ async function readHistoricalFromGit(dir, base, rel) {
 async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize) {
   const size2 = knownSize ?? await new Promise((resolve5, reject) => {
     const args2 = ["cat-file", "-s", object4], done = observeGit(args2);
-    execFile7("git", args2, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
+    execFile8("git", args2, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
         if (/does not exist|not a valid object|could not get object info|path .* not in/i.test(String(stderr2))) resolve5(void 0);
@@ -34299,7 +34362,7 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
   return new Promise((resolve5, reject) => {
     const args2 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object4] : ["cat-file", "-p", object4];
     const done = observeGit(args2);
-    execFile7("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
+    execFile8("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
         if (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reject(new HistoricalTextTooLarge(rel));
@@ -37847,12 +37910,12 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
     }
     return commonDir2 ?? void 0;
   };
-  const self = identity(process.pid);
+  const self = identity(probeOwnProcess(), process.pid);
   const bound = () => {
     const codexThreadId2 = admittedCodexThread();
     if (cached2 && cached2.codexThreadId === codexThreadId2 && now() - cached2.at < RECHECK_MS) return cached2.value;
     if (parent === void 0) {
-      parent = identity(process.ppid) ?? null;
+      parent = identity(probeProcessNow(process.ppid), process.ppid) ?? null;
       try {
         parentArgs = execFileSync6("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
@@ -37888,8 +37951,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
     commonDir: common
   };
 }
-function identity(pid) {
-  const info = probeProcess(pid);
+function identity(info, pid) {
   return info?.startTime && info.executable ? { pid, startTime: info.startTime, executable: info.executable } : void 0;
 }
 var RECHECK_MS;
@@ -39048,8 +39110,8 @@ async function releaseLocalName(file, token) {
   } catch {
   }
 }
-function processToken(sessionId, probe = probeProcess) {
-  const own2 = probe(process.pid);
+function processToken(sessionId, probe) {
+  const own2 = probe ? probe(process.pid) : probeOwnProcess();
   return { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId, nonce: randomUUID4() };
 }
 async function acquireName(options) {
@@ -39273,7 +39335,7 @@ var init_names = __esm({
 });
 
 // packages/room-mcp/src/repository.ts
-import { execFile as execFile8 } from "node:child_process";
+import { execFile as execFile9 } from "node:child_process";
 import fs35 from "node:fs";
 async function repositoryRoot(dir, git4 = run) {
   const where = await git4(dir, ["rev-parse", "--is-bare-repository", "--is-inside-work-tree"]);
@@ -39325,7 +39387,7 @@ var init_repository = __esm({
     noWorkTree = (dir, bare) => `Room works in a repository's working tree (the folder with your files), and ${dir} is ${bare ? "a bare repository" : "inside a repository's .git folder"}, which has none. Open the checkout folder, then say 'join the room' again.`;
     noCommit = (root) => `Room needs a first commit: ${root} is a git repository with no commits yet. Make a first commit (git add -A && git commit -m "first commit"), then say 'join the room' again.`;
     run = (dir, args2) => new Promise((resolve5) => {
-      execFile8("git", args2, { cwd: dir, timeout: timeoutMs() }, (err, stdout, stderr2) => {
+      execFile9("git", args2, { cwd: dir, timeout: timeoutMs() }, (err, stdout, stderr2) => {
         const e = err;
         resolve5({ status: !e ? 0 : e.killed ? "timeout" : e.code ?? null, stdout: String(stdout), stderr: String(stderr2) });
       });
@@ -40997,7 +41059,7 @@ var init_names2 = __esm({
 });
 
 // packages/room-mcp/src/preview-cache.ts
-import { execFile as execFile9, spawn as spawn4 } from "node:child_process";
+import { execFile as execFile10, spawn as spawn4 } from "node:child_process";
 import fs38 from "node:fs";
 import path35 from "node:path";
 function previewCapBytes() {
@@ -41041,7 +41103,7 @@ async function tryPreviewLock(entry) {
 }
 async function measurePreview(entry, cap) {
   const du = await new Promise((resolve5) => {
-    execFile9("du", ["-sk", entry], { timeout: 1e4, maxBuffer: 1024 * 1024 }, (error2, stdout) => {
+    execFile10("du", ["-sk", entry], { timeout: 1e4, maxBuffer: 1024 * 1024 }, (error2, stdout) => {
       const kb = Number(/^\s*(\d+)\s/.exec(stdout)?.[1]);
       resolve5(error2 || !Number.isSafeInteger(kb) ? void 0 : kb * 1024);
     });
@@ -41124,7 +41186,7 @@ __export(files_exports, {
   testVerdict: () => testVerdict,
   waitForPreviewSweepForTests: () => waitForPreviewSweepForTests
 });
-import { execFile as execFile10, spawn as spawn5 } from "node:child_process";
+import { execFile as execFile11, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { createHash as createHash15, randomUUID as randomUUID5 } from "node:crypto";
 import fs39 from "node:fs";
@@ -41831,7 +41893,7 @@ async function boundedProbe(operation) {
 }
 async function processCommand(file, args2) {
   return boundedProbe(new Promise((resolve5, reject) => {
-    execFile10(
+    execFile11(
       file,
       args2,
       { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } },
@@ -42254,7 +42316,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
       const command2 = bash ?? "sh";
       const args2 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
       if (process.platform === "win32") return new Promise((resolve5, reject) => {
-        execFile10(command2, args2, { cwd: dir, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env }, (err, stdout, stderr2) => {
+        execFile11(command2, args2, { cwd: dir, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env }, (err, stdout, stderr2) => {
           const raw = err ? err.code : 0;
           const limit = execFileLimit(err, checkLimits);
           if (limit) {
@@ -42353,7 +42415,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
   const deadline = performance4.now() + SETUP_TIMEOUT_MS;
   const run2 = (args2) => new Promise((resolve5, reject) => {
     const remaining = Math.max(1, Math.ceil(deadline - performance4.now()));
-    execFile10("git", ["-C", cloneDir, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", ...args2], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr2) => {
+    execFile11("git", ["-C", cloneDir, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", ...args2], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr2) => {
       if (error2) reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${args2[0]}: ${String(stderr2 || error2.message).trim()})`));
       else resolve5();
     });
@@ -43165,7 +43227,7 @@ async function registryForDir(dir, sessionId) {
         });
       }
     }
-    const processInfo = probeProcess(process.pid);
+    const processInfo = probeOwnProcess();
     const identity3 = {
       pid: process.pid,
       startTime: processInfo?.startTime ?? "",
@@ -43197,8 +43259,8 @@ async function admitWorkerEnvironment(dir, env = process.env, bound) {
   if (bound && bound.host !== record2.host) throw new Error("worker host session mismatch");
   const hostSessionId = bound?.id ?? (record2.host === "claude" ? env.CLAUDE_CODE_SESSION_ID : env.CODEX_THREAD_ID);
   if (env.ROOM_REGISTRY && fs41.realpathSync(path38.resolve(env.ROOM_REGISTRY)) !== fs41.realpathSync(registry2.root)) throw new Error("this worker run was collected, discarded or superseded");
-  const processInfo = probeProcess(process.pid);
-  const parentInfo = probeProcess(process.ppid);
+  const processInfo = probeOwnProcess();
+  const parentInfo = probeProcessNow(process.ppid);
   const chain = [
     { pid: process.pid, startTime: processInfo?.startTime ?? "", executable: processInfo?.executable ?? "" },
     ...parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? "", executable: parentInfo.executable ?? "" }] : []
@@ -54953,7 +55015,7 @@ init_config();
 
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
-import { execFile as execFile4, execFileSync as execFileSync4 } from "node:child_process";
+import { execFile as execFile5, execFileSync as execFileSync4 } from "node:child_process";
 
 // packages/room-mcp/src/codex-app-server.ts
 init_wrapper();
@@ -55138,7 +55200,7 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
 }
 function codexQueue(threadId, text) {
   return new Promise((resolve5, reject) => {
-    execFile4("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr2) => err ? reject(new Error(String(stderr2 || err.message).trim())) : resolve5());
+    execFile5("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr2) => err ? reject(new Error(String(stderr2 || err.message).trim())) : resolve5());
   });
 }
 function createWakeSender(o) {
@@ -58147,7 +58209,7 @@ function registryRunningWorkers(s, rooms) {
 function createWorkerRuntime(deps) {
   const { ctx, rooms, doJoin, doLeave, log: log2, cleanupMine, now } = deps;
   const myWorkers = (s) => localWorkers(s.dir, (record2) => record2.lead.participant === s.me.name && record2.room === s.roomName);
-  const workerAlive = (s, w) => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe);
+  const workerAlive = (s, w) => rooms.hasHandle(s, w) || workerProcessLive(w.pid, w, ctx.probe);
   const ensureWorkersRoom = async (lead) => {
     if (lead.local) return lead;
     const have = rooms.workers();
@@ -58310,7 +58372,7 @@ init_credentials();
 import fs48 from "node:fs";
 import os12 from "node:os";
 import path47 from "node:path";
-import { execFile as execFile11 } from "node:child_process";
+import { execFile as execFile12 } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -58380,7 +58442,7 @@ function createStaleVersionWarning(modulePath = fileURLToPath4(import.meta.url),
 init_src3();
 init_src4();
 init_plugin();
-var exec = promisify(execFile11);
+var exec = promisify(execFile12);
 var minimumGit = [2, 31, 0];
 var CODEX_ROOM_HOOK_HASHES = {
   "pre_tool_use:0:0": "sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb",
@@ -59973,7 +60035,7 @@ import fs50 from "node:fs";
 import path50 from "node:path";
 import os13 from "node:os";
 import { randomUUID as randomUUID10 } from "node:crypto";
-import { execFile as execFile12 } from "node:child_process";
+import { execFile as execFile13 } from "node:child_process";
 var MAX_LISTED = 10;
 var OPERATIONS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"];
 var internalGit2 = (dir, args2) => git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args2]);
@@ -60000,7 +60062,7 @@ async function containmentDetails(dir, deltaBase, target, delivered) {
   const done = observeGit(args2);
   try {
     return await new Promise((resolve5, reject) => {
-      execFile12("git", args2, { cwd: dir, timeout: timeoutMs(), maxBuffer: 64 * 1024 * 1024 }, (error2, stdout) => {
+      execFile13("git", args2, { cwd: dir, timeout: timeoutMs(), maxBuffer: 64 * 1024 * 1024 }, (error2, stdout) => {
         if (error2 && error2.code !== 1) {
           reject(error2);
           return;
@@ -64041,7 +64103,7 @@ async function startArbitration(o) {
     });
   });
   const port = server.address().port;
-  const self = probeProcess(process.pid);
+  const self = probeOwnProcess();
   let written;
   const publish2 = () => {
     const dir = o.binding.dir();
@@ -64318,12 +64380,23 @@ async function releaseIdleHeld(s, idleEpoch, idleMs, monotonicMs, pendingOnly = 
     registry2.close();
   }
 }
-function attachingParentReader(probe = probeProcess, ppid = process.ppid) {
+function attachingParentReader(probe = probeProcess, ppid = process.ppid, asyncProbe = process.platform === "win32" && probe === probeProcess ? probeProcessAsync : void 0) {
   let parent;
+  let pending = false;
+  const remember = (info) => {
+    if (!parent && info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable };
+  };
   return () => {
     if (!parent && ppid > 1) {
       const info = probe(ppid);
-      if (info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable };
+      remember(info);
+      if (!parent && info && asyncProbe && !pending) {
+        pending = true;
+        void Promise.resolve().then(() => asyncProbe(ppid)).then(remember).catch(() => {
+        }).finally(() => {
+          pending = false;
+        });
+      }
     }
     return parent;
   };
@@ -64340,11 +64413,11 @@ function hostRecordAlive(record2, parent, probe = probeProcess, ppid = process.p
   return { alive: false };
 }
 async function hostSessionAlive(dir, parent) {
-  const bound = boundSession({ cwd: dir });
+  const bound = boundSession({ cwd: dir, parent });
   if (!bound) return { alive: void 0 };
   const record2 = readSessionRecord(await gitCommonDir(dir), bound.id);
   if (!record2?.hostPid) return { alive: void 0 };
-  return hostRecordAlive(record2, parent);
+  return hostRecordAlive({ ...record2, hostPid: record2.hostPid }, parent);
 }
 var MINUTE = 6e4;
 var IDLE_LEASE_MS = 30 * MINUTE;
