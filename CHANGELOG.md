@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.23
+
+- Windows: process identity reads no longer block a session. A cache miss answers at once as pending (unreadable, never evidence of death) and fills from one bounded background PowerShell read per pid; only the definitive reads used for signalling and recording stay synchronous, now with a 10 s limit instead of 3 s. On a slow machine the 30 s presence tick and status reads used to stall the event loop for seconds and time out, which is what left the host identity unreadable in the 2026-10-24 report (repository under OneDrive).
+- Hook: the session-start hook records `hostPid` only for an ancestor whose executable matches the host name. When the process table cannot be read or no ancestor matches, the field is omitted and `room-hook.log` says why; a record without `hostPid` never ends presence. Previously the hook fell back to its own parent, which on Windows is the transient Git Bash, PowerShell or cmd shell that runs hooks.
+- Tests: the async probe path with fake readers; records without `hostPid`; the hook launched through a transient shell under the fake host, run natively on CI's Windows job, which also prints the hook's table-query timing (whole table 453 ms vs a filtered ancestor walk 590 ms on the runner, so the whole-table read stays).
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.22
 
 - Presence: when the identity of the process that started the MCP cannot be read (a Windows CIM query past its three-second limit, seen on a repository under OneDrive), a gone recorded host pid no longer ends the session; Room falls back to whether the parent pid still exists. 0.17.21 failed closed there and the same Windows Codex session still stopped about a minute after `room_join`.
