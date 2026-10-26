@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.24
+
+- Collect: default collection and copy mode's comparison apply files up to 5 MB, the same per-file cap as carry at spawn (was 512 KB), so binary outputs such as audio stems and screenshots merge like any other change. A worker or lead file over 5 MB no longer aborts the call with a raw `file too large for Room read` error: collect writes nothing, keeps the workers, names the file (`NOT collected (over 5 MB)`) and ends with the exact `room_collect(tag=..., mode="copy", paths=[...])` command. After that copy the bytes match on both sides and the next default collect proceeds. On 2026-10-23 a 4 MB `.m4a` and, a day earlier, a 687 KB PNG made leads copy files by hand, bypassing conflict detection.
+- Workers: `room_state` shows how long a finished worker has waited for collection, and both it and the `room_spawn` reply warn once finished workers have gone uncollected for over an hour, since their final publications still take part in conflict checks. Every worker's prompt now says to write only inside its own worktree.
+- Preview: `room_preview_merge` keeps its 512 KB limit but names an oversized local file (`NOT previewed (over 512 KB)`) instead of failing.
+
 ## 0.17.23
 
 - Windows: process identity reads no longer block a session. A cache miss answers at once as pending (unreadable, never evidence of death) and fills from one bounded background PowerShell read per pid; only the definitive reads used for signalling and recording stay synchronous, now with a 10 s limit instead of 3 s. On a slow machine the 30 s presence tick and status reads used to stall the event loop for seconds and time out, which is what left the host identity unreadable in the 2026-10-24 report (repository under OneDrive).

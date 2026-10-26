@@ -368,6 +368,22 @@ const ago = (ms: number): string => {
   return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h` : `${Math.floor(seconds / 86400)}d`
 }
 
+/** A finished worker whose output has not been collected or discarded. */
+const uncollected = (w: WorkerView): boolean => (w.status === 'done' || w.status === 'failed') && !w.stopReason && w.finishedAt !== undefined
+
+export const STALE_WORKER_MS = 60 * 60 * 1000
+
+/**
+ * Finished workers left uncollected for over an hour: their final publications still take part in conflict
+ * checks, so a later batch sees phantom conflicts against them (creativewriting, 2026-10-23).
+ */
+export function staleWorkersNote(workers: readonly WorkerView[], now = Date.now()): string | undefined {
+  const stale = workers.filter(w => uncollected(w) && now - w.finishedAt! >= STALE_WORKER_MS)
+  if (!stale.length) return undefined
+  const oldest = Math.min(...stale.map(w => w.finishedAt!))
+  return `${formatCount(stale.length, 'finished worker')} uncollected for ${ago(now - oldest)} (${stale.map(w => w.tag).join(', ')}): collect or discard them; their final publications still take part in conflict checks.`
+}
+
 /** The canonical room_state lines for one dispatched worker; a live worker with known activity gets a third. */
 export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, activity, now = Date.now() }: WorkerLineInput): string[] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
@@ -378,7 +394,8 @@ export function workerLine({ worker: w, dir, processGone = false, lastActive, ch
     : w.stopReason ? `stopped (${w.stopReason})`
     : w.noReport ? 'ended without a report'
     : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED
-    : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status)
+    : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true })
+    : uncollected(w) ? `${w.status}, uncollected for ${ago(now - w.finishedAt!)}` : w.status)
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${w.followUp ? ` · follow-up: ${w.followUp.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
@@ -393,6 +410,8 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
   const out = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
     .flatMap(workerLine)]
+  const stale = staleWorkersNote(inputs.map(input => input.worker), inputs[0]?.now)
+  if (stale) out.push('  ' + stale)
   for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
     const state = w.disposition === 'stopped' ? (stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? 'reason unknown'})`)) : w.disposition ?? w.outcome
     const kept = w.keptWorktree ? `, kept: ${w.keptReason ?? (w.summary.startsWith('kept for ') ? w.summary.slice(9) : `worktree at ${w.keptWorktree}`)}` : ''

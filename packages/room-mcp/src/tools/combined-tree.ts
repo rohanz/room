@@ -56,12 +56,34 @@ export function previewSettler(state: HandlerState, participants: readonly Parti
   }
 }
 
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; settler?: ReturnType<typeof previewSettler> } = {}) {
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number; settler?: ReturnType<typeof previewSettler> } = {}) {
   const settler = options.settler ?? previewSettler(state, participants)
   for (;;) {
     const result = await buildCombinedTreeOnce(state, caller, participants, options)
     if (result.current) return result
     if (!await settler.settle(result.settledWorkers())) throw new PreviewMoved(result.moved())
+  }
+}
+
+/** Compare two regular files in chunks without holding either whole; links and non-files never match. */
+function sameDiskBytes(a: string, b: string): boolean {
+  if (a === b) return true
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)
+  let fa: number | undefined, fb: number | undefined
+  try {
+    fa = fs.openSync(a, flags); fb = fs.openSync(b, flags)
+    const sa = fs.fstatSync(fa), sb = fs.fstatSync(fb)
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false
+    const ba = Buffer.allocUnsafe(64 * 1024), bb = Buffer.allocUnsafe(64 * 1024)
+    for (let offset = 0; offset < sa.size;) {
+      const na = fs.readSync(fa, ba, 0, ba.length, offset), nb = fs.readSync(fb, bb, 0, bb.length, offset)
+      if (na !== nb || na === 0 || !ba.subarray(0, na).equals(bb.subarray(0, nb))) return false
+      offset += na
+    }
+    return true
+  } catch { return false } finally {
+    if (fa !== undefined) fs.closeSync(fa)
+    if (fb !== undefined) fs.closeSync(fb)
   }
 }
 
@@ -130,8 +152,10 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
 }
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
+async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number } = {}) {
   const { rooms, baseFor } = state
+  /** Per-file byte ceiling for local and Git reads; collection raises it, previews keep the default. */
+  const limit = options.limit ?? DISK_TEXT_LIMIT
   const people = participants.map(p => p.person)
   const snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
   const acceptedRecords = new Map<string, ParticipantGit>()
@@ -259,7 +283,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       const result = containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link' })
       if (!result.ok) throw new Error('unsafe preview symlink: ' + p)
       const file = result.path
-      return await readBoundedDiskText(file, options.encoding ?? 'utf8', { root, path: path.join(root, p) })
+      return await readBoundedDiskText(file, options.encoding ?? 'utf8', { root, path: path.join(root, p) }, limit)
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw e
@@ -549,9 +573,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const key = sha + ':' + p
     if (!baseTexts.has(key)) {
       const blob = (await infoAt(sha)).get(p)
-      if (blob && blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(p)
+      if (blob && blob.size > limit) throw new HistoricalTextTooLarge(p)
       baseTexts.set(key, blob ? (await (!options.encoding || options.encoding === 'utf8' ? gitAt(sha, p, blob.size)
-        : readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size))) ?? null : null)
+        : readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size, limit))) ?? null : null)
     }
     return baseTexts.get(key)!
   }
@@ -563,7 +587,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const sha = pair.untracked.get(p)!.sha, key = pair.dir + '\0' + sha + '\0' + p
     let text = carriedTexts.get(key)
     if (!text) {
-      text = readBoundedCheckoutText(pair.dir, sha, p, options.encoding).then(carried => {
+      text = readBoundedCheckoutText(pair.dir, sha, p, options.encoding, true, undefined, limit).then(carried => {
         if (carried === undefined) throw new MissingBaseBlob(p)
         return carried
       })
@@ -618,6 +642,21 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       ignoredNotes.push(`NOT previewed: ${p}: ${workers.join(', ')} start from different delivered versions; include ${leads.join(', ') || 'their lead'} in the preview`)
       pathSet.delete(p)
     }
+  }
+  // A local file over the limit is named, not read: stat each disk side that the merge will read.
+  const diskSides = [{ person: anchorName, dir: anchor ? previewWorker(anchor.session, anchorName)?.dir ?? (anchor.session === caller && anchorName === caller.me.name ? caller.dir : undefined) : caller.dir },
+    ...contributors.map(({ person, session }) => ({ person, dir: previewWorker(session, person)?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined) }))]
+  const overLabel = limit >= 1024 * 1024 ? `${limit / (1024 * 1024)} MB` : `${limit / 1024} KB`
+  for (const p of [...pathSet]) {
+    const read = diskSides.filter(({ person, dir }) => dir && (person === anchorName || !(leftAlone(person, p) || scratchBy.get(person)?.has(p))))
+    const sizeOf = (dir: string) => { try { const stat = fs.lstatSync(path.join(rootOf(dir), p)); return stat.isFile() ? stat.size : undefined } catch { return undefined } }
+    const over = read.find(({ dir }) => (sizeOf(dir!) ?? 0) > limit)
+    if (!over) continue
+    pathSet.delete(p)
+    // Identical bytes on every side (for example after a copy-mode collect) are the same change: nothing to merge.
+    if (read.length > 1 && read.every(({ dir }) => sameDiskBytes(path.join(rootOf(read[0].dir!), p), path.join(rootOf(dir!), p)))) continue
+    gaps.push({ person: over.person, path: p, why: `over ${overLabel}` })
+    ignoredNotes.push(`NOT ${options.diskOnly ? 'collected' : 'previewed'} (over ${overLabel}): ${p}`)
   }
   for (const p of [...pathSet]) {
     await new Promise<void>(resolve => setImmediate(resolve))

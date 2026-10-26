@@ -23,6 +23,7 @@ describe('worker plumbing', () => {
     expect(prompt).toContain('ask rohanz for scope decisions or unresolved ownership')
     expect(prompt).toContain('Continue independent work while an answer is pending')
     expect(prompt).toContain('TASK: switch to cents')
+    expect(prompt).toContain("write only inside it, never into the lead's checkout or another worker's worktree")
   })
 
   it('uses the resolved channel override and supports disabling it', async () => {

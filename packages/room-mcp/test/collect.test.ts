@@ -679,6 +679,60 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(lead, 'data/input'), 'utf8')).toBe('private')
   })
 
+  it('applies a binary file over the old 512 KB read limit byte-for-byte', async () => {
+    const t = setup()
+    const bytes = Buffer.alloc(1024 * 1024, 7); bytes[0] = 0; bytes[bytes.length - 1] = 255
+    fs.writeFileSync(path.join(worker, 'stem.m4a'), bytes)
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
+    expect(fs.readFileSync(path.join(lead, 'stem.m4a')).equals(bytes)).toBe(true)
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+
+  it('reports competing 1 MB binaries as a conflict and writes nothing', async () => {
+    const t = setup()
+    const mine = Buffer.alloc(1024 * 1024, 1), theirs = Buffer.alloc(1024 * 1024, 2); mine[0] = theirs[0] = 0
+    fs.writeFileSync(path.join(lead, 'art.bin'), mine); fs.writeFileSync(path.join(worker, 'art.bin'), theirs)
+    put(worker, 'new.txt', 'worker output\n')
+    expect(await t.call({ tag: 'test' })).toContain('Nothing written; conflicting files: art.bin')
+    expect(fs.readFileSync(path.join(lead, 'art.bin')).equals(mine)).toBe(true)
+    expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+
+  it('names a worker file over 5 MB with the copy command, then collects after the copy', async () => {
+    const t = setup()
+    const big = Buffer.alloc(6 * 1024 * 1024, 3); big[0] = 0
+    fs.writeFileSync(path.join(worker, 'stems/bass.m4a'.replace('/', '-')), big)
+    put(worker, 'new.txt', 'worker output\n')
+    const refused = await t.call({ tag: 'test' })
+    expect(refused).toContain('NOT collected (over 5 MB): stems-bass.m4a')
+    expect(refused).toContain('Copy them first with room_collect(tag="test", mode="copy", paths=["stems-bass.m4a"]) then collect again.')
+    expect(fs.existsSync(path.join(lead, 'stems-bass.m4a'))).toBe(false)
+    expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['stems-bass.m4a'] })).toContain('copied stems-bass.m4a')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
+    expect(fs.readFileSync(path.join(lead, 'stems-bass.m4a')).equals(big)).toBe(true)
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker output\n')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+
+  it('skips an untouched lead file over 5 MB and reports one the worker also changed', async () => {
+    const t = setup()
+    fs.writeFileSync(path.join(lead, 'huge.bin'), Buffer.alloc(6 * 1024 * 1024, 4))
+    fs.writeFileSync(path.join(lead, 'shared.bin'), Buffer.alloc(6 * 1024 * 1024, 5))
+    fs.writeFileSync(path.join(worker, 'shared.bin'), Buffer.from([0, 1]))
+    put(worker, 'new.txt', 'worker output\n')
+    const refused = await t.call({ tag: 'test' })
+    expect(refused).toContain('NOT collected (over 5 MB): shared.bin')
+    expect(refused).not.toContain('huge.bin')
+    expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+    fs.unlinkSync(path.join(worker, 'shared.bin'))
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker output\n')
+    expect(fs.statSync(path.join(lead, 'huge.bin')).size).toBe(6 * 1024 * 1024)
+  })
+
   it('collects worker output despite more than 2000 unrelated paths committed by the lead', async () => {
     const t = setup()
     for (let i = 0; i < 2001; i++) put(lead, `unrelated/${i}.txt`, 'committed lead input\n')

@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { completionId, completionMessage, highestSeq, manifestPaths, participantRecord, type DoneMsg, type NoteMsg } from '@room/shared'
+import { completionId, completionMessage, highestSeq, manifestPaths, participantRecord, staleWorkersNote, type DoneMsg, type NoteMsg } from '@room/shared'
 import { reconcileProjectedConflicts } from '../conflict-set.js'
 import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
@@ -20,6 +20,7 @@ import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
+import { localWorkerView } from '../worker-projector.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
@@ -326,6 +327,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (wakeNote) out.unshift(wakeNote)
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
+        const stale = staleWorkersNote(myWorkers(s).filter(w => w.id !== id).flatMap(w => localWorkerView(s, w.id) ?? []), now())
+        if (stale) out.push('note: ' + stale)
         if (publication?.pending) out.push('carried preview freshness pending: publication could not be verified; previews including the lead report a gap. Plain room_send retries.')
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; answer its questions promptly.`)

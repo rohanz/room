@@ -69,7 +69,7 @@ async function readHistoricalFromGit(dir: string, base: string, rel: string): Pr
 }
 
 /** Checkout filters can expand a small blob, so cap their output as well as the input blob. */
-export async function readBoundedCheckoutText(dir: string, object: string, rel: string, encoding: BufferEncoding = 'utf8', filtered = true, knownSize?: number): Promise<string | undefined> {
+export async function readBoundedCheckoutText(dir: string, object: string, rel: string, encoding: BufferEncoding = 'utf8', filtered = true, knownSize?: number, limit = DISK_TEXT_LIMIT): Promise<string | undefined> {
   const size = knownSize ?? await new Promise<number | undefined>((resolve, reject) => {
     const args = ['cat-file', '-s', object], done = observeGit(args)
     execFile('git', args, { cwd: dir, timeout: 30_000, maxBuffer: 4096 }, (error, stdout, stderr) => {
@@ -79,11 +79,11 @@ export async function readBoundedCheckoutText(dir: string, object: string, rel: 
     })
   })
   if (size === undefined) return undefined
-  if (!Number.isSafeInteger(size) || size < 0 || size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel)
+  if (!Number.isSafeInteger(size) || size < 0 || size > limit) throw new HistoricalTextTooLarge(rel)
   return new Promise<string | undefined>((resolve, reject) => {
     const args = filtered ? ['cat-file', '--filters', `--path=${rel}`, object] : ['cat-file', '-p', object]
     const done = observeGit(args)
-    execFile('git', args, { cwd: dir, encoding: 'buffer', timeout: 30_000, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error, stdout, stderr) => {
+    execFile('git', args, { cwd: dir, encoding: 'buffer', timeout: 30_000, maxBuffer: limit + 1 }, (error, stdout, stderr) => {
       done()
       if (error) {
         if ((error as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') reject(new HistoricalTextTooLarge(rel))
@@ -91,14 +91,14 @@ export async function readBoundedCheckoutText(dir: string, object: string, rel: 
         else reject(error)
         return
       }
-      if (stdout.length > DISK_TEXT_LIMIT) { reject(new HistoricalTextTooLarge(rel)); return }
+      if (stdout.length > limit) { reject(new HistoricalTextTooLarge(rel)); return }
       resolve(stdout.toString(encoding))
     })
   })
 }
 
 /** Read from one descriptor, with a hard byte limit even if the file grows after stat. */
-export async function readBoundedDiskText(file: string, encoding: BufferEncoding = 'utf8', boundary?: { root: string; path: string }): Promise<string> {
+export async function readBoundedDiskText(file: string, encoding: BufferEncoding = 'utf8', boundary?: { root: string; path: string }, limit = DISK_TEXT_LIMIT): Promise<string> {
   const handle = await fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
   try {
     const stat = await handle.stat()
@@ -111,14 +111,14 @@ export async function readBoundedDiskText(file: string, encoding: BufferEncoding
     }
     verify()
     if (!stat.isFile()) throw new Error('not a file: ' + file)
-    if (stat.size > DISK_TEXT_LIMIT) throw new Error(`file too large for Room read (${stat.size} bytes): ${file}`)
-    const bytes = Buffer.allocUnsafe(DISK_TEXT_LIMIT + 1)
+    if (stat.size > limit) throw new Error(`file too large for Room read (${stat.size} bytes): ${file}`)
+    const bytes = Buffer.allocUnsafe(limit + 1)
     let used = 0
-    while (used <= DISK_TEXT_LIMIT) {
+    while (used <= limit) {
       const { bytesRead } = await handle.read(bytes, used, Math.min(64 * 1024, bytes.length - used), null)
       if (bytesRead === 0) { verify(); return bytes.subarray(0, used).toString(encoding) }
       used += bytesRead
     }
-    throw new Error(`file too large for Room read (over ${DISK_TEXT_LIMIT} bytes): ${file}`)
+    throw new Error(`file too large for Room read (over ${limit} bytes): ${file}`)
   } finally { await handle.close() }
 }

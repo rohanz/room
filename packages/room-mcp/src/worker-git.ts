@@ -330,7 +330,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
         const link = fs.readlinkSync(source)
         if (path.isAbsolute(link)) { skippedCarry.push({ path: rel, reason: 'absolute link' }); continue }
       }
-      if (stat.isFile() && (stat.size > 5 * 1024 * 1024 || totalBytes + stat.size > 50 * 1024 * 1024)) { skippedCarry.push({ path: rel, reason: 'size budget' }); continue }
+      if (stat.isFile() && (stat.size > CARRY_FILE_LIMIT || totalBytes + stat.size > 50 * 1024 * 1024)) { skippedCarry.push({ path: rel, reason: 'size budget' }); continue }
       fs.mkdirSync(path.dirname(target), { recursive: true })
       if (stat.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(source), target)
       else {
@@ -541,8 +541,11 @@ export async function saveDiscardPatch(leadDir: string, w: LocalWorker,
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }
 
+/** Per-file cap for carry at spawn; collection (collect.ts) uses the same ceiling. */
+export const CARRY_FILE_LIMIT = 5 * 1024 * 1024
+
 /** Carry's limits bound saved scratch too. */
-const SCRATCH_FILE_LIMIT = 5 * 1024 * 1024, SCRATCH_TOTAL_LIMIT = 50 * 1024 * 1024
+const SCRATCH_FILE_LIMIT = CARRY_FILE_LIMIT, SCRATCH_TOTAL_LIMIT = 50 * 1024 * 1024
 const SCRATCH_DIR = path.join('.room', 'scratch')
 
 /**

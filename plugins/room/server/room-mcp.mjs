@@ -17477,12 +17477,18 @@ function claimLine(claim2, options = {}) {
 function areaMembershipSummary(areas) {
   return areas.length ? `areas ${Array.from(new Set(areas)).sort().join(", ")}` : "";
 }
+function staleWorkersNote(workers, now = Date.now()) {
+  const stale = workers.filter((w) => uncollected(w) && now - w.finishedAt >= STALE_WORKER_MS);
+  if (!stale.length) return void 0;
+  const oldest = Math.min(...stale.map((w) => w.finishedAt));
+  return `${formatCount(stale.length, "finished worker")} uncollected for ${ago(now - oldest)} (${stale.map((w) => w.tag).join(", ")}): collect or discard them; their final publications still take part in conflict checks.`;
+}
 function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last: last2, activity, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const showActivity = activity && workerLive(w.status) && !processGone && (!w.stopReason || stoppedWithSession(w));
   if (showActivity) lastActive = Math.max(lastActive ?? 0, activity.at);
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
-  const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status);
+  const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : uncollected(w) ? `${w.status}, uncollected for ${ago(now - w.finishedAt)}` : w.status);
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${w.followUp ? ` \xB7 follow-up: ${w.followUp.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`,
@@ -17494,6 +17500,8 @@ function workerLines(inputs, options = {}) {
   if (!inputs.length && !retired.length) return [];
   const visibleRetired = options.all ? retired : retired.filter((w) => !!w.keptWorktree);
   const out = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
+  const stale = staleWorkersNote(inputs.map((input) => input.worker), inputs[0]?.now);
+  if (stale) out.push("  " + stale);
   for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
     const state = w.disposition === "stopped" ? stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : `stopped (${w.stopReason ?? "reason unknown"})`) : w.disposition ?? w.outcome;
     const kept = w.keptWorktree ? `, kept: ${w.keptReason ?? (w.summary.startsWith("kept for ") ? w.summary.slice(9) : `worktree at ${w.keptWorktree}`)}` : "";
@@ -17537,7 +17545,7 @@ function unresolvedLines(roomName, entries, messagesTo, maxNames = 5) {
   if (groups.size > maxNames) out.push(`+${groups.size - maxNames} more unresolved names`);
   return out;
 }
-var ROOM_STALE_MS, AWARENESS_FRESH_MS, STOPPED_WITH_SESSION, STOP_REQUESTED_WITH_SESSION, STOP_UNCONFIRMED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, IDLE_SHOWN_MIN, scopeLine, WORKER_ACTIVITY_MAX, ago;
+var ROOM_STALE_MS, AWARENESS_FRESH_MS, STOPPED_WITH_SESSION, STOP_REQUESTED_WITH_SESSION, STOP_UNCONFIRMED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, IDLE_SHOWN_MIN, scopeLine, WORKER_ACTIVITY_MAX, ago, uncollected, STALE_WORKER_MS;
 var init_views = __esm({
   "packages/shared/src/views.ts"() {
     "use strict";
@@ -17561,6 +17569,8 @@ var init_views = __esm({
       const seconds = Math.max(0, Math.floor(ms2 / 1e3));
       return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h` : `${Math.floor(seconds / 86400)}d`;
     };
+    uncollected = (w) => (w.status === "done" || w.status === "failed") && !w.stopReason && w.finishedAt !== void 0;
+    STALE_WORKER_MS = 60 * 60 * 1e3;
   }
 });
 
@@ -32372,7 +32382,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.23",
+      version: "0.17.24",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -32609,7 +32619,7 @@ function workerPrompt(lead, tag, task, context2) {
     `room_scope first, claim before editing. Ask the peer responsible for a dependency directly with room_send(type "question", to "<returned peer name>"); ask ${lead} for scope decisions or unresolved ownership.`,
     `Continue independent work while an answer is pending. If blocked, use room_wait(questionId) for that answer or room_wait(claimId) for the blocking claim; a timeout is not an answer or approval. Permission decisions stay with the human.`,
     `Choose task-appropriate validation: focused checks for your changes and, when needed, room_preview_merge with named peers for affected interfaces; send failures to their owner. Preview current overlapping work before finishing, then room_done with a one-line summary and finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
-    `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
+    `Do not commit or push unless the task says so. You are on your own git worktree and branch; write only inside it, never into the lead's checkout or another worker's worktree: outputs the lead needs come back through collection. The lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
     `Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.`,
     `On Claude Code with documented background-command lifetime and completion delivery (verified on 2.1.300), use host-managed background commands when responsiveness matters; await completion and inspect the actual result before room_done. On unverified hosts, including Codex, use foreground commands until background lifetime and completion delivery are verified. See room-etiquette for host limits; process exit can terminate unmanaged jobs.`,
@@ -34344,7 +34354,7 @@ async function readHistoricalFromGit(dir, base, rel) {
   if (blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel);
   return readBoundedCheckoutText(dir, blob.hash, rel, "utf8", false, blob.size);
 }
-async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize) {
+async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize, limit = DISK_TEXT_LIMIT) {
   const size2 = knownSize ?? await new Promise((resolve5, reject) => {
     const args2 = ["cat-file", "-s", object4], done = observeGit(args2);
     execFile8("git", args2, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
@@ -34358,11 +34368,11 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
     });
   });
   if (size2 === void 0) return void 0;
-  if (!Number.isSafeInteger(size2) || size2 < 0 || size2 > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel);
+  if (!Number.isSafeInteger(size2) || size2 < 0 || size2 > limit) throw new HistoricalTextTooLarge(rel);
   return new Promise((resolve5, reject) => {
     const args2 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object4] : ["cat-file", "-p", object4];
     const done = observeGit(args2);
-    execFile8("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
+    execFile8("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: limit + 1 }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
         if (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reject(new HistoricalTextTooLarge(rel));
@@ -34370,7 +34380,7 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
         else reject(error2);
         return;
       }
-      if (stdout.length > DISK_TEXT_LIMIT) {
+      if (stdout.length > limit) {
         reject(new HistoricalTextTooLarge(rel));
         return;
       }
@@ -34378,7 +34388,7 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
     });
   });
 }
-async function readBoundedDiskText(file, encoding = "utf8", boundary) {
+async function readBoundedDiskText(file, encoding = "utf8", boundary, limit = DISK_TEXT_LIMIT) {
   const handle = await fs23.promises.open(file, fs23.constants.O_RDONLY | (fs23.constants.O_NOFOLLOW ?? 0));
   try {
     const stat4 = await handle.stat();
@@ -34391,10 +34401,10 @@ async function readBoundedDiskText(file, encoding = "utf8", boundary) {
     };
     verify();
     if (!stat4.isFile()) throw new Error("not a file: " + file);
-    if (stat4.size > DISK_TEXT_LIMIT) throw new Error(`file too large for Room read (${stat4.size} bytes): ${file}`);
-    const bytes = Buffer.allocUnsafe(DISK_TEXT_LIMIT + 1);
+    if (stat4.size > limit) throw new Error(`file too large for Room read (${stat4.size} bytes): ${file}`);
+    const bytes = Buffer.allocUnsafe(limit + 1);
     let used = 0;
-    while (used <= DISK_TEXT_LIMIT) {
+    while (used <= limit) {
       const { bytesRead } = await handle.read(bytes, used, Math.min(64 * 1024, bytes.length - used), null);
       if (bytesRead === 0) {
         verify();
@@ -34402,7 +34412,7 @@ async function readBoundedDiskText(file, encoding = "utf8", boundary) {
       }
       used += bytesRead;
     }
-    throw new Error(`file too large for Room read (over ${DISK_TEXT_LIMIT} bytes): ${file}`);
+    throw new Error(`file too large for Room read (over ${limit} bytes): ${file}`);
   } finally {
     await handle.close();
   }
@@ -34735,6 +34745,29 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     if (!await settler.settle(result2.settledWorkers())) throw new PreviewMoved(result2.moved());
   }
 }
+function sameDiskBytes(a, b) {
+  if (a === b) return true;
+  const flags = fs26.constants.O_RDONLY | (fs26.constants.O_NOFOLLOW ?? 0);
+  let fa, fb;
+  try {
+    fa = fs26.openSync(a, flags);
+    fb = fs26.openSync(b, flags);
+    const sa = fs26.fstatSync(fa), sb = fs26.fstatSync(fb);
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
+    const ba = Buffer.allocUnsafe(64 * 1024), bb = Buffer.allocUnsafe(64 * 1024);
+    for (let offset = 0; offset < sa.size; ) {
+      const na = fs26.readSync(fa, ba, 0, ba.length, offset), nb = fs26.readSync(fb, bb, 0, bb.length, offset);
+      if (na !== nb || na === 0 || !ba.subarray(0, na).equals(bb.subarray(0, nb))) return false;
+      offset += na;
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fa !== void 0) fs26.closeSync(fa);
+    if (fb !== void 0) fs26.closeSync(fb);
+  }
+}
 function ignoredOutputNotes(byPerson) {
   const notes = [], kinds = /* @__PURE__ */ new Set(), owners = [];
   let count = 0, allFolders = true;
@@ -34770,6 +34803,7 @@ function scratchCollectNote(byPerson, tagOf, outcome) {
 }
 async function buildCombinedTreeOnce(state, caller, participants, options = {}) {
   const { rooms, baseFor } = state;
+  const limit = options.limit ?? DISK_TEXT_LIMIT;
   const people = participants.map((p) => p.person);
   const snapshots = /* @__PURE__ */ new Map();
   const acceptedRecords = /* @__PURE__ */ new Map();
@@ -34898,7 +34932,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       const result2 = containedRepoPath(root, path24.join(root, p), { leaf: "read-contained-link" });
       if (!result2.ok) throw new Error("unsafe preview symlink: " + p);
       const file = result2.path;
-      return await readBoundedDiskText(file, options.encoding ?? "utf8", { root, path: path24.join(root, p) });
+      return await readBoundedDiskText(file, options.encoding ?? "utf8", { root, path: path24.join(root, p) }, limit);
     } catch (e) {
       if (e.code === "ENOENT") return null;
       throw e;
@@ -35205,8 +35239,8 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const key2 = sha + ":" + p;
     if (!baseTexts.has(key2)) {
       const blob = (await infoAt(sha)).get(p);
-      if (blob && blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(p);
-      baseTexts.set(key2, blob ? await (!options.encoding || options.encoding === "utf8" ? gitAt(sha, p, blob.size) : readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size)) ?? null : null);
+      if (blob && blob.size > limit) throw new HistoricalTextTooLarge(p);
+      baseTexts.set(key2, blob ? await (!options.encoding || options.encoding === "utf8" ? gitAt(sha, p, blob.size) : readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size, limit)) ?? null : null);
     }
     return baseTexts.get(key2);
   };
@@ -35217,7 +35251,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const sha = pair.untracked.get(p).sha, key2 = pair.dir + "\0" + sha + "\0" + p;
     let text = carriedTexts.get(key2);
     if (!text) {
-      text = readBoundedCheckoutText(pair.dir, sha, p, options.encoding).then((carried) => {
+      text = readBoundedCheckoutText(pair.dir, sha, p, options.encoding, true, void 0, limit).then((carried) => {
         if (carried === void 0) throw new MissingBaseBlob(p);
         return carried;
       });
@@ -35271,6 +35305,28 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       ignoredNotes.push(`NOT previewed: ${p}: ${workers.join(", ")} start from different delivered versions; include ${leads.join(", ") || "their lead"} in the preview`);
       pathSet.delete(p);
     }
+  }
+  const diskSides = [
+    { person: anchorName, dir: anchor3 ? previewWorker(anchor3.session, anchorName)?.dir ?? (anchor3.session === caller && anchorName === caller.me.name ? caller.dir : void 0) : caller.dir },
+    ...contributors.map(({ person, session }) => ({ person, dir: previewWorker(session, person)?.dir ?? (session === caller && person === caller.me.name ? caller.dir : void 0) }))
+  ];
+  const overLabel = limit >= 1024 * 1024 ? `${limit / (1024 * 1024)} MB` : `${limit / 1024} KB`;
+  for (const p of [...pathSet]) {
+    const read3 = diskSides.filter(({ person, dir }) => dir && (person === anchorName || !(leftAlone(person, p) || scratchBy.get(person)?.has(p))));
+    const sizeOf3 = (dir) => {
+      try {
+        const stat4 = fs26.lstatSync(path24.join(rootOf(dir), p));
+        return stat4.isFile() ? stat4.size : void 0;
+      } catch {
+        return void 0;
+      }
+    };
+    const over = read3.find(({ dir }) => (sizeOf3(dir) ?? 0) > limit);
+    if (!over) continue;
+    pathSet.delete(p);
+    if (read3.length > 1 && read3.every(({ dir }) => sameDiskBytes(path24.join(rootOf(read3[0].dir), p), path24.join(rootOf(dir), p)))) continue;
+    gaps.push({ person: over.person, path: p, why: `over ${overLabel}` });
+    ignoredNotes.push(`NOT ${options.diskOnly ? "collected" : "previewed"} (over ${overLabel}): ${p}`);
   }
   for (const p of [...pathSet]) {
     await new Promise((resolve5) => setImmediate(resolve5));
@@ -42839,7 +42895,7 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
           continue;
         }
       }
-      if (stat4.isFile() && (stat4.size > 5 * 1024 * 1024 || totalBytes + stat4.size > 50 * 1024 * 1024)) {
+      if (stat4.isFile() && (stat4.size > CARRY_FILE_LIMIT || totalBytes + stat4.size > 50 * 1024 * 1024)) {
         skippedCarry.push({ path: rel, reason: "size budget" });
         continue;
       }
@@ -42946,14 +43002,14 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false, t
       } catch {
       }
       const currentHead = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
-      const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w, capturedHead)]);
+      const [ignored, uncollected2] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w, capturedHead)]);
       const committedPaths2 = capturedHead && capturedHead !== currentHead ? (await git(w.dir, ["diff", "--no-renames", "--name-only", "-z", capturedHead, currentHead, "--", ".", ...workerOwnedPaths(w).exclusions])).split("\0").filter(Boolean).sort() : void 0;
       if (preservation) {
         preservation.ignored = ignored;
-        preservation.uncollected = uncollected;
+        preservation.uncollected = uncollected2;
         if (committedPaths2) preservation.commitsAfterCollection = { sha: currentHead.slice(0, 12), paths: committedPaths2 };
       }
-      if (ignored.length || uncollected.length || committedPaths2) return false;
+      if (ignored.length || uncollected2.length || committedPaths2) return false;
     }
     if (!await available()) return false;
     const tip = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
@@ -43150,7 +43206,7 @@ function saveWorkerScratch(leadRoot, workers) {
   }
   return { saved, skipped };
 }
-var WORKERS_DIR, collectHeadRef, collectBaseRef, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, SCRATCH_FILE_LIMIT, SCRATCH_TOTAL_LIMIT, SCRATCH_DIR;
+var WORKERS_DIR, collectHeadRef, collectBaseRef, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, CARRY_FILE_LIMIT, SCRATCH_FILE_LIMIT, SCRATCH_TOTAL_LIMIT, SCRATCH_DIR;
 var init_worker_git = __esm({
   "packages/room-mcp/src/worker-git.ts"() {
     "use strict";
@@ -43169,7 +43225,8 @@ var init_worker_git = __esm({
     carryRef = (tag) => `refs/room/carry/${tag}`;
     carriedUntrackedRef = (tag) => `refs/room/carry-untracked/${tag}`;
     pathExcluded = (rel, exclusions) => exclusions.some((p) => rel === p || rel.startsWith(p.replace(/\/$/, "") + "/"));
-    SCRATCH_FILE_LIMIT = 5 * 1024 * 1024;
+    CARRY_FILE_LIMIT = 5 * 1024 * 1024;
+    SCRATCH_FILE_LIMIT = CARRY_FILE_LIMIT;
     SCRATCH_TOTAL_LIMIT = 50 * 1024 * 1024;
     SCRATCH_DIR = path37.join(".room", "scratch");
   }
@@ -57565,6 +57622,7 @@ var Rooms = class _Rooms {
 init_session();
 init_worker_config();
 init_worker_git();
+init_worker_projector();
 init_context();
 init_config();
 init_worker_registry();
@@ -58153,6 +58211,8 @@ function handlers4(state) {
         if (wakeNote) out.unshift(wakeNote);
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB \xB7 priority ${nice ? `nice ${nice}` : "normal"}${link.length ? ` \xB7 inputs ${link.join(", ")}` : ""}`);
         out.push(`log: ${logFile}`);
+        const stale = staleWorkersNote(myWorkers(s).filter((w) => w.id !== id3).flatMap((w) => localWorkerView(s, w.id) ?? []), now());
+        if (stale) out.push("note: " + stale);
         if (publication?.pending) out.push("carried preview freshness pending: publication could not be verified; previews including the lead report a gap. Plain room_send retries.");
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`);
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? "this room" : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; answer its questions promptly.`);
@@ -62479,7 +62539,7 @@ var defs9 = [{
   } }
 }];
 var split = (value2) => value2.split("\0").filter(Boolean);
-var COLLECT_TEXT_LIMIT = 512 * 1024;
+var COLLECT_FILE_LIMIT = CARRY_FILE_LIMIT;
 var COLLECT_YIELD_EVERY = 32;
 var COPY_INSTALL_LIMIT = 4096;
 var EXIT_WAIT_MS = 15e3;
@@ -62499,7 +62559,7 @@ function sameIdentity(a, b) {
 }
 function boundedCollectText(file, expected) {
   if (expected === null) return null;
-  if (expected.size > COLLECT_TEXT_LIMIT) throw new Error(file + " exceeds collection text limit; nothing written");
+  if (expected.size > COLLECT_FILE_LIMIT) throw new Error(file + " exceeds collection text limit; nothing written");
   const fd = fs57.openSync(file, fs57.constants.O_RDONLY | (fs57.constants.O_NOFOLLOW ?? 0));
   try {
     const stat4 = fs57.fstatSync(fd);
@@ -63080,7 +63140,7 @@ repeat with force=true to delete them`;
           const dst = safePath(leadRoot, p);
           const destination = fileIdentity(dst);
           if (a.force !== true && (modified.has(p) || !tracked.has(p) && destination !== null)) {
-            if (destination === null || destination.size !== source.size || source.size > COLLECT_TEXT_LIMIT || !await sameFileBytes(dst, src, source.size)) return "error: lead has modified " + p + "; pass force=true to overwrite";
+            if (destination === null || destination.size !== source.size || source.size > COLLECT_FILE_LIMIT || !await sameFileBytes(dst, src, source.size)) return "error: lead has modified " + p + "; pass force=true to overwrite";
             if (!sameIdentity(source, fileIdentity(src)) || !sameIdentity(destination, fileIdentity(dst))) throw new Error(p + " changed during collection; nothing written, retry");
           }
           copyPlan.push({ p, source, destination });
@@ -63148,13 +63208,20 @@ repeat with force=true to delete them`;
           diskOnly: true,
           encoding: "latin1",
           skipCallerOnly: true,
+          limit: COLLECT_FILE_LIMIT,
           roots: new Map([[path56.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path56.resolve(w.dir), workerRoots.get(w)])])
         }
       );
       const provenance = result2.gaps.filter((gap) => gap.kind === "provenance");
       if (provenance.length) return [...out, "Nothing written; preview provenance is incomplete: " + provenance.map((gap) => `${gap.person}${gap.path ? ": " + gap.path : ""}: ${gap.why}`).join("; ") + ". All selected workers kept."].join("\n");
       const unsupported = result2.ignoredNotes.filter((note) => !note.includes("gitignored") && !note.includes("linked input"));
-      if (unsupported.length) return [...out, "Nothing written; files need manual collection: " + unsupported.join("; ") + ". All selected workers kept."].join("\n");
+      if (unsupported.length) {
+        const remedy = selected.map(({ w }) => {
+          const large = result2.gaps.filter((gap) => gap.person === w.name && gap.path && gap.why.startsWith("over ")).map((gap) => gap.path);
+          return large.length ? ` Copy them first with room_collect(tag="${w.tag}", mode="copy", paths=${JSON.stringify(large)}) then collect again.` : "";
+        }).join("");
+        return [...out, "Nothing written; files need manual collection: " + unsupported.join("; ") + ". All selected workers kept." + remedy].join("\n");
+      }
       const tags = (names) => names.map((name) => selected.find((x) => x.w.name === name)?.w.tag ?? "your edits").join(", ");
       if (result2.conflictingPaths.size) return [...out, "Nothing written; conflicting files: " + [...result2.conflictingPaths].map(([p, names]) => p + " (" + tags(names) + ")").join("; "), "Collect one at a time, or resolve by hand using room_read."].join("\n");
       const snapshots = /* @__PURE__ */ new Map();

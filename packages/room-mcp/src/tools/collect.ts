@@ -6,7 +6,7 @@ import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, saveWorkerScratch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, saveWorkerScratch, workerOwnedPaths, CARRY_FILE_LIMIT, type WorkerCleanupPreservation } from '../worker-git.js'
 import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree, scratchCollectNote } from './combined-tree.js'
@@ -37,7 +37,8 @@ export const defs: ToolDef[] = [{
 }]
 
 const split = (value: string) => value.split('\0').filter(Boolean)
-const COLLECT_TEXT_LIMIT = 512 * 1024
+/** Per-file collection ceiling: the carry and scratch cap, so whatever a worker could receive it can return. */
+const COLLECT_FILE_LIMIT = CARRY_FILE_LIMIT
 const COLLECT_YIELD_EVERY = 32
 const COPY_INSTALL_LIMIT = 4_096
 /** How long collect waits for a finished worker's host to exit; room_wait's done notice states it. */
@@ -61,7 +62,7 @@ function sameIdentity(a: FileIdentity, b: FileIdentity): boolean {
 /** The descriptor is checked both before and after the bounded read. */
 function boundedCollectText(file: string, expected: FileIdentity): Buffer | null {
   if (expected === null) return null
-  if (expected.size > COLLECT_TEXT_LIMIT) throw new Error(file + ' exceeds collection text limit; nothing written')
+  if (expected.size > COLLECT_FILE_LIMIT) throw new Error(file + ' exceeds collection text limit; nothing written')
   const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
   try {
     const stat = fs.fstatSync(fd)
@@ -609,7 +610,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (a.force !== true && (modified.has(p) || (!tracked.has(p) && destination !== null))) {
             // Large matching files are a conservative conflict. Explicit force can
             // still copy them without bringing their bytes into JS for comparison.
-            if (destination === null || destination.size !== source.size || source.size > COLLECT_TEXT_LIMIT || !await sameFileBytes(dst, src, source.size)) return 'error: lead has modified ' + p + '; pass force=true to overwrite'
+            if (destination === null || destination.size !== source.size || source.size > COLLECT_FILE_LIMIT || !await sameFileBytes(dst, src, source.size)) return 'error: lead has modified ' + p + '; pass force=true to overwrite'
             if (!sameIdentity(source, fileIdentity(src)) || !sameIdentity(destination, fileIdentity(dst))) throw new Error(p + ' changed during collection; nothing written, retry')
           }
           copyPlan.push({ p, source, destination })
@@ -675,13 +676,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Latin-1 transports bytes losslessly through the text engine, including binary additions.
       const result = await buildCombinedTree({ ...state, baseFor: (_s, person) => heads.get(person)!, shareOf: () => 'full' }, lead,
         selected.map(({ s, w }) => ({ session: s, person: w.name })), {
-          diskOnly: true, encoding: 'latin1', skipCallerOnly: true,
+          diskOnly: true, encoding: 'latin1', skipCallerOnly: true, limit: COLLECT_FILE_LIMIT,
           roots: new Map([[path.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path.resolve(w.dir), workerRoots.get(w)!] as const)]),
         })
       const provenance = result.gaps.filter(gap => gap.kind === 'provenance')
       if (provenance.length) return [...out, 'Nothing written; preview provenance is incomplete: ' + provenance.map(gap => `${gap.person}${gap.path ? ': ' + gap.path : ''}: ${gap.why}`).join('; ') + '. All selected workers kept.'].join('\n')
       const unsupported = result.ignoredNotes.filter(note => !note.includes('gitignored') && !note.includes('linked input'))
-      if (unsupported.length) return [...out, 'Nothing written; files need manual collection: ' + unsupported.join('; ') + '. All selected workers kept.'].join('\n')
+      if (unsupported.length) {
+        // Over-limit worker files have one remedy: copy them, so the next collect sees the same bytes on both sides.
+        const remedy = selected.map(({ w }) => {
+          const large = result.gaps.filter(gap => gap.person === w.name && gap.path && gap.why.startsWith('over ')).map(gap => gap.path!)
+          return large.length ? ` Copy them first with room_collect(tag="${w.tag}", mode="copy", paths=${JSON.stringify(large)}) then collect again.` : ''
+        }).join('')
+        return [...out, 'Nothing written; files need manual collection: ' + unsupported.join('; ') + '. All selected workers kept.' + remedy].join('\n')
+      }
       const tags = (names: string[]) => names.map(name => selected.find(x => x.w.name === name)?.w.tag ?? 'your edits').join(', ')
       if (result.conflictingPaths.size) return [...out, 'Nothing written; conflicting files: ' + [...result.conflictingPaths].map(([p, names]) => p + ' (' + tags(names) + ')').join('; '), 'Collect one at a time, or resolve by hand using room_read.'].join('\n')
       const snapshots = new Map<string, Awaited<ReturnType<typeof keptSnapshot>>>()

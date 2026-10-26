@@ -163,7 +163,7 @@ describe('room_collect', () => {
   })
 
   it('treats an oversized matching copy destination as a conflict until force is explicit', async () => {
-    const large = Buffer.alloc(512 * 1024 + 1, 65)
+    const large = Buffer.alloc(5 * 1024 * 1024 + 1, 65)
     fs.writeFileSync(path.join(worker, 'large.bin'), large)
     fs.writeFileSync(path.join(lead, 'large.bin'), large)
     const t = setup()

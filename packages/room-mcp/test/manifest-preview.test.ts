@@ -379,3 +379,13 @@ it.skipIf(process.env.TEST_SCALE !== '1')('S1 keeps a manifest-overlapping peer 
   expect(session.lastPreview?.complete).toBe(false)
   // 2,001 real files, a commit and two previews: the assertions are on outcomes; the limit only bounds a stuck run.
 }, 120_000)
+
+it('keeps the 512 KB default for local files in a preview and names the file instead of failing', async () => {
+  const { entries, texts, state } = fixture()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'x'.repeat(512 * 1024 + 1))
+  const changed = 'ben replacement\n'
+  entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(changed), size: changed.length, at: 1, fence: '1' })
+  texts.set('app.py', new Y.Text(changed))
+  const preview = await handlers(state).room_preview_merge({ person: 'ben' })
+  expect(preview).toContain('NOT previewed (over 512 KB): app.py')
+})

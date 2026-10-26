@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { workerLine, type WorkerView } from '@room/shared'
+import { staleWorkersNote, workerLine, workerLines, type WorkerView } from '@room/shared'
 import { WorkerActivityTracker } from '../src/worker-activity.js'
 import { defaultSpawner } from '../src/worker-process.js'
 
@@ -264,6 +264,17 @@ describe('workerLine last activity', () => {
     expect(workerLine({ worker: view, changedCount: 1, now: 60_000 })).toHaveLength(2)
     expect(workerLine({ worker: { ...view, status: 'done' }, changedCount: 1, now: 60_000, activity: { label: 'editing a', at: 1 } })).toHaveLength(2)
     expect(workerLine({ worker: view, processGone: true, changedCount: 1, now: 60_000, activity: { label: 'editing a', at: 1 } })).toHaveLength(2)
+  })
+  it('says how long a finished worker has waited for collection, and flags stale ones in the list', () => {
+    const done = { ...view, status: 'done' as const, finishedAt: 30 * 60_000 }
+    expect(workerLine({ worker: done, changedCount: 1, now: 90 * 60_000 })[0]).toContain('done, uncollected for 1h')
+    expect(workerLine({ worker: { ...done, stopReason: 'discarded' }, changedCount: 1, now: 90 * 60_000 })[0]).not.toContain('uncollected')
+    expect(staleWorkersNote([done], 60 * 60_000)).toBeUndefined()
+    expect(staleWorkersNote([done, { ...done, tag: 'ui', finishedAt: 0 }, view], 90 * 60_000))
+      .toBe('2 finished workers uncollected for 1h (tax, ui): collect or discard them; their final publications still take part in conflict checks.')
+    const listed = workerLines([{ worker: done, changedCount: 1, now: 90 * 60_000 }, { worker: view, changedCount: 0, now: 90 * 60_000 }])
+    expect(listed.at(-1)).toBe('  1 finished worker uncollected for 1h (tax): collect or discard them; their final publications still take part in conflict checks.')
+    expect(workerLines([{ worker: done, changedCount: 1, now: 60 * 60_000 }]).join('\n')).not.toContain('collect or discard')
   })
   it('caps a long label', () => {
     expect(workerLine({ worker: view, changedCount: 0, now: 5_000, activity: { label: 'x'.repeat(300), at: 0 } })[2].length).toBeLessThanOrEqual(6 + 80 + ' · 5s ago'.length)

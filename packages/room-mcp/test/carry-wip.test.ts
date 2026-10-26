@@ -618,7 +618,8 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   })
 
   it('(G2) collect still refuses a large carried tracked file the worker changed', async () => {
-    const big = Array.from({ length: 40_000 }, (_, i) => `generated line ${i}`).join('\n') + '\n'
+    // Over collection's 5 MB per-file ceiling (the carry cap); smaller files now merge like any text.
+    const big = Array.from({ length: 300_000 }, (_, i) => `generated line ${i}`).join('\n') + '\n'
     put(repo, 'bundle.mjs', big); git(repo, 'add', 'bundle.mjs'); git(repo, 'commit', '-qm', 'bundle'); head = git(repo, 'rev-parse', 'HEAD')
     put(repo, 'bundle.mjs', big + '// lead rebuild\n')
     const t = world()
