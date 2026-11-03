@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.26
 
 - Preview cache: collecting or discarding a worker removes its clone's cached `room-preview` worktree, and every preview or worker cleanup reclaims entries whose clone no longer exists. Since 0.17.0 (2026-09-30) worker cleanup only migrated legacy slots, so a 1 MB entry under the 4 GB cap stayed registered and locked forever; a user's repository still carried one from a 2026-10-22 batch. Ownership is the existing OS file lock, so an entry in use, including a check orphaned by a crash, is left for a later pass.
 - Team login: a server that was down or cold at first contact was cached as "no GitHub login" for the life of the process, so github.com rooms and `room_login` said there was nothing to log in to until restart. Only a real `/auth/config` answer is cached now.
