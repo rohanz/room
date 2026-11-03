@@ -39880,10 +39880,10 @@ async function serverAuthConfig(server) {
       const b = await res.json();
       if (b.github === "device") cfg.mode = "device";
       cfg.providers = (b.providers ?? (cfg.mode === "device" ? ["github"] : [])).filter((p) => p === "github" || p === "oidc");
+      configCache.set(server, cfg);
     }
   } catch {
   }
-  configCache.set(server, cfg);
   return cfg;
 }
 async function serverAuthMode(server) {
@@ -42227,10 +42227,54 @@ async function migrateLegacySlots(cloneDir, repoDir = cloneDir) {
     }
   }
 }
+async function removeCloneEntries(repoDir, folder, cloneGone) {
+  await rejectPreviewLink(folder);
+  if (await isLegacyTree(folder)) return;
+  for (const name of await fs40.promises.readdir(folder).catch(() => [])) {
+    if (!/^shared-[a-f0-9]{16}$/.test(name)) continue;
+    const entry = path36.join(folder, name);
+    const unlock = await tryPreviewLock(entry).catch(() => void 0);
+    if (!unlock) continue;
+    try {
+      if (await removePreviewEntry(repoDir, entry, true) && cloneGone) await fs40.promises.rm(`${entry}.lock`, { force: true });
+    } finally {
+      await unlock();
+    }
+  }
+  if (!cloneGone) return;
+  const left = await fs40.promises.readdir(folder).catch(() => void 0);
+  if (left && left.every((name) => name === "clone.json")) await fs40.promises.rm(folder, { recursive: true, force: true });
+}
+async function reclaimOrphanEntries(repoDir) {
+  const base = path36.join(await fs40.promises.realpath(await gitCommonDir(repoDir)), "room-preview");
+  await rejectPreviewLink(base);
+  for (const name of await fs40.promises.readdir(base).catch(() => [])) {
+    if (!/^[a-f0-9]{20}(?:\.slots)?$/.test(name)) continue;
+    const folder = path36.join(base, name);
+    let clone2;
+    try {
+      clone2 = JSON.parse(await fs40.promises.readFile(path36.join(folder, "clone.json"), "utf8")).path;
+    } catch {
+      continue;
+    }
+    if (typeof clone2 !== "string" || !path36.isAbsolute(clone2)) continue;
+    const exists = await fs40.promises.lstat(clone2).then(() => true, (error2) => error2.code !== "ENOENT");
+    if (!exists) await removeCloneEntries(repoDir, folder, true);
+  }
+}
+function previewMaintenance(work, label, into = previewMigrations) {
+  const task = work.catch((error2) => console.warn(`${label}:`, error2));
+  into.add(task);
+  void task.finally(() => into.delete(task));
+}
 async function removePreviewCache(cloneDir, repoDir = cloneDir) {
-  const migration = migrateLegacySlots(cloneDir, repoDir).catch((error2) => console.warn("room preview migration:", error2));
-  previewMigrations.add(migration);
-  void migration.finally(() => previewMigrations.delete(migration));
+  previewMaintenance(migrateLegacySlots(cloneDir, repoDir), "room preview migration");
+  previewMaintenance((async () => {
+    const key2 = await previewKeyPath(cloneDir, repoDir);
+    const cloneGone = !fs40.existsSync(cloneDir);
+    for (const folder of [key2, `${key2}.slots`]) await removeCloneEntries(repoDir, folder, cloneGone);
+    await reclaimOrphanEntries(repoDir);
+  })(), "room preview cleanup");
 }
 async function waitForPreviewSweepForTests() {
   for (let n = 0; n < 1e3; n++) {
@@ -42454,10 +42498,12 @@ command completion: ${stage === "setup" ? "not run" : "incomplete"}` };
     } finally {
       await release?.();
       if (release) previewProcesses.getStore().lock = void 0;
-      if (cached2 || previewCapBytes() === 0) {
-        const key2 = await previewKeyPath(s.dir).catch(() => void 0);
-        if (key2) {
-          const eviction = evictPreviewLru(path36.dirname(key2), previewCapBytes(), async (entry, used) => {
+      const evict = cached2 || previewCapBytes() === 0;
+      const key2 = await previewKeyPath(s.dir).catch(() => void 0);
+      if (key2) previewMaintenance((async () => {
+        await reclaimOrphanEntries(s.dir);
+        if (evict) {
+          await evictPreviewLru(path36.dirname(key2), previewCapBytes(), async (entry, used) => {
             const unlock = await tryPreviewLock(entry);
             if (!unlock) return false;
             try {
@@ -42473,11 +42519,9 @@ command completion: ${stage === "setup" ? "not run" : "incomplete"}` };
             } finally {
               await unlock();
             }
-          }).catch((error2) => console.warn("room preview eviction:", error2));
-          previewEvictions.add(eviction);
-          void eviction.finally(() => previewEvictions.delete(eviction));
+          });
         }
-      }
+      })(), "room preview eviction", previewEvictions);
     }
   }
 }
@@ -56906,7 +56950,7 @@ function bindWorkerPortReservation(proc, reservation) {
   const onExit = proc.onExit.bind(proc);
   proc.onExit = (cb) => onExit((code) => {
     release();
-    cb(code);
+    return cb(code);
   });
 }
 function releaseWorkerProcessPort(proc) {
@@ -57055,7 +57099,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     bindWorkerPortReservation(proc, reservation);
     host.watch(id3, proc, (code) => {
       exited = true;
-      void onExit(code).catch((error2) => policy.log(`worker exit: ${error2}`));
+      return onExit(code).catch((error2) => policy.log(`worker exit: ${error2}`));
     });
     watching = true;
     if (proc.pid > 0) await onLaunched(proc.pid);
@@ -58572,25 +58616,27 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
   add2(atLeast(f.git, minimumGit) ? "PASS" : "FAIL", "Git", f.git ? `${f.git} (need 2.31+)` : "not found", "Install Git 2.31 or newer");
   add2(f.repo ? "PASS" : "FAIL", "repository", f.repo ? "Git checkout with a commit" : "not a Git checkout with a commit", "Run this from a committed Git checkout");
   const installed = [f.claude, f.codex].filter((p) => !!p);
-  if (!installed.length) add2("WARN", "Room hosts", "Room is not installed in Claude Code or Codex", "Install room@room from rohanz/room");
-  for (const [name, cli, listOk, plugin] of [["Claude Code", f.claudeCli, f.claudeListOk, f.claude], ["Codex", f.codexCli, f.codexListOk, f.codex]]) {
+  const listed = (!f.claudeCli || f.claudeListOk !== false) && (!f.codexCli || f.codexListOk !== false);
+  const absent = !installed.length && listed && !f.sessionHost;
+  if (absent) add2("WARN", "Room hosts", "Room is not installed in Claude Code or Codex", "Install room@room from rohanz/room");
+  for (const [name, host, cli, listOk, plugin] of [["Claude Code", "claude", f.claudeCli, f.claudeListOk, f.claude], ["Codex", "codex", f.codexCli, f.codexListOk, f.codex]]) {
     if (!cli) {
       add2("PASS", name, "not installed");
       continue;
     }
     if (listOk === false) {
-      add2("WARN", name, "plugin list unavailable", `Retry ${name} plugin list --json`);
+      add2("INFO", name, `plugin list did not answer within 2.5 s or failed; Room's version and hooks for ${name} were not checked${f.sessionHost === host ? " (this session's Room is checked under running session)" : ""}`);
       continue;
     }
     if (!plugin) {
-      add2(installed.length ? "PASS" : "WARN", name, "Room not installed", "Install room@room from rohanz/room");
+      add2(absent ? "WARN" : "PASS", name, "Room not installed", "Install room@room from rohanz/room");
       continue;
     }
     const reinstall = name === "Claude Code" ? "claude plugin marketplace update room && claude plugin update room@room" : "codex plugin marketplace upgrade room && codex plugin add room@room";
     const match = plugin.version === version3;
-    add2(match ? "PASS" : "FAIL", name, `loaded Room ${plugin.version ?? "unknown"}; bundle ${version3}`, reinstall);
-    if (name === "Claude Code" && match && plugin.recordedVersion && plugin.recordedVersion !== version3)
-      add2("WARN", "Claude Code install record", `records Room ${plugin.recordedVersion}; loaded Room ${version3}`, "claude plugin update room@room");
+    add2(match ? "PASS" : "FAIL", name, `loaded Room ${plugin.version ?? "unknown"}; bundle ${version3}${name === "Claude Code" && plugin.cached === false ? " (directory marketplace)" : ""}`, reinstall);
+    if (name === "Claude Code" && match && plugin.cached && plugin.recordedVersion && plugin.recordedVersion !== version3)
+      add2("WARN", "Claude Code install record", `cache records Room ${plugin.recordedVersion}; its files are Room ${version3}`, "claude plugin update room@room");
     const stamp = hookVersion(name === "Codex" ? f.codexHooks : f.claudeHooks);
     add2(stamp === version3 ? "PASS" : "FAIL", `${name} hooks`, stamp ? `${stamp}; bundle ${version3}` : "version stamp missing", reinstall);
   }
@@ -58600,7 +58646,8 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
   }
   if (f.claude) {
     const min2 = process.platform === "win32" ? [2, 1, 234] : [2, 1, 224];
-    add2(atLeast(f.claudeVersion, min2) ? "PASS" : "WARN", "Claude wake", f.claudeVersion ? `Claude Code ${f.claudeVersion}` : "version unknown", `Update Claude Code to ${min2.join(".")} or newer`);
+    if (!triple(f.claudeVersion)) add2("INFO", "Claude wake", "Claude Code version unknown; wake support not checked");
+    else add2(atLeast(f.claudeVersion, min2) ? "PASS" : "WARN", "Claude wake", `Claude Code ${f.claudeVersion}`, `Update Claude Code to ${min2.join(".")} or newer`);
     if (f.wakeSession) {
       const disabled = f.deliveryPath?.mode === "off";
       if (!disabled && f.sessionBound === false)
@@ -58611,7 +58658,7 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
   if (f.deliveryPath) {
     const p = f.deliveryPath;
     add2(
-      p.availability === "unavailable" ? "WARN" : "PASS",
+      "INFO",
       `${f.deliveryHost ?? "Host"} delivery configuration`,
       `${p.mode}; ${p.transport} ${p.availability}; configuration only, no receipt evidence${f.deliveryHost === "Claude" ? "; inbound hold/refuse may prevent receipt" : "; exec/--no-daemon require tool/hook fallback when host state is unknown"}`
     );
@@ -58666,7 +58713,7 @@ function claudePlugin(row, marketplaces) {
   if (!row) return void 0;
   const market = Array.isArray(marketplaces) ? marketplaces.find((m) => m?.name === "room") : void 0;
   const root = market?.source?.toLowerCase() === "directory" && (market.path || market.installLocation) ? path47.join(market.path ?? market.installLocation, "plugins", "room") : row.installPath;
-  return { version: manifestVersion(root, "claude"), recordedVersion: row.version, root };
+  return { version: manifestVersion(root, "claude"), recordedVersion: row.version, root, cached: root === row.installPath };
 }
 function codexPlugin(row, marketplaces, codexHome) {
   if (!row) return void 0;
@@ -58751,6 +58798,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
     wakeSession: inSession && process.env.ROOM_HOST === "claude",
     wakeBound: claudeWakeAvailable({ host: "claude" }),
     ...inSession && (process.env.ROOM_HOST === "codex" || process.env.ROOM_HOST === "claude") ? {
+      sessionHost: process.env.ROOM_HOST,
       deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }),
       deliveryHost: process.env.ROOM_HOST === "claude" ? "Claude" : "Codex"
     } : {},
@@ -58799,7 +58847,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
   }
   return f;
 }
-async function runDoctor(dir, inSession = false, selected, sessionWarning, sessionBound) {
+async function runDoctor(dir, { inSession = false, selected, sessionWarning, sessionBound } = {}) {
   const facts = await collectDoctorFacts(dir, inSession, selected);
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning;
   if (inSession && sessionBound !== void 0) facts.sessionBound = sessionBound;
@@ -59152,7 +59200,12 @@ ${url}`;
         const active = state.ctx.getSession();
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf("/")) : void 0;
         const destination = server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : void 0;
-        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination, active?.local?.canonicalWarning, state.ctx.binding ? !!state.ctx.binding.bound() : void 0);
+        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), {
+          inSession: true,
+          selected: destination,
+          sessionWarning: active?.local?.canonicalWarning,
+          sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : void 0
+        });
         return [report, formatDeliveryHealth(state.deliveryHealth())].filter(Boolean).join("\n");
       }
       const s = S();

@@ -44,8 +44,9 @@ describe('carry never pipes file-sized input into a synchronous git call', () =>
     expect(prepared.carryFailed).toBeFalsy()
     expect(prepared.carried?.paths).toContain('big.txt')
     expect(prepared.carriedUntracked?.map(c => c.path)).toContain('untracked.bin')
-    expect(readFileSync(join(prepared.dir, 'big.txt'))).toEqual(tracked)
-    expect(readFileSync(join(prepared.dir, 'untracked.bin'))).toEqual(untracked)
+    // Buffer.equals: a deep toEqual walks 4 MB element by element (5 s alone, far longer under load).
+    expect(readFileSync(join(prepared.dir, 'big.txt')).equals(tracked), 'big.txt carried byte-for-byte').toBe(true)
+    expect(readFileSync(join(prepared.dir, 'untracked.bin')).equals(untracked), 'untracked.bin carried byte-for-byte').toBe(true)
     expect(calls.filter(c => c.input).map(c => c.args.slice(0, 4).join(' '))).toEqual([])
   })
 

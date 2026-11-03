@@ -55,7 +55,8 @@ beforeEach(() => {
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
-afterEach(async () => { collectRefHook.call = undefined; await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
+// Removal runs off the event loop: a synchronous delete of a large fixture held the worker for the whole hook.
+afterEach(async () => { collectRefHook.call = undefined; await closeRegistryForDir(lead); await fs.promises.rm(root, { recursive: true, force: true }) })
 
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {

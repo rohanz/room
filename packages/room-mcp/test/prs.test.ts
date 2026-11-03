@@ -386,7 +386,8 @@ it('exports a stored empty archive document as a ledger', async () => {
 
 it.each([Buffer.from([0, 0]), Buffer.from([0, 0, 0, 10, 1]), Buffer.from([127, 255, 255, 255])])('rejects truncated or oversized archive frames without writing a ledger', async body => {
   const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/vnd.room.updates' } })))
+  // A fresh Response per call: the server's auth config is probed first and a body can be read once.
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { headers: { 'content-type': 'application/vnd.room.updates' } })))
   try { await expect(exportArchiveLedger(s, 'git/x/o/r/main', { path: join(dir, 'bad-frame.md') })).rejects.toThrow(/archive frame/) }
   finally { s.room.doc.destroy(); vi.unstubAllGlobals() }
 })

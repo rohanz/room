@@ -77,8 +77,10 @@ describe('doctor report', () => {
     expect(codex).toMatchObject({ version: '0.8.0', root: codexCache, hooksRoot: codexHooks })
     const rows = evaluateDoctor({ ...base(), claude, codex })
     expect(rows.find(r => r.name === 'Claude Code')?.level).toBe(source === 'directory' ? 'PASS' : 'FAIL')
-    if (source === 'directory') expect(rows.find(r => r.name === 'Claude Code install record')).toMatchObject({ level: 'WARN', fix: 'claude plugin update room@room' })
-    else expect(rows.find(r => r.name === 'Claude Code install record')).toBeUndefined()
+    // A directory marketplace runs its checkout; the stale cache record changes nothing that runs.
+    expect(rows.find(r => r.name === 'Claude Code install record')).toBeUndefined()
+    expect(claude?.cached).toBe(source !== 'directory')
+    if (source === 'directory') expect(rows.find(r => r.name === 'Claude Code')?.finding).toContain('(directory marketplace)')
     expect(rows.find(r => r.name === 'Codex')).toMatchObject({ level: 'FAIL', fix: 'codex plugin marketplace upgrade room && codex plugin add room@room' })
     if (source === 'directory') {
       writeManifest(claudeLoadedRoot, 'claude', '0.8.0')
@@ -146,7 +148,39 @@ describe('doctor report', () => {
   it('distinguishes missing plugins from a failed host query', () => {
     const f = { ...base(), claude: undefined, codex: undefined }
     expect(evaluateDoctor(f).find(r => r.name === 'Room hosts')?.level).toBe('WARN')
-    expect(evaluateDoctor({ ...f, claudeListOk: false }).find(r => r.name === 'Claude Code')?.finding).toBe('plugin list unavailable')
+    const failed = evaluateDoctor({ ...f, claudeListOk: false })
+    expect(failed.find(r => r.name === 'Claude Code')).toMatchObject({ level: 'INFO', fix: undefined })
+    expect(failed.find(r => r.name === 'Claude Code')?.finding).toContain('not checked')
+    // A failed listing is not evidence that Room is absent.
+    expect(failed.find(r => r.name === 'Room hosts')).toBeUndefined()
+  })
+  it('reports Codex absent from PATH as not installed and a failed listing without a retry fix', () => {
+    expect(evaluateDoctor({ ...base(), codexCli: false, codex: undefined }).find(r => r.name === 'Codex')).toMatchObject({ level: 'PASS', finding: 'not installed' })
+    const idle = evaluateDoctor({ ...base(), codex: undefined, codexListOk: false }).find(r => r.name === 'Codex')
+    expect(idle).toMatchObject({ level: 'INFO', fix: undefined })
+    expect(idle?.finding).not.toContain('running session')
+    const active = evaluateDoctor({ ...base(), codex: undefined, codexListOk: false, sessionHost: 'codex' }).find(r => r.name === 'Codex')
+    expect(active).toMatchObject({ level: 'INFO', fix: undefined })
+    expect(active?.finding).toContain('checked under running session')
+    expect(formatDoctor(evaluateDoctor({ ...base(), codex: undefined, codexListOk: false }))).not.toMatch(/Retry|plugin list --json/)
+  })
+  it('does not call Room uninstalled inside a running Room session', () => {
+    const f = { ...base(), claude: undefined, codex: undefined }
+    const rows = evaluateDoctor({ ...f, sessionHost: 'claude' })
+    expect(rows.find(r => r.name === 'Room hosts')).toBeUndefined()
+    expect(rows.find(r => r.name === 'Codex')).toMatchObject({ level: 'PASS', finding: 'Room not installed' })
+  })
+  it('warns about the install record only when Claude loads the recorded cache', () => {
+    const cached = { version, recordedVersion: '0.17.15', cached: true }
+    expect(evaluateDoctor({ ...base(), claude: cached }).find(r => r.name === 'Claude Code install record')).toMatchObject({ level: 'WARN', fix: 'claude plugin update room@room' })
+    expect(evaluateDoctor({ ...base(), claude: { ...cached, cached: false } }).find(r => r.name === 'Claude Code install record')).toBeUndefined()
+    expect(evaluateDoctor({ ...base(), claude: { ...cached, recordedVersion: version } }).find(r => r.name === 'Claude Code install record')).toBeUndefined()
+  })
+  it('treats an unreadable Claude version and delivery configuration as context, not warnings', () => {
+    const rows = evaluateDoctor({ ...base(), claudeVersion: undefined, deliveryHost: 'Claude', deliveryPath: { mode: 'auto', transport: 'none', availability: 'unavailable' } })
+    expect(rows.find(r => r.name === 'Claude wake')).toMatchObject({ level: 'INFO', fix: undefined })
+    expect(rows.find(r => r.name === 'Claude delivery configuration')).toMatchObject({ level: 'INFO', fix: undefined })
+    expect(evaluateDoctor({ ...base(), claudeVersion: '2.1.223' }).find(r => r.name === 'Claude wake')?.level).toBe('WARN')
   })
   it('parses only both Room hook trust entries and stamps', () => {
     expect(codexRoomHooksTrusted(trust)).toBe(true)
@@ -271,6 +305,6 @@ it('room_state check diagnoses a never-synced session and its selected checkout'
   const tools = createTools({ getSession: () => active, setSession: s => { active = s }, cwd: '/original/checkout' })
   active = { dir: '/selected/checkout', roomUrl: 'wss://selected.example/repository', roomName: 'repository', token: 'test-token', provider: { synced: false }, daemon: { touch: vi.fn() } } as unknown as Session
   expect(await tools.call('room_state', { check: true })).toBe('PASS  doctor: report from tool')
-  expect(doctor).toHaveBeenCalledWith('/selected/checkout', true, { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, undefined, undefined)
+  expect(doctor).toHaveBeenCalledWith('/selected/checkout', { inSession: true, selected: { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, sessionWarning: undefined, sessionBound: undefined })
   expect(active.daemon.touch).not.toHaveBeenCalled()
 })

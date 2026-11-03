@@ -18,7 +18,8 @@ export interface SpawnedProcess {
   pid: number
   /** Resolves on child_process 'spawn'; rejects on 'error'. */
   started: Promise<void>
-  onExit(cb: (code: number | null) => void): void
+  /** The callback may return the promise of its exit handling; a spawner that can wait for it (tests) awaits that. */
+  onExit(cb: (code: number | null) => void | Promise<void>): void
   /** Fires when the process could not be started at all (e.g. the binary is missing). */
   onError?(cb: (err: Error) => void): void
   /** SIGTERM the worker; true when a signal was actually delivered (false: no pid, or the process is gone). */

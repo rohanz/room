@@ -351,9 +351,11 @@ export async function serverAuthConfig(server: string): Promise<AuthConfig> {
       const b = await res.json() as { github?: string; providers?: string[] }
       if (b.github === 'device') cfg.mode = 'device'
       cfg.providers = (b.providers ?? (cfg.mode === 'device' ? ['github'] : [])).filter((p): p is Provider => p === 'github' || p === 'oidc')
+      // Only an answer is kept: a server that was down at first contact (cold start, offline) is asked again, or
+      // a GitHub room would stay "no GitHub login" until restart. A server's login setup is kept for the process.
+      configCache.set(server, cfg)
     }
   } catch { /* unreachable: the join will report it */ }
-  configCache.set(server, cfg)
   return cfg
 }
 /** `device`: the server has GitHub device login, so github.com rooms can be joined after room_login.

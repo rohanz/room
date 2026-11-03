@@ -1021,11 +1021,63 @@ async function migrateLegacySlots(cloneDir: string, repoDir = cloneDir): Promise
   }
 }
 
-/** Worker cleanup starts migration without waiting on a directory scan. */
+/**
+ * Remove a clone key's shared entries. The OS lock is the owner check: a preview holds it for its whole
+ * run (and, after a crash, until its process groups exit), so an entry whose lock is free has no owner.
+ * Idempotent; an entry in use is left for the next pass.
+ */
+async function removeCloneEntries(repoDir: string, folder: string, cloneGone: boolean): Promise<void> {
+  await rejectPreviewLink(folder)
+  if (await isLegacyTree(folder)) return
+  for (const name of await fs.promises.readdir(folder).catch(() => [] as string[])) {
+    if (!/^shared-[a-f0-9]{16}$/.test(name)) continue
+    const entry = path.join(folder, name)
+    const unlock = await tryPreviewLock(entry).catch(() => undefined)
+    if (!unlock) continue
+    try {
+      // A killed first checkout can leave an unregistered partial directory. Unlinking the lock file while a
+      // live clone could still preview would let two holders lock different inodes, so only a gone clone's goes.
+      if (await removePreviewEntry(repoDir, entry, true) && cloneGone) await fs.promises.rm(`${entry}.lock`, { force: true })
+    } finally { await unlock() }
+  }
+  // Only a gone clone's folder: a live clone may be creating its next entry here.
+  if (!cloneGone) return
+  const left = await fs.promises.readdir(folder).catch(() => undefined)
+  if (left && left.every(name => name === 'clone.json')) await fs.promises.rm(folder, { recursive: true, force: true })
+}
+
+/** Entries whose recorded clone no longer exists (a collected worker, a deleted checkout) have no future user. */
+async function reclaimOrphanEntries(repoDir: string): Promise<void> {
+  const base = path.join(await fs.promises.realpath(await gitCommonDir(repoDir)), 'room-preview')
+  await rejectPreviewLink(base)
+  for (const name of await fs.promises.readdir(base).catch(() => [] as string[])) {
+    if (!/^[a-f0-9]{20}(?:\.slots)?$/.test(name)) continue
+    const folder = path.join(base, name)
+    let clone: unknown
+    try { clone = (JSON.parse(await fs.promises.readFile(path.join(folder, 'clone.json'), 'utf8')) as { path?: unknown }).path }
+    catch { continue } // No record: an older layout or a folder being prepared.
+    if (typeof clone !== 'string' || !path.isAbsolute(clone)) continue
+    const exists = await fs.promises.lstat(clone).then(() => true, error => (error as NodeJS.ErrnoException).code !== 'ENOENT')
+    if (!exists) await removeCloneEntries(repoDir, folder, true)
+  }
+}
+
+/** Queue background preview-cache maintenance; waitForPreviewSweepForTests awaits it. */
+function previewMaintenance(work: Promise<void>, label: string, into = previewMigrations): void {
+  const task = work.catch(error => console.warn(`${label}:`, error))
+  into.add(task)
+  void task.finally(() => into.delete(task))
+}
+
+/** Worker cleanup removes the worker clone's idle entries and reclaims orphans without waiting on them. */
 export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
-  const migration = migrateLegacySlots(cloneDir, repoDir).catch(error => console.warn('room preview migration:', error))
-  previewMigrations.add(migration)
-  void migration.finally(() => previewMigrations.delete(migration))
+  previewMaintenance(migrateLegacySlots(cloneDir, repoDir), 'room preview migration')
+  previewMaintenance((async () => {
+    const key = await previewKeyPath(cloneDir, repoDir)
+    const cloneGone = !fs.existsSync(cloneDir)
+    for (const folder of [key, `${key}.slots`]) await removeCloneEntries(repoDir, folder, cloneGone)
+    await reclaimOrphanEntries(repoDir)
+  })(), 'room preview cleanup')
 }
 
 export async function waitForPreviewSweepForTests(): Promise<void> {
@@ -1248,10 +1300,12 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       await release?.()
       if (release) previewProcesses.getStore()!.lock = undefined
       // Maintenance never delays the preview reply and is bounded per pass.
-      if (cached || previewCapBytes() === 0) {
-        const key = await previewKeyPath(s.dir).catch(() => undefined)
-        if (key) {
-          const eviction = evictPreviewLru(path.dirname(key), previewCapBytes(), async (entry, used) => {
+      const evict = cached || previewCapBytes() === 0
+      const key = await previewKeyPath(s.dir).catch(() => undefined)
+      if (key) previewMaintenance((async () => {
+        await reclaimOrphanEntries(s.dir)
+        if (evict) {
+          await evictPreviewLru(path.dirname(key), previewCapBytes(), async (entry, used) => {
             const unlock = await tryPreviewLock(entry)
             if (!unlock) return false
             try {
@@ -1264,11 +1318,9 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
               return currentUsed === used && await slotRegistration(s.dir, entry) === 'valid' && await removePreviewEntry(s.dir, entry)
             } catch { return false }
             finally { await unlock() }
-          }).catch(error => console.warn('room preview eviction:', error))
-          previewEvictions.add(eviction)
-          void eviction.finally(() => previewEvictions.delete(eviction))
+          })
         }
-      }
+      })(), 'room preview eviction', previewEvictions)
     }
   }
 }

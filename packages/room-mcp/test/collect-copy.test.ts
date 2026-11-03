@@ -4,6 +4,16 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { registryForDir } from '../src/worker-registry.js'
 import { workerByTag } from './registry-fixture.js'
+
+/** collect.ts COLLECT_YIELD_EVERY: its bounded loops yield to the event loop once per this many paths. */
+const YIELD_EVERY = 32
+// Count the yields collect takes (it imports setImmediate from node:timers/promises), deterministically.
+const yields = vi.hoisted(() => ({ count: 0 }))
+vi.mock('node:timers/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:timers/promises')>()
+  return { ...actual, setImmediate: ((...args: Parameters<typeof actual.setImmediate>) => { yields.count++; return actual.setImmediate(...args) }) as typeof actual.setImmediate }
+})
+
 describe('room_collect', () => {
 
   it('copies ignored and nested artifacts byte-for-byte, without committing', async () => {
@@ -91,25 +101,32 @@ describe('room_collect', () => {
     } finally { seam.mockRestore() }
   })
 
-  it('yields through 2,000 copy paths without reading whole file contents into memory', async () => {
-    for (let i = 0; i < 2_000; i++) put(worker, `bulk/${i.toString().padStart(4, '0')}.txt`, 'x')
+  it('yields through many copy paths without reading whole file contents into memory', async () => {
+    // Eight yield windows (collect yields every 32 paths) exercise the bounded loops; each real copy
+    // costs a few ms of file system work, so 2,000 paths took 10-20 s under load and proved no more.
+    const count = 8 * YIELD_EVERY
+    for (let i = 0; i < count; i++) put(worker, `bulk/${i.toString().padStart(4, '0')}.txt`, 'x')
     const t = setup()
-    let turnRan = false, copies = 0
+    await t.sync()
+    const yieldsAtCopy: number[] = []
     const realCopy = fs.promises.copyFile.bind(fs.promises)
     const copy = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (...args) => {
-      expect(turnRan).toBe(true)
-      copies++
+      yieldsAtCopy.push(yields.count)
       return realCopy(...args)
     })
     const read = vi.spyOn(fs, 'readFileSync')
-    setImmediate(() => { turnRan = true })
+    yields.count = 0
     try {
       const reply = await t.call({ tag: 'test', mode: 'copy', paths: ['bulk'] })
-      expect(reply.match(/^copied bulk\//gm)).toHaveLength(2_000)
-      expect(copies).toBe(2_000)
+      expect(reply.match(/^copied bulk\//gm)).toHaveLength(count)
+      expect(yieldsAtCopy).toHaveLength(count)
+      // Enumeration and preflight each yield once per window before the first copy...
+      expect(yieldsAtCopy[0]).toBeGreaterThanOrEqual(2 * count / YIELD_EVERY)
+      // ...and staging never runs a whole window of copies without yielding.
+      for (let i = YIELD_EVERY; i < count; i++) expect(yieldsAtCopy[i]).toBeGreaterThan(yieldsAtCopy[i - YIELD_EVERY])
       expect(read.mock.calls.filter(([name]) => typeof name === 'string' && name.includes('/bulk/'))).toHaveLength(0)
     } finally { copy.mockRestore(); read.mockRestore() }
-  }, 120_000) // 2,000 real copies: the assertion is about memory, not speed; a saturated host took over 30 s
+  })
 
   it('refuses a destination that grows after apply preparation, before any write', async () => {
     put(worker, 'file.txt', 'worker\n')

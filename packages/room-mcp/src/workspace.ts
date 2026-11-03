@@ -95,6 +95,7 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
   matches?: (a: string, b: string) => Promise<boolean>
 }) {
   type Attempt = { dir: string; promise: Promise<T>; failed?: unknown }
+  // A started workspace is kept for the process (a different Codex workspace is told to restart); a failed one is retried.
   let current: Attempt | undefined
   let closing = false
   const abort = new AbortController()

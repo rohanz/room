@@ -96,6 +96,7 @@ async function main() {
     logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
     initialize: async (dir: string, signal: AbortSignal) => {
       let session: Session | null = null
+      // The startup choice only: environment is fixed for the process, and room_join/room_close/joinSession re-resolve it.
       const startup = await resolveConfig({ dir, env: process.env })
       if (signal.aborted) throw new Error('Room is shutting down')
       LOG_FILE = startup.logFile
@@ -133,6 +134,7 @@ async function main() {
       }
 
       // Presence ends once the host session has finished (registry §18): its process gone, or the idle lease.
+      // Host kind, parent and lease come from this process's parent and environment, which never change while it lives.
       const presenceHostKind = hostKind()
       const attachingParent = attachingParentReader()
       const idleLeaseMs = resolveIdleLeaseMs(process.env.ROOM_IDLE_LEASE_MS)

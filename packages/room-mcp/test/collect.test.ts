@@ -1,7 +1,7 @@
 import { LINES, base, carry, collectRefHook, commitLines, expectRetired, git, gitPathCalls, lead, ownershipEvidence, put, release, reportedRunning, root, second, seedPresence, setup, startWorktreeProcess, useLegacyWorker, worker } from './collect-fixture.js'
 import { git as roomGit } from '@room/roomd/git'
 import { workerLines } from '@room/shared'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -735,15 +735,26 @@ describe('room_collect', () => {
 
   it('collects worker output despite more than 2000 unrelated paths committed by the lead', async () => {
     const t = setup()
-    for (let i = 0; i < 2001; i++) put(lead, `unrelated/${i}.txt`, 'committed lead input\n')
-    git(lead, 'add', '--', 'unrelated'); git(lead, 'commit', '-qm', 'unrelated lead files')
-    const head = git(lead, 'rev-parse', 'HEAD'), index = git(lead, 'write-tree')
-    put(worker, 'new.txt', 'worker output\n')
-    expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
-    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker output\n')
-    expect(fs.readFileSync(path.join(lead, 'unrelated/2000.txt'), 'utf8')).toBe('committed lead input\n')
-    expect(git(lead, 'rev-parse', 'HEAD')).toBe(head); expect(git(lead, 'write-tree')).toBe(index)
-    expect(git(lead, 'status', '--porcelain')).toBe('?? new.txt')
+    // Git writes the 2,001 paths (one shared blob) in one process; thousands of synchronous writes
+    // and deletes from the test stalled its worker under full-suite load.
+    put(root, 'unrelated-blob', 'committed lead input\n')
+    const blob = git(lead, 'hash-object', '-w', path.join(root, 'unrelated-blob'))
+    fs.writeFileSync(path.join(root, 'unrelated-index'), Array.from({ length: 2001 }, (_, i) => `100644 ${blob}\tunrelated/${i}.txt\n`).join(''))
+    const entries = fs.openSync(path.join(root, 'unrelated-index'), 'r')
+    try { execFileSync('git', ['-C', lead, 'update-index', '--index-info'], { stdio: [entries, 'pipe', 'pipe'] }) } finally { fs.closeSync(entries) }
+    git(lead, 'checkout-index', '-a', '-q'); git(lead, 'commit', '-qm', 'unrelated lead files')
+    try {
+      const head = git(lead, 'rev-parse', 'HEAD'), index = git(lead, 'write-tree')
+      put(worker, 'new.txt', 'worker output\n')
+      expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
+      expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker output\n')
+      expect(fs.readFileSync(path.join(lead, 'unrelated/2000.txt'), 'utf8')).toBe('committed lead input\n')
+      expect(git(lead, 'rev-parse', 'HEAD')).toBe(head); expect(git(lead, 'write-tree')).toBe(index)
+      expect(git(lead, 'status', '--porcelain')).toBe('?? new.txt')
+    } finally {
+      // Remove the bulk here, off the event loop and inside this test's own time, not the shared teardown's.
+      await fs.promises.rm(path.join(lead, 'unrelated'), { recursive: true, force: true })
+    }
   })
 
   it('skips failed workers without touching their output', async () => {

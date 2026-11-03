@@ -21,13 +21,17 @@ export const CODEX_ROOM_HOOK_HASHES = {
 } as const
 /** Hash of the frozen hooks.json bytes for which Codex 0.158 produced the identities above. */
 export const CODEX_ROOM_HOOKS_FILE_SHA256 = '336c0b90c935ff627f9988ceb92e21c887b44c9b6e904b2c2ddd9a188db4b777'
-type Result = { level: 'PASS' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
-type Plugin = { version?: string; recordedVersion?: string; root?: string; hooksRoot?: string }
+/** INFO states context that proves no problem; it never carries a fix. */
+type Result = { level: 'PASS' | 'INFO' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
+/** `cached`: Claude loads this plugin from the install record's cache path (not a directory marketplace). */
+type Plugin = { version?: string; recordedVersion?: string; root?: string; hooksRoot?: string; cached?: boolean }
 export interface DoctorFacts {
   node?: string; git?: string; repo: boolean; claudeCli: boolean; codexCli: boolean
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
   claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
+  /** The host running this Room session, when the check runs inside one. */
+  sessionHost?: 'claude' | 'codex'
   /** Whether this MCP has identified its host session (binding.ts); false means no wake can be addressed. */
   sessionBound?: boolean
   deliveryPath?: WakePathStatus
@@ -89,18 +93,31 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   add(atLeast(f.git, minimumGit) ? 'PASS' : 'FAIL', 'Git', f.git ? `${f.git} (need 2.31+)` : 'not found', 'Install Git 2.31 or newer')
   add(f.repo ? 'PASS' : 'FAIL', 'repository', f.repo ? 'Git checkout with a commit' : 'not a Git checkout with a commit', 'Run this from a committed Git checkout')
   const installed = [f.claude, f.codex].filter((p): p is Plugin => !!p)
-  if (!installed.length) add('WARN', 'Room hosts', 'Room is not installed in Claude Code or Codex', 'Install room@room from rohanz/room')
-  for (const [name, cli, listOk, plugin] of [['Claude Code', f.claudeCli, f.claudeListOk, f.claude], ['Codex', f.codexCli, f.codexListOk, f.codex]] as const) {
+  // "Not installed anywhere" needs evidence from every present CLI: a failed listing is not absence,
+  // and a running Room session proves its host loaded Room (perhaps via --plugin-dir, which no list shows).
+  const listed = (!f.claudeCli || f.claudeListOk !== false) && (!f.codexCli || f.codexListOk !== false)
+  const absent = !installed.length && listed && !f.sessionHost
+  if (absent) add('WARN', 'Room hosts', 'Room is not installed in Claude Code or Codex', 'Install room@room from rohanz/room')
+  for (const [name, host, cli, listOk, plugin] of [['Claude Code', 'claude', f.claudeCli, f.claudeListOk, f.claude], ['Codex', 'codex', f.codexCli, f.codexListOk, f.codex]] as const) {
     if (!cli) { add('PASS', name, 'not installed'); continue }
-    if (listOk === false) { add('WARN', name, 'plugin list unavailable', `Retry ${name} plugin list --json`); continue }
-    if (!plugin) { add(installed.length ? 'PASS' : 'WARN', name, 'Room not installed', 'Install room@room from rohanz/room'); continue }
+    // Room ran the listing itself; a timeout or error proves nothing about the plugin and gives the
+    // user no command to run. Say what went unchecked, and that this session's Room is still checked.
+    if (listOk === false) {
+      add('INFO', name, `plugin list did not answer within 2.5 s or failed; Room's version and hooks for ${name} were not checked${f.sessionHost === host ? " (this session's Room is checked under running session)" : ''}`)
+      continue
+    }
+    if (!plugin) { add(absent ? 'WARN' : 'PASS', name, 'Room not installed', 'Install room@room from rohanz/room'); continue }
     const reinstall = name === 'Claude Code'
       ? 'claude plugin marketplace update room && claude plugin update room@room'
       : 'codex plugin marketplace upgrade room && codex plugin add room@room'
     const match = plugin.version === version
-    add(match ? 'PASS' : 'FAIL', name, `loaded Room ${plugin.version ?? 'unknown'}; bundle ${version}`, reinstall)
-    if (name === 'Claude Code' && match && plugin.recordedVersion && plugin.recordedVersion !== version)
-      add('WARN', 'Claude Code install record', `records Room ${plugin.recordedVersion}; loaded Room ${version}`, 'claude plugin update room@room')
+    add(match ? 'PASS' : 'FAIL', name, `loaded Room ${plugin.version ?? 'unknown'}; bundle ${version}${name === 'Claude Code' && plugin.cached === false ? ' (directory marketplace)' : ''}`, reinstall)
+    // installed_plugins.json is bookkeeping. Claude loads a directory marketplace from its checkout, so a
+    // stale record there changes nothing that runs and gets no row (a 2026-11-03 lead blamed a missing wake
+    // on it). Only when Claude loads from the recorded cache path can the record disagree with what runs;
+    // a mismatched cache manifest already fails the row above, so this covers a record that lags its cache.
+    if (name === 'Claude Code' && match && plugin.cached && plugin.recordedVersion && plugin.recordedVersion !== version)
+      add('WARN', 'Claude Code install record', `cache records Room ${plugin.recordedVersion}; its files are Room ${version}`, 'claude plugin update room@room')
     const stamp = hookVersion(name === 'Codex' ? f.codexHooks : f.claudeHooks)
     add(stamp === version ? 'PASS' : 'FAIL', `${name} hooks`, stamp ? `${stamp}; bundle ${version}` : 'version stamp missing', reinstall)
   }
@@ -110,7 +127,9 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   }
   if (f.claude) {
     const min = process.platform === 'win32' ? [2, 1, 234] : [2, 1, 224]
-    add(atLeast(f.claudeVersion, min) ? 'PASS' : 'WARN', 'Claude wake', f.claudeVersion ? `Claude Code ${f.claudeVersion}` : 'version unknown', `Update Claude Code to ${min.join('.')} or newer`)
+    // An unreadable version is missing evidence, not an old Claude Code.
+    if (!triple(f.claudeVersion)) add('INFO', 'Claude wake', 'Claude Code version unknown; wake support not checked')
+    else add(atLeast(f.claudeVersion, min) ? 'PASS' : 'WARN', 'Claude wake', `Claude Code ${f.claudeVersion}`, `Update Claude Code to ${min.join('.')} or newer`)
     if (f.wakeSession) {
       const disabled = f.deliveryPath?.mode === 'off'
       if (!disabled && f.sessionBound === false)
@@ -120,7 +139,8 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   }
   if (f.deliveryPath) {
     const p = f.deliveryPath
-    add(p.availability === 'unavailable' ? 'WARN' : 'PASS', `${f.deliveryHost ?? 'Host'} delivery configuration`,
+    // Configuration only: the Claude inbox row and the runtime delivery lines carry the evidence and the WARN.
+    add('INFO', `${f.deliveryHost ?? 'Host'} delivery configuration`,
       `${p.mode}; ${p.transport} ${p.availability}; configuration only, no receipt evidence${f.deliveryHost === 'Claude' ? '; inbound hold/refuse may prevent receipt' : '; exec/--no-daemon require tool/hook fallback when host state is unknown'}`)
   }
   if (f.configError) add('FAIL', 'Room config', f.configError, 'Correct ROOM_SERVER or ROOM_URL, then retry')
@@ -160,7 +180,7 @@ export function claudePlugin(row: { version?: string; installPath?: string } | u
   const market = Array.isArray(marketplaces) ? marketplaces.find(m => m?.name === 'room') as { source?: string; path?: string; installLocation?: string } | undefined : undefined
   const root = market?.source?.toLowerCase() === 'directory' && (market.path || market.installLocation)
     ? path.join(market.path ?? market.installLocation!, 'plugins', 'room') : row.installPath
-  return { version: manifestVersion(root, 'claude'), recordedVersion: row.version, root }
+  return { version: manifestVersion(root, 'claude'), recordedVersion: row.version, root, cached: root === row.installPath }
 }
 export function codexPlugin(row: { version?: string; marketplaceName?: string } | undefined, marketplaces: unknown, codexHome: string): Plugin | undefined {
   if (!row) return undefined
@@ -217,7 +237,7 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     claude, codex, claudeVersion, inSession, wakeSession: inSession && process.env.ROOM_HOST === 'claude',
     wakeBound: claudeWakeAvailable({ host: 'claude' }),
     ...(inSession && (process.env.ROOM_HOST === 'codex' || process.env.ROOM_HOST === 'claude') ? {
-      deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }), deliveryHost: process.env.ROOM_HOST === 'claude' ? 'Claude' : 'Codex',
+      sessionHost: process.env.ROOM_HOST, deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }), deliveryHost: process.env.ROOM_HOST === 'claude' ? 'Claude' : 'Codex',
     } : {}),
     claudeHooks: read(claude?.root && path.join(claude.root, 'hooks', 'common.mjs')),
     codexHooks: read(codex?.hooksRoot && path.join(codex.hooksRoot, 'hooks', 'common.mjs')),
@@ -259,7 +279,17 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
   return f
 }
-export async function runDoctor(dir: string, inSession = false, selected?: DoctorDestination, sessionWarning?: string, sessionBound?: boolean): Promise<string> {
+export interface DoctorOptions {
+  /** Called from a running Room session (room_state check=true) rather than the CLI. */
+  inSession?: boolean
+  /** The joined room's destination; otherwise the directory's configuration is resolved. */
+  selected?: DoctorDestination
+  /** The session's canonical-relay warning, which replaces the probed one. */
+  sessionWarning?: string
+  /** Whether the session identified its host session; undefined when it has no binding. */
+  sessionBound?: boolean
+}
+export async function runDoctor(dir: string, { inSession = false, selected, sessionWarning, sessionBound }: DoctorOptions = {}): Promise<string> {
   const facts = await collectDoctorFacts(dir, inSession, selected)
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning
   if (inSession && sessionBound !== undefined) facts.sessionBound = sessionBound
