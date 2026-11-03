@@ -32382,7 +32382,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.26",
+      version: "0.17.27",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -42246,7 +42246,13 @@ async function removeCloneEntries(repoDir, folder, cloneGone) {
   if (left && left.every((name) => name === "clone.json")) await fs40.promises.rm(folder, { recursive: true, force: true });
 }
 async function reclaimOrphanEntries(repoDir) {
-  const base = path36.join(await fs40.promises.realpath(await gitCommonDir(repoDir)), "room-preview");
+  let common;
+  try {
+    common = await fs40.promises.realpath(await gitCommonDir(repoDir));
+  } catch {
+    return;
+  }
+  const base = path36.join(common, "room-preview");
   await rejectPreviewLink(base);
   for (const name of await fs40.promises.readdir(base).catch(() => [])) {
     if (!/^[a-f0-9]{20}(?:\.slots)?$/.test(name)) continue;
@@ -42271,8 +42277,7 @@ async function removePreviewCache(cloneDir, repoDir = cloneDir) {
   previewMaintenance(migrateLegacySlots(cloneDir, repoDir), "room preview migration");
   previewMaintenance((async () => {
     const key2 = await previewKeyPath(cloneDir, repoDir);
-    const cloneGone = !fs40.existsSync(cloneDir);
-    for (const folder of [key2, `${key2}.slots`]) await removeCloneEntries(repoDir, folder, cloneGone);
+    for (const folder of [key2, `${key2}.slots`]) await removeCloneEntries(repoDir, folder, true);
     await reclaimOrphanEntries(repoDir);
   })(), "room preview cleanup");
 }

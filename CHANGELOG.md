@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.27
+
+- Preview cache: worker cleanup now treats the worker's clone as removed when deleting its cached worktree, instead of sampling the filesystem from a background task. On Linux the task ran before the worktree was gone, so the clone's folder and lock file stayed behind (0.17.26 CI failed on this; macOS passed by timing). Reclaiming orphans after a preview is silent when the repository itself has been removed.
+
 ## 0.17.26
 
 - Preview cache: collecting or discarding a worker removes its clone's cached `room-preview` worktree, and every preview or worker cleanup reclaims entries whose clone no longer exists. Since 0.17.0 (2026-09-30) worker cleanup only migrated legacy slots, so a 1 MB entry under the 4 GB cap stayed registered and locked forever; a user's repository still carried one from a 2026-10-22 batch. Ownership is the existing OS file lock, so an entry in use, including a check orphaned by a crash, is left for a later pass.

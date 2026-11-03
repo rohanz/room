@@ -1048,7 +1048,10 @@ async function removeCloneEntries(repoDir: string, folder: string, cloneGone: bo
 
 /** Entries whose recorded clone no longer exists (a collected worker, a deleted checkout) have no future user. */
 async function reclaimOrphanEntries(repoDir: string): Promise<void> {
-  const base = path.join(await fs.promises.realpath(await gitCommonDir(repoDir)), 'room-preview')
+  let common: string
+  try { common = await fs.promises.realpath(await gitCommonDir(repoDir)) }
+  catch { return } // The repository itself is gone (a removed checkout): nothing left to reclaim.
+  const base = path.join(common, 'room-preview')
   await rejectPreviewLink(base)
   for (const name of await fs.promises.readdir(base).catch(() => [] as string[])) {
     if (!/^[a-f0-9]{20}(?:\.slots)?$/.test(name)) continue
@@ -1069,13 +1072,15 @@ function previewMaintenance(work: Promise<void>, label: string, into = previewMi
   void task.finally(() => into.delete(task))
 }
 
-/** Worker cleanup removes the worker clone's idle entries and reclaims orphans without waiting on them. */
+/**
+ * Worker cleanup: the clone is being removed (its processes are already stopped) or has vanished, so its
+ * entries, lock files and folder go, and orphans are reclaimed, without waiting on them.
+ */
 export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
   previewMaintenance(migrateLegacySlots(cloneDir, repoDir), 'room preview migration')
   previewMaintenance((async () => {
     const key = await previewKeyPath(cloneDir, repoDir)
-    const cloneGone = !fs.existsSync(cloneDir)
-    for (const folder of [key, `${key}.slots`]) await removeCloneEntries(repoDir, folder, cloneGone)
+    for (const folder of [key, `${key}.slots`]) await removeCloneEntries(repoDir, folder, true)
     await reclaimOrphanEntries(repoDir)
   })(), 'room preview cleanup')
 }
