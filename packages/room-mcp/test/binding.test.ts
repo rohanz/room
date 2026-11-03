@@ -62,3 +62,20 @@ it('bounds the distinct conflict log to 32 ids', async () => {
   expect(log).toHaveBeenCalledTimes(32)
   expect(b.bound()).toEqual({ id: 'first-thread', host: 'codex' })
 })
+
+it('binds a Claude session once its folder becomes a repository (git init after the session started)', async () => {
+  vi.resetModules()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-late-repo-'))
+  dirs.push(dir)
+  let now = 0
+  const { createSessionBinding } = await import('../src/binding.js')
+  const b = createSessionBinding(dir, { ROOM_HOST: 'claude', CLAUDE_CODE_SESSION_ID: 'late-session' }, () => now)
+  expect(b.bound()).toBeUndefined()
+  expect(b.commonDir()).toBeUndefined()
+  execFileSync('git', ['init', '-q', dir])
+  expect(b.bound()).toBeUndefined() // the miss is re-checked once a second, not on every call
+  now += 1_001
+  expect(b.bound()).toEqual({ id: 'late-session', host: 'claude' })
+  expect(b.commonDir()).toBe(path.join(dir, '.git'))
+  expect(b.dir()).toContain(path.join('room', 'sessions'))
+})

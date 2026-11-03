@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -9,6 +10,7 @@ import { hubAppend } from '@room/shared/testing'
 import { claudeWakeAvailable, createWakeSender, type SendWake } from '../src/wake-path.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
 import { Ledger } from '../src/ledger.js'
+import { createSessionBinding } from '../src/binding.js'
 import type { Session } from '../src/session.js'
 
 const pause = (ms = 60) => new Promise(resolve => setTimeout(resolve, ms))
@@ -300,5 +302,34 @@ describe('the reconciler: one pointer per host session', () => {
       await vi.advanceTimersByTimeAsync(15)
       expect(send).toHaveBeenCalledOnce()
     } finally { wakes.stop(); s.awareness.destroy() }
+  })
+})
+
+describe('a lead whose repository appears after the session started', () => {
+  it('reports unbound while nothing can wake it, then wakes once git init makes the binding possible', async () => {
+    vi.useFakeTimers()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-late-repo-wake-'))
+    const texts: string[] = []
+    const log: string[] = []
+    const binding = createSessionBinding(dir, { ROOM_HOST: 'claude', CLAUDE_CODE_SESSION_ID: 'lead-1' }, () => Date.now())
+    const room = new RoomDoc()
+    const s = { room, awareness: new Awareness(room.doc), me: { name: 'Rohan', kind: 'agent' }, roomName: 'r', dir } as unknown as Session
+    const ledger = new Ledger({ sessionId: () => binding.id(), sessionDir: () => binding.dir(), route: () => ({}) })
+    const wakes = new WakeReconciler({ ledger, bound: () => binding.bound(), sessionDir: () => binding.dir(), log: line => log.push(line),
+      send: async (_target, text) => { texts.push(text); return 'socket' }, pollMs: 10, windowMs: 10, ownWorkers: () => new Set(['cat']) })
+    ledger.bind(s); wakes.attach(s)
+    try {
+      hubAppend(room, { name: 'cat', kind: 'agent' }, { type: 'done', to: 'Rohan', tag: 'cat', summary: 'finished fixture', changed: [] })
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(texts).toEqual([])
+      expect(wakes.health()).toMatchObject({ host: 'unbound', degraded: 'unbound' })
+      expect(log.filter(line => line.includes('not bound'))).toHaveLength(1)
+      execFileSync('git', ['init', '-q', dir])
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(texts).toHaveLength(1)
+      expect(texts[0]).toContain('finished')
+      expect(wakes.health()).toMatchObject({ host: 'claude', degraded: undefined })
+      expect(fs.existsSync(path.join(binding.dir()!, 'wakes.json'))).toBe(true)
+    } finally { wakes.stop(); s.awareness.destroy(); room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 })

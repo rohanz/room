@@ -3,6 +3,7 @@
  * rebinds. The parent's identity and command line never change for a process, so they are read once.
  */
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { admitCodexThread, admittedCodexThread, boundSession, sessionDirectory, syntheticSessionId } from './session.js'
 import { probeOwnProcess, probeProcessNow, type ProcessInfo } from './worker-process.js'
@@ -23,13 +24,19 @@ const RECHECK_MS = 1_000
 export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now,
   options: { log?: (line: string) => void } = {}): SessionBinding & { admitCodexThread(id: string): void } {
   let commonDir: string | null | undefined
+  let commonCheckedAt = -Infinity
   let parent: ReturnType<typeof identity> | null | undefined
   let parentArgs: string | undefined
   let cached: { at: number; codexThreadId?: string; value: ReturnType<SessionBinding['bound']> } | undefined
   let ownGitDir: string | undefined
   const migrated = new Set<string>()
+  // A repository found once never moves. A folder that is not one yet (git init after the session started) is
+  // re-checked once a second, and git runs again only once a `.git` entry exists in the folder or a parent:
+  // an idle session in a plain folder stats a few paths and spawns nothing.
   const common = () => {
-    if (commonDir === undefined) {
+    if (commonDir === null && (now() - commonCheckedAt < RECHECK_MS || !gitEntryAbove(cwd))) return undefined
+    if (commonDir === undefined || commonDir === null) {
+      commonCheckedAt = now()
       try { commonDir = path.resolve(cwd, execFileSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()) }
       catch { commonDir = null }
     }
@@ -67,6 +74,17 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
       return target
     },
     commonDir: common,
+  }
+}
+
+/** Whether `dir` or an ancestor holds a `.git` entry (directory or worktree file): the only way a repository can appear. */
+function gitEntryAbove(dir: string): boolean {
+  let current = path.resolve(dir)
+  for (;;) {
+    try { fs.statSync(path.join(current, '.git')); return true } catch { /* not here */ }
+    const parent = path.dirname(current)
+    if (parent === current) return false
+    current = parent
   }
 }
 

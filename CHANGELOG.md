@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.25
+
+- Wake: a session started in a folder that only later becomes a git repository (`git init` after Claude started) now binds, logs and wakes within a second of the repository appearing. The binding cached the first "not a repository" answer for the life of the process, so such a lead was never woken for its workers' questions or completion, wrote nothing to `room-mcp.log`, and `room_state(check=true)` still said the wake path was bound. Observed on 2026-11-03: a lead spawned seven workers and learned of every completion only when its human asked. While a session with wakeable messages is unbound, delivery is reported as degraded (`unbound`) and the check says "this session is not bound: nothing can wake it" with the remedy; "wake path bound" is now "wake path configured", since the line never inspected the binding.
+
 ## 0.17.24
 
 - Collect: default collection and copy mode's comparison apply files up to 5 MB, the same per-file cap as carry at spawn (was 512 KB), so binary outputs such as audio stems and screenshots merge like any other change. A worker or lead file over 5 MB no longer aborts the call with a raw `file too large for Room read` error: collect writes nothing, keeps the workers, names the file (`NOT collected (over 5 MB)`) and ends with the exact `room_collect(tag=..., mode="copy", paths=[...])` command. After that copy the bytes match on both sides and the next default collect proceeds. On 2026-10-23 a 4 MB `.m4a` and, a day earlier, a 687 KB PNG made leads copy files by hand, bypassing conflict detection.

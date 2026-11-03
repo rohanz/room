@@ -43,7 +43,7 @@ export interface DeliveryHealth {
   path?: WakePathStatus
   state?: TurnState
   attempt?: WakeAttempt
-  degraded?: 'host-state-unknown' | 'transport-failed' | 'transport-unavailable' | 'mid-turn-retry-limit' | 'wake-retry-limit' | 'submission-uncertain'
+  degraded?: 'unbound' | 'host-state-unknown' | 'transport-failed' | 'transport-unavailable' | 'mid-turn-retry-limit' | 'wake-retry-limit' | 'submission-uncertain'
   sampled?: boolean
   retainedAddressed: number
   pendingAddressed: number
@@ -157,6 +157,7 @@ export class WakeReconciler {
   /** Cheap normal-state summary; detailed retained-ledger sampling is reserved for check=true. */
   degradation(): DeliveryHealth['degraded'] {
     const target = this.o.bound()
+    if (!target) return this.degraded === 'unbound' ? 'unbound' : undefined
     return target && this.bindingKey === `${target.host}\0${target.id}` && this.o.send.describe?.(target).availability !== 'off'
       ? this.degraded : undefined
   }
@@ -243,7 +244,12 @@ export class WakeReconciler {
     for (const key of this.retryAfter.keys()) if (!live.has(key)) this.retryAfter.delete(key)
     if (!due.length) { this.failures = 0; this.unknownFailures = 0; this.unknownNextAt = 0; this.recover(); return }
     const target = this.o.bound()
-    if (!target) { this.arm(this.o.pollMs ?? POLL_MS); return }
+    if (!target) {
+      // Nothing can be woken until the host session is known (for example a session started outside a git repository).
+      if (!this.silent) this.o.log?.('wake: this session is not bound to a host session; nothing can wake it until it is')
+      this.silent = true
+      this.degrade('unbound'); this.arm(this.o.pollMs ?? POLL_MS); return
+    }
     const bindingKey = `${target.host}\0${target.id}`
     if (this.bindingKey !== bindingKey) {
       this.bindingKey = bindingKey; this.state = undefined; this.recover()

@@ -124,9 +124,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const active = state.ctx.getSession()
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf('/')) : undefined
         const destination = server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : undefined
-        const report = active?.local?.canonicalWarning
-          ? await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination, active.local.canonicalWarning)
-          : await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination)
+        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination, active?.local?.canonicalWarning, state.ctx.binding ? !!state.ctx.binding.bound() : undefined)
         return [report, formatDeliveryHealth(state.deliveryHealth())].filter(Boolean).join('\n')
       }
       const s = S()

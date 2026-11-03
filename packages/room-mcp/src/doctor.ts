@@ -28,6 +28,8 @@ export interface DoctorFacts {
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
   claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
+  /** Whether this MCP has identified its host session (binding.ts); false means no wake can be addressed. */
+  sessionBound?: boolean
   deliveryPath?: WakePathStatus
   deliveryHost?: string
   server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string
@@ -111,7 +113,9 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     add(atLeast(f.claudeVersion, min) ? 'PASS' : 'WARN', 'Claude wake', f.claudeVersion ? `Claude Code ${f.claudeVersion}` : 'version unknown', `Update Claude Code to ${min.join('.')} or newer`)
     if (f.wakeSession) {
       const disabled = f.deliveryPath?.mode === 'off'
-      add(disabled || f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', disabled ? 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff' : f.wakeBound ? 'wake path bound' : 'wake path unavailable', disabled ? undefined : 'Check /status for a Peer address, or start claude-room')
+      if (!disabled && f.sessionBound === false)
+        add('WARN', 'Claude inbox', 'wake path configured but this session is not bound: nothing can wake it', 'Start Claude inside the git repository (git init first), then restart the session')
+      else add(disabled || f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', disabled ? 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff' : f.wakeBound ? 'wake path configured' : 'wake path unavailable', disabled ? undefined : 'Check /status for a Peer address, or start claude-room')
     }
   }
   if (f.deliveryPath) {
@@ -255,8 +259,9 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
   return f
 }
-export async function runDoctor(dir: string, inSession = false, selected?: DoctorDestination, sessionWarning?: string): Promise<string> {
+export async function runDoctor(dir: string, inSession = false, selected?: DoctorDestination, sessionWarning?: string, sessionBound?: boolean): Promise<string> {
   const facts = await collectDoctorFacts(dir, inSession, selected)
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning
+  if (inSession && sessionBound !== undefined) facts.sessionBound = sessionBound
   return formatDoctor(evaluateDoctor(facts))
 }

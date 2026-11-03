@@ -68,7 +68,7 @@ Useful optional arguments:
 
 ## Wake paths
 
-For missing wakes, check `room_state(check=true)` and `<git common dir>/room-mcp.log`. Host settings, disconnections or transport errors can prevent a wake even when a transport is configured.
+For missing wakes, check `room_state(check=true)` and `<git common dir>/room-mcp.log`. Host settings, disconnections or transport errors can prevent a wake even when a transport is configured. A session that cannot identify its host session (for example one started before its folder was a git repository) is reported as `delivery: unbound` and in the check as not bound; since 0.17.25 it binds within a second of the repository appearing.
 
 Routine progress notes from the lead's own workers stay quiet. Addressed questions, worker completion (`room_done`) and eligible interrupts can wake it. An interactive lead with a configured wake path need not poll or watch worker PIDs just to receive those events. A headless lead must stay alive with `room_wait` while supervising workers; use that fallback for unavailable/disabled wake paths too. Messages also arrive on Room tool replies and eligible before-edit hooks. A process-exit watcher alone misses mid-task questions.
 

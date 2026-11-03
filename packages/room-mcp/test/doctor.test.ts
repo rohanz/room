@@ -24,6 +24,16 @@ const base = (): DoctorFacts => ({ node: 'v22.14.0', git: 'git version 2.39.0', 
   inSession: true })
 
 describe('doctor report', () => {
+  it('says when the session is unbound instead of calling a configured socket a bound wake path', () => {
+    const configured = evaluateDoctor({ ...base(), sessionBound: true }).find(r => r.name === 'Claude inbox')
+    expect(configured).toMatchObject({ level: 'PASS', finding: 'wake path configured' })
+    const unbound = evaluateDoctor({ ...base(), sessionBound: false }).find(r => r.name === 'Claude inbox')
+    expect(unbound).toMatchObject({ level: 'WARN' })
+    expect(unbound?.finding).toContain('not bound')
+    expect(unbound?.fix).toContain('git init')
+    const off = evaluateDoctor({ ...base(), sessionBound: false, deliveryPath: { mode: 'off', transport: 'none', availability: 'off' } }).find(r => r.name === 'Claude inbox')
+    expect(off?.level).toBe('PASS')
+  })
   it('distinguishes configured Claude delivery from acceptance and respects off', () => {
     const facts = { ...base(), deliveryHost: 'Claude', deliveryPath: { mode: 'auto' as const, transport: 'socket' as const, availability: 'configured' as const } }
     const row = evaluateDoctor(facts).find(r => r.name === 'Claude delivery configuration')
@@ -261,6 +271,6 @@ it('room_state check diagnoses a never-synced session and its selected checkout'
   const tools = createTools({ getSession: () => active, setSession: s => { active = s }, cwd: '/original/checkout' })
   active = { dir: '/selected/checkout', roomUrl: 'wss://selected.example/repository', roomName: 'repository', token: 'test-token', provider: { synced: false }, daemon: { touch: vi.fn() } } as unknown as Session
   expect(await tools.call('room_state', { check: true })).toBe('PASS  doctor: report from tool')
-  expect(doctor).toHaveBeenCalledWith('/selected/checkout', true, { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined })
+  expect(doctor).toHaveBeenCalledWith('/selected/checkout', true, { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, undefined, undefined)
   expect(active.daemon.touch).not.toHaveBeenCalled()
 })

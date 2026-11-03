@@ -54,12 +54,14 @@ export function appendRoomLog(file: string, line: string, maxBytes = ROOM_LOG_MA
 
 // ROOM_LOG_FILE: also append every log line to a file (workers spawned by room_spawn get one per tag).
 let LOG_FILE: string | undefined = process.env.ROOM_LOG_FILE
-let ROOM_LOG_FILE: string | undefined
+// The clone's git common dir, read through the session binding so a repository created after startup is found.
+let roomLogDir: () => string | undefined = () => undefined
 const log = (s: string) => {
   try { fs.writeSync(2, `room-mcp: ${s}\n`) } catch { /* stderr may already be closed */ }
   const at = new Date().toISOString()
   if (LOG_FILE) { try { fs.appendFileSync(LOG_FILE, `${at} ${s}\n`) } catch { /* best effort */ } }
-  if (ROOM_LOG_FILE) appendRoomLog(ROOM_LOG_FILE, `${at} pid ${process.pid}${process.env.ROOM_TAG ? ` ${process.env.ROOM_TAG}` : ''}: ${s}`)
+  const common = roomLogDir()
+  if (common) appendRoomLog(path.join(common, ROOM_LOG), `${at} pid ${process.pid}${process.env.ROOM_TAG ? ` ${process.env.ROOM_TAG}` : ''}: ${s}`)
 }
 
 /** The entry file is the loaded plugin bundle in an installation. Check it once per tool call. */
@@ -97,9 +99,8 @@ async function main() {
       const startup = await resolveConfig({ dir, env: process.env })
       if (signal.aborted) throw new Error('Room is shutting down')
       LOG_FILE = startup.logFile
-      ROOM_LOG_FILE = await gitCommonDir(dir).then(common => path.join(common, ROOM_LOG), () => undefined)
-      if (signal.aborted) throw new Error('Room is shutting down')
       const sessionBinding = createSessionBinding(dir)
+      roomLogDir = () => sessionBinding.commonDir()
       let rebinding: Promise<void> | undefined
       let rebindHost: (sessionId: string) => Promise<void> = async () => {}
       // Content-free wakes: Codex active-turn output or idle queue; Claude inbox or channel.
