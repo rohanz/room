@@ -1217,19 +1217,20 @@ describe('spawn inputs and effort', () => {
   })
 })
 
-it('reads only the last five non-empty log lines, strips ANSI, and caps output at 600 characters', () => {
+it('keeps only the last five parsed model texts, strips ANSI, and caps output at 600 characters', () => {
   const log = join(dir, 'worker-tail.log')
+  const say = (text: string) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text } ] } })
   try {
-    writeFileSync(log, 'old\n' + 'x'.repeat(70_000) + '\n1\n\n2\n3\n\u001b[31m4\u001b[0m\n5\n')
+    writeFileSync(log, [say('old'), 'x'.repeat(70_000), ...['1', '', '2', '3', '\u001b[31m4\u001b[0m', '5'].map(say)].join('\n') + '\n')
     expect(workerLogTail(log)).toBe('1\n2\n3\n4\n5')
-    writeFileSync(log, 'x'.repeat(1000) + '\nlast')
+    writeFileSync(log, say('x'.repeat(1000)) + '\n' + say('last'))
     expect(workerLogTail(log)).toHaveLength(600)
     expect(workerLogTail(log)).toMatch(/last$/)
-    expect(workerLogTail(join(dir, 'missing-log'))).toBe('(log unavailable)')
+    expect(workerLogTail(join(dir, 'missing-log'))).toBe('')
   } finally { rmSync(log, { force: true }) }
 })
 
-it('renders Codex JSONL agent and error text without raw event envelopes', () => {
+it('never returns plain lines, host errors or other JSON from the log, only the model text', () => {
   const log = join(dir, 'worker-jsonl.log')
   try {
     writeFileSync(log, [
@@ -1237,9 +1238,12 @@ it('renders Codex JSONL agent and error text without raw event envelopes', () =>
       JSON.stringify({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'Checking the failing path.' } }),
       JSON.stringify({ type: 'turn.failed', error: { message: 'The command failed.' } }),
       JSON.stringify({ type: 'error', message: 'Connection lost.' }),
+      JSON.stringify({ level: 'info', message: 'a tool printed JSON on stderr' }),
       'process exited with status 1',
     ].join('\n'))
-    expect(workerLogTail(log)).toBe('Checking the failing path.\nThe command failed.\nConnection lost.\nprocess exited with status 1')
+    expect(workerLogTail(log)).toBe('Checking the failing path.')
+    writeFileSync(log, 'only plain stderr\n')
+    expect(workerLogTail(log)).toBe('')
   } finally { rmSync(log, { force: true }) }
 })
 

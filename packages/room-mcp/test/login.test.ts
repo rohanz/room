@@ -30,11 +30,11 @@ afterAll(() => { server.close(); delete process.env.ROOM_CREDENTIALS; delete pro
 
 describe('credentials store', () => {
   it('round-trips per server origin with 0600 perms', () => {
-    setCredential('wss://a.example/', { session: 'x', login: 'me', at: 1 })
-    expect(getCredential('wss://a.example')).toMatchObject({ login: 'me' })
+    setCredential(credentialsPath(), 'wss://a.example/', { session: 'x', login: 'me', at: 1 })
+    expect(getCredential(credentialsPath(), 'wss://a.example')).toMatchObject({ login: 'me' })
     expect(fs.statSync(credentialsPath()).mode & 0o777).toBe(0o600)
-    expect(removeCredential('wss://a.example')).toBe(true)
-    expect(getCredential('wss://a.example')).toBeUndefined()
+    expect(removeCredential(credentialsPath(), 'wss://a.example')).toBe(true)
+    expect(getCredential(credentialsPath(), 'wss://a.example')).toBeUndefined()
   })
 })
 
@@ -49,26 +49,26 @@ describe('room_login account actions', () => {
     const second = await t.call('room_login', { wait: 5 })
     expect(second).toContain('logged in to')
     expect(second).toContain('as octo')
-    expect(getCredential(url)).toMatchObject({ login: 'octo', session: 's'.repeat(64) })
+    expect(getCredential(credentialsPath(), url)).toMatchObject({ login: 'octo', session: 's'.repeat(64) })
     let joined = false
     const guarded = createTools({ getSession: () => null, setSession: () => {}, cwd: process.cwd(), join: async () => { joined = true; throw new Error('must not join') } })
     expect(await guarded.call('room_join', { server: url, room: 'github.com/x/y/main', name: 'alias' }))
       .toBe('error: name is your GitHub login on this server (octo); use ROOM_TAG for a second agent')
     expect(joined).toBe(false)
     // the join path picks the session up and binds the name to the login
-    const a = await resolveAuth(url, 'github.com/x/y/main')
+    const a = await resolveAuth(credentialsPath(), url, 'github.com/x/y/main')
     expect(a).toMatchObject({ session: 's'.repeat(64), login: 'octo' })
     expect(a.gh).toBeUndefined()
     expect(await t.call('room_login', {})).toContain('already logged in')
     const out = await t.call('room_login', { action: 'logout', })
     expect(out).toContain('logged out')
     expect(loggedOut).toEqual(['s'.repeat(64)])
-    expect(getCredential(url)).toBeUndefined()
+    expect(getCredential(credentialsPath(), url)).toBeUndefined()
   })
   it('device mode without a login: joining a GitHub room throws NotLoggedIn even with a shared token; non-GitHub rooms are unaffected', async () => {
-    await expect(resolveAuth(url, 'github.com/x/y/main')).rejects.toBeInstanceOf(NotLoggedIn)
-    await expect(resolveAuth(url, 'github.com/x/y/main', 'tok')).rejects.toBeInstanceOf(NotLoggedIn)
-    expect(await resolveAuth(url, 'local/dir/main', 'tok')).toEqual({ token: 'tok' })
+    await expect(resolveAuth(credentialsPath(), url, 'github.com/x/y/main')).rejects.toBeInstanceOf(NotLoggedIn)
+    await expect(resolveAuth(credentialsPath(), url, 'github.com/x/y/main', 'tok')).rejects.toBeInstanceOf(NotLoggedIn)
+    expect(await resolveAuth(credentialsPath(), url, 'local/dir/main', 'tok')).toEqual({ token: 'tok' })
   })
   it('a server without GitHub login cannot admit a GitHub room; the local gh token is never offered', async () => {
     mode.github = 'token'
@@ -76,9 +76,9 @@ describe('room_login account actions', () => {
       const { serverAuthMode } = await import('../src/session.js')
       // the config is cached per server string: a trailing slash is a fresh entry read under the new mode
       expect(await serverAuthMode(url + '/')).toBe('token')
-      await expect(resolveAuth(url + '/', 'github.com/x/y/main', 'tok')).rejects.toThrow(/no GitHub login/)
-      expect(await resolveAuth(url + '/', 'local/dir/main', 'tok')).toEqual({ token: 'tok' })
-      expect(await resolveAuth(url + '/', 'git/gitlab.example/o/r/main')).toEqual({ token: undefined })
+      await expect(resolveAuth(credentialsPath(), url + '/', 'github.com/x/y/main', 'tok')).rejects.toThrow(/no GitHub login/)
+      expect(await resolveAuth(credentialsPath(), url + '/', 'local/dir/main', 'tok')).toEqual({ token: 'tok' })
+      expect(await resolveAuth(credentialsPath(), url + '/', 'git/gitlab.example/o/r/main')).toEqual({ token: undefined })
     } finally { mode.github = 'device' }
   })
   it('logout with nothing stored says so', async () => {

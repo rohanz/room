@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,14 +9,19 @@ import { previewCachePath, runInMergedTree, waitForPreviewSweepForTests } from '
 import type { Session } from '../src/session.js'
 
 const roots: string[] = []
+const maintenanceRoots = new Set<string>()
 const originalCap = process.env.ROOM_PREVIEW_CACHE_GB
 const originalPath = process.env.PATH
-afterEach(() => {
+afterEach(async () => {
+  for (const root of roots.splice(0)) {
+    if (maintenanceRoots.has(root)) await disposePreviewFixture(root)
+    else await fs.promises.rm(root, { recursive: true, force: true })
+  }
+  maintenanceRoots.clear()
   setPreviewLockUnavailableForTests()
   process.env.PATH = originalPath
   if (originalCap === undefined) delete process.env.ROOM_PREVIEW_CACHE_GB
   else process.env.ROOM_PREVIEW_CACHE_GB = originalCap
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 it('uses du allocation before the bounded walk and falls back when du fails', async () => {
@@ -39,6 +45,7 @@ it('uses du allocation before the bounded walk and falls back when du fails', as
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-lru-'))
   roots.push(root)
+  maintenanceRoots.add(root)
   const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
   git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test')
   fs.writeFileSync(path.join(root, 'app.txt'), 'base\n')

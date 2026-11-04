@@ -578,9 +578,11 @@ const server = http.createServer((req, res) => {
     json(200, r)
   })
   if (url.pathname === '/auth/logout' && req.method === 'POST') return withBody(async o => {
-    const was = auth.logout(str(o.session))
-    if (was) audit({ event: 'logout', login: was.login, id: was.id, provider: was.provider })
-    json(200, { ok: !!was })
+    const { removed, error } = await auth.logout(str(o.session))
+    // The session is already unusable; until its deletion is stored a restart could revive it.
+    if (error) return json(503, { ok: false, retryable: true, error })
+    if (removed) audit({ event: 'logout', login: removed.login, id: removed.id, provider: removed.provider })
+    json(200, { ok: !!removed })
   })
   if (url.pathname === '/auth/me' && req.method === 'GET') {
     const st = auth.resolve(headerCreds().session)

@@ -12,9 +12,11 @@ export function testPolicyStore(level: ShareLevel = 'full', onChange?: (policy: 
   let active: string[] = [], ending: string[] = [], retained: string[] = []
   let disclosed: { level: ShareLevel; version: number } = { level: 'full', version: 1 }
   let policy: SharingPolicy
+  const listeners = new Set<(policy: SharingPolicy) => void>()
   const rebuild = () => {
     policy = Object.freeze({ ...policyFromLevel(requested, [...new Set([...active, ...ending, ...retained])], ceiling, publisher), ending: Object.freeze([...ending]), ...(publisherName ? { publisherName } : {}) })
     onChange?.(policy)
+    for (const listener of listeners) listener(policy)
     return policy
   }
   rebuild()
@@ -49,5 +51,6 @@ export function testPolicyStore(level: ShareLevel = 'full', onChange?: (policy: 
     setCeiling(next: ShareLevel) { if (ceiling === next) return policy; ceiling = next; return rebuild() },
     setPublisher(next: boolean, name?: string) { if (publisher === next && publisherName === name) return policy; publisher = next; publisherName = name; return rebuild() },
     async markDisclosed(next: ShareLevel, version: number) { disclosed = { level: next, version }; return policy },
+    watch(listener: (policy: SharingPolicy) => void) { listeners.add(listener); return () => { listeners.delete(listener) } },
   } as unknown as PolicyStore
 }

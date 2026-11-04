@@ -12,9 +12,22 @@ import { specForPath } from './parse/index.js'
 import type { BaselineRead } from '@room/roomd/baseline'
 import { carriedFrom } from './worker-registry.js'
 import { snapshotStillCurrent } from '@room/shared'
-import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
+import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedHistoricalText, readBoundedHistoricalTexts } from './tools/disk-text.js'
 
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
+/** Source paths at a commit, with blob ids for regular files and symlinks (a submodule has none). */
+async function listSourceBlobs(dir: string, base: string): Promise<{ paths: string[]; blobs: Map<string, string> }> {
+  const paths: string[] = [], blobs = new Map<string, string>()
+  for (const entry of (await git(dir, ['ls-tree', '-r', '-z', base])).split('\0')) {
+    const tab = entry.indexOf('\t') // "<mode> <type> <id>\t<path>"
+    const path = entry.slice(tab + 1)
+    if (tab < 0 || !isSourcePath(path)) continue
+    paths.push(path)
+    const [, type, id] = entry.slice(0, tab).split(' ')
+    if (type === 'blob') blobs.set(path, id)
+  }
+  return { paths, blobs }
+}
 const MAX_FILES = 3000
 const MAX_BYTES = 256 * 1024
 const MAX_REFRESH_CONCURRENCY = 8
@@ -41,6 +54,12 @@ const MIN_PUBLISH_MS = 20_000
 const YIELD_EVERY = 100
 const YIELD_AFTER_MS = 20
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
+/**
+ * Paths per batched base read: the requested path plus the next queued refreshes. Texts wait in memory
+ * until their refresh takes them; 32 is four rounds of MAX_REFRESH_CONCURRENCY, enough to keep
+ * refreshes fed between reads.
+ */
+const READ_AHEAD_PATHS = 32
 type PublicationSource = { kind: 'base'; base: string } | { kind: 'entry'; person: string; fence: string; hash: string } |
   { kind: 'deletion'; person: string; fence: string; base: string; baseline: string }
 
@@ -65,8 +84,11 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
   return graph.dependenciesOf(consumer).some(dep => dep.symbol === name && dep.definedIn.includes(provider))
 }
 
-/** Immutable base facts only; no room, leases, overlays or sharing grants cross a reconnect. */
-export interface GraphSeed { dir: string; base: string; files: ReadonlyMap<string, FileSymbols> }
+/**
+ * Immutable base facts only; no room, leases, overlays or sharing grants cross a reconnect or a base move.
+ * A file's symbols are reused at the same base, or at another base whose blob for it is unchanged.
+ */
+export interface GraphSeed { dir: string; base: string; files: ReadonlyMap<string, FileSymbols>; blobs?: ReadonlyMap<string, string> }
 export interface GraphIndexOptions {
   minPublishMs?: number; random?: () => number; read?: typeof gitShow; seed?: GraphSeed
   maxPaths?: number; maxRetainedSymbols?: number; maxRetainedBytes?: number; maxSymbolsPerFile?: number
@@ -111,6 +133,7 @@ export class GraphIndex {
   private pending = new Map<string, { generation: number; promise: Promise<void>; resolve: () => void; idle: Promise<void>; resolveIdle: () => void }>()
   /** Owns the concurrency limit and per-path deduplication for initial and overlay refreshes. */
   private refreshQueue: string[] = []
+  private drainQueued = false
   private activeRefreshes = 0
   private revisions = new Map<string, number>()
   private observedByPath = new Map<string, ObservedContractChange[]>()
@@ -156,6 +179,12 @@ export class GraphIndex {
   private endJitter?: () => void
   private unobserve: (() => void)[] = []
   private currentBuild: Promise<void> = Promise.resolve()
+  /** Blob ids of source paths at `base`, from the build's listing. */
+  private baseBlobs = new Map<string, string>()
+  /** Base texts read ahead for queued refreshes, until each path's refresh takes its own. */
+  private baseTexts = new Map<string, Promise<string | undefined>>()
+  /** Paths already reported over the read limit in this build. */
+  private oversized = new Set<string>()
   /** Quiescence alone does not mean discovery or individual reads succeeded. */
   get isReady(): boolean { return this.phase !== 'error' && !this.degradedPaths.size && !this.discovering && this.pending.size === 0 }
   /** Resolves when the current build is done, even if a captured waiter is superseded. */
@@ -179,14 +208,47 @@ export class GraphIndex {
   }
 
   private historicalText(base: string, pathname: string): Promise<string | undefined> {
-    return this.opts.read ? this.opts.read(this.dir, base, pathname) : readBoundedHistoricalText(this.dir, base, pathname)
+    if (this.opts.read) return this.opts.read(this.dir, base, pathname)
+    if (base === this.base && this.baseBlobs.has(pathname)) return this.readBaseAhead(pathname)
+    return readBoundedHistoricalText(this.dir, base, pathname)
+  }
+
+  /**
+   * Base texts are read in batches along the refresh queue, so a build or a grant change that
+   * refreshes every file costs two Git calls per batch, not per file. Values match
+   * readBoundedHistoricalText; a failed batch falls back to per-file reads, so one bad blob still
+   * affects only its own path.
+   */
+  private readBaseAhead(path: string): Promise<string | undefined> {
+    const known = this.baseTexts.get(path)
+    if (known) return known
+    const base = this.base, batch = [path]
+    for (const next of this.refreshQueue) {
+      if (batch.length >= READ_AHEAD_PATHS) break
+      if (next !== path && this.baseBlobs.has(next) && !this.baseTexts.has(next)) batch.push(next)
+    }
+    const read = readBoundedHistoricalTexts(this.dir, base, batch)
+    for (const p of batch) {
+      const text = read.then(texts => {
+        const value = texts.get(p)
+        if (value instanceof HistoricalTextTooLarge) throw value
+        return value
+      }, () => readBoundedHistoricalText(this.dir, base, p))
+      text.catch(() => {}) // each entry is awaited by its own path's refresh, if that still runs
+      this.baseTexts.set(p, text)
+    }
+    return this.baseTexts.get(path)!
   }
 
   private async graphText(base: string, pathname: string): Promise<string | undefined> {
     try { return await this.historicalText(base, pathname) }
     catch (error) {
       if (!(error instanceof HistoricalTextTooLarge)) throw error
-      this.log(`graph: historical text too large for ${pathname}; graph coverage degraded`)
+      // The one rule for bundles, minified and generated files: over the read limit, not indexed.
+      if (!this.oversized.has(pathname)) {
+        this.oversized.add(pathname)
+        this.log(`graph: ${pathname} is over the ${DISK_TEXT_LIMIT / 1024} KB read limit; not indexed`)
+      }
       return undefined
     }
   }
@@ -333,15 +395,16 @@ export class GraphIndex {
       if (source.kind === 'base' && source.base === this.base && local && published && !this.pending.has(path) &&
           JSON.stringify(local) === JSON.stringify(published)) files.set(path, local)
     }
-    return { dir: this.dir, base: this.base, files }
+    const blobs = new Map<string, string>()
+    for (const path of files.keys()) { const blob = this.baseBlobs.get(path); if (blob) blobs.set(path, blob) }
+    return { dir: this.dir, base: this.base, files, blobs }
   }
 
-  /** Re-evaluate current authority even when the parsed immutable base is reusable. */
-  private reuseBase(path: string): boolean {
-    const seed = this.opts.seed
-    if (!seed || seed.dir !== this.dir || seed.base !== this.base) return false
-    const symbols = seed.files.get(path)
-    if (!symbols) return false
+  /** Reuse a seed's symbols for an unchanged base file; current authority is still re-evaluated. */
+  private reuseBase(path: string, seed: GraphSeed | undefined): boolean {
+    if (seed?.dir !== this.dir) return false
+    const symbols = seed.files.get(path), blob = this.baseBlobs.get(path)
+    if (!symbols || seed.base !== this.base && (!blob || seed.blobs?.get(path) !== blob)) return false
     for (const [person, head] of this.room.manifestHead) {
       if (this.room.manifest.get(manifestKey(person, head.fence))?.has(path)) return false
       if (this.room.roomSalt && head.excluded.includes(digestPath(this.room.roomSalt, path))) return false
@@ -362,6 +425,7 @@ export class GraphIndex {
   stop(): void {
     this.stopped = true
     this.parser.stop()
+    this.baseBlobs.clear(); this.baseTexts.clear()
     clearImmediate(this.budgetPublishing); this.budgetPublishing = undefined; this.withdrawalPending = false
     this.invalidatePriorities()
     for (const timer of this.recoveryTimers.values()) clearTimeout(timer)
@@ -399,6 +463,10 @@ export class GraphIndex {
       this.phase = 'indexing'
       this.completedFiles.clear()
       this.totalFiles = 0
+      // A base move is incremental: files whose blob is unchanged keep the previous build's symbols.
+      // The first build reuses a reconnect's seed the same way. Overlay changes never rebuild.
+      const seed = this.base ? this.baseSeed() : this.opts.seed
+      this.baseBlobs = new Map(); this.baseTexts.clear(); this.oversized.clear()
       this.base = participantRecord(this.room, this.me)?.git?.base ?? ''
       this.observedByPath.clear()
       for (const path of this.retainedCosts.keys()) this.syncRetainedCost(path)
@@ -427,10 +495,12 @@ export class GraphIndex {
       if (!this.base) return
       await this.publish('indexing')
       if (generation !== this.generation || this.stopped) return
-      let paths: string[] = []
-      try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', '-z', this.base])).split('\0').filter(isSourcePath) }
+      let listing: { paths: string[]; blobs: Map<string, string> }
+      try { listing = await listSourceBlobs(this.dir, this.base) }
       catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
       if (generation !== this.generation || this.stopped) return
+      const { paths } = listing
+      this.baseBlobs = listing.blobs
       this.truncated = false
       const all = new Set(paths)
       for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all.add(p)
@@ -440,8 +510,7 @@ export class GraphIndex {
       for (const path of ordered.slice(pathsToRefresh.length)) this.omit(path, 'path admission limit')
       this.totalFiles = pathsToRefresh.length
       if (generation !== this.generation || this.stopped) return
-      const refreshes: Promise<void>[] = []
-      let reused = 0
+      const toRead: string[] = []
       let lastYield = Date.now()
       for (let i = 0; i < pathsToRefresh.length; i++) {
         if (i > 0 && (i % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
@@ -449,11 +518,11 @@ export class GraphIndex {
           if (generation !== this.generation || this.stopped) return
           lastYield = Date.now()
         }
-        if (this.reuseBase(pathsToRefresh[i])) reused++
-        else refreshes.push(this.refresh(pathsToRefresh[i]))
+        if (!this.reuseBase(pathsToRefresh[i], seed)) toRead.push(pathsToRefresh[i])
       }
-      if (reused) this.log(`graph: reused ${reused} unchanged base files after reconnect`)
-      await Promise.all(refreshes)
+      const reused = pathsToRefresh.length - toRead.length
+      if (reused) this.log(`graph: reused ${reused} base files unchanged since ${seed!.base.slice(0, 10)}`)
+      await Promise.all(toRead.map(path => this.refresh(path)))
       if (generation !== this.generation || this.stopped) return
       this.phase = 'ready'
       await this.publish('ready')
@@ -685,6 +754,7 @@ export class GraphIndex {
       pending?.resolve(); pending?.resolveIdle(); this.pending.delete(path)
       const queued = this.refreshQueue.indexOf(path)
       if (queued >= 0) this.refreshQueue.splice(queued, 1)
+      this.baseTexts.delete(path)
       this.revisions.delete(path); this.completedFiles.delete(path)
     }
     this.cache.delete(path); this.publishedCache.delete(path); this.publishedSource.delete(path)
@@ -759,7 +829,8 @@ export class GraphIndex {
     const idle = new Promise<void>(r => { resolveIdle = () => { this.activePaths.delete(path); r() } })
     this.pending.set(path, { generation: this.generation, promise, resolve, idle, resolveIdle })
     this.refreshQueue.push(path)
-    this.drainRefreshQueue()
+    // Drain once the caller has queued everything it is about to, so batched base reads see the whole queue.
+    if (!this.drainQueued) { this.drainQueued = true; queueMicrotask(() => { this.drainQueued = false; this.drainRefreshQueue() }) }
     return promise
   }
 
@@ -839,6 +910,8 @@ export class GraphIndex {
         clearTimeout(this.recoveryTimers.get(path)); this.recoveryTimers.delete(path)
       }
       throw error
+    } finally {
+      this.baseTexts.delete(path)
     }
   }
 
@@ -862,7 +935,8 @@ export class GraphIndex {
       const mineDeleted = myEntry?.change === 'D'
       const ownFileUnavailable = myEntry?.state === 'shared' && !mineDeleted && mine === undefined
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
-      const own = carriedFrom(this.dir, this.me)?.baseline
+      // Only an own manifest entry uses it: the registry read is synchronous, so base files skip it.
+      const own = myEntry ? carriedFrom(this.dir, this.me)?.baseline : undefined
       const read = (sha: string, file: string) => this.historicalText(sha, file)
       const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
         ? await (own?.untracked.has(path)

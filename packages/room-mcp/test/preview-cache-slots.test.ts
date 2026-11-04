@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,7 +20,7 @@ it('places a preview checkout in a shared fingerprint entry beneath the clone ke
     expect(result.passed, result.text).toBe(true)
     expect(git('worktree', 'list', '--porcelain')).toContain(cache)
     expect(git('worktree', 'list', '--porcelain')).toMatch(/locked room preview cache/)
-  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  } finally { await disposePreviewFixture(root) }
 }, 30_000)
 
 it('ignores persistent legacy sidecars on repeated migration passes', async () => {
@@ -48,5 +49,5 @@ it('ignores persistent legacy sidecars on repeated migration passes', async () =
       ['.claim', '.lock', '.meta.json', '.settings', '.settings.old', '.settings-old'].map(suffix => `${name}${suffix}`).sort(),
     )
     expect(fs.existsSync(`${slot}.lock.lock`)).toBe(false)
-  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  } finally { await disposePreviewFixture(root) }
 }, 30_000)

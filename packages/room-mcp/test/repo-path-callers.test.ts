@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
@@ -21,7 +22,9 @@ import { testPolicyStore } from './policy-fixture.js'
 
 let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
+let startsPreviewMaintenance = false
 beforeEach(() => {
+  startsPreviewMaintenance = false
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-repo-path-callers-')))
   lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'w')
   fs.mkdirSync(lead)
@@ -31,7 +34,11 @@ beforeEach(() => {
   fs.appendFileSync(path.join(lead, '.git', 'info', 'exclude'), '.room/\n')
   git(lead, 'worktree', 'add', '-qb', 'room/w', worker)
 })
-afterEach(async () => { vi.restoreAllMocks(); await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => {
+  vi.restoreAllMocks()
+  if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [lead] })
+  else { await closeRegistryForDir(lead); await fs.promises.rm(root, { recursive: true, force: true }) }
+})
 
 const cases = ['a\\b', 'a//b', 'a/./b', 'a/../b', '.git/config', 'a/.git/config', '/tmp/nope']
 
@@ -135,6 +142,7 @@ it('rollback recovery skips invalid recorded paths before writing them', async (
   fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/recover "*) echo "late failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
   const originalPath = process.env.PATH
   process.env.PATH = bin + path.delimiter + originalPath
+  startsPreviewMaintenance = true
   try { await expect(cleanupWorker(lead, w, true, true, [], { list: () => [] })).rejects.toThrow(/cleanup failed:.*late failure.*reconstructed base/) }
   finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
   expect(fs.existsSync(path.join(lead, 'escape'))).toBe(false)

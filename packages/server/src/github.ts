@@ -13,6 +13,9 @@ export interface PullRequest {
   /** Head branch name. */
   head: string
   files: string[]
+  /** Absent when `files` is the PR's whole file list. `partial`: a later page failed or the page ceiling was
+   *  hit, so `files` is what was read; `unavailable`: the file list could not be read at all (`files` is empty). */
+  coverage?: 'partial' | 'unavailable'
   updatedAt: string
   url: string
 }
@@ -62,20 +65,21 @@ export class GitHubProxy {
   }
 
   /** Every item of a paged list endpoint (`path` ends in `?` or `&...`), 100 per page, following pages until a
-   *  short one, `maxPages`, or (`until`) an item the caller was looking for. A non-200 first page is an error;
-   *  a later failure keeps what was read. */
-  private async pages<T>(token: string, path: string, maxPages: number, until?: (item: T) => boolean, signal?: AbortSignal): Promise<{ items: T[] } | { error: number }> {
+   *  short one, `maxPages`, or (`until`) an item the caller was looking for. A non-200 first page is an error.
+   *  `complete` is false when a later page failed (`failed` is its HTTP status) or the ceiling stopped the walk
+   *  on a full page; `items` is then what was read, never evidence that nothing more exists. */
+  private async pages<T>(token: string, path: string, maxPages: number, until?: (item: T) => boolean, signal?: AbortSignal): Promise<Paged<T> | { error: number }> {
     const items: T[] = []
     const sep = path.endsWith('?') || path.endsWith('&') ? '' : '&'
     for (let page = 1; page <= maxPages; page++) {
       if (signal?.aborted) throw signal.reason ?? new Error('request cancelled')
       const r = await this.api(token, `${path}${sep}per_page=${PAGE}&page=${page}`, { signal })
-      if (r.status !== 200 || !Array.isArray(r.body)) { if (page === 1) return { error: r.status }; break }
+      if (r.status !== 200 || !Array.isArray(r.body)) return page === 1 ? { error: r.status } : { items, complete: false, failed: r.status }
       const batch = r.body as T[]
       items.push(...batch)
-      if (batch.length < PAGE || (until && batch.some(until))) break
+      if (batch.length < PAGE || (until && batch.some(until))) return { items, complete: true }
     }
-    return { items }
+    return { items, complete: false }
   }
 
   /** Open PRs of owner/repo, newest update first, with their files. By default those whose base is `branch`;
@@ -88,8 +92,9 @@ export class GitHubProxy {
     let flight = this.inFlight.get(key)
     if (!flight) {
       const controller = new AbortController()
-      const promise = this.fetchPrs(token, ownerRepo, branch, opts.head, controller.signal).then(prs => {
-        this.cache.set(key, { exp: this.now() + this.cacheMs, prs })
+      const promise = this.fetchPrs(token, ownerRepo, branch, opts.head, controller.signal).then(({ prs, failed }) => {
+        // A file list that failed upstream is retried on the next poll, not pinned for the cache lifetime.
+        if (!failed) this.cache.set(key, { exp: this.now() + this.cacheMs, prs })
         for (const [k, v] of this.cache) if (v.exp <= this.now()) this.cache.delete(k)
         if (this.cache.size > 500) this.cache.delete(this.cache.keys().next().value!)
         return prs
@@ -118,20 +123,26 @@ export class GitHubProxy {
     } finally { opts.signal.removeEventListener('abort', onAbort!); if (!left) abandoned() }
   }
 
-  private async fetchPrs(token: string, ownerRepo: string, branch: string, head: boolean | undefined, signal: AbortSignal): Promise<PullRequest[]> {
+  private async fetchPrs(token: string, ownerRepo: string, branch: string, head: boolean | undefined, signal: AbortSignal): Promise<{ prs: PullRequest[]; failed: boolean }> {
     const owner = ownerRepo.split('/')[0]
     const filter = head ? `head=${encodeURIComponent(`${owner}:${branch}`)}` : `base=${encodeURIComponent(branch)}`
     // GitHub pages the list at 100; a busy repo has more open PRs than that.
     const raws = await this.pages<RawPr>(token, `/repos/${ownerRepo}/pulls?state=open&${filter}&sort=updated&direction=desc`, MAX_PR_PAGES, undefined, signal)
     if ('error' in raws) throw new GitHubError(raws.error, `could not list pull requests of ${ownerRepo} (HTTP ${raws.error})`)
+    // A short list would read as "these PRs closed" to the client that mirrors it: fail and let it retry.
+    if (raws.failed !== undefined) throw new GitHubError(503, `the pull request list of ${ownerRepo} is incomplete (a later page answered HTTP ${raws.failed}); retry`)
+    if (!raws.complete) this.o.log?.(`github/prs: listing the newest ${MAX_PR_PAGES * PAGE} open pull requests of ${ownerRepo}; more exist (GitHub gives no total)`)
     const prs: PullRequest[] = []
+    let failed = false
     for (const raw of raws.items) {
       // Same for the file list; a mirrored scope must not silently drop the files past the first page.
       const files = await this.pages<{ filename?: string }>(token, `/repos/${ownerRepo}/pulls/${raw.number}/files?`, MAX_FILE_PAGES, undefined, signal)
       const paths = ('error' in files ? [] : files.items).map(f => f.filename).filter((f): f is string => !!f)
-      prs.push({ number: raw.number, title: raw.title ?? '', author: raw.user?.login ?? '', head: raw.head?.ref ?? '', files: paths, updatedAt: raw.updated_at ?? '', url: raw.html_url ?? '' })
+      const coverage = 'error' in files ? 'unavailable' : files.complete ? undefined : 'partial'
+      if ('error' in files || files.failed !== undefined) failed = true
+      prs.push({ number: raw.number, title: raw.title ?? '', author: raw.user?.login ?? '', head: raw.head?.ref ?? '', files: paths, ...(coverage ? { coverage } : {}), updatedAt: raw.updated_at ?? '', url: raw.html_url ?? '' })
     }
-    return prs
+    return { prs, failed }
   }
 
   /** The login behind a token (cached), used to find the caller's own ledger comment. */
@@ -152,9 +163,15 @@ export class GitHubProxy {
     if (signal?.aborted) throw signal.reason ?? new Error('request cancelled')
     const text = body.includes(LEDGER_MARKER) ? body : `${LEDGER_MARKER}\n${body}`
     // A long-lived PR has more than one page of comments; the ledger may be on any of them.
-    const existing = await this.pages<RawComment>(token, `/repos/${ownerRepo}/issues/${number}/comments?`, MAX_COMMENT_PAGES, c => c.user?.login === login && typeof c.body === 'string' && c.body.includes(LEDGER_MARKER), signal)
+    const isMine = (c: RawComment) => c.user?.login === login && typeof c.body === 'string' && c.body.includes(LEDGER_MARKER)
+    const existing = await this.pages<RawComment>(token, `/repos/${ownerRepo}/issues/${number}/comments?`, MAX_COMMENT_PAGES, isMine, signal)
     if ('error' in existing) throw new GitHubError(existing.error, `could not read comments of ${ownerRepo}#${number} (HTTP ${existing.error})`)
-    const mine = existing.items.find(c => c.user?.login === login && typeof c.body === 'string' && c.body.includes(LEDGER_MARKER))
+    const mine = existing.items.find(isMine)
+    // Not finding the ledger proves it absent only when every page was read; otherwise posting could duplicate it.
+    if (!mine && !existing.complete) {
+      const why = existing.failed !== undefined ? `a later page answered HTTP ${existing.failed}` : `more than ${MAX_COMMENT_PAGES * PAGE} comments`
+      throw new GitHubError(503, `the comment search on ${ownerRepo}#${number} is incomplete (${why}), so the room ledger was not posted; retry`)
+    }
     const r = mine
       ? await this.api(token, `/repos/${ownerRepo}/issues/comments/${mine.id}`, { method: 'PATCH', body: { body: text }, signal })
       : await this.api(token, `/repos/${ownerRepo}/issues/${number}/comments`, { method: 'POST', body: { body: text }, signal })
@@ -169,5 +186,6 @@ class GitHubError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+type Paged<T> = { items: T[]; complete: boolean; failed?: number }
 interface RawPr { number: number; title?: string; user?: { login?: string }; head?: { ref?: string }; updated_at?: string; html_url?: string }
 interface RawComment { id: number; body?: string; html_url?: string; user?: { login?: string } }

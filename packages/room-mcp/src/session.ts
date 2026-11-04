@@ -21,8 +21,9 @@ import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, STALE_REPLICA_CODE, STALE_REPLICA_REASON, assertValidParticipantName, roomConnection, canonicalRepo, roomKey, type Claim, type Identity, type Kind, type Msg, type Scope } from '@room/shared'
 import { GraphIndex, type GraphSeed } from './graph-index.js'
+import { checkoutLead, endCheckoutLead } from './checkout-lead.js'
 import { withdrawFormerPublisher } from '@room/roomd/publisher'
-import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
+import { credentialsPath as defaultCredentialsPath, getCredential, removeCredential, setCredential } from './credentials.js'
 import { LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
 import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
@@ -75,7 +76,7 @@ export interface Session {
   /** Human-readable repository room name, e.g. github.com/rohanz/room */
   roomName: string
   browserUrl: string
-  /** Symbol graph over base + overlays; undefined in unit tests. */
+  /** Symbol graph over base + overlays; undefined in unit tests and while another session leads this checkout (checkout-lead.ts). */
   graph?: GraphIndex
   /** Set when the server closed the repo (ws close 4001): the provider stops reconnecting. */
   closed?: { reason: string }
@@ -92,6 +93,8 @@ export interface Session {
   shareWarning?: string
   /** The requested level before the server ceiling. */
   shareRequested: ShareLevel
+  /** The credential store this team session authenticated from; HTTP calls after the join read the same store. */
+  credentialsPath?: string
   /** The shared token this session joined with (argument, ROOM_TOKEN, or `?token=` on the server URL); workers get it as ROOM_TOKEN. Never printed. */
   token?: string
   autoTagNote?: string
@@ -367,10 +370,10 @@ export interface Creds { token?: string; session?: string; login?: string }
 /** Credentials for a server: a Room session from a login and/or the shared token. A github.com room needs the
  *  session (ROOM_TOKEN does not admit it; the server never accepts a forwarded GitHub token). Non-GitHub rooms
  *  (local/, git/) send the session when this machine holds one: servers with a login provider require it. */
-export async function resolveAuth(server: string, roomName: string, token?: string): Promise<Creds> {
+export async function resolveAuth(credentialsPath: string, server: string, roomName: string, token?: string): Promise<Creds> {
   const github = roomName.startsWith('github.com/')
   const cfg = await serverAuthConfig(server)
-  const c = cfg.providers.length ? getCredential(server) : undefined
+  const c = cfg.providers.length ? getCredential(credentialsPath, server) : undefined
   if (c) return { token, session: c.session, login: c.login }
   if (github) {
     if (cfg.mode !== 'device') throw new RoomdError(`${server} has no GitHub login (GITHUB_CLIENT_ID), so it cannot admit ${roomName}: use a server with GitHub login, or a non-GitHub origin`, 2)
@@ -394,8 +397,9 @@ export async function startLogin(server: string, provider?: Provider): Promise<L
   const p = await res.json() as LoginProgress
   return { ...p, provider: p.provider ?? provider ?? 'github' }
 }
-/** Poll until the provider confirms, the attempt fails, or maxMs passes. Saves the credential on success. */
-export async function pollLogin(server: string, p: LoginProgress, opts: { maxMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<{ login: string } | { pending: true } | { error: string }> {
+/** Poll until the provider confirms, the attempt fails, or maxMs passes. Saves the credential on success into
+ *  credentialsPath, the store captured when the login started. */
+export async function pollLogin(credentialsPath: string, server: string, p: LoginProgress, opts: { maxMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<{ login: string } | { pending: true } | { error: string }> {
   const sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)))
   const deadline = Date.now() + (opts.maxMs ?? 90_000)
   for (;;) {
@@ -408,16 +412,27 @@ export async function pollLogin(server: string, p: LoginProgress, opts: { maxMs?
     }
     if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` }
     const b = await res.json() as { pending?: boolean; error?: string; session?: string; login?: string }
-    if (b.session && b.login) { setCredential(server, { session: b.session, login: b.login, at: Date.now() }); configCache.delete(server); return { login: b.login } }
+    if (b.session && b.login) { setCredential(credentialsPath, server, { session: b.session, login: b.login, at: Date.now() }); configCache.delete(server); return { login: b.login } }
     if (b.error) return { error: b.error }
     if (Date.now() >= deadline) return { pending: true }
     await sleep(Math.max(1, p.interval) * 1000)
   }
 }
-export async function logout(server: string): Promise<{ login?: string; removed: boolean }> {
-  const c = getCredential(server)
-  if (c) { try { await fetch(`${httpOf(server)}/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: c.session }), signal: AbortSignal.timeout(20000) }) } catch { /* local removal still counts */ } }
-  return { login: c?.login, removed: removeCredential(server) }
+/** Removes the saved login locally whatever the server says; `unconfirmed` says why the server did not confirm
+ *  ending the session (unreachable, or 503 when its deletion was not stored yet), so a retry can finish it. */
+export async function logout(credentialsPath: string, server: string): Promise<{ login?: string; removed: boolean; unconfirmed?: string }> {
+  const c = getCredential(credentialsPath, server)
+  let unconfirmed: string | undefined
+  if (c) {
+    try {
+      const res = await fetch(`${httpOf(server)}/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: c.session }), signal: AbortSignal.timeout(20000) })
+      if (!res.ok) {
+        const body = await res.json().catch(() => undefined) as { error?: unknown } | undefined
+        unconfirmed = `${res.status}${typeof body?.error === 'string' && body.error ? ` ${body.error}` : ''}`
+      }
+    } catch (e) { unconfirmed = e instanceof Error ? e.message : String(e) }
+  }
+  return { login: c?.login, removed: removeCredential(credentialsPath, server), ...(unconfirmed ? { unconfirmed } : {}) }
 }
 
 /** Private room metadata written by the daemon. */
@@ -777,7 +792,6 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (localWorkerLead && await realGitCommonDir(dir) !== localWorkerLead) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${localWorkerLead}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
   if (process.env.ROOM_WORKER_ID) await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound())
   for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
-  configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)
   const chosen = config.server
   if (chosen === LOCAL) {
@@ -804,7 +818,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   } else {
     roomName = normalizeExplicitRoomName(roomName, opts.log)
   }
-  const auth = await resolveAuth(server, roomName, token)
+  const auth = await resolveAuth(config.credentialsPath, server, roomName, token)
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
   // makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex).
   const label = config.tag?.replace(/[^A-Za-z0-9_-]/g, '') || undefined
@@ -816,12 +830,12 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const name = label ? `${owner}+${label}` : owner
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
-  let pre = await timed('preflight', () => preflight(server, roomName!, creds))
+  let pre = await timed('preflight', () => preflight(config.credentialsPath, server, roomName!, creds))
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
     const err = await timed('preflight', () => createRoom(server, roomName!, { ...creds, by: name }))
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}${branchRoomHint(roomName)}`, 2)
-    pre = await timed('preflight', () => preflight(server, roomName!, creds))
+    pre = await timed('preflight', () => preflight(config.credentialsPath, server, roomName!, creds))
   }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
   if (pre?.missing) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ''), server)
@@ -839,10 +853,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds))
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
-  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log, { seed: opts.reuse?.graph })
-  graph.start()
   const session: Session = {
-    graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
@@ -857,9 +868,11 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     shareMax,
     shareRequested: policyStore.requested,
     shareWarning: config.shareWarning,
+    credentialsPath: config.credentialsPath,
     ...(token ? { token } : {}),
     hub, post,
   }
+  indexWhileLeading(session, opts.reuse?.graph, opts.log)
   const untrackShare = ceilingFor(server, shareMax).subscribe(policyStore)
   trackConnection(session)
   const stop = session.daemon.stop.bind(session.daemon)
@@ -911,10 +924,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   replica = daemon.roomDoc.doc
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
   const browserUrl = localBrowserLink(roomUrl, me.name, localViewKey(local.key, roomName), findLocalViewer(), opts.web)
-  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
-  graph.start()
   const session: Session = {
-    graph,
     room: daemon.roomDoc,
     provider: daemon.provider,
     awareness: daemon.provider.awareness,
@@ -931,6 +941,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     local,
     hub, post,
   }
+  indexWhileLeading(session, undefined, opts.log)
   trackConnection(session)
   // The relay closes a writer into a room over its size cap with 4413, as the server does.
   watchClosed(session, opts.log, startupCapClose())
@@ -1030,15 +1041,15 @@ export function watchClosed(s: Session, log?: (line: string) => void, startupClo
 
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 /** A session the server no longer knows is useless locally too. */
-function removeStaleCredential(server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(server) }
+function removeStaleCredential(credentialsPath: string, server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(credentialsPath, server) }
 
 /** Check team admission before a move leaves its current room. A room_create may open a missing room after confirmation. */
 export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean } = {}): Promise<void> {
   roomName = normalizeExplicitRoomName(roomName)
-  if (opts.credentialsPath) configureCredentials(opts.credentialsPath)
+  const credentialsPath = opts.credentialsPath ?? defaultCredentialsPath()
   const parsed = parseServer(rawServer)
-  const { login: _login, ...creds } = await resolveAuth(parsed.server, roomName, opts.token ?? parsed.token)
-  const pre = await preflight(parsed.server, roomName, creds)
+  const { login: _login, ...creds } = await resolveAuth(credentialsPath, parsed.server, roomName, opts.token ?? parsed.token)
+  const pre = await preflight(credentialsPath, parsed.server, roomName, creds)
   if (!pre || pre.canonical) return
   if (pre.missing) {
     if (!opts.create) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ''), parsed.server)
@@ -1051,7 +1062,7 @@ export async function checkTeamAdmission(rawServer: string, roomName: string, op
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */
-async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string; status?: number } | undefined> {
+async function preflight(credentialsPath: string, server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string; status?: number } | undefined> {
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
     if (res.ok) {
@@ -1062,7 +1073,7 @@ async function preflight(server: string, roomName: string, auth: Creds): Promise
     if (res.status === 401) {
       const reason = (await res.text()).trim() || 'unauthorized'
       // The server points at room_login for a missing or stale session; a ROOM_TOKEN on a github.com room gets the same pointer.
-      if (/room_login/.test(reason)) { removeStaleCredential(server, reason); return { reason, loginNeeded: true } }
+      if (/room_login/.test(reason)) { removeStaleCredential(credentialsPath, server, reason); return { reason, loginNeeded: true } }
       return { reason }
     }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
@@ -1098,7 +1109,7 @@ export async function authFor(s: Session): Promise<Creds & { server: string }> {
   if (s.local) throw new RoomdError('local room: no server to authenticate to', 2)
   const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
   const token = s.token
-  const { login: _login, ...creds } = await resolveAuth(server, s.roomName, token)
+  const { login: _login, ...creds } = await resolveAuth(s.credentialsPath ?? defaultCredentialsPath(), server, s.roomName, token)
   return { ...creds, server }
 }
 
@@ -1129,8 +1140,18 @@ export async function refreshBrowserUrl(s: Session): Promise<string> {
   return s.browserUrl
 }
 
+/** The symbol graph runs only while this session leads its checkout (checkout-lead.ts). A reused seed serves the
+ *  first start only: a later start follows another session's tenure, so it rebuilds from the base. */
+function indexWhileLeading(s: Session, seed: GraphSeed | undefined, log?: (line: string) => void): void {
+  checkoutLead(s, { log }).attach({
+    name: 'symbol graph',
+    start: () => { s.graph = new GraphIndex(s.room, s.me.name, s.dir, log, seed ? { seed } : {}); seed = undefined; s.graph.start() },
+    stop: () => { s.graph?.stop(); s.graph = undefined },
+  })
+}
+
 export async function leaveSession(s: Session): Promise<void> {
-  s.graph?.stop()
+  endCheckoutLead(s)
   await s.daemon.stop()
   await s.local?.stop()
 }

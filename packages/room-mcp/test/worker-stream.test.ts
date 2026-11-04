@@ -121,10 +121,10 @@ describe('Claude stream-json worker runs', () => {
     expect(unawaitedBackgroundTasks(file, 0, 'codex')).toBe(0)
   })
 
-  it('starts a resumed failure tail at this run, even when the prior done is near the end', () => {
+  it('starts a resumed run tail at this run, even when the prior done is near the end', () => {
     const prior = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Done. marked done' } }) + '\n'
     const file = join(dir, 'run.log')
-    writeFileSync(file, prior + JSON.stringify({ type: 'turn.failed', error: { message: 'Current run failed' } }) + '\n')
-    expect(workerLogTail(file, Buffer.byteLength(prior))).toBe('Current run failed')
+    writeFileSync(file, prior + JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Current run text' } }) + '\n')
+    expect(workerLogTail(file, Buffer.byteLength(prior))).toBe('Current run text')
   })
 })

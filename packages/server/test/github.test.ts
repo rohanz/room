@@ -190,6 +190,75 @@ describe('GitHub proxy: paging and head lookups', () => {
     expect(r2.updated).toBe(false)
     expect(gh2.calls.filter(c => new URL(c.url).pathname === '/repos/o/r/issues/7/comments' && c.method === 'GET').length).toBe(2)
   })
+  it('marks file coverage unavailable or partial instead of reporting a failed file list as empty, and does not cache it', async () => {
+    let failFiles: 'first' | 'second' | 'none' = 'first'
+    const gh = fakeGitHub()
+    const failing = (async (url: string, init?: RequestInit) => {
+      const u = new URL(url), page = u.searchParams.get('page')
+      if (u.pathname.endsWith('/files') && (failFiles === 'first' || (failFiles === 'second' && page === '2'))) return new Response('{"message":"boom"}', { status: 502 })
+      return gh.fetch(url, init)
+    }) as typeof fetch
+    let t = 0
+    const proxy = new GitHubProxy({ fetch: failing, now: () => t })
+    const unavailable = await proxy.openPrs('tok', 'o/r', 'big')
+    expect(unavailable[0]).toMatchObject({ number: 13, files: [], coverage: 'unavailable' })
+    failFiles = 'second'
+    const partial = await proxy.openPrs('tok', 'o/r', 'big') // not served from the cache
+    expect(partial[0].files.length).toBe(100)
+    expect(partial[0].coverage).toBe('partial')
+    failFiles = 'none'
+    const full = await proxy.openPrs('tok', 'o/r', 'big')
+    expect(full[0].files.length).toBe(101)
+    expect('coverage' in full[0]).toBe(false)
+  })
+  it('marks file coverage partial when the file-page ceiling is hit', async () => {
+    const full = (async (url: string) => {
+      const u = new URL(url)
+      if (u.pathname === '/repos/o/r/pulls') return new Response(JSON.stringify(u.searchParams.get('page') === '1' ? [{ number: 5, title: 't', user: { login: 'a' }, head: { ref: 'h' } }] : []))
+      return new Response(JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ filename: `p${u.searchParams.get('page')}/${i}` }))))
+    }) as typeof fetch
+    const prs = await new GitHubProxy({ fetch: full }).openPrs('tok', 'o/r', 'main')
+    expect(prs[0].files.length).toBe(3000)
+    expect(prs[0].coverage).toBe('partial')
+  })
+  it('fails (retryably, uncached) rather than returning a short PR list when a later list page fails', async () => {
+    const extra = Array.from({ length: 120 }, (_, i) => ({ number: 1000 + i, title: `bulk ${i}`, user: { login: 'bot' }, head: { ref: `bulk/${i}` }, base: { ref: 'main' }, updated_at: '2026-09-14T00:00:00Z', html_url: '' }))
+    const gh = fakeGitHub({ extraPrs: extra })
+    let fail = true
+    const proxy = new GitHubProxy({ fetch: (async (url: string, init?: RequestInit) => {
+      const u = new URL(url)
+      if (fail && u.pathname === '/repos/o/r/pulls' && u.searchParams.get('page') === '2') return new Response('{}', { status: 500 })
+      return gh.fetch(url, init)
+    }) as typeof fetch })
+    await expect(proxy.openPrs('tok', 'o/r', 'main')).rejects.toMatchObject({ status: 503, message: expect.stringContaining('incomplete') })
+    fail = false
+    expect((await proxy.openPrs('tok', 'o/r', 'main')).length).toBe(122)
+  })
+  it('refuses to post a second ledger comment when the comment search did not complete, and retries cleanly', async () => {
+    const filler = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, body: `chatter ${i}`, user: { login: 'kieran' } }))
+    const gh = fakeGitHub({ login: 'octo', comments: [...filler, { id: 777, body: `${LEDGER_MARKER}\nold`, user: { login: 'octo' } }] })
+    let fail = true
+    const proxy = new GitHubProxy({ fetch: (async (url: string, init?: RequestInit) => {
+      const u = new URL(url)
+      if (fail && u.pathname === '/repos/o/r/issues/7/comments' && u.searchParams.get('page') === '2') return new Response('{}', { status: 502 })
+      return gh.fetch(url, init)
+    }) as typeof fetch })
+    await expect(proxy.upsertNote('gho_x', 'o/r', 7, 'new')).rejects.toMatchObject({ status: 503, message: expect.stringMatching(/incomplete.*retry/) })
+    expect(gh.calls.some(c => c.method === 'POST' || c.method === 'PATCH')).toBe(false)
+    fail = false
+    expect(await proxy.upsertNote('gho_x', 'o/r', 7, 'new')).toMatchObject({ id: 777, updated: true })
+  })
+  it('refuses to post when the comment page ceiling hides whether a ledger exists', async () => {
+    const calls: string[] = []
+    const proxy = new GitHubProxy({ fetch: (async (url: string, init?: RequestInit) => {
+      const u = new URL(url); calls.push(init?.method ?? 'GET')
+      if (u.pathname === '/user') return new Response('{"login":"octo"}')
+      return new Response(JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ id: i + 1, body: 'chatter', user: { login: 'kieran' } }))))
+    }) as typeof fetch })
+    await expect(proxy.upsertNote('gho_x', 'o/r', 7, 'new')).rejects.toMatchObject({ status: 503 })
+    expect(calls.filter(m => m === 'GET').length).toBe(31) // /user + 30 comment pages
+    expect(calls).not.toContain('POST')
+  })
   it('lists the PR whose head is the branch, with any base', async () => {
     const gh = fakeGitHub()
     const proxy = new GitHubProxy({ fetch: gh.fetch })

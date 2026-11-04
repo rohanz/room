@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setImmediate } from 'node:timers/promises'
 import { git, gitBlobInfoMany, gitWholeTree, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
-import { authorizesText, defaultExcludedPath, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
+import { authorizesText, defaultExcludedPath, publishesFiles, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
 
 /** Thrown when the inputs a scan or prepare captured are replaced mid-way; the caller drops that publication. */
 export class StalePublication extends Error {}
@@ -73,7 +73,7 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
   carried: ReadonlyMap<string, { sha: string }> = new Map(),
   valid: () => boolean = () => true,
   onBaseBlobs?: (blobs: ReadonlyMap<string, GitBlobInfo | undefined>) => void): Promise<DiskFact[]> {
-  if (inputs.policy.level === 'intent' || !inputs.policy.publisher) return []
+  if (!publishesFiles(inputs)) return []
   const { paths, changed, indexed } = await changedSince(dir, inputs.head, previous)
   const [blobs, format, gitIgnored] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)])
   onBaseBlobs?.(blobs)

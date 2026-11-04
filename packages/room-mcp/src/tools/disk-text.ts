@@ -1,27 +1,13 @@
 import fs from 'node:fs'
 import { execFile } from 'node:child_process'
 import { containedRepoPath } from '@room/roomd'
-import { gitBlobInfoMany, gitCommitMissing, observeGit } from '@room/roomd/git'
+import { gitBlobInfoMany, gitCatFileBatch, gitCommitMissing, observeGit } from '@room/roomd/git'
 
 /** Local reads use the same per-file ceiling as the default publisher. */
 export const DISK_TEXT_LIMIT = 512 * 1024
 
 /** Small synchronous local probes, such as test-command manifests, use a descriptor cap too. */
-export function readBoundedDiskTextSync(file: string, limit = DISK_TEXT_LIMIT): string {
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
-  try {
-    const stat = fs.fstatSync(fd)
-    if (!stat.isFile() || stat.size > limit) throw new Error(`file too large for Room read: ${file}`)
-    const bytes = Buffer.allocUnsafe(limit + 1)
-    let used = 0
-    while (used <= limit) {
-      const count = fs.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null)
-      if (count === 0) return bytes.subarray(0, used).toString('utf8')
-      used += count
-    }
-    throw new Error(`file too large for Room read: ${file}`)
-  } finally { fs.closeSync(fd) }
-}
+export { readBoundedFileSync as readBoundedDiskTextSync } from '@room/roomd'
 
 export class HistoricalTextTooLarge extends Error {
   readonly code = 'ROOM_TEXT_TOO_LARGE'
@@ -58,14 +44,47 @@ export function readBoundedHistoricalText(dir: string, base: string, rel: string
 }
 
 async function readHistoricalFromGit(dir: string, base: string, rel: string): Promise<string | undefined> {
-  const info = await gitBlobInfoMany(dir, base, [rel])
-  const blob = info.get(rel)
-  if (!blob) {
-    if (await gitCommitMissing(dir, base)) throw new Error(`historical base ${base} is unavailable`)
-    return undefined
+  const text = (await readBoundedHistoricalTexts(dir, base, [rel])).get(rel)
+  if (text instanceof HistoricalTextTooLarge) throw text
+  return text
+}
+
+/**
+ * Bytes of blob text per `git cat-file --batch`. Output is buffered whole, so this bounds memory per
+ * call; 4 MB is eight texts at the per-file limit and typically a few hundred source files.
+ */
+const HISTORICAL_BATCH_BYTES = 4 * 1024 * 1024
+
+/**
+ * Many paths at one commit, by the rules of readBoundedHistoricalText: blob sizes are checked before
+ * any text is read, a path over DISK_TEXT_LIMIT maps to HistoricalTextTooLarge, an absent path to
+ * undefined, and an unavailable commit rejects. Two Git calls per HISTORICAL_BATCH_BYTES instead of
+ * two per path. Uncached: a caller that reads each path once, such as a graph build, owns its results.
+ */
+export async function readBoundedHistoricalTexts(dir: string, base: string, rels: readonly string[]): Promise<Map<string, string | undefined | HistoricalTextTooLarge>> {
+  const info = await gitBlobInfoMany(dir, base, rels)
+  const out = new Map<string, string | undefined | HistoricalTextTooLarge>()
+  let group: string[] = [], bytes = 0, commitChecked = false
+  const flush = async () => {
+    const objects = await gitCatFileBatch(dir, group.map(rel => info.get(rel)!.hash))
+    // `toString('utf8')` decodes exactly as `git cat-file -p` output in readBoundedCheckoutText does.
+    for (const [i, rel] of group.entries()) out.set(rel, objects[i]?.type === 'blob' ? objects[i]!.bytes.toString('utf8') : undefined)
+    group = []; bytes = 0
   }
-  if (blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel)
-  return readBoundedCheckoutText(dir, blob.hash, rel, 'utf8', false, blob.size)
+  for (const rel of rels) {
+    const blob = info.get(rel)
+    if (!blob) {
+      if (!commitChecked && await gitCommitMissing(dir, base)) throw new Error(`historical base ${base} is unavailable`)
+      commitChecked = true
+      out.set(rel, undefined)
+    } else if (blob.size > DISK_TEXT_LIMIT) out.set(rel, new HistoricalTextTooLarge(rel))
+    else {
+      if (group.length && bytes + blob.size > HISTORICAL_BATCH_BYTES) await flush()
+      group.push(rel); bytes += blob.size
+    }
+  }
+  if (group.length) await flush()
+  return out
 }
 
 /** Checkout filters can expand a small blob, so cap their output as well as the input blob. */

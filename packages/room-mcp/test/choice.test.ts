@@ -50,6 +50,13 @@ describe('room choice', () => {
     expect(await configured()).toMatchObject({ whereRule: 'default' })
   })
 
+  it('rejects a failed forget instead of reporting that nothing was remembered', async () => {
+    const file = await choiceFile(dir)
+    mkdirSync(file)
+    try { await expect(clearChoice(dir)).rejects.toThrow() }
+    finally { rmSync(file, { recursive: true, force: true }) }
+  })
+
   it('describes the room in one word for humans', () => {
     expect(describeWhere(LOCAL)).toBe('local (this machine)')
     expect(describeWhere('wss://team.example')).toBe('team (wss://team.example)')

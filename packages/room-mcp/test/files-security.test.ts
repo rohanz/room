@@ -1,8 +1,9 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import * as Y from 'yjs'
@@ -14,9 +15,10 @@ import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 const roots: string[] = []
-afterEach(() => {
+const registryDirs: string[] = []
+afterEach(async () => {
   delete process.env.ROOM_SECURITY_MARKER
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) await disposePreviewFixture(root, { registries: registryDirs.splice(0) })
 })
 
 describe('merge preview materialization', () => {
@@ -28,6 +30,7 @@ describe('merge preview materialization', () => {
     process.env.ROOM_SECURITY_MARKER = marker
     const dir = join(root, 'clone $(touch${IFS}${ROOM_SECURITY_MARKER}) `true` " space')
     mkdirSync(dir)
+    registryDirs.push(dir)
     const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
     git('init', '-q', '-b', 'main'); git('config', 'user.email', 'test@room'); git('config', 'user.name', 'test')
     writeFileSync(join(dir, 'app.txt'), 'base\n')

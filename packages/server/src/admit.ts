@@ -13,7 +13,7 @@ import { githubRepoOf, roomNameOf } from './names.js'
 
 export interface Creds { gh?: string; token?: string; session?: string }
 /** `login` is the display name; `id` the namespaced identity (`oidc:<issuer-host>:<sub>`) when the provider has one. */
-export type Verdict = { ok: true; login?: string; id?: string; provider?: Provider } | { ok: false; status: 401 | 403; why: string }
+export type Verdict = { ok: true; login?: string; id?: string; provider?: Provider } | { ok: false; status: 401 | 403 | 503; why: string }
 
 const GH_REFUSED = 'forwarded GitHub tokens are not accepted: run room_login (GitHub device login)'
 
@@ -110,7 +110,10 @@ export function makeAdmitted(o: AdmitOptions): (room: string, c: Creds) => Promi
     if (!st) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
     if (!st.ghToken) return { ok: false, status: 403, why: auth.providers.includes('github') ? `${repo} is a GitHub repo: log in with GitHub (room_login provider=github) to prove push access` : `${repo} is a GitHub repo but this server has no GitHub login configured (GITHUB_CLIENT_ID)` }
     // The fake issuer (tests, demo) mints no real token: every fake login may push.
-    if (auth.fake ? st.ghToken.startsWith('fake:') || await canPush(st.ghToken, repo) : await canPush(st.ghToken, repo)) return { ok: true, login: st.login, provider: 'github' }
-    return { ok: false, status: 403, why: `${st.login} cannot push to ${repo}: ask for write access` }
+    const push = auth.fake && st.ghToken.startsWith('fake:') ? true : await canPush(st.ghToken, repo)
+    if (push === true) return { ok: true, login: st.login, provider: 'github' }
+    if (push === false) return { ok: false, status: 403, why: `${st.login} cannot push to ${repo}: ask for write access` }
+    // undefined: GitHub was rate limited, timed out or answered without permissions. The checker cached nothing.
+    return { ok: false, status: 503, why: `could not confirm push access to ${repo} with GitHub right now; retry shortly` }
   }
 }

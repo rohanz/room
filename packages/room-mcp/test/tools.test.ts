@@ -1,3 +1,5 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
+import { rm } from 'node:fs/promises'
 import { clearFixture, publishFixture as publishFixtureRaw, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -52,6 +54,8 @@ const me: Identity = { name: 'Rohan', kind: 'agent' }
 const fixtureSessionId = syntheticSessionId({ pid: process.pid, startTime: '', executable: '' })
 let dir: string
 let base: string
+let startsPreviewMaintenance = false
+const fixtureDisposals: (() => void | Promise<void>)[] = []
 /** Published text in these tests belongs to the clone's committed base. */
 const publishFixture = (...args: Parameters<typeof publishFixtureRaw>) =>
   publishFixtureRaw(args[0], args[1], args[2], args[3], { ...args[4], base: args[4]?.base ?? base })
@@ -59,6 +63,7 @@ const publishFixture = (...args: Parameters<typeof publishFixtureRaw>) =>
 /** Two docs synced by update exchange: Rohan's session doc and Kieran's view. */
 function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
+  fixtureDisposals.push(() => { a.destroy(); b.destroy() })
   a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   const rooms = { a: new RoomDoc(a), b: new RoomDoc(b) }
@@ -81,13 +86,14 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, sessionId: heldSessionId, status: 'idle' })
   const graph = new GraphIndex(room, 'Rohan', dir); graph.start()
+  fixtureDisposals.push(() => { graph.stop(); awareness.destroy() })
   const policyStore = testPolicyStore()
   // These tests exercise room tools, not the repository-wide upgrade notice.
   void policyStore.markDisclosed('full', 2)
   return {
     graph,
     // This fixture holds the epoch published above; a replacement or ended holder fences it out.
-    lease: { sessionId: heldSessionId, fence: leaseFence, check: () => {},
+    lease: { sessionId: heldSessionId, fence: leaseFence, check: () => {}, end: async () => {},
       paused: () => leaseFence() ? undefined : '[room] fixture name lease paused' } as Session['lease'],
     policyStore,
     room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
@@ -113,6 +119,13 @@ function setup(opts: { openBrowser?: (url: string, directory: string) => Promise
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
     leave: async () => {},
   })
+  fixtureDisposals.push(() => tools.shutdown())
+  const call = tools.call.bind(tools)
+  tools.call = (...args: Parameters<typeof call>) => {
+    const [tool, input] = args
+    if ((tool === 'room_preview_merge' && input?.run) || (tool === 'room_collect' && !input?.keep && input?.mode !== 'copy')) startsPreviewMaintenance = true
+    return call(...args)
+  }
   return { room: a, other: b, tools, joined, created, get session() { return session } }
 }
 
@@ -251,7 +264,11 @@ beforeAll(() => {
   git('remote', 'add', 'origin', 'https://github.com/o/r.git')
   base = git('rev-parse', 'HEAD').trim()
 })
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+afterAll(async () => {
+  const stop = async () => { for (const dispose of fixtureDisposals.splice(0).reverse()) await dispose() }
+  if (startsPreviewMaintenance) await disposePreviewFixture(dir, { stop, registries: [dir] })
+  else { await stop(); await closeRegistryForDir(dir); await rm(dir, { recursive: true, force: true }) }
+})
 
 /** Workers registered by one test must not appear in the next: the registry lives in the shared repo. */
 async function dropRegistry(): Promise<void> {
@@ -526,6 +543,28 @@ describe('session gating', () => {
     await t.tools.call('room_leave', { forget: true })
     await t.tools.call('room_join', {})
     expect(t.created).toEqual([true, false])
+  })
+
+  it('says when a join cannot remember its choice or a leave cannot forget it, and never calls a failed forget unnecessary', async () => {
+    const t = setup({ joined: false })
+    const file = join(dir, '.git', 'room-choice.json')
+    rmSync(file, { recursive: true, force: true })
+    mkdirSync(file) // unreadable as a choice and not removable as a file: both writes fail with a real error
+    try {
+      const joined = await t.tools.call('room_join', { where: 'ws://127.0.0.1:9' })
+      expect(joined).toContain('joined r as Rohan')
+      expect(joined).toMatch(/WARN: joined, but this room choice could not be saved for this clone \(.*EISDIR.*\)/)
+      const left = await t.tools.call('room_leave', { forget: true })
+      expect(left).toContain('left r')
+      expect(left).toMatch(/WARN: could not forget the remembered room choice for this clone \(.+\); the next session may still follow it/)
+      expect(left).not.toContain('nothing was remembered')
+      rmSync(file, { recursive: true, force: true })
+      await t.tools.call('room_join', {})
+      expect(await t.tools.call('room_leave', { forget: true })).toContain('; nothing was remembered for this clone')
+    } finally {
+      rmSync(file, { recursive: true, force: true })
+      await t.tools.shutdown()
+    }
   })
 
   it('keeps the join reply quiet when only a foreign overlay is present', async () => {

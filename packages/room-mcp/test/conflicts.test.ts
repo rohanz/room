@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -246,6 +247,7 @@ describe('worker preview pair baselines', () => {
 
   let root: string, repo: string, head: string
   const cleanups: (() => Promise<void>)[] = []
+  let startsPreviewMaintenance = false
   let roomEnv: Record<string, string | undefined>
   const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim()
   const put = (dir: string, p: string, text: string, mode?: number) => {
@@ -254,6 +256,7 @@ describe('worker preview pair baselines', () => {
   }
 
   beforeEach(() => {
+    startsPreviewMaintenance = false
     roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROOM_')))
     for (const key of Object.keys(roomEnv)) delete process.env[key]
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-pairs-')))
@@ -271,7 +274,8 @@ describe('worker preview pair baselines', () => {
   afterEach(async () => {
     for (const c of cleanups.splice(0)) await c().catch(() => {})
     vi.unstubAllEnvs()
-    fs.rmSync(root, { recursive: true, force: true })
+    if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [repo] })
+    else await fs.promises.rm(root, { recursive: true, force: true })
     for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
     Object.assign(process.env, roomEnv)
   })
@@ -337,6 +341,7 @@ describe('worker preview pair baselines', () => {
       const w = workerByTag(repo, tag)!
       const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
       const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
+      startsPreviewMaintenance = true
       try { return await tools.call('room_preview_merge', { person: 'rohanz', run }) as string }
       finally { await tools.shutdown(); ws.graph?.stop() }
     }
@@ -384,6 +389,7 @@ describe('worker preview pair baselines', () => {
       const xs = fakeSession(t.b, { name: `rohanz+${owner}`, kind: 'agent', owner: 'rohanz', label: owner }, owner === 'w' ? w.dir : x.dir)
       const tools = createTools({ getSession: () => xs, setSession: () => {}, cwd: xs.dir })
       try {
+        startsPreviewMaintenance = true
         const preview = await tools.call('room_preview_merge', { person: owner === 'w' ? 'rohanz+x' : 'rohanz+w', run: `test "$(sed -n '2p' shared.txt)" = 'lead carried fixed' && echo '1 passed'` }) as string
         expect(preview, preview).not.toContain('CONFLICTS:')
         expect(preview).toContain('tests: PASSED (exit 0)')
@@ -404,6 +410,7 @@ describe('worker preview pair baselines', () => {
       const xs = fakeSession(t.b, { name: 'rohanz+x', kind: 'agent', owner: 'rohanz', label: 'x' }, x.dir)
       const tools = createTools({ getSession: () => xs, setSession: () => {}, cwd: x.dir })
       try {
+        startsPreviewMaintenance = true
         const preview = await tools.call('room_preview_merge', { person: 'rohanz+w', run: `test "$(sed -n '2p' shared.txt)" = 'DELIVERED fixed' && echo '1 passed'` }) as string
         expect(preview, preview).not.toContain('CONFLICTS:')
         expect(preview).toContain('tests: PASSED (exit 0)')

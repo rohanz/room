@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { patchPublisher } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,7 +28,9 @@ let root: string
 let originalPath: string | undefined
 let originalTimeout: string | undefined
 const run = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
+let startsPreviewMaintenance = false
 beforeEach(() => {
+  startsPreviewMaintenance = false
   originalPath = process.env.PATH
   originalTimeout = process.env.ROOM_GIT_TIMEOUT_MS
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-clean-')))
@@ -38,12 +41,13 @@ beforeEach(() => {
   run(root, 'add', '.')
   run(root, 'commit', '-qm', 'base')
 })
-afterEach(() => {
+afterEach(async () => {
   process.env.PATH = originalPath
   if (originalTimeout === undefined) delete process.env.ROOM_GIT_TIMEOUT_MS
   else process.env.ROOM_GIT_TIMEOUT_MS = originalTimeout
   vi.restoreAllMocks()
-  fs.rmSync(root, { recursive: true, force: true })
+  if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [root] })
+  else await fs.promises.rm(root, { recursive: true, force: true })
 })
 
 describe('carry and discard safety', () => {
@@ -108,6 +112,7 @@ describe('carry and discard safety', () => {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
     fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/rollback "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = bin + path.delimiter + originalPath
+    startsPreviewMaintenance = true
     try { await expect(cleanupWorker(root, worker, true, true, [], { list: () => [] })).rejects.toThrow(/cleanup failed:.*late cleanup failure/) }
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)

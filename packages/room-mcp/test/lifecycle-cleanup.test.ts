@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
 import { finishSignalShutdown } from '../src/index.js'
@@ -99,7 +100,7 @@ describe('worker lifecycle cleanup', () => {
       }, 'lead')).toBe(false)
       expect(signal).not.toHaveBeenCalled()
       expect(existsSync(explicit)).toBe(true)
-    } finally { rmSync(root, { recursive: true, force: true }) }
+    } finally { await disposePreviewFixture(root, { registries: [root] }) }
   })
 
   it('dismissWorker names a worktree server before signalling its host', async () => {

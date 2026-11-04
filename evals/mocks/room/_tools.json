@@ -181,8 +181,9 @@
     {
       "name": "room_export",
       "annotations": {
-        "readOnlyHint": true,
-        "destructiveHint": false,
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
         "openWorldHint": false
       },
       "description": "Export room history or a legacy archive as Markdown.",
@@ -579,9 +580,10 @@
     {
       "name": "room_preview_merge",
       "annotations": {
-        "readOnlyHint": true,
-        "destructiveHint": false,
-        "openWorldHint": false
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
       },
       "description": "For \"will our changes work together?\" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.",
       "inputSchema": {

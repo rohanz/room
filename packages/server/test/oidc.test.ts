@@ -211,7 +211,7 @@ describe('OIDC login', () => {
     const b = make(idp, { store: new FileStore({ dir }) })
     await b.ready
     expect(b.resolve(session)).toMatchObject({ login: 'ann@example.com', provider: 'oidc' })
-    expect(b.logout(session)).toMatchObject({ login: 'ann@example.com' })
-    expect(b.logout(session)).toBeUndefined()
+    expect(await b.logout(session)).toEqual({ removed: expect.objectContaining({ login: 'ann@example.com' }) })
+    expect(await b.logout(session)).toEqual({})
   })
 })

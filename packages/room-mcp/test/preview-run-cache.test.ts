@@ -1,37 +1,39 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterAll, beforeAll, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { previewCachePath, runInMergedTree } from '../src/tools/files.js'
 import type { Session } from '../src/session.js'
 
-let repo: string
-let ancestor: string
+const roots: string[] = []
 const merged = new Map<string, string | null>([['src/00/f00000.txt', 'merged zero\n'], ['src/00/f00001.txt', 'merged one\n']])
 const command = 'test "$(cat src/00/f00000.txt)" = "merged zero" && test "$(cat src/00/f00001.txt)" = "merged one" && test "$(cat src/49/f04999.txt)" = "base 4999" && echo "1 passed"'
-const session = () => ({ dir: repo }) as Session
 
-beforeAll(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-cache-test-'))
+function fixture(scale = false) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-cache-test-'))
+  roots.push(repo)
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
   git('init', '-q')
   git('config', 'user.name', 'Test')
   git('config', 'user.email', 'test@example.com')
-  for (let i = 0; i < 5_000; i++) {
+  // Functional cases need only these five paths. The 5,000-path setup belongs to scale cases.
+  for (const i of scale ? Array.from({ length: 5_000 }, (_, i) => i) : [0, 1, 2, 3, 4999]) {
     const dir = path.join(repo, 'src', String(Math.floor(i / 100)).padStart(2, '0'))
-    if (i % 100 === 0) fs.mkdirSync(dir, { recursive: true })
+    if (!scale || i % 100 === 0) fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, `f${String(i).padStart(5, '0')}.txt`), `base ${i}\n`)
   }
   fs.writeFileSync(path.join(repo, '.gitignore'), 'target/\n')
   git('add', '.')
   git('commit', '-qm', 'base')
-  ancestor = git('rev-parse', 'HEAD')
-}, 120_000)
+  return { repo, ancestor: git('rev-parse', 'HEAD'), session: () => ({ dir: repo }) as Session }
+}
 
-afterAll(() => { if (repo) fs.rmSync(repo, { recursive: true, force: true }) }, 120_000)
+afterEach(async () => { for (const root of roots.splice(0)) await disposePreviewFixture(root) }, 120_000)
 
 it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes only two merged paths on a warm preview', async () => {
+  const { ancestor, session } = fixture(true)
   const counts = { firstBase: 0, secondBase: 0, secondWrites: [] as string[] }
   const first = await runInMergedTree(session(), ancestor, merged, command, new Map(), { baseMaterialized: () => counts.firstBase++ })
   const second = await runInMergedTree(session(), ancestor, merged, command, new Map(), {
@@ -44,6 +46,7 @@ it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes
 }, 120_000)
 
 it.skipIf(process.env.TEST_SCALE !== '1')('keeps the event loop responsive throughout a preview with a check', async () => {
+  const { ancestor, session } = fixture(true)
   let maxDelay = 0
   let previous = performance.now()
   const timer = setInterval(() => { const now = performance.now(); maxDelay = Math.max(maxDelay, now - previous - 10); previous = now }, 10)
@@ -65,9 +68,9 @@ it.skipIf(process.env.TEST_SCALE !== '1')('keeps the event loop responsive throu
 }, 120_000)
 
 it('repairs a dirty cache before the check and retains ignored build outputs', async () => {
+  const { repo, ancestor, session } = fixture()
+  expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   const cache = await previewCachePath(repo)
-  // The warm-preview test above materializes the cache when TEST_SCALE=1; in a default run do it here.
-  if (!fs.existsSync(path.join(cache, 'src/00/f00000.txt'))) expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   fs.writeFileSync(path.join(cache, 'src/00/f00000.txt'), 'dirty tracked\n')
   fs.writeFileSync(path.join(cache, 'scratch-leak'), 'dirty untracked\n')
   fs.mkdirSync(path.join(cache, 'target'), { recursive: true })
@@ -82,6 +85,8 @@ it('repairs a dirty cache before the check and retains ignored build outputs', a
 }, 120_000)
 
 it('applies merged deletions and modes without losing ancestor files', async () => {
+  const { repo, ancestor, session } = fixture()
+  expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   const changes = new Map<string, string | null>([
     ['src/00/f00002.txt', null], ['bin/check.sh', '#!/bin/sh\necho ready\n'],
   ])
@@ -95,6 +100,8 @@ it('applies merged deletions and modes without losing ancestor files', async () 
 }, 120_000)
 
 it('moves the cached ancestor without rebuilding the full tree', async () => {
+  const { repo, ancestor, session } = fixture()
+  expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   const rel = 'src/00/f00003.txt'
   fs.writeFileSync(path.join(repo, rel), 'new ancestor\n')
   execFileSync('git', ['-C', repo, 'add', rel])
@@ -110,6 +117,8 @@ it('moves the cached ancestor without rebuilding the full tree', async () => {
 }, 120_000)
 
 it('uses an isolated fresh tree when two checks overlap in one clone', async () => {
+  const { ancestor, session } = fixture()
+  expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   let started!: () => void
   const prepared = new Promise<void>(resolve => { started = resolve })
   const first = runInMergedTree(session(), ancestor, merged, `sleep 1; ${command}`, new Map(), {
@@ -143,6 +152,8 @@ it('uses an isolated fresh tree when two checks overlap in one clone', async () 
 }, 120_000)
 
 it('uses a fresh tree when a cached worktree has lost its gitfile', async () => {
+  const { repo, ancestor, session } = fixture()
+  expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   const cache = await previewCachePath(repo)
   fs.unlinkSync(path.join(cache, '.git'))
   execFileSync('git', ['-C', repo, 'worktree', 'prune'])

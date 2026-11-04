@@ -346,6 +346,24 @@ describe('resumed worker boundaries', () => {
     expect(workerByTag(t.dir, 'fresh')?.summary).not.toContain('background')
   })
 
+  it('publishes no plain log line from a no-report exit, only the log path and the model text', async () => {
+    const t = setup()
+    expect(await t.tools.call('room_spawn', { tag: 'quiet', task: 'test', host: 'claude' })).toContain('spawned quiet')
+    const logFile = join(t.dir, '.room', 'workers', 'quiet.log')
+    writeFileSync(logFile, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'All tests pass.' }] } }),
+      'export API_TOKEN=plain-stderr-secret',
+      JSON.stringify({ level: 'warn', message: 'json-stderr-secret' }),
+    ].join('\n') + '\n')
+    await t.exits[0](0)
+    const done = t.room.messages().filter(m => m.type === 'done' && m.summary.includes('ended without a report'))
+    expect(done).toHaveLength(1)
+    expect(done[0].summary).toContain('All tests pass.')
+    expect(done[0].summary).toContain('quiet.log')
+    const published = JSON.stringify([t.room.messages(), workerByTag(t.dir, 'quiet')])
+    expect(published).not.toContain('secret')
+  })
+
   // Claude Code 2.1.286 stream-json: a background shell task the turn did not await is killed after the result.
   const unawaited = (sessionId?: string) => [
     { type: 'system', subtype: 'task_started', task_id: 'b4z', tool_use_id: 'toolu_1', description: 'sleep 40; echo done', is_backgrounded: true, task_type: 'local_bash' },

@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,8 +18,25 @@ import { seedRegistryWorker } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 
 let root: string | undefined
+let startsPreviewMaintenance = false
 const cleanups: (() => void | Promise<void>)[] = []
-afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); if (root) fs.rmSync(root, { recursive: true, force: true }); root = undefined })
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup()
+  if (root) {
+    if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [root] })
+    else await fs.promises.rm(root, { recursive: true, force: true })
+  }
+  root = undefined
+  startsPreviewMaintenance = false
+})
+
+function previewFor(state: HandlerState) {
+  const preview = handlers(state).room_preview_merge
+  return (args: Record<string, unknown>) => {
+    if (args.run) startsPreviewMaintenance = true
+    return preview(args)
+  }
+}
 
 function fixture(baseContent = 'base\n') {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-names-'))
@@ -95,7 +113,7 @@ function workerFixture(overlap: boolean) {
 it('a worker sees present siblings and the lead but names non-overlapping peers instead of merging them', async () => {
   const { state, session } = workerFixture(false)
   session.lastPreview = { clean: true, complete: true, testsPassed: true }
-  const result = await handlers(state).room_preview_merge({})
+  const result = await previewFor(state)({})
   expect(result).toContain('no overlapping present participants to merge')
   expect(result).toContain('skipped 2 present participants without overlapping paths: ana, ana+two; include with people: ["ana", "ana+two"]')
   expect(result).not.toContain('offline')
@@ -104,7 +122,7 @@ it('a worker sees present siblings and the lead but names non-overlapping peers 
 
 it('a worker includes an overlapping present sibling from awareness with only its own session registered', async () => {
   const { state, session } = workerFixture(true)
-  const result = await handlers(state).room_preview_merge({})
+  const result = await previewFor(state)({})
   expect(result).toContain('step 1: merge ana+two')
   expect(result).toContain('final combined tree:')
   expect(result).toContain('skipped 1 present participant without overlapping paths: ana; include with people: ["ana"]')
@@ -116,24 +134,24 @@ it('keeps finished sibling workers offline by default and retains the manifest-f
   const { state, session, room, sibling, disconnect } = workerFixture(true)
   room.workerViews.set('two', { ...room.workerViews.get('two')!, status: 'done' })
   disconnect(sibling)
-  const result = await handlers(state).room_preview_merge({})
+  const result = await previewFor(state)({})
   expect(result).toContain('no overlapping present participants to merge')
   expect(result).toContain('skipped 1 present participant without overlapping paths: ana')
   expect(result).toContain('skipped 1 offline participant with manifest facts: ana+two; include with people: ["ana+two"] or includeOffline: true')
   expect(result).not.toContain('final combined tree:')
   expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false })
-  expect(await handlers(state).room_preview_merge({ person: sibling })).toContain('step 1: merge ana+two')
+  expect(await previewFor(state)({ person: sibling })).toContain('step 1: merge ana+two')
 })
 
 it('distinguishes offline peers from an empty room', async () => {
   const { state, session, room, disconnect, lead, sibling } = workerFixture(false)
   disconnect(lead); disconnect(sibling)
-  const offline = await handlers(state).room_preview_merge({})
+  const offline = await previewFor(state)({})
   expect(offline).toContain('no other participants are present in the room')
   expect(offline).toContain('skipped 2 offline participants with manifest facts: ana, ana+two')
   expect(offline).not.toContain('nobody else is in the room')
   room.participants.clear(); room.workerViews.clear(); room.manifestHead.clear(); room.manifest.clear(); room.overlays.clear()
-  expect(await handlers(state).room_preview_merge({})).toBe('nobody else is in the room')
+  expect(await previewFor(state)({})).toBe('nobody else is in the room')
   expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false })
 })
 
@@ -146,7 +164,7 @@ it('includes the caller\'s own running worker even without overlapping paths', a
     lead: { participant: caller, room: session.roomName, instance }, base: state.baseFor(session, caller) })
   expect(registry.list()).toHaveLength(1)
   expect(state.myWorkers(session).map(w => w.name)).toEqual([sibling])
-  const result = await handlers(state).room_preview_merge({})
+  const result = await previewFor(state)({})
   expect(result).toContain('step 1: merge ana+two')
   expect(result).toContain('skipped 1 present participant without overlapping paths: ana; include with people: ["ana"]')
 })
@@ -155,7 +173,7 @@ it('distinguishes an unknown overlap from a confirmed lack of overlap', async ()
   const { state, session, sibling } = workerFixture(false)
   const baseFor = state.baseFor
   state.baseFor = (s, person) => person === sibling ? 'missing-commit' : baseFor(s, person)
-  const result = await handlers(state).room_preview_merge({})
+  const result = await previewFor(state)({})
   expect(result).toContain('no participants selected by default; overlap could not be fully determined')
   expect(result).toContain('select peers with people: ["ana+two"]')
   expect(result).toContain('skipped 1 present participant without overlapping paths: ana')
@@ -167,7 +185,7 @@ it('distinguishes an unknown overlap from a confirmed lack of overlap', async ()
 it('an explicit empty selection does not suggest that connected peers are absent or run tests', async () => {
   const { state, session } = workerFixture(false)
   const marker = path.join(root!, 'check-ran')
-  const result = await handlers(state).room_preview_merge({ people: [], run: `touch '${marker}'` })
+  const result = await previewFor(state)({ people: [], run: `touch '${marker}'` })
   expect(result).toBe('no other participants selected; you are always included')
   expect(fs.existsSync(marker)).toBe(false)
   expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false })
@@ -176,7 +194,7 @@ it('an explicit empty selection does not suggest that connected peers are absent
 it('drops the caller display name and resolves a peer display name before building', async () => {
   const { session, state, add } = fixture()
   add('ben', 'shared', 'ben changed\n')
-  const result = await handlers(state).room_preview_merge({ people: ['ANA’S AGENT', 'BEN’S AGENT'], run: 'test "$(cat app.py)" = "ben changed" && echo "1 passed"' })
+  const result = await previewFor(state)({ people: ['ANA’S AGENT', 'BEN’S AGENT'], run: 'test "$(cat app.py)" = "ben changed" && echo "1 passed"' })
   expect(result).toContain('you are always included; dropped ANA’S AGENT')
   expect(result).toContain('final combined tree: 1 path(s) applied')
   expect(result).not.toContain('ana\'s agent: no manifest record')
@@ -187,7 +205,7 @@ it('refuses an unknown explicit name before running a check', async () => {
   const { room, session, state, add } = fixture()
   add('ben', 'shared', 'ben changed\n')
   const marker = path.join(root!, 'check-ran')
-  const result = await handlers(state).room_preview_merge({ people: ['ben', 'ghost'], run: `touch '${marker}'; echo '1 passed'` })
+  const result = await previewFor(state)({ people: ['ben', 'ghost'], run: `touch '${marker}'; echo '1 passed'` })
   expect(result).toContain('error: nobody called ghost is or was in this room; known names:')
   expect(fs.existsSync(marker)).toBe(false)
   expect(session.lastPreview?.testsPassed).not.toBe(true)
@@ -197,7 +215,7 @@ it('refuses an unknown explicit name before running a check', async () => {
 it('clears a previous passing preview when a later name is refused or only names the caller', async () => {
   const { session, state, add } = fixture()
   add('ben', 'shared', 'ben changed\n')
-  const preview = handlers(state).room_preview_merge
+  const preview = previewFor(state)
   const passed = await preview({ person: 'ben', run: 'test "$(cat app.py)" = "ben changed" && echo "1 passed"' })
   expect(passed).toContain('tests: PASSED')
   expect(session.lastPreview?.testsPassed).toBe(true)
@@ -219,7 +237,7 @@ it('refuses an ambiguous display name and lists the candidates', async () => {
   add('ben', 'shared', 'lower\n')
   room.setScope('Ben', { area: 'test', summary: 'upper', paths: ['app.py'], byKind: 'agent' })
   room.setScope('ben', { area: 'test', summary: 'lower', paths: ['app.py'], byKind: 'agent' })
-  const result = await handlers(state).room_preview_merge({ person: 'BEN’S AGENT', run: 'echo "1 passed"' })
+  const result = await previewFor(state)({ person: 'BEN’S AGENT', run: 'echo "1 passed"' })
   expect(result).toContain('error: BEN’S AGENT is ambiguous; use a full name: Ben, ben')
   expect(result).not.toContain('final combined tree')
 })
@@ -228,7 +246,7 @@ it('keeps another participant version when one version is held', async () => {
   const { session, state, add } = fixture()
   add('ben', 'held')
   add('chris', 'shared', 'chris changed\n')
-  const result = await handlers(state).room_preview_merge({ people: ['ben', 'chris'], run: 'test "$(cat app.py)" = "chris changed" && echo "1 passed"' })
+  const result = await previewFor(state)({ people: ['ben', 'chris'], run: 'test "$(cat app.py)" = "chris changed" && echo "1 passed"' })
   expect(result).toContain('final combined tree: 1 path(s) applied')
   expect(result).toContain("app.py: ben's version not included")
   expect(result).toContain('passed on a PARTIAL tree')
@@ -241,7 +259,7 @@ it('keeps a shared version when another participant excluded the path', async ()
   add('chris', 'shared', 'chris changed\n')
   room.manifest.get(manifestKey('ben', '1'))?.delete('app.py')
   room.manifestHead.set('ben', { ...room.manifestHead.get('ben')!, excluded: [digestPath(room.ensureRoomSalt(), 'app.py')], semRev: 2 })
-  const result = await handlers(state).room_preview_merge({ people: ['ben', 'chris'], run: 'test "$(cat app.py)" = "chris changed" && echo "1 passed"' })
+  const result = await previewFor(state)({ people: ['ben', 'chris'], run: 'test "$(cat app.py)" = "chris changed" && echo "1 passed"' })
   expect(result).toContain('final combined tree: 1 path(s) applied')
   expect(result).toContain("app.py: ben's version not included")
   expect(result).toContain('passed on a PARTIAL tree')
@@ -251,7 +269,7 @@ it('keeps a shared version when another participant excluded the path', async ()
 it('does not endorse a passing check on the caller tree when no peer path was applied', async () => {
   const { room, session, state, add } = fixture()
   add('ben', 'held')
-  const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'echo "1 passed"' })
+  const result = await previewFor(state)({ person: 'ben', run: 'echo "1 passed"' })
   expect(result).toContain('no changes from ben to apply; ran the check on your own tree only')
   expect(result).not.toContain('merge preview with ben:')
   expect(session.lastPreview).toMatchObject({ testsPassed: false })
@@ -262,7 +280,7 @@ it('keeps a newer refusal after an older preview succeeds', async () => {
   const { session, state, add } = fixture()
   add('ben', 'shared', 'ben changed\n')
   const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
-  const preview = handlers(state).room_preview_merge
+  const preview = previewFor(state)
   const older = preview({ person: 'ben', run: `touch '${marker}'; while ! test -e '${release}'; do sleep 0.05; done; echo "1 passed"` })
   try {
     for (let i = 0; i < 200 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10))
@@ -277,7 +295,7 @@ it('keeps a newer success after an older preview fails late', async () => {
   const { session, state, add } = fixture()
   add('ben', 'shared', 'ben changed\n')
   const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
-  const preview = handlers(state).room_preview_merge
+  const preview = previewFor(state)
   const older = preview({ person: 'ben', run: `touch '${marker}'; while ! test -e '${release}'; do sleep 0.05; done; echo "1 failed"; exit 1` })
   try {
     for (let i = 0; i < 200 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10))

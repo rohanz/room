@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,10 +9,9 @@ import type { Session } from '../src/session.js'
 
 const roots: string[] = []
 afterEach(async () => {
-  await waitForPreviewSweepForTests()
+  for (const root of roots.splice(0)) await disposePreviewFixture(root, { registries: [root] })
   setPreviewProcessProbeForTests()
   vi.restoreAllMocks()
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-legacy-'))

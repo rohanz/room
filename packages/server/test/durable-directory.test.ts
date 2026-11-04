@@ -61,3 +61,14 @@ it('refuses a file in the directory path', async () => {
   await expect(incarnationFile(file, 0).advance(0)).rejects.toThrow()
   expect(await fs.readFile(file, 'utf8')).toBe('keep')
 })
+
+it('removes its temporary file when the write fails before rename', async () => {
+  const dir = await setup(), open = fs.open.bind(fs)
+  vi.spyOn(fs, 'open').mockImplementation(async (target, flags, mode) => {
+    const handle = await open(target, flags, mode)
+    if (String(target).endsWith('.tmp')) vi.spyOn(handle, 'sync').mockRejectedValue(Object.assign(new Error('disk gone'), { code: 'EIO' }))
+    return handle
+  })
+  await expect(incarnationFile(dir, 0).advance(0)).rejects.toThrow('disk gone')
+  expect((await fs.readdir(path.join(dir, 'hub'))).filter(f => f.endsWith('.tmp'))).toEqual([])
+})

@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -20,7 +21,9 @@ let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim()
 const put = (dir: string, p: string, text: string) => { fs.mkdirSync(path.dirname(path.join(dir, p)), { recursive: true }); fs.writeFileSync(path.join(dir, p), text) }
 
+let startsPreviewMaintenance = false
 beforeEach(() => {
+  startsPreviewMaintenance = false
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-lead-only-'))
   lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'test'); fs.mkdirSync(lead)
   git(lead, 'init', '-q'); git(lead, 'config', 'user.name', 'Lead'); git(lead, 'config', 'user.email', 'lead@example.test')
@@ -30,7 +33,11 @@ beforeEach(() => {
   fs.mkdirSync(path.dirname(worker), { recursive: true })
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
-afterEach(async () => { vi.restoreAllMocks(); await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => {
+  vi.restoreAllMocks()
+  if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [lead] })
+  else { await closeRegistryForDir(lead); await fs.promises.rm(root, { recursive: true, force: true }) }
+})
 
 async function setup() {
   const room = new RoomDoc(new Y.Doc())
@@ -87,6 +94,7 @@ it('runs a team preview from a teammate\'s shared overlay, with no local directo
   s.local = undefined
   publishFixture(s.room, 'ben', 'new.txt', 'shared change\n')
   t.state.liveText = async (_session, file, person) => s.room.text(file, person)
+  startsPreviewMaintenance = true
   const result = await fileHandlers(t.state).room_preview_merge({ person: 'ben', run: 'cat new.txt' })
   expect(result).toContain('shared change')
   expect(result).toContain('exit 0')
@@ -102,6 +110,7 @@ it('runs a team preview of the lead\'s own worker from its worktree, not its sta
   s.local = undefined
   publishFixture(s.room, 'lead+test', 'new.txt', 'stale overlay\n')
   t.state.liveText = async (_session, file, person) => s.room.text(file, person)
+  startsPreviewMaintenance = true
   const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat new.txt' })
   expect(result).toContain('lead+test: trusted local worktree')
   expect(result).toContain('worktree change')
@@ -114,6 +123,7 @@ it('room_collect does not read files only the lead changed and leaves them untou
   put(worker, 'new.txt', 'worker change\n')
   const t = await setup()
   const reader = vi.spyOn(fs, 'readFileSync')
+  startsPreviewMaintenance = true
   const result = await handlers(t.state).room_collect({ tag: 'test' })
   expect(result).toContain('Changes from test: new.txt')
   expect(readsOf(reader, art)).toEqual([])

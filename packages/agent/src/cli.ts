@@ -9,7 +9,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createPost, HubClient, hubTransport } from '@room/room-mcp'
 import { RoomDoc, colorFor, roomConnection } from '@room/shared'
-import { configureCredentials, deriveRoomName, encodeRoom, getCredential, parseServer } from '@room/room-mcp'
+import { credentialsPath as defaultCredentialsPath, deriveRoomName, encodeRoom, getCredential, parseServer } from '@room/room-mcp'
 import { CodexBackend } from './backend.js'
 import { finalClose, roomConnectionParams, waitForRoomSync } from './connection.js'
 import { Runner } from './runner.js'
@@ -50,8 +50,7 @@ if (!roomUrl) { console.error('roomagent: pass --room, or choose --server/ROOM_S
 const u = new URL(roomUrl)
 const roomName = u.pathname.replace(/^\/+/, '') || 'room'
 const serverUrl = `${u.protocol}//${u.host}`
-configureCredentials(args.credentials ?? process.env.ROOM_CREDENTIALS)
-const saved = getCredential(serverUrl)
+const saved = getCredential(args.credentials ?? defaultCredentialsPath(), serverUrl)
 const name = args.name ?? cfg.name ?? saved?.login ?? gitName()
 if (!name) { console.error('roomagent: pass --name or set git config user.name'); process.exit(2) }
 const params = roomConnectionParams(u, {

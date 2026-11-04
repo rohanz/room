@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { resolveConfig } from './config.js'
-import { getCredential, configureCredentials } from './credentials.js'
+import { credentialsPath, getCredential } from './credentials.js'
 import { createStaleVersionWarning } from './stale-version.js'
 import { claudeWakeAvailable, wakePathStatus, type WakePathStatus } from './wake-path.js'
 import type { DeliveryHealth } from './wake-reconciler.js'
@@ -37,7 +37,7 @@ export interface DoctorFacts {
   deliveryPath?: WakePathStatus
   deliveryHost?: string
   server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string
-  credential?: boolean; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
+  credential?: boolean; credentialError?: string; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
   relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
 }
 
@@ -151,7 +151,8 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     else if (f.serverSchema === undefined) add('FAIL', 'team server', 'the server is older than Room 0.17: deploy 0.17', 'Deploy Room 0.17 on the server')
     else if (f.serverSchema !== 2 || f.serverHub !== 1) add('FAIL', 'team server', `server schema ${f.serverSchema}, hub ${f.serverHub ?? 'missing'}; need schema 2, hub 1`, 'Deploy a compatible Room 0.17 server')
     else add('PASS', 'team server', 'schema 2, hub 1; storage healthy')
-    if (!f.credential && f.sharedToken) add('PASS', 'team login', 'shared token configured; login check does not apply')
+    if (f.credentialError) add('FAIL', 'team login', f.credentialError, 'Repair or move aside the credentials file, then run room_login')
+    else if (!f.credential && f.sharedToken) add('PASS', 'team login', 'shared token configured; login check does not apply')
     else if (!f.credential) add('WARN', 'team login', 'login missing', 'Run room_login')
     else if (f.credentialStatus === 'valid') add('PASS', 'team login', `logged in as ${f.credentialLogin}`)
     else if (f.credentialStatus === 'rejected' && f.serverSchema === 2 && f.serverHub === 1) add('FAIL', 'team login', 'saved credential was rejected; log in again (room_login)', 'Run room_login')
@@ -248,8 +249,9 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     const config = selected ?? await resolveConfig({ dir })
     if (config.server !== 'local') {
       f.server = config.server
-      configureCredentials(config.credentialsPath)
-      const session = getCredential(config.server)?.session
+      let session: string | undefined
+      try { session = getCredential(config.credentialsPath ?? credentialsPath(), config.server)?.session }
+      catch (error) { f.credentialError = error instanceof Error ? error.message : String(error) }
       f.credential = !!session
       f.sharedToken = !!config.token
       const u = new URL(config.server); u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:'; u.pathname = '/health'; u.search = ''

@@ -1,4 +1,4 @@
-import { waitForPreviewSweepForTests } from '../src/tools/files.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { realGitCommonDir } from '@room/roomd'
 import { manifestPaths, RoomDoc, splitParticipants } from '@room/shared'
 import { execFileSync, spawn } from 'node:child_process'
@@ -11,7 +11,7 @@ import type { Session } from '../src/session.js'
 import { handlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { projectWorkers } from '../src/worker-projector.js'
-import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
+import { localWorkers, registryForDir } from '../src/worker-registry.js'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from '../src/worker-state.js'
 import { hubSeam } from './fixtures/hub.js'
 import { publishFixture } from './fixtures/manifest.js'
@@ -58,7 +58,7 @@ beforeEach(() => {
 })
 // Removal runs off the event loop: a synchronous delete of a large fixture held the worker for the whole hook.
 // Collection and previews queue preview-cache maintenance that writes lock files under the lead's .git; wait for it before the tree goes.
-afterEach(async () => { collectRefHook.call = undefined; await closeRegistryForDir(lead); await waitForPreviewSweepForTests(); await fs.promises.rm(root, { recursive: true, force: true }) })
+afterEach(async () => { collectRefHook.call = undefined; await disposePreviewFixture(root, { registries: [lead] }) })
 
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {

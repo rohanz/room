@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { finishWorker, fixtureId, patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -28,7 +30,15 @@ const workerGitFacts = async (dir: string, w: FixtureWorker) => {
 }
 const worker = (dir: string): FixtureWorker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: -1, startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
 const dirs: string[] = []
-afterEach(async () => { vi.useRealTimers(); for (const dir of dirs.splice(0)) { await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true }) } })
+const maintenanceDirs = new Set<string>()
+afterEach(async () => {
+  vi.useRealTimers()
+  for (const dir of dirs.splice(0)) {
+    if (maintenanceDirs.has(dir)) await disposePreviewFixture(dir, { registries: [dir] })
+    else { await closeRegistryForDir(dir); await rm(dir, { recursive: true, force: true }) }
+  }
+  maintenanceDirs.clear()
+})
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'room-retirement-')); dirs.push(dir)
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
@@ -46,6 +56,8 @@ function registry(dir: string) {
   let primary: Session | null = s
   const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
   rooms.track(s)
+  const autoRetire = rooms.autoRetire.bind(rooms)
+  rooms.autoRetire = async () => { maintenanceDirs.add(dir); await autoRetire() }
   const has = (tag: string) => !!workerByTag(dir, tag)
   return { room, s, rooms, has, close: () => { rooms.remove(s); room.doc.destroy() } }
 }
@@ -197,6 +209,7 @@ describe('git facts and lead evaluation', () => {
       S: () => r.s, rooms: r.rooms, now: Date.now, workerAlive: () => alive,
       ctx: { listCwdProcesses: () => [], sleep: async () => { alive = false } },
     } as unknown as HandlerState
+    maintenanceDirs.add(dir)
     const reply = await collectHandlers(state).room_collect({})
     expect(reply).toContain('Changes from w: already present. Nothing committed or staged.')
     expect(reply).toContain('cleaned up w')

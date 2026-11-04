@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,7 +14,15 @@ import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 
 let root: string | undefined
-afterEach(() => { if (root) fs.rmSync(root, { recursive: true, force: true }); root = undefined })
+let startsPreviewMaintenance = false
+afterEach(async () => {
+  if (root) {
+    if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [root] })
+    else await fs.promises.rm(root, { recursive: true, force: true })
+  }
+  root = undefined
+  startsPreviewMaintenance = false
+})
 
 function fixture() {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-manifest-preview-'))
@@ -123,6 +132,7 @@ it('services an event-loop turn between merged file materialisations', async () 
     return write(file, data, options)
   }) as typeof fs.writeFileSync)
   try {
+    startsPreviewMaintenance = true
     const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'echo "1 passed"' })
     expect(result).toContain('tests: PASSED')
     expect(first).toBe(true)
@@ -146,6 +156,7 @@ it('services an event-loop turn within preview mode preparation', async () => {
     return lstat(file, options as never)
   }) as typeof fs.lstatSync)
   try {
+    startsPreviewMaintenance = true
     expect(await handlers(state).room_preview_merge({ person: 'ben', run: 'echo "1 passed"' })).toContain('tests: PASSED')
     expect(lastSawTurn).toBe(true)
   } finally { seam.mockRestore() }
@@ -155,6 +166,7 @@ it('marks a changed disk symlink as a named partial gap even if a scratch test p
   const { room, session, state } = fixture()
   fs.unlinkSync(path.join(root!, 'app.py'))
   fs.symlinkSync(path.join(os.tmpdir(), 'outside-room-preview'), path.join(root!, 'app.py'))
+  startsPreviewMaintenance = true
   const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test ! -L app.py && echo "1 passed"' })
   expect(result).toContain('PARTIAL preview')
   expect(result).toContain('app.py')
@@ -182,6 +194,7 @@ it('keeps a hashless held file out of the combined tree and records a partial pa
   expect(heldRead).toContain('outside their declared area')
   expect(heldRead).not.toContain('base\n')
   expect(heldRead).not.toContain('bytes')
+  startsPreviewMaintenance = true
   const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat tests.txt)" = "tests pass" && echo "1 passed"' })
   expect(result).toContain('PARTIAL preview')
   expect(result).toContain('app.py')
@@ -285,6 +298,7 @@ it('names the accepted base after a combined-tree retry', async () => {
     if (++reads === 2) publish(c2, 3)
     return reads >= 2 ? c2 : c1
   }
+  startsPreviewMaintenance = true
   const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat app.py)" = newest && echo "1 passed"' })
   const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
   expect(reads).toBeGreaterThanOrEqual(3)
@@ -316,6 +330,7 @@ it('labels live changes from the accepted retry snapshot', async () => {
     }
     return base
   }
+  startsPreviewMaintenance = true
   const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat tests.txt)" = live && echo "1 passed"' })
   const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
   expect(reads).toBeGreaterThanOrEqual(3)

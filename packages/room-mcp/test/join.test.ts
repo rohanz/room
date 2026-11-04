@@ -107,7 +107,7 @@ it('carries a requested custom destination through login and back to join', asyn
   }))
   let active: Session | null = session(`local/${dir.split('/').pop()}`, { local: true })
   const joiner = vi.fn(async (opts: JoinOptions) => {
-    if (!getCredential(server)) throw new NotLoggedIn(server)
+    if (!getCredential(opts.credentialsPath!, server)) throw new NotLoggedIn(server)
     return session(opts.room!)
   })
   const tools = createTools({ cwd: dir, getSession: () => active, setSession: s => { active = s }, join: joiner, leave: async () => {} })

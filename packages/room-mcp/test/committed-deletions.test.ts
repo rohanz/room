@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,13 +17,18 @@ import { testPolicyStore } from './policy-fixture.js'
 
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: vi.fn() }))
 const roots: string[] = [], rooms: RoomDoc[] = []
+const maintenanceRoots = new Set<string>()
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim()
 const put = (dir: string, file: string, text: string) => { fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true }); fs.writeFileSync(path.join(dir, file), text) }
 const oldPath = 'src/old.lua', newPath = 'src/new.lua', script = 'return 42\n'
 type Change = 'committed rename' | 'staged rename' | 'committed deletion'
 
 afterEach(async () => {
-  for (const root of roots.splice(0)) { await closeRegistryForDir(root); fs.rmSync(root, { recursive: true, force: true }) }
+  for (const root of roots.splice(0)) {
+    if (maintenanceRoots.has(root)) await disposePreviewFixture(root, { registries: [root] })
+    else { await closeRegistryForDir(root); await fs.promises.rm(root, { recursive: true, force: true }) }
+  }
+  maintenanceRoots.clear()
   for (const room of rooms.splice(0)) room.doc.destroy()
 })
 
@@ -93,6 +99,7 @@ it.each(changes)('keep-collection applies %s without staging or reverting lead c
 
 it.each(['committed rename', 'committed deletion'] as const)('preview applies a published peer %s with no deletion manifest entry', async change => {
   const t = await fixture(change, true), before = t.snapshot()
+  maintenanceRoots.add(t.root)
   const reply = await fileHandlers(t.state).room_preview_merge({ person: t.person,
     run: `test ! -e ${oldPath} && ${change === 'committed deletion' ? `test ! -e ${newPath}` : `test "$(cat ${newPath})" = 'return 42'`} && echo '1 passed'` })
   expect(reply).toContain('tests: PASSED (exit 0)')

@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -36,7 +37,7 @@ for (const [ignoresTerm, useCache] of [[false, true], [true, true], [false, fals
     } finally {
       if (oldCap === undefined) delete process.env.ROOM_PREVIEW_CACHE_GB
       else process.env.ROOM_PREVIEW_CACHE_GB = oldCap
-      fs.rmSync(root, { recursive: true, force: true })
+      await disposePreviewFixture(root)
     }
   }, 30_000)
 }

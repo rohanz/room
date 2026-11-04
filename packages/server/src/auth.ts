@@ -56,6 +56,11 @@ export type DeviceStart = { provider: 'github'; user_code: string; verification_
 export type OidcStart = { provider: 'oidc'; url: string; expires_in: number; interval: number; device: string }
 export type LoginStart = DeviceStart | OidcStart
 export type PollResult = { pending: true } | { error: string } | { session: string; login: string; provider: Provider; expiresIn: number }
+/** `removed`: the session this logout ended. `error`: its deletion is not yet durable (a restart
+ *  could reload it); the session is already unusable here, and logging out again retries. */
+export interface LogoutResult { removed?: StoredSession; error?: string }
+/** `ok: false`: the store could not be read, so nothing was revoked and current sessions stand. */
+export type ReconcileResult = { ok: true } | { ok: false; error: string }
 
 /** Namespaced identity of an OIDC user: `oidc:<issuer-host>:<sub>`. ROOM_ADMINS may list this form. */
 export function oidcIdentity(issuer: string, sub: string): string {
@@ -74,6 +79,7 @@ type Pending =
   | { provider: 'oidc'; verifier: string; nonce: string; exp: number; interval: number; result?: { session: string; login: string } | { error: string } }
 
 export const FAKE_CLIENT_ID = 'fake'
+const message = (e: unknown) => e instanceof Error ? e.message : String(e)
 
 export class Auth {
   /** `device`: GitHub login is configured (github.com rooms possible). `token`: no GitHub login; only non-GitHub rooms, admitted by ROOM_TOKEN or another provider. */
@@ -91,6 +97,10 @@ export class Auth {
   private readonly devices = new Map<string, Pending>()
   private readonly maxPending = Number(process.env.ROOM_MAX_PENDING_LOGINS ?? 1000)
   private readonly sessions = new Map<string, StoredSession>()
+  /** Logged out here, but the store still holds them: deleted again on the next logout or reconciliation. */
+  private readonly owedDeletes = new Map<string, StoredSession>()
+  /** Whether the store was read at startup; until it is, reconciliation adopts stored sessions. */
+  private loaded = false
   private discovery?: { doc: Discovery; jwks?: { set: JSONWebKeySet; at: number } }
 
   constructor(private readonly o: AuthOptions = {}) {
@@ -109,13 +119,17 @@ export class Auth {
   private async load(): Promise<void> {
     try {
       await this.store.init()
-      // Sessions written before OIDC existed have no provider: they are GitHub sessions.
-      for (const [k, v] of Object.entries(await this.store.loadSessions())) if (v.at + this.ttl > this.now()) this.sessions.set(k, { ...v, provider: v.provider ?? 'github' })
-    } catch (e) { this.o.log?.(`auth: could not load sessions: ${e instanceof Error ? e.message : e}`) }
+      this.adopt(await this.store.loadSessions())
+    } catch (e) { this.o.log?.(`auth: could not load sessions; will retry: ${message(e)}`) }
+  }
+  /** Sessions written before OIDC existed have no provider: they are GitHub sessions. */
+  private adopt(stored: Record<string, StoredSession>): void {
+    for (const [k, v] of Object.entries(stored)) if (v.at + this.ttl > this.now() && !this.owedDeletes.has(k) && !this.sessions.has(k)) this.sessions.set(k, { ...v, provider: v.provider ?? 'github' })
+    this.loaded = true
   }
 
   private persist(p: Promise<void>): void {
-    p.catch(e => this.o.log?.(`auth: could not save session: ${e instanceof Error ? e.message : e}`))
+    p.catch(e => this.o.log?.(`auth: could not save session: ${message(e)}`))
   }
   private sweep(): void {
     for (const [k, v] of this.devices) if (v.exp < this.now()) this.devices.delete(k)
@@ -308,14 +322,27 @@ export class Auth {
     return s
   }
 
-  /** Removes the session; returns what it was (for the audit log) or undefined. */
-  logout(session: string | undefined): StoredSession | undefined {
-    if (!session) return undefined
-    const s = this.sessions.get(session)
-    if (!s) return undefined
-    this.sessions.delete(session); this.persist(this.store.deleteSession(session))
-    this.o.onSessionRemoved?.(session, 'logged out', s)
-    return s
+  /** Ends the session at once, then waits for the store to delete it. An earlier logout whose
+   *  deletion failed is retried, so a client can repeat logout until it is durable. */
+  async logout(session: string | undefined): Promise<LogoutResult> {
+    if (!session) return {}
+    const s = this.sessions.get(session) ?? this.owedDeletes.get(session)
+    if (!s) return {}
+    if (this.sessions.delete(session)) {
+      this.owedDeletes.set(session, s)
+      this.o.onSessionRemoved?.(session, 'logged out', s)
+    }
+    const error = await this.deleteOwed(session)
+    return error ? { removed: s, error } : { removed: s }
+  }
+  private async deleteOwed(session: string): Promise<string | undefined> {
+    try { await this.store.deleteSession(session) }
+    catch (e) {
+      this.o.log?.(`auth: logout not yet persisted; will retry: ${message(e)}`)
+      return 'the logout could not be saved yet; retry'
+    }
+    this.owedDeletes.delete(session)
+    return undefined
   }
 
   /** Expire idle sessions even when no new HTTP request or upgrade arrives. */
@@ -323,14 +350,23 @@ export class Auth {
     for (const id of this.sessions.keys()) if ((this.sessions.get(id)?.at ?? 0) + this.ttl < this.now()) this.peek(id)
   }
 
-  /** Detect session deletion in the persistent store (for operator revocation). */
-  async reconcileSessions(): Promise<void> {
-    const stored = await this.store.loadSessions()
+  /** Detect session deletion in the persistent store (for operator revocation). A store that cannot
+   *  be read revokes nothing. Also retries owed logout deletions and finishes a failed startup load. */
+  async reconcileSessions(): Promise<ReconcileResult> {
+    for (const id of [...this.owedDeletes.keys()]) await this.deleteOwed(id)
+    let stored: Record<string, StoredSession>
+    try { stored = await this.store.loadSessions() }
+    catch (e) {
+      this.o.log?.(`auth: session storage unavailable; keeping current sessions: ${message(e)}`)
+      return { ok: false, error: message(e) }
+    }
+    if (!this.loaded) { this.adopt(stored); return { ok: true } }
     for (const id of this.sessions.keys()) if (!(id in stored)) {
       const removed = this.sessions.get(id)
       this.sessions.delete(id)
       this.o.onSessionRemoved?.(id, 'logged out', removed)
     }
+    return { ok: true }
   }
 
   /** Number of live sessions (diagnostics/tests). */

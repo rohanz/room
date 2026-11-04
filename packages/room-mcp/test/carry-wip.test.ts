@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { patchPublisher, workerByTag } from './registry-fixture.js'
@@ -44,7 +45,9 @@ const exists = (dir: string, p: string) => fs.existsSync(path.join(dir, p))
 const status = (dir: string) => git(dir, 'status', '--porcelain', '--untracked-files=all').split('\n').filter(l => l && !/^..\s+"?\.room\//.test(l)).sort()
 const leadState = () => ({ head: git(repo, 'rev-parse', 'HEAD'), index: git(repo, 'write-tree'), cached: git(repo, 'diff', '--cached', '--binary'), status: status(repo) })
 
+let startsPreviewMaintenance = false
 beforeEach(() => {
+  startsPreviewMaintenance = false
   roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROOM_')))
   for (const key of Object.keys(roomEnv)) delete process.env[key]
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-')))
@@ -70,12 +73,12 @@ afterEach(async ({ task }) => {
   // The fake daemon does not own these real resources as a production daemon does.
   // Stop graphs/awareness before destroying their documents and deleting the checkout.
   for (const dispose of fixtureDisposals.splice(0).reverse()) dispose()
-  await closeRegistryForDir(repo)
   timings.resources = performance.now() - start
   vi.unstubAllEnvs()
   profile.cleanupPhase = 'remove'
   start = performance.now()
-  fs.rmSync(root, { recursive: true, force: true })
+  if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [repo] })
+  else { await closeRegistryForDir(repo); await fs.promises.rm(root, { recursive: true, force: true }) }
   timings.remove = performance.now() - start
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
@@ -131,7 +134,10 @@ function world() {
     },
   })
   cleanups.push(() => leadTools.shutdown())
-  const call = (tool: string, args: Record<string, unknown>) => leadTools.call(tool, args) as Promise<string>
+  const call = (tool: string, args: Record<string, unknown>) => {
+    if ((tool === 'room_collect' && !args.keep && args.mode !== 'copy') || (tool === 'room_preview_merge' && args.run)) startsPreviewMaintenance = true
+    return leadTools.call(tool, args) as Promise<string>
+  }
   async function spawn(tag: string) {
     const reply = await call('room_spawn', { tag, task: `task ${tag}` })
     const w = workerByTag(repo, tag)
@@ -164,6 +170,7 @@ function world() {
       peer.destroy()
     }
     const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
+    if (run) startsPreviewMaintenance = true
     try { return await tools.call('room_preview_merge', { person: 'rohanz', ...(run ? { run } : {}) }) as string }
     finally { await tools.shutdown(); ws.graph?.stop() }
   }
@@ -172,6 +179,7 @@ function world() {
     const w = workerByTag(repo, tag)!
     const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
+    if (run) startsPreviewMaintenance = true
     try { return await tools.call('room_preview_merge', { person, ...(run ? { run } : {}) }) as string }
     finally { await tools.shutdown(); ws.graph?.stop() }
   }
@@ -250,6 +258,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const record = path.join(repo, '.git', 'room-carry', 'retired.json')
     expect(fs.existsSync(record)).toBe(false)
     const w = { tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
+    startsPreviewMaintenance = true
     expect(await cleanupWorker(repo, w, true, false, [], { list: () => [] })).toBe(true)
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry/retired')).toThrow()
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry-untracked/retired')).toThrow()
@@ -264,6 +273,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const originalPath = process.env.PATH
     process.env.PATH = bin + path.delimiter + originalPath
     const w = { tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
+    startsPreviewMaintenance = true
     try { await expect(cleanupWorker(repo, w, true, false, [], { list: () => [] })).rejects.toThrow(/cleanup/) }
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(prepared.dir)).toBe(true)

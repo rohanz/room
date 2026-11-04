@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 // rc11 all-Codex rehearsal R1, end to end against a real team server: a worker that commits before room_done.
 // The lead's clone is single-branch (no origin/HEAD), so the worker's room/<tag> branch has no remote ref.
 // Only the host process is stubbed: lead and worker are real sessions with real daemons, joined over the server.
@@ -8,7 +9,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { joinSession, leaveSession, setCredential, type Session } from '../src/index.js'
+import { credentialsPath, joinSession, leaveSession, setCredential, type Session } from '../src/index.js'
 import { createTools } from '../src/tools.js'
 import type { SpawnSpec } from '../src/worker-process.js'
 import { workerByTag } from './registry-fixture.js'
@@ -31,7 +32,7 @@ beforeAll(async () => {
   for (let i = 0; i < 200; i++) { try { if ((await fetch(`${http()}/health`)).ok) break } catch { /* starting */ } await new Promise(r => setTimeout(r, 100)) }
   const device = (await (await post('/auth/device', {})).json() as { device: string }).device
   const { session } = await (await post('/auth/poll', { device, fakeLogin: 'ana' })).json() as { session: string }
-  setCredential(`ws://127.0.0.1:${port}`, { session, login: 'ana', at: Date.now() })
+  setCredential(credentialsPath(), `ws://127.0.0.1:${port}`, { session, login: 'ana', at: Date.now() })
   expect((await post('/rooms', { room: 'github.com/acme/werk', session, schema: 2 })).ok).toBe(true)
 }, 60_000)
 afterAll(() => { proc?.kill() })
@@ -45,8 +46,8 @@ afterEach(async () => {
 async function world() {
   vi.stubEnv('ROOM_AUTO_FETCH', '0')
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-team-commit-')))
-  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }))
   const dir = path.join(root, 'lead')
+  cleanups.push(() => disposePreviewFixture(root, { registries: [dir] }))
   fs.mkdirSync(dir)
   git(dir, 'init', '-q', '-b', 'r17'); git(dir, 'config', 'user.name', 'Ana'); git(dir, 'config', 'user.email', 'ana@example.test')
   git(dir, 'remote', 'add', 'origin', 'https://github.com/acme/werk.git')

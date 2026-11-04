@@ -67,6 +67,7 @@ export class PolicyStore {
   private publisher = true
   private publisherName?: string
   private onChange?: (policy: SharingPolicy) => void
+  private readonly listeners = new Set<(policy: SharingPolicy) => void>()
   private currentPolicy!: SharingPolicy
   private constructor(private readonly file: string, private record: SharingRecord) {}
 
@@ -115,9 +116,16 @@ export class PolicyStore {
     const { requested, declared } = this.record
     this.currentPolicy = Object.freeze({ ...policyFromLevel(requested, sorted([...declared.active, ...declared.ending, ...declared.retained]), this.ceiling, this.publisher), ending: Object.freeze([...declared.ending]), ...(this.publisherName ? { publisherName: this.publisherName } : {}) })
     this.onChange?.(this.currentPolicy)
+    for (const listener of this.listeners) listener(this.currentPolicy)
     return this.currentPolicy
   }
   get policy(): SharingPolicy { return this.currentPolicy }
+
+  /** Observe every new policy after the daemon's own update (onChange); returns the unsubscribe. */
+  watch(listener: (policy: SharingPolicy) => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
 
   get requested(): ShareLevel { return this.record.requested }
   get disclosed(): Readonly<SharingRecord['disclosed']> { return this.record.disclosed }

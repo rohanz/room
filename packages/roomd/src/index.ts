@@ -7,6 +7,7 @@
 import { readRoomFile, roomFilePath } from './room-file.js'
 export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH, type RepoPathSyntax, type RepoLeafPolicy, type RepoContainmentOptions } from './repo-path.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
+export { readBoundedFileSync } from './bounded-read.js'
 import { commonGitDirFromDotGit, worktreeGitDirFromDotGit } from './git-dirs.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir } from './git-dirs.js'
 import fs from 'node:fs'
@@ -34,7 +35,8 @@ import { CheckoutWatch, WatcherHandoff, type WatchHandlers } from './checkout-wa
 export { WatcherHandoff } from './checkout-watch.js'
 import { RoomDoc, assertValidParticipantName, roomConnection, claimReleaseText, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
-import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
+import { parseRoomIgnore, ROOMIGNORE_MAX_BYTES, ROOMIGNORE_MAX_PATTERNS, type RoomIgnore } from './roomignore.js'
+import { readBoundedFileSync } from './bounded-read.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
 import { git, gitBlobInfoMany, gitBranch, gitChanged, gitHead, gitIgnored, gitPathsBetween, gitShowMany, gitTracked } from './git.js'
 import { pushHistory, pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
@@ -212,6 +214,8 @@ export class RoomdError extends Error {
 
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
+/** Room only appends two lines to Git's exclude file; a larger one is left alone. */
+const GIT_EXCLUDE_MAX_BYTES = 1024 * 1024
 /** Gitignored folders are listed again at least this often, besides on .gitignore changes and new ignored output. */
 const IGNORED_DIRS_REFRESH_MS = 60_000
 
@@ -319,7 +323,10 @@ class Daemon implements Roomd {
   readonly totalBudget: number
   private readonly connectTimeoutMs: number
   private roomIgnore: RoomIgnore = parseRoomIgnore('')
-  private roomIgnoreText = ''
+  /** Last successfully read policy; undefined until one is known, which withholds all file text. */
+  private roomIgnoreText: string | undefined
+  /** Why the current `.roomignore` cannot be used; reported once until it is readable again. */
+  private roomIgnoreProblem?: string
   readonly skips = { size: new Set<string>(), budget: new Set<string>(), ignore: new Set<string>() }
   private readonly roomUrl: string
   inputs: PublicationInputs
@@ -417,7 +424,7 @@ class Daemon implements Roomd {
     this.poster = options.post
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
-    this.inputs = { policy: options.policy, rules: rulesFromText('', this.sizeCap, this.totalBudget), head: '' }
+    this.inputs = { policy: options.policy, rules: rulesFromText(undefined, this.sizeCap, this.totalBudget), head: '' }
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
     this.onScanned = options.onScanned
     this.beforePublishWrite = options.beforePublishWrite
@@ -637,12 +644,31 @@ class Daemon implements Roomd {
   }
 
 
+  /**
+   * Only a missing file means "no policy". An unreadable, unsafe or oversized file keeps the last policy read
+   * (none at startup, which withholds all file text) and leaves publication incomplete until it is usable again.
+   */
   private loadRoomIgnore(): void {
-    let text = ''
-    try { if (this.isSafeRoomPath(ROOMIGNORE, false)) text = fs.readFileSync(this.abs(ROOMIGNORE), 'utf8') } catch { /* none */ }
+    let text: string, ignore: RoomIgnore
+    try {
+      if (!this.isSafeRoomPath(ROOMIGNORE, false)) throw new Error('it is a symbolic link or leaves the checkout')
+      try { text = readBoundedFileSync(this.abs(ROOMIGNORE), ROOMIGNORE_MAX_BYTES) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; text = '' }
+      ignore = parseRoomIgnore(text, ROOMIGNORE_MAX_PATTERNS)
+    } catch (error) {
+      const problem = errMsg(error)
+      if (this.roomIgnoreProblem === undefined) {
+        this.log(`warn: cannot read ${ROOMIGNORE} (${problem}); ${this.roomIgnoreText === undefined
+          ? 'sharing no file text until it can be read' : 'keeping its previous rules'}, publication marked incomplete`)
+      }
+      this.roomIgnoreProblem = problem
+      return
+    }
+    if (this.roomIgnoreProblem !== undefined) this.log(`${ROOMIGNORE} readable again`)
+    this.roomIgnoreProblem = undefined
     this.roomIgnoreText = text
-    this.roomIgnore = parseRoomIgnore(text)
-    if (this.roomIgnore.patterns) this.log(`${ROOMIGNORE}: ${this.roomIgnore.patterns} pattern(s)`)
+    this.roomIgnore = ignore
+    if (ignore.patterns) this.log(`${ROOMIGNORE}: ${ignore.patterns} pattern(s)`)
   }
 
   takeWatcher(): WatcherHandoff | undefined {
@@ -755,7 +781,7 @@ class Daemon implements Roomd {
   }
 
   private publicationComplete(): boolean {
-    return this.anchor.anchored && !this.transitionPending && !this.pendingClaimValidation?.claims.size
+    return this.anchor.anchored && !this.transitionPending && !this.pendingClaimValidation?.claims.size && this.roomIgnoreProblem === undefined
   }
 
   /** Mark this party active now (tool calls count as activity). */
@@ -804,7 +830,9 @@ class Daemon implements Roomd {
     const exclude = path.join(gitDir, 'info', 'exclude')
     try {
       fs.mkdirSync(path.dirname(exclude), { recursive: true })
-      const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
+      let current = ''
+      try { current = readBoundedFileSync(exclude, GIT_EXCLUDE_MAX_BYTES) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       const missing = [ROOM_FILE, '.room/'].filter(p => !current.split(/\r?\n/).includes(p))
       if (!missing.length) return
       const separator = current.length > 0 && !current.endsWith('\n') ? '\n' : ''
@@ -1424,8 +1452,14 @@ class Daemon implements Roomd {
 
   /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */
   private reloadRoomIgnore(): void {
+    const before = this.roomIgnoreProblem
     this.loadRoomIgnore()
-    this.applyInputs({ ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) })
+    if (this.roomIgnoreProblem === undefined) {
+      this.applyInputs({ ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) })
+    } else if (before === undefined) {
+      // The rules stand; republish so the manifest head stops certifying complete coverage.
+      void this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
+    }
   }
 
   /** Does not synthesize events: callers must first observe the change they are waiting for. */
@@ -1515,6 +1549,8 @@ class Daemon implements Roomd {
 
   private async refreshTracked(): Promise<void> {
     if (this.stopped || !this.inputs.policy.publisher) return
+    // A watcher may never report a permission change: retry an unusable .roomignore on the tracked poll.
+    if (this.roomIgnoreProblem !== undefined) this.reloadRoomIgnore()
     const epoch = this.checkoutEpoch
     const [next] = await Promise.all([gitTracked(this.dir),
       this.ignoredDirsStale || Date.now() - this.ignoredDirsAt >= IGNORED_DIRS_REFRESH_MS ? this.refreshIgnoredDirs() : undefined])

@@ -3,6 +3,7 @@ import { gitCommonDir } from '@room/roomd'
 import { openRoomBrowser } from '../browser-open.js'
 import { sharingDescription, sharingHumanChoices } from '../config.js'
 import { runDoctor, formatDeliveryHealth, formatDeliveryDegradation } from '../doctor.js'
+import { formatProcessHealth } from '../cpu-watchdog.js'
 import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
@@ -125,12 +126,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.check === true) {
         const active = state.ctx.getSession()
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf('/')) : undefined
-        const destination = server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : undefined
+        const destination = server ? { server, token: active?.token, credentialsPath: active?.credentialsPath ?? state.ctx.config?.credentialsPath } : undefined
         const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), {
           inSession: true, selected: destination, sessionWarning: active?.local?.canonicalWarning,
           sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : undefined,
         })
-        return [report, formatDeliveryHealth(state.deliveryHealth())].filter(Boolean).join('\n')
+        return [report, formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
       }
       const s = S()
       await loadAreas(s)

@@ -292,7 +292,7 @@ it.each(['in progress', 'failed'])('room_state check bypasses an %s automatic jo
   const ensure = vi.fn(state === 'failed' ? () => { throw new Error('AUTO_JOIN_TOUCHED') } : () => new Promise<void>(() => {}))
   const settle = vi.fn(state === 'failed' ? () => Promise.reject(new Error('AUTO_JOIN_TOUCHED')) : () => new Promise<void>(() => {}))
   tools.setAutoJoin({ ensure, settle, cancel() {}, retarget() {}, ...(state === 'failed' ? { failure: 'join failed' } : {}) })
-  expect(await tools.call('room_state', { check: true })).toBe('PASS  doctor: report from tool')
+  expect(await tools.call('room_state', { check: true })).toMatch(/^PASS  doctor: report from tool\nINFO  Room server process: pid \d+; CPU [\d.]+ s \(user [\d.]+, system [\d.]+\); RSS \d+ MB; up /)
   expect(ensure).not.toHaveBeenCalled()
   expect(settle).not.toHaveBeenCalled()
 })
@@ -304,7 +304,7 @@ it('room_state check diagnoses a never-synced session and its selected checkout'
   let active: Session | null = null
   const tools = createTools({ getSession: () => active, setSession: s => { active = s }, cwd: '/original/checkout' })
   active = { dir: '/selected/checkout', roomUrl: 'wss://selected.example/repository', roomName: 'repository', token: 'test-token', provider: { synced: false }, daemon: { touch: vi.fn() } } as unknown as Session
-  expect(await tools.call('room_state', { check: true })).toBe('PASS  doctor: report from tool')
+  expect(await tools.call('room_state', { check: true })).toMatch(/^PASS  doctor: report from tool\nINFO  Room server process: pid \d+; CPU [\d.]+ s \(user [\d.]+, system [\d.]+\); RSS \d+ MB; up /)
   expect(doctor).toHaveBeenCalledWith('/selected/checkout', { inSession: true, selected: { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, sessionWarning: undefined, sessionBound: undefined })
   expect(active.daemon.touch).not.toHaveBeenCalled()
 })

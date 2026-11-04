@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
 import { setGitObserver } from '@room/roomd/git'
@@ -7,10 +8,15 @@ import { editLine, juceRepo, juceSession, put, type JuceRepo } from './fixtures/
 
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: vi.fn() }))
 const repos: JuceRepo[] = []
+const maintenanceRepos = new Set<JuceRepo>()
 afterEach(async () => {
   setGitObserver(undefined)
   vi.restoreAllMocks()
-  for (const repo of repos.splice(0)) { await closeRegistryForDir(repo.lead); fs.rmSync(repo.root, { recursive: true, force: true }) }
+  for (const repo of repos.splice(0)) {
+    if (maintenanceRepos.has(repo)) await disposePreviewFixture(repo.root, { registries: [repo.lead] })
+    else { await closeRegistryForDir(repo.lead); await fs.promises.rm(repo.root, { recursive: true, force: true }) }
+  }
+  maintenanceRepos.clear()
 }, 60_000) // removing two JUCE-sized fixtures took over 10 s under a full suite
 
 /** One preview of the same handful of edits over a JUCE-shaped clone; counts Git processes and file opens. */
@@ -28,6 +34,7 @@ async function preview(shape: { ignored: number; untracked: number }, args: Reco
   let gitCalls = 0
   setGitObserver(() => { gitCalls++ })
   const opens = vi.spyOn(fs.promises, 'open')
+  if (args.run) maintenanceRepos.add(repo)
   const result = await fileHandlers(state).room_preview_merge({ people: ['lead+w1', 'lead+w2'], ...args })
   const counts = { gitCalls, opens: opens.mock.calls.length }
   setGitObserver(undefined)

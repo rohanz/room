@@ -227,15 +227,25 @@ describe('worker log while the host runs', () => {
   it('grows line by line before the host exits, and the tracker sees each step', async () => {
     const script = path.join(tmp, 'fake-host.mjs')
     const lines = [claudeTool('Read', { file_path: `${tmp}/a.ts` }), claudeTool('Edit', { file_path: `${tmp}/b.ts` })]
-    fs.writeFileSync(script, `const lines = ${JSON.stringify(lines)}
-const sleep = ms => new Promise(r => setTimeout(r, ms))
-for (const line of lines) { process.stdout.write(line + '\\n'); await sleep(400) }
-await sleep(5000)
+    // File acknowledgements are durable IPC: the child cannot outrun a descheduled poller.
+    const acknowledgements = lines.map((_, i) => path.join(tmp, `ack-${i}`))
+    fs.writeFileSync(script, `import fs from 'node:fs'
+const lines = ${JSON.stringify(lines)}
+const acknowledgements = ${JSON.stringify(acknowledgements)}
+for (const [i, line] of lines.entries()) {
+  await new Promise(resolve => {
+    const check = () => {
+      if (fs.existsSync(acknowledgements[i])) { fs.unwatchFile(acknowledgements[i]); resolve() }
+    }
+    fs.watchFile(acknowledgements[i], { interval: 10 }, check)
+    process.stdout.write(line + '\\n')
+  })
+}
 `)
     const logFile = path.join(tmp, 'live', 'fake.log')
     const proc = defaultSpawner({ cmd: process.execPath, args: [script], cwd: tmp, env: {}, logFile })
     let exited = false
-    proc.onExit(() => { exited = true })
+    const closed = new Promise<void>(resolve => { proc.onExit(() => { exited = true; resolve() }) })
     try {
       await proc.started
       const tracker = new WorkerActivityTracker()
@@ -246,10 +256,14 @@ await sleep(5000)
       }
       expect(await until('reading a.ts')).toBe('reading a.ts')
       expect(exited).toBe(false)
+      fs.writeFileSync(acknowledgements[0], 'observed')
       expect(await until('editing b.ts')).toBe('editing b.ts')
       expect(exited).toBe(false)
       expect(fs.statSync(logFile).size).toBeGreaterThan(0)
-    } finally { proc.killForce?.() }
+      fs.writeFileSync(acknowledgements[1], 'observed')
+      await closed
+      expect(exited).toBe(true)
+    } finally { if (!exited) proc.killForce?.(); await closed }
   })
 })
 

@@ -5,7 +5,7 @@ import { gitBlobInfoById, gitHead, gitShowManyCapped, type GitBlobInfo } from '.
 import { checkoutText, type Baseline } from './baseline.js'
 import { readDisk, StalePublication } from './disk-scan.js'
 import { markManifestIncomplete, prepareManifestPublication, prepareManifestPublicationYielding, type ManifestFact } from './manifest-publish.js'
-import { authorizesText, defaultExcludedPath, planYielding, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
+import { authorizesText, defaultExcludedPath, planYielding, publishesFiles, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
 import type { DiskBatch } from './disk-batch.js'
 
 interface Host {
@@ -105,7 +105,7 @@ export class Publisher {
     const retainedText = new Set<string>()
     let budget = 0
     let baseBudget = 0
-    if (next.policy.level !== 'intent' && next.policy.publisher) {
+    if (publishesFiles(next)) {
       for (const [path, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
         if (defaultExcludedPath(path) || next.rules.roomIgnore.ignores(path) || (entry.size !== undefined && entry.size > next.rules.sizeCap)) {
           facts.push({ path, change: entry.change, excluded: true })

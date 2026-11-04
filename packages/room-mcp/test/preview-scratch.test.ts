@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,9 +12,14 @@ import { editLine, juceRepo, juceSession, put, type JuceRepo } from './fixtures/
 
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: vi.fn() }))
 const repos: JuceRepo[] = []
+const maintenanceRepos = new Set<JuceRepo>()
 afterEach(async () => {
   vi.restoreAllMocks()
-  for (const repo of repos.splice(0)) { await closeRegistryForDir(repo.lead); fs.rmSync(repo.root, { recursive: true, force: true }) }
+  for (const repo of repos.splice(0)) {
+    if (maintenanceRepos.has(repo)) await disposePreviewFixture(repo.root, { registries: [repo.lead] })
+    else { await closeRegistryForDir(repo.lead); await fs.promises.rm(repo.root, { recursive: true, force: true }) }
+  }
+  maintenanceRepos.clear()
 })
 const small = async (options: Parameters<typeof juceRepo>[0] = {}) => {
   const repo = await juceRepo({ tracked: 4, ignored: 0, built: 0, ...options })
@@ -29,6 +35,7 @@ it('reports two workers\' untracked build logs on one low-key line, not as a cod
   put(w2.dir, 'build_before.log', 'w2 configure output\n')
   editLine(w1.dir, 'Source/part0/Unit0.cpp', 2, '// w1 edit')
   const { state } = await juceSession(repo)
+  maintenanceRepos.add(repo)
   const result = await fileHandlers(state).room_preview_merge({ people: ['lead+w1', 'lead+w2'], run: 'test ! -e build_before.log' })
   expect(result).not.toContain('CONFLICTS')
   expect(result).not.toContain('build_before.log (lead+w1 only)')
@@ -88,6 +95,7 @@ it('previews identical same-path additions cleanly and keeps one exact copy in t
   const text = 'int helper() { return 1; }\n'
   for (const worker of repo.workers) put(worker.dir, 'Source/Helper.cpp', text)
   const { state, session } = await juceSession(repo)
+  maintenanceRepos.add(repo)
   const result = await fileHandlers(state).room_preview_merge({ people: ['lead+w1', 'lead+w2'], run: 'cat Source/Helper.cpp' })
   expect(result).toContain('lead+w1 and lead+w2 made the same change: Source/Helper.cpp')
   expect(result).not.toContain('CONFLICTS')
@@ -104,6 +112,7 @@ it('collects both workers past their scratch logs and saves each copy under .roo
   put(w1.dir, 'Source/New1.cpp', 'one\n')
   put(w2.dir, 'Source/New2.cpp', 'two\n')
   const { state } = await juceSession(repo)
+  maintenanceRepos.add(repo)
   const result = await collectHandlers(state).room_collect({})
   expect(result).not.toContain('Nothing written')
   expect(result).toContain('not collected: worker scratch (untracked logs or temp files, never committed): build_before.log (w1, w2); saved under .room/scratch/w1/ and .room/scratch/w2/')

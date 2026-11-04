@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -110,6 +111,6 @@ it('keeps an orphaned check and eviction off the cached tree until the check exi
     })
     if (oldCap === undefined) delete process.env.ROOM_PREVIEW_CACHE_GB
     else process.env.ROOM_PREVIEW_CACHE_GB = oldCap
-    try { fs.rmSync(root, { recursive: true, force: true }) } catch { /* Preserve the failed assertion. */ }
+    try { await disposePreviewFixture(root) } catch { /* Preserve the failed assertion. */ }
   }
 }, 120_000)

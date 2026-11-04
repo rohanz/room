@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -21,9 +22,9 @@ beforeEach(() => {
   process.env.GIT_ATTR_NOSYSTEM = '1'
 })
 afterEach(async () => {
-  await waitForPreviewSweepForTests()
+  for (const root of roots.splice(0).filter(root => root !== isolatedHome)) await disposePreviewFixture(root)
   vi.restoreAllMocks()
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+  await fs.promises.rm(isolatedHome, { recursive: true, force: true })
   for (const key of gitEnvKeys) {
     const value = previousGitEnv[key]
     if (value === undefined) delete process.env[key]

@@ -62,7 +62,35 @@ jobs:
           path: ${{ runner.temp }}/room-windows-*.json
           if-no-files-found: warn
 
+  hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        id: install
+        run: npm ci
+      - name: Check repository hygiene
+        run: npx knip
+
+  # Keep the existing required "test" status as the gate for both independent jobs.
+  # A hygiene failure cannot suppress test/build evidence or silently become optional.
   test:
+    if: ${{ always() }}
+    needs: [checks, hygiene]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require tests, builds and hygiene
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          HYGIENE_RESULT: ${{ needs.hygiene.result }}
+        run: test "$CHECKS_RESULT" = success && test "$HYGIENE_RESULT" = success
+
+  checks:
     runs-on: ubuntu-latest
     # The suite alone takes about 6 minutes on an M-series Mac and longer on a 4-vCPU runner;
     # the test watchdog already ends any single file after 15 minutes.
@@ -79,37 +107,44 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: install
         run: npm ci
 
       - name: Configure Git identity for tests
         run: git config --global user.name 'CI' && git config --global user.email 'ci@example.com'
 
       - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run typecheck
 
-      - name: Check repository hygiene
-        run: npx knip
-
       - name: Run tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           TEST_SCALE: '1'
         run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test
 
       - name: Build web
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build -w @room/web
 
       - name: Build server image
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         # The image installs packages/server/package.json on its own, outside the workspace.
         run: docker build -t room-server-ci .
 
       - name: Build plugin
+        id: plugin
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build:plugin
 
       - name: Check committed plugin assets
+        if: ${{ !cancelled() && steps.plugin.outcome == 'success' }}
         # Locked dependencies, fixed esbuild target and content-hashed Vite assets;
         # neither build config injects timestamps or absolute build paths.
         run: |
           if [ -n "$(git status --porcelain --untracked-files=all -- plugins/room)" ]; then
+            git status --short --untracked-files=all -- plugins/room
+            git diff --stat -- plugins/room
             echo '::error::Plugin assets are out of date. Run npm run build:plugin and commit all generated files under plugins/room.'
             exit 1
           fi

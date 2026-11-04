@@ -157,7 +157,11 @@ export interface HandlerState {
   flushConflicts: () => Promise<void>
 }
 
-/** Room tools only touch the shared room doc, never the user's files, so none is destructive. */
+/**
+ * Shared hints for tools that only read or change the shared room doc and Room's own state. Hosts use these hints
+ * for approval decisions, so a tool that writes the user's files (room_collect, room_export) or runs a caller's
+ * command (room_preview_merge) declares its own conservative annotations instead of using these.
+ */
 export const RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
 export const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 export const str = (d: string) => ({ type: 'string', description: d })

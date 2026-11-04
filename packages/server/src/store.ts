@@ -12,10 +12,13 @@ import path from 'node:path'
 export function writeAtomicFile(file: string, content: string): void {
   const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
   const fd = fs.openSync(temporary, 'wx', 0o600)
-  try { fs.writeFileSync(fd, content); fs.fsyncSync(fd) }
-  finally { fs.closeSync(fd) }
-  try { fs.renameSync(temporary, file) }
-  catch (e) { fs.rmSync(temporary, { force: true }); throw e }
+  let replaced = false
+  try {
+    try { fs.writeFileSync(fd, content); fs.fsyncSync(fd) }
+    finally { fs.closeSync(fd) }
+    fs.renameSync(temporary, file)
+    replaced = true
+  } finally { if (!replaced) fs.rmSync(temporary, { force: true }) }
   try {
     const dir = fs.openSync(path.dirname(file), 'r')
     try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
@@ -43,6 +46,21 @@ export interface AuditRead { entries: AuditEntry[]; complete: boolean }
 const incomplete = (): AuditRead => ({ entries: [], complete: false })
 const isEntry = (e: unknown): e is AuditEntry => !!e && typeof e === 'object' && !Array.isArray(e)
 
+/** A JSON object of records. Only a missing file is empty: an unreadable, torn or non-object file
+ *  throws, so callers keep the state they have instead of treating it as an empty table. */
+function readTable<T>(file: string): Record<string, T> {
+  let text: string
+  try { text = fs.readFileSync(file, 'utf8') }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    throw new Error(`could not read ${file}: ${e instanceof Error ? e.message : e}`)
+  }
+  let value: unknown
+  try { value = JSON.parse(text) } catch (e) { throw new Error(`${file} is not valid JSON: ${e instanceof Error ? e.message : e}`) }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${file} does not hold a JSON object`)
+  return value as Record<string, T>
+}
+
 /** Most in-memory audit entries kept when there is no audit file: oldest are dropped past this. */
 export const MEM_AUDIT_MAX = 5000
 
@@ -60,8 +78,10 @@ export class WriteQueue {
 export interface Store {
   /** Create tables / directories. Called once before use. */
   init(): Promise<void>
+  /** Rejects when stored state exists but cannot be read; only absent state is empty. */
   loadRooms(): Promise<Record<string, OpenRepo>>
   saveRooms(all: Record<string, OpenRepo>): Promise<void>
+  /** Rejects when stored state exists but cannot be read; only absent state is empty. */
   loadSessions(): Promise<Record<string, StoredSession>>
   putSession(id: string, s: StoredSession): Promise<void>
   deleteSession(id: string): Promise<void>
@@ -99,13 +119,8 @@ export class FileStore implements Store {
     for (const f of [this.sessionsFile, this.roomsFile, this.auditFile]) if (f) fs.mkdirSync(path.dirname(f), { recursive: true })
   }
 
-  private readJson<T>(file: string | undefined): T | undefined {
-    if (!file || !fs.existsSync(file)) return undefined
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T } catch { return undefined }
-  }
-
   async loadRooms(): Promise<Record<string, OpenRepo>> {
-    const raw = this.readJson<Record<string, Partial<OpenRepo>>>(this.roomsFile) ?? {}
+    const raw = this.roomsFile ? readTable<Partial<OpenRepo>>(this.roomsFile) : {}
     const out: Record<string, OpenRepo> = {}
     for (const [k, v] of Object.entries(raw)) out[k] = { ...v, by: v.by, at: v.at ?? Date.now(), branches: v.branches ?? [] }
     return out
@@ -115,23 +130,25 @@ export class FileStore implements Store {
     return this.writes.run(async () => { if (this.roomsFile) writeAtomicFile(this.roomsFile, text) })
   }
 
+  /** The file is the source of truth (an operator may edit it); without one, this process's map is. */
   async loadSessions(): Promise<Record<string, StoredSession>> {
-    // Without a file, this map is the source of truth. Reload only persistent sessions so
-    // operator deletions still revoke logins during Auth's periodic reconciliation.
-    if (this.sessionsFile) this.sessions = this.readJson<Record<string, StoredSession>>(this.sessionsFile) ?? {}
-    return { ...this.sessions }
+    return { ...(this.sessionsFile ? readTable<StoredSession>(this.sessionsFile) : this.sessions) }
   }
-  /** Sessions hold GitHub tokens: the file is 0600. */
-  private writeSessions(): Promise<void> {
-    const text = JSON.stringify(this.sessions)
+  /** Read, change and atomically replace the 0600 file (sessions hold GitHub tokens). A file that
+   *  cannot be read is never replaced: the change is rejected and the file keeps what it holds. */
+  private changeSessions(change: (all: Record<string, StoredSession>) => void): Promise<void> {
     return this.writes.run(async () => {
-      if (!this.sessionsFile) return
-      fs.writeFileSync(this.sessionsFile, text, { mode: 0o600 })
-      fs.chmodSync(this.sessionsFile, 0o600)
+      if (!this.sessionsFile) { change(this.sessions); return }
+      const all = readTable<StoredSession>(this.sessionsFile)
+      change(all)
+      writeAtomicFile(this.sessionsFile, JSON.stringify(all))
     })
   }
-  putSession(id: string, s: StoredSession): Promise<void> { this.sessions[id] = s; return this.writeSessions() }
-  deleteSession(id: string): Promise<void> { delete this.sessions[id]; return this.writeSessions() }
+  putSession(id: string, s: StoredSession): Promise<void> {
+    const copy = { ...s }
+    return this.changeSessions(all => { all[id] = copy })
+  }
+  deleteSession(id: string): Promise<void> { return this.changeSessions(all => { delete all[id] }) }
 
   async audit(e: AuditEntry): Promise<void> {
     if (this.auditFile) { fs.appendFileSync(this.auditFile, JSON.stringify(e) + '\n'); return }

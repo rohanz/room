@@ -6,7 +6,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LOCAL, joinSession, leaveSession, setCredential, type Session } from '../src/index.js'
+import { LOCAL, credentialsPath, joinSession, leaveSession, setCredential, type Session } from '../src/index.js'
 import { createTools } from '../src/tools.js'
 import { readChoice } from '../src/choice.js'
 
@@ -25,7 +25,7 @@ beforeAll(async () => {
   for (let i = 0; i < 200; i++) { try { if ((await fetch(`${http()}/health`)).ok) break } catch { /* starting */ } await new Promise(r => setTimeout(r, 100)) }
   const device = (await (await post('/auth/device', {})).json() as { device: string }).device
   const { session } = await (await post('/auth/poll', { device, fakeLogin: 'rohanz' })).json() as { session: string }
-  setCredential(`ws://127.0.0.1:${port}`, { session, login: 'rohanz', at: Date.now() })
+  setCredential(credentialsPath(), `ws://127.0.0.1:${port}`, { session, login: 'rohanz', at: Date.now() })
   expect((await post('/rooms', { room: 'github.com/rohanz/x', session, schema: 2 })).ok).toBe(true)
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-move-server-')))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' })

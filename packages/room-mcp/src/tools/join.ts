@@ -9,9 +9,9 @@ import { NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, deriveRoomName, nor
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
-import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
+import { getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, browserViewLine, logout as doLogout, pollLogin, serverAuthConfig, startLogin } from '../session.js'
-import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { SHARE, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Ledger } from '../ledger.js'
 import type { ShareLevel } from '@room/roomd'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
@@ -36,7 +36,8 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean' }, force: { type: 'boolean' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Close for everyone only when asked: export history, then delete the room. Clone files stay.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } },
-  { name: 'room_export', annotations: RO, description: 'Export room history or a legacy archive as Markdown.',
+  // Creates directories and writes (or overwrites) the chosen Markdown path in the user's checkout.
+  { name: 'room_export', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, description: 'Export room history or a legacy archive as Markdown.',
     inputSchema: { type: 'object', properties: { room: str('legacy branch room'), path: str('output Markdown path') } } }
 ]
 
@@ -103,7 +104,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
     const config = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { server: typeof a.server === 'string' ? a.server : undefined, credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
-    configureCredentials(config.credentialsPath)
     ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath, teamServer: config.teamServer }
     return config
   }
@@ -112,27 +112,30 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const config = await configureLogin(a)
       const server = serverOf(a, config.server)
       if (server === LOCAL) return LOCAL_LOGIN
+      // The store is captured here and used throughout, even if another login selects a different one meanwhile.
+      const store = config.credentialsPath
       if (a.action === 'logout') {
-        setPending(server, undefined)
-        const r = await doLogout(server)
-        return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
+        setPending(store, server, undefined)
+        const r = await doLogout(store, server)
+        const unconfirmed = r.unconfirmed ? `; the server did not confirm ending the session (${r.unconfirmed}), so it may stay valid there until it expires` : ''
+        return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${unconfirmed}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
       }
       const cfg = await serverAuthConfig(server)
       if (!cfg.providers.length) return `${server} has no login provider: non-GitHub rooms are admitted by its shared token (or open), and github.com rooms cannot be joined there; nothing to log in to`
       const provider = a.provider === 'github' || a.provider === 'oidc' ? a.provider : undefined
       if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(', ')})`
-      const cred = getCredential(server)
-      const pending = getPending(server)
+      const cred = getCredential(store, server)
+      const pending = getPending(store, server)
       if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_login action=logout to switch accounts`
       if (pending && (!provider || provider === pending.provider)) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === 'number' ? a.wait : 90))
-        const r = await pollLogin(server, pending, { maxMs: wait * 1000 })
-        if ('login' in r) { setPending(server, undefined); return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
-        if ('error' in r) { setPending(server, undefined); return `login failed: ${r.error}. Call room_login to start again.` }
+        const r = await pollLogin(store, server, pending, { maxMs: wait * 1000 })
+        if ('login' in r) { setPending(store, server, undefined); return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
+        if ('error' in r) { setPending(store, server, undefined); return `login failed: ${r.error}. Call room_login to start again.` }
         return `still waiting: ${codeLine(pending)}`
       }
       const p = await startLogin(server, provider)
-      setPending(server, { ...p, startedAt: Date.now() })
+      setPending(store, server, { ...p, startedAt: Date.now() })
       return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
@@ -192,7 +195,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server
         const cfg = await serverAuthConfig(server)
-        const login = cfg.mode === 'device' ? getCredential(server)?.login : undefined
+        const login = cfg.mode === 'device' ? getCredential(resolved.credentialsPath, server)?.login : undefined
         if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`
       }
       if (choice.server !== LOCAL) {
@@ -249,8 +252,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { await doLeave(s) } catch (e) { rooms.add(s, 'primary'); return `cancelled, but couldn't leave ${s.roomName} (${message(e)}); you're in ${s.roomName}.` }
         return rollBack('the request was cancelled')
       }
+      let notRemembered = ''
       const remembered = choice.server === LOCAL ? choice.where : parseServer(choice.server).server
-      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, remembered, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
+      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) {
+        try { await writeChoice(dir, remembered, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) }
+        catch (e) { notRemembered = `WARN: joined, but this room choice could not be saved for this clone (${message(e)}); the next session follows the earlier remembered choice or the default, not this one.` }
+      }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
@@ -260,6 +267,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''}, clone ${s.dir})`]
       if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`)
       if (s.upgradeNote) { out.push(s.upgradeNote); delete s.upgradeNote }
+      if (notRemembered) out.push(notRemembered)
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone and its worktrees)' : choice.rule === 'env' ? resolved.whereEnv : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
       await offerTeamSharingDisclosure(s, ledger)
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER to your server URL and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
@@ -304,7 +312,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       rooms.remove(s)
       await doLeave(s)
       let forgot = ''
-      if (a.forget === true) { const had = await clearChoice(s.dir).catch(() => false); forgot = had ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
+      if (a.forget === true) {
+        try { forgot = await clearChoice(s.dir) ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
+        catch (e) { forgot = `; WARN: could not forget the remembered room choice for this clone (${e instanceof Error ? e.message : String(e)}); the next session may still follow it` }
+      }
       return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? '; worker process checks: ' + stopped.join('; ') : ''}${forgot}`
     },
     async room_close(a) {
@@ -317,9 +328,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const roomName = normalizeExplicitRoomName((await deriveRoomName(dir)).repo ?? config.room ?? '')
         if (!roomName) return `error: ${dir} has no origin remote; room_join needs a room name`
         const { server, token } = parseServer(config.server)
-        configureCredentials(config.credentialsPath)
         let auth
-        try { auth = await resolveAuth(server, roomName, config.token ?? token) }
+        try { auth = await resolveAuth(config.credentialsPath, server, roomName, config.token ?? token) }
         catch (e) {
           if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_close confirm=true afterward.`
           throw e

@@ -59,6 +59,22 @@ describe('admission: github.com rooms', () => {
     expect(await admitted(GH, {})).toMatchObject({ ok: false, status: 401, why: expect.stringContaining('room_login') })
   })
 
+  it('an unknown push answer (rate limit, timeout, malformed reply) is a 503 "unavailable", never "cannot push", and is asked again', async () => {
+    const auth = new Auth({ clientId: 'fake', production: false })
+    let answer: boolean | undefined = undefined, calls = 0
+    const admitted = makeAdmitted({ auth: { ...auth, providers: auth.providers, resolve: s => auth.resolve(s), fake: false }, canPush: async () => { calls++; return answer } })
+    const octo = await githubLogin(auth, 'octo')
+    const v = await admitted(GH, { session: octo })
+    expect(v).toMatchObject({ ok: false, status: 503 })
+    expect((v as { why: string }).why).toMatch(/could not confirm.*retry/)
+    expect((v as { why: string }).why).not.toMatch(/cannot push|write access/)
+    answer = true
+    expect(await admitted(GH, { session: octo })).toEqual({ ok: true, login: 'octo', provider: 'github' })
+    answer = false
+    expect(await admitted(GH, { session: octo })).toMatchObject({ ok: false, status: 403, why: expect.stringContaining('cannot push') })
+    expect(calls).toBe(3)
+  })
+
   it('a github.com room named without a branch is still held to the GitHub rules, never the shared-token ones', async () => {
     const admitted = makeAdmitted({ auth: new Auth({}), token: 'shared', canPush: async () => true })
     expect(await admitted('github.com/o/r', { token: 'shared' })).toMatchObject({ ok: false, status: 401 })
@@ -168,7 +184,7 @@ it('session logout and expiry clear the removed holder permission entries', asyn
   for (const reason of ['logout', 'expiry']) {
     const session = await githubLogin(auth, 'holder')
     await checker('fake:holder', 'o/r'); await checker('fake:holder', 'o/r')
-    if (reason === 'logout') auth.logout(session)
+    if (reason === 'logout') await auth.logout(session)
     else { now += 1001; auth.sweepSessions() }
     await checker('fake:holder', 'o/r')
   }

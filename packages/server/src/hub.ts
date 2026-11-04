@@ -42,9 +42,13 @@ async function writeDurable(file: string, content: object): Promise<void> {
   await ensureDurableDirectory(dir)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   const handle = await fsp.open(temp, 'wx', 0o600)
-  try { await handle.writeFile(JSON.stringify(content) + '\n'); await handle.sync() }
-  finally { await handle.close() }
-  try { await fsp.rename(temp, file) } catch (e) { await fsp.rm(temp, { force: true }); throw e }
+  let replaced = false
+  try {
+    try { await handle.writeFile(JSON.stringify(content) + '\n'); await handle.sync() }
+    finally { await handle.close() }
+    await fsp.rename(temp, file)
+    replaced = true
+  } finally { if (!replaced) await fsp.rm(temp, { force: true }) }
   await syncDirectory(dir)
 }
 

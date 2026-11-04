@@ -19,6 +19,8 @@ export interface ExclusionRules {
   readonly roomIgnore: RoomIgnore
   readonly sizeCap: number
   readonly budget: number
+  /** No `.roomignore` policy has been read yet (unreadable or oversized at startup): publish no file text. */
+  readonly unavailable: boolean
   /** Changes whenever the ignore file, size cap, or budget changes. */
   readonly id: string
 }
@@ -52,8 +54,15 @@ export function defaultIgnoredPath(relpath: string): boolean {
 export const TRACKED_ONLY_LOCKFILES = new Set(['uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'Cargo.lock', 'Gemfile.lock', 'composer.lock', 'go.sum'])
 export const isTrackedOnlyLockfile = (relpath: string): boolean => TRACKED_ONLY_LOCKFILES.has(relpath.slice(relpath.lastIndexOf('/') + 1))
 
-export function rulesFromText(text: string, sizeCap: number, budget: number): ExclusionRules {
-  return Object.freeze({ roomIgnore: parseRoomIgnore(text), sizeCap, budget, id: createHash('sha256').update(JSON.stringify([text, sizeCap, budget])).digest('hex') })
+/** `text` undefined means the `.roomignore` policy is unknown; such rules authorize no file text. */
+export function rulesFromText(text: string | undefined, sizeCap: number, budget: number): ExclusionRules {
+  return Object.freeze({ roomIgnore: parseRoomIgnore(text ?? ''), sizeCap, budget, unavailable: text === undefined,
+    id: createHash('sha256').update(JSON.stringify([text ?? null, sizeCap, budget])).digest('hex') })
+}
+
+/** Whether these inputs may publish any manifest entry or file text at all. */
+export function publishesFiles(inputs: PublicationInputs): boolean {
+  return inputs.policy.level !== 'intent' && inputs.policy.publisher && !inputs.rules.unavailable
 }
 
 /** A checkout observation relative to the captured base. No disk I/O occurs in plan(). */
@@ -96,7 +105,7 @@ function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: 
   const textPaths: string[] = []
   const excludedReasons = new Map<string, 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile'>()
   const policy = inputs.policy
-  if (policy.level === 'intent' || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons }
+  if (!publishesFiles(inputs)) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons }
   let used = 0
   let baseUsed = 0
   for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {

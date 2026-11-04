@@ -26,6 +26,7 @@ import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' wi
 import { runDoctor } from './doctor.js'
 import { admitWorkerEnvironment, ownWorkerNames } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
+import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
 export const RELEASE_VERSION = pluginManifest.version
@@ -34,7 +35,7 @@ export { AGENT_INSTRUCTIONS } from './prompt.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
 export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer, serverAuthMode, serverShareMax, requestedShare, resolveAuth, startLogin, pollLogin, logout } from './session.js'
-export { credentialsPath, configureCredentials, getCredential, setCredential, removeCredential } from './credentials.js'
+export { credentialsPath, getCredential, setCredential, removeCredential } from './credentials.js'
 export type { Session, JoinOptions } from './session.js'
 export { resolveConfig } from './config.js'
 export { HubClient, hubTransport } from './hub-client.js'
@@ -83,7 +84,9 @@ async function main() {
   let closing = false
   const timing = new ToolTimingTracker({ log })
   registerPrepareGitTiming()
-  const watchdog = startEventLoopWatchdog(timing, { log })
+  const cpu = new CpuWatchdog({ busy: () => timing.busy, log, profileDir: () => { const common = roomLogDir(); return common ? path.join(common, 'room', 'profiles') : undefined } })
+  const watchdog = startEventLoopWatchdog(timing, { log, onTick: () => { void cpu.sample() } })
+  setLatestCpuProfile(() => cpu.latest)
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const mcp = new Server(
     { name: 'room', version: RELEASE_VERSION },

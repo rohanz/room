@@ -1,3 +1,4 @@
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -12,7 +13,24 @@ import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 
 let root: string | undefined
-afterEach(() => { vi.restoreAllMocks(); if (root) fs.rmSync(root, { recursive: true, force: true }); root = undefined })
+let startsPreviewMaintenance = false
+afterEach(async () => {
+  if (root) {
+    if (startsPreviewMaintenance) await disposePreviewFixture(root)
+    else await fs.promises.rm(root, { recursive: true, force: true })
+  }
+  vi.restoreAllMocks()
+  root = undefined
+  startsPreviewMaintenance = false
+})
+
+function previewFor(state: HandlerState) {
+  const preview = handlers(state).room_preview_merge
+  return (args: Record<string, unknown>) => {
+    if (args.run) startsPreviewMaintenance = true
+    return preview(args)
+  }
+}
 
 function fixture() {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-snapshot-'))
@@ -45,7 +63,7 @@ function fixture() {
     myWorkers: () => [], baseFor: () => base, now: () => Date.now() + offset,
     ctx: { sleep: async (ms: number) => { offset += ms; await new Promise<void>(resolve => setImmediate(resolve)) } },
   } as unknown as HandlerState
-  return { room, session, state, publish, base, preview: handlers(state).room_preview_merge }
+  return { room, session, state, publish, base, preview: previewFor(state) }
 }
 
 async function waitForFile(file: string) {

@@ -7,11 +7,13 @@
  */
 export interface RoomIgnore { ignores(relpath: string): boolean; readonly patterns: number }
 
-export function parseRoomIgnore(text: string): RoomIgnore {
+/** Throws past `maxPatterns`, before compiling the rest. */
+export function parseRoomIgnore(text: string, maxPatterns = Infinity): RoomIgnore {
   const rules: { re: RegExp; negate: boolean }[] = []
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '')
     if (!line || line.startsWith('#')) continue
+    if (rules.length >= maxPatterns) throw new TooManyPatterns(maxPatterns)
     const negate = line.startsWith('!')
     let pat = negate ? line.slice(1) : line
     const dirOnly = pat.endsWith('/')
@@ -41,4 +43,12 @@ export function parseRoomIgnore(text: string): RoomIgnore {
       return ignored
     },
   }
+}
+
+/** Control-file limits: `.roomignore` is read whole and compiled to regexes on every change. */
+export const ROOMIGNORE_MAX_BYTES = 64 * 1024
+export const ROOMIGNORE_MAX_PATTERNS = 2000
+
+class TooManyPatterns extends Error {
+  constructor(readonly limit: number) { super(`too many patterns (over ${limit})`) }
 }

@@ -114,10 +114,9 @@ describe('device-flow auth', () => {
     const gh2 = fakeGitHub({ tokenResponses: [{ access_token: 'gho_2' }], login: 'octo' })
     const c = new Auth({ clientId: 'cid', fetch: gh2.fetch, sessionsFile: file })
     const { session: s2 } = await c.poll((await c.startDevice()).device) as { session: string }
-    expect(c.logout(s2)).toMatchObject({ login: 'octo' })
-    expect(c.logout(s2)).toBeUndefined()
+    expect(await c.logout(s2)).toEqual({ removed: expect.objectContaining({ login: 'octo' }) })
+    expect(await c.logout(s2)).toEqual({})
     expect(c.resolve(s2)).toBeUndefined()
-    await new Promise(r => setTimeout(r, 10)) // session writes are queued, in order
     expect(fs.readFileSync(file, 'utf8')).not.toContain('gho_2')
   })
 
@@ -148,10 +147,88 @@ describe('device-flow auth', () => {
     expect(auth.resolve(session)).toMatchObject({ login: 'octo' })
     await auth.reconcileSessions()
     expect(removed).toEqual([])
-    auth.logout(session)
+    await auth.logout(session)
     await auth.reconcileSessions()
     expect(auth.peek(session)).toBeUndefined()
     expect(removed).toEqual([session])
+  })
+
+  it('keeps sessions and reports storage unavailable when the sessions file cannot be read', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-auth-corrupt-'))
+    const file = path.join(dir, 'sessions.json')
+    try {
+      const removed: string[] = []
+      const auth = new Auth({ clientId: 'fake', sessionsFile: file, onSessionRemoved: id => removed.push(id) })
+      await auth.ready
+      const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
+      await new Promise(r => setTimeout(r, 10))
+      const good = fs.readFileSync(file, 'utf8')
+      fs.writeFileSync(file, good.slice(0, 10)) // a torn or half-copied file
+      expect(await auth.reconcileSessions()).toMatchObject({ ok: false, error: expect.stringMatching(/sessions\.json/) })
+      expect(removed).toEqual([])
+      expect(auth.peek(session)).toMatchObject({ login: 'octo' })
+      fs.writeFileSync(file, good)
+      expect(await auth.reconcileSessions()).toEqual({ ok: true })
+      expect(auth.peek(session)).toMatchObject({ login: 'octo' })
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('adopts stored sessions once a store that failed at startup becomes readable', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-auth-late-'))
+    const file = path.join(dir, 'sessions.json')
+    try {
+      const good = JSON.stringify({ s1: { login: 'octo', provider: 'github', ghToken: 'gho_1', at: Date.now() } })
+      fs.writeFileSync(file, good.slice(0, 10))
+      const auth = new Auth({ clientId: 'fake', sessionsFile: file })
+      await auth.ready
+      expect(auth.peek('s1')).toBeUndefined()
+      fs.writeFileSync(file, good)
+      expect(await auth.reconcileSessions()).toEqual({ ok: true })
+      expect(auth.peek('s1')).toMatchObject({ login: 'octo' })
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('logout reports a retryable failure until the deletion is persisted', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-auth-logout-'))
+    const file = path.join(dir, 'sessions.json')
+    try {
+      const removed: string[] = []
+      const auth = new Auth({ clientId: 'fake', sessionsFile: file, onSessionRemoved: id => removed.push(id) })
+      await auth.ready
+      const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
+      await new Promise(r => setTimeout(r, 10))
+      const good = fs.readFileSync(file, 'utf8')
+      fs.writeFileSync(file, good.slice(0, 10))
+      const failed = await auth.logout(session)
+      expect(failed).toEqual({ removed: expect.objectContaining({ login: 'octo' }), error: 'the logout could not be saved yet; retry' })
+      // Sockets close and the session stops working at once; the durable deletion is still owed.
+      expect(removed).toEqual([session])
+      expect(auth.peek(session)).toBeUndefined()
+      fs.writeFileSync(file, good)
+      // A restart now would reload the token: logout is retried, not reported as done.
+      expect(await auth.logout(session)).toEqual({ removed: expect.objectContaining({ login: 'octo' }) })
+      expect(fs.readFileSync(file, 'utf8')).not.toContain(session)
+      expect(removed).toEqual([session])
+      expect(await auth.logout(session)).toEqual({})
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('retries owed logout deletions during reconciliation', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-auth-owed-'))
+    const file = path.join(dir, 'sessions.json')
+    try {
+      const auth = new Auth({ clientId: 'fake', sessionsFile: file })
+      await auth.ready
+      const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
+      await new Promise(r => setTimeout(r, 10))
+      const good = fs.readFileSync(file, 'utf8')
+      fs.writeFileSync(file, good.slice(0, 10))
+      expect((await auth.logout(session)).error).toBeTruthy()
+      fs.writeFileSync(file, good)
+      expect(await auth.reconcileSessions()).toEqual({ ok: true })
+      expect(fs.readFileSync(file, 'utf8')).not.toContain(session)
+      expect(auth.peek(session)).toBeUndefined()
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('notices an operator deleting a persisted session', async () => {

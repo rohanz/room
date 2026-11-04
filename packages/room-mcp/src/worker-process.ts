@@ -144,22 +144,26 @@ export function mcpStopReason(mcpLogFile: string, since: number): string | undef
 const errorMessage = (event: HostEvent): string | undefined =>
   event.error && typeof event.error === 'object' && typeof event.error.message === 'string' ? event.error.message : undefined
 
-/** Five non-empty lines of the run's log suffix, host events reduced to their text. */
+/**
+ * The model's last words in this run: up to five non-empty texts from parsed host events (Claude `assistant` and
+ * `result`, Codex `agent_message` items), capped at 600 characters. Plain lines are never returned: the log also
+ * holds stderr and command output, and this text can reach room messages through a no-report summary.
+ * '' when the run has no such event or the log cannot be read.
+ */
 export function workerLogTail(logFile: string, logStart = 0): string {
   try {
     return runLogSuffix(logFile, logStart).map(l => {
       const line = l.trim()
-      if (!line.startsWith('{')) return line
+      if (!line.startsWith('{')) return ''
       try {
         const event = JSON.parse(line) as HostEvent
         if (event.type === 'assistant') return assistantText(event)
         if (event.type === 'result') return typeof event.result === 'string' ? event.result.trim() : ''
         if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') return event.item.text.trim()
-        if (errorMessage(event)) return errorMessage(event)!.trim()
-        return typeof event.message === 'string' ? event.message.trim() : ''
+        return ''
       } catch { return '' }
-    }).filter(Boolean).slice(-5).join('\n').slice(-600)
-  } catch { return '(log unavailable)' }
+    }).map(text => stripVTControlCharacters(text)).filter(Boolean).slice(-5).join('\n').slice(-600)
+  } catch { return '' }
 }
 
 /** The host's own account of why a run failed; `transient` when a retry later can succeed. */

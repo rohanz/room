@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -40,6 +40,62 @@ describe('FileStore', () => {
     expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
     fs.rmSync(path.join(dir, 'audit.log'))
     expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: true })
+  })
+
+  it('treats only an absent file as empty: unreadable or corrupt state is an error, never an empty map', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-store-corrupt-'))
+    try {
+      const s = new FileStore({ dir }); await s.init()
+      expect(await s.loadSessions()).toEqual({})
+      expect(await s.loadRooms()).toEqual({})
+      for (const bad of ['{"s1": {"login": "ann"', '[1]', 'null', '7']) {
+        fs.writeFileSync(path.join(dir, 'sessions.json'), bad)
+        fs.writeFileSync(path.join(dir, 'rooms.json'), bad)
+        await expect(s.loadSessions()).rejects.toThrow(/sessions\.json/)
+        await expect(s.loadRooms()).rejects.toThrow(/rooms\.json/)
+      }
+      // A directory where the file should be is an I/O failure, not absence.
+      fs.rmSync(path.join(dir, 'sessions.json')); fs.mkdirSync(path.join(dir, 'sessions.json'))
+      await expect(s.loadSessions()).rejects.toThrow(/sessions\.json/)
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('never replaces a sessions file it cannot read', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-store-keep-'))
+    try {
+      const s = new FileStore({ dir }); await s.init()
+      const file = path.join(dir, 'sessions.json')
+      fs.writeFileSync(file, '{"s1": {"login": "ann"')
+      await expect(s.putSession('s2', { login: 'bob', provider: 'oidc', at: 1 })).rejects.toThrow(/sessions\.json/)
+      await expect(s.deleteSession('s1')).rejects.toThrow(/sessions\.json/)
+      expect(fs.readFileSync(file, 'utf8')).toBe('{"s1": {"login": "ann"')
+      // Once it is readable again, writes build on what the file holds, including an operator's edits.
+      fs.writeFileSync(file, JSON.stringify({ s1: { login: 'ann', provider: 'oidc', at: 1 } }))
+      await s.putSession('s2', { login: 'bob', provider: 'oidc', at: 2 })
+      expect(Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')))).toEqual(['s1', 's2'])
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('replaces the sessions file atomically and leaves no temporary file when a write fails', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-store-atomic-'))
+    try {
+      const s = new FileStore({ dir }); await s.init()
+      const file = path.join(dir, 'sessions.json')
+      await s.putSession('s1', { login: 'ann', provider: 'oidc', at: 1 })
+      const before = fs.readFileSync(file, 'utf8')
+      const renames: string[] = []
+      const realRename = fs.renameSync.bind(fs)
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => { renames.push(String(to)); realRename(from, to) })
+      await s.putSession('s2', { login: 'bob', provider: 'oidc', at: 2 })
+      expect(renames).toEqual([file])
+      const fsync = vi.spyOn(fs, 'fsyncSync').mockImplementation(() => { throw Object.assign(new Error('disk gone'), { code: 'EIO' }) })
+      await expect(s.putSession('s3', { login: 'cy', provider: 'oidc', at: 3 })).rejects.toThrow('disk gone')
+      await expect(s.saveRooms({ 'local/d': { at: 1, branches: [] } })).rejects.toThrow('disk gone')
+      fsync.mockRestore(); rename.mockRestore()
+      expect(fs.readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ ...JSON.parse(before), s2: { login: 'bob', provider: 'oidc', at: 2 } })
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    } finally { vi.restoreAllMocks(); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('works in memory when no directory is given', async () => {

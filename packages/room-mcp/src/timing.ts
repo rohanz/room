@@ -209,17 +209,20 @@ export class ToolTimingTracker {
     }
   }
   runningAt(now = this.now()): string[] { return [...this.active].map(timing => `${timing.name} ${ms(now - timing.started)}`) }
+  get busy(): boolean { return this.active.size > 0 }
 }
 
+/** `onTick` (the CPU watchdog) samples on the same unrefed timer. */
 export function startEventLoopWatchdog(tracker: ToolTimingTracker, {
-  now = () => performance.now(), log, every = setInterval, clear = clearInterval,
-}: { now?: Clock; log: Logger; every?: typeof setInterval; clear?: typeof clearInterval }): { stop(): void } {
+  now = () => performance.now(), log, every = setInterval, clear = clearInterval, onTick,
+}: { now?: Clock; log: Logger; every?: typeof setInterval; clear?: typeof clearInterval; onTick?: () => void }): { stop(): void } {
   let expected = now() + EVENT_LOOP_SAMPLE_MS
   const timer = every(() => {
     const at = now()
     const lag = at - expected
     expected = at + EVENT_LOOP_SAMPLE_MS
     if (lag >= EVENT_LOOP_LAG_MS) log(`event loop lag ${ms(lag)}: in flight ${tracker.runningAt(at).join(', ') || 'none'}`)
+    onTick?.()
   }, EVENT_LOOP_SAMPLE_MS)
   timer.unref()
   return { stop: () => clear(timer) }

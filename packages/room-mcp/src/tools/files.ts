@@ -27,13 +27,15 @@ import { previewCheck, previewPhase } from '../timing.js'
 import { evictPreviewLru, previewCapBytes, touchPreview, tryPreviewLock, type PreviewUnlock } from '../preview-cache.js'
 import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { leadsCheckout } from '../checkout-lead.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_read', annotations: RO, description: 'Read peer text/diffs; omit path with diff=true for all diffs.',
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, person: { type: 'string' }, diff: { type: 'boolean' }, cursor: { type: 'string' } } } },
   { name: 'room_impact', annotations: RO, description: 'Find consumers before public API edits.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
-  { name: 'room_preview_merge', annotations: RO, description: 'For "will our changes work together?" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.',
+  // `run` executes a caller-supplied shell command with this process's environment: not read-only, and it may reach anything.
+  { name: 'room_preview_merge', annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }, description: 'For "will our changes work together?" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.',
     inputSchema: { type: 'object', properties: { people: strs('names; worker collect order'), person: { type: 'string' }, includeOffline: { type: 'boolean' }, run: str('tests; stops at 5 min/4 MB'), allowSlow: { type: 'boolean', description: 'retry timed-out command' }, resolve: { type: 'boolean', description: 'superset resolution' } } } }
 ]
 
@@ -215,7 +217,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
     async room_impact(a) {
       const s = S()
-      if (!s.graph) return 'error: no symbol graph in this session'
+      if (!s.graph) return leadsCheckout(s.policyStore?.policy)
+        ? 'error: no symbol graph in this session'
+        : `error: no symbol graph in this session: ${s.policyStore.policy.publisherName ?? 'another session'} leads this checkout and its session indexes it; this session starts indexing if it takes over`
       const g = s.graph.graph
       const available = typeof a.symbol === 'string' && a.symbol
         ? g.definersOf(a.symbol).length > 0 || g.usersOf(a.symbol).length > 0

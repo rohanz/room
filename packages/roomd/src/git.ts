@@ -145,7 +145,30 @@ async function gitShowManyImpl(dir: string, base: string, relpaths: Iterable<str
     else batch.push(p)
   }
   if (!batch.length) return out
-  const timeout = wholeTreeTimeoutMs(batch.length, configuredTimeoutMs)
+  const objects = await gitCatFileBatch(dir, batch.map(p => blobs ? blobs.get(p)!.hash : `${base}:${p}`), configuredTimeoutMs)
+  for (const [i, p] of batch.entries()) {
+    const object = objects[i]
+    let text: string | undefined
+    if (object?.type === 'blob') {
+      if (!blobs) text = object.bytes.toString('utf8')
+      else {
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(object.bytes) }
+        catch { /* Invalid text is unavailable, never replacement characters or an empty base. */ }
+      }
+    }
+    out.set(p, text)
+  }
+  return out
+}
+
+/**
+ * Objects (ids or `<rev>:<path>` names without newlines) from one `git cat-file --batch`, in input
+ * order; a missing or ambiguous name is undefined. Callers bound the total size, e.g. by checking
+ * sizes with `--batch-check` first: the whole output is held in memory.
+ */
+export async function gitCatFileBatch(dir: string, objects: readonly string[], configuredTimeoutMs?: number): Promise<({ type: string; bytes: Buffer } | undefined)[]> {
+  if (!objects.length) return []
+  const timeout = wholeTreeTimeoutMs(objects.length, configuredTimeoutMs)
   const done = observeGit(['cat-file', '--batch'])
   const raw = await new Promise<Buffer>((resolve, reject) => {
     const child = spawn('git', ['cat-file', '--batch'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -157,26 +180,19 @@ async function gitShowManyImpl(dir: string, base: string, relpaths: Iterable<str
     child.on('error', e => { clearTimeout(timer); done(); reject(e) })
     child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr.trim() || `exit ${code}`}`)) })
     child.stdin.on('error', () => { /* reported by close */ })
-    child.stdin.end(batch.map(p => `${blobs ? blobs.get(p)!.hash : `${base}:${p}`}\n`).join(''))
+    child.stdin.end(objects.map(object => `${object}\n`).join(''))
   })
+  const out: ({ type: string; bytes: Buffer } | undefined)[] = []
   let at = 0
-  for (const p of batch) {
+  for (const object of objects) {
     const eol = raw.indexOf(0x0a, at)
+    if (eol < 0) throw new Error(`git cat-file --batch output ended before ${object}`)
     const header = raw.subarray(at, eol).toString()
     at = eol + 1
     const [, type, size] = header.split(' ')
-    if (header.endsWith(' missing') || header.endsWith(' ambiguous') || size === undefined) { out.set(p, undefined); continue }
+    if (header.endsWith(' missing') || header.endsWith(' ambiguous') || size === undefined) { out.push(undefined); continue }
     const n = Number(size)
-    const bytes = raw.subarray(at, at + n)
-    let text: string | undefined
-    if (type === 'blob') {
-      if (!blobs) text = bytes.toString('utf8')
-      else {
-        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
-        catch { /* Invalid text is unavailable, never replacement characters or an empty base. */ }
-      }
-    }
-    out.set(p, text)
+    out.push({ type, bytes: raw.subarray(at, at + n) })
     at += n + 1
   }
   return out

@@ -240,16 +240,26 @@ describe('GraphIndex overlay events', () => {
       try {
         gi.start(); await gi.whenIdle()
         await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')!.paths.includes('utils.py'))
+        // Parser/Git startup stays real; control only the publication clock and deadline.
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
         writeFileSync(join(dir, 'utils.py'), 'def validate_token(secret_customer):\n    return secret_customer\n')
         const head = room.manifestHead.get('Rohan')!
         room.manifestHead.set('Rohan', { ...head, excluded: [digestPath(room.ensureRoomSalt(), 'utils.py')], rev: head.rev + 1, semRev: head.semRev + 1 })
         expect(room.manifest.get(key)!.has('utils.py')).toBe(false)
         expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
         await gi.whenIdle()
-        await new Promise(resolve => setTimeout(resolve, minPublishMs === 0 ? 200 : 20_150))
+        // Drain the real head-change immediate before advancing the publication scheduler.
+        await new Promise<void>(resolve => setImmediate(resolve))
+        if (minPublishMs === undefined) expect(room.graphs.get('Rohan')?.status).toBe('indexing')
+        await vi.advanceTimersByTimeAsync(20_150)
+        await gi.whenIdle()
+        await new Promise<void>(resolve => setImmediate(resolve))
+        // Withdrawal stamps provenance synchronously but leaves 'indexing'; ready proves publication finished.
+        expect(room.graphs.get('Rohan')?.status).toBe('ready')
+        expect(room.graphs.get('Rohan')?.sourceRev).toBe(room.manifestHead.get('Rohan')?.rev)
         expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
         expect(JSON.stringify(room.graphs.get('Rohan'))).not.toContain('secret_customer')
-      } finally { gi.stop(); room.doc.destroy() }
+      } finally { gi.stop(); vi.useRealTimers(); room.doc.destroy() }
     }, 25_000)
   it('M1 rejects a published signature when its holder epoch changes during the base read', async () => {
     const room = new RoomDoc()

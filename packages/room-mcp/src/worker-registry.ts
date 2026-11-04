@@ -165,10 +165,6 @@ export function workerCarried(dir: string, env: NodeJS.ProcessEnv = process.env)
   if (!id || !safeId(id)) return undefined
   try { return registrySnapshotForDir(dir).read(id) } catch { return undefined }
 }
-/**
- * A run that exited cleanly without room_done gets the evidence from its log: the no-report summary
- * carries the log tail, and either form names background shell tasks its exit killed (count only).
- */
 /** Where the host writes the worker's log; an older record's owned worktree sits beside it in `.room/workers`. */
 export function workerLogFile(record: Pick<WorkerRecord, 'dir' | 'tag' | 'logFile'>): string {
   return record.logFile ?? path.join(path.dirname(record.dir), `${record.tag}.log`)
@@ -180,13 +176,22 @@ export function backgroundAtExit(record: Pick<WorkerRecord, 'dir' | 'tag' | 'hos
   return killed ? ` — background work was still running (${killed} background task(s) killed at exit)` : ''
 }
 
+/**
+ * A run that exited cleanly without room_done gets the evidence from its log: the no-report summary names the
+ * log path and the model's own parsed final text (never raw lines, see workerLogTail), and either form names
+ * background shell tasks its exit killed (count only).
+ */
 function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): WorkerStatusResult {
   const run = status.run
   const resumedWithoutDone = status.status === 'failed' && status.exitCode === 0 && run?.mode === 'resume'
   if (!run || !status.noReport && !resumedWithoutDone) return status
   const logFile = workerLogFile(record)
   const background = backgroundAtExit(record, run)
-  if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
+  if (status.noReport) {
+    // This summary is published to the room: only structured facts, the log path and the model's own parsed text.
+    const said = workerLogTail(logFile, run.logStart)
+    return { ...status, summary: `ended without a report${background}; log: ${logFile}${said ? `; its last words: ${said}` : ''}` }
+  }
   return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
 }
 

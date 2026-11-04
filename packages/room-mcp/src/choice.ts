@@ -113,9 +113,14 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
   }
 }
 
-/** Forget the destination and tags. The separate sharing baseline survives room_leave. */
+/**
+ * Forget the destination and tags. The separate sharing baseline survives room_leave.
+ * Resolves false only when nothing was remembered; any other failure rejects, so a caller never
+ * mistakes a choice that is still on disk for an absent one.
+ */
 export async function clearChoice(dir: string): Promise<boolean> {
-  try { fs.rmSync(await choiceFile(dir)); return true } catch { return false }
+  try { fs.rmSync(await choiceFile(dir)); return true }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error }
 }
 
 /** One word for humans: "local" or "team", else the URL. */
