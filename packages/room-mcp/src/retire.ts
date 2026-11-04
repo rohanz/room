@@ -71,7 +71,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     if (!outcome || !current()) continue
     // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
     // the lead can copy it or explicitly discard it, exactly as manual collection does.
-    try { if ((await ignoredWorkerArtifacts(w)).length) continue }
+    try { if ((await ignoredWorkerArtifacts(w, s.dir)).length) continue }
     catch { continue }
     const reported = registry.reports(record.id).flatMap(report => report.done?.changed ?? [])
     const files = [...new Set([...manifestPaths(s.room, w.name), ...reported])].sort()

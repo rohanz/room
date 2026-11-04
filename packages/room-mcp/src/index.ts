@@ -18,7 +18,7 @@ import { offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
 import { admitCodexThread } from './session.js'
-import { createSessionBinding } from './binding.js'
+import { CODEX_WORKER_BIND_WAIT_MS, createSessionBinding, isCodexExecWorker } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { codexThreadFromMeta, codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import { PresenceEnd, attachingParentReader, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
@@ -209,6 +209,8 @@ async function main() {
       const autoJoin = new AutoJoin({
         local: chosen === LOCAL,
         log,
+        // Joining before the thread id is known would rebind (leave and rejoin) as soon as it arrives.
+        ...(isCodexExecWorker() ? { bindWait: { bound: () => !!sessionBinding.bound(), ms: CODEX_WORKER_BIND_WAIT_MS } } : {}),
         async attempt(target) {
           const root = await joinableRoot(dir)
           // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.

@@ -1,6 +1,6 @@
 import type { Baseline } from '@room/roomd/baseline'
 import { describe, expect, it, vi } from 'vitest'
-import { RoomDoc, formatMsg, memorySnapshot, participantRecord, snapshot } from '@room/shared'
+import { RoomDoc, formatMsg, memorySnapshot, participantRecord, snapshot, supersededConflictNotices } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId, peerNoticeId } from '../src/conflict-set.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
@@ -49,10 +49,11 @@ describe('ConflictSlots', () => {
     const key = slotKey('a', 'merge', 'b', 'x')
     await slots.settle(key, { status: 'conflict', inputs: 'i', factId: 'f', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
     expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-    expect(post).toHaveBeenCalledWith(expect.anything(), expect.anything(), { id: noticeId(key, 1), auto: true })
+    const id = peerNoticeId('a', 'b', 1, [{ path: 'x', epoch: 1 }], [])
+    expect(post).toHaveBeenCalledWith(expect.anything(), expect.anything(), { id, auto: true })
     await slots.replay('a')
     expect(post).toHaveBeenCalledTimes(2)
-    expect(post.mock.calls[1][2].id).toBe(noticeId(key, 1))
+    expect(post.mock.calls[1][2].id).toBe(id)
   })
 
   it('keeps a conflict through unknown and advances its epoch only after clean', async () => {
@@ -68,7 +69,9 @@ describe('ConflictSlots', () => {
     await slots.settle(key, { ...evaluation, status: 'clean' })
     await slots.settle(key, { ...evaluation, status: 'conflict' })
     expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ epoch: 2, status: 'conflict' })
-    expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), expect.stringMatching(/^cf:.*:clean$/), noticeId(key, 2)])
+    // Clearing ends the peer episode; the file's next conflict opens a new one.
+    expect(post.mock.calls.map(c => c[2].id)).toEqual([peerNoticeId('a', 'b', 1, [{ path: 'x', epoch: 1 }], []),
+      peerNoticeId('a', 'b', 1, [], [{ path: 'x', epoch: 1 }]), peerNoticeId('a', 'b', 2, [{ path: 'x', epoch: 2 }], [])])
   })
 
   it('keeps hashless possible inputs stable when only edit time changes', async () => {
@@ -103,7 +106,9 @@ describe('ConflictSlots', () => {
     await slots.settle(key, { ...base, status: 'unknown', inputs: '3' })
     await slots.settle(key, { ...base, status: 'conflict', inputs: '4' })
     expect(slots.get(key)?.epoch).toBe(2)
-    expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), expect.stringMatching(/^cf:.*:clean$/), noticeId(key, 2)])
+    // Clearing ends the peer episode; the file's next conflict opens a new one.
+    expect(post.mock.calls.map(c => c[2].id)).toEqual([peerNoticeId('a', 'b', 1, [{ path: 'x', epoch: 1 }], []),
+      peerNoticeId('a', 'b', 1, [], [{ path: 'x', epoch: 1 }]), peerNoticeId('a', 'b', 2, [{ path: 'x', epoch: 2 }], [])])
   })
 
   it('describes the held owner instead of blaming the other participant', async () => {
@@ -2322,5 +2327,148 @@ describe('worker pair baselines', () => {
       expect(r.status).not.toBe('conflict')
       expect(r.notices).toEqual([])
     } finally { f.room.doc.destroy(); f.cleanup() }
+  })
+})
+
+describe('per-peer merge notices', () => {
+  const paths = Array.from({ length: 13 }, (_, i) => `src/f${String(i + 1).padStart(2, '0')}.ts`)
+  function fixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'room-peer-'))
+    const run = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
+    run('init', '-q'); run('config', 'user.email', 't@t'); run('config', 'user.name', 't')
+    mkdirSync(join(dir, 'src'))
+    for (const path of paths) writeFileSync(join(dir, path), 'one\ntwo\nthree\n')
+    run('add', '.'); run('commit', '-qm', 'init')
+    const base = run('rev-parse', 'HEAD')
+    const room = new RoomDoc()
+    room.ensureRoomSalt()
+    const states = new Map<number, unknown>()
+    let next = 1
+    for (const name of ['A', 'B', 'C']) {
+      epochPublication(room, name, base, 1)
+      room.participants.set(`${name}\0id`, { name, kind: 'agent' })
+      states.set(next++, { user: { name, kind: 'agent' }, sessionId: `session-${name}` })
+      room.manifestHead.set(name, { base, fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+      room.manifest.set(manifestKey(name, '1'), new Y.Map())
+    }
+    let rev = 1
+    /** Publish `name`'s version of each path: line two replaced by `text`. */
+    const edit = (name: string, files: string[], text: string) => {
+      rev++
+      for (const path of files) {
+        const content = `one\n${text}\nthree\n`
+        room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(content), at: 1, fence: '1' })
+        room.setOverlay(manifestKey(name, '1'), path, content)
+      }
+      room.manifestHead.set(name, { ...room.manifestHead.get(name)!, rev, semRev: rev })
+    }
+    const posted: any[] = []
+    let seq = 0
+    const post = vi.fn().mockImplementation((from, body, opts) => {
+      const msg = { ...body, id: opts.id, from: from.name, fromKind: from.kind, at: ++seq, seq }
+      if (!posted.some(m => m.id === msg.id)) posted.push(msg)
+      return Promise.resolve({ ok: true, msg })
+    })
+    const session = { room, awareness: { getStates: () => states } as unknown as Awareness,
+      provider: { synced: true, on() {}, off() {} }, me: { name: 'A', kind: 'agent' }, dir, post,
+      lease: { fence: () => '1' } } as unknown as Session
+    const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined)
+    // The merge budget spaces real merges over seconds; a pass is still one pass without it.
+    vi.spyOn(set as unknown as { budget(): Promise<void> }, 'budget').mockResolvedValue(undefined)
+    /** Notices posted for the first time by one pass. */
+    const pass = async () => { const before = posted.length; await set.reconcile('change'); return posted.slice(before) }
+    return { room, edit, posted, pass, set, cleanup: () => { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) } }
+  }
+
+  it('tells a burst against one peer as one notice, updates it, clears it, and keeps two peers apart', async () => {
+    const f = fixture()
+    try {
+      const twelve = paths.slice(0, 12)
+      f.edit('A', twelve, 'mine'); f.edit('B', twelve, 'theirs')
+      const burst = await f.pass()
+      expect(burst).toHaveLength(1)
+      expect(burst[0]).toMatchObject({ type: 'merge-conflict', to: 'A', priority: 'notify', path: 'src/f01.ts' })
+      expect(formatMsg(burst[0])).toBe("[notify] CONFLICT: 12 files conflict with B's version: " +
+        `${paths.slice(0, 8).map(p => `${p} at lines 2`).join('; ')}; and 4 more`)
+      // Per-file detail stays in the slots room_state reads.
+      expect(paths.slice(0, 12).every(p => f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'merge', 'B', p))?.settled === 'conflict')).toBe(true)
+
+      // A 13th file against the same peer replaces the notice; an unchanged pass posts nothing new.
+      f.edit('A', [paths[12]!], 'mine'); f.edit('B', [paths[12]!], 'theirs')
+      const thirteenth = await f.pass()
+      expect(thirteenth).toHaveLength(1)
+      expect(formatMsg(thirteenth[0])).toMatch(/^\[notify\] CONFLICT: 13 files conflict with B's version: /)
+      expect(thirteenth[0].id.split(':peer:')[0]).toBe(burst[0].id.split(':peer:')[0])
+      expect(supersededConflictNotices(f.posted)).toEqual(new Set([burst[0].id]))
+      expect(await f.pass()).toEqual([])
+
+      // Clearing some files updates the notice without a new wake; clearing all removes it.
+      f.edit('B', paths.slice(0, 3), 'mine')
+      const some = await f.pass()
+      expect(some).toHaveLength(1)
+      expect(formatMsg(some[0])).toBe("[fyi] CONFLICT: 10 files conflict with B's version: " +
+        `${paths.slice(3, 11).map(p => `${p} at lines 2`).join('; ')}; and 2 more; 3 files cleared: ${paths.slice(0, 3).join(', ')}`)
+      f.edit('B', paths.slice(3), 'mine')
+      const all = await f.pass()
+      expect(all).toHaveLength(1)
+      expect(all[0]).toMatchObject({ priority: 'fyi', clearedFrom: 'conflict' })
+      expect(formatMsg(all[0])).toBe(`[fyi] CONFLICT cleared: 13 files no longer conflict with B's version: ${paths.slice(0, 8).join(', ')}, and 5 more`)
+      expect([...supersededConflictNotices(f.posted)].sort()).toEqual(f.posted.slice(0, -1).map(m => m.id).sort())
+
+      // Two peers in one pass: two notices, one each.
+      f.edit('B', paths.slice(0, 2), 'theirs'); f.edit('C', paths.slice(0, 3), 'other')
+      const two = await f.pass()
+      expect(two.map(m => formatMsg(m)).sort()).toEqual([
+        `[notify] CONFLICT: 2 files conflict with B's version: ${paths[0]} at lines 2; ${paths[1]} at lines 2`,
+        `[notify] CONFLICT: 3 files conflict with C's version: ${paths.slice(0, 3).map(p => `${p} at lines 2`).join('; ')}`,
+      ])
+      // A new episode with B: the cleared notice no longer covers it.
+      expect(supersededConflictNotices(f.posted).has(two.find(m => m.text.includes("B's"))!.id)).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps the per-file wording for a single file', async () => {
+    const f = fixture()
+    try {
+      f.edit('A', [paths[0]!], 'mine'); f.edit('B', [paths[0]!], 'theirs')
+      const [notice] = await f.pass()
+      expect(formatMsg(notice)).toBe(`[notify] CONFLICT on ${paths[0]}: ${paths[0]} conflicts with B's version at lines 2`)
+      f.edit('B', [paths[0]!], 'mine')
+      const [cleared] = await f.pass()
+      expect(formatMsg(cleared)).toBe(`[fyi] CONFLICT cleared on ${paths[0]}: the conflict with B cleared`)
+    } finally { f.cleanup() }
+  })
+})
+
+describe('per-peer merge notice delivery', () => {
+  it('owes only the latest notice per peer, but keeps a notify owed past a clear-only fyi update', async () => {
+    const { hubAppend } = await import('@room/shared/testing')
+    const { Ledger } = await import('../src/ledger.js')
+    const room = new RoomDoc()
+    const s = { room, me: { name: 'A', kind: 'agent' }, roomName: 'r', lease: { fence: () => '1' } } as unknown as Session
+    const ledger = new Ledger({ sessionId: () => 'session-A', route: () => ({}) })
+    ledger.bind(s)
+    const notice = (id: string, priority: 'notify' | 'fyi', extra: object = {}) =>
+      hubAppend(room, { name: 'room', kind: 'agent' }, { type: 'merge-conflict', to: 'A', path: 'a', priority, text: `2 files conflict with B's version: a; b`, ...extra } as any, { id })
+    const b = (n: string) => `${peerNoticeId('A', 'B', 1, [{ path: n, epoch: 1 }], []).split(':peer:')[0]}:peer:1:${n}`
+    const c = peerNoticeId('A', 'C', 1, [{ path: 'a', epoch: 1 }], [])
+    notice(b('one'), 'notify'); notice(c, 'notify'); notice(b('two'), 'notify')
+    expect(ledger.candidates(s).map(m => m.id).sort()).toEqual([b('two'), c].sort())
+    notice(b('three'), 'fyi')
+    expect(ledger.candidates(s).map(m => m.id).sort()).toEqual([b('two'), b('three'), c].sort())
+    notice(b('cleared'), 'fyi', { clearedFrom: 'conflict' })
+    expect(ledger.candidates(s).map(m => m.id).sort()).toEqual([b('cleared'), c].sort())
+    room.doc.destroy()
+  })
+
+  it('lists every open file per peer for room_state', async () => {
+    const { openMergeConflicts } = await import('../src/conflict-set.js')
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, post, '1')
+    for (const [other, path] of [['B', 'y'], ['B', 'x'], ['C', 'x']]) await slots.settle(slotKey('A', 'merge', other!, path!),
+      { owner: 'A', other: other!, kind: 'merge', path: path!, status: 'conflict', inputs: path!, factId: path!, lines: [3] })
+    expect(openMergeConflicts(room, 'A')).toEqual([
+      { other: 'B', path: 'x', lines: [3] }, { other: 'B', path: 'y', lines: [3] }, { other: 'C', path: 'x', lines: [3] }])
+    room.doc.destroy()
   })
 })

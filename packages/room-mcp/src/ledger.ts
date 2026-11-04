@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { highestSeq, messageForMe, owed, participantRecord, type MessageRouteContext, type Msg, type Via } from '@room/shared'
+import { highestSeq, messageForMe, owed, participantRecord, supersededConflictNotices, type MessageRouteContext, type Msg, type Via } from '@room/shared'
 import { writeAtomic } from './leases.js'
 import { registrySnapshotForDir } from './worker-registry.js'
 import type { Session } from './session.js'
@@ -125,7 +125,9 @@ export class Ledger {
     this.prune(s)
     const cursor = this.route(s)
     const prompt = new Set(this.promptIds(s))
-    return owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && (this.o.relevant?.(s, m) ?? true))
+    // A peer's conflict notice that a later one replaced is not owed: the reader gets the current files once.
+    const superseded = supersededConflictNotices([...s.room.mail.values(), ...s.room.messages()])
+    return owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && !superseded.has(m.id) && (this.o.relevant?.(s, m) ?? true))
   }
 
   /** Receipts for a confirmed handoff; a late commit for an expired batch still writes (a real handoff). */

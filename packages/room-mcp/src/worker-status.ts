@@ -13,6 +13,13 @@ export interface Run {
   posted?: string
 }
 export interface ExitObservation { run: number; code: number | null; signal?: string; at: number; witnessed: boolean }
+/** A witnessed exit that carries neither a code nor a signal (earlier releases dropped the signal). */
+export const HOST_ENDED = 'host process ended without an exit code or signal'
+/** How a witnessed run ended, from the exit Room recorded: the signal, the code, or neither. */
+export function exitReason(exit: Pick<ExitObservation, 'code' | 'signal'>): string {
+  if (exit.signal) return `killed by ${exit.signal}`
+  return exit.code != null ? `exit ${exit.code}` : HOST_ENDED
+}
 export interface RunReport {
   run: number; nonce: string; chain: ProcessIdentity[]; joinedAt: number; hostSessionId?: string
   /** Parent host captured at admission; null means it could not be verified (the first chain member is the MCP). */
@@ -113,7 +120,7 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
   if (exit?.witnessed && exit.code === 0 && current.mode === 'fresh')
     return result('done', current, undefined, { finishedAt: exit.at, exitCode: 0, noReport: true, summary: 'ended without a report' })
   if (exit?.witnessed && exit.code === 0) return result('failed', current, 'exited without room_done', { finishedAt: exit.at, exitCode: 0 })
-  if (exit?.witnessed) return result('failed', current, exit.signal ?? `exit ${exit.code ?? 'unknown'}`, { finishedAt: exit.at, ...(exit.code != null ? { exitCode: exit.code } : {}) })
+  if (exit?.witnessed) return result('failed', current, exitReason(exit), { finishedAt: exit.at, ...(exit.code != null ? { exitCode: exit.code } : {}) })
   if (exit && current.mode === 'resume' && earlierDone) return result('done', current, 'follow-up outcome unknown: ended while no session of yours was running', { finishedAt: exit.at })
   if (exit) return result('failed', current, 'stopped while no session of yours was running', { finishedAt: exit.at })
   return result('running', current, 'exit being recorded')

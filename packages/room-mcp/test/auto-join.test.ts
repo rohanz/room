@@ -13,7 +13,7 @@ import { RoomdError } from '@room/roomd'
 import { ensureLocalRelay, relayProof, startRelay } from '@room/relay'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
-import { LOCAL, NoRoom, joinSession, leaveSession, type Session } from '../src/session.js'
+import { LOCAL, NoRoom, joinSession, leaveSession, writeSessionRecord, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { workerProcessEnv } from '../src/worker-config.js'
@@ -147,6 +147,31 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(lead.room.seen('Ada+q').has(old.id)).toBe(false)
     expect(await mcp.call('room_wait', { timeoutMs: 10 })).not.toMatch(/BROADCAST-(NOTIFY|INTERRUPT)/)
   }, 45_000)
+
+  it('a Codex worker whose hook record arrives after startup joins once under its thread id, without a rebind', async () => {
+    const dir = repo()
+    const room = 'local/demo'
+    const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
+    cleanups.push(() => leaveSession(lead))
+    const launcher = (await registryForDir(dir)).instance
+    cleanups.push(() => closeRegistryForDir(dir))
+    const { registry, record } = await seedRegistryWorker(dir, 'late', {
+      name: 'Ada+late', room, lead: { participant: 'Ada', room, instance: launcher }, host: 'codex', task: 'bind once', dir, branch: 'main',
+      runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'late-run-1', busFrontier: 0, promptMsgIds: [], launcher, logStart: 0 }],
+    })
+    const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
+      tag: 'late', lead: 'Ada', owner: 'Ada', share: 'full', run: 1, nonce: 'late-run-1', registry: registry.root, id: record.id, logDir: dir, isWorker: false })
+    const mcp = await startMcp(dir, env)
+    // What the SessionStart hook writes once Codex has started the thread, after the MCP is already up.
+    await new Promise(r => setTimeout(r, 500))
+    writeSessionRecord(path.join(dir, '.git'), { session_id: 'late-thread', host: 'codex', worker_id: record.id, cwd: dir, at: Date.now(), chain: [] })
+    await mcp.waitFor(/Ada\+late joined/, 30_000)
+    await new Promise(r => setTimeout(r, 2000)) // longer than the record watcher's poll and the binding cache
+    const log = mcp.lines.join('\n')
+    expect(log).not.toMatch(/host session changed|host session rebound|not bound after/)
+    expect(mcp.lines.filter(l => /Ada\+late joined/.test(l))).toHaveLength(1)
+    expect(await mcp.call('room_state')).toContain('you: Ada+late')
+  }, 60_000)
 
   it('a session whose first join hits a wedged relay owner joins by itself once that owner is gone', async () => {
     const dir = repo()
@@ -366,6 +391,29 @@ describe('AutoJoin (the ensure step)', () => {
     expect(u.a.failure).toBeUndefined()
     await u.a.ensure()
     expect(u.reports[1]).toMatch(/^Room could not join the local room: relay gone\. Room tries again/)
+  })
+
+  it('a bind wait holds the first join until the host session is bound, once', async () => {
+    let bound = false, calls = 0
+    const t = setup(async () => { calls++; expect(bound).toBe(true); return fakeSession() }, { bindWait: { bound: () => bound, ms: 2000, pollMs: 5 } })
+    setTimeout(() => { bound = true }, 40)
+    await t.a.ensure()
+    expect(calls).toBe(1)
+    expect(t.logs.join('\n')).not.toMatch(/not bound/)
+  })
+
+  it('a bind wait that runs out joins anyway and logs it; a cancel during the wait joins nothing', async () => {
+    let calls = 0
+    const t = setup(async () => { calls++; return fakeSession() }, { bindWait: { bound: () => false, ms: 30, pollMs: 5 } })
+    await t.a.ensure()
+    expect(calls).toBe(1)
+    expect(t.logs).toContain("host session not bound after 30ms; joining under this process's id")
+    const u = setup(async () => { calls++; return fakeSession() }, { bindWait: { bound: () => false, ms: 5000, pollMs: 5 } })
+    const run = u.a.ensure()
+    u.a.cancel()
+    await run
+    expect(calls).toBe(1)
+    expect(u.current()).toBeNull()
   })
 
   it('a join that overruns the total deadline fails with that cause, and its late session is left', async () => {

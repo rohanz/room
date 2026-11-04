@@ -54,7 +54,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   let current: Session | null = session
   const specs: SpawnSpec[] = []
   const logs: string[] = []
-  const exits: ((code: number | null) => void | Promise<void>)[] = []
+  const exits: ((code: number | null, signal?: NodeJS.Signals | null) => void | Promise<void>)[] = []
   const errors: ((error: Error) => void)[] = []
   const kills: number[] = []
   let notifySpawn!: () => void
@@ -547,6 +547,48 @@ describe('resumed worker boundaries', () => {
     await t.exits[0](-1)
     expect(workerByTag(t.dir, 'crash')).toMatchObject({ status: 'failed', exitCode: -1 })
     expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('worker crash failed: exit -1'))).toBe(true)
+  })
+
+  it('records a SIGTERM kill and quotes no output lines in the interrupt', async () => {
+    const t = setup()
+    await t.seed('killed', { host: 'codex' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'killed', text: 'again' })).toContain('resumed killed')
+    const record = (await t.record('killed'))!, run = record.runs.at(-1)!
+    // The marker that tells a Room worker's host process from the user's own `codex exec`.
+    expect(t.specs[0].env.ROOM_WORKER_ID).toBe(record.id)
+    const log = join(t.dir, '.room', 'workers', 'killed.log')
+    writeFileSync(log, 'x'.repeat(run.logStart) + '\n        log.debug("lagged session %s notes_len=%d", session.id, len(notes))\n"exit_code":0,"status":"completed"}}\n')
+    await t.exits[0](null, 'SIGTERM')
+    const registry = await registryForDir(t.dir)
+    expect(registry.exits(record.id).find(exit => exit.run === run.n)).toMatchObject({ code: null, signal: 'SIGTERM', witnessed: true })
+    expect(registry.status(record.id)).toMatchObject({ status: 'failed', note: 'killed by SIGTERM' })
+    const [interrupt] = t.room.messages().filter(m => m.priority === 'interrupt')
+    expect(interrupt).toMatchObject({ to: 'rohanz', text: `worker killed failed: killed by SIGTERM; log: ${log}` })
+    expect(interrupt.text).not.toMatch(/lagged|exit_code|notes_len/)
+  })
+
+  it('records the signal that killed a freshly spawned worker', async () => {
+    const t = setup()
+    expect(await t.tools.call('room_spawn', { tag: 'freshkill', task: 'review', host: 'codex' })).toContain('spawned freshkill')
+    const record = (await t.record('freshkill'))!
+    expect(t.specs[0].env.ROOM_WORKER_ID).toBe(record.id)
+    await t.exits[0](null, 'SIGKILL')
+    expect((await registryForDir(t.dir)).exits(record.id)).toMatchObject([{ run: 1, code: null, signal: 'SIGKILL', witnessed: true }])
+    expect(t.room.messages().filter(m => m.priority === 'interrupt').map(m => m.text))
+      .toEqual([expect.stringMatching(/^worker freshkill failed: killed by SIGKILL; log: /)])
+  })
+
+  it('says the host ended with its stdin closed when the exit carries neither code nor signal', async () => {
+    const t = setup()
+    await t.seed('stdin', { host: 'codex' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'stdin', text: 'again' })).toContain('resumed stdin')
+    const record = (await t.record('stdin'))!
+    writeFileSync(join(t.dir, '.room', 'workers', 'stdin.mcp.log'), `${new Date(0).toISOString()} stopping: SIGTERM\n${new Date().toISOString()} stopping: stdin closed\n`)
+    await t.exits[0](null)
+    const registry = await registryForDir(t.dir)
+    expect(registry.status(record.id)).toMatchObject({ status: 'failed', note: 'host process ended (stdin closed)' })
+    expect(t.room.messages().filter(m => m.priority === 'interrupt').map(m => m.text))
+      .toEqual([expect.stringMatching(/^worker stdin failed: host process ended \(stdin closed\); log: /)])
   })
 
   it('refuses a vanished worktree before posting a message or starting a host', async () => {

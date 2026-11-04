@@ -10,7 +10,7 @@ import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
-import { LOCAL, logout as doLogout, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
+import { LOCAL, browserViewLine, logout as doLogout, pollLogin, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Ledger } from '../ledger.js'
 import type { ShareLevel } from '@room/roomd'
@@ -288,7 +288,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (s.autoTagNote) { out.push(s.autoTagNote); delete s.autoTagNote }
       const cs = s.room.openClaims()
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
-      out.push(`browser view: ${await refreshBrowserUrl(s)}`)
+      out.push(await browserViewLine(s))
       out.push('next: room_scope(area, summary, paths) before you edit.')
       const wakeNote = here.length ? claudeWakeNote(s, 'company') : ''
       if (wakeNote) out.push(wakeNote)

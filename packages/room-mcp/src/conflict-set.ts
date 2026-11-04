@@ -53,6 +53,13 @@ export interface ConflictSlot {
   possibleEpisode?: number
   /** This slot joined an episode another slot opened: that slot's notice covers it. */
   possibleJoined?: boolean
+  /**
+   * A file merge conflict's peer episode (1, 2, …), shared by every file in conflict with the same peer at once:
+   * the files of one episode are one notice, updated as files join or clear. Kept after it clears.
+   */
+  peerEpisode?: number
+  /** When this file last joined or left its peer episode's open conflicts. */
+  turnedAt?: number
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers'>
 
@@ -66,6 +73,31 @@ export const slotKey = (owner: string, kind: ConflictKind, other: string, path: 
   [owner, kind, other, path, subject].join('\0')
 export const noticeId = (key: string, epoch: number, episode?: string): string =>
   `cf:${hash(key)}:${epoch}${episode ? `:${episode}` : ''}`
+/** A file merge slot whose conflicts are told per peer, not per file. */
+const peerMerge = (slot: Pick<ConflictSlot, 'kind' | 'path'>): boolean => slot.kind === 'merge' && slot.path !== '*'
+const openInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'conflict'
+const clearedInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'clean' && slot.clearedFrom === 'conflict'
+/** Files named in a peer notice; room_state lists every file. */
+export const PEER_NOTICE_FILES = 8
+/**
+ * The id of the per-peer merge notice for one episode state. Every notice for the same owner and peer shares the
+ * `cf:<pair>:peer:` prefix, so a later one replaces an earlier one that was not yet delivered (supersededConflictNotices).
+ */
+export const peerNoticeId = (owner: string, other: string, episode: number, open: readonly Pick<ConflictSlot, 'path' | 'epoch'>[], cleared: readonly Pick<ConflictSlot, 'path' | 'epoch'>[]): string =>
+  `cf:${hash([owner, other, 'merge'].join('\0'))}:peer:${episode}:${open.length
+    ? hash(JSON.stringify([open.map(s => [s.path, s.epoch]), cleared.map(s => [s.path, s.epoch])]))
+    : 'clean'}`
+const atLines = (lines?: number[]) => lines?.length ? ` at lines ${lines.join(', ')}` : ''
+const bounded = (items: string[], sep: string) => items.slice(0, PEER_NOTICE_FILES).join(sep) +
+  (items.length > PEER_NOTICE_FILES ? `${sep}and ${items.length - PEER_NOTICE_FILES} more` : '')
+const files = (n: number) => `${n} file${n === 1 ? '' : 's'}`
+/** One owner's open file merge conflicts, per file, for room_state. */
+export function openMergeConflicts(room: RoomDoc, owner: string): { other: string; path: string; lines: number[] }[] {
+  return [...room.doc.getMap<ConflictSlot>('conflicts').values()]
+    .filter(s => s.owner === owner && peerMerge(s) && s.settled === 'conflict')
+    .map(s => ({ other: s.other, path: s.path, lines: s.lines ?? [] }))
+    .sort((a, b) => a.other.localeCompare(b.other) || a.path.localeCompare(b.path))
+}
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
@@ -131,10 +163,77 @@ export class ConflictSlots {
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
       ...(result.kind === 'edit-in-claim' && result.status === 'conflict' ? { burstAt: prev?.status === 'conflict' ? prev.burstAt ?? now : now } : {}),
     }
+    // A file joins its peer's open episode, or leaves it: the peer's one notice changes, not a notice per file.
+    const peerTurn = peerMerge(result) && (changedFact && settled === 'conflict' || prev?.settled === 'conflict' && settled !== 'conflict')
+    if (peerMerge(result)) {
+      const peerEpisode = this.joinPeerEpisode(key, result, settled, prev)
+      if (peerEpisode !== undefined) slot.peerEpisode = peerEpisode
+      const turnedAt = peerTurn ? now : prev?.turnedAt
+      if (turnedAt !== undefined) slot.turnedAt = turnedAt
+    }
     this.room.doc.transact(() => this.map.set(key, slot))
+    // A slot from before peer episodes clears with its own per-file notice.
+    const toldPerPeer = peerMerge(result) && (settled === 'conflict' || settled === 'clean' && prev?.settled === 'conflict' && slot.peerEpisode !== undefined)
+    if (peerTurn && !this.deferPeerNotices) await this.postPeerNotice(slot.owner, slot.other)
+    if (toldPerPeer) return slot
     if (changedFact) await this.postNotice(key, slot)
     else if (result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible')) await this.postNotice(key, slot)
     return slot
+  }
+
+  /**
+   * Inside a ConflictSet pass, file merge slots settle silently and the pass's replay posts one notice per peer.
+   * Outside a pass (direct callers), each settle that changes a peer's open files posts that peer's notice.
+   */
+  deferPeerNotices = false
+
+  /** The file merge slots of this owner and peer that belong to an episode. */
+  private peerSlots(owner: string, other: string): [string, ConflictSlot][] {
+    return this.owned(owner).filter(([, s]) => peerMerge(s) && s.other === other && s.peerEpisode !== undefined)
+  }
+
+  /** Join the peer's open episode, or open a new one; any other state keeps the episode it was in. */
+  private joinPeerEpisode(key: string, result: Evaluation, settled: ConflictSlot['settled'], prev: ConflictSlot | undefined): number | undefined {
+    if (settled !== 'conflict') return prev?.peerEpisode
+    if (prev?.settled === 'conflict' && prev.peerEpisode !== undefined) return prev.peerEpisode
+    const pair = this.peerSlots(result.owner, result.other).filter(([k]) => k !== key)
+    const open = pair.find(([, s]) => openInEpisode(s))?.[1]
+    if (open) return open.peerEpisode
+    return 1 + Math.max(prev?.peerEpisode ?? 0, ...pair.map(([, s]) => s.peerEpisode ?? 0))
+  }
+
+  /**
+   * The one notice for this owner's latest episode with a peer: the files still in conflict with their lines (up to
+   * PEER_NOTICE_FILES), how many cleared, or that all of them cleared. Derived from replicated slots, so a replay
+   * re-derives the same id. A one-file episode keeps the per-file wording.
+   */
+  async postPeerNotice(owner: string, other: string): Promise<void> {
+    if (!this.valid()) return
+    const pair = this.peerSlots(owner, other).map(([, s]) => s)
+    if (!pair.length) return
+    const episode = Math.max(...pair.map(s => s.peerEpisode!))
+    const byPath = (a: ConflictSlot, b: ConflictSlot) => a.path.localeCompare(b.path)
+    const open = pair.filter(s => s.peerEpisode === episode && openInEpisode(s)).sort(byPath)
+    const cleared = pair.filter(s => s.peerEpisode === episode && clearedInEpisode(s)).sort(byPath)
+    if (!open.length && !cleared.length) return
+    const id = peerNoticeId(owner, other, episode, open, cleared)
+    const latest = (slots: ConflictSlot[]) => Math.max(0, ...slots.map(s => s.turnedAt ?? s.checkedAt))
+    // An update that only clears files is not a new reason to stop what you are doing.
+    const priority = open.length && latest(open) >= latest(cleared) ? 'notify' : 'fyi'
+    const clearedNote = cleared.length ? `; ${files(cleared.length)} cleared: ${bounded(cleared.map(s => s.path), ', ')}` : ''
+    const text = open.length
+      ? open.length === 1 && !cleared.length
+        ? `${open[0]!.path} conflicts with ${other}'s version${atLines(open[0]!.lines)}`
+        : `${files(open.length)} conflict${open.length === 1 ? 's' : ''} with ${other}'s version: ${bounded(open.map(s => `${s.path}${atLines(s.lines)}`), '; ')}${clearedNote}`
+      : cleared.length === 1
+        ? `the conflict with ${other} cleared`
+        : `${files(cleared.length)} no longer conflict with ${other}'s version: ${bounded(cleared.map(s => s.path), ', ')}`
+    const body = { type: 'merge-conflict', path: (open[0] ?? cleared[0])!.path, to: owner, priority, text,
+      ...(open.length ? {} : { clearedFrom: 'conflict' }) } as unknown as PostBody<Msg>
+    try {
+      const posted = await this.post(ROOM, body, { id, auto: true })
+      if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
+    } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
   }
 
   /** The other edit-in-claim slots of this owner for the same holder and path. */
@@ -156,10 +255,13 @@ export class ConflictSlots {
 
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
   async replay(owner: string, validSlot: (slot: ConflictSlot) => boolean = () => true): Promise<void> {
+    const peers = new Set<string>()
     for (const [key, slot] of this.owned(owner)) {
       if (!validSlot(slot)) continue
+      if (peerMerge(slot) && slot.peerEpisode !== undefined && (openInEpisode(slot) || clearedInEpisode(slot))) { peers.add(slot.other); continue }
       if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot, true)
     }
+    for (const other of [...peers].sort()) await this.postPeerNotice(owner, other)
   }
 
   async postNotice(key: string, slot: ConflictSlot, replay = false): Promise<void> {
@@ -495,9 +597,11 @@ export class ConflictSet {
       // never a recursive chain that keeps flush/tools alive indefinitely.
       for (let attempt = 0; attempt < 2 && !this.stopped; attempt++) {
         this.rerun = false
+        // A pass tells each peer's file conflicts once, from its replay: one notice per peer, not per file.
+        this.slots.deferPeerNotices = true
         try { await this.run(reason) }
         catch (e) { if (!(e instanceof StaleConflictInputs)) throw e; this.rerun = true }
-        finally { this.guard = undefined }
+        finally { this.guard = undefined; this.slots.deferPeerNotices = false }
         if (!this.rerun) return
         if (attempt === 0) await new Promise<void>(resolve => setImmediate(resolve))
       }
@@ -801,6 +905,8 @@ export class ConflictSet {
             if (!this.guard?.()) { this.rerun = true; return false }
             return true
           })
+          // A peer's one notice is the replay's last post: inputs it moved are checked again.
+          if (!this.guard?.()) this.rerun = true
         }
       }
     }

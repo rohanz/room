@@ -142,6 +142,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     `If you spawn workers, collect them before your own room_done.`,
     `Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.`,
     `On Claude Code with documented background-command lifetime and completion delivery (verified on 2.1.300), use host-managed background commands when responsiveness matters; await completion and inspect the actual result before room_done. On unverified hosts, including Codex, use foreground commands until background lifetime and completion delivery are verified. See room-etiquette for host limits; process exit can terminate unmanaged jobs.`,
+    `Room workers run as plain \`codex exec\` / \`claude -p\` processes too (ROOM_WORKER_ID in their environment marks them): stop jobs you started by their own pid, never by a pattern such as \`pkill -f codex\`.`,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),

@@ -18,8 +18,11 @@ export interface SpawnedProcess {
   pid: number
   /** Resolves on child_process 'spawn'; rejects on 'error'. */
   started: Promise<void>
-  /** The callback may return the promise of its exit handling; a spawner that can wait for it (tests) awaits that. */
-  onExit(cb: (code: number | null) => void | Promise<void>): void
+  /**
+   * Node's 'close' arguments: the exit code, or the signal that ended the child. The callback may return the
+   * promise of its exit handling; a spawner that can wait for it (tests) awaits that.
+   */
+  onExit(cb: (code: number | null, signal?: NodeJS.Signals | null) => void | Promise<void>): void
   /** Fires when the process could not be started at all (e.g. the binary is missing). */
   onError?(cb: (err: Error) => void): void
   /** SIGTERM the worker; true when a signal was actually delivered (false: no pid, or the process is gone). */
@@ -122,6 +125,20 @@ function runLogSuffix(logFile: string, logStart: number): string[] {
     fs.readSync(fd, buffer, 0, buffer.length, start)
     return stripVTControlCharacters(buffer.toString('utf8')).split(/\r?\n|\r/)
   } finally { fs.closeSync(fd) }
+}
+
+/**
+ * Why the worker's own Room MCP stopped ("stdin closed", "SIGTERM", …), from its last `stopping:` line in its
+ * ROOM_LOG_FILE that is no older than `since`. Room writes that log itself; undefined when it has no such line.
+ */
+export function mcpStopReason(mcpLogFile: string, since: number): string | undefined {
+  let lines: string[]
+  try { lines = runLogSuffix(mcpLogFile, 0) } catch { return undefined }
+  for (const line of lines.reverse()) {
+    const match = /^(\S+) stopping: (.+)$/.exec(line.trim())
+    if (match && Date.parse(match[1]) >= since) return match[2]
+  }
+  return undefined
 }
 
 const errorMessage = (event: HostEvent): string | undefined =>

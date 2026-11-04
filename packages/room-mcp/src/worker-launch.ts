@@ -17,7 +17,7 @@ export class WorkerLaunchError extends Error {
 export interface LaunchHost {
   setHandle(id: string, proc: SpawnedProcess): void
   /** `onExit` resolves once the exit is recorded and reported; it never rejects. */
-  watch(id: string, proc: SpawnedProcess, onExit: (code: number | null) => Promise<void>): void
+  watch(id: string, proc: SpawnedProcess, onExit: (code: number | null, signal?: NodeJS.Signals | null) => Promise<void>): void
   aborted(): boolean
 }
 
@@ -77,7 +77,7 @@ async function reserveWorkerName(s: Session, name: string, workerId: string, log
 /** The caller records the launch intent before entering this boundary. */
 export async function launchWorkerProcess(policy: Policy, command: Command, host: LaunchHost,
   onLaunched: (pid: number) => Promise<void>, onSpawn: (result: WorkerLaunchResult) => Promise<void>,
-  onExit: (code: number | null) => Promise<void>): Promise<WorkerLaunchResult> {
+  onExit: (code: number | null, signal?: NodeJS.Signals | null) => Promise<void>): Promise<WorkerLaunchResult> {
   const { session: s, id, tag } = policy
   let reservation: ReturnType<typeof reserveWorkerPort> | undefined
   let passed = false
@@ -127,7 +127,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     releaseReservation = false
     if (proc.pid > 0) host.setHandle(id, proc)
     bindWorkerPortReservation(proc, reservation)
-    host.watch(id, proc, code => { exited = true; return onExit(code).catch(error => policy.log(`worker exit: ${error}`)) })
+    host.watch(id, proc, (code, signal) => { exited = true; return onExit(code, signal).catch(error => policy.log(`worker exit: ${error}`)) })
     watching = true
     if (proc.pid > 0) await onLaunched(proc.pid)
     try { await proc.started }

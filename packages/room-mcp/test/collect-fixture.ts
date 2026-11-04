@@ -1,3 +1,4 @@
+import { waitForPreviewSweepForTests } from '../src/tools/files.js'
 import { realGitCommonDir } from '@room/roomd'
 import { manifestPaths, RoomDoc, splitParticipants } from '@room/shared'
 import { execFileSync, spawn } from 'node:child_process'
@@ -56,7 +57,8 @@ beforeEach(() => {
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
 // Removal runs off the event loop: a synchronous delete of a large fixture held the worker for the whole hook.
-afterEach(async () => { collectRefHook.call = undefined; await closeRegistryForDir(lead); await fs.promises.rm(root, { recursive: true, force: true }) })
+// Collection and previews queue preview-cache maintenance that writes lock files under the lead's .git; wait for it before the tree goes.
+afterEach(async () => { collectRefHook.call = undefined; await closeRegistryForDir(lead); await waitForPreviewSweepForTests(); await fs.promises.rm(root, { recursive: true, force: true }) })
 
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {

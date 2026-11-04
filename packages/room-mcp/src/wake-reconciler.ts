@@ -464,6 +464,8 @@ function kindPhrase(type: Msg['type']): string {
     case 'note': return 'sent a note'
     case 'done': return 'finished'
     case 'base': return 'moved the base'
+    // One per peer: the pointer counts peers in conflict, not files.
+    case 'merge-conflict': return 'reported a conflict with a peer'
     default: return 'has an update'
   }
 }

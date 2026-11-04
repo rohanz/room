@@ -35,6 +35,39 @@ const priority = (m: MsgBase) => `[${m.priority}] `
 const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | 'possible'; merges?: 'clean' }) => m.clearedFrom === 'possible'
   ? 'POSSIBLE conflict cleared' : m.clearedFrom === 'conflict' ? m.merges === 'clean' ? 'overlap cleared' : 'CONFLICT cleared'
     : m.merges === 'clean' ? 'overlap' : m.priority !== 'fyi' ? 'CONFLICT' : 'POSSIBLE conflict'
+/** A per-peer merge notice names its files in the text; its `path` is only the first of them. */
+const PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /
+const PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/
+const priorityRank = (p: Priority | undefined) => p === 'interrupt' ? 2 : p === 'notify' ? 1 : 0
+
+/**
+ * Room's per-peer merge notices (`cf:<pair>:peer:…`) that a later notice for the same pair and reader replaces:
+ * one that clears the peer's files, or one at least as urgent. An undelivered notice whose files changed is
+ * therefore not delivered as well as its update. A later fyi update (files only cleared) keeps an earlier notify owed.
+ */
+export function supersededConflictNotices(messages: Iterable<Msg>): Set<string> {
+  const groups = new Map<string, Msg[]>()
+  for (const m of messages) {
+    const pair = m.type === 'merge-conflict' && m.from === 'room' ? PEER_NOTICE_ID.exec(m.id)?.[1] : undefined
+    if (!pair) continue
+    const key = `${m.to ?? ''}\u0000${pair}`
+    const group = groups.get(key) ?? []
+    if (!group.some(x => x.id === m.id)) group.push(m)
+    groups.set(key, group)
+  }
+  const out = new Set<string>()
+  for (const group of groups.values()) {
+    group.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || a.at - b.at)
+    let cleared = false, rank = -1
+    for (let i = group.length - 1; i >= 0; i--) {
+      const m = group[i]!
+      if (cleared || rank >= priorityRank(m.priority)) out.add(m.id)
+      cleared ||= m.type === 'merge-conflict' && m.clearedFrom === 'conflict'
+      rank = Math.max(rank, priorityRank(m.priority))
+    }
+  }
+  return out
+}
 const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join('\u0000')
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'
@@ -131,7 +164,9 @@ const builtins = {
   question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
   answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   conflict: { priority: 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
-  'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
+  'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => PEER_NOTICE_TEXT.test(m.text)
+    // Certified either way: fyi only means its update cleared files.
+    ? `${priority(m)}${m.clearedFrom ? 'CONFLICT cleared' : 'CONFLICT'}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
   contract: { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'always', format: m => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
   note: { priority: m => m.to ? 'notify' : 'fyi', audience: 'everyone', inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || (!m.to && m.priority === 'interrupt' && !!w.me && messageForMe({ name: w.me }, m))), format: m => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },

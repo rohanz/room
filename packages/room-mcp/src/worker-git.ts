@@ -55,8 +55,47 @@ export function workerOwnedPaths(w?: { link?: readonly string[] }) {
   }
 }
 
-/** Ignored output that a discard patch cannot recover. */
-export async function ignoredWorkerArtifacts(w: LocalWorker): Promise<string[]> {
+const lstatOrUndefined = (file: string) => {
+  try { return fs.lstatSync(file) } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
+}
+
+/** Whether a worker path matches the lead's at the same place: both absent, equal links, or
+ * regular files with the same executable bits and bytes (compared in chunks). */
+async function sameAsLead(left: string, right: string): Promise<boolean> {
+  const a = lstatOrUndefined(left), b = lstatOrUndefined(right)
+  if (!a || !b) return !a && !b
+  if (a.isSymbolicLink() || b.isSymbolicLink()) return a.isSymbolicLink() && b.isSymbolicLink() && fs.readlinkSync(left) === fs.readlinkSync(right)
+  if (!a.isFile() || !b.isFile() || a.size !== b.size || (a.mode & 0o111) !== (b.mode & 0o111)) return false
+  const x = await fs.promises.open(left, 'r'), y = await fs.promises.open(right, 'r')
+  try {
+    const one = Buffer.alloc(64 * 1024), two = Buffer.alloc(one.length)
+    for (let offset = 0; offset < a.size; offset += one.length) {
+      const length = Math.min(one.length, a.size - offset)
+      const [first, second] = await Promise.all([x.read(one, 0, length, offset), y.read(two, 0, length, offset)])
+      if (first.bytesRead !== length || second.bytesRead !== length || !one.subarray(0, length).equals(two.subarray(0, length))) return false
+    }
+    return true
+  } finally { await Promise.all([x.close(), y.close()]) }
+}
+
+/** An ignored path carries information only if it is a non-empty file, link or special file the
+ * lead lacks or holds differently; a directory, only if something inside it does. Links are not followed. */
+async function informativeIgnored(workerDir: string, leadDir: string, rel: string): Promise<boolean> {
+  const left = path.join(workerDir, rel)
+  const stat = lstatOrUndefined(left)
+  if (!stat) return false
+  if (stat.isDirectory()) {
+    for (const name of await fs.promises.readdir(left)) {
+      if (await informativeIgnored(workerDir, leadDir, path.posix.join(rel, name))) return true
+    }
+    return false
+  }
+  if (stat.isFile() && stat.size === 0) return false
+  return !await sameAsLead(left, path.join(leadDir, rel))
+}
+
+/** Ignored output that a discard patch cannot recover and the lead checkout does not already hold. */
+export async function ignoredWorkerArtifacts(w: LocalWorker, leadDir: string): Promise<string[]> {
   const raw = await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', '--', '.', ...workerOwnedPaths(w).exclusions])
   const environments = new Map<string, boolean>()
   const generatedEnvironment = (p: string) => {
@@ -67,11 +106,13 @@ export async function ignoredWorkerArtifacts(w: LocalWorker): Promise<string[]> 
     if (!environments.has(rel)) environments.set(rel, generatedPythonEnvironment(w.dir, rel))
     return environments.get(rel)!
   }
-  return raw.split('\0').filter(Boolean)
+  const candidates = raw.split('\0').filter(Boolean)
     .filter(p => p !== '.room' && p !== '.room/' && !p.startsWith('.room/'))
     .filter(p => !isRegenerableBuildPath(p))
     .filter(p => !generatedEnvironment(p))
-    .sort()
+  const artifacts: string[] = []
+  for (const p of candidates) if (await informativeIgnored(w.dir, leadDir, p.replace(/\/$/, ''))) artifacts.push(p)
+  return artifacts.sort()
 }
 
 export type WorkerCleanupPreservation = {
@@ -92,26 +133,8 @@ async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, capturedH
     capturedHead ? git(w.dir, ['diff', '--no-renames', '--name-only', '-z', capturedHead, 'HEAD', '--', '.', ...exclusions]) : '',
   ])
   const paths = [...new Set((changed + untracked + committed).split('\0').filter(Boolean))]
-  const same = async (rel: string): Promise<boolean> => {
-    const left = path.join(w.dir, rel), right = path.join(leadDir, rel)
-    const stat = (file: string) => { try { return fs.lstatSync(file) } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e } }
-    const a = stat(left), b = stat(right)
-    if (!a || !b) return !a && !b
-    if (a.isSymbolicLink() || b.isSymbolicLink()) return a.isSymbolicLink() && b.isSymbolicLink() && fs.readlinkSync(left) === fs.readlinkSync(right)
-    if (!a.isFile() || !b.isFile() || a.size !== b.size || (a.mode & 0o111) !== (b.mode & 0o111)) return false
-    const x = await fs.promises.open(left, 'r'), y = await fs.promises.open(right, 'r')
-    try {
-      const one = Buffer.alloc(64 * 1024), two = Buffer.alloc(one.length)
-      for (let offset = 0; offset < a.size; offset += one.length) {
-        const length = Math.min(one.length, a.size - offset)
-        const [first, second] = await Promise.all([x.read(one, 0, length, offset), y.read(two, 0, length, offset)])
-        if (first.bytesRead !== length || second.bytesRead !== length || !one.subarray(0, length).equals(two.subarray(0, length))) return false
-      }
-      return true
-    } finally { await Promise.all([x.close(), y.close()]) }
-  }
   const remaining: string[] = []
-  for (const rel of paths) if (!await same(rel)) remaining.push(rel)
+  for (const rel of paths) if (!await sameAsLead(path.join(w.dir, rel), path.join(leadDir, rel))) remaining.push(rel)
   return remaining.sort()
 }
 
@@ -434,7 +457,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
       let capturedHead: string | undefined
       try { capturedHead = (await git(leadDir, ['rev-parse', '--verify', collectHeadRef(w.tag, w.id)])).trim() } catch { /* legacy collection */ }
       const currentHead = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
-      const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w, capturedHead)])
+      const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w, leadDir), uncollectedWorkerPaths(leadDir, w, capturedHead)])
       const committedPaths = capturedHead && capturedHead !== currentHead
         ? (await git(w.dir, ['diff', '--no-renames', '--name-only', '-z', capturedHead, currentHead, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort()
         : undefined

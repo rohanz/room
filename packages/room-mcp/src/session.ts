@@ -266,7 +266,8 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
     const matching = records.filter(record => record.worker_id === workerId
       && (!options.cwd || typeof record.cwd === 'string' && sameFolder(record.cwd, options.cwd)))
       .sort((a, b) => b.at - a.at)[0]
-    const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId : undefined)
+    // A Codex worker without its hook record yet is bound by the thread its first tool call names.
+    const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId ?? options.codexThreadId ?? admittedCodexThread() : undefined)
     return id ? { id, host } : undefined
   }
   if (host === 'codex') {
@@ -1112,6 +1113,9 @@ async function viewToken(server: string, roomName: string, auth: Creds): Promise
 }
 
 /** Re-mint the browser link (view keys can expire or be lost); falls back to the stored one. */
+/** The printed link line: OS file openers drop the `#` parameters, so the line names the tool that opens it properly. */
+export async function browserViewLine(s: Session): Promise<string> { return `browser view: ${await refreshBrowserUrl(s)} (room_open opens it)` }
+
 export async function refreshBrowserUrl(s: Session): Promise<string> {
   if (s.local) return s.browserUrl
   try {

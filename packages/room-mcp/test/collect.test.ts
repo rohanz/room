@@ -277,7 +277,7 @@ describe('room_collect', () => {
     put(worker, '.venv/CACHEDIR.TAG', 'Signature: 8a477f597d28d172789f06886806bc55\n')
     put(worker, '.venv/lib/python3.12/site-packages/dependency.py', 'installed dependency')
     fs.symlinkSync('lib', path.join(worker, '.venv/lib64'))
-    expect(await ignoredWorkerArtifacts(t.w)).toEqual([])
+    expect(await ignoredWorkerArtifacts(t.w, lead)).toEqual([])
     expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
     expect(fs.existsSync(worker)).toBe(false)
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
@@ -302,7 +302,7 @@ describe('room_collect', () => {
       fs.renameSync(path.join(worker, '.venv'), path.join(root, 'external-env'))
       fs.symlinkSync(path.join(root, 'external-env'), path.join(worker, '.venv'))
     }
-    expect(await ignoredWorkerArtifacts(t.w)).not.toEqual([])
+    expect(await ignoredWorkerArtifacts(t.w, lead)).not.toEqual([])
   })
 
   it('names a worktree server before the worker host exits during collect', async () => {
@@ -874,6 +874,41 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('diagnostic output')
     expect(workerByTag(lead, 'test')).toBeUndefined()
     expect(t.s.room.retiredWorkers()[0].summary).toBe(`kept for ignored output at ${worker}`)
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+
+  it.each([
+    ['identical to the lead\'s', () => { put(lead, 'artifact.bin', 'xy'); put(worker, 'artifact.bin', 'xy') }],
+    ['empty', () => put(worker, 'artifact.bin', '')],
+    ['a directory of identical and empty files', () => {
+      fs.appendFileSync(path.join(lead, '.git/info/exclude'), 'fixtures/\n')
+      put(lead, 'fixtures/a.txt', 'same'); put(worker, 'fixtures/a.txt', 'same'); put(worker, 'fixtures/nested/empty.txt', '')
+    }],
+  ])('cleans up a worktree whose only ignored file is %s', async (_kind, arrange) => {
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'new.txt', 'new'); arrange()
+    expect(await ignoredWorkerArtifacts(t.w, lead)).toEqual([])
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('cleaned up test')
+    expect(result).not.toContain('uncopied ignored artifacts')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+
+  it.each([
+    ['the lead lacks', () => put(worker, 'artifact.bin', 'xy'), 'artifact.bin'],
+    ['differs from the lead\'s', () => { put(lead, 'artifact.bin', 'xy'); put(worker, 'artifact.bin', 'xz') }, 'artifact.bin'],
+    ['is in a directory with one differing file', () => {
+      fs.appendFileSync(path.join(lead, '.git/info/exclude'), 'fixtures/\n')
+      put(lead, 'fixtures/a.txt', 'same'); put(worker, 'fixtures/a.txt', 'same'); put(worker, 'fixtures/empty.txt', '')
+      put(lead, 'fixtures/nested/b.txt', 'lead'); put(worker, 'fixtures/nested/b.txt', 'worker')
+    }, 'fixtures/'],
+  ])('retains the worktree over an ignored file the %s', async (_kind, arrange, kept) => {
+    const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'new.txt', 'new'); arrange()
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('kept test: uncopied ignored artifacts')
+    expect(result).toContain(`kept ${kept} at ${path.join(worker, kept)}`)
+    expect(result).toContain(`retained worktree: ${worker}`)
     expect(fs.existsSync(worker)).toBe(true)
   })
 

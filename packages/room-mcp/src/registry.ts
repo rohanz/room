@@ -319,8 +319,8 @@ export class Rooms {
           runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
             ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
               executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
-      }, async code => {
-        await registry.writeExit(record.id, { run: run.n, code, witnessed: true, at: at() })
+      }, async (code, signal) => {
+        await registry.writeExit(record.id, { run: run.n, code, ...(signal ? { signal } : {}), witnessed: true, at: at() })
         this.dropHandle(s, record.id)
         await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
       })

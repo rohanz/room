@@ -322,7 +322,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const shared = !borrowed && fs.existsSync(r.keptWorktree!) && registry.checkoutUsers(active)[0]
           if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`
           const missing = !borrowed && decideDiscard(await workerRealState(s.dir, w)) === 'prune'
-          const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w)
+          const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir)
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
           await registry.beginDiscard(active.id, a.force === true, [])
           await registry.markDiscardStep(active.id, 'children')
@@ -386,7 +386,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const children = descendants(s, w)
         if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
         const beforePlan = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) })
-        const ignoredBefore = !borrowed && decideDiscard(beforePlan) === 'cleanup' ? await ignoredWorkerArtifacts(w) : []
+        const ignoredBefore = !borrowed && decideDiscard(beforePlan) === 'cleanup' ? await ignoredWorkerArtifacts(w, s.dir) : []
         if (ignoredBefore.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignoredBefore.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
         await registry.beginDiscard(lock, a.force === true, children.map(child => child.id!).filter(Boolean))
         const childResults: string[] = []
@@ -457,7 +457,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           cleanupWorkerLogs(s.dir, w)
         }
         const ownedWorktree = !borrowed && decideDiscard(afterStop) === 'cleanup'
-        const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w) : []
+        const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : []
         if (ignored.length && a.force !== true) {
           await registry.interruptDiscard(lock, `ignored artifacts appeared: ${ignored.join(', ')}`)
           return [
@@ -829,7 +829,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               out.push(`retired ${user.tag} with ${w.tag}`)
             }
           }
-          const ignored = await ignoredWorkerArtifacts(w)
+          const ignored = await ignoredWorkerArtifacts(w, s.dir)
           if (ignored.length) {
             out.push('kept ' + w.tag + ': uncopied ignored artifacts')
             out.push(...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`))

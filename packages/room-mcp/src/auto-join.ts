@@ -30,6 +30,12 @@ export interface AutoJoinOptions {
   deadlineMs?: number
   /** After a failed run, a tool call starts a new one at most this often. */
   retryAfterMs?: number
+  /**
+   * Before the first join, wait up to `ms` for the host session to be bound. A Codex worker's MCP starts before
+   * its SessionStart hook (or first tool call) supplies the thread id; joining earlier under the synthetic id
+   * would rebind, leave and rejoin seconds later. After the bound the join goes ahead unbound.
+   */
+  bindWait?: { bound(): boolean; ms: number; pollMs?: number }
   now?: () => number
 }
 
@@ -73,6 +79,7 @@ export class AutoJoin {
   failure: string | undefined
   private permanent = false
   private recheck = false
+  private bindWaited = false
   private target: Session | undefined
   private readonly delays: number[]
   private readonly deadlineMs: number
@@ -116,7 +123,22 @@ export class AutoJoin {
     this.wake?.()
   }
 
+  private async waitForBinding(wait: NonNullable<AutoJoinOptions['bindWait']>): Promise<void> {
+    this.bindWaited = true
+    const until = this.now() + wait.ms
+    while (!wait.bound()) {
+      if (this.cancelled) return
+      if (this.now() >= until) { this.o.log(`host session not bound after ${wait.ms}ms; joining under this process's id`); return }
+      await this.sleep(Math.min(wait.pollMs ?? 100, Math.max(1, until - this.now())))
+    }
+  }
+
   private async run(): Promise<void> {
+    const wait = this.o.bindWait
+    if (wait && !this.bindWaited && !this.target && !wait.bound()) {
+      await this.waitForBinding(wait)
+      if (this.cancelled) return
+    }
     const hadNoRepository = this.recheck
     this.recheck = false
     const deadline = this.now() + this.deadlineMs

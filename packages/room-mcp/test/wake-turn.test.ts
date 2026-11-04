@@ -579,6 +579,21 @@ it('mid-turn sender maps daemon outcomes, skips Claude and logs each failure rea
   expect(log).toHaveBeenCalledTimes(3)
 })
 
+it('mid-turn sender skips a codex exec worker silently and still logs for an app-server session', async () => {
+  const post = vi.fn().mockResolvedValue({ kind: 'unavailable', reason: 'Codex thread is notLoaded' })
+  const log = vi.fn()
+  const target = { id: 'worker-thread', host: 'codex' as const }
+  const worker = createMidTurnSender({ env: { CODEX_HOME: '/missing-room-codex-home', ROOM_WORKER_ID: 'w_1', ROOM_WORKER_HOST: 'codex' }, post, log })
+  expect(await worker(target, 'pointer')).toBeUndefined()
+  expect(post).not.toHaveBeenCalled()
+  expect(log).not.toHaveBeenCalled()
+  expect(worker.lastAttempt?.(target)).toBeUndefined()
+  const appServer = createMidTurnSender({ env: { CODEX_HOME: '/missing-room-codex-home' }, post, log })
+  expect(await appServer(target, 'pointer')).toBeUndefined()
+  expect(post).toHaveBeenCalledOnce()
+  expect(log).toHaveBeenCalledWith('wake: Codex mid-turn unavailable for session worker-thread: Codex thread is notLoaded')
+})
+
 it('uses kind priorities for legacy messages with no explicit priority', async () => {
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   const r = rig(true, { midTurn })

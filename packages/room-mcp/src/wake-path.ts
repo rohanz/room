@@ -13,6 +13,7 @@ import net from 'node:net'
 import { execFile, execFileSync } from 'node:child_process'
 import { codexControlSocket, postCodexToolOutput } from './codex-app-server.js'
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
+import { isCodexExecWorker } from './binding.js'
 import { sendChannelNotification, type ChannelNotification } from './channel.js'
 
 type WakeEnv = NodeJS.ProcessEnv
@@ -179,7 +180,8 @@ export function createMidTurnSender(o: { env?: WakeEnv; post?: typeof postCodexT
     if (lastTarget !== key) last = undefined
     lastTarget = key
     const env = o.env ?? process.env
-    if (target.host !== 'codex' || mode(env) === 'off') return undefined
+    // A `codex exec` worker's thread is not an app-server thread: no mid-turn path exists, and tool replies carry its messages.
+    if (target.host !== 'codex' || mode(env) === 'off' || isCodexExecWorker(env)) return undefined
     last = { via: 'turn', at: Date.now(), outcome: 'attempting' }
     let result
     try { result = await (o.post ?? postCodexToolOutput)({ socketPath: codexControlSocket(env), threadId: target.id, text, clientVersion: o.clientVersion }) }

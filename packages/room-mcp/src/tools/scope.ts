@@ -15,9 +15,10 @@ import { localWorkerView } from '../worker-projector.js'
 import { liveWorkerActivity } from '../worker-activity.js'
 import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
-import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
+import { browserViewLine, parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
+import { openMergeConflicts } from '../conflict-set.js'
 import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { importedHistory, unresolvedLines, type UnresolvedEntry } from '@room/shared'
 
@@ -82,6 +83,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           who.set(n, entry?.state === 'shared' ? 'shared' : 'not shared')
         }
       }
+      for (const c of openMergeConflicts(s.room, s.me.name)) if (c.path === p) out.push(`conflicts with ${c.other}'s version${c.lines.length ? ` at lines ${c.lines.join(', ')}` : ''}`)
       if (who.size) out.push(`uncommitted changes by: ${[...who].sort(([a], [b]) => a.localeCompare(b)).map(([n, state]) => `${n} (${state})`).join(', ')}`)
       return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
   }
@@ -151,7 +153,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (wakeNote) out.unshift(wakeNote)
       }
       if (s.closed) out.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}`)
-      if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
+      if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(await browserViewLine(s)); return out.join('\n') }
       const wsRoom = rooms.workers()
       if (s.rejected) out.push(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
       const since = offlineSince(s, now)
@@ -237,7 +239,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         if (offline.length) out.push(`  ${offline.length} offline elsewhere: ${offline.map(label).join(', ')} (all:true for detail)`)
       }
-      if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
+      if (a.link === true) out.push(await browserViewLine(s))
       const areaScopes = s.room.allScopes().filter(sc => nb.has(sc.by) && (all || inView(sc.by)) || sc.by === s.me.name)
       const summary = s.room.areaSummary().filter(l => areaScopes.some(sc => l.startsWith(`${sc.area} (`)))
       if (summary.length) { out.push('activity by scope area:'); for (const l of summary) out.push(`  - ${l}`) }
@@ -274,6 +276,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] }
       if (skipped.size.length) out.push(`  ${skipped.size.length} of your changed files are not shared: too large`)
       if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`)
+      // Conflict notices name a peer and up to eight files; every file is here.
+      const merges = openMergeConflicts(s.room, s.me.name)
+      if (merges.length) {
+        out.push(`files that conflict with others' versions (${merges.length}):`)
+        for (const c of merges) out.push(`  - ${c.path} with ${c.other}${c.lines.length ? ` at lines ${c.lines.join(', ')}` : ''}`)
+      }
       const waits = await waitingOn(s)
       if (waits.length) { out.push('waiting on (others\' planned changes to symbols you use):'); out.push(...waits) }
       // Migrated Room 0.16 history is not recent: it would push out current lines. all=true shows it.

@@ -154,6 +154,9 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    in the foreground. Await completion and inspect the actual result before reporting
    validation; a stopped check is not a pass. Stop remaining background commands and
    monitors you started before the final message so the host exits cleanly.
+   Room workers are plain `codex exec` / `claude -p` processes too (ROOM_WORKER_ID in their
+   environment marks them), so stop your own jobs by the pid you started, never by a pattern
+   such as `pkill -f codex`, which also kills your workers.
    Report the work and validation evidence.
    Never commit or push unless the human asked. If asked to commit, use plain git for one
    task commit with a normal message; worker details do not belong in the history.

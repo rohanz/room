@@ -9,8 +9,8 @@ import { completionId, completionMessage, participantRecord, RoomDoc, ROOM_DOC_M
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
-import { followUpAnswer, hostFailure, hostFailureLine, missingClaudeSession, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
-import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
+import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, missingClaudeSession, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
+import { HOST_ENDED, idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
@@ -188,6 +188,16 @@ function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): Worke
   const background = backgroundAtExit(record, run)
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
   return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
+}
+
+/** The worker MCP's own log, beside the host's (worker-config.ts ROOM_LOG_FILE). */
+const workerMcpLogFile = (record: Pick<WorkerRecord, 'dir' | 'tag' | 'logFile'>): string => workerLogFile(record).replace(/\.log$/, '.mcp.log')
+
+/** A host that ended with neither code nor signal: the worker MCP's log may show it saw its stdin close. */
+function hostEnded(record: WorkerRecord, status: WorkerStatusResult): WorkerStatusResult {
+  if (status.status !== 'failed' || status.note !== HOST_ENDED || !status.run) return status
+  const reason = mcpStopReason(workerMcpLogFile(record), status.run.intentAt)
+  return reason?.startsWith('stdin') ? { ...status, note: 'host process ended (stdin closed)' } : status
 }
 
 /** A message resumes the retained host session; without one, only a respawn retries. */
@@ -576,7 +586,7 @@ export class WorkerRegistry {
     const record = this.read(id)
     if (!record) return undefined
     const reports = this.reports(id), exits = this.exits(id)
-    const status = failedByHost(record, unreportedExit(record, statusOf(record, record.runs, reports, exits, this.alive, this.now())))
+    const status = failedByHost(record, hostEnded(record, unreportedExit(record, statusOf(record, record.runs, reports, exits, this.alive, this.now()))))
     const run = status.run
     if (status.noReport) return status
     if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
@@ -853,21 +863,22 @@ export class WorkerRegistry {
     const report = this.reports(id).find(value => value.run === n)
     const current = this.status(id)
     const status = record?.phase === 'retiring' && !record.stop
-      ? unreportedExit(record, statusOf({ ...record, phase: 'active' }, record.runs, this.reports(id), this.exits(id), this.alive, this.now()))
+      ? hostEnded(record, unreportedExit(record, statusOf({ ...record, phase: 'active' }, record.runs, this.reports(id), this.exits(id), this.alive, this.now())))
       : current
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
       || (status.status !== 'failed' && !status.noReport && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
     const logFile = workerLogFile(record)
     const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
       && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
-    // The host's error event names the cause; the log tail may lead with a stderr banner (R2, 2026-10-02).
+    // Only facts Room can vouch for: the exit reason, the host's own error event or follow-up answer, and the
+    // log's path. Raw log lines are never quoted: a killed worker's tail is whatever its last command printed.
     const failure = missing ? undefined : hostFailure(logFile, record.host, run.logStart)
-    const tail = failure ? '' : workerLogTail(logFile, run.logStart)
     const answer = run.mode === 'resume' && !failure ? followUpAnswer(logFile, record.host, run.logStart) : ''
+    const reason = status.note ?? 'exited before reporting done'
     const detail = missing
       ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`
-      : failure ? `${status.note ?? 'exited before reporting done'}; ${hostFailureLine(failure, record.host, resumable(record))}`
-      : (answer || tail !== '(log unavailable)') ? `${status.note ?? 'exited before reporting done'}; ${answer || tail}` : status.note
+      : failure ? `${reason}; ${hostFailureLine(failure, record.host, resumable(record))}`
+      : answer ? `${reason}; ${answer}` : `${reason}; log: ${logFile}`
     const message = completionMessage(record, run, { ...status, note: detail }, report)
     if (!message) return false
     const posted = status.noReport ? { ...message, id: `${message.id}:no-report` } : message
@@ -1066,7 +1077,7 @@ export class WorkerRegistry {
     }
     if (!record.discard!.steps.patch) {
       if (owned) {
-        const ignored = await ignoredWorkerArtifacts(own)
+        const ignored = await ignoredWorkerArtifacts(own, leadDir)
         if (ignored.length && !record.discard!.force) {
           await this.interruptDiscard(id, `ignored artifacts appeared: ${ignored.join(', ')}`)
           return

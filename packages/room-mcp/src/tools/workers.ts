@@ -16,7 +16,7 @@ import { reconcileProjectedConflicts } from '../conflict-set.js'
 import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
-import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
+import { LOCAL, browserViewLine, type Session } from '../session.js'
 import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
@@ -287,8 +287,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               budget: { ...old.budget, nice: result.nice }, link,
               runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: result.proc.pid,
                 ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
-          }, async code => {
-            await registry.writeExit(id, { run: 1, code, witnessed: true, at: now() })
+          }, async (code, signal) => {
+            await registry.writeExit(id, { run: 1, code, ...(signal ? { signal } : {}), witnessed: true, at: now() })
             rooms.dropHandle(s, id)
             await registry.postObservedFailure(id, 1, message => postWorkerMessage(s.post, record, message))
           }))
@@ -330,7 +330,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const stale = staleWorkersNote(myWorkers(s).filter(w => w.id !== id).flatMap(w => localWorkerView(s, w.id) ?? []), now())
         if (stale) out.push('note: ' + stale)
         if (publication?.pending) out.push('carried preview freshness pending: publication could not be verified; previews including the lead report a gap. Plain room_send retries.')
-        if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
+        if (!spawnExplained.has(lead)) out.push(await browserViewLine(s))
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; answer its questions promptly.`)
         spawnExplained.add(lead)
         if (carried || skippedCarry?.length) {

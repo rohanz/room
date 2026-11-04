@@ -260,6 +260,18 @@ async function dropRegistry(): Promise<void> {
 }
 
 describe('session gating', () => {
+  it('lists each file of a per-peer conflict notice in room_state and room_state path=', async () => {
+    const t = setup()
+    const conflicts = t.room.doc.getMap<any>('conflicts')
+    for (const [other, path, lines] of [['Kieran', 'b.py', [4, 9]], ['Kieran', 'a.py', [2]], ['Ben', 'a.py', []]] as const)
+      conflicts.set(`Rohan\0merge\0${other}\0${path}\0`, { owner: 'Rohan', other, kind: 'merge', path, status: 'conflict', settled: 'conflict', lines, epoch: 1, peerEpisode: 1 })
+    conflicts.set('Rohan\0merge\0Kieran\0c.py\0', { owner: 'Rohan', other: 'Kieran', kind: 'merge', path: 'c.py', status: 'clean', settled: 'clean', clearedFrom: 'conflict', epoch: 1, peerEpisode: 1 })
+    const out = await t.tools.call('room_state', { all: true })
+    expect(out).toContain("files that conflict with others' versions (3):\n  - a.py with Ben\n  - a.py with Kieran at lines 2\n  - b.py with Kieran at lines 4, 9\n")
+    expect(await t.tools.call('room_state', { path: 'b.py' })).toContain("conflicts with Kieran's version at lines 4, 9")
+    expect(await t.tools.call('room_state', { path: 'c.py' })).not.toContain('conflicts with')
+  })
+
   it('summarizes six or more changed paths but preserves short lists and path lookup', async () => {
     const t = setup()
     for (let i = 0; i < 6; i++) publishFixture(t.room, 'Kieran', `art/main-street/scene-${i}.md`, 'changed')
