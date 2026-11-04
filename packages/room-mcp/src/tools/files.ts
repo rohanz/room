@@ -1266,7 +1266,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   let completed: TestResult | undefined
   let stage: 'setup' | 'check' = 'setup'
   const setupStart = performance.now()
-  let checkStart = 0
+  let checkStart = 0, checkStartedAt = Date.now()
   // This identifies logical source inputs, not mutable linked dependencies or the environment.
   const inputHash = createHash('sha256').update(ancestor)
   for (const [rel, value] of [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
@@ -1326,7 +1326,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
     env.ROOM_MERGED_TREE = dir!
-    checkStart = performance.now()
+    checkStart = performance.now(); checkStartedAt = Date.now()
     const result = await previewCheck(async () => {
       const command = bash ?? 'sh'
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
@@ -1357,7 +1357,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     if (error instanceof PreviewCleanupIncomplete) {
       survivors = true
       if (cached && dir) {
-        try { await quarantinePreview(dir, `cleanup did not finish within ${error.graceMs}ms`); quarantined = true }
+        try { await quarantinePreview(dir, `cleanup did not finish within ${error.graceMs}ms`, checkStartedAt); quarantined = true }
         catch (failure) { console.warn(`room preview: could not quarantine ${dir}: ${failure instanceof Error ? failure.message : String(failure)}`) }
       }
       const kept = !cached ? '' : quarantined

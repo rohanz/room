@@ -6,7 +6,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
-export const HOOKS_VERSION = '0.17.31'
+export const HOOKS_VERSION = '0.17.32'
 
 /**
  * Hook input carries the whole tool input, so a Write of a large file arrives here in full. 32 MB keeps

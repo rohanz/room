@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.32
+
+- Preview quarantine on Linux: the probe that decides whether a quarantined cached tree is quiet disregards a same-user process whose working directory it cannot read when that process started before the check (it cannot be the check's descendant), instead of keeping the tree quarantined forever on hosts that run a non-dumpable process, as the GitHub runner does. The quarantine marker records when its check started.
+
 ## 0.17.31
 
 - Local relay: only a lead session starts or takes over a clone's local relay. Workers on any host, and sessions started inside a worker's worktree, never start or take it over; a worker whose lead is gone reports "waiting for the lead's session to start the local relay" and joins once the lead is back. A relay from an older Room gets a warning and the lead takes over when it exits. A graceful relay stop no longer discards the room's only current state when the final save fails (full disk, I/O error): it retries for about 3 s, then keeps serving and holding authority until exit, and `room_leave` says the state could not be saved and why. On 2026-11-04 a worker's server took the relay over twice after the lead's session restarted, and its lagging event loop made join-only Codex workers fail to join.

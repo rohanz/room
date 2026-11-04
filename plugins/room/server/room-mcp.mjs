@@ -33971,7 +33971,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.31",
+      version: "0.17.32",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -40154,21 +40154,20 @@ async function tryPreviewLock(entry) {
     timer = setTimeout(() => finish(), 1e3);
   });
 }
-async function quarantinePreview(entry, reason) {
-  await fs38.promises.writeFile(previewQuarantinePath(entry), JSON.stringify({ reason, at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid }), { mode: 384 });
+async function quarantinePreview(entry, reason, since = Date.now()) {
+  await fs38.promises.writeFile(previewQuarantinePath(entry), JSON.stringify({ reason, at: (/* @__PURE__ */ new Date()).toISOString(), since, pid: process.pid }), { mode: 384 });
 }
-async function processCwds() {
+async function processCwds(since) {
   if (cwdsForTests) return cwdsForTests();
   if (process.platform === "linux") {
     const pids = await fs38.promises.readdir("/proc").catch(() => void 0);
     if (!pids) return void 0;
     const uid2 = typeof process.getuid === "function" ? process.getuid() : void 0;
-    return procCwds(
-      pids.filter((name) => /^\d+$/.test(name)),
-      uid2,
-      (pid) => fs38.promises.readlink(`/proc/${pid}/cwd`),
-      (pid) => fs38.promises.stat(`/proc/${pid}`).then((st) => st.uid, () => void 0)
-    );
+    return procCwds(pids.filter((name) => /^\d+$/.test(name)), uid2, {
+      readCwd: (pid) => fs38.promises.readlink(`/proc/${pid}/cwd`),
+      ownerOf: (pid) => fs38.promises.stat(`/proc/${pid}`).then((st) => st.uid, () => void 0),
+      startedAt: linuxProcessStart
+    }, since);
   }
   if (process.platform !== "darwin" || typeof process.getuid !== "function") return void 0;
   const uid = String(process.getuid());
@@ -40186,29 +40185,47 @@ function lsofCwds(error2, stdout) {
   const cwds = stdout.split("\n").filter((line) => line.startsWith("n")).map((line) => line.slice(1));
   return cwds.length ? cwds : void 0;
 }
-async function procCwds(pids, uid, readCwd, ownerOf) {
+async function procCwds(pids, uid, read3, since) {
   const cwds = [];
   for (const pid of pids) {
     try {
-      cwds.push((await readCwd(pid)).replace(/ \(deleted\)$/, ""));
+      cwds.push((await read3.readCwd(pid)).replace(/ \(deleted\)$/, ""));
     } catch (error2) {
       const code = error2.code;
       if (code === "ENOENT" || code === "ESRCH") continue;
       if (code === "EACCES" || code === "EPERM") {
-        const owner = await ownerOf(pid);
+        const owner = await read3.ownerOf(pid);
         if (owner === void 0 || owner !== uid) continue;
+        const started = since === void 0 ? void 0 : await read3.startedAt(pid);
+        if (started !== void 0 && started < since) continue;
       }
       return void 0;
     }
   }
   return cwds;
 }
+async function linuxProcessStart(pid) {
+  linuxBootMs ??= fs38.promises.readFile("/proc/stat", "utf8").then((text) => {
+    const m = /^btime (\d+)$/m.exec(text);
+    return m ? Number(m[1]) * 1e3 : void 0;
+  }, () => void 0);
+  const boot = await linuxBootMs;
+  const stat4 = await fs38.promises.readFile(`/proc/${pid}/stat`, "utf8").catch(() => void 0);
+  if (boot === void 0 || !stat4) return void 0;
+  const fields = stat4.slice(stat4.lastIndexOf(")") + 2).split(" ");
+  const ticks = Number(fields[19]);
+  return Number.isFinite(ticks) ? boot + ticks * (1e3 / LINUX_CLK_TCK) : void 0;
+}
 async function clearPreviewQuarantine(entry) {
   const marker = previewQuarantinePath(entry);
   const marked = await fs38.promises.lstat(marker).then(() => true, (error2) => error2.code !== "ENOENT");
   if (!marked) return true;
   const real = await fs38.promises.realpath(entry).catch(() => path35.resolve(entry));
-  const cwds = await processCwds();
+  const since = await fs38.promises.readFile(marker, "utf8").then((text) => {
+    const v = JSON.parse(text).since;
+    return typeof v === "number" ? v : void 0;
+  }, () => void 0);
+  const cwds = await processCwds(since);
   if (!cwds || cwds.some((cwd) => cwd === real || cwd.startsWith(`${real}${path35.sep}`))) return false;
   await fs38.promises.rm(marker, { force: true });
   return true;
@@ -40265,12 +40282,13 @@ async function evictPreviewLru(root, cap, remove) {
     if (await remove(entry.entry, entry.used)) total -= entry.bytes;
   }
 }
-var lockUnavailableForTests, previewQuarantinePath, cwdsForTests, previewMetaPath;
+var lockUnavailableForTests, previewQuarantinePath, cwdsForTests, LINUX_CLK_TCK, linuxBootMs, previewMetaPath;
 var init_preview_cache = __esm({
   "packages/room-mcp/src/preview-cache.ts"() {
     "use strict";
     lockUnavailableForTests = false;
     previewQuarantinePath = (entry) => `${entry}.quarantine`;
+    LINUX_CLK_TCK = 100;
     previewMetaPath = (entry) => `${entry}.meta.json`;
   }
 });
@@ -41527,7 +41545,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let completed;
   let stage = "setup";
   const setupStart = performance4.now();
-  let checkStart = 0;
+  let checkStart = 0, checkStartedAt = Date.now();
   const inputHash = createHash13("sha256").update(ancestor);
   for (const [rel, value2] of [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     inputHash.update(JSON.stringify([rel, value2, modes.get(rel) ?? 420]));
@@ -41589,6 +41607,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
     const env = Object.fromEntries(Object.entries(process.env).filter(([key2]) => !key2.startsWith("ROOM_")));
     env.ROOM_MERGED_TREE = dir;
     checkStart = performance4.now();
+    checkStartedAt = Date.now();
     const result2 = await previewCheck(async () => {
       const command2 = bash ?? "sh";
       const args2 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
@@ -41632,7 +41651,7 @@ ${verdict.text}${result2.stopped ? "\nstopped leftover processes from the check"
       survivors = true;
       if (cached2 && dir) {
         try {
-          await quarantinePreview(dir, `cleanup did not finish within ${error2.graceMs}ms`);
+          await quarantinePreview(dir, `cleanup did not finish within ${error2.graceMs}ms`, checkStartedAt);
           quarantined = true;
         } catch (failure) {
           console.warn(`room preview: could not quarantine ${dir}: ${failure instanceof Error ? failure.message : String(failure)}`);

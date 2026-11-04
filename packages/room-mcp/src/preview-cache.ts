@@ -111,8 +111,13 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
  */
 export const previewQuarantinePath = (entry: string): string => `${entry}.quarantine`
 
-export async function quarantinePreview(entry: string, reason: string): Promise<void> {
-  await fs.promises.writeFile(previewQuarantinePath(entry), JSON.stringify({ reason, at: new Date().toISOString(), pid: process.pid }), { mode: 0o600 })
+/**
+ * Mark a cached tree that a process from a check may still use. `since` is when that check started (ms since the
+ * epoch): a process that was already running then cannot be its descendant, which lets the probe disregard a
+ * long-lived process whose working directory it cannot read.
+ */
+export async function quarantinePreview(entry: string, reason: string, since = Date.now()): Promise<void> {
+  await fs.promises.writeFile(previewQuarantinePath(entry), JSON.stringify({ reason, at: new Date().toISOString(), since, pid: process.pid }), { mode: 0o600 })
 }
 
 let cwdsForTests: (() => Promise<string[] | undefined>) | undefined
@@ -126,14 +131,17 @@ export function setPreviewCwdsForTests(read?: () => Promise<string[] | undefined
  * (EACCES/EPERM with a foreign owner) is not ours to wait for; any other failure makes the listing incomplete.
  * macOS: only a clean, complete lsof listing counts; an error, timeout or overflowed buffer is incomplete.
  */
-async function processCwds(): Promise<string[] | undefined> {
+async function processCwds(since?: number): Promise<string[] | undefined> {
   if (cwdsForTests) return cwdsForTests()
   if (process.platform === 'linux') {
     const pids = await fs.promises.readdir('/proc').catch(() => undefined)
     if (!pids) return undefined
     const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
-    return procCwds(pids.filter(name => /^\d+$/.test(name)), uid,
-      pid => fs.promises.readlink(`/proc/${pid}/cwd`), pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, () => undefined))
+    return procCwds(pids.filter(name => /^\d+$/.test(name)), uid, {
+      readCwd: pid => fs.promises.readlink(`/proc/${pid}/cwd`),
+      ownerOf: pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, () => undefined),
+      startedAt: linuxProcessStart,
+    }, since)
   }
   if (process.platform !== 'darwin' || typeof process.getuid !== 'function') return undefined
   const uid = String(process.getuid())
@@ -151,27 +159,51 @@ export function lsofCwds(error: Error | null, stdout: string): string[] | undefi
   return cwds.length ? cwds : undefined
 }
 
+export type ProcReaders = {
+  readCwd: (pid: string) => Promise<string>
+  ownerOf: (pid: string) => Promise<number | undefined>
+  /** When the process started, ms since the epoch; undefined when unreadable. */
+  startedAt: (pid: string) => Promise<number | undefined>
+}
+
 /**
  * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that another user owns
- * (EACCES/EPERM) is not ours to wait for; any other failure, including our own unreadable process, makes
- * the listing incomplete.
+ * (EACCES/EPERM) is not ours to wait for; our own process with an unreadable working directory (non-dumpable:
+ * setuid or setcap) is disregarded only when it provably started before the check (`since`), since it cannot be
+ * that check's descendant; any other failure makes the listing incomplete.
  */
-export async function procCwds(pids: string[], uid: number | undefined, readCwd: (pid: string) => Promise<string>,
-  ownerOf: (pid: string) => Promise<number | undefined>): Promise<string[] | undefined> {
+export async function procCwds(pids: string[], uid: number | undefined, read: ProcReaders, since?: number): Promise<string[] | undefined> {
   const cwds: string[] = []
   for (const pid of pids) {
-    try { cwds.push((await readCwd(pid)).replace(/ \(deleted\)$/, '')) }
+    try { cwds.push((await read.readCwd(pid)).replace(/ \(deleted\)$/, '')) }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code === 'ENOENT' || code === 'ESRCH') continue
       if (code === 'EACCES' || code === 'EPERM') {
-        const owner = await ownerOf(pid)
+        const owner = await read.ownerOf(pid)
         if (owner === undefined || owner !== uid) continue
+        const started = since === undefined ? undefined : await read.startedAt(pid)
+        if (started !== undefined && started < since!) continue
       }
       return undefined
     }
   }
   return cwds
+}
+
+/** Linux clock ticks per second for /proc/<pid>/stat starttime (CONFIG_HZ is irrelevant: user-facing ticks are 100). */
+const LINUX_CLK_TCK = 100
+let linuxBootMs: Promise<number | undefined> | undefined
+/** Process start as ms since the epoch from /proc/<pid>/stat field 22, readable even when the cwd is not. */
+async function linuxProcessStart(pid: string): Promise<number | undefined> {
+  linuxBootMs ??= fs.promises.readFile('/proc/stat', 'utf8')
+    .then(text => { const m = /^btime (\d+)$/m.exec(text); return m ? Number(m[1]) * 1000 : undefined }, () => undefined)
+  const boot = await linuxBootMs
+  const stat = await fs.promises.readFile(`/proc/${pid}/stat`, 'utf8').catch(() => undefined)
+  if (boot === undefined || !stat) return undefined
+  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+  const ticks = Number(fields[19]) // field 22 of the whole line; the first two fields precede the comm
+  return Number.isFinite(ticks) ? boot + ticks * (1000 / LINUX_CLK_TCK) : undefined
 }
 
 /**
@@ -183,7 +215,8 @@ export async function clearPreviewQuarantine(entry: string): Promise<boolean> {
   const marked = await fs.promises.lstat(marker).then(() => true, error => (error as NodeJS.ErrnoException).code !== 'ENOENT')
   if (!marked) return true
   const real = await fs.promises.realpath(entry).catch(() => path.resolve(entry))
-  const cwds = await processCwds()
+  const since = await fs.promises.readFile(marker, 'utf8').then(text => { const v = (JSON.parse(text) as { since?: unknown }).since; return typeof v === 'number' ? v : undefined }, () => undefined)
+  const cwds = await processCwds(since)
   if (!cwds || cwds.some(cwd => cwd === real || cwd.startsWith(`${real}${path.sep}`))) return false
   await fs.promises.rm(marker, { force: true })
   return true
