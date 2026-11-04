@@ -45,7 +45,7 @@ describe('CheckoutLead', () => {
     const t = setup(false)
     expect(t.graph.start).not.toHaveBeenCalled()
     expect(t.conflicts.start).not.toHaveBeenCalled()
-    expect(t.lines).toEqual(['rohanz leads this checkout: its session runs the symbol graph and conflict checks; they start here if this session takes over'])
+    expect(t.lines).toEqual(['rohanz leads this checkout: its session runs the symbol graph; it starts here if this session takes over'])
     t.store.setPublisher(true)
     expect(t.graph.start).toHaveBeenCalledOnce()
     expect(t.conflicts.start).toHaveBeenCalledOnce()
@@ -116,7 +116,7 @@ describe('a second session in the same checkout (duplicate lead)', () => {
     return { s, tools }
   }
 
-  it('runs no file watcher, graph index or conflict checker, still answers tools, and starts all three once the first leaves', async () => {
+  it('runs no file watcher or graph index, keeps its own-claim conflict checker, still answers tools, and starts the rest once the first leaves', async () => {
     const conflictStarts: Session[] = []
     const start = ConflictSet.prototype.start
     vi.spyOn(ConflictSet.prototype, 'start').mockImplementation(function (this: ConflictSet) {
@@ -128,16 +128,17 @@ describe('a second session in the same checkout (duplicate lead)', () => {
     expect(second.s.me.name).not.toBe(first.s.me.name)
     expect(first.s.daemon.inputs.policy.publisher).toBe(true)
     expect(first.s.graph).toBeDefined()
-    expect(conflictStarts).toEqual([first.s])
+    // Both sessions run a ConflictSet: the duplicate's limits itself to its own claims (ownNonPublisher).
+    expect(conflictStarts).toEqual([first.s, second.s])
 
-    // The duplicate: no checkout watcher (roomd follows the publisher lease), no graph, no conflict checker.
+    // The duplicate: no checkout watcher (roomd follows the publisher lease), no graph.
     expect(second.s.daemon.inputs.policy.publisher).toBe(false)
     expect(second.s.daemon.takeWatcher()).toBeUndefined()
     expect(second.s.graph).toBeUndefined()
     expect(await second.tools.call('room_impact', { path: 'app.py' })).toContain(`${first.s.me.name} leads this checkout`)
     expect(await second.tools.call('room_state', {})).not.toMatch(/^error/)
 
-    // The first leaves: the duplicate takes the publisher lease on its next tick and starts all three.
+    // The first leaves: the duplicate takes the publisher lease on its next tick and starts the graph; no new ConflictSet.
     await shutdowns.shift()!()
     sessions.splice(sessions.indexOf(first.s), 1)
     await vi.waitFor(() => expect(second.s.daemon.inputs.policy.publisher).toBe(true), { timeout: 15_000 })

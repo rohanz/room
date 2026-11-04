@@ -36810,12 +36810,15 @@ function syncPrs(room, prs, origin) {
   const keep = new Set(prs.map((p) => prName(p.number)));
   const added = [], updated = [], removed = [];
   room.doc.transact(() => {
-    for (const pr of prs) {
-      const name = prName(pr.number);
+    for (const raw of prs) {
+      const name = prName(raw.number);
       const prev = map2.get(name);
-      if (prev && prev.updatedAt === pr.updatedAt && prev.title === pr.title && sameList(prev.files, pr.files)) continue;
+      const files3 = raw.coverage && prev ? prev.files : raw.files;
+      const pr = { ...raw, files: files3 };
+      if (prev && prev.updatedAt === pr.updatedAt && prev.title === pr.title && sameList(prev.files, pr.files) && prev.coverage === pr.coverage) continue;
       map2.set(name, pr);
-      room.scopes.set(name, { by: name, byKind: "bot", area: prArea(pr.files), summary: `PR #${pr.number}: ${pr.title}`, paths: pr.files, at: Date.parse(pr.updatedAt) || Date.now() });
+      const summary = `PR #${pr.number}: ${pr.title}${pr.coverage ? ` (files ${pr.coverage})` : ""}`;
+      room.scopes.set(name, { by: name, byKind: "bot", area: prArea(pr.files), summary, paths: pr.files, at: Date.parse(pr.updatedAt) || Date.now() });
       (prev ? updated : added).push(pr.number);
     }
     for (const name of Array.from(map2.keys())) {
@@ -37413,7 +37416,7 @@ async function tryPreviewLock(entry) {
   const command2 = lockUnavailableForTests ? void 0 : process.platform === "darwin" ? "lockf" : process.platform === "linux" ? "flock" : void 0;
   if (!command2) return void 0;
   await fs30.promises.mkdir(path27.dirname(file), { recursive: true, mode: 448 });
-  const helper = `printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { ps -A -o pgid=,stat= 2>/dev/null | awk -v g="$1" '$1==g && $2 !~ /^Z/ {f=1} END {exit !f}'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done`;
+  const helper = `printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { kill -0 "-$1" 2>/dev/null; return; }; printf "%s\\n" "$t" | awk -v g="$1" '$1==g && $2 !~ /^Z/ {f=1} END {exit !f}'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done`;
   const args2 = command2 === "lockf" ? ["-t", "0", file, "sh", "-c", helper] : ["-n", file, "sh", "-c", helper];
   return new Promise((resolve5) => {
     const child = spawn4(command2, args2, { stdio: ["pipe", "pipe", "ignore"] });
@@ -37533,7 +37536,7 @@ var init_checkout_lead = __esm({
         this.after = o.after ?? setTimeout;
         this.cancel = o.cancel ?? clearTimeout;
         this.running = leadsCheckout(source?.policy);
-        if (!this.running) o.log?.(`${this.publisher()} leads this checkout: its session runs the symbol graph and conflict checks; they start here if this session takes over`);
+        if (!this.running) o.log?.(`${this.publisher()} leads this checkout: its session runs the symbol graph; it starts here if this session takes over`);
         this.unwatch = typeof source?.watch === "function" ? source.watch((policy) => this.update(leadsCheckout(policy))) : void 0;
       }
       source;
@@ -60737,7 +60740,7 @@ function createPrs(deps) {
     const prs = openPrs(s.room);
     if (!prs.length) return [];
     const out = [`open pull requests (${prs.length}):`];
-    for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head}): ${pr.files.length ? pr.files.slice(0, 8).join(", ") + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : "") : "no files"} \xB7 ${pr.url}`);
+    for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head}): ${pr.coverage ? `[files ${pr.coverage}] ` : ""}${pr.files.length ? pr.files.slice(0, 8).join(", ") + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : "") : "no files"} \xB7 ${pr.url}`);
     return out;
   };
   const myPr = async (s) => {
@@ -62468,7 +62471,6 @@ function kindPhrase(type) {
 }
 
 // packages/room-mcp/src/tools/state.ts
-init_checkout_lead();
 init_session();
 
 // packages/room-mcp/src/ledger.ts
@@ -62922,18 +62924,8 @@ function createHandlerState(ctx) {
     if (hooks) primaryHooks = hooks;
     let watcher = null;
     let bridge = null;
-    let ungate;
     if (role === "primary") {
-      ungate = checkoutLead(s, { log: log2 }).attach({
-        name: "conflict checks",
-        start: () => {
-          watcher = claims.startConflictSet(s);
-        },
-        stop: () => {
-          watcher?.stop();
-          watcher = null;
-        }
-      });
+      watcher = claims.startConflictSet(s);
       prs.startPrSync(s);
     } else if (lead) {
       bridge = workers.startWorkersBridge(lead, s);
@@ -62944,7 +62936,7 @@ function createHandlerState(ctx) {
         wakes.detach(s);
         unwatch();
         hooks?.stop();
-        ungate?.();
+        watcher?.stop();
         if (hooks && primaryHooks === hooks) primaryHooks = null;
         if (role === "primary") prs.stopPrSync();
         if (bridge) {

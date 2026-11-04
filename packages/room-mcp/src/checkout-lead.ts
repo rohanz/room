@@ -20,8 +20,9 @@ export interface CheckoutWork { name: string; start(): void; stop(): void }
 interface LeadOptions { graceMs?: number; log?: (line: string) => void; after?: typeof setTimeout; cancel?: typeof clearTimeout }
 
 /**
- * Checkout-wide work (symbol graph, conflict checker) runs only in the session leading the checkout: another session
- * in the same checkout, or a stale one whose name lease lapsed, would compute it again from byte-identical inputs.
+ * Checkout-wide work (the symbol graph) runs only in the session leading the checkout: another session in the same
+ * checkout, or a stale one whose name lease lapsed, would compute it again from byte-identical inputs. The conflict
+ * checker is not gated: it limits itself to the session's own claims when it is not the publisher.
  * Work starts as soon as the session leads, and stops after `graceMs` without the role.
  */
 export class CheckoutLead {
@@ -38,7 +39,7 @@ export class CheckoutLead {
     this.after = o.after ?? setTimeout
     this.cancel = o.cancel ?? clearTimeout
     this.running = leadsCheckout(source?.policy)
-    if (!this.running) o.log?.(`${this.publisher()} leads this checkout: its session runs the symbol graph and conflict checks; they start here if this session takes over`)
+    if (!this.running) o.log?.(`${this.publisher()} leads this checkout: its session runs the symbol graph; it starts here if this session takes over`)
     this.unwatch = typeof source?.watch === 'function' ? source.watch(policy => this.update(leadsCheckout(policy))) : undefined
   }
 

@@ -99,6 +99,8 @@ export class Auth {
   private readonly sessions = new Map<string, StoredSession>()
   /** Logged out here, but the store still holds them: deleted again on the next logout or reconciliation. */
   private readonly owedDeletes = new Map<string, StoredSession>()
+  /** Logged out before the store was loaded, so unknown here: deleted from the store and never adopted from it. */
+  private readonly unknownDeletes = new Set<string>()
   /** Whether the store was read at startup; until it is, reconciliation adopts stored sessions. */
   private loaded = false
   private discovery?: { doc: Discovery; jwks?: { set: JSONWebKeySet; at: number } }
@@ -124,7 +126,7 @@ export class Auth {
   }
   /** Sessions written before OIDC existed have no provider: they are GitHub sessions. */
   private adopt(stored: Record<string, StoredSession>): void {
-    for (const [k, v] of Object.entries(stored)) if (v.at + this.ttl > this.now() && !this.owedDeletes.has(k) && !this.sessions.has(k)) this.sessions.set(k, { ...v, provider: v.provider ?? 'github' })
+    for (const [k, v] of Object.entries(stored)) if (v.at + this.ttl > this.now() && !this.owedDeletes.has(k) && !this.unknownDeletes.has(k) && !this.sessions.has(k)) this.sessions.set(k, { ...v, provider: v.provider ?? 'github' })
     this.loaded = true
   }
 
@@ -327,13 +329,29 @@ export class Auth {
   async logout(session: string | undefined): Promise<LogoutResult> {
     if (!session) return {}
     const s = this.sessions.get(session) ?? this.owedDeletes.get(session)
-    if (!s) return {}
+    if (!s) {
+      // Unknown here while the store never loaded: it may still hold the token, so delete it there and keep it out of
+      // any later adoption; until that deletion is stored the client is told to retry.
+      if (this.loaded) return {}
+      this.unknownDeletes.add(session)
+      const error = await this.deleteUnknown(session)
+      return error ? { error } : {}
+    }
     if (this.sessions.delete(session)) {
       this.owedDeletes.set(session, s)
       this.o.onSessionRemoved?.(session, 'logged out', s)
     }
     const error = await this.deleteOwed(session)
     return error ? { removed: s, error } : { removed: s }
+  }
+  private async deleteUnknown(session: string): Promise<string | undefined> {
+    try { await this.store.deleteSession(session) }
+    catch (e) {
+      this.o.log?.(`auth: logout of an unloaded session not yet persisted; will retry: ${message(e)}`)
+      return 'the logout could not be saved yet; retry'
+    }
+    this.unknownDeletes.delete(session)
+    return undefined
   }
   private async deleteOwed(session: string): Promise<string | undefined> {
     try { await this.store.deleteSession(session) }
@@ -354,6 +372,7 @@ export class Auth {
    *  be read revokes nothing. Also retries owed logout deletions and finishes a failed startup load. */
   async reconcileSessions(): Promise<ReconcileResult> {
     for (const id of [...this.owedDeletes.keys()]) await this.deleteOwed(id)
+    for (const id of [...this.unknownDeletes]) await this.deleteUnknown(id)
     let stored: Record<string, StoredSession>
     try { stored = await this.store.loadSessions() }
     catch (e) {

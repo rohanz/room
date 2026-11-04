@@ -11,7 +11,6 @@ import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { WakeReconciler } from '../wake-reconciler.js'
 import { ConflictSet } from '../conflict-set.js'
-import { checkoutLead } from '../checkout-lead.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
 import { Ledger } from '../ledger.js'
@@ -56,13 +55,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     if (hooks) primaryHooks = hooks
     let watcher: ConflictSet | null = null
     let bridge: Bridge | null = null
-    let ungate: (() => void) | undefined
     if (role === 'primary') {
-      ungate = checkoutLead(s, { log }).attach({
-        name: 'conflict checks',
-        start: () => { watcher = claims.startConflictSet(s) },
-        stop: () => { watcher?.stop(); watcher = null },
-      })
+      // Not gated on leading the checkout: a non-publisher session's ConflictSet limits itself to its own claims
+      // (conflict-set.ts ownNonPublisher), which the publisher's checker does not cover.
+      watcher = claims.startConflictSet(s)
       prs.startPrSync(s)
     } else if (lead) {
       bridge = workers.startWorkersBridge(lead, s)
@@ -70,7 +66,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     }
     return {
       stop() {
-        wakes.detach(s); unwatch(); hooks?.stop(); ungate?.()
+        wakes.detach(s); unwatch(); hooks?.stop(); watcher?.stop()
         if (hooks && primaryHooks === hooks) primaryHooks = null
         if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }

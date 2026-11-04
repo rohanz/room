@@ -68,7 +68,7 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
   await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   // Read every process group while the owner is alive. EOF may mean normal
   // release or a killed owner; either way, wait for its children before unlock.
-  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { ps -A -o pgid=,stat= 2>/dev/null | awk -v g="$1" \'$1==g && $2 !~ /^Z/ {f=1} END {exit !f}\'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done'
+  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { kill -0 "-$1" 2>/dev/null; return; }; printf "%s\\n" "$t" | awk -v g="$1" \'$1==g && $2 !~ /^Z/ {f=1} END {exit !f}\'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done'
   const args = command === 'lockf'
     ? ['-t', '0', file, 'sh', '-c', helper]
     : ['-n', file, 'sh', '-c', helper]

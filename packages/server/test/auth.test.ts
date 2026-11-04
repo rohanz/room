@@ -248,3 +248,48 @@ describe('device-flow auth', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+describe('logout of a token the server has not loaded yet', () => {
+  function flakyStore(sessions: Record<string, import('../src/store.js').StoredSession>) {
+    const state = { loadFails: true, deleteFails: false, deleted: [] as string[] }
+    const store: import('../src/store.js').Store = {
+      async init() {}, async loadRooms() { return {} }, async saveRooms() {},
+      async loadSessions() { if (state.loadFails) throw new Error('storage down'); return { ...sessions } },
+      async putSession(id, s) { sessions[id] = s },
+      async deleteSession(id) { if (state.deleteFails) throw new Error('storage down'); state.deleted.push(id); delete sessions[id] },
+      async audit() {}, async readAudit() { return [] }, async readAllAudit() { return { entries: [], complete: true } }, async close() {},
+    }
+    return { store, state }
+  }
+  it('deletes it from the store, tells the client to retry until that is stored, and never adopts it back', async () => {
+    const now = Date.now()
+    const stored = { tok1: { login: 'alice', provider: 'github' as const, at: now }, tok2: { login: 'bob', provider: 'github' as const, at: now } }
+    const { store, state } = flakyStore(stored)
+    const auth = new Auth({ clientId: 'fake', production: false, store, now: () => now })
+    await new Promise(r => setTimeout(r, 10)) // startup load failed; nothing adopted yet
+    state.deleteFails = true
+    expect(await auth.logout('tok1')).toMatchObject({ error: expect.stringContaining('retry') })
+    state.deleteFails = false
+    expect(await auth.logout('tok1')).toEqual({})
+    expect(state.deleted).toEqual(['tok1'])
+    state.loadFails = false
+    expect(await auth.reconcileSessions()).toEqual({ ok: true })
+    expect(auth.resolve('tok1')).toBeUndefined()
+    expect(auth.resolve('tok2')).toMatchObject({ login: 'bob' })
+  })
+  it('retries a failed unloaded logout on reconciliation and keeps the token out of adoption meanwhile', async () => {
+    const now = Date.now()
+    const stored = { tok1: { login: 'alice', provider: 'github' as const, at: now } }
+    const { store, state } = flakyStore(stored)
+    const auth = new Auth({ clientId: 'fake', production: false, store, now: () => now })
+    await new Promise(r => setTimeout(r, 10))
+    state.deleteFails = true
+    await auth.logout('tok1')
+    state.loadFails = false
+    expect(await auth.reconcileSessions()).toEqual({ ok: true })
+    expect(auth.resolve('tok1')).toBeUndefined() // still in the store, but never adopted
+    state.deleteFails = false
+    await auth.reconcileSessions()
+    expect(state.deleted).toEqual(['tok1'])
+  })
+})

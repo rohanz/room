@@ -19,6 +19,8 @@ export interface PrInfo {
   author: string
   head: string
   files: string[]
+  /** The server could not read the whole file list: 'partial' (cut short) or 'unavailable' (not read). Absent when complete. */
+  coverage?: 'partial' | 'unavailable'
   updatedAt: string
   url: string
 }
@@ -53,12 +55,16 @@ export function syncPrs(room: RoomDoc, prs: PrInfo[], origin?: unknown): { added
   const keep = new Set(prs.map(p => prName(p.number)))
   const added: number[] = [], updated: number[] = [], removed: number[] = []
   room.doc.transact(() => {
-    for (const pr of prs) {
-      const name = prName(pr.number)
+    for (const raw of prs) {
+      const name = prName(raw.number)
       const prev = map.get(name)
-      if (prev && prev.updatedAt === pr.updatedAt && prev.title === pr.title && sameList(prev.files, pr.files)) continue
+      // An incomplete read keeps the paths already known for the PR: a failed file page is not a removal.
+      const files = raw.coverage && prev ? prev.files : raw.files
+      const pr: PrInfo = { ...raw, files }
+      if (prev && prev.updatedAt === pr.updatedAt && prev.title === pr.title && sameList(prev.files, pr.files) && prev.coverage === pr.coverage) continue
       map.set(name, pr)
-      room.scopes.set(name, { by: name, byKind: 'bot', area: prArea(pr.files), summary: `PR #${pr.number}: ${pr.title}`, paths: pr.files, at: Date.parse(pr.updatedAt) || Date.now() })
+      const summary = `PR #${pr.number}: ${pr.title}${pr.coverage ? ` (files ${pr.coverage})` : ''}`
+      room.scopes.set(name, { by: name, byKind: 'bot', area: prArea(pr.files), summary, paths: pr.files, at: Date.parse(pr.updatedAt) || Date.now() })
       ;(prev ? updated : added).push(pr.number)
     }
     for (const name of Array.from(map.keys())) {

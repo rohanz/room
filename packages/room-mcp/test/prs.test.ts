@@ -71,6 +71,19 @@ describe('PR mirror in the doc', () => {
     expect(openPrs(b).map(p => p.number)).toEqual([7])
   })
 
+  it('an incomplete file read keeps the paths already known for the PR and is labelled', () => {
+    const { a, b } = pair()
+    syncPrs(a, [PR7])
+    expect(syncPrs(a, [{ ...PR7, files: ['src/auth.py'], coverage: 'partial', updatedAt: '2026-09-15T12:00:00Z' }])).toEqual({ added: [], updated: [7], removed: [] })
+    expect(b.scope('pr#7')).toMatchObject({ paths: ['src/auth.py', 'src/session.py'], summary: 'PR #7: Add login (files partial)' })
+    expect(openPrs(b)[0]).toMatchObject({ coverage: 'partial', files: ['src/auth.py', 'src/session.py'] })
+    expect(syncPrs(a, [{ ...PR7, files: [], coverage: 'unavailable', updatedAt: '2026-09-15T12:00:00Z' }])).toEqual({ added: [], updated: [7], removed: [] })
+    expect(b.scope('pr#7')!.paths).toEqual(['src/auth.py', 'src/session.py'])
+    // A complete read again replaces the list.
+    expect(syncPrs(a, [{ ...PR7, files: ['src/auth.py'], updatedAt: '2026-09-15T13:00:00Z' }])).toEqual({ added: [], updated: [7], removed: [] })
+    expect(b.scope('pr#7')).toMatchObject({ paths: ['src/auth.py'], summary: 'PR #7: Add login' })
+  })
+
   it('PR name, area and leader helpers', () => {
     expect(isPrName('pr#7')).toBe(true); expect(isPrName('rohanz+prs')).toBe(false)
     expect(prArea(['a/x.py', 'b/y.py', 'a/z.py'])).toBe('a')

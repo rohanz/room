@@ -85,7 +85,7 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       const prs = openPrs(s.room)
       if (!prs.length) return []
       const out = [`open pull requests (${prs.length}):`]
-      for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head}): ${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
+      for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head}): ${pr.coverage ? `[files ${pr.coverage}] ` : ''}${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
       return out
     }
   const myPr = async (s: Session): Promise<PrInfo | undefined> => {
