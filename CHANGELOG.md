@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.28
 
 - Collect: an ignored file that is empty or has the same bytes as the lead checkout's at the same path no longer keeps a collected worker's worktree, nor does an ignored directory holding only such files. In a user's repository one 2-byte ignored test fixture, written identically in the lead, kept 27 of 41 collected workers' worktrees; the 30 retained worktrees and their `.venv`s held 4.1 GB, plus 728 MB of preview cache. Ignored output the lead lacks or holds differently still retains the worktree and is named in the reply; discard's ignored-artifact refusal uses the same rule.
 - Codex workers: a `codex exec` worker's MCP starts before its SessionStart hook records the thread id, so it joined under its process id and, within two seconds, rebound: left the room, paused coordination and rejoined (all 14 Codex workers in a 2026-11-04 batch, with duplicate "joined" lines). Its first automatic join now waits up to 5 s for the thread id from the hook record or the first tool call's metadata, then joins once; without one it joins as before. A Codex worker with no hook record yet also binds to the thread its tool calls name. The mid-turn wake path skips `codex exec` workers silently (they are not app-server threads; tool replies carry their messages), so a lead's answer no longer logs "Codex mid-turn unavailable … notLoaded". App-server sessions keep the warning.
