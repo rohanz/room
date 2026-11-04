@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.30
 
 - Hosted server: a logout for a token the server had not loaded yet (its startup read of the sessions file failed) is deleted from the store anyway and kept out of any later adoption, with a retryable 503 until the deletion is stored; before, the request answered 200 and the token came back once storage recovered.
 - PR mirror: the server's new file-coverage markers reach the room. A PR whose file list was cut short or unreadable keeps the paths already known instead of replacing them with a partial or empty list, its scope summary says `(files partial)` or `(files unavailable)`, and `room_state` labels it. Found by the pre-release Astra review (docs/superpowers/reviews/2026-11-04-prerelease-review-0.17.30.md), along with the three fixes above that it confirmed.
