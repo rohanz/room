@@ -80,6 +80,8 @@ export interface CpuWatchdogOptions {
   log: (line: string) => void
   /** Whether any tool call is in flight now. */
   busy: () => boolean
+  /** A counter that moves whenever a tool call started; a call completed between two samples still resets the window. */
+  activity?: () => number
   now?: () => number
   wallClock?: () => Date
   cpuUsage?: () => NodeJS.CpuUsage
@@ -96,6 +98,7 @@ export class CpuWatchdog {
   private profiling = false
   private lastProfileAt = -Infinity
   private lastProfile?: string
+  private lastActivity: number | undefined
   private readonly now: () => number
   private readonly cpuUsage: () => NodeJS.CpuUsage
 
@@ -110,7 +113,10 @@ export class CpuWatchdog {
   /** One tick. Returns the running profile's promise when this tick started one (tests await it). */
   sample(): Promise<void> | undefined {
     const at = this.now()
-    if (this.o.busy()) { this.samples = []; return undefined }
+    const activity = this.o.activity?.()
+    const ran = activity !== undefined && this.lastActivity !== undefined && activity !== this.lastActivity
+    this.lastActivity = activity
+    if (this.o.busy() || ran) { this.samples = []; return undefined }
     const usage = this.cpuUsage()
     const micros = usage.user + usage.system
     this.samples.push({ at, micros })

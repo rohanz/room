@@ -102,7 +102,7 @@ it('keeps an orphaned check and eviction off the cached tree until the check exi
     if (checkPid) {
       try { process.kill(checkPid, 'SIGKILL') } catch { /* already exited */ }
       // Exited is enough: without an init process to reap it, the orphan stays a zombie that kill(pid, 0) still sees.
-      await until(() => !processAlive(checkPid!))
+      await until(async () => !(await processAlive(checkPid!)))
     }
     if (cache) await until(async () => {
       const unlock = await tryPreviewLock(cache!)

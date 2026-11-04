@@ -18,13 +18,13 @@ const profile: CpuProfile = {
   timeDeltas: [0, 1000, 50_000, 9000, 1000, 2000],
 }
 
-function harness(o: { busy?: () => boolean } = {}) {
+function harness(o: { busy?: () => boolean; activity?: () => number } = {}) {
   let now = 0, cpu = 0
   const lines: string[] = []
   const written: { dir: string; at: Date }[] = []
   const capture = vi.fn(async (_ms: number) => profile)
   const dog = new CpuWatchdog({
-    profileDir: () => '/repo/.git/room/profiles', log: line => lines.push(line), busy: o.busy ?? (() => false),
+    profileDir: () => '/repo/.git/room/profiles', log: line => lines.push(line), busy: o.busy ?? (() => false), ...(o.activity ? { activity: o.activity } : {}),
     now: () => now, wallClock: () => new Date(Date.UTC(2026, 10, 4, 12, 0, 0) + now), cpuUsage: () => ({ user: cpu * 0.75, system: cpu * 0.25 }),
     capture, write: async (dir, _p, at) => { written.push({ dir, at }); return `${dir}/${at.toISOString()}.cpuprofile` },
   })
@@ -123,4 +123,13 @@ describe('profile files', () => {
 it('formats the server process line for room_state(check=true)', () => {
   expect(formatProcessHealth({ cpu: { user: 3_500_000, system: 1_000_000 }, rss: 120 * 1048576, uptime: 3 * 3600 + 125, latest: '/r/p.cpuprofile' }))
     .toBe(`INFO  Room server process: pid ${process.pid}; CPU 4.5 s (user 3.5, system 1.0); RSS 120 MB; up 3 h 2 min; last CPU profile /r/p.cpuprofile`)
+})
+
+it('a tool call that started and finished between two samples resets the idle window', async () => {
+  let calls = 0
+  const h = harness({ activity: () => calls })
+  expect(await h.run(50_000, 0.9)).toBe(0)
+  calls++ // a short call ran entirely between two ticks; no sample ever saw it in flight
+  expect(await h.run(50_000, 0.9)).toBe(0) // the window restarted at the call, so 50 s later it is still short
+  expect(await h.run(12_000, 0.9)).toBe(1) // first post-call sample at 51 s; 60 s of samples by 111 s
 })

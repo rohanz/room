@@ -665,7 +665,7 @@ const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock }>()
 const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
 
 /** A check's process group counts as alive only while a non-zombie member remains (preview-cache.ts). */
-const previewGroupAlive = (pid: number): boolean => processGroupAlive(pid)
+const previewGroupAlive = (pid: number): Promise<boolean> => processGroupAlive(pid)
 
 function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock?: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
   return new Promise((resolve, reject) => {
@@ -716,9 +716,9 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
     child.on('exit', code => {
       exited = true
       void (async () => {
-        const stopped = !!child.pid && previewGroupAlive(child.pid)
+        const stopped = !!child.pid && await previewGroupAlive(child.pid)
         if (stopped) terminate()
-        while (child.pid && previewGroupAlive(child.pid)) {
+        while (child.pid && await previewGroupAlive(child.pid)) {
           if (termAt !== undefined && Date.now() - termAt >= 2000) signalGroup('SIGKILL')
           await new Promise(done => setTimeout(done, 25))
         }

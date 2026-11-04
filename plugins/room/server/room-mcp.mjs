@@ -37353,6 +37353,8 @@ var init_timing = __esm({
     };
     ToolTimingTracker = class {
       active = /* @__PURE__ */ new Set();
+      /** Counts every tool call start: a call that began and ended between two samples still shows as activity. */
+      calls = 0;
       now;
       log;
       constructor({ now = () => performance3.now(), log: log2 }) {
@@ -37361,6 +37363,7 @@ var init_timing = __esm({
       }
       async run(name, work) {
         const timing = new ToolTiming(name, this.now);
+        this.calls++;
         this.active.add(timing);
         try {
           return await context.run(timing, () => timing.phase("body", work));
@@ -37376,12 +37379,16 @@ var init_timing = __esm({
       get busy() {
         return this.active.size > 0;
       }
+      /** Monotonic: changes whenever a tool call has started since the value was last read. */
+      get activity() {
+        return this.calls;
+      }
     };
   }
 });
 
 // packages/room-mcp/src/preview-cache.ts
-import { execFile as execFile8, execFileSync as execFileSync5, spawn as spawn4 } from "node:child_process";
+import { execFile as execFile8, spawn as spawn4 } from "node:child_process";
 import fs30 from "node:fs";
 import path27 from "node:path";
 function previewCapBytes() {
@@ -37390,17 +37397,27 @@ function previewCapBytes() {
   const gb = Number(value2);
   return Number.isFinite(gb) && gb >= 0 ? gb * 1024 ** 3 : 4 * 1024 ** 3;
 }
-function readProcessGroupTable() {
-  const text = execFileSync5("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] });
-  return text.split("\n").flatMap((line) => {
-    const [pgid, stat4] = line.trim().split(/\s+/);
-    return pgid && stat4 && /^\d+$/.test(pgid) ? [{ pgid: Number(pgid), stat: stat4 }] : [];
+function readTable(column) {
+  return new Promise((resolve5, reject) => {
+    execFile8("ps", ["-A", "-o", `${column}=,stat=`], { encoding: "utf8", timeout: 3e3, maxBuffer: 8 * 1024 * 1024 }, (error2, stdout) => {
+      if (error2) {
+        reject(error2);
+        return;
+      }
+      resolve5(stdout.split("\n").flatMap((line) => {
+        const [key2, stat4] = line.trim().split(/\s+/);
+        return key2 && stat4 && /^\d+$/.test(key2) ? [{ key: Number(key2), stat: stat4 }] : [];
+      }));
+    });
   });
 }
-function processGroupAlive(pgid, table = readProcessGroupTable) {
+async function readProcessGroupTable() {
+  return (await readTable("pgid")).map(({ key: key2, stat: stat4 }) => ({ pgid: key2, stat: stat4 }));
+}
+async function processGroupAlive(pgid, table = readProcessGroupTable) {
   let rows;
   try {
-    rows = table();
+    rows = await table();
   } catch {
     try {
       process.kill(-pgid, 0);
@@ -38292,9 +38309,9 @@ function runTrackedProcess(file, args2, cwd, timeout, maxBuffer, lock, env = pro
     child.on("exit", (code) => {
       exited = true;
       void (async () => {
-        const stopped = !!child.pid && previewGroupAlive(child.pid);
+        const stopped = !!child.pid && await previewGroupAlive(child.pid);
         if (stopped) terminate();
-        while (child.pid && previewGroupAlive(child.pid)) {
+        while (child.pid && await previewGroupAlive(child.pid)) {
           if (termAt !== void 0 && Date.now() - termAt >= 2e3) signalGroup("SIGKILL");
           await new Promise((done) => setTimeout(done, 25));
         }
@@ -39695,7 +39712,7 @@ __export(worker_registry_exports, {
 import fs33 from "node:fs";
 import path30 from "node:path";
 import { createHash as createHash12, randomBytes as randomBytes4 } from "node:crypto";
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 import { performance as performance5 } from "node:perf_hooks";
 function base32(value2, length2) {
   let out = "";
@@ -39882,7 +39899,7 @@ async function leaseRetry(fn, deadline = performance5.now() + GUARD_WAIT_MS) {
 function commitExists(commonDir2, oid) {
   if (typeof oid !== "string" || !/^[0-9a-f]{40,64}$/.test(oid)) return false;
   try {
-    execFileSync6("git", ["--git-dir", commonDir2, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
+    execFileSync5("git", ["--git-dir", commonDir2, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -39891,7 +39908,7 @@ function commitExists(commonDir2, oid) {
 function legacySession(dir, oldId, host) {
   if (!oldId) return void 0;
   try {
-    const gitDir = execFileSync6("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    const gitDir = execFileSync5("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     const local = readJson2(path30.join(gitDir, "room-session.json"));
     return local?.worker_id === oldId && local.host === host && typeof local.session_id === "string" ? local.session_id : void 0;
   } catch {
@@ -39948,7 +39965,7 @@ function legacyDisplay(commonDir2) {
 function discoverLegacyWorktrees(commonDir2) {
   let output;
   try {
-    output = execFileSync6("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+    output = execFileSync5("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8" });
   } catch {
     return [];
   }
@@ -41009,7 +41026,7 @@ var init_worker_registry = __esm({
         if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) return;
         const leadDir = path30.dirname(path30.dirname(path30.dirname(record2.dir)));
         if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
-        const run2 = (...args2) => execFileSync6("git", ["--git-dir", this.commonDir, ...args2], { encoding: "utf8" }).trim();
+        const run2 = (...args2) => execFileSync5("git", ["--git-dir", this.commonDir, ...args2], { encoding: "utf8" }).trim();
         if (prep.created === true && fs33.existsSync(record2.dir)) {
           const listing = run2("worktree", "list", "--porcelain");
           const canonical = fs33.realpathSync(record2.dir);
@@ -44871,7 +44888,7 @@ var init_bridge = __esm({
 // packages/room-mcp/src/session.ts
 import { existsSync as existsSync2, readFileSync, readdirSync, statSync } from "node:fs";
 import { createHash as createHash16 } from "node:crypto";
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { basename as basename3, dirname as dirname3, join as join3, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 function findLocalViewer() {
@@ -44933,14 +44950,14 @@ function sameProcess(a, b) {
 }
 function defaultCommonDir(cwd) {
   try {
-    return resolve3(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+    return resolve3(cwd, execFileSync6("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
   } catch {
     return void 0;
   }
 }
 function parentCommandLine() {
   try {
-    return execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync6("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return "";
   }
@@ -46008,7 +46025,7 @@ var init_local_migration = __esm({
 });
 
 // packages/room-mcp/src/binding.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 import fs43 from "node:fs";
 import path38 from "node:path";
 function isCodexExecWorker(env = process.env) {
@@ -46027,7 +46044,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
     if (commonDir2 === void 0 || commonDir2 === null) {
       commonCheckedAt = now();
       try {
-        commonDir2 = path38.resolve(cwd, execFileSync8("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+        commonDir2 = path38.resolve(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
       } catch {
         commonDir2 = null;
       }
@@ -46041,7 +46058,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
     if (parent === void 0) {
       parent = identity(probeProcessNow(process.ppid), process.ppid) ?? null;
       try {
-        parentArgs = execFileSync8("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+        parentArgs = execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         parentArgs = "";
       }
@@ -46061,7 +46078,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
       const target = sessionDirectory(dir, b.id);
       if (!migrated.has(b.id)) {
         try {
-          ownGitDir ??= execFileSync8(
+          ownGitDir ??= execFileSync7(
             "git",
             ["-C", cwd, "rev-parse", "--absolute-git-dir"],
             { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }
@@ -55550,7 +55567,7 @@ init_config();
 
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
-import { execFile as execFile11, execFileSync as execFileSync9 } from "node:child_process";
+import { execFile as execFile11, execFileSync as execFileSync8 } from "node:child_process";
 
 // packages/room-mcp/src/codex-app-server.ts
 init_wrapper();
@@ -55672,7 +55689,7 @@ var parentArgsCache;
 function claudeParentArgs() {
   if (parentArgsCache !== void 0) return parentArgsCache;
   try {
-    parentArgsCache = execFileSync9("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
+    parentArgsCache = execFileSync8("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
   } catch {
     parentArgsCache = "";
   }
@@ -59425,6 +59442,7 @@ var CpuWatchdog = class {
   profiling = false;
   lastProfileAt = -Infinity;
   lastProfile;
+  lastActivity;
   now;
   cpuUsage;
   /** The most recent profile written, for diagnostics. */
@@ -59434,7 +59452,10 @@ var CpuWatchdog = class {
   /** One tick. Returns the running profile's promise when this tick started one (tests await it). */
   sample() {
     const at = this.now();
-    if (this.o.busy()) {
+    const activity = this.o.activity?.();
+    const ran = activity !== void 0 && this.lastActivity !== void 0 && activity !== this.lastActivity;
+    this.lastActivity = activity;
+    if (this.o.busy() || ran) {
       this.samples = [];
       return void 0;
     }
@@ -62808,7 +62829,7 @@ function spawnFrontier(s, id3, name) {
 
 // packages/room-mcp/src/relevance.ts
 init_src();
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 var RECHECK_MS2 = 5e3;
 function createRelevance(now = Date.now) {
   const integrated = /* @__PURE__ */ new Map();
@@ -62819,7 +62840,7 @@ function createRelevance(now = Date.now) {
     if (!sha) return true;
     let head;
     try {
-      head = execFileSync10("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
+      head = execFileSync9("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
     } catch {
       return true;
     }
@@ -62828,7 +62849,7 @@ function createRelevance(now = Date.now) {
     if (known === true) return false;
     if (known !== void 0 && now() - known < RECHECK_MS2) return true;
     try {
-      execFileSync10("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
+      execFileSync9("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
       integrated.set(key2, true);
       return false;
     } catch {
@@ -64951,7 +64972,7 @@ function removeOwn(file, key2) {
 // packages/room-mcp/src/workspace.ts
 init_src4();
 import fs62 from "node:fs";
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 var samePlace = (a, b) => {
   try {
     return fs62.realpathSync(a) === fs62.realpathSync(b);
@@ -64967,7 +64988,7 @@ function fallbackWorkspace(env, processDir) {
   const pwd = value2("PWD");
   return pwd && samePlace(pwd, processDir) ? pwd : processDir;
 }
-var parentCommand = () => execFileSync11("ps", ["-o", "command=", "-p", String(process.ppid)], {
+var parentCommand = () => execFileSync10("ps", ["-o", "command=", "-p", String(process.ppid)], {
   encoding: "utf8",
   timeout: 1e3,
   stdio: ["ignore", "pipe", "ignore"]
@@ -64984,7 +65005,7 @@ function deferForSharedCodex(env, readParent = parentCommand, platform = process
 }
 var worktreeRoot = (dir) => {
   try {
-    return execFileSync11("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+    return execFileSync10("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
   } catch {
     return void 0;
   }
@@ -65403,7 +65424,7 @@ async function main() {
   let closing = false;
   const timing = new ToolTimingTracker({ log });
   registerPrepareGitTiming();
-  const cpu = new CpuWatchdog({ busy: () => timing.busy, log, profileDir: () => {
+  const cpu = new CpuWatchdog({ busy: () => timing.busy, activity: () => timing.activity, log, profileDir: () => {
     const common = roomLogDir();
     return common ? path59.join(common, "room", "profiles") : void 0;
   } });

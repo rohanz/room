@@ -84,7 +84,7 @@ async function main() {
   let closing = false
   const timing = new ToolTimingTracker({ log })
   registerPrepareGitTiming()
-  const cpu = new CpuWatchdog({ busy: () => timing.busy, log, profileDir: () => { const common = roomLogDir(); return common ? path.join(common, 'room', 'profiles') : undefined } })
+  const cpu = new CpuWatchdog({ busy: () => timing.busy, activity: () => timing.activity, log, profileDir: () => { const common = roomLogDir(); return common ? path.join(common, 'room', 'profiles') : undefined } })
   const watchdog = startEventLoopWatchdog(timing, { log, onTick: () => { void cpu.sample() } })
   setLatestCpuProfile(() => cpu.latest)
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')

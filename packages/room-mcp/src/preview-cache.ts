@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -22,13 +22,22 @@ export function setPreviewLockUnavailableForTests(value = false): void { lockUna
 
 export type PreviewUnlock = (() => Promise<void>) & { trackProcess(pid: number): Promise<void> }
 
-/** `pgid stat` rows for every process, as `ps -A -o pgid=,stat=` prints them on BSD and GNU ps alike. */
-export function readProcessGroupTable(): { pgid: number; stat: string }[] {
-  const text = execFileSync('ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
-  return text.split('\n').flatMap(line => {
-    const [pgid, stat] = line.trim().split(/\s+/)
-    return pgid && stat && /^\d+$/.test(pgid) ? [{ pgid: Number(pgid), stat }] : []
+/** One bounded, asynchronous `ps -A` read (never on the event loop), parsed into `{ key, stat }` rows. */
+function readTable(column: 'pgid' | 'pid'): Promise<{ key: number; stat: string }[]> {
+  return new Promise((resolve, reject) => {
+    execFile('ps', ['-A', '-o', `${column}=,stat=`], { encoding: 'utf8', timeout: 3000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      if (error) { reject(error); return }
+      resolve(stdout.split('\n').flatMap(line => {
+        const [key, stat] = line.trim().split(/\s+/)
+        return key && stat && /^\d+$/.test(key) ? [{ key: Number(key), stat }] : []
+      }))
+    })
   })
+}
+
+/** `pgid stat` rows for every process, as `ps -A -o pgid=,stat=` prints them on BSD and GNU ps alike. */
+export async function readProcessGroupTable(): Promise<{ pgid: number; stat: string }[]> {
+  return (await readTable('pgid')).map(({ key, stat }) => ({ pgid: key, stat }))
 }
 
 /**
@@ -38,25 +47,20 @@ export function readProcessGroupTable(): { pgid: number; stat: string }[] {
  * probe is the fallback.
  */
 /** Whether one process is still running (a zombie has exited and only awaits reaping). Same fallback as the group check. */
-export function processAlive(pid: number, table: () => { pid: number; stat: string }[] = readProcessTable): boolean {
+export async function processAlive(pid: number, table: () => Promise<{ pid: number; stat: string }[]> = readProcessTable): Promise<boolean> {
   let rows: { pid: number; stat: string }[]
-  try { rows = table() }
+  try { rows = await table() }
   catch { try { process.kill(pid, 0); return true } catch { return false } }
   return rows.some(row => row.pid === pid && !row.stat.startsWith('Z'))
 }
 
-/** `pid stat` rows for every process. */
-function readProcessTable(): { pid: number; stat: string }[] {
-  const text = execFileSync('ps', ['-A', '-o', 'pid=,stat='], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
-  return text.split('\n').flatMap(line => {
-    const [pid, stat] = line.trim().split(/\s+/)
-    return pid && stat && /^\d+$/.test(pid) ? [{ pid: Number(pid), stat }] : []
-  })
+async function readProcessTable(): Promise<{ pid: number; stat: string }[]> {
+  return (await readTable('pid')).map(({ key, stat }) => ({ pid: key, stat }))
 }
 
-export function processGroupAlive(pgid: number, table: () => { pgid: number; stat: string }[] = readProcessGroupTable): boolean {
+export async function processGroupAlive(pgid: number, table: () => Promise<{ pgid: number; stat: string }[]> = readProcessGroupTable): Promise<boolean> {
   let rows: { pgid: number; stat: string }[]
-  try { rows = table() }
+  try { rows = await table() }
   catch { try { process.kill(-pgid, 0); return true } catch { return false } }
   return rows.some(row => row.pgid === pgid && !row.stat.startsWith('Z'))
 }

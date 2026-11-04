@@ -193,6 +193,8 @@ export function registerPrepareGitTiming(): void {
 
 export class ToolTimingTracker {
   private readonly active = new Set<ToolTiming>()
+  /** Counts every tool call start: a call that began and ended between two samples still shows as activity. */
+  private calls = 0
   private readonly now: Clock
   private readonly log: Logger
   constructor({ now = () => performance.now(), log }: { now?: Clock; log: Logger }) {
@@ -200,6 +202,7 @@ export class ToolTimingTracker {
   }
   async run<T>(name: string, work: () => Promise<T> | T): Promise<T> {
     const timing = new ToolTiming(name, this.now)
+    this.calls++
     this.active.add(timing)
     try { return await context.run(timing, () => timing.phase('body', work)) }
     finally {
@@ -210,6 +213,8 @@ export class ToolTimingTracker {
   }
   runningAt(now = this.now()): string[] { return [...this.active].map(timing => `${timing.name} ${ms(now - timing.started)}`) }
   get busy(): boolean { return this.active.size > 0 }
+  /** Monotonic: changes whenever a tool call has started since the value was last read. */
+  get activity(): number { return this.calls }
 }
 
 /** `onTick` (the CPU watchdog) samples on the same unrefed timer. */
