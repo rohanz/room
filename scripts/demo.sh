@@ -1,17 +1,50 @@
 #!/usr/bin/env bash
 # One-machine demo: room server + a shared "origin" + two clones (Rohan, Kieran).
 # Then prints how to join from each clone with plain Codex (plugin) or with roomagent.
+#
+# Usage (any cwd):  bash scripts/demo.sh            # or: PORT=1244 WORK=/tmp/my-room-demo bash scripts/demo.sh
+# Prerequisites:    Node 22+ and npm (run `npm ci` in the repo first), git, curl, uv.
+# PORT              server port (default 1234); it must be free: a listener already there is refused.
+# WORK              demo directory, left in place on exit. Default: a fresh `mktemp -d` directory. A given
+#                   WORK that exists and is not empty is replaced only when it holds the .room-demo marker
+#                   an earlier run wrote; root, home, the repository and their ancestors are always refused.
+# The server is in-memory and stops with this script (Ctrl-C). Its log is $WORK/server.log.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PORT="${PORT:-1234}"
-WORK="${WORK:-/tmp/room-demo}"
-A="$WORK/rohan" B="$WORK/kieran"
+MARKER=.room-demo
 
-case "$WORK" in
-  /tmp/*|*room-demo*) ;;
-  *) echo "[demo] refusing to rm -rf '$WORK' (must be under /tmp or contain 'room-demo')" >&2; exit 1 ;;
-esac
-rm -rf "$WORK"; mkdir -p "$WORK"
+die() { echo "[demo] $*" >&2; exit 1; }
+# Is $2 equal to $1 or inside it? Both are canonical absolute paths.
+within() { [ "$1" = / ] || [ "$2" = "$1" ] || case "$2" in "$1"/*) true ;; *) false ;; esac; }
+
+if [ -z "${WORK:-}" ]; then
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/room-demo.XXXXXX")"
+  WORK="$(cd "$WORK" && pwd -P)"
+else
+  case "/$WORK/" in */../*|*/./*) die "refusing WORK='$WORK': use a path without . or .. components" ;; esac
+  while [ "${WORK%/}" != "$WORK" ]; do WORK="${WORK%/}"; done
+  [ -n "$WORK" ] || die "refusing WORK=/"
+  [ -L "$WORK" ] && die "refusing WORK='$WORK': it is a symbolic link"
+  parent="$(dirname "$WORK")"
+  [ -d "$parent" ] || die "refusing WORK='$WORK': $parent does not exist"
+  parent="$(cd "$parent" && pwd -P)"
+  WORK="${parent%/}/$(basename "$WORK")"
+  HOME_DIR="$(cd "${HOME:-/}" && pwd -P)"
+  for guarded in "$HOME_DIR" "$ROOT"; do
+    within "$WORK" "$guarded" && die "refusing WORK='$WORK': it is $guarded or one of its ancestors"
+  done
+  if [ -e "$WORK" ]; then
+    [ -d "$WORK" ] || die "refusing WORK='$WORK': it is not a directory"
+    if [ -n "$(ls -A "$WORK")" ]; then
+      [ -f "$WORK/$MARKER" ] || die "refusing to replace '$WORK': it is not empty and has no $MARKER marker from an earlier demo"
+      rm -rf "$WORK"
+    fi
+  fi
+  mkdir -p "$WORK"
+fi
+touch "$WORK/$MARKER"
+A="$WORK/rohan" B="$WORK/kieran"
 
 # Bare origin from the example repo so both clones share a base commit and an origin URL.
 cp -R "$ROOT/examples/demo-repo" "$WORK/src"
@@ -25,13 +58,27 @@ for d in "$A" "$B"; do ( cd "$d" && uv sync --group dev -q ); done
 echo "[demo] starting room server on :$PORT (fake GitHub issuer: GITHUB_CLIENT_ID=fake)"
 # The fake issuer walks the real login path (POST /auth/device, /auth/poll) without GitHub: a login is
 # whatever `fakeLogin` the poll carries. Never set it on a real server; NODE_ENV=production refuses it.
-GITHUB_CLIENT_ID=fake PORT="$PORT" npx tsx "$ROOT/packages/server/src/index.ts" > "$WORK/server.log" 2>&1 &
+if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/health"; then
+  die "something already answers HTTP on :$PORT; stop it or pick another PORT"
+fi
+# The server itself, not an npx wrapper, so the recorded pid is the process to stop.
+( cd "$ROOT" && GITHUB_CLIENT_ID=fake PORT="$PORT" exec node --import tsx packages/server/src/index.ts ) > "$WORK/server.log" 2>&1 &
 SRV=$!
-trap 'echo; echo "[demo] stopping"; kill $SRV 2>/dev/null; wait 2>/dev/null' EXIT
-for _ in $(seq 1 50); do
-  if (echo > "/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1; then break; fi
+stop_server() {
+  [ -n "${SRV:-}" ] || return 0
+  kill "$SRV" 2>/dev/null || true
+  wait "$SRV" 2>/dev/null || true
+  SRV=
+}
+trap 'echo; echo "[demo] stopping"; stop_server' EXIT
+server_failed() { echo "[demo] $1; server log follows" >&2; cat "$WORK/server.log" >&2; exit 1; }
+ready=
+for _ in $(seq 1 150); do
+  kill -0 "$SRV" 2>/dev/null || { wait "$SRV" 2>/dev/null || true; SRV=; server_failed "the server exited during startup"; }
+  if curl -sf --max-time 1 "http://127.0.0.1:$PORT/health" | grep -q '"ok":true'; then ready=1; break; fi
   sleep 0.1
 done
+[ -n "$ready" ] || server_failed "the server did not answer /health on :$PORT within 15 s"
 # Give each on-duty agent its own authenticated identity. The session values are demo-only and die
 # with this in-memory server; printing them is what makes the copy/paste commands actually connect.
 fake_session() {
@@ -66,4 +113,4 @@ Browser view:  npm run web   then open the URL room_join prints.
 
 Ctrl-C here stops the server.
 MSG
-wait
+wait "$SRV"

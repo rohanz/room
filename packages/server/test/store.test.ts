@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { FileStore, PgStore, WriteQueue, MEM_AUDIT_MAX, storeFromEnv, type AuditEntry } from '../src/store.js'
+import { FileStore, PgStore, MEM_AUDIT_MAX, storeFromEnv, type AuditEntry } from '../src/store.js'
 
 describe('FileStore', () => {
   it('round-trips rooms, sessions (0600) and audit lines through a directory', async () => {
@@ -25,16 +25,17 @@ describe('FileStore', () => {
     await b.init()
     expect(await b.loadRooms()).toEqual({ 'github.com/o/r': { by: 'ann', at: 1, branches: ['github.com/o/r/main'], lastSeen: undefined }, 'local/demo': { by: undefined, at: 2, branches: [], lastSeen: undefined } })
     expect(await b.loadSessions()).toEqual({ s2: { login: 'bob@example.com', provider: 'oidc', at: 2 } })
-    expect((await b.readAudit()).map(e => e.event)).toEqual(['login', 'join', 'refused'])
-    expect((await b.readAudit({ since: 20 })).map(e => e.at)).toEqual([20, 30])
-    expect((await b.readAudit({ limit: 1 })).map(e => e.at)).toEqual([30])
+    expect((await b.readAudit()).entries.map(e => e.event)).toEqual(['login', 'join', 'refused'])
+    expect((await b.readAudit({ since: 20 })).entries.map(e => e.at)).toEqual([20, 30])
+    expect((await b.readAudit({ limit: 1 })).entries.map(e => e.at)).toEqual([30])
     // migration reads the whole audit as evidence, or learns that it cannot
-    expect(await b.readAllAudit({ limit: 3, maxBytes: 1 << 20 })).toEqual({ entries: await b.readAudit(), complete: true })
+    expect(await b.readAllAudit({ limit: 3, maxBytes: 1 << 20 })).toEqual({ entries: (await b.readAudit()).entries, complete: true })
     expect(await b.readAllAudit({ limit: 2, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
     expect(await b.readAllAudit({ limit: 3, maxBytes: 10 })).toEqual({ entries: [], complete: false })
     // a corrupt line is skipped by the listing, and makes the whole audit incomplete
     fs.appendFileSync(path.join(dir, 'audit.log'), 'not json\n')
-    expect(await b.readAudit()).toHaveLength(3)
+    expect(await b.readAudit()).toMatchObject({ complete: false, gaps: ['unreadable'] })
+    expect((await b.readAudit()).entries).toHaveLength(3)
     expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
     fs.writeFileSync(path.join(dir, 'audit.log'), '{"at":1,"event":"join"}\n7\n')
     expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
@@ -105,7 +106,7 @@ describe('FileStore', () => {
     await s.saveRooms({ 'local/d': { at: 1, branches: [] } })
     await s.audit({ at: 1, event: 'logout', login: 'a' })
     expect(await s.loadRooms()).toEqual({})
-    expect(await s.readAudit()).toEqual([{ at: 1, event: 'logout', login: 'a' }])
+    expect(await s.readAudit()).toEqual({ entries: [{ at: 1, event: 'logout', login: 'a' }], complete: true, gaps: [] })
     // the in-memory audit drops entries past MEM_AUDIT_MAX, so it is never evidence
     expect(await s.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
   })
@@ -123,7 +124,7 @@ describe('FileStore', () => {
   it('keeps at most MEM_AUDIT_MAX in-memory audit entries, dropping the oldest', async () => {
     const s = new FileStore()
     for (let at = 1; at <= MEM_AUDIT_MAX + 25; at++) await s.audit({ at, event: 'join', room: 'r' })
-    const all = await s.readAudit({ limit: 100_000 })
+    const { entries: all } = await s.readAudit({ limit: 100_000 })
     expect(all).toHaveLength(MEM_AUDIT_MAX)
     expect(all[0].at).toBe(26)
     expect(all.at(-1)!.at).toBe(MEM_AUDIT_MAX + 25)
@@ -187,8 +188,8 @@ describe('PgStore', () => {
     await s.deleteSession('s1')
     expect(await s.loadSessions()).toEqual({})
     for (const at of [1, 2, 3]) await s.audit({ at, event: 'join', room: 'r' })
-    expect((await s.readAudit({ since: 2 })).map(e => e.at)).toEqual([2, 3])
-    expect((await s.readAudit({ limit: 2 })).map(e => e.at)).toEqual([2, 3])
+    expect((await s.readAudit({ since: 2 })).entries.map(e => e.at)).toEqual([2, 3])
+    expect((await s.readAudit({ limit: 2 })).entries.map(e => e.at)).toEqual([2, 3])
     expect(await s.readAllAudit({ limit: 3, maxBytes: 1 << 20 })).toEqual({ entries: [1, 2, 3].map(at => ({ at, event: 'join', room: 'r' })), complete: true })
     await s.close()
     expect(pg.isEnded()).toBe(true)
@@ -223,22 +224,12 @@ describe('PgStore', () => {
     const b = s.saveRooms({ 'github.com/a/three': { at: 2, branches: [] } })
     const c = s.putSession('s1', { login: 'ann', provider: 'github', at: 3 })
     await Promise.all([a, b, c])
-    const tx = pg.log.filter(l => /^BEGIN|^COMMIT|^DELETE FROM room_repos|^INSERT INTO room_repos|^INSERT INTO room_sessions/.test(l))
-    expect(tx).toEqual(['BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'INSERT INTO room_repos', 'COMMIT', 'BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'COMMIT', 'INSERT INTO room_sessions'])
+    // Sessions are another table with their own queue; registry replacements stay whole and in order.
+    const tx = pg.log.filter(l => /^BEGIN|^COMMIT|^DELETE FROM room_repos|^INSERT INTO room_repos/.test(l))
+    expect(tx).toEqual(['BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'INSERT INTO room_repos', 'COMMIT', 'BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'COMMIT'])
+    expect(await s.loadSessions()).toEqual({ s1: { login: 'ann', provider: 'github', at: 3 } })
     expect(await s.loadRooms()).toEqual({ 'github.com/a/three': { at: 2, branches: [] } })
     expect(pg.openClients()).toBe(0)
-  })
-
-  it('WriteQueue runs jobs in order and a failure does not block the ones after it', async () => {
-    const q = new WriteQueue()
-    const order: string[] = []
-    const first = q.run(async () => { await new Promise(r => setTimeout(r, 5)); order.push('first') })
-    const second = q.run(async () => { order.push('second'); throw new Error('boom') })
-    const third = q.run(async () => { order.push('third'); return 3 })
-    await first
-    await expect(second).rejects.toThrow('boom')
-    expect(await third).toBe(3)
-    expect(order).toEqual(['first', 'second', 'third'])
   })
 
   it('PgStore.saveRooms runs its transaction on one client and releases it', async () => {

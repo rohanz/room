@@ -17,6 +17,7 @@ const TEAM_SERVER_REQUIRED = 'No team server configured. Ask the user for their 
 export const LOCAL = 'local'
 export const DEFAULT_CLAUDE_CHANNEL = 'plugin:room@room'
 const DEFAULT_MAX_WORKERS = 8
+/** Display only (room_state's stale-claim label). Deletion is the hub's fixed expiry (ROOM_STALE_MS in @room/shared). */
 const DEFAULT_STALE_DAYS = 7
 
 export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'

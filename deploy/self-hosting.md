@@ -42,6 +42,10 @@ This controls repository registration, not who can visit the login page. Existin
 
 ## Settings
 
+Every capacity and byte-budget setting below must be a finite positive value (zero only where the
+table says 0 means off). An invalid explicit value stops the server at startup with `invalid server
+settings` and the names of the bad settings, instead of silently running with no cap.
+
 Everything is optional. Without any login provider or token the server is open (fine on a laptop, not on the internet). These are the settings most servers set; the many resource limits with sensible defaults are under [advanced limits](#advanced-limits).
 
 | Setting | Meaning | Default |
@@ -151,6 +155,17 @@ curl -H "Authorization: Bearer <session id>" "https://room.example.com/audit?sin
 ```
 
 The session id is in `~/.config/room/credentials.json` on a machine that ran `room_login`.
+
+A query reads the log backwards and keeps only the requested tail: at most `ROOM_AUDIT_SCAN_MB`
+(default 64) of the newest bytes within a 10 s deadline. The response says whether that covered
+everything: `X-Room-Audit-Complete: true|false` and, when false, `X-Room-Audit-Gaps` naming the reason
+(`pruned`, `scan-bytes`, `deadline`, `unreadable`, or `rotated` when the log kept rotating while the
+query opened it, with no entries returned: retry). A segment deleted while a query opens it counts as
+`pruned`, as does one an operator removes by hand during a query. The file rotates into `audit.log.1`, `audit.log.2`, …
+once a segment passes `ROOM_AUDIT_ROTATE_MB` (default 64). Nothing is deleted unless
+`ROOM_AUDIT_KEEP_FILES` is set; then older segments are removed after `audit.log.pruned` records it,
+and every later query and migration inventory that reaches into the pruned period reports itself
+incomplete rather than pretending the history is whole. Postgres has no retention setting.
 
 `GET /admin/inventory` lists stored room documents with their sizes for the same admins; an unlisted caller receives `403`. `scripts/room-inventory.mts` in a checkout is the offline alternative over a stopped server's `YPERSISTENCE` directory. Both matter mostly for the [0.16 upgrade](../docs/upgrading.md).
 

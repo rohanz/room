@@ -175,7 +175,7 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
   addWorker(main, worker)
   const question = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   let launchedIds: string[] = []
-  const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt, _spawner, _channel, _max, _log, _at, _wait, beforeLaunch) => {
+  const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt, { beforeLaunch } = {}) => {
     expect(prompt).toBe('price_cents')
     launchedIds = (await beforeLaunch?.())?.ids ?? []
     if (change === 'answered') hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })

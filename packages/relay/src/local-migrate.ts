@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { RoomDoc, isLegacyBranchNotice, isRoomNotice, type Claim, type Msg, type Scope } from '@room/shared'
+import { ROOM_DOC_MAX_BYTES, RoomDoc, isLegacyBranchNotice, isRoomNotice, type Claim, type Msg, type Scope } from '@room/shared'
 import { probeProcess, sameStartTime, type ProcessProbe } from './process.js'
 import { saveMemory } from './memory.js'
 
@@ -54,7 +54,33 @@ function writeLedger(common: string, room: string, ledger: Ledger): void {
     fs.renameSync(temp, file)
   } finally { fs.rmSync(temp, { force: true }) }
 }
-function sources(common: string, room: string): { file: string; name: string; mtime: number }[] {
+/** Budgets checked before any snapshot is read: per file, and per catch-up pass in files and bytes. */
+export interface MigrationLimits { fileBytes: number; files: number; totalBytes: number }
+const DEFAULT_LIMITS: MigrationLimits = { fileBytes: ROOM_DOC_MAX_BYTES, files: 64, totalBytes: 2 * ROOM_DOC_MAX_BYTES }
+
+/** Names each source snapshot mentions, by observed file revision: an unchanged file is not decoded again. */
+const SUMMARIES_MAX = 1024
+const SUMMARY_NAMES_MAX = 10_000
+const summaries = new Map<string, { revision: string; persons: string[] }>()
+function remember(key: string, revision: string, persons: string[]): void {
+  summaries.delete(key)
+  if (persons.length > SUMMARY_NAMES_MAX) return
+  summaries.set(key, { revision, persons })
+  if (summaries.size > SUMMARIES_MAX) summaries.delete(summaries.keys().next().value!)
+}
+function personsOf(source: RoomDoc): string[] {
+  const persons = new Set<string>()
+  const add = (person: string | undefined) => { if (person) persons.add(person) }
+  for (const person of source.scopes.keys()) add(person)
+  for (const claim of source.claims.values()) add(claim.by)
+  for (const person of source.overlays.keys()) add(person)
+  for (const person of source.legacyDeleted.keys()) add(person)
+  for (const msg of [...source.bus.toArray(), ...source.mail.values()]) { if (!isRoomNotice(msg)) add(msg.from); add(msg.to) }
+  return [...persons]
+}
+
+interface Source { file: string; name: string; mtime: number; size: number; revision: string }
+function sources(common: string, room: string): Source[] {
   try {
     return fs.readdirSync(legacyDir(common)).filter(file => file.endsWith('.ydoc')).flatMap(file => {
       let name: string
@@ -62,7 +88,8 @@ function sources(common: string, room: string): { file: string; name: string; mt
       catch { throw new Error(`invalid legacy snapshot name: ${file}`) }
       if (name !== room && !name.startsWith(`${room}/`)) return []
       const full = path.join(legacyDir(common), file)
-      return [{ file: full, name, mtime: fs.statSync(full).mtimeMs }]
+      const stat = fs.statSync(full)
+      return [{ file: full, name, mtime: stat.mtimeMs, size: stat.size, revision: `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` }]
     })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
@@ -72,7 +99,8 @@ function sources(common: string, room: string): { file: string; name: string; mt
 
 /** Return whether a legacy relay is still live. Saving precedes the ID ledger: a crash
  * between them replays harmlessly because target IDs are checked too. */
-export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log: (line: string) => void = console.error, probe: ProcessProbe = probeProcess): boolean {
+export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log: (line: string) => void = console.error, probe: ProcessProbe = probeProcess,
+  limits: MigrationLimits = DEFAULT_LIMITS): boolean {
   let files: ReturnType<typeof sources>
   try { files = sources(common, room) }
   catch (error) {
@@ -85,19 +113,24 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
   const ledger = readLedger(common, room)
   if (ledger.complete) return false // completed snapshots are an immutable archive
   if (!files.length && !running) return false
+  const decoded: Y.Doc[] = []
+  try {
+    return catchUpDecoded(common, room, targetDoc, log, limits, files, running, ledger, decoded)
+  } finally {
+    // Every temporary snapshot document is disposed, on success and on any failure.
+    for (const doc of decoded) doc.destroy()
+  }
+}
+
+/** `decoded` collects every temporary document for the caller to dispose. */
+function catchUpDecoded(common: string, room: string, targetDoc: Y.Doc, log: (line: string) => void, limits: MigrationLimits,
+  files: Source[], running: boolean, ledger: Ledger, decoded: Y.Doc[]): boolean {
   const target = new RoomDoc(targetDoc)
   const messages = new Set(ledger.messages), claims = new Set(ledger.claims), scopes = new Set(ledger.scopes)
   const existing = new Set([...target.bus.toArray().map(m => m.id), ...target.mail.keys()])
   // Room's own notices repeat word for word (one per daemon start, one per branch room): import each once.
   const noticeKey = (m: Msg) => `${m.type}\0${m.to ?? ''}\0${JSON.stringify((m as { text?: unknown }).text ?? null)}`
   const notices = new Set([...target.bus.toArray(), ...target.mail.values()].filter(isRoomNotice).map(noticeKey))
-  const loaded: { name: string; mtime: number; source: RoomDoc; doc: Y.Doc }[] = []
-  let unreadable = false
-  for (const { file, name, mtime } of files) {
-    const doc = new Y.Doc()
-    try { Y.applyUpdate(doc, fs.readFileSync(file)); loaded.push({ name, mtime, source: new RoomDoc(doc), doc }) }
-    catch (error) { log(`local migration: cannot read ${file}: ${String(error)}`); unreadable = true; doc.destroy() }
-  }
   // Identity evidence is monotonic while catch-up is pending. A snapshot that
   // temporarily fails to parse cannot make an ambiguous legacy name unique.
   const occurrences = new Map<string, Set<string>>(Object.entries(ledger.identities)
@@ -108,12 +141,30 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
     if (!names) { names = new Set(); occurrences.set(person, names) }
     names.add(source)
   }
-  for (const { name, source } of loaded) {
-    for (const person of source.scopes.keys()) mark(person, name)
-    for (const claim of source.claims.values()) mark(claim.by, name)
-    for (const person of source.overlays.keys()) mark(person, name)
-    for (const person of source.legacyDeleted.keys()) mark(person, name)
-    for (const msg of [...source.bus.toArray(), ...source.mail.values()]) { if (!isRoomNotice(msg)) mark(msg.from, name); mark(msg.to, name) }
+  const loaded: { name: string; mtime: number; source: RoomDoc }[] = []
+  let unreadable = false, deferred = false, decodedBytes = 0
+  for (const { file, name, mtime, size, revision } of files) {
+    const imported = ledger.sources[name] === mtime
+    const key = `${common}\0${file}`
+    const summary = summaries.get(key)
+    if (imported && summary?.revision === revision) { for (const person of summary.persons) mark(person, name); continue }
+    if (size > limits.fileBytes) {
+      log(`local migration: cannot read ${file}: ${size} bytes exceeds the ${limits.fileBytes}-byte snapshot limit`)
+      unreadable = true
+      continue
+    }
+    // Over this pass's budget: a later pass reads it, and catch-up stays pending until then.
+    if (decoded.length >= limits.files || decodedBytes + size > limits.totalBytes) { deferred = true; continue }
+    decodedBytes += size
+    const doc = new Y.Doc()
+    decoded.push(doc)
+    try { Y.applyUpdate(doc, fs.readFileSync(file)) }
+    catch (error) { log(`local migration: cannot read ${file}: ${String(error)}`); unreadable = true; continue }
+    const source = new RoomDoc(doc)
+    const persons = personsOf(source)
+    for (const person of persons) mark(person, name)
+    remember(key, revision, persons)
+    if (!imported) loaded.push({ name, mtime, source })
   }
   const aliases = targetDoc.getMap<string>('aliases')
   const placeholder = (person: string, source: string) => `?${crypto.createHash('sha256').update(`${source}\0${person}`).digest('hex').slice(0, 16)}`
@@ -166,8 +217,7 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
       }
     }
   })
-  for (const { name, mtime, source, doc } of loaded) {
-    if (ledger.sources[name] === mtime) { doc.destroy(); continue }
+  for (const { name, mtime, source } of loaded) {
     scanned = true
     targetDoc.transact(() => {
       for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
@@ -209,9 +259,8 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
       }
     })
     ledger.sources[name] = mtime
-    doc.destroy()
   }
-  const pending = running || unreadable
+  const pending = running || unreadable || deferred
   if (target.metaMap.get('localMigrating') !== Number(pending)) { target.metaMap.set('localMigrating', Number(pending)); changed = true }
   const completionChanged = ledger.complete !== !pending
   ledger.complete = !pending

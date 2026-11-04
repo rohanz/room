@@ -13,18 +13,19 @@ import { performance } from 'node:perf_hooks'
 import { stripVTControlCharacters } from 'node:util'
 import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, snapshot, snapshotStillCurrent, versionOf, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
+import { currentToolSignal } from '../registry.js'
 import type { LocalWorker } from '../worker-status.js'
 import type { Session } from '../session.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
+import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree.js'
 import { knownNames, resolveDisplayedName } from './names.js'
-import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
+import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
-import { evictPreviewLru, previewCapBytes, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
+import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
 import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { leadsCheckout } from '../checkout-lead.js'
@@ -59,21 +60,7 @@ export function testCommandFor(dir: string): string {
   return suggestedTestCommand(files)
 }
 
-async function ownDiskText(dir: string, rel: string): Promise<string | null> {
-  if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe room path: ' + rel)
-  const root = fs.realpathSync(dir)
-  const candidate = path.resolve(root, rel)
-  if (!isInsideRoot(root, candidate)) throw new Error('unsafe room path: ' + rel)
-  try {
-    const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
-    if (!result.ok) throw new Error('unsafe room symlink: ' + rel)
-    const real = result.path
-    return await readBoundedDiskText(real, 'utf8', { root, path: candidate })
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw e
-  }
-}
+const ownDiskText = (dir: string, rel: string): Promise<string | null> => readContainedRepoText(dir, rel, 'room')
 
 const previewGenerations = new WeakMap<Session, number>()
 
@@ -414,7 +401,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               if (await settler.settle(result.settledWorkers())) continue
               return movedReply(result.moved())
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run, modes, undefined, a.allowSlow === true)
+            const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
             ranOk = verdict.passed
             const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join('; ')})`
               : !appliedFromOthers ? '; passed on your own tree only' : ''
@@ -661,27 +648,86 @@ const outputCap = (bytes: number) => new PreviewProcessLimit('output exceeded pr
 export function execFileLimit(err: { code?: unknown; killed?: boolean } | null, limits: { timeoutMs: number; maxBuffer: number }): PreviewProcessLimit | undefined {
   return err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? outputCap(limits.maxBuffer) : err?.killed ? timeLimit(limits.timeoutMs) : undefined
 }
-const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock }>()
+/** The preview's tool call was cancelled; its processes were stopped. */
+class PreviewCancelled extends Error {
+  out = ''
+  constructor() { super('cancelled by the caller') }
+}
+/**
+ * Processes or an inherited output pipe outlived the cleanup grace period. The tree may still be in use, so the
+ * caller keeps it locked (the lock helper holds the OS lock until every tracked group member exits) and untouched.
+ */
+class PreviewCleanupIncomplete extends Error {
+  out = ''
+  constructor(readonly graceMs: number, readonly reason?: Error) { super(`process cleanup did not finish within ${graceMs}ms`) }
+}
+const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal }>()
 const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
 
-/** A check's process group counts as alive only while a non-zombie member remains (preview-cache.ts). */
-const previewGroupAlive = (pid: number): Promise<boolean> => processGroupAlive(pid)
+/** After a stop or an exit, how long group termination and pipe closure may take before the result is incomplete. */
+const CLEANUP_GRACE_MS = 10_000
+const KILL_AFTER_MS = 2000
+type CleanupSeam = { graceMs?: number; groupAlive?: (pid: number, file: string) => Promise<boolean> }
+let cleanupForTests: CleanupSeam = {}
+/** Test seam: the grace period, and a group-liveness probe given the tracked command's file. */
+export function setPreviewCleanupForTests(options: CleanupSeam = {}): void {
+  cleanupForTests = options
+}
 
-function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock?: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
+/** A check's process group counts as alive only while a non-zombie member remains (preview-cache.ts). */
+const previewGroupAlive = (pid: number, file: string): Promise<boolean> => cleanupForTests.groupAlive ? cleanupForTests.groupAlive(pid, file) : processGroupAlive(pid)
+
+interface TrackedProcessOptions {
+  cwd: string
+  timeout: number
+  maxBuffer: number
+  lock?: PreviewUnlock
+  env?: NodeJS.ProcessEnv
+  signal?: AbortSignal
+}
+
+function runTrackedProcess(file: string, args: string[], options: TrackedProcessOptions): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
+  const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options
+  const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new PreviewCancelled()); return }
     const child = spawn('sh', ['-c', previewProcessGate, 'sh', file, ...args], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = [], err: Buffer[] = []
-    let bytes = 0, failed: Error | undefined
+    const output = () => Buffer.concat(out).toString() + Buffer.concat(err).toString()
+    let bytes = 0, failed: Error | undefined, settled = false
     let termAt: number | undefined
-    let killTimer: NodeJS.Timeout | undefined
-    const signalGroup = (signal: NodeJS.Signals) => {
-      if (child.pid) { try { process.kill(-child.pid, signal) } catch { /* already exited */ } }
+    let killTimer: NodeJS.Timeout | undefined, graceTimer: NodeJS.Timeout | undefined
+    const signalGroup = (sig: NodeJS.Signals) => {
+      if (child.pid) { try { process.kill(-child.pid, sig) } catch { /* already exited */ } }
+    }
+    const onAbort = () => stop(new PreviewCancelled())
+    let markEnded!: () => void
+    const ended = new Promise<void>(done => { markEnded = done })
+    const settle = (finish: () => void) => {
+      if (settled) return
+      settled = true
+      markEnded()
+      clearTimeout(timer)
+      if (killTimer) clearTimeout(killTimer)
+      if (graceTimer) clearTimeout(graceTimer)
+      signal?.removeEventListener('abort', onAbort)
+      finish()
+    }
+    // One bound for termination and pipe closure, armed by the first stop or exit.
+    const armGrace = () => {
+      graceTimer ??= setTimeout(() => settle(() => {
+        child.stdout.destroy(); child.stderr.destroy()
+        const incomplete = new PreviewCleanupIncomplete(graceMs, failed)
+        incomplete.out = output()
+        reject(incomplete)
+      }), graceMs)
     }
     const terminate = () => {
       if (termAt !== undefined) return
       termAt = Date.now()
       signalGroup('SIGTERM')
-      killTimer = setTimeout(() => signalGroup('SIGKILL'), 2000)
+      killTimer = setTimeout(() => signalGroup('SIGKILL'), KILL_AFTER_MS)
+      armGrace()
     }
     const stop = (error: Error) => {
       if (failed) return
@@ -689,6 +735,7 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
       terminate()
     }
     const timer = setTimeout(() => stop(timeLimit(timeout)), timeout)
+    signal?.addEventListener('abort', onAbort, { once: true })
     const collect = (kind: 'stdout' | 'stderr', chunk: Buffer) => {
       bytes += chunk.length
       if (bytes > maxBuffer) { stop(outputCap(maxBuffer)); return }
@@ -701,33 +748,26 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
     child.on('error', stop)
     let exited = false
     const fail = () => {
-      if (failed instanceof PreviewProcessLimit) failed.out = Buffer.concat(out).toString() + Buffer.concat(err).toString()
+      if (failed instanceof PreviewProcessLimit || failed instanceof PreviewCancelled) failed.out = output()
       reject(failed)
     }
     const closed = new Promise<void>(done => child.once('close', () => done()))
     child.on('close', () => {
-      if (!exited) {
-        clearTimeout(timer)
-        if (killTimer) clearTimeout(killTimer)
-        if (failed) fail()
-        else reject(new Error('tracked preview process closed without exiting'))
-      }
+      if (!exited) settle(() => failed ? fail() : reject(new Error('tracked preview process closed without exiting')))
     })
     child.on('exit', code => {
       exited = true
+      armGrace()
       void (async () => {
-        const stopped = !!child.pid && await previewGroupAlive(child.pid)
+        const stopped = !!child.pid && await previewGroupAlive(child.pid, file)
         if (stopped) terminate()
-        while (child.pid && await previewGroupAlive(child.pid)) {
-          if (termAt !== undefined && Date.now() - termAt >= 2000) signalGroup('SIGKILL')
+        while (!settled && child.pid && await previewGroupAlive(child.pid, file)) {
+          if (termAt !== undefined && Date.now() - termAt >= KILL_AFTER_MS) signalGroup('SIGKILL')
           await new Promise(done => setTimeout(done, 25))
         }
-        await closed
-        clearTimeout(timer)
-        if (killTimer) clearTimeout(killTimer)
-        if (failed) fail()
-        else resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped })
-      })().catch(reject)
+        await Promise.race([closed, ended])
+        settle(() => failed ? fail() : resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped }))
+      })().catch(error => settle(() => reject(error)))
     })
     if (child.pid && lock) void lock.trackProcess(child.pid).then(() => child.stdin.end('GO\n'), stop)
     else if (child.pid) child.stdin.end('GO\n')
@@ -735,9 +775,10 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
 }
 
 const gitSetup = (dir: string, args: string[]) => {
-  const lock = previewProcesses.getStore()?.lock
+  const store = previewProcesses.getStore()
+  const lock = store?.lock
   if (!lock) return git(dir, args, SETUP_TIMEOUT_MS)
-  return runTrackedProcess('git', args, dir, SETUP_TIMEOUT_MS, 64 * 1024 * 1024, lock).then(result => {
+  return runTrackedProcess('git', args, { cwd: dir, timeout: SETUP_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, lock, signal: store?.signal }).then(result => {
     if (result.code) throw new Error(`git ${args.join(' ')} failed: ${result.stderr.trim() || `exit ${result.code}`}`)
     return result.stdout
   })
@@ -1048,6 +1089,7 @@ async function removeCloneEntries(repoDir: string, folder: string, cloneGone: bo
     const unlock = await tryPreviewLock(entry).catch(() => undefined)
     if (!unlock) continue
     try {
+      if (!await clearPreviewQuarantine(entry)) continue // a process may still use it; a later pass retries
       // A killed first checkout can leave an unregistered partial directory. Unlinking the lock file while a
       // live clone could still preview would let two holders lock different inodes, so only a gone clone's goes.
       if (await removePreviewEntry(repoDir, entry, true) && cloneGone) await fs.promises.rm(`${entry}.lock`, { force: true })
@@ -1187,15 +1229,33 @@ function rememberStoppedPreview(s: Session, key: string, text: string): void {
 }
 
 /** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
-export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }, allowSlow = false): Promise<TestResult> {
-  const key = previewCheckKey(ancestor, merged, cmd, modes)
-  const repeated = !allowSlow ? stoppedPreviewReply(s, key, cmd) : undefined
-  if (repeated) return repeated
-  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, key))
+export interface PreviewObserver { baseMaterialized?(): void; mergedWrite?(path: string): void }
+export interface MergedTreeOptions {
+  modes?: ReadonlyMap<string, number>
+  observe?: PreviewObserver
+  /** Run even though the identical command on these inputs hit the time limit before. */
+  allowSlow?: boolean
+  /** The tool call's cancellation: stops setup and check processes through the same bounded cleanup. */
+  signal?: AbortSignal
 }
 
-async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined, historyKey: string): Promise<TestResult> {
+export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, options: MergedTreeOptions = {}): Promise<TestResult> {
+  const modes = options.modes ?? new Map<string, number>()
+  const key = previewCheckKey(ancestor, merged, cmd, modes)
+  const repeated = !options.allowSlow ? stoppedPreviewReply(s, key, cmd) : undefined
+  if (repeated) return repeated
+  return previewProcesses.run({ signal: options.signal }, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, { modes, observe: options.observe, historyKey: key, signal: options.signal }))
+}
+
+async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string,
+  options: { modes: ReadonlyMap<string, number>; observe?: PreviewObserver; historyKey: string; signal?: AbortSignal }): Promise<TestResult> {
+  const { modes, observe, historyKey, signal } = options
   let dir: string | undefined
+  // Processes outlived the cleanup deadline: leave the tree in place and its lock held until they exit.
+  let survivors = false
+  // A cached tree a check's processes may still use is marked unusable before its lock is released.
+  let quarantined = false
+  let skippedQuarantine = false
   let release: (() => Promise<void>) | undefined
   let cached = false
   let reused = false
@@ -1214,6 +1274,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   }
   const evidence = `snapshot inputs sha256: ${inputHash.digest('hex')}; command: ${JSON.stringify(cmd)}\nenvironment: ${process.platform}/${process.arch}, Node ${process.version}; inherited environment (ROOM_* removed, ROOM_MERGED_TREE set) and linked dependencies are not fingerprinted`
   try {
+    if (signal?.aborted) throw new PreviewCancelled()
     await previewPhase('setup', async () => {
       let cache: string | undefined
       let source: Awaited<ReturnType<typeof checkoutSettings>> | undefined
@@ -1223,7 +1284,10 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       } catch { /* Uncertain checkout policy or identity uses a fresh tree. */ }
       if (cache && previewCapBytes() > 0) {
         const unlock = await tryPreviewLock(cache).catch(() => undefined)
-        if (unlock) {
+        if (unlock && !await clearPreviewQuarantine(cache).catch(() => false)) {
+          await unlock()
+          skippedQuarantine = true
+        } else if (unlock) {
           release = unlock
           previewProcesses.getStore()!.lock = unlock
         }
@@ -1257,6 +1321,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       await linkSharedDirs(s.dir, dir!)
     })
     setupMs = performance.now() - setupStart
+    if (signal?.aborted) throw new PreviewCancelled()
     stage = 'check'
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
@@ -1267,14 +1332,15 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
       // Windows has no process groups to signal (and never caches): its check keeps execFile's own deadline.
       if (process.platform === 'win32') return new Promise<{ code: number; out: string; stopped: boolean }>((resolve, reject) => {
-        execFile(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env }, (err, stdout, stderr) => {
+        execFile(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env, signal }, (err, stdout, stderr) => {
+          if (err && signal?.aborted) { const cancelled = new PreviewCancelled(); cancelled.out = `${stdout}${stderr}`; reject(cancelled); return }
           const raw = err ? (err as { code?: unknown }).code : 0
           const limit = execFileLimit(err, checkLimits)
           if (limit) { limit.out = `${stdout}${stderr}`; reject(limit); return }
           resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false })
         })
       })
-      const tracked = await runTrackedProcess(command, args, dir!, checkLimits.timeoutMs, checkLimits.maxBuffer, previewProcesses.getStore()?.lock, env)
+      const tracked = await runTrackedProcess(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, lock: previewProcesses.getStore()?.lock, env, signal })
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
     checkMs = performance.now() - checkStart
@@ -1282,11 +1348,27 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     completed = await previewPhase('collect', () => {
       const tail = outputTail(result.out)
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdict.text}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : skippedQuarantine ? 'fresh base; cached tree quarantined while an earlier check\'s process may use it' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdict.text}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
     })
     return completed
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
+    const elapsed = () => stage === 'setup' ? `setup ${Math.round(performance.now() - setupStart)}ms` : `check ${Math.round(performance.now() - checkStart)}ms`
+    if (error instanceof PreviewCleanupIncomplete) {
+      survivors = true
+      if (cached && dir) {
+        try { await quarantinePreview(dir, `cleanup did not finish within ${error.graceMs}ms`); quarantined = true }
+        catch (failure) { console.warn(`room preview: could not quarantine ${dir}: ${failure instanceof Error ? failure.message : String(failure)}`) }
+      }
+      const kept = !cached ? '' : quarantined
+        ? ' and is quarantined: no later check resets, reuses or removes it while any process has its working directory inside it'
+        : ' and stays locked by this session until it exits'
+      const why = error.reason instanceof PreviewProcessLimit ? `it was stopped at ${error.reason.limit}, and ` : error.reason instanceof PreviewCancelled ? 'it was cancelled, and ' : ''
+      return { passed: false, text: `merged-tree ${stage} did not finish: "${cmd}" ${why}process cleanup did not finish within ${error.graceMs / 1000}s (${elapsed()}): a process from it is still running or still holds its output open; this is NOT a pass.\n${evidence}\ncommand completion: incomplete\nThe preview tree ${dir ?? ''} is left in place${kept}.\nLast output:\n${outputTail(error.out) || '(no output)'}` }
+    }
+    if (error instanceof PreviewCancelled) {
+      return { passed: false, text: `merged-tree ${stage} cancelled by the caller (${elapsed()}); this is NOT a pass.\n${evidence}\ncommand completion: ${stage === 'check' ? 'incomplete' : 'not run'}${error.out ? `\nLast output before it was stopped:\n${outputTail(error.out)}` : ''}` }
+    }
     if (stage === 'check' && error instanceof PreviewProcessLimit) {
       const stopped = { passed: false, text: `merged-tree check did not finish: "${cmd}" was stopped at ${error.limit} (check ${Math.round(performance.now() - checkStart)}ms); this is NOT a pass.\n${evidence}\ncommand completion: incomplete\nLast output before it was stopped:\n${outputTail(error.out) || '(no output)'}` }
       if (error.kind === 'time') {
@@ -1297,8 +1379,11 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     }
     return { passed: false, text: `${stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}`}\n${evidence}\ncommand completion: ${stage === 'setup' ? 'not run' : 'incomplete'}` }
   } finally {
+    // Cancellation stops the check; restoring the cached tree still runs, under its own bounds.
+    previewProcesses.getStore()!.signal = undefined
     try {
-      if (dir) {
+      // Never reset, remove or unlock a tree that live processes may still be using.
+      if (dir && !survivors) {
         if (cached && cacheReady) {
           try { await resetPreviewTree(s.dir, dir, ancestor) }
           catch (error) {
@@ -1315,7 +1400,11 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       console.warn(`room preview cleanup: ${error instanceof Error ? error.message : String(error)}`)
       if (completed) completed.text += '\nwarning: preview cache abandoned after the check; next preview uses a new cache'
     } finally {
-      await release?.()
+      // With survivors, ending the helper's input does not unlock: it keeps the OS lock until every tracked
+      // group member has exited, so this reply does not wait for that. A descendant outside those groups is covered
+      // by the quarantine marker; without one, the lock stays held until this process exits.
+      if (survivors) { if (!cached || quarantined) void release?.().catch(() => undefined) }
+      else await release?.()
       if (release) previewProcesses.getStore()!.lock = undefined
       // Maintenance never delays the preview reply and is bounded per pass.
       const evict = cached || previewCapBytes() === 0
@@ -1333,6 +1422,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
                 if (Number.isFinite(read)) currentUsed = read
               }
               catch { /* Missing or malformed metadata was ranked oldest. */ }
+              if (!await clearPreviewQuarantine(entry)) return false
               return currentUsed === used && await slotRegistration(s.dir, entry) === 'valid' && await removePreviewEntry(s.dir, entry)
             } catch { return false }
             finally { await unlock() }

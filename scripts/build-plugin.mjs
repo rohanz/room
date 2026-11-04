@@ -1,5 +1,11 @@
 // Bundles room-mcp (with @room/relay, the local relay) into a single file so the Codex plugin runs from its cache dir with no node_modules,
 // and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
+//
+// Run:        npm run build:plugin   (from the repository root; paths are cwd-relative). Needs `npm ci`.
+// Overwrites: plugins/room/server/{room-mcp,parse-worker}.mjs, replaces plugins/room/server/grammars/ and (via the
+//             web build, packages/web/dist) plugins/room/web/. All committed; CI checks they are current.
+// --skip-web  rebuilds only the server bundle (for sandboxes that cannot build the web view): partial output, never commit it.
+// Installed plugins copy the bundle: reinstall room@room on each host after a rebuild.
 import { build } from 'esbuild'
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'

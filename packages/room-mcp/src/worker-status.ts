@@ -50,6 +50,9 @@ export interface WorkerRecord {
   base?: string; carriedBase?: string; carriedUntracked?: { path: string; sha: string; mode?: number }[]
   /** Explicit keep preserves resumption even when a refresh replaces the collection snapshot ref. */
   collectedKeep?: boolean
+  /** Collection applied this worker's output but could not confirm its host's clean exit. The record stays live,
+   * with its worktree, until a later collect or the auto-retire sweep sees the process gone and finishes cleanup. */
+  collectPending?: { at: number; reason: string }
   /** A post-operation full scan proves the lead published the kept/carried input.
    * Paths are bounded verification inputs, never a history of guessed stale hashes. */
   keptPublication?: {
@@ -170,7 +173,7 @@ export function workerView(record: WorkerRecord, status: WorkerStatusResult, fen
     task: record.task.slice(0, 200), branch: record.branch, status: status.status,
     ...(status.summary ?? record.legacy?.said ? { summary: status.summary ?? record.legacy?.said } : {}),
     ...(status.noReport ? { noReport: true } : {}),
-    ...(status.note ? { note: status.note } : {}), run: status.run?.n ?? record.runs.at(-1)?.n ?? 0, startedAt: record.createdAt,
+    ...(status.note || record.collectPending ? { note: [status.note, record.collectPending && `collected; worktree kept: ${record.collectPending.reason}`].filter(Boolean).join('; ') } : {}), run: status.run?.n ?? record.runs.at(-1)?.n ?? 0, startedAt: record.createdAt,
     ...(status.followUp ? { followUp: status.followUp } : {}),
     ...(status.finishedAt !== undefined ? { finishedAt: status.finishedAt } : {}),
     ...(status.exitCode !== undefined ? { exitCode: status.exitCode } : {}),

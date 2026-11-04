@@ -64,16 +64,16 @@ describe('whole redesign registry and names regressions', () => {
     const t = await finishedWorker()
     const worker = { id: t.record.id, tag: t.record.tag, host: t.record.host }
     const neverSpawn = vi.fn(() => { throw new Error('must not spawn') })
-    expect(await t.rooms.resumeWorker(t.session, worker, 'again', neverSpawn, undefined, 1,
-      () => {}, Date.now, 30_000, async () => 'error: hub full')).toBe('error: hub full')
+    expect(await t.rooms.resumeWorker(t.session, worker, 'again', { spawner: neverSpawn, maxWorkers: 1,
+      log: () => {}, at: Date.now, exitWaitMs: 30_000, beforeLaunch: async () => 'error: hub full' })).toBe('error: hub full')
     expect(t.registry.read(worker.id)?.runs.at(-1)?.launch).toEqual({ outcome: 'never', error: 'error: hub full' })
     expect(fs.existsSync(path.join(t.registry.root, 'workers', `${worker.id}.op`))).toBe(false)
-    await expect(t.rooms.resumeWorker(t.session, worker, 'again', neverSpawn, undefined, 1,
-      () => {}, Date.now, 30_000, async () => { throw new Error('post unavailable') })).rejects.toThrow('post unavailable')
+    await expect(t.rooms.resumeWorker(t.session, worker, 'again', { spawner: neverSpawn, maxWorkers: 1,
+      log: () => {}, at: Date.now, exitWaitMs: 30_000, beforeLaunch: async () => { throw new Error('post unavailable') } })).rejects.toThrow('post unavailable')
     expect(fs.existsSync(path.join(t.registry.root, 'workers', `${worker.id}.op`))).toBe(false)
     const spawned = vi.fn(() => ({ pid: 8001, started: Promise.resolve(), onExit: () => {}, kill: () => true }))
-    const result = await t.rooms.resumeWorker(t.session, worker, 'again', spawned, undefined, 1,
-      () => {}, Date.now, 30_000, async () => ({ ids: ['follow-up-id'], prompt: 'again' }))
+    const result = await t.rooms.resumeWorker(t.session, worker, 'again', { spawner: spawned, maxWorkers: 1,
+      log: () => {}, at: Date.now, exitWaitMs: 30_000, beforeLaunch: async () => ({ ids: ['follow-up-id'], prompt: 'again' }) })
     expect(result).toContain('resumed retry')
     expect(spawned).toHaveBeenCalledOnce()
   })

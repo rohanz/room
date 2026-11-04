@@ -66,9 +66,9 @@ afterEach(async () => {
 
 /** The shape the live run produced: the human's worker `lead` and its Codex worker `cat`, nested under it. */
 async function nestedBatch(opts: { leadStatus?: FixtureWorker['status']; catStatus?: FixtureWorker['status'] } = {}) {
-  const lead = await prepareWorktree(top, 'lead', HUMAN, [], undefined)
+  const lead = await prepareWorktree(top, 'lead', HUMAN, { linkExclusions: [] })
   put(lead.dir, 'api/tax.py', '# Rates reviewed 2026-09\nRATES = {}\n')
-  const cat = await prepareWorktree(lead.dir, 'cat', LEAD, [], undefined)
+  const cat = await prepareWorktree(lead.dir, 'cat', LEAD, { linkExclusions: [] })
   put(cat.dir, 'api/catalog.py', 'def price_of(name):\n    """Raises KeyError for unknown products."""\n    return 1\n')
   put(lead.dir, '.room/workers/cat.log', 'codex transcript\n')
   const room = new RoomDoc(new Y.Doc())

@@ -179,7 +179,7 @@ describe('room_collect', () => {
     const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
     await registry.beginOperation(owner.id, 'collect')
     try {
-      expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, true, false, [], {}, 'lead', [owner], preservation)).toBe(false)
+      expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, { collected: true, leadName: 'lead', workers: [owner], preservation })).toBe(false)
     } finally { await registry.finishOperation(owner.id) }
     expect(preservation).toEqual({ ignored: [], uncollected: ['late.txt'] })
     expect(fs.readFileSync(path.join(worker, 'late.txt'), 'utf8')).toBe('new borrower work')
@@ -202,7 +202,7 @@ describe('room_collect', () => {
     const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
     await registry.beginOperation(owner.id, 'collect')
     try {
-      expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, true, false, [], {}, 'lead', [owner], preservation)).toBe(false)
+      expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, { collected: true, leadName: 'lead', workers: [owner], preservation })).toBe(false)
     } finally { await registry.finishOperation(owner.id) }
     expect(preservation.uncollected).toEqual(['file.txt'])
     if (state === 'committed') expect(preservation.commitsAfterCollection?.paths).toEqual(['file.txt', 'renamed.txt'])

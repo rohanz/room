@@ -553,8 +553,8 @@ describe('resumed worker boundaries', () => {
     await t.seed('retry')
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, attach: () => ({ stop() {} }) })
     const w = workerByTag(t.dir, 'retry')!
-    expect(await rooms.resumeWorker(t.session, w, 'again', () => { throw new Error('unavailable') }, undefined, 1)).toContain('could not resume retry')
-    const second = await rooms.resumeWorker(t.session, w, 'again', () => ({ pid: 9001, started: Promise.resolve(), onExit: () => {}, kill: () => true }), undefined, 1)
+    expect(await rooms.resumeWorker(t.session, w, 'again', { spawner: () => { throw new Error('unavailable') }, maxWorkers: 1 })).toContain('could not resume retry')
+    const second = await rooms.resumeWorker(t.session, w, 'again', { spawner: () => ({ pid: 9001, started: Promise.resolve(), onExit: () => {}, kill: () => true }), maxWorkers: 1 })
     expect(second).toContain('resumed retry')
   })
 

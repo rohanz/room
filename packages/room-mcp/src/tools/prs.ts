@@ -44,9 +44,29 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
   const { ctx, presences, log, now } = deps
   let prTimer: ReturnType<typeof setInterval> | null = null
   let prSyncedSession: Session | null = null
+  // Stopping or replacing the sync advances the generation: a pass started before it never publishes.
+  let generation = 0
+  type Flight = { done: Promise<string>; dirty: boolean; controller: AbortController; generation: number }
+  const flights = new Map<Session, Flight>()
   const fetchPrList = ctx.prs?.fetch ?? fetchPrs
   const postNote = ctx.prs?.post ?? postPrNote
-  const refreshPrs = async (s: Session): Promise<string> => {
+  const owns = (s: Session, flight: Flight) => flight.generation === generation && !flight.controller.signal.aborted && !s.closed
+  /** One pass at a time per session; a request made during a pass marks it dirty and gets one follow-up pass. */
+  const refreshPrs = (s: Session): Promise<string> => {
+    const current = flights.get(s)
+    if (current) { current.dirty = true; return current.done }
+    const flight = { dirty: false, controller: new AbortController(), generation } as Flight
+    flight.done = (async () => {
+      try {
+        let result = ''
+        do { flight.dirty = false; result = await refreshOnce(s, flight) } while (flight.dirty && owns(s, flight))
+        return result
+      } finally { if (flights.get(s) === flight) flights.delete(s) }
+    })()
+    flights.set(s, flight)
+    return flight.done
+  }
+  const refreshOnce = async (s: Session, flight: Flight): Promise<string> => {
       if (!s.roomName.startsWith('github.com/')) return ''
       const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
       const present = presences(s).map(p => p.user.name).filter(name => name === s.me.name || nb.has(name))
@@ -60,11 +80,16 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       const branches = chooseBranches()
       if (!branches.length) return ''
       let prs: PrInfo[]
+      const signal = flight.controller.signal
       try {
-        const fetched = await Promise.all(branches.flatMap(branch => [fetchPrList(s, { branch }), fetchPrList(s, { branch, head: true })]))
+        const fetched = await Promise.all(branches.flatMap(branch => [fetchPrList(s, { branch, signal }), fetchPrList(s, { branch, head: true, signal })]))
         prs = [...new Map(fetched.flat().map(pr => [pr.number, pr])).values()].slice(0, 20)
-      } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }
-      if (prLeader(presences(s).map(p => p.user.name), s.room.acceptedWorkerViews().map(w => w.name)) !== s.me.name
+      } catch (e) {
+        if (owns(s, flight)) log(`pull requests: ${e instanceof Error ? e.message : String(e)}`)
+        return ''
+      }
+      if (!owns(s, flight)
+        || prLeader(presences(s).map(p => p.user.name), s.room.acceptedWorkerViews().map(w => w.name)) !== s.me.name
         || JSON.stringify(chooseBranches()) !== JSON.stringify(branches)) return ''
       const r = syncPrs(s.room, prs, s.me)
       const parts = [r.added.length ? `mirrored ${r.added.map(n => `#${n}`).join(', ')}` : '', r.removed.length ? `removed ${r.removed.map(n => `#${n}`).join(', ')}` : ''].filter(Boolean)
@@ -80,7 +105,13 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       refresh()
       if (every > 0) { prTimer = setInterval(refresh, every); prTimer.unref?.() }
     }
-  const stopPrSync = () => { if (prTimer) clearInterval(prTimer); prTimer = null; prSyncedSession = null }
+  const stopPrSync = () => {
+    if (prTimer) clearInterval(prTimer)
+    prTimer = null; prSyncedSession = null
+    generation++
+    for (const flight of flights.values()) flight.controller.abort()
+    flights.clear()
+  }
   const prLines = (s: Session): string[] => {
       const prs = openPrs(s.room)
       if (!prs.length) return []

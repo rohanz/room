@@ -48,11 +48,27 @@ export const gitWholeTree = (dir: string, args: string[], pathCount?: number, co
 export const isGitTimeout = (error: unknown): error is Error =>
   error instanceof Error && /^git .*timed out after \d+ms/.test(error.message)
 
+/** Hard ceiling on one Git command's retained stdout. */
+export const GIT_OUTPUT_MAX_BYTES = 64 * 1024 * 1024
+/** Stderr is diagnostic only: retain at most this much of it. */
+const GIT_STDERR_MAX_BYTES = 64 * 1024
+/** A child that ignores SIGTERM after a timeout or overflow is killed outright after this grace. */
+const GIT_KILL_GRACE_MS = 2_000
+
+/** Git output exceeded its byte budget: the command was stopped and its result is incomplete. */
+export class GitOutputTooLarge extends Error {
+  constructor(readonly args: readonly string[], readonly limit: number) {
+    super(`git ${args.join(' ')} failed: output exceeded ${limit} bytes; result incomplete`)
+  }
+}
+
+const stderrDetail = (stderr: string) => stderr.length > GIT_STDERR_MAX_BYTES ? stderr.slice(0, GIT_STDERR_MAX_BYTES) : stderr
+
 export function git(dir: string, args: string[], configuredTimeoutMs?: number): Promise<string> {
   const timeout = timeoutMs(configuredTimeoutMs)
   const done = observeGit(args)
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd: dir, maxBuffer: GIT_OUTPUT_MAX_BYTES, timeout }, (err, stdout, stderr) => {
       done()
       if (err) {
         const stopped = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
@@ -61,11 +77,70 @@ export function git(dir: string, args: string[], configuredTimeoutMs?: number): 
           reject(missing)
           return
         }
-        const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr || err.message).trim()
+        if (stopped.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') { reject(new GitOutputTooLarge(args, GIT_OUTPUT_MAX_BYTES)); return }
+        const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : stderrDetail(String(stderr || err.message)).trim()
         reject(new Error(`git ${args.join(' ')} failed: ${detail}`))
       }
       else resolve(stdout)
     })
+  })
+}
+
+/**
+ * One Git command fed `input` on stdin. Stdout is counted before each chunk is retained: past `maxBytes`
+ * the child is stopped and the promise rejects with GitOutputTooLarge. Stderr is retained only up to a
+ * small diagnostic cap. Timeout and overflow settle only when the child has closed, so no caller outlives
+ * the Git work it started. `okCodes` lists exit codes that mean success.
+ */
+export function gitStream(dir: string, args: readonly string[], input: string,
+  opts: { timeoutMs: number; maxBytes: number; okCodes?: readonly number[] }): Promise<Buffer> {
+  const { timeoutMs: timeout, maxBytes, okCodes = [0] } = opts
+  const done = observeGit(args)
+  return new Promise<Buffer>((resolve, reject) => {
+    const child = spawn('git', args, { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
+    const chunks: Buffer[] = []
+    let length = 0
+    let stderr = ''
+    let failure: Error | undefined
+    let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+    const settle = (error: Error | undefined, value?: Buffer) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer); clearTimeout(grace); done()
+      if (error) reject(error)
+      else resolve(value!)
+    }
+    const stop = (error: Error) => {
+      if (failure) return
+      failure = error
+      chunks.length = 0
+      child.kill()
+      grace = setTimeout(() => child.kill('SIGKILL'), GIT_KILL_GRACE_MS)
+      grace.unref?.()
+    }
+    const timer = setTimeout(() => stop(new Error(`git ${args.join(' ')} failed: timed out after ${timeout}ms`)), timeout)
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (failure) return
+      if (length + chunk.length > maxBytes) { stop(new GitOutputTooLarge(args, maxBytes)); return }
+      length += chunk.length
+      chunks.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderr.length < GIT_STDERR_MAX_BYTES) stderr += chunk.subarray(0, GIT_STDERR_MAX_BYTES - stderr.length).toString()
+    })
+    child.on('error', error => {
+      // A child that never started has no close to wait for.
+      if (child.pid === undefined) settle(missingGitCwd(dir, error) ?? error)
+      else failure ??= error
+    })
+    child.on('close', code => {
+      if (failure) settle(failure)
+      else if (code !== null && okCodes.includes(code)) settle(undefined, Buffer.concat(chunks, length))
+      else settle(new Error(`git ${args.join(' ')} failed: ${stderr.trim() || `exit ${code}`}`))
+    })
+    child.stdin.on('error', () => { /* reported by close */ })
+    child.stdin.end(input)
   })
 }
 
@@ -145,7 +220,10 @@ async function gitShowManyImpl(dir: string, base: string, relpaths: Iterable<str
     else batch.push(p)
   }
   if (!batch.length) return out
-  const objects = await gitCatFileBatch(dir, batch.map(p => blobs ? blobs.get(p)!.hash : `${base}:${p}`), configuredTimeoutMs)
+  const names = batch.map(p => blobs ? blobs.get(p)!.hash : `${base}:${p}`)
+  // Known sizes bound the output exactly; otherwise the general ceiling applies.
+  const maxBytes = blobs ? batchOutputBytes(names, batch.map(p => blobs.get(p)!.size)) : undefined
+  const objects = await gitCatFileBatch(dir, names, configuredTimeoutMs, maxBytes)
   for (const [i, p] of batch.entries()) {
     const object = objects[i]
     let text: string | undefined
@@ -163,25 +241,15 @@ async function gitShowManyImpl(dir: string, base: string, relpaths: Iterable<str
 
 /**
  * Objects (ids or `<rev>:<path>` names without newlines) from one `git cat-file --batch`, in input
- * order; a missing or ambiguous name is undefined. Callers bound the total size, e.g. by checking
- * sizes with `--batch-check` first: the whole output is held in memory.
+ * order; a missing or ambiguous name is undefined. The whole output is held in memory, so it is
+ * capped at `maxBytes` (GitOutputTooLarge past it); callers that know blob sizes from `--batch-check`
+ * pass `batchOutputBytes` of them.
  */
-export async function gitCatFileBatch(dir: string, objects: readonly string[], configuredTimeoutMs?: number): Promise<({ type: string; bytes: Buffer } | undefined)[]> {
+export async function gitCatFileBatch(dir: string, objects: readonly string[], configuredTimeoutMs?: number,
+  maxBytes = GIT_OUTPUT_MAX_BYTES): Promise<({ type: string; bytes: Buffer } | undefined)[]> {
   if (!objects.length) return []
-  const timeout = wholeTreeTimeoutMs(objects.length, configuredTimeoutMs)
-  const done = observeGit(['cat-file', '--batch'])
-  const raw = await new Promise<Buffer>((resolve, reject) => {
-    const child = spawn('git', ['cat-file', '--batch'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
-    const chunks: Buffer[] = []
-    let stderr = ''
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`git cat-file --batch failed: timed out after ${timeout}ms`)) }, timeout)
-    child.stdout.on('data', (c: Buffer) => chunks.push(c))
-    child.stderr.on('data', (c: Buffer) => { stderr += c })
-    child.on('error', e => { clearTimeout(timer); done(); reject(e) })
-    child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr.trim() || `exit ${code}`}`)) })
-    child.stdin.on('error', () => { /* reported by close */ })
-    child.stdin.end(objects.map(object => `${object}\n`).join(''))
-  })
+  const raw = await gitStream(dir, ['cat-file', '--batch'], objects.map(object => `${object}\n`).join(''),
+    { timeoutMs: wholeTreeTimeoutMs(objects.length, configuredTimeoutMs), maxBytes })
   const out: ({ type: string; bytes: Buffer } | undefined)[] = []
   let at = 0
   for (const object of objects) {
@@ -196,6 +264,15 @@ export async function gitCatFileBatch(dir: string, objects: readonly string[], c
     at += n + 1
   }
   return out
+}
+
+/** Most a header line adds per object: `<oid> <type> <size>\n` or `<name> missing\n`, plus the content's trailing newline. */
+const BATCH_HEADER_BYTES = 96
+/** Exact output ceiling of `git cat-file --batch` for objects of known sizes. */
+export function batchOutputBytes(objects: readonly string[], sizes: readonly number[]): number {
+  let total = 0
+  for (const [i, object] of objects.entries()) total += Buffer.byteLength(object) + BATCH_HEADER_BYTES + sizes[i]
+  return total
 }
 
 export interface GitBlobInfo { hash: string; size: number }
@@ -219,20 +296,10 @@ async function gitObjectInfoMany(dir: string, relpaths: Iterable<string>, object
   }
   const out = new Map<string, GitBlobInfo | undefined>()
   if (!paths.length) return out
-  const timeout = wholeTreeTimeoutMs(paths.length, configuredTimeoutMs)
-  const done = observeGit(['cat-file', '--batch-check', '-Z'])
-  const raw = await new Promise<string>((resolve, reject) => {
-    const child = spawn('git', ['cat-file', '--batch-check', '-Z'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
-    const chunks: Buffer[] = []
-    let stderr = ''
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`git cat-file --batch-check failed: timed out after ${timeout}ms`)) }, timeout)
-    child.stdout.on('data', (c: Buffer) => chunks.push(c))
-    child.stderr.on('data', (c: Buffer) => { stderr += c })
-    child.on('error', e => { clearTimeout(timer); done(); reject(e) })
-    child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr.trim() || `exit ${code}`}`)) })
-    child.stdin.on('error', () => { /* reported by close */ })
-    child.stdin.end(paths.map(p => `${object(p)}\0`).join(''))
-  })
+  const names = paths.map(object)
+  // Each answer is one header with no content.
+  const raw = (await gitStream(dir, ['cat-file', '--batch-check', '-Z'], names.map(name => `${name}\0`).join(''),
+    { timeoutMs: wholeTreeTimeoutMs(paths.length, configuredTimeoutMs), maxBytes: batchOutputBytes(names, names.map(() => 0)) })).toString()
   const headers = raw.split('\0')
   if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`)
   for (const [i, p] of paths.entries()) {

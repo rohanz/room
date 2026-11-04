@@ -5,6 +5,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import type { LocalWorker } from './worker-status.js'
 import { workerEnv } from './worker-config.js'
+import { assistantText, runLogFacts, type HostEvent } from './run-log-facts.js'
 
 export interface SpawnSpec {
   cmd: string
@@ -35,17 +36,6 @@ export interface SpawnedProcess {
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 
-interface HostEvent {
-  type?: string; subtype?: string; session_id?: string; thread_id?: string
-  result?: unknown; message?: { content?: unknown } | string; item?: { type?: string; text?: unknown }
-  /** Codex: `{ message }` on turn.failed (null on tool items). Claude: an assistant message's API error category. */
-  error?: { message?: unknown } | string | null; is_error?: boolean
-  is_api_error_message?: boolean; api_error_status?: unknown; errors?: unknown
-  num_turns?: number
-  task_id?: unknown; task_type?: unknown; is_backgrounded?: unknown; patch?: { status?: unknown }
-  tool_use_result?: { backgroundTaskId?: unknown }
-}
-
 /** Read complete JSON lines from one run, starting at its byte offset in the shared log. */
 function* hostEvents(file: string, start = 0): Generator<HostEvent> {
   let fd: number | undefined
@@ -72,48 +62,21 @@ function* hostEvents(file: string, start = 0): Generator<HostEvent> {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
-function assistantText(event: HostEvent): string {
-  const content = typeof event.message === 'object' ? event.message?.content : undefined
-  if (!Array.isArray(content)) return ''
-  return content.filter((part): part is { type: string; text: string } => part?.type === 'text' && typeof part.text === 'string')
-    .map(part => part.text).join('\n').trim()
-}
-
 /** A prompt receipt requires model activity in this retained session's resume run. */
 export function resumeAccepted(file: string, host: 'claude' | 'codex', hostSessionId: string, logStart: number): boolean {
-  let codexThread: string | undefined
-  for (const event of hostEvents(file, logStart)) {
-    if (host === 'claude' && event.type === 'assistant' && event.session_id === hostSessionId) return true
-    if (host === 'codex') {
-      if (event.type === 'thread.started') codexThread = event.thread_id
-      if (event.type === 'turn.started' && (event.thread_id ?? codexThread) === hostSessionId) return true
-    }
-  }
-  return false
+  const facts = runLogFacts(file, logStart)
+  return (host === 'claude' ? facts.assistantSessions : facts.codexTurns).has(hostSessionId)
 }
 
 export function missingClaudeSession(file: string, hostSessionId: string, logStart: number): boolean {
-  let missing = false
-  for (const event of hostEvents(file, logStart)) {
-    if (event.type === 'assistant' && event.session_id === hostSessionId) return false
-    if (event.type === 'result' && event.session_id === hostSessionId
-      && event.subtype === 'error_during_execution' && event.is_error === true && event.num_turns === 0) missing = true
-  }
-  return missing
+  const facts = runLogFacts(file, logStart)
+  return facts.missingSessions.has(hostSessionId) && !facts.assistantSessions.has(hostSessionId)
 }
 
 /** Final answer from this run; Claude result wins over interim assistant text. */
 export function followUpAnswer(file: string, host: 'claude' | 'codex', logStart: number): string {
-  let assistant = '', result = ''
-  for (const event of hostEvents(file, logStart)) {
-    if (host === 'claude') {
-      if (event.type === 'assistant') assistant = assistantText(event) || assistant
-      if (event.type === 'result' && typeof event.result === 'string') result = event.result.trim()
-    } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-      assistant = event.item.text.trim()
-    }
-  }
-  return result || assistant
+  const facts = runLogFacts(file, logStart)
+  return host === 'claude' ? facts.claudeResult || facts.claudeAssistant : facts.codexAnswer
 }
 
 /** The run's last 64 KB at most, ANSI-free, even for multi-GB logs; throws when the log is unreadable. */

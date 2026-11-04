@@ -143,6 +143,101 @@ describe('git facts and lead evaluation', () => {
     r.close()
   })
 
+  it('finishes a pending collection once the host is gone, under collect’s ignored and uncollected rules', async () => {
+    const { dir, git } = repo(), r = registry(dir)
+    writeFileSync(join(dir, '.gitignore'), 'artifact.bin\n'); git('add', '.'); git('commit', '-qm', 'ignore')
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    // A finished host session normally keeps a worker addressable; a pending collection is cleaned anyway.
+    const w = { ...worker(prepared.dir), base: prepared.base, hostSessionId: 'host-session' }
+    const workers = await registerWorkers(r.s, [w])
+    const id = fixtureId(w)
+    // Collection applied the worker's edit to the lead, then could not confirm its host's clean exit.
+    writeFileSync(join(w.dir, 'a'), 'worker edit'); writeFileSync(join(dir, 'a'), 'worker edit')
+    writeFileSync(join(w.dir, 'artifact.bin'), 'ignored output')
+    await workers.deferCollectCleanup(id, 'exit not witnessed')
+    await r.rooms.autoRetire()
+    expect(workers.read(id)).toMatchObject({ phase: 'active', collectPending: { reason: 'uncopied ignored artifacts' } })
+    expect(existsSync(join(w.dir, 'artifact.bin'))).toBe(true)
+    rmSync(join(w.dir, 'artifact.bin'))
+    // Written after collection: the lead does not hold it, so the worktree stays with a live record.
+    writeFileSync(join(w.dir, 'late.txt'), 'late')
+    await r.rooms.autoRetire()
+    expect(workers.read(id)?.phase).toBe('active')
+    expect(r.room.retiredWorkers()).toEqual([])
+    rmSync(join(w.dir, 'late.txt'))
+    await r.rooms.autoRetire()
+    expect(workers.read(id)?.phase).toBe('retired')
+    expect(workers.read(id)?.keptWorktree).toBeUndefined()
+    expect(existsSync(prepared.dir)).toBe(false)
+    expect(git('branch', '--list', 'room/w')).toBe('')
+    expect(r.room.retiredWorkers()).toMatchObject([{ tag: 'w', disposition: 'collected' }])
+    r.close()
+  })
+
+  it('keeps a pending collection live while a nested worker remains, then finishes it', async () => {
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    const childDir = await prepareWorktree(dir, 'c', 'lead')
+    const child: FixtureWorker = { ...worker(childDir.dir), id: 'lead+w/c#1', name: 'lead+w+c', tag: 'c', lead: 'lead+w', branch: 'room/c', base: childDir.base, status: 'running' }
+    const workers = await registerWorkers(r.s, [w, child])
+    const id = fixtureId(w)
+    await workers.deferCollectCleanup(id, 'nested workers remain: c')
+    await r.rooms.autoRetire()
+    expect(workers.read(id)).toMatchObject({ phase: 'active', collectPending: { reason: 'nested workers remain: c' } })
+    expect(existsSync(prepared.dir)).toBe(true)
+    await workers.beginRetirement(fixtureId(child), workers.archiveOf(workers.read(fixtureId(child))!, { summary: 'gone' }))
+    await r.rooms.autoRetire()
+    expect(workers.read(id)?.phase).toBe('retired')
+    expect(existsSync(prepared.dir)).toBe(false)
+    r.close()
+  })
+
+  it('completes retirement of a record whose completion was never posted before it began retiring', async () => {
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base, status: 'running' as const }
+    const workers = await registerWorkers(r.s, [w])
+    const id = fixtureId(w), record = workers.read(id)!
+    // Report and exit land, and retirement begins, before any projection posts the completion.
+    await workers.writeReport(id, { run: 1, nonce: record.runs[0].nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'done', changed: [] } })
+    await workers.writeExit(id, { run: 1, code: 0, at: Date.now(), witnessed: true })
+    await workers.beginRetirement(id, workers.archiveOf(record, { summary: 'done' }))
+    await r.rooms.project()
+    expect(workers.read(id)?.phase).toBe('retired')
+    expect(workers.read(id)?.runs[0].posted).toBeDefined()
+    expect(r.room.retiredWorkers().map(entry => entry.tag)).toEqual(['w'])
+    r.close()
+  })
+
+  it('adopts a 0.17.30 retired record kept for an unconfirmed exit once its output is fully collected', async () => {
+    const { dir, git } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base }
+    const workers = await registerWorkers(r.s, [w])
+    const id = fixtureId(w)
+    writeFileSync(join(w.dir, 'a'), 'worker edit'); writeFileSync(join(dir, 'a'), 'worker edit')
+    writeFileSync(join(w.dir, 'late.txt'), 'written after collection')
+    const archive = { ...workers.archiveOf(workers.read(id)!, { summary: 'done', disposition: 'collected' }), keptWorktree: w.dir, keptReason: 'clean exit not confirmed' }
+    await workers.beginRetirement(id, archive, { keptWorktree: w.dir })
+    await r.rooms.project()
+    expect(workers.read(id)?.phase).toBe('retired')
+    expect(r.room.retiredWorkers()[0].keptWorktree).toBe(w.dir)
+    // Something the lead does not hold stays for the lead to recover; nothing is deleted.
+    await r.rooms.autoRetire()
+    expect(existsSync(join(w.dir, 'late.txt'))).toBe(true)
+    expect(workers.read(id)?.keptWorktree).toBe(w.dir)
+    rmSync(join(w.dir, 'late.txt'))
+    await r.rooms.autoRetire()
+    expect(existsSync(prepared.dir)).toBe(false)
+    expect(git('branch', '--list', 'room/w')).toBe('')
+    expect(workers.read(id)?.phase).toBe('retired')
+    expect(workers.read(id)?.keptWorktree).toBeUndefined()
+    expect(workers.read(id)?.archive?.keptReason).toBeUndefined()
+    expect(r.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
+    r.close()
+  })
+
   it('retains the record when automatic worktree cleanup cannot safely complete', async () => {
     const { dir } = repo(), r = registry(dir)
     const w = { ...worker(dir), branch: 'main' }

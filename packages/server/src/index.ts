@@ -50,7 +50,7 @@ import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, leve
 import { takeInventory, classifyDoc } from './inventory.js'
 import { DOC_SIZE_CAP_CODE, HUB_ORIGIN } from '@room/hub-core'
 import { COMPACTED_UPDATE_REASON, GENERATION_PARAM, STALE_REPLICA_CODE, STALE_REPLICA_REASON, docGeneration, generationGate } from '@room/shared'
-import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
+import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, sendFile, staticFile } from './http.js'
 
 import {
   LOAD_MAX_BYTES, MAX_BODY_BYTES, BODY_TIMEOUT_MS, PR_NOTE_MAX_BYTES, AWARENESS_MAX_MESSAGE_BYTES, AWARENESS_MAX_STATE_BYTES,
@@ -58,8 +58,13 @@ import {
   EXPORT_CHUNK_BYTES, MAX_HTTP_RESPONSES_PER_PRINCIPAL, HTTP_RESPONSE_DEADLINE_MS, LISTS_PER_MINUTE,
   MAX_PR_NOTES_PER_PRINCIPAL, MAX_PR_LISTS_PER_PRINCIPAL, PR_OPERATIONS_PER_MINUTE, limits,
 } from './limits.js'
+import { settingsFromEnv } from './settings.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
+/** Capacities and byte budgets: an invalid explicit setting stops startup instead of silently disabling a cap. */
+const settings = (() => {
+  try { return settingsFromEnv() } catch (e) { console.error(`invalid server settings:\n${e instanceof Error ? e.message : e}`); process.exit(1) }
+})()
 const HOST = process.env.HOST ?? '0.0.0.0'
 const TOKEN = process.env.ROOM_TOKEN?.trim() || undefined
 /** Ceiling on what clients may share: intent | declared | full (ROOM_SHARE_MAX). */
@@ -89,6 +94,7 @@ const auth = new Auth({
   clientId,
   oidc: oidcIssuer ? { issuer: oidcIssuer, clientId: process.env.OIDC_CLIENT_ID!.trim(), clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(), allowedDomains: list(process.env.OIDC_ALLOWED_DOMAINS), publicUrl: process.env.PUBLIC_URL!.trim() } : undefined,
   store,
+  maxPendingLogins: settings.maxPendingLogins,
   log: l => console.log(l),
   onSessionRemoved: (session, reason, removed) => { if (removed?.ghToken) pushChecker.forget(removed.ghToken); credentialSockets.close({ kind: 'session', value: session }, 4401, reason); revalidator.forget(session) },
 })
@@ -106,9 +112,9 @@ const github = new GitHubProxy({ log: l => console.log(l) })
 /** Room-scoped tokens for the browser view (minted for verified clients). Persisted next to the
  *  room data so a redeploy does not invalidate links people already opened. */
 const viewTokens = new Map<string, { room: string; exp: number; issuer?: string }>()
-const VIEW_TTL = Number(process.env.ROOM_VIEW_TTL_MS ?? 7 * 24 * 60 * 60 * 1000)
-const VIEW_MAX_PER_ROOM = Number(process.env.ROOM_VIEW_MAX_PER_ROOM ?? 200)
-const VIEW_MAX_TOTAL = Number(process.env.ROOM_VIEW_MAX_TOTAL ?? 10000)
+const VIEW_TTL = settings.viewTtlMs
+const VIEW_MAX_PER_ROOM = settings.viewMaxPerRoom
+const VIEW_MAX_TOTAL = settings.viewMaxTotal
 const VIEW_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'view-tokens.json') : undefined
 try { if (VIEW_FILE && fs.existsSync(VIEW_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(VIEW_FILE, 'utf8')) as Record<string, { room: string; exp: number }>)) if (v.exp > Date.now()) viewTokens.set(k, v) } catch { /* start empty */ }
 let viewSaveRetry: ReturnType<typeof setTimeout> | undefined
@@ -133,26 +139,26 @@ function writeViewTokens() {
 const rooms = new Map<string, OpenRepo>()
 /** Process budgets: 100 rooms x 40 agents is enough for a large team on one server. Every session, worker and
  *  browser view is its own connection, and one login's lead plus its workers share that login's budget. */
-const MAX_ROOMS = Number(process.env.ROOM_MAX_ROOMS ?? 100)
-const MAX_CONNECTIONS = Number(process.env.ROOM_MAX_CONNECTIONS ?? 4000)
-const MAX_CONNECTIONS_PER_ROOM = Number(process.env.ROOM_MAX_CONNECTIONS_PER_ROOM ?? 200)
-const MAX_CONNECTIONS_PER_PRINCIPAL = Number(process.env.ROOM_MAX_CONNECTIONS_PER_PRINCIPAL ?? 100)
-const MAX_PENDING_ADMISSIONS = Number(process.env.ROOM_MAX_PENDING_ADMISSIONS ?? 256)
-const MAX_PENDING_PER_ADDRESS = Number(process.env.ROOM_MAX_PENDING_PER_ADDRESS ?? 16)
+const MAX_ROOMS = settings.maxRooms
+const MAX_CONNECTIONS = settings.maxConnections
+const MAX_CONNECTIONS_PER_ROOM = settings.maxConnectionsPerRoom
+const MAX_CONNECTIONS_PER_PRINCIPAL = settings.maxConnectionsPerPrincipal
+const MAX_PENDING_ADMISSIONS = settings.maxPendingAdmissions
+const MAX_PENDING_PER_ADDRESS = settings.maxPendingPerAddress
 const pendingAdmissions = new PendingAdmissions(MAX_PENDING_ADMISSIONS, MAX_PENDING_PER_ADDRESS)
 const connectionCounts = new ConnectionReservations({ total: MAX_CONNECTIONS, room: MAX_CONNECTIONS_PER_ROOM,
   principal: MAX_CONNECTIONS_PER_PRINCIPAL })
-const MAX_QUEUED_BYTES = Number(process.env.ROOM_MAX_QUEUED_MB ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) + 4) * 1048576
-const MAX_TOTAL_QUEUED_BYTES = Number(process.env.ROOM_MAX_TOTAL_QUEUED_MB ?? 256) * 1048576
+const MAX_QUEUED_BYTES = settings.maxQueuedBytes
+const MAX_TOTAL_QUEUED_BYTES = settings.maxTotalQueuedBytes
 const outbound = new OutboundBudget(MAX_QUEUED_BYTES, MAX_TOTAL_QUEUED_BYTES)
-const MAX_EXPORTS = Number(process.env.ROOM_MAX_EXPORTS ?? 2)
-const DOC_MAX_RESERVATION_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
+const MAX_EXPORTS = settings.maxExports
+const DOC_MAX_RESERVATION_BYTES = settings.docMaxBytes
 const exportsInFlight = new WorkSlots(MAX_EXPORTS, MAX_EXPORTS_PER_PRINCIPAL, outbound)
-const MAX_PR_OPERATIONS = Number(process.env.ROOM_MAX_PR_OPERATIONS ?? 8)
+const MAX_PR_OPERATIONS = settings.maxPrOperations
 const prOperations = new WorkSlots(MAX_PR_OPERATIONS, MAX_PR_LISTS_PER_PRINCIPAL, outbound)
 const prOperationRate = new RateLimit(PR_OPERATIONS_PER_MINUTE, 60_000)
-const MAX_HTTP_RESPONSES = Number(process.env.ROOM_MAX_HTTP_RESPONSES ?? 32)
-const MAX_ROOM_LISTS = Number(process.env.ROOM_MAX_ROOM_LISTS ?? 8)
+const MAX_HTTP_RESPONSES = settings.maxHttpResponses
+const MAX_ROOM_LISTS = settings.maxRoomLists
 const MAX_ROOM_LISTS_PER_PRINCIPAL = 1
 const archiveListSetting = Number(process.env.ROOM_ARCHIVE_LIST_MAX_KEYS ?? 1000)
 const ARCHIVE_LIST_MAX_KEYS = Number.isFinite(archiveListSetting) ? Math.min(1000, Math.max(0, Math.floor(archiveListSetting))) : 1000
@@ -365,11 +371,11 @@ async function migrateOpenRepo(repo: string): Promise<void> {
 }
 /** Repos nobody has connected to for ROOM_IDLE_DAYS (default 30) are closed automatically: their
  *  shared uncommitted work is deleted. 0 disables. Checked hourly and at startup. */
-const IDLE_MS = Number(process.env.ROOM_IDLE_DAYS ?? 30) * 24 * 60 * 60 * 1000
+const IDLE_MS = settings.idleMs
 async function expireIdle() {
   const cutoff = Date.now() - IDLE_MS
   for (const [repo, r] of Array.from(rooms)) {
-    if (r.migratedAt && r.legacy?.length && Date.now() - r.migratedAt > Number(process.env.ROOM_LEGACY_DAYS ?? 30) * 86400000) {
+    if (r.migratedAt && r.legacy?.length && Date.now() - r.migratedAt > settings.legacyMs) {
       await locks.run(repo, async () => {
         const current = rooms.get(repo)
         if (!current?.legacy?.length || !current.migratedAt) return
@@ -418,7 +424,7 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
 }
 const str = (v: unknown): string | undefined => typeof v === 'string' && v ? v : undefined
 const readBody = bodyReader({ maxBytes: MAX_BODY_BYTES,
-  maxConcurrent: Number(process.env.ROOM_MAX_BODY_READS ?? 32), timeoutMs: BODY_TIMEOUT_MS })
+  maxConcurrent: settings.maxBodyReads, timeoutMs: BODY_TIMEOUT_MS })
 /** A PR note carries a room's ledger, so its body may be larger (fixed at 4 MiB), but only for a
  *  request whose Authorization header is a live session: nobody unauthenticated is read past the small limit. */
 const authStartLimit = new RateLimit(10, 60_000)
@@ -595,7 +601,12 @@ const server = http.createServer((req, res) => {
     const since = Number(url.searchParams.get('since') ?? 0) || 0
     const limit = Math.min(10_000, Number(url.searchParams.get('limit') ?? 1000) || 1000)
     const releaseWork = responseWork?.hold()
-    void store.readAudit({ since, limit }).then(entries => json(200, entries)).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`)).finally(() => releaseWork?.())
+    // The body stays the entry array; the headers say whether entries the request covers may be missing.
+    void store.readAudit({ since, limit, maxScanBytes: settings.auditScanBytes }).then(tail => {
+      res.setHeader('X-Room-Audit-Complete', String(tail.complete))
+      if (tail.gaps.length) res.setHeader('X-Room-Audit-Gaps', tail.gaps.join(','))
+      json(200, tail.entries)
+    }).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`)).finally(() => releaseWork?.())
     return
   }
 
@@ -934,9 +945,7 @@ const server = http.createServer((req, res) => {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
     const file = staticFile(STATIC, url.pathname)
     if (file) {
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': rel === 'index.html' ? 'no-store' : 'public, max-age=31536000, immutable' })
-      fs.createReadStream(file).pipe(res)
-      return
+      return sendFile(res, file, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': rel === 'index.html' ? 'no-store' : 'public, max-age=31536000, immutable' }, l => console.log(l))
     }
   }
   res.writeHead(200, { 'content-type': 'text/plain' })
@@ -951,7 +960,7 @@ const server = http.createServer((req, res) => {
  *  after 200 write messages or 8 MB received, whichever comes first: a time-only cache would let an
  *  unbounded amount through between two measurements. The default 64 pairs with ROOM_DOC_MAX_BYTES in
  *  shared/src/memory.ts, the local relay's live cap and snapshot ceiling (one rule: hub-core/src/doc-cap.ts). */
-const DOC_MAX_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
+const DOC_MAX_BYTES = settings.docMaxBytes
 const docMeters = new Map<string, DocSizeMeter>()
 const capLogged = new Map<string, number>()
 function docMeter(roomName: string): DocSizeMeter {
@@ -964,7 +973,7 @@ function docMeter(roomName: string): DocSizeMeter {
 }
 /** Largest websocket message accepted (ROOM_MAX_MESSAGE_MB, default 16). A client holding a bloated copy of
  *  a room, such as a browser tab left open, would otherwise push the whole thing back in one frame. */
-const MAX_MESSAGE_BYTES = Number(process.env.ROOM_MAX_MESSAGE_MB ?? 16) * 1048576
+const MAX_MESSAGE_BYTES = settings.maxMessageBytes
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
 wss.on('headers', headers => headers.push('Referrer-Policy: no-referrer'))
 /** One log line per room per minute at most: a misbehaving viewer must not flood the log. */
@@ -1031,8 +1040,8 @@ const documentGuards = new Map<string, DocumentIdentityGuard>()
 const awarenessOwners = new Map<string, Map<number, string>>()
 const awarenessBudgets = new Map<string, AwarenessBudget>()
 // y-websocket clients send back every presence change they hear: a client in a room of 200 relays some 800 heartbeats a minute.
-const AWARENESS_MAX_MESSAGES_PER_MINUTE = Number(process.env.ROOM_AWARENESS_MESSAGES_PER_MINUTE ?? 6000)
-const AWARENESS_MAX_IDS_PER_ROOM = Number(process.env.ROOM_AWARENESS_IDS_PER_ROOM ?? 4096)
+const AWARENESS_MAX_MESSAGES_PER_MINUTE = settings.awarenessMessagesPerMinute
+const AWARENESS_MAX_IDS_PER_ROOM = settings.awarenessIdsPerRoom
 function documentGuard(roomName: string): DocumentIdentityGuard {
   let guard = documentGuards.get(roomName)
   if (!guard) { guard = new DocumentIdentityGuard(() => docs.get(roomName)); documentGuards.set(roomName, guard) }

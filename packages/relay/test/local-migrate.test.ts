@@ -430,3 +430,62 @@ it('imports exact duplicate Room notices once', () => {
   expect(mail.filter(m => m.text === 'same words twice')).toHaveLength(2)
   expect(mail.filter(m => m.text.startsWith('released')).map(m => m.from)).toEqual(['room'])
 })
+
+const legacySnapshot = (room: string, name: string, id: string) => {
+  const file = path.join(common, 'room-local', `${encodeURIComponent(`${room}/${name}`)}.ydoc`)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const doc = new RoomDoc(new Y.Doc())
+  doc.bus.push([{ id, type: 'note', from: 'ada', fromKind: 'agent', text: id, at: 1, priority: 'fyi' }])
+  fs.writeFileSync(file, Y.encodeStateAsUpdate(doc.doc))
+  doc.doc.destroy()
+  return file
+}
+const readsOf = (file: string) => {
+  const read = fs.readFileSync
+  const calls: string[] = []
+  vi.spyOn(fs, 'readFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, options?: unknown) => {
+    if (String(target) === file) calls.push(file)
+    return read(target, options as never)
+  }) as typeof fs.readFileSync)
+  return calls
+}
+
+it('does not decode an unchanged snapshot again while a legacy relay keeps catch-up pending', () => {
+  const room = 'local/steady'
+  fs.writeFileSync(path.join(common, 'room-local.json'), JSON.stringify({ pid: process.pid }))
+  const file = legacySnapshot(room, 'main', 'm1')
+  const target = new RoomDoc(new Y.Doc())
+  expect(catchUpLocal(common, room, target.doc)).toBe(true)
+  const reads = readsOf(file)
+  expect(catchUpLocal(common, room, target.doc)).toBe(true)
+  expect(reads).toEqual([])
+  expect(target.bus.toArray().map(m => m.id)).toEqual(['m1'])
+})
+
+it('refuses a snapshot over the per-file budget before reading it and stays pending', () => {
+  const room = 'local/huge'
+  const file = legacySnapshot(room, 'main', 'm1')
+  const reads = readsOf(file)
+  const lines: string[] = []
+  const target = new RoomDoc(new Y.Doc())
+  expect(catchUpLocal(common, room, target.doc, line => lines.push(line), probeProcess, { fileBytes: 8, files: 64, totalBytes: 1 << 20 })).toBe(true)
+  expect(reads).toEqual([])
+  expect(lines).toEqual([expect.stringMatching(/exceeds the 8-byte snapshot limit/)])
+  expect(target.bus.length).toBe(0)
+})
+
+it('defers snapshots past the per-pass file and byte budgets to later passes without losing them', () => {
+  const room = 'local/many'
+  for (const name of ['a', 'b', 'c']) legacySnapshot(room, name, `m-${name}`)
+  const target = new RoomDoc(new Y.Doc())
+  const limits = { fileBytes: 1 << 20, files: 2, totalBytes: 1 << 20 }
+  expect(catchUpLocal(common, room, target.doc, () => {}, probeProcess, limits)).toBe(true)
+  expect(target.bus.length).toBe(2)
+  expect(catchUpLocal(common, room, target.doc, () => {}, probeProcess, limits)).toBe(false)
+  expect(target.bus.toArray().map(m => m.id).sort()).toEqual(['m-a', 'm-b', 'm-c'])
+  const bytes = { fileBytes: 1 << 20, files: 64, totalBytes: 1 }
+  const other = new RoomDoc(new Y.Doc())
+  for (const name of ['x']) legacySnapshot('local/bytes', name, `m-${name}`)
+  expect(catchUpLocal(common, 'local/bytes', other.doc, () => {}, probeProcess, bytes)).toBe(true)
+  expect(other.bus.length).toBe(0)
+})

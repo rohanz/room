@@ -7,6 +7,7 @@ import { readDisk, StalePublication } from './disk-scan.js'
 import { markManifestIncomplete, prepareManifestPublication, prepareManifestPublicationYielding, type ManifestFact } from './manifest-publish.js'
 import { authorizesText, defaultExcludedPath, planYielding, publishesFiles, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
 import type { DiskBatch } from './disk-batch.js'
+import { RecentKeys } from './recent-keys.js'
 
 interface Host {
   readonly dir: string
@@ -69,7 +70,8 @@ export function withdrawFormerPublisher(room: RoomDoc, name: string, fence: stri
 /** One publisher path: capture inputs, read disk/Git, pure plan, synchronous guarded apply. */
 export class Publisher {
   private readonly excludedPaths = new Set<string>()
-  private readonly errors = new Set<string>()
+  /** Recent distinct failures, logged once per ten minutes each; a success resets them. */
+  private readonly errors = new RecentKeys(10 * 60_000, 32)
   private readonly oversizedCache = new Map<string, { size: number; mtimeMs: number; base: string; hash: string }>()
   private dirtyTimer?: ReturnType<typeof setTimeout>
   private formerPublisher?: { name: string; fence: string }
@@ -150,7 +152,7 @@ export class Publisher {
 
   reconcileFailed(error: unknown): void {
     const text = message(error)
-    if (!this.errors.has(text)) { this.errors.add(text); this.host.log(`warn: ${text}`) }
+    if (!this.errors.hit(text)) this.host.log(`warn: ${text}`)
     this.markDirty()
   }
 

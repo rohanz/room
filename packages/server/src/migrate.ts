@@ -1,4 +1,5 @@
 import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS, MIGRATION_AUDIT_MAX_ENTRIES, MIGRATION_AUDIT_MAX_BYTES, LOAD_MAX_BYTES } from './limits.js'
+import { envCount, envMegabytes } from './settings.js'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
@@ -127,8 +128,8 @@ const nextTurn = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 /** The caller holds repoLock. A persisted plan makes every replay use the same sources and archive key. */
 export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO, registered: ReadonlySet<string> = new Set()): Promise<void> {
   if (entry.migratedAt) return
-  const maxReadBytes = io.maxReadBytes ?? Number(process.env.ROOM_MIGRATION_MAX_READ_MB ?? 128) * 1048576
-  const maxRecords = io.maxRecords ?? Number(process.env.ROOM_MIGRATION_MAX_RECORDS ?? 100_000)
+  const maxReadBytes = io.maxReadBytes ?? envMegabytes(process.env, 'ROOM_MIGRATION_MAX_READ_MB', 128)
+  const maxRecords = io.maxRecords ?? envCount(process.env, 'ROOM_MIGRATION_MAX_RECORDS', 100_000)
   let workBytes = 0, workRecords = 0
   const release = (name: string, doc: Y.Doc) => io.release ? io.release(name, doc) : doc.destroy()
   const checkedLoad = async (name: string): Promise<Y.Doc | undefined> => {
@@ -225,8 +226,8 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     entry.step = 'moved'; await save()
   }
   if (entry.step === 'moved') {
-    const maxTargetBytes = io.maxTargetBytes ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
-    const maxSources = io.maxSources ?? Number(process.env.ROOM_MIGRATION_MAX_SOURCES ?? 1000)
+    const maxTargetBytes = io.maxTargetBytes ?? envMegabytes(process.env, 'ROOM_DOC_MAX_MB', 64)
+    const maxSources = io.maxSources ?? envCount(process.env, 'ROOM_MIGRATION_MAX_SOURCES', 1000)
     const candidates = plan.sources.slice(0, maxSources)
     let skippedSources = plan.sources.length - candidates.length, skippedRecords = 0
     let unknownCounts = skippedSources

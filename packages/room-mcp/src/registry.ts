@@ -27,6 +27,17 @@ import { readDiffCache } from './read-diff-cache.js'
 
 export type Role = 'primary' | 'workers'
 export interface DeliveredResume { delivered: true; reply: string }
+export interface ResumeWorkerOptions {
+  spawner?: Spawner
+  claudeChannel?: string
+  maxWorkers?: number | string
+  log?: (line: string) => void
+  at?: () => number
+  /** How long to wait for the previous run's exit (default 30 s). */
+  exitWaitMs?: number
+  /** See resumeWorker: runs just before the host starts; an error string ends the run unlaunched. */
+  beforeLaunch?: () => Promise<string | { ids: string[]; prompt: string } | undefined>
+}
 
 /** The MCP request's cancellation follows awaits into worker preparation and registry locks. */
 const toolSignal = new AsyncLocalStorage<AbortSignal>()
@@ -34,6 +45,7 @@ export function withToolSignal<T>(signal: AbortSignal | undefined, run: () => Pr
   return signal ? toolSignal.run(signal, run) : run()
 }
 export function toolCallAborted(): boolean { return toolSignal.getStore()?.aborted === true }
+export const currentToolSignal = (): AbortSignal | undefined => toolSignal.getStore()
 
 /** What a session needs running while it is in the registry; built by the host (tools.ts) because the pieces close over tool state. */
 export interface Attachment {
@@ -249,7 +261,9 @@ export class Rooms {
    * `beforeLaunch` runs once every check has passed and the run is reserved, just before the host starts; an
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
-  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000, beforeLaunch?: () => Promise<string | { ids: string[]; prompt: string } | undefined>): Promise<string | DeliveredResume> {
+  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, options: ResumeWorkerOptions = {}): Promise<string | DeliveredResume> {
+    const { spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log = console.error, at = Date.now,
+      exitWaitMs = 30_000, beforeLaunch } = options
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
     const known = registry.reserved(w.tag)
@@ -312,18 +326,18 @@ export class Rooms {
       { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt : followUp, oldPort: record.port },
       { setHandle: (id, proc) => this.setHandle(s, id, proc),
         watch: (_id, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
-      async pid => { await registry.update(record.id, old => ({ ...old,
+      { onLaunched: async pid => { await registry.update(record.id, old => ({ ...old,
         runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
-      async result => {
+      onSpawn: async result => {
         await registry.update(record.id, old => ({ ...old, phase: 'active', port: result.port,
           runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
             ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
               executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
-      }, async (code, signal) => {
+      }, onExit: async (code, signal) => {
         await registry.writeExit(record.id, { run: run.n, code, ...(signal ? { signal } : {}), witnessed: true, at: at() })
         this.dropHandle(s, record.id)
         await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
-      })
+      } })
       return [`resumed ${record.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}`, ...launched.warnings].join('\n')
     } catch (error) {
       const launchError = error instanceof WorkerLaunchError ? error : new WorkerLaunchError('start', String(error))

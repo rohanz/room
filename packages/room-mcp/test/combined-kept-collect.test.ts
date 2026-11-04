@@ -97,7 +97,7 @@ async function carriedFixture(carry = true) {
   publishFixture(room, 'lead', 'shared.txt', sharedText(), { base })
   room.participants.set('lead\0git', { ...room.participants.get('lead\0git')!, head: base })
   put(root, 'shared.txt', sharedText([2, 'carried input'])); put(root, 'new.txt', 'carried untracked input\n')
-  const prepared = await prepareWorktree(root, 'carry', 'lead', [], undefined, 0, carry)
+  const prepared = await prepareWorktree(root, 'carry', 'lead', { linkExclusions: [], carry: carry })
   const session = (name: string, dir: string) => ({ ...hubSeam(room), policyStore: testPolicyStore(), dir, me: { name, kind: 'agent' }, room,
     local: {}, roomName: 'local/test', awareness: { getStates: () => new Map() }, daemon: { touch() {}, fence: '1', settle: async () => {} } } as unknown as Session)
   const lead = session('lead', root), worker = session('lead+carry', prepared.dir)
@@ -181,7 +181,7 @@ it.each([false, true])('checks the immediate worker-lead publication in a three-
   const t = await carriedFixture(), parentRecord = t.registry.reservedByTagOrName('lead+carry')!
   const parentProof = await acknowledgeKeptPublication(t.lead, undefined, t.prepared.carried!.paths)
   await t.registry.update(parentRecord.id, old => ({ ...old, keptPublication: { ...parentProof, base: old.base }, seq: old.seq + 1 }))
-  const child = await prepareWorktree(t.worker.dir, 'grand', t.worker.me.name, [])
+  const child = await prepareWorktree(t.worker.dir, 'grand', t.worker.me.name, { linkExclusions: [] })
   await registerWorkers(t.worker, [{ tag: 'grand', name: 'lead+carry+grand', lead: t.worker.me.name, dir: child.dir, branch: child.branch,
     status: 'done', base: child.base, carriedBase: child.carriedBase, carriedUntracked: child.carriedUntracked, host: 'codex', task: 'grand', pid: 0, startedAt: 2 }])
   t.worker.daemon.reconcileGitChanges = async () => {

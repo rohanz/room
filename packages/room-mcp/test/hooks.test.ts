@@ -291,36 +291,23 @@ describe('shell edit hooks', () => {
   const shellNames = ['Bash', 'shell', 'local_shell', 'exec', 'exec_command', 'unified_exec']
   const claim = { by: 'Kieran', path: 'api/tax.py', from: 1, to: 1, intent: 'tax rules' }
   const state = (extra = {}, id = SID) => writeSessionFile('state.json', { at: Date.now(), company: true, claims: [claim], ...extra }, id)
-  const intents = (id: string) => (file: string) => {
-    const record = join(sdir(id), 'write-intents.json')
-    if (!existsSync(record)) return undefined
-    return JSON.parse(readFileSync(record, 'utf8')).writes.some((write: { path: string }) => write.path === join(dir, file))
-  }
-
-  it('records session-specific write intents with company, including new edit files', async () => {
-    state({}, 'intent-lead'); state({}, 'intent-peer')
-    const lead = intents('intent-lead')
-    expect(lead('app.py')).toBeUndefined()
-    await runHook('before-edit.mjs', { session_id: 'intent-lead', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'cat app.py' } })
-    await runHook('before-edit.mjs', { session_id: 'intent-lead', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'echo x > api/tax.py' } })
-    expect(lead('app.py')).toBe(false)
-    const peer = intents('intent-peer')
-    await runHook('before-edit.mjs', { session_id: 'intent-peer', cwd: dir, tool_name: 'Write', tool_input: { file_path: join(dir, 'new.py') } })
-    expect(peer('new.py')).toBe(true)
-    expect(lead('new.py')).toBe(false)
-    await runHook('before-edit.mjs', { session_id: 'intent-lead', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'echo x > app.py' } })
-    expect(lead('app.py')).toBe(true)
-    expect(peer('app.py')).toBe(false)
+  it('finds shell and edit write targets, including new edit files, but not reads', async () => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { cmd: 'cat app.py' }, dir)).toEqual([])
+    expect(pathsOf('Bash', { cmd: 'echo x > api/tax.py' }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('Write', { file_path: join(dir, 'new.py') }, dir)).toEqual(['new.py'])
   })
 
-  it('records PowerShell write targets but not read-only commands', async () => {
+  it('finds PowerShell write targets but not read-only commands', async () => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('PowerShell', { command: 'Get-Content -LiteralPath api/tax.py', description: 'Read tax rules' }, dir)).toEqual([])
+    expect(pathsOf('PowerShell', { command: 'sEt-CoNtEnT -LiteralPath api\\tax.py -Value "x = 2"', description: 'Edit tax rules' }, dir)).toEqual(['api/tax.py'])
+  })
+
+  it('writes no per-session write-intent record (its reader went in 0.17.17)', async () => {
     state()
-    const read = intents(SID)
-    await runHook('before-edit.mjs', { cwd: dir, tool_name: 'PowerShell', tool_input: { command: 'Set-Content -LiteralPath app.py -Value "x = 3"' } })
-    await runHook('before-edit.mjs', { cwd: dir, tool_name: 'PowerShell', tool_input: { command: 'Get-Content -LiteralPath api/tax.py', description: 'Read tax rules' } })
-    expect(read('api/tax.py')).toBe(false)
-    await runHook('before-edit.mjs', { cwd: dir, tool_name: 'PowerShell', tool_input: { command: 'sEt-CoNtEnT -LiteralPath api\\tax.py -Value "x = 2"', description: 'Edit tax rules' } })
-    expect(read('api/tax.py')).toBe(true)
+    expect(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'echo x > api/tax.py' } })).toContain('tax rules')
+    expect(existsSync(join(sdir(), 'write-intents.json'))).toBe(false)
   })
 
   it('finds PowerShell write destinations, including aliases and parameter paths', async () => {
@@ -343,18 +330,6 @@ describe('shell edit hooks', () => {
     }
     expect(pathsOf('PowerShell', { command: 'Set-Content -Path C:\\repo\\api\\tax.py -Value x' }, 'C:\\repo')).toEqual(['api/tax.py'])
     expect(pathsOf('PowerShell', { command: 'Copy-Item -Path app.py -Destination "api/new tax.py"' }, dir)).toContain('api/new tax.py')
-  })
-
-  it('bounds recorded intents to 200 entries and drops ten-minute history', async () => {
-    const { recordWriteIntents } = await import(join(HOOKS, 'common.mjs'))
-    const clock = 1_000_000
-    recordWriteIntents(sdir(), dir, Array.from({ length: 201 }, (_, i) => `f${i}`), clock)
-    const writes = () => readSession('write-intents.json').writes
-    expect(writes()).toHaveLength(200)
-    expect(writes()[0].path).toBe(join(dir, 'f1'))
-    expect(writes().at(-1).path).toBe(join(dir, 'f200'))
-    recordWriteIntents(sdir(), dir, ['fresh'], clock + 600_000)
-    expect(writes()).toEqual([{ path: join(dir, 'fresh'), at: clock + 600_000 }])
   })
 
   it('shows directory claims for descendant writes only', async () => {
@@ -847,12 +822,11 @@ describe('session records (registry §17, ledger SF3)', () => {
     expect(readSession('hook-activity.json').at).toBeGreaterThan(JSON.parse(first).at)
   })
 
-  it('does no endpoint, intent or transcript work while alone with nothing owed', async () => {
+  it('does no endpoint or transcript work while alone with nothing owed', async () => {
     const input = { cwd: dir, tool_name: 'Write', tool_input: { file_path: 'app.py' }, transcript_path: '/nonexistent' }
     writeSessionFile('state.json', { at: Date.now(), company: false, owedCount: 0, claims: [] })
     writeSessionFile('mcp.json', { port: 1, key: 'unused' })
     expect(await runHook('before-edit.mjs', input)).toBe('')
-    expect(existsSync(join(sdir(), 'write-intents.json'))).toBe(false)
   })
 })
 

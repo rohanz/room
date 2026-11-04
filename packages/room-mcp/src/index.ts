@@ -232,7 +232,7 @@ async function main() {
           return undefined
         },
         async adopt(s) { if (replacement.active) await replacement.finish(s, adopt); else await adopt(s); log('ready') },
-        discard: s => leaveSession(s),
+        discard: async s => { const unsaved = await leaveSession(s); if (unsaved) log(`WARN: ${unsaved}`) },
         joined: () => !!session && !session.local?.lost && !session.stale,
         report(line) {
           tools.startupNotice(line)

@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import type http from 'node:http'
 
 import { HttpFailure } from '@room/hub-core'
@@ -94,6 +95,29 @@ export function staticFile(root: string, pathname: string): string | undefined {
   const inside = path.relative(base, real)
   if (inside.startsWith('..' + path.sep) || inside === '..' || path.isAbsolute(inside)) return undefined
   return fs.statSync(real).isFile() ? real : undefined
+}
+
+/** Streams a file the route already resolved. It can still vanish or fail to read before or while it
+ *  streams: that ends this response (404/500 before opening, a cut connection after) and logs one
+ *  bounded line, rather than an unhandled stream error stopping the process. */
+export async function sendFile(res: http.ServerResponse, file: string, headers: http.OutgoingHttpHeaders, log: (line: string) => void): Promise<void> {
+  const fail = (e: unknown) => {
+    const code = (e as NodeJS.ErrnoException).code ?? 'error'
+    log(`static file failed: ${code} ${path.basename(file).slice(0, 80)}: ${(e instanceof Error ? e.message : String(e)).slice(0, 160)}`)
+  }
+  const stream = fs.createReadStream(file)
+  try {
+    await new Promise<void>((resolve, reject) => { stream.once('open', () => resolve()); stream.once('error', reject) })
+  } catch (e) {
+    fail(e)
+    if (!res.headersSent) { res.writeHead((e as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500); res.end() }
+    return
+  }
+  res.writeHead(200, headers)
+  // pipeline destroys both ends on failure, so a read error mid-stream cuts the connection instead of
+  // sending a truncated body as complete. A client that went away is not a server failure.
+  try { await pipeline(stream, res) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') fail(e) }
 }
 
 export function bodyReader(opts: { maxBytes?: number; maxConcurrent?: number; timeoutMs?: number } = {}) {

@@ -212,7 +212,9 @@ it('coalesces 500 published-path withdrawals into one immediate guarded snapshot
     expect(f.room.graphs.get('A')?.paths.filter(path => path.startsWith('base'))).toEqual(['base0.js'])
     set.mockRestore()
   } finally { gi.stop(); f.cleanup() }
-})
+  // The 501-file fixture commit and 500 writes are disk-bound: 0.7 s alone, 10 s beside other git-heavy files,
+  // past 20 s in a loaded full run. The claim here is the single coalesced snapshot, not speed.
+}, 90_000)
 
 // The budget is this process's CPU time, not wall-clock: other sessions and test workers on the
 // machine slow the clock but not the work. The fixture's 3000-file commit is disk-bound, so the

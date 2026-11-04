@@ -19,6 +19,8 @@ import { closeRegistryForDir } from '../src/worker-registry.js'
 import { chooseName, processToken } from '../src/names.js'
 
 vi.mock('@room/relay', async importOriginal => ({ ...(await importOriginal() as object), ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
+// Admission is covered by worker-registry.test.ts; here a dispatched worker is admitted as is.
+vi.mock('../src/worker-registry.js', async importOriginal => ({ ...(await importOriginal() as object), admitWorkerEnvironment: vi.fn(async () => {}) }))
 let dir: string
 const dispose: (() => void)[] = []
 beforeEach(() => {
@@ -59,6 +61,24 @@ it('a local worker without a named lead clone only joins an existing relay', asy
   vi.mocked(ensureLocalRelay).mockRejectedValueOnce(new NoLocalRelay('local/lead'))
   await expect(joinSession({ dir, server: 'local', name: 'Ada', joinOnly: true })).rejects.toThrow('cannot start one')
   expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: true }))
+})
+
+it.each(['claude', 'codex'])('a dispatched %s worker never starts or takes over the relay, even with its lead clone named', async host => {
+  vi.stubEnv('ROOM_WORKER_ID', 'w_01'); vi.stubEnv('ROOM_WORKER_HOST', host)
+  vi.stubEnv('ROOM_LEAD_CLONE', await realGitCommonDir(dir))
+  vi.mocked(ensureLocalRelay).mockRejectedValueOnce(new NoLocalRelay('local/lead'))
+  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toThrow("It joins once the lead's session is back.")
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: true }))
+})
+it('a lead session may start the relay', async () => {
+  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toThrow('relay boundary')
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: false, lead: true }))
+})
+it("a session in a Room worker's worktree is not a lead, even without worker variables", async () => {
+  const wt = join(dir, '.room', 'workers', 'w')
+  execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'room/w', wt])
+  await expect(joinSession({ dir: wt, server: 'local', name: 'Ada', room: `local/${basename(dir)}` })).rejects.toThrow('relay boundary')
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: false, lead: false }))
 })
 
 it('keeps distinct Codex labels for several sessions in one checkout', async () => {

@@ -13,6 +13,7 @@ import { ignoredWorkerArtifacts } from '../src/worker-git.js'
 import { pidAlive, signalWorker } from '../src/worker-process.js'
 import { localWorkers, registryForDir } from '../src/worker-registry.js'
 import { finishWorker, workerByTag } from './registry-fixture.js'
+import { finishFixtureProcess } from './fixtures/process-liveness.js'
 describe('room_collect', () => {
 
   it('preserves scratch handling and stays finished through automatic retirement after keep', async () => {
@@ -94,7 +95,7 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('changed during collect\n')
   })
 
-  it.each([false, true])('refuses discard before a recovery snapshot when cwd inspection fails (retired: %s)', async retired => {
+  it.each([false, true])('refuses discard before a recovery snapshot when cwd inspection fails (collected first: %s)', async retired => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
@@ -102,7 +103,7 @@ describe('room_collect', () => {
       put(worker, 'artifact.bin', 'ignored output')
       const collected = await t.call({ tag: 'test' })
       expect(collected, await ownershipEvidence(t)).toContain('Changes from test: new.txt')
-      expect(workerByTag(lead, 'test')).toBeUndefined()
+      expect(workerByTag(lead, 'test')).toBeDefined()
     }
     t.state.ctx!.listCwdProcesses = () => { throw new Error('worktree process inspection is unsupported on win32') }
     const result = await t.call({ tag: 'test', discard: true, force: true })
@@ -122,7 +123,13 @@ describe('room_collect', () => {
     expect(result).toContain('worktree process inspection is unsupported on win32')
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
     expect(fs.existsSync(worker)).toBe(true)
-    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    expect(t.s.room.retiredWorkers()).toEqual([])
+    expect((await registryForDir(lead)).read('w_test')).toMatchObject({ phase: 'active', collectPending: { reason: expect.stringContaining('cleanup incomplete') } })
+    // Once inspection works again, a later collect retries cleanup instead of applying again.
+    t.state.ctx!.listCwdProcesses = () => []
+    expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
+    expect(fs.existsSync(worker)).toBe(false)
+    expectRetired(t)
   })
 
   it('checks Git operation markers in one call per checkout and reports collect phases', async () => {
@@ -170,7 +177,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(false)
   })
 
-  it('retires collected worker with ignored output and shows only its kept worktree', async () => {
+  it('keeps a collected worker with ignored output live and cleans it up once the output is copied', async () => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
@@ -185,14 +192,15 @@ describe('room_collect', () => {
     seedPresence(t)
     expect(await t.call({ tag: 'test' })).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
     expect(fs.existsSync(worker)).toBe(true)
+    expect(t.s.room.retiredWorkers()).toEqual([])
+    await t.state.rooms.project()
+    expect(t.s.room.workerViewOf(t.w.name)?.note).toContain('collected; worktree kept: uncopied ignored artifacts')
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['artifact.bin'], force: true })).toContain('copied artifact.bin')
+    expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
+    expect(fs.existsSync(worker)).toBe(false)
     expect(fs.existsSync(retained)).toBe(false)
     expectRetired(t)
-    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
-    expect(workerLines([], { retiredWorkers: t.s.room.retiredWorkers() }).join('\n')).toContain('kept: uncopied ignored artifacts')
-    const lines = workerLines([], { all: true, retiredWorkers: t.s.room.retiredWorkers() }).join('\n')
-    expect(lines).toContain(`kept for ignored output at ${worker}`)
-    expect(lines).not.toContain('uncommitted')
-    expect(lines).toContain('workers (1):')
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
   })
 
   it('refuses to stop a worker in an unmanaged existing directory', async () => {
@@ -333,13 +341,13 @@ describe('room_collect', () => {
     } finally { child.kill('SIGKILL') }
   })
 
-  it('discards ignored output from a retired collected worker with force', async () => {
+  it('discards ignored output from a collected worker kept live with force', async () => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
-    expect(workerByTag(lead, 'test')).toBeUndefined()
+    expect(workerByTag(lead, 'test')).toBeDefined()
     expect(await t.call({ tag: 'test', discard: true })).toContain('discard refused; ignored artifacts')
     expect(fs.existsSync(worker)).toBe(true)
     expect(await t.call({ tag: 'test', discard: true, force: true })).toContain('discarded test')
@@ -373,11 +381,11 @@ describe('room_collect', () => {
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
-    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    expect((await registryForDir(lead)).read('w_test')?.collectPending?.reason).toBe('uncopied ignored artifacts')
     git(worker, 'checkout', '-qb', 'elsewhere')
-    expect(await t.call({ tag: 'test', discard: true, force: true })).toBe(`error: worker is not an owned Room worktree; retained ${worker}`)
+    expect(await t.call({ tag: 'test', discard: true, force: true })).toMatch(/^error: /)
     expect(fs.existsSync(path.join(worker, 'artifact.bin'))).toBe(true)
-    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    expect(t.s.room.retiredWorkers()).toEqual([])
   })
 
   it('preflights ignored output before stopping worktree processes', async () => {
@@ -582,7 +590,12 @@ describe('room_collect', () => {
     expect(result).toContain('Directory not empty')
     expect(result).toContain('cleanup incomplete')
     expect(fs.existsSync(worker)).toBe(true)
-    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+    expect(t.s.room.retiredWorkers()).toEqual([])
+    // The failure was transient (as a `git worktree remove` timeout under load is): the sweep retries it.
+    await autoRetire(t.s, { ...t.state.rooms, probe: () => undefined } as never)
+    expect(fs.existsSync(worker)).toBe(false)
+    expect((await registryForDir(lead)).read('w_test')?.phase).toBe('retired')
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
   })
 
   it('serializes parallel collects through the worktree lease', async () => {
@@ -872,8 +885,8 @@ describe('room_collect', () => {
     expect(result).not.toContain('cleaned up test')
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('new')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('diagnostic output')
-    expect(workerByTag(lead, 'test')).toBeUndefined()
-    expect(t.s.room.retiredWorkers()[0].summary).toBe(`kept for ignored output at ${worker}`)
+    expect(workerByTag(lead, 'test')).toBeDefined()
+    expect(t.s.room.retiredWorkers()).toEqual([])
     expect(fs.existsSync(worker)).toBe(true)
   })
 
@@ -1077,11 +1090,175 @@ describe('room_collect', () => {
     let alive = false
     t.state.workerAlive = () => alive
     release.mockImplementationOnce(() => { alive = true })
-    expect(await t.call({ tag: 'test' })).toContain('kept test: clean exit not confirmed')
+    expect(await t.call({ tag: 'test' })).toContain('kept test: changes collected; clean exit not confirmed (its host process is still running); cleaned up by a later room_collect or the automatic sweep once its process is gone')
     expect(workerByTag(lead, 'test')).toBeDefined()
     expect(t.s.room.scopes.has(t.w.name)).toBe(true)
     expect(t.s.room.overlays.has(t.w.name)).toBe(true)
     expect(t.s.room.retiredWorkers()).toEqual([])
+    // The pending cleanup does not re-apply: a later collect only finishes once the process is gone.
+    expect(await t.call({ tag: 'test' })).toContain('kept test: its host process is still running')
+    alive = false
+    expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
+    expect(fs.existsSync(worker)).toBe(false)
+    expectRetired(t)
+  })
+
+  it('keeps a pending collection for follow-up when asked, then a plain collect cleans it up', async () => {
+    const t = setup()
+    put(worker, 'new.txt', 'worker change')
+    let alive = false
+    t.state.workerAlive = () => alive
+    release.mockImplementationOnce(() => { alive = true })
+    expect(await t.call({ tag: 'test' })).toContain('clean exit not confirmed')
+    const registry = await registryForDir(lead)
+    expect(registry.read('w_test')?.collectPending).toBeDefined()
+    alive = false
+    // keep=true replaces the pending cleanup with a kept baseline instead of removing the worktree.
+    const kept = await t.call({ tag: 'test', keep: true })
+    expect(kept).toContain('Changes from test: already present')
+    expect(kept).toContain('kept test: finished and resumable; worktree, branch, logs and host session retained; its pending automatic cleanup is cancelled')
+    expect(kept).not.toContain('cleaned up test')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
+    expect(fs.existsSync(worker)).toBe(true)
+    const record = registry.read('w_test')!
+    expect(record).toMatchObject({ phase: 'active', collectedKeep: true })
+    expect(record.collectPending).toBeUndefined()
+    expect(git(lead, 'rev-parse', 'refs/room/collect-head/test/w_test')).toBe(record.base)
+    expect(git(lead, 'log', '-1', '--format=%s', record.base!)).toBe('room: kept collection baseline')
+    expect(git(lead, 'show', `${record.base}:new.txt`)).toBe('worker change')
+    expect(t.s.room.retiredWorkers()).toEqual([])
+    // The sweep leaves a kept worker addressable, as it does after an ordinary keep.
+    await autoRetire(t.s, { ...t.state.rooms, probe: () => undefined } as never)
+    expect(registry.read('w_test')?.phase).toBe('active')
+    expect(fs.existsSync(worker)).toBe(true)
+    // A later plain collect measures from the kept baseline: nothing new to apply, so it cleans up.
+    const plain = await t.call({ tag: 'test' })
+    expect(plain).toContain('cleaned up test')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
+    expect(fs.existsSync(worker)).toBe(false)
+    expectRetired(t)
+  })
+
+  it('keeps a pending collection pending when the kept re-collection is refused', async () => {
+    const t = setup()
+    put(worker, 'file.txt', 'worker output\n')
+    let alive = false
+    t.state.workerAlive = () => alive
+    release.mockImplementationOnce(() => { alive = true })
+    expect(await t.call({ tag: 'test' })).toContain('clean exit not confirmed')
+    alive = false
+    // The worker edits the collected file again after collection while the lead edits it too.
+    put(worker, 'file.txt', 'worker later\n')
+    put(lead, 'file.txt', 'lead later\n')
+    expect(await t.call({ tag: 'test', keep: true })).toContain('Nothing written; conflicting files: file.txt')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('lead later\n')
+    const registry = await registryForDir(lead)
+    expect(registry.read('w_test')).toMatchObject({ phase: 'active', collectPending: expect.any(Object) })
+    expect(registry.read('w_test')?.collectedKeep).toBeUndefined()
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+
+  describe('an exit that is not witnessed when collection applies', () => {
+    /** A worker that reported done and whose host is gone, but whose exit was only polled (no exit code). */
+    async function unwitnessedExit() {
+      const t = setup('running'); t.set('test', { ...t.w, status: 'running', pid: 4_190_002 })
+      await t.sync()
+      const registry = await registryForDir(lead)
+      const record = registry.list().find(r => r.tag === 'test')!
+      await registry.writeReport(record.id, { run: 1, nonce: record.runs[0].nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'finished', changed: [] } })
+      finishFixtureProcess(4_190_002)
+      await registry.writeExit(record.id, { run: 1, code: null, at: Date.now(), witnessed: false })
+      // The lead's projector runs on every registry change and posts the completion while the record is active.
+      await t.state.rooms.project()
+      expect(registry.status(record.id)).toMatchObject({ status: 'done', summary: 'finished' })
+      expect(registry.status(record.id)?.exitCode).toBeUndefined()
+      let at = 0
+      t.state.now = () => at
+      // Any wait collection makes is counted, so a test can assert that it does not block on the process.
+      t.state.ctx = { listCwdProcesses: () => [], sleep: async (ms: number) => { at += ms } } as HandlerState['ctx']
+      put(worker, 'new.txt', 'new')
+      return { t, registry, id: record.id, elapsed: () => at }
+    }
+
+    it('does not block on the exit; a witnessed exit recorded later lets the next collect clean up', async () => {
+      const { t, registry, id, elapsed } = await unwitnessedExit()
+      const reply = await t.call({ tag: 'test' })
+      expect(reply).toContain('Changes from test: new.txt')
+      expect(reply).toContain('kept test: changes collected; clean exit not confirmed (exit not witnessed)')
+      expect(elapsed()).toBe(0)
+      await registry.writeExit(id, { run: 1, code: 0, at: Date.now(), witnessed: true })
+      expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
+      expect(fs.existsSync(worker)).toBe(false)
+      expectRetired(t)
+    })
+
+    it('never retires the record while its worktree remains; a later collect finishes cleanup', async () => {
+      const { t, registry, id, elapsed } = await unwitnessedExit()
+      const reply = await t.call({ tag: 'test' })
+      expect(reply).toContain('Changes from test: new.txt')
+      expect(reply).toContain('kept test: changes collected; clean exit not confirmed (exit not witnessed); cleaned up by a later room_collect or the automatic sweep once its process is gone')
+      expect(elapsed()).toBe(0)
+      expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('new')
+      expect(fs.existsSync(worker)).toBe(true)
+      expect(registry.read(id)).toMatchObject({ phase: 'active', collectPending: { reason: 'exit not witnessed' } })
+      expect(t.s.room.retiredWorkers()).toEqual([])
+      const again = await t.call({ tag: 'test' })
+      expect(again).toContain('cleaned up test')
+      expect(again).not.toContain('Changes from')
+      expect(fs.existsSync(worker)).toBe(false)
+      expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
+      expectRetired(t)
+    })
+
+    it('keeps a collected worker with nested workers live and finishes once they are gone', async () => {
+      const t = setup(); t.set('test', { ...t.w, exitCode: 0 })
+      const childDir = path.join(lead, '.room', 'workers', 'child')
+      git(lead, 'worktree', 'add', '-qb', 'room/child', childDir)
+      t.set('child', { ...t.w, tag: 'child', name: 'lead+test+child', lead: 'lead+test', dir: childDir, branch: 'room/child', status: 'running', pid: 0 })
+      put(worker, 'new.txt', 'new')
+      const reply = await t.call({ tag: 'test' })
+      expect(reply).toContain('Changes from test: new.txt')
+      expect(reply).toContain('kept test: nested workers remain: child')
+      const registry = await registryForDir(lead)
+      expect(registry.read('w_test')).toMatchObject({ phase: 'active', collectPending: { reason: 'nested workers remain: child' } })
+      expect(t.s.room.retiredWorkers()).toEqual([])
+      await registry.beginRetirement('w_child', registry.archiveOf(registry.read('w_child')!, { summary: 'gone' }))
+      await autoRetire(t.s, { ...t.state.rooms, probe: () => undefined } as never)
+      expect(registry.read('w_test')?.phase).toBe('retired')
+      expect(fs.existsSync(worker)).toBe(false)
+    })
+
+    it('lets the auto-retire sweep finish cleanup of a collected worker whose process is gone', async () => {
+      const { t, registry, id } = await unwitnessedExit()
+      expect(await t.call({ tag: 'test' })).toContain('kept test: changes collected')
+      // A finished host session normally stays addressable; a pending collection is cleaned regardless.
+      await registry.update(id, old => ({ ...old, hostSessionId: 'session', seq: old.seq + 1 }))
+      await autoRetire(t.s, { ...t.state.rooms, probe: () => undefined } as never)
+      expect(registry.read(id)?.phase).toBe('retired')
+      expect(registry.read(id)?.keptWorktree).toBeUndefined()
+      expect(fs.existsSync(worker)).toBe(false)
+      expect(t.s.room.retiredWorkers().map(r => r.tag)).toEqual(['test'])
+    })
+
+    it('keeps the record live when the worktree changed after collection or holds ignored output', async () => {
+      const { t, registry, id } = await unwitnessedExit()
+      expect(await t.call({ tag: 'test' })).toContain('kept test: changes collected')
+      put(worker, 'new.txt', 'written after collection')
+      put(worker, 'artifact.bin', 'ignored output')
+      const sweep = () => autoRetire(t.s, { ...t.state.rooms, probe: () => undefined } as never)
+      await sweep()
+      expect(registry.read(id)?.phase).toBe('active')
+      expect(fs.existsSync(worker)).toBe(true)
+      const reply = await t.call({ tag: 'test' })
+      expect(reply).toContain('kept test: uncopied ignored artifacts')
+      expect(reply).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
+      fs.rmSync(path.join(worker, 'artifact.bin'))
+      expect(await t.call({ tag: 'test' })).toContain('kept test: changed since collection: new.txt; copy it (mode="copy") or discard=true')
+      await sweep()
+      expect(registry.read(id)?.phase).toBe('active')
+      expect(await t.call({ tag: 'test', discard: true })).toContain('discarded test')
+      expect(fs.existsSync(worker)).toBe(false)
+    })
   })
 
 it('enforces a durable review hold before apply, copy, discard or force and preserves resumable work', async () => {

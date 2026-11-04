@@ -8,13 +8,32 @@ export { MAX_MEMORY_BYTES }
 const stderr = (line: string): void => { process.stderr.write(`${line}\n`) }
 const mb = (bytes: number): string => (bytes / 1048576).toFixed(1)
 const WARN_EVERY_MS = 60_000
-const warnedAt = new Map<string, number>()
-/** Saves run every 2–10 s under activity; repeat a standing warning at most once a minute per room. */
-function warnLimited(key: string, line: () => string, log: (line: string) => void): void {
-  const now = Date.now()
-  if (now - (warnedAt.get(key) ?? -Infinity) < WARN_EVERY_MS) return
-  warnedAt.set(key, now); log(line())
+const WARN_KEYS_MAX = 64
+/**
+ * Saves run every 2–10 s under activity; repeat a standing warning at most once a minute per key.
+ * Each RoomMemory owns one, so another relay instance's warnings never suppress its first; expired
+ * keys are dropped and at most 64 kept.
+ */
+export class WarningLimiter {
+  // Insertion order is time order: a key is re-inserted only after it expired.
+  private readonly warnedAt = new Map<string, number>()
+  constructor(private readonly now: () => number = Date.now) {}
+  get size(): number { return this.warnedAt.size }
+  warn(key: string, line: () => string, log: (line: string) => void): void {
+    const now = this.now()
+    for (const [old, at] of this.warnedAt) {
+      if (now - at < WARN_EVERY_MS) break
+      this.warnedAt.delete(old)
+    }
+    if (this.warnedAt.has(key)) return
+    this.warnedAt.set(key, now)
+    if (this.warnedAt.size > WARN_KEYS_MAX) this.warnedAt.delete(this.warnedAt.keys().next().value!)
+    log(line())
+  }
+  clear(): void { this.warnedAt.clear() }
 }
+/** For saves outside a RoomMemory (legacy migration, tools). */
+const sharedWarnings = new WarningLimiter()
 function largestRoots(update: Uint8Array): string {
   const doc = new Y.Doc()
   try {
@@ -55,17 +74,23 @@ export function loadMemory(commonDir: string, room: string, log = stderr): Y.Doc
 /** Atomic replacement keeps the previous good snapshot on any write/rename failure. Over the 5 MB target
  * after shedding, the smallest achievable snapshot is still saved, so owed mail survives a restart; only
  * one over the 64 MB ceiling (a document the team server would refuse too) is skipped. */
-export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = stderr): boolean {
+export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = stderr, warnings = sharedWarnings): boolean {
+  return writeMemory(commonDir, room, doc, log, warnings) === undefined
+}
+
+/** saveMemory, returning why the snapshot was not saved (undefined when it was). */
+function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: string) => void, warnings: WarningLimiter): string | undefined {
   const file = memoryFile(commonDir, room)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   try {
-    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: line => warnLimited(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log) })
+    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: line => warnings.warn(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log) })
     if (update.byteLength > ROOM_DOC_MAX_BYTES) {
-      warnLimited(`${file}\0over`, () => `local room memory: skipping ${room}: snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling; keeping the last good file`, log)
-      return false
+      const cause = `snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling`
+      warnings.warn(`${file}\0over`, () => `local room memory: skipping ${room}: ${cause}; keeping the last good file`, log)
+      return cause
     }
     if (update.byteLength > MAX_MEMORY_BYTES) {
-      warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log)
+      warnings.warn(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log)
     }
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     fs.chmodSync(path.dirname(file), 0o700)
@@ -74,8 +99,8 @@ export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = st
     try { fs.writeFileSync(fd, update); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
     fs.renameSync(temp, file)
     syncDirectory(path.dirname(file))
-    return true
-  } catch (e) { log(`local room memory: cannot save ${file}: ${e}`); return false }
+    return undefined
+  } catch (e) { log(`local room memory: cannot save ${file}: ${e}`); return e instanceof Error ? e.message : String(e) }
   finally { try { fs.unlinkSync(temp) } catch { /* no temp file */ } }
 }
 
@@ -86,6 +111,7 @@ export class RoomMemory {
   private deadline?: ReturnType<typeof setTimeout>
   private forgotten = false
   private reconciling = false
+  private readonly warnings = new WarningLimiter()
   constructor(private commonDir: string, private room: string, private log = stderr) {
     this.doc = loadMemory(commonDir, room, log)
     this.doc.on('update', this.schedule)
@@ -120,11 +146,15 @@ export class RoomMemory {
     this.deadline ??= setTimeout(() => this.flush(), 10000)
     this.debounce.unref?.(); this.deadline.unref?.()
   }
-  flush(): void {
+  flush(): void { this.save() }
+  /** Save now; returns why the snapshot was not saved, or undefined (also once forgotten: nothing is owed). */
+  save(): string | undefined {
     clearTimeout(this.debounce); clearTimeout(this.deadline)
     this.debounce = this.deadline = undefined
-    if (!this.forgotten) saveMemory(this.commonDir, this.room, this.doc, this.log)
+    return this.forgotten ? undefined : writeMemory(this.commonDir, this.room, this.doc, this.log, this.warnings)
   }
+  /** Stop saving on updates. Call only after a final save() succeeded, or the room's latest state is lost. */
+  detach(): void { this.doc.off('update', this.schedule); this.warnings.clear() }
   forget(): void {
     // Do not let a pending debounce or surviving client restore the forgotten snapshot.
     fs.rmSync(memoryFile(this.commonDir, this.room), { force: true })
@@ -139,5 +169,33 @@ export class RoomMemory {
       }
     })
   }
-  close(): void { this.flush(); this.doc.off('update', this.schedule) }
+  /** Final save, then detach. Rejects with FinalSaveError, still attached, if the save keeps failing. */
+  async close(delays: readonly number[] = FINAL_SAVE_RETRY_MS): Promise<void> {
+    await finalSave(() => [this], delays)
+    this.detach()
+  }
+}
+
+/**
+ * Waits between attempts of a voluntary stop's final save: about 3 s in all. A full disk or an I/O error
+ * can clear in that time (a build's temp files removed); longer would hold up a session that is leaving.
+ */
+export const FINAL_SAVE_RETRY_MS: readonly number[] = [100, 200, 400, 800, 1500]
+
+export class FinalSaveError extends Error {
+  constructor(readonly causes: string[]) { super(causes.join('; ')); this.name = 'FinalSaveError' }
+}
+
+/**
+ * Save every memory in one synchronous pass, retrying the whole pass after each delay until all succeed.
+ * On success the caller can tear down in the same tick, so no update lands between the save and teardown.
+ * Throws FinalSaveError naming each cause once the delays are exhausted; nothing is detached either way.
+ */
+export async function finalSave(memories: () => readonly RoomMemory[], delays: readonly number[] = FINAL_SAVE_RETRY_MS): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const causes = memories().map(m => m.save()).filter((cause): cause is string => cause !== undefined)
+    if (!causes.length) return
+    if (attempt >= delays.length) throw new FinalSaveError([...new Set(causes)])
+    await new Promise(resolve => setTimeout(resolve, delays[attempt]))
+  }
 }

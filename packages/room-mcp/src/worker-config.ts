@@ -42,6 +42,13 @@ export function hostDefaultRuntime(host: WorkerHost, dir: string, env: NodeJS.Pr
 export const WORKER_PORT_START = 4400
 export const WORKER_PORT_END = 4499
 
+/** Ports held by this checkout's live workers; a retired or abandoned record's port is free again. */
+export function workerPortsInUse(records: Iterable<{ port?: number; phase: string }>): number[] {
+  const ports: number[] = []
+  for (const record of records) if (typeof record.port === 'number' && record.phase !== 'retired' && record.phase !== 'abandoned') ports.push(record.port)
+  return ports
+}
+
 /** A small, predictable range makes simultaneous worker dev servers independent. */
 export function allocateWorkerPort(used: Iterable<number>): number {
   const occupied = new Set(used)

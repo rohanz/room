@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { ROOM_DOC_MAX_BYTES } from '@room/shared'
-import { loadMemory, memoryFile, RoomMemory, saveMemory, MAX_MEMORY_BYTES } from '../src/memory.js'
+import { FinalSaveError, loadMemory, memoryFile, RoomMemory, saveMemory, MAX_MEMORY_BYTES, WarningLimiter } from '../src/memory.js'
 
 let dir: string
 const docs: Y.Doc[] = []
@@ -12,24 +12,24 @@ const memories: RoomMemory[] = []
 const log = vi.fn()
 const room = 'local/repo/branch with % space'
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-memory-')); log.mockClear() })
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
-  for (const memory of memories.splice(0)) memory.close()
-  for (const doc of docs.splice(0)) doc.destroy()
   vi.useRealTimers()
+  for (const memory of memories.splice(0)) await memory.close([]).catch(() => {})
+  for (const doc of docs.splice(0)) doc.destroy()
   fs.rmSync(dir, { recursive: true, force: true })
 })
 const open = () => { const m = new RoomMemory(dir, room, log); memories.push(m); docs.push(m.doc); return m }
 const load = () => { const d = loadMemory(dir, room, log); docs.push(d); return d }
 
-it('saves on close and a new relay memory instance restores only memory with private modes', () => {
+it('saves on close and a new relay memory instance restores only memory with private modes', async () => {
   const first = open()
   first.doc.getMap('seen:lead%2Bworker').set('bus', 123)
   first.doc.getMap('seen:lead%2Bworker').set('unreferenced', 123)
   for (const type of ['bus', 'retiredWorkers']) first.doc.getArray(type).push([{ id: type }])
   for (const type of ['workers', 'scopes', 'colors', 'meta', 'ledger']) first.doc.getMap(type).set('key', { value: type })
   for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) first.doc.getMap(type).set('stale', 'text')
-  first.close()
+  await first.close()
   const second = open()
   expect(second.doc.getMap('seen:lead%2Bworker').toJSON()).toEqual({ bus: 123 })
   expect(second.doc.getArray('bus').toArray()).toEqual([{ id: 'bus' }])
@@ -163,7 +163,7 @@ it('still saves when sibling roots push the snapshot past 5MB, shedding archive 
   expect(restored.getArray('bus').length).toBeLessThan(300)
   expect(log).toHaveBeenCalledWith(expect.stringMatching(/^local room memory: .*: snapshot over 5242880 bytes: dropped 1000 archive entries/))
 })
-it('forget removes only this room and prevents pending or shutdown saves from recreating it', () => {
+it('forget removes only this room and prevents pending or shutdown saves from recreating it', async () => {
   vi.useFakeTimers()
   const memory = open(); memory.doc.getArray('bus').push(['kept']); memory.flush()
   saveMemory(dir, 'other', memory.doc, log)
@@ -173,7 +173,7 @@ it('forget removes only this room and prevents pending or shutdown saves from re
   expect(memory.doc.getArray('bus').length).toBe(0)
   expect(memory.doc.getMap('seen:lead%2Bworker').size).toBe(0)
   expect(memory.doc.getMap('completedPublications').size).toBe(0)
-  memory.doc.getArray('bus').push(['late client']); vi.advanceTimersByTime(15000); memory.close()
+  memory.doc.getArray('bus').push(['late client']); vi.advanceTimersByTime(15000); await memory.close()
   expect(fs.existsSync(memoryFile(dir, room))).toBe(false)
   expect(fs.existsSync(memoryFile(dir, 'other'))).toBe(true)
 })
@@ -187,4 +187,55 @@ it('does not duplicate history when an existing client reconnects after a relay 
   Y.applyUpdate(client, Y.encodeStateAsUpdate(relay.doc))
   expect(client.getArray('bus').toArray()).toEqual([{ id: 'event-1' }])
   expect(relay.doc.getArray('retiredWorkers').length).toBe(1)
+})
+it("a later relay instance's first standing warning is not suppressed by an earlier instance", async () => {
+  const first = open()
+  first.doc.getMap('meta').set('large', 'x'.repeat(MAX_MEMORY_BYTES))
+  first.flush()
+  await first.close()
+  const laterLog = vi.fn()
+  const later = new RoomMemory(dir, room, laterLog); memories.push(later); docs.push(later.doc)
+  later.flush()
+  expect(log.mock.calls.filter(([line]) => /saved anyway/.test(line))).toHaveLength(1)
+  expect(laterLog.mock.calls.filter(([line]) => /saved anyway/.test(line))).toHaveLength(1)
+})
+it('the warning limiter keeps the one-minute cadence and evicts old keys', () => {
+  let now = 0
+  const limiter = new WarningLimiter(() => now), lines: string[] = []
+  limiter.warn('a', () => 'first', line => lines.push(line))
+  now = 59_999
+  limiter.warn('a', () => 'repeat', line => lines.push(line))
+  now = 60_000
+  limiter.warn('a', () => 'again', line => lines.push(line))
+  expect(lines).toEqual(['first', 'again'])
+  for (let i = 0; i < 1000; i++) limiter.warn(`room-${i}`, () => '', () => {})
+  expect(limiter.size).toBeLessThanOrEqual(64)
+  now = 200_000
+  limiter.warn('b', () => '', () => {})
+  expect(limiter.size).toBe(1)
+})
+const enospc = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+it('close retries a failed final save, then rejects naming the cause and stays attached', async () => {
+  const memory = open(); memory.doc.getArray('bus').push(['old']); memory.flush()
+  memory.doc.getArray('bus').push(['newest'])
+  const write = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => { throw enospc() })
+  const closing = memory.close([5, 5])
+  await expect(closing).rejects.toThrow(FinalSaveError)
+  await expect(closing).rejects.toThrow(/ENOSPC: no space left on device/)
+  expect(write).toHaveBeenCalledTimes(3)
+  expect(load().getArray('bus').toArray()).toEqual(['old'])
+  // Still attached: once the disk recovers, the next update saves the newest state as before.
+  write.mockRestore()
+  vi.useFakeTimers()
+  memory.doc.getArray('bus').push(['after'])
+  vi.advanceTimersByTime(2000)
+  expect(load().getArray('bus').toArray()).toEqual(['old', 'newest', 'after'])
+})
+it('close succeeds when a retry of the final save succeeds', async () => {
+  const memory = open(); memory.doc.getArray('bus').push(['newest'])
+  const real = fs.writeFileSync
+  const write = vi.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => { throw enospc() }).mockImplementation(real)
+  await memory.close([5, 5])
+  expect(write).toHaveBeenCalledTimes(2)
+  expect(load().getArray('bus').toArray()).toEqual(['newest'])
 })

@@ -55,7 +55,7 @@ describe('carry and discard safety', () => {
     run(root, 'config', 'diff.renames', 'true')
     run(root, 'mv', 'base.txt', 'renamed.txt')
     expect(run(root, 'diff', '--name-status', 'HEAD')).toMatch(/^R100\s/)
-    const prepared = await prepareWorktree(root, 'rename', 'lead', [])
+    const prepared = await prepareWorktree(root, 'rename', 'lead', { linkExclusions: [] })
     expect(prepared.carried?.paths).toEqual(['base.txt', 'renamed.txt'])
     expect(prepared.carried?.count).toBe(2)
     const worker = { name: 'lead+rename', dir: prepared.dir, base: prepared.base, carriedBase: prepared.carried?.commit }
@@ -68,7 +68,7 @@ describe('carry and discard safety', () => {
   it('honors an explicit empty link list even when .roomlinks exists', async () => {
     fs.writeFileSync(path.join(root, '.roomlinks'), 'data.txt\n')
     fs.writeFileSync(path.join(root, 'data.txt'), 'lead data\n')
-    const prepared = await prepareWorktree(root, 'empty-links', 'lead', [])
+    const prepared = await prepareWorktree(root, 'empty-links', 'lead', { linkExclusions: [] })
     expect(fs.readFileSync(path.join(prepared.dir, 'data.txt'), 'utf8')).toBe('lead data\n')
     expect(prepared.carried?.paths).toContain('data.txt')
   })
@@ -113,7 +113,7 @@ describe('carry and discard safety', () => {
     fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/rollback "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = bin + path.delimiter + originalPath
     startsPreviewMaintenance = true
-    try { await expect(cleanupWorker(root, worker, true, true, [], { list: () => [] })).rejects.toThrow(/cleanup failed:.*late cleanup failure/) }
+    try { await expect(cleanupWorker(root, worker, { collected: true, discarded: true, processOptions: { list: () => [] } })).rejects.toThrow(/cleanup failed:.*late cleanup failure/) }
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
     expect(fs.readFileSync(patch!, 'utf8')).toContain('worker edit')

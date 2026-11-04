@@ -1,22 +1,22 @@
 /**
- * @room/relay — the local room relay. No server: the first process to join a clone's local
+ * @room/relay — the local room relay. No server: the first lead session to join a clone's local
  * room starts a tiny y-websocket relay on 127.0.0.1 (with private memory snapshots) and records it in
  * `<git common dir>/room/relay.json` (mode 0600, with a random key every websocket must
  * present). The relay binds a port derived from the common dir, so two processes starting at
  * the same moment cannot end up in two rooms: one binds, the other gets EADDRINUSE and joins.
  * Later processes find the file, check the relay answers as a room relay, and connect. Only the
  * holder of the clone's authority lock (hub.ts) runs a relay, and each relay room runs the room's
- * hub (@room/hub-core) behind message type 7. When the owner exits, any remaining client notices
- * within a couple of seconds, recovers the lock from the dead owner and starts a relay on the same
- * port, seeded from its own replica; the others reconnect to it. Every client holds the full
+ * hub (@room/hub-core) behind message type 7. Only lead sessions own it (see ensureLocalRelay). When the
+ * owner exits, a remaining lead notices within a couple of seconds, recovers the lock from the dead owner
+ * and starts a relay on the same port, seeded from its own replica; the others reconnect to it. Every client holds the full
  * document, so a relay restart loses nothing: clients sync their state back into the new one.
  */
-import { RoomMemory, memoryFile } from './memory.js'
+import { RoomMemory, finalSave, memoryFile } from './memory.js'
 import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
 export { legacyRelayRunning } from './local-migrate.js'
 import { pidAlive } from './process.js'
 import { AuthorityLock, holderDeadCheck, hubDir, incarnationFile, relayLeaseFile } from './hub.js'
-export { RoomMemory, memoryFile, loadMemory, saveMemory } from './memory.js'
+export { RoomMemory, memoryFile, loadMemory, saveMemory, FinalSaveError } from './memory.js'
 export { AuthorityLock } from './hub.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -329,7 +329,8 @@ export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOpt
   }
 }
 
-export interface LocalRelayInfo { schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string }
+/** `lead`: the owner is a lead session (0.17.31+). Without it the owner is an older Room, which a lead takes over when it exits. */
+export interface LocalRelayInfo { schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
@@ -343,10 +344,13 @@ export interface LocalRelay {
   owned: boolean
   /** A canonical port occupied by a relay of this clone, while this session uses another port. */
   canonicalWarning?: string
+  /** A lead joined a relay run by an older Room that cannot hand it over; the lead takes over when that process exits. */
+  readonly ownerWarning?: string
   /** Set when this clone's relay port is now served by another relay: the session must join afresh. */
   readonly lost?: string
   /** Forget this room's saved memory until the relay next restarts. */
   forget?(): Promise<void>
+  /** Rejects with FinalSaveError when this process owns the relay and could not save its state; the relay keeps running. */
   stop(): Promise<void>
 }
 
@@ -358,7 +362,7 @@ export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
   try {
     const v = JSON.parse(fs.readFileSync(relayFile(commonDir), 'utf8')) as Partial<LocalRelayInfo>
     return v.schema === 2 && typeof v.port === 'number' && typeof v.pid === 'number' && typeof v.key === 'string' && v.key
-      ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key, ...(typeof v.canonicalWarning === 'string' ? { canonicalWarning: v.canonicalWarning } : {}) }
+      ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key, ...(typeof v.canonicalWarning === 'string' ? { canonicalWarning: v.canonicalWarning } : {}), ...(v.lead === true ? { lead: true as const } : {}) }
       : undefined
   } catch { return undefined }
 }
@@ -434,9 +438,13 @@ export interface RelayOptions {
   admission?: RelayAdmissionLimits
   /** Hosted-equivalent presence bounds; options also permit smaller deterministic fixtures. */
   awareness?: RelayAwarenessLimits
+  /** Waits between final-save attempts on close; default FINAL_SAVE_RETRY_MS (memory.ts). */
+  finalSaveRetryMs?: readonly number[]
 }
 export interface StartedRelay {
   port: number
+  /** Saves each room's memory, then stops. If the save still fails after FINAL_SAVE_RETRY_MS, rejects with
+   *  FinalSaveError and keeps serving: documents, clients and the authority lock stay until a later close or exit. */
   close(): Promise<void>
   /** A room's doc and its hub once started (tests drive hubs on fake clocks through this). */
   hubRoom(room: string): { doc: RoomDoc; hub?: Hub } | undefined
@@ -576,19 +584,26 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     })
     const signals = ['SIGTERM', 'SIGINT'] as const
     let closing: Promise<void> | undefined
-    const onSignal = () => { void close() }
-    const close = (): Promise<void> => closing ??= new Promise<void>(done => {
+    const onSignal = () => { close().catch(error => opts.log?.(`local relay: room state could not be saved on stop: ${error instanceof Error ? error.message : String(error)}`)) }
+    // The relay holds the room's only current replica once the last writer has gone. Nothing is torn down
+    // until every room's memory is saved: on a failed save the relay keeps serving and holding the lock.
+    const close = (): Promise<void> => closing ??= (async () => {
+      // Each pass re-reads the rooms: one opened during a retry is saved too.
+      await finalSave(() => [...docs.values()].flatMap(d => d.memory ? [d.memory] : []), opts.finalSaveRetryMs)
+      // Saved: tear down before any socket can deliver another update (no macrotask runs in between).
       for (const signal of signals) process.off(signal, onSignal)
       clearInterval(ticker)
-      for (const d of docs.values()) { d.closed = true; d.hub?.stop(); d.memory?.close() }
+      for (const d of docs.values()) { d.closed = true; d.hub?.stop(); d.memory?.detach() }
       for (const c of wss.clients) c.terminate()
-      wss.close(); server.close(() => {
-        for (const d of docs.values()) { d.awareness.destroy(); d.doc.destroy() }
-        docs.clear()
-        opts.hub?.lock.release()
-        done()
+      await new Promise<void>(done => {
+        wss.close(); server.close(() => {
+          for (const d of docs.values()) { d.awareness.destroy(); d.doc.destroy() }
+          docs.clear()
+          opts.hub?.lock.release()
+          done()
+        })
       })
-    })
+    })().catch(error => { closing = undefined; throw error })
     server.once('error', e => { clearInterval(ticker); reject(e) })
     server.listen(port, '127.0.0.1', () => {
       const addr = server.address()
@@ -608,8 +623,13 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
 
 /**
  * Find the clone's local relay or become it. Then keep watching: if the relay dies and this
- * process is still around, take over on the same port so connected providers reconnect
+ * process is a lead, take over on the same port so connected providers reconnect
  * without a URL change.
+ *
+ * Roles: only a lead starts or takes over a relay. A non-lead (`joinOnly`, every Room worker, or `lead: false`,
+ * a session in a worker's worktree) only joins: with no relay running it throws NoLocalRelay, and when the
+ * relay it joined is gone it reports `lost` and waits for a lead. A lead that finds a relay run by an older
+ * Room (no `lead` in the discovery file) joins it with a warning and takes over when that process exits.
  *
  * Starting is race-free: only the holder of the clone's authority lock starts a relay, on the
  * port derived from the common dir; the others wait for its discovery file and join. If that
@@ -620,18 +640,22 @@ export class NoLocalRelay extends Error {
   constructor(room: string) { super(`no running local relay for ${room}`); this.name = 'NoLocalRelay' }
 }
 
-export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array; joinOnly?: boolean; probeTimeoutMs?: number; lostAfterMisses?: number } = {}): Promise<LocalRelay> {
+export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array; joinOnly?: boolean; lead?: boolean; probeTimeoutMs?: number; lostAfterMisses?: number } = {}): Promise<LocalRelay> {
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`))
+  const lead = !opts.joinOnly && opts.lead !== false
   let owned: StartedRelay | null = null
   let port = 0
   let key = ''
   let canonicalWarning: string | undefined
+  let ownerWarning: string | undefined
+  /** Consecutive liveness probes the joined relay missed. */
+  let misses = 0
   /** Publish the discovery file atomically: readers see the old file or the new one, never a partial one. */
   const write = () => {
     const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-      fs.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key, canonicalWarning } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key, canonicalWarning, ...(lead ? { lead: true as const } : {}) } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
       fs.chmodSync(tmp, 0o600)
       fs.renameSync(tmp, file)
     } catch (e) {
@@ -644,6 +668,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     const info = readRelayInfo(commonDir)
     if (!info) return undefined
     const who = await probeRelay(info.port, commonDir, info.key)
+    if (who === 'slow' && !lead) log(`local room ${room}: the relay on 127.0.0.1:${info.port} (pid ${info.pid}) did not answer the join probe in time; treating it as not running`)
     if (who === 'foreign') log(`local room ${room}: ${relayFile(commonDir)} names a relay on 127.0.0.1:${info.port} that does not serve this clone with its key; treating the file as stale`)
     return who === 'ours' ? info : undefined
   }
@@ -663,9 +688,15 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   }
 
   const existing = await recorded()
-  if (existing) adopt(existing, 'joined')
+  if (existing) {
+    if (lead && !existing.lead) {
+      ownerWarning = `a session from an older Room (pid ${existing.pid}) holds this room's relay on 127.0.0.1:${existing.port}; this lead takes it over when that process exits`
+      log(`local room ${room}: ${ownerWarning}`)
+    }
+    adopt(existing, 'joined')
+  }
   else {
-    if (opts.joinOnly) throw new NoLocalRelay(room)
+    if (!lead) throw new NoLocalRelay(room)
     key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString('hex')
     const want = deterministicPort(commonDir)
     const lock = AuthorityLock.take(commonDir)
@@ -707,7 +738,6 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   // busy. A refused port is decisive at once: the owner's process is gone and callers are waiting on it.
   const probeTimeoutMs = opts.probeTimeoutMs ?? LIVENESS_PROBE_TIMEOUT_MS
   const lostAfterMisses = Math.max(1, opts.lostAfterMisses ?? LIVENESS_MISSES_BEFORE_LOST)
-  let misses = 0
   const tick = async () => {
     if (stopped) return
     if (canonicalWarning) {
@@ -725,7 +755,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     }
     misses = who === 'slow' ? misses + 1 : lostAfterMisses
     if (misses < lostAfterMisses) return
-    if (opts.joinOnly) {
+    if (!lead) {
       lost = `the lead's local relay for ${room} is no longer running`
       log(`local room ${room}: ${lost}`)
       return
@@ -736,8 +766,13 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     if (!lock) return
     let started: StartedRelay
     try { started = await start(port, lock, opts.seed?.()) } catch { lock.release(); return /* the port is someone else's for now */ }
-    if (stopped) { await started.close(); return }
+    if (stopped) {
+      // Still serving after a failed save: keep it as ours, so it is not an orphan the session cannot see.
+      try { await started.close() } catch (error) { owned = started; throw error }
+      return
+    }
     owned = started
+    ownerWarning = undefined
     write()
     log(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`)
   }
@@ -756,6 +791,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     port,
     key,
     get canonicalWarning() { return canonicalWarning },
+    get ownerWarning() { return ownerWarning },
     get owned() { return owned !== null },
     get lost() { return lost },
     async forget() {
@@ -772,7 +808,17 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
       await ticking
       // The file stays: it records the port and key the survivors will take over with, and new
       // joiners probe the port before trusting it.
-      if (owned) { await owned.close(); owned = null }
+      // A failed final save leaves the relay serving under this process: the room's latest state stays
+      // recoverable by its clients (and a later save) until exit, instead of a successor loading an older file.
+      if (owned) {
+        try { await owned.close() }
+        catch (error) {
+          const cause = error instanceof Error ? error.message : String(error)
+          log(`local room ${room}: local room state could not be saved: ${cause}; the relay keeps running until this process exits`)
+          throw error
+        }
+        owned = null
+      }
     },
   }
 }

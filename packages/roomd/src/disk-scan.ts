@@ -1,9 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { setImmediate } from 'node:timers/promises'
-import { git, gitBlobInfoMany, gitWholeTree, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
+import { git, gitBlobInfoMany, gitStream, gitWholeTree, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
 import { authorizesText, defaultExcludedPath, publishesFiles, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
 
 /** Thrown when the inputs a scan or prepare captured are replaced mid-way; the caller drops that publication. */
@@ -12,20 +11,11 @@ export class StalePublication extends Error {}
 /** --no-index applies Git ignore rules to tracked paths too. NUL framing preserves unusual names. */
 export async function ignoredTrackedPaths(dir: string, paths: readonly string[]): Promise<Set<string>> {
   if (!paths.length) return new Set()
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', ['check-ignore', '--no-index', '-z', '--stdin'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
-    const timeout = wholeTreeTimeoutMs(paths.length)
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`git check-ignore timed out after ${timeout}ms`)) }, timeout)
-    const output: Buffer[] = []
-    let error = ''
-    child.stdout.on('data', (chunk: Buffer) => output.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => { error += chunk })
-    child.on('error', error => { clearTimeout(timer); reject(error) })
-    child.on('close', code => { clearTimeout(timer); code === 0 || code === 1
-      ? resolve(new Set(Buffer.concat(output).toString().split('\0').filter(Boolean)))
-      : reject(new Error(`git check-ignore failed: ${error.trim() || `exit ${code}`}`)) })
-    child.stdin.end(paths.join('\0') + '\0')
-  })
+  const input = paths.join('\0') + '\0'
+  // Output is a subset of the input paths, so the input's size bounds it.
+  const output = await gitStream(dir, ['check-ignore', '--no-index', '-z', '--stdin'], input,
+    { timeoutMs: wholeTreeTimeoutMs(paths.length), maxBytes: Buffer.byteLength(input), okCodes: [0, 1] })
+  return new Set(output.toString().split('\0').filter(Boolean))
 }
 
 /**
@@ -41,13 +31,29 @@ export async function gitIgnoredDirs(dir: string): Promise<Set<string>> {
   return new Set(listed.filter(entry => matched.has(entry)).map(entry => entry.slice(0, -1)))
 }
 
-const formats = new Map<string, 'sha1' | 'sha256'>()
-async function objectFormat(dir: string): Promise<'sha1' | 'sha256'> {
+/** The checkout's `.git` entry (directory or worktree link file): a repository replaced at the same path gets a new one. */
+function checkoutIdentity(dir: string): string | undefined {
+  try {
+    const stat = fs.statSync(path.join(dir, '.git'), { bigint: true })
+    // Without a birth time (some Linux filesystems) a reused inode is told apart by its change time.
+    return `${stat.dev}:${stat.ino}:${stat.birthtimeNs > 0n ? stat.birthtimeNs : `c${stat.ctimeNs}`}`
+  } catch { return undefined }
+}
+
+const FORMAT_CACHE_MAX = 64
+const formats = new Map<string, { identity: string; format: 'sha1' | 'sha256' }>()
+/** Object format, cached per checkout only while its `.git` identity is unchanged. */
+export async function objectFormat(dir: string): Promise<'sha1' | 'sha256'> {
+  const identity = checkoutIdentity(dir)
   const known = formats.get(dir)
-  if (known) return known
+  if (known && identity !== undefined && known.identity === identity) return known.format
   const actual = (await git(dir, ['rev-parse', '--show-object-format'])).trim()
   if (actual !== 'sha1' && actual !== 'sha256') throw new Error(`unsupported Git object format: ${actual}`)
-  formats.set(dir, actual)
+  formats.delete(dir)
+  if (identity !== undefined && identity === checkoutIdentity(dir)) {
+    formats.set(dir, { identity, format: actual })
+    if (formats.size > FORMAT_CACHE_MAX) formats.delete(formats.keys().next().value!)
+  }
   return actual
 }
 

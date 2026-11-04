@@ -820,7 +820,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     let onExit: ((code: number | null) => void) | undefined
     const tools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: repo, now: () => 500, probe: fixtureProbe,
-      worktree: async (_repo, tag) => prepareWorktree(repo, tag, 'rohanz', [], undefined, 0, false),
+      worktree: async (_repo, tag) => prepareWorktree(repo, tag, 'rohanz', { linkExclusions: [], carry: false }),
       spawner: spec => {
         writeFileSync(join(spec.cwd, 'partial.txt'), 'keep me')
         fixtureProcess(8123, 'fixture:after-start', 'node')

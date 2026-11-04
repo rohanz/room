@@ -51,7 +51,7 @@ for (const [kind, limits, cmd, limit] of [
         const changed = await runInMergedTree(session, ancestor, new Map([['app.txt', 'FIXED\n']]), cmd)
         expect(changed.text).toContain('merged-tree check did not finish')
         expect(changed.text).not.toContain('refusing')
-        const overridden = await runInMergedTree(session, ancestor, merged, cmd, new Map(), undefined, true)
+        const overridden = await runInMergedTree(session, ancestor, merged, cmd, { allowSlow: true })
         expect(overridden.text).toContain('merged-tree check did not finish')
         expect(overridden.text).not.toContain('refusing')
         const different = await runInMergedTree(session, ancestor, merged, 'echo "1 passed"')
@@ -65,7 +65,7 @@ for (const [kind, limits, cmd, limit] of [
         expect((await runInMergedTree(session, ancestor, merged, slow)).text).toContain('did not finish')
         expect((await runInMergedTree(session, ancestor, merged, slow)).text).toContain('refusing')
         setPreviewCheckLimitsForTests({ timeoutMs: 60_000, maxBuffer: 4 * 1024 * 1024 })
-        expect((await runInMergedTree(session, ancestor, merged, slow, new Map(), undefined, true)).passed).toBe(true)
+        expect((await runInMergedTree(session, ancestor, merged, slow, { allowSlow: true })).passed).toBe(true)
         setPreviewCheckLimitsForTests(limits)
         expect((await runInMergedTree(session, ancestor, merged, slow)).text).toContain('did not finish')
       } else {

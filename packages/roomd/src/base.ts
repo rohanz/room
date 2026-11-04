@@ -7,6 +7,7 @@
 import { execFile } from 'node:child_process'
 import { BASE_CATCH_UP, canonicalRepo, type ParticipantGit } from '@room/shared'
 import { git, gitCountBetween, gitPathsBetween, gitSubject, isGitTimeout, normalizeGitOrigin } from './git.js'
+import { RecentKeys } from './recent-keys.js'
 
 interface BaseRef { name: string; sha: string }
 export interface BaseRefs {
@@ -214,7 +215,8 @@ export async function pushedFacts(dir: string, fromSha: string, toSha: string): 
 
 const FETCH_TIMEOUT_MS = 20_000
 const FETCH_RETRY_MS = 5 * 60_000
-const fetchAttempts = new Map<string, number>()
+/** Per (dir, sha): one fetch per five minutes; expired attempts are forgotten and at most 1,024 kept. */
+const fetchAttempts = new RecentKeys(FETCH_RETRY_MS, 1024)
 
 const hasCommit = async (dir: string, sha: string) => {
   try { await git(dir, ['cat-file', '-e', `${sha}^{commit}`]); return true } catch { return false }
@@ -229,9 +231,7 @@ export async function ensureCommit(dir: string, remote: string | undefined, sha:
   if (await hasCommit(dir, sha)) return true
   if (!remote || process.env.ROOM_AUTO_FETCH === '0' || !/^[0-9a-f]{40,64}$/.test(sha)) return false
   const key = `${dir}\0${sha}`
-  const last = fetchAttempts.get(key)
-  if (last !== undefined && Date.now() - last < FETCH_RETRY_MS) return false
-  fetchAttempts.set(key, Date.now())
+  if (fetchAttempts.hit(key)) return false
   await new Promise<void>(resolve => {
     execFile('git', ['-c', 'credential.interactive=never', 'fetch', '--no-tags', '--no-write-fetch-head', remote, sha],
       { cwd: dir, timeout: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, () => resolve())

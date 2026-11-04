@@ -15,7 +15,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { normalizeExplicitRoomName } from './room-name.js'
 export { normalizeExplicitRoomName } from './room-name.js'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type WatcherHandoff, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
+import { ensureLocalRelay, FinalSaveError, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -33,6 +33,7 @@ import { sameStartTime } from '@room/relay/process'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
+import { roomWorkerPathMatchesBranch } from './worker-state.js'
 import { HubClient, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 import { attachPublisher, publisherLease } from './publisher-lease.js'
@@ -97,6 +98,8 @@ export interface Session {
   credentialsPath?: string
   /** The shared token this session joined with (argument, ROOM_TOKEN, or `?token=` on the server URL); workers get it as ROOM_TOKEN. Never printed. */
   token?: string
+  /** Receives this session's server-wait progress lines (the join's `log`). */
+  serverLog?: ServerLog
   autoTagNote?: string
   /** One-time upgrade notice for the first reply: a remembered 0.16 per-branch local room moved to the repository room. */
   upgradeNote?: string
@@ -325,7 +328,7 @@ export interface JoinOptions {
   log?: (line: string) => void
   /** A local worker's lead clone, bound by the worker launcher. */
   leadClone?: string
-  /** A worker without a lead clone can only join an existing relay. */
+  /** Join an existing local relay only: never start one or take one over. Every dispatched worker joins this way. */
   joinOnly?: boolean
 }
 
@@ -345,12 +348,12 @@ const configCache = new Map<string, AuthConfig>()
 /** The server's login setup: whether it has GitHub device login (`device`: github.com rooms possible) or
  *  not (`token`: non-GitHub rooms only, by shared token or another provider), and which login providers
  *  it offers (github, oidc). A GitHub token from this machine is never sent to any server. */
-export async function serverAuthConfig(server: string): Promise<AuthConfig> {
+export async function serverAuthConfig(server: string, log?: ServerLog): Promise<AuthConfig> {
   const hit = configCache.get(server)
   if (hit) return hit
   const cfg: AuthConfig = { mode: 'token', providers: [] }
   try {
-    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
+    const res = await serverFetch(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 }, log)
     if (res.ok) {
       const b = await res.json() as { github?: string; providers?: string[] }
       if (b.github === 'device') cfg.mode = 'device'
@@ -370,9 +373,9 @@ export interface Creds { token?: string; session?: string; login?: string }
 /** Credentials for a server: a Room session from a login and/or the shared token. A github.com room needs the
  *  session (ROOM_TOKEN does not admit it; the server never accepts a forwarded GitHub token). Non-GitHub rooms
  *  (local/, git/) send the session when this machine holds one: servers with a login provider require it. */
-export async function resolveAuth(credentialsPath: string, server: string, roomName: string, token?: string): Promise<Creds> {
+export async function resolveAuth(credentialsPath: string, server: string, roomName: string, token?: string, log?: ServerLog): Promise<Creds> {
   const github = roomName.startsWith('github.com/')
-  const cfg = await serverAuthConfig(server)
+  const cfg = await serverAuthConfig(server, log)
   const c = cfg.providers.length ? getCredential(credentialsPath, server) : undefined
   if (c) return { token, session: c.session, login: c.login }
   if (github) {
@@ -386,8 +389,8 @@ export async function resolveAuth(credentialsPath: string, server: string, roomN
 /** What a started login needs from the user: GitHub shows a code to enter at verification_uri; OIDC gives a URL to open. */
 export interface LoginProgress { provider: Provider; device: string; expires_in: number; interval: number; user_code?: string; verification_uri?: string; url?: string }
 /** Start a login against the server (default provider: the server's first). Show the user the code/URL; then pollLogin until done. */
-export async function startLogin(server: string, provider?: Provider): Promise<LoginProgress> {
-  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15000, retry: false })
+export async function startLogin(server: string, provider?: Provider, log?: ServerLog): Promise<LoginProgress> {
+  const res = await serverFetch(`${httpOf(server)}/auth/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(provider ? { provider } : {}), timeoutMs: 15000, retry: false }, log)
   if (res.status === 404 && !provider) { // older server: only the GitHub device flow
     const old = await fetch(`${httpOf(server)}/auth/device`, { method: 'POST', signal: AbortSignal.timeout(15000) })
     if (!old.ok) throw new RoomdError(`${server} could not start GitHub login: ${(await old.text()).trim() || `HTTP ${old.status}`}`, 2)
@@ -496,7 +499,7 @@ function ceilingFor(server: string, fallback: ShareLevel): CeilingSource {
   return source
 }
 /** The server's sharing ceiling. Unknown results use the local choice and are retried. */
-export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch, _refresh = false): Promise<ShareLevel> {
+export async function serverShareMax(server: string, fallback: ShareLevel = 'intent', fetcher: typeof serverFetch = serverFetch): Promise<ShareLevel> {
   const source = ceilingFor(server, fallback)
   try {
     const res = await fetcher(`${httpOf(server)}/auth/config`, { timeoutMs: 20000 })
@@ -521,19 +524,25 @@ function defaultWeb(server: string): string {
   } catch { return DEFAULT_WEB }
 }
 
+/** Progress lines for one session's server waits (cold starts). */
+export type ServerLog = (line: string) => void
+/** Total time a tool call may spend starting new attempts against a cold server. */
+const SERVER_RETRY_MS = 45_000
+/** Default bound on one attempt; callers pass their own `timeoutMs`. */
+const SERVER_ATTEMPT_MS = 25_000
+/** Pause between attempts. */
+const SERVER_RETRY_PAUSE_MS = 3000
+
 /**
  * HTTP to the room server with patience for a cold start: the hosted machine stops when idle and
- * takes up to a minute to answer its first request (timeouts, 502/503/504 from the proxy). Retry
- * those for up to ~100 s, then give up with the last error.
+ * takes up to a minute to answer its first request (timeouts, 502/503/504 from the proxy). Those
+ * are retried while fewer than SERVER_RETRY_MS have passed since the first attempt; an attempt
+ * started before that deadline still runs to its own `timeoutMs` (default SERVER_ATTEMPT_MS), so a
+ * call can last up to SERVER_RETRY_MS + SERVER_RETRY_PAUSE_MS + `timeoutMs`. Then the last answer
+ * or error is returned. `log` receives progress lines for the caller's session.
  */
-/** Progress lines for server waits; joinSession sets it from its `log` so every call site reports cold starts. */
-let serverLog: ((line: string) => void) | undefined
-function setServerLog(log?: (line: string) => void): void { serverLog = log }
-/** Total time a tool call may spend waiting for a cold server before giving up. */
-const SERVER_RETRY_MS = 45_000
-
-export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number; retry?: boolean } = {}, log: ((line: string) => void) | undefined = serverLog): Promise<Response> {
-  const { timeoutMs = 25_000, retry = true, ...rest } = init
+export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number; retry?: boolean } = {}, log?: ServerLog): Promise<Response> {
+  const { timeoutMs = SERVER_ATTEMPT_MS, retry = true, ...rest } = init
   const deadline = Date.now() + SERVER_RETRY_MS
   let attempt = 0
   for (;;) {
@@ -549,7 +558,7 @@ export async function serverFetch(url: string, init: RequestInit & { timeoutMs?:
       if (!retry || !coldStart || Date.now() > deadline) throw e
       log?.(`waiting for the server to wake (attempt ${attempt}: ${e instanceof Error ? e.message : String(e)})`)
     }
-    await new Promise(r => setTimeout(r, 3000))
+    await new Promise(r => setTimeout(r, SERVER_RETRY_PAUSE_MS))
   }
 }
 
@@ -693,13 +702,34 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     started.stop = async (reason?: string) => { stopLegacyWatch(); stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
   }
   daemon = started
+  const records = watchSessionRecords({ daemon: started, binding, sessionId, boundAtJoin, hostCurrent, lease })
+  const stop = started.stop.bind(started)
+  started.stop = async (reason?: string) => { records.stop(); await stop(reason) }
+  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose() }
+}
+
+/** What watchSessionRecords installs; `stop` ends the poll before the daemon stops. */
+interface SessionRecordsWatch {
+  stop: () => void
+  /** Republish the bound session's runtime facts now. */
+  refresh: () => void
+  onHookActivity: (listener: () => void) => void
+  /** The listener hears a new host binding; registering it also checks at once. */
+  onRebind: (listener: (sessionId: string) => void) => void
+}
+
+/** Poll the bound host session's records into the daemon's presence; a rebinding withdraws publisher authority. */
+function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurrent, lease }: {
+  daemon: Roomd; binding: ReturnType<typeof createSessionBinding>; sessionId: string; boundAtJoin: string | undefined
+  hostCurrent: () => boolean; lease: ParticipantLease
+}): SessionRecordsWatch {
   // The bound session's records (ledger SF3): SessionStart's session.json, the before-edit hook's runtime.json
   // and hook-activity.json. Polled, since a new binding (Claude /clear) moves them to another directory.
   const publishRuntime = () => {
     if (!hostCurrent()) return
-    const current = started.provider.awareness.getLocalState()
+    const current = daemon.provider.awareness.getLocalState()
     const runtime = resolveSessionRuntime(binding.dir())
-    if (current) started.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(), ...runtime })
+    if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(), ...runtime })
   }
   let published = ''
   let lastActivity = Date.now() // do not replay activity left by an earlier session
@@ -725,16 +755,19 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
       if (activity.session_id !== binding.bound()?.id || activity.event !== 'PreToolUse') return
       if (typeof activity.at !== 'number' || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return
       lastActivity = activity.at
-      started.touch()
+      daemon.touch()
       hookActivity?.()
     } catch { /* absent or partially written hook state; retry on the next poll */ }
   }
   const watcher = setInterval(watchRecords, 500)
   watcher.unref?.()
   publishRuntime()
-  const stop = started.stop.bind(started)
-  started.stop = async (reason?: string) => { clearInterval(watcher); await stop(reason) }
-  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: publishRuntime, onHookActivity: listener => { hookActivity = listener }, onRebind: listener => { rebindListener = listener; watchRecords() }, startupCapClose: () => startupCapClose() }
+  return {
+    stop: () => clearInterval(watcher),
+    refresh: publishRuntime,
+    onHookActivity: listener => { hookActivity = listener },
+    onRebind: listener => { rebindListener = listener; watchRecords() },
+  }
 }
 
 /** Resolve an ambiguous 0.16 branch-room identity using this worktree's old room.json. */
@@ -792,12 +825,11 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (localWorkerLead && await realGitCommonDir(dir) !== localWorkerLead) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${localWorkerLead}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
   if (process.env.ROOM_WORKER_ID) await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound())
   for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
-  if (opts.log) setServerLog(opts.log)
   const chosen = config.server
   if (chosen === LOCAL) {
     const dispatched = !!config.workerId
     const leadClone = dispatched ? process.env.ROOM_LEAD_CLONE || undefined : opts.leadClone
-    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web, leadClone, joinOnly: opts.joinOnly || (dispatched && !leadClone) })
+    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web, leadClone, joinOnly: !!opts.joinOnly || dispatched })
     session.shareWarning = config.shareWarning
     if (config.legacyLocalRoom && session.roomName === config.legacyLocalRoom.to) {
       const note = await migrateLegacyLocalChoice(dir).catch(error => { opts.log?.(`could not update the remembered room choice: ${error instanceof Error ? error.message : String(error)}`); return undefined })
@@ -818,7 +850,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   } else {
     roomName = normalizeExplicitRoomName(roomName, opts.log)
   }
-  const auth = await resolveAuth(config.credentialsPath, server, roomName, token)
+  const auth = await resolveAuth(config.credentialsPath, server, roomName, token, opts.log)
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
   // makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex).
   const label = config.tag?.replace(/[^A-Za-z0-9_-]/g, '') || undefined
@@ -833,7 +865,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   let pre = await timed('preflight', () => preflight(config.credentialsPath, server, roomName!, creds))
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
-    const err = await timed('preflight', () => createRoom(server, roomName!, { ...creds, by: name }))
+    const err = await timed('preflight', () => createRoom(server, roomName!, { ...creds, by: name }, opts.log))
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}${branchRoomHint(roomName)}`, 2)
     pre = await timed('preflight', () => preflight(config.credentialsPath, server, roomName!, creds))
   }
@@ -847,11 +879,12 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const shareRequested = requestedShare(config.share)
-  const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested))
+  const fetchServer: typeof serverFetch = (url, init) => serverFetch(url, init, opts.log)
+  const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested, fetchServer))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
-  const view = await timed('view token', () => viewToken(server, roomName, creds))
+  const view = await timed('view token', () => viewToken(server, roomName, creds, opts.log))
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
   const session: Session = {
     room: daemon.roomDoc,
@@ -869,6 +902,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     shareRequested: policyStore.requested,
     shareWarning: config.shareWarning,
     credentialsPath: config.credentialsPath,
+    serverLog: opts.log,
     ...(token ? { token } : {}),
     hub, post,
   }
@@ -881,7 +915,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   session.provider.on('sync', (synced: boolean) => {
     if (!synced || refreshing) return
     refreshing = true
-    void serverShareMax(server, session.shareMax, serverFetch, true)
+    void serverShareMax(server, session.shareMax, fetchServer)
       .catch(error => opts.log?.(`warn: could not refresh sharing ceiling: ${String(error)}`))
       .finally(() => { refreshing = false })
   })
@@ -895,6 +929,12 @@ export function normalizeLocalRoomName(room: string): string {
   const name = room.trim().replace(/[^A-Za-z0-9_./-]/g, '')
   if (!name) throw new RoomdError('local room name must not be empty', 2)
   return `local/${name}`
+}
+
+/** `dir` is a Room worker's worktree: `<parent>/.room/workers/<name>` with `room/<name>` checked out. */
+async function inRoomWorkerWorktree(dir: string): Promise<boolean> {
+  if (basename(dirname(dirname(dir))) !== '.room') return false
+  return roomWorkerPathMatchesBranch(dirname(dirname(dirname(dir))), dir, await gitBranch(dir).catch(() => ''))
 }
 
 /** Local mode: no server, no login. The clone's shared git dir hosts a relay; every worktree of the clone shares the room. */
@@ -912,8 +952,11 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   if (opts.leadClone && await realGitCommonDir(dir) !== opts.leadClone) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${opts.leadClone}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
   // A takeover starts the successor relay from this session's replica (hub.md §5); roomd supplies it once started.
   let replica: Y.Doc | undefined
-  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: opts.joinOnly, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }).catch(e => {
-    throw e instanceof NoLocalRelay ? new RoomdError(`your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e
+  // A session in a Room worker's worktree (a host started there by hand, or nested in a worker with ROOM_* scrubbed)
+  // is not a lead: like a dispatched worker, it never starts or takes over a relay, and waits for the lead's.
+  const lead = !opts.joinOnly && !await inRoomWorkerWorktree(dir)
+  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: !!opts.joinOnly, lead, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }).catch(e => {
+    throw e instanceof NoLocalRelay ? new RoomdError(`waiting for the lead's session to start the local relay: your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e
   }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
@@ -1044,12 +1087,12 @@ const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^w
 function removeStaleCredential(credentialsPath: string, server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(credentialsPath, server) }
 
 /** Check team admission before a move leaves its current room. A room_create may open a missing room after confirmation. */
-export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean } = {}): Promise<void> {
+export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean; log?: ServerLog } = {}): Promise<void> {
   roomName = normalizeExplicitRoomName(roomName)
   const credentialsPath = opts.credentialsPath ?? defaultCredentialsPath()
   const parsed = parseServer(rawServer)
-  const { login: _login, ...creds } = await resolveAuth(credentialsPath, parsed.server, roomName, opts.token ?? parsed.token)
-  const pre = await preflight(credentialsPath, parsed.server, roomName, creds)
+  const { login: _login, ...creds } = await resolveAuth(credentialsPath, parsed.server, roomName, opts.token ?? parsed.token, opts.log)
+  const pre = await preflight(credentialsPath, parsed.server, roomName, creds, opts.log)
   if (!pre || pre.canonical) return
   if (pre.missing) {
     if (!opts.create) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ''), parsed.server)
@@ -1062,9 +1105,9 @@ export async function checkTeamAdmission(rawServer: string, roomName: string, op
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */
-async function preflight(credentialsPath: string, server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string; status?: number } | undefined> {
+async function preflight(credentialsPath: string, server: string, roomName: string, auth: Creds, log?: ServerLog): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string; status?: number } | undefined> {
   try {
-    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
     if (res.ok) {
       const body = await res.json() as { room?: string; hub?: number }
       if (body.hub !== 1) return { reason: 'this Room server has no 0.17 hub; ask its operator to deploy Room 0.17' }
@@ -1086,9 +1129,9 @@ async function preflight(credentialsPath: string, server: string, roomName: stri
 }
 
 /** Open this repository room on the server. Idempotent. Returns the refusal, if any. */
-export async function createRoom(server: string, roomName: string, auth: Creds & { by?: string }): Promise<string | undefined> {
+export async function createRoom(server: string, roomName: string, auth: Creds & { by?: string }, log?: ServerLog): Promise<string | undefined> {
   try {
-    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
+    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
     if (res.ok) return undefined
     return (await res.text()).trim() || `HTTP ${res.status}`
   } catch (e) {
@@ -1097,8 +1140,8 @@ export async function createRoom(server: string, roomName: string, auth: Creds &
 }
 
 /** Close this repository room on the server, with its overlays and connections. */
-export async function closeRoom(server: string, roomName: string, auth: Creds): Promise<string[]> {
-  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
+export async function closeRoom(server: string, roomName: string, auth: Creds, log?: ServerLog): Promise<string[]> {
+  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
   const body = (await res.json().catch(() => ({}))) as { closed?: string[] }
   return body.closed ?? []
@@ -1109,15 +1152,15 @@ export async function authFor(s: Session): Promise<Creds & { server: string }> {
   if (s.local) throw new RoomdError('local room: no server to authenticate to', 2)
   const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
   const token = s.token
-  const { login: _login, ...creds } = await resolveAuth(s.credentialsPath ?? defaultCredentialsPath(), server, s.roomName, token)
+  const { login: _login, ...creds } = await resolveAuth(s.credentialsPath ?? defaultCredentialsPath(), server, s.roomName, token, s.serverLog)
   return { ...creds, server }
 }
 
 /** Ask the server for a room-scoped token (7 days) the browser can use (never the GitHub token itself). */
-async function viewToken(server: string, roomName: string, auth: Creds): Promise<string | undefined> {
+async function viewToken(server: string, roomName: string, auth: Creds, log?: ServerLog): Promise<string | undefined> {
   if (!auth.token && !auth.session) return undefined
   try {
-    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
     if (!res.ok) return undefined
     return ((await res.json()) as { view?: string }).view
   } catch { return undefined }
@@ -1134,7 +1177,7 @@ export async function refreshBrowserUrl(s: Session): Promise<string> {
     const u = new URL(s.browserUrl)
     const web = `${u.protocol}//${u.host}`
     const a = await authFor(s)
-    const view = await timed('view token', () => viewToken(server, s.roomName, a))
+    const view = await timed('view token', () => viewToken(server, s.roomName, a, s.serverLog))
     if (view) s.browserUrl = `${web}/#room=${encodeURIComponent(s.roomUrl)}&view=${encodeURIComponent(view)}&participant=${encodeURIComponent(s.me.name)}`
   } catch { /* keep the stored link */ }
   return s.browserUrl
@@ -1150,8 +1193,15 @@ function indexWhileLeading(s: Session, seed: GraphSeed | undefined, log?: (line:
   })
 }
 
-export async function leaveSession(s: Session): Promise<void> {
+/** Returns a warning when this session's local relay could not save the room's state on stop: the relay then
+ *  keeps serving (and holding the clone's relay authority) until this process exits, rather than losing it. */
+export async function leaveSession(s: Session): Promise<string | undefined> {
   endCheckoutLead(s)
   await s.daemon.stop()
-  await s.local?.stop()
+  try { await s.local?.stop() }
+  catch (error) {
+    if (!(error instanceof FinalSaveError)) throw error
+    return `local room state could not be saved: ${error.message}; the relay kept running until exit`
+  }
+  return undefined
 }

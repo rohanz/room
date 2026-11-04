@@ -95,13 +95,13 @@ export function acceptedPrBranch(s: Session, name = s.me.name, now = Date.now())
 }
 
 /** GET /github/prs on the session's server for an explicit participant branch. */
-export async function fetchPrs(s: Session, opts: { head?: boolean; branch?: string } = {}): Promise<PrInfo[]> {
+export async function fetchPrs(s: Session, opts: { head?: boolean; branch?: string; signal?: AbortSignal } = {}): Promise<PrInfo[]> {
   const branch = opts.branch ?? acceptedPrBranch(s)
   if (!branch || branch === 'updating') return []
   const a = await authFor(s)
   const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, branch, head: opts.head ? '1' : undefined })}`, {
     headers: { ...(a.session ? { authorization: `Bearer ${a.session}` } : {}), ...(a.token ? { 'x-room-token': a.token } : {}) },
-    signal: AbortSignal.timeout(20000),
+    signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(20000), opts.signal]) : AbortSignal.timeout(20000),
   })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
   return await res.json() as PrInfo[]

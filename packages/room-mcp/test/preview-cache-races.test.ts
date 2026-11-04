@@ -159,9 +159,9 @@ it('keeps a finished check result if cache cleanup fails', async () => {
     }
     return original(file, flags, mode)
   })
-  const result = await runInMergedTree({ dir: root } as Session, head, new Map([['app.txt', 'merged\n']]), 'echo "1 failed"; exit 1', new Map(), {
+  const result = await runInMergedTree({ dir: root } as Session, head, new Map([['app.txt', 'merged\n']]), 'echo "1 failed"; exit 1', { observe: {
     mergedWrite() { afterSetup = true },
-  })
+  } })
   expect(result.passed).toBe(false)
   expect(result.text).toContain('1 failed')
   expect(result.text).toContain('preview cache abandoned after the check')

@@ -46,7 +46,7 @@ it.runIf(cacheHost).each([false, true])('removes the worker clone\'s idle previe
   const { root, cache, worker, listed } = await fixture()
   expect(fs.existsSync(cache)).toBe(true)
   expect(listed()).toMatch(new RegExp(`${cache.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n[^]*?locked`))
-  expect(await cleanupWorker(root, worker, true, discarded, [], { list: () => [] })).toBe(true)
+  expect(await cleanupWorker(root, worker, { collected: true, discarded, processOptions: { list: () => [] } })).toBe(true)
   await waitForPreviewSweepForTests()
   expect(fs.existsSync(cache)).toBe(false)
   expect(listed()).not.toContain(cache)
@@ -84,7 +84,7 @@ it.runIf(cacheHost)('leaves an entry whose preview still holds the lock, and rec
   const holder = await tryPreviewLock(cache)
   expect(holder).toBeDefined()
   try {
-    expect(await cleanupWorker(root, worker, true, true, [], { list: () => [] })).toBe(true)
+    expect(await cleanupWorker(root, worker, { collected: true, discarded: true, processOptions: { list: () => [] } })).toBe(true)
     await waitForPreviewSweepForTests()
     expect(fs.existsSync(path.join(cache, '.git'))).toBe(true)
     expect(listed()).toContain(cache)

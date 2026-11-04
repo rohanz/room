@@ -399,13 +399,18 @@ class Daemon implements Roomd {
     })
     this.debounceMs = options.debounceMs ?? 300
     this.watchedDirectory = createHash('sha256').update(machineHostname).update('\0').update(machineIdentity(this.log)).update('\0').update(fs.realpathSync(this.dir)).digest('hex')
-    this.batch = new DiskBatch(paths => {
+    this.batch = new DiskBatch((paths, overflow) => {
       const work = this.enqueue(async () => {
         await this.pollHead()
         for (const [p, fresh] of paths) {
           try { await this.onDiskChange(p, fresh) }
           finally { this.onScanned?.(p) }
         }
+      }).then(async () => {
+        if (!overflow || this.stopped) return
+        // Changes past the batch's path budget were not retained: relist the checkout and reconcile it whole.
+        this.trackedPoll?.trigger()
+        await this.reconcileGitChanges()
       })
       this.diskWork.add(work)
       void work.finally(() => this.diskWork.delete(work))

@@ -227,7 +227,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       let resumed = false
       if (resume) {
-        const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, async () => {
+        const result = await rooms.resumeWorker(s, addressedWorker!, text, { spawner: state.ctx?.spawner, claudeChannel: state.ctx?.config?.claudeChannel, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async () => {
           // The previous run has exited and this call holds the worker's operation lease.
           if (refresh) {
             const tag = addressedWorker!.tag
@@ -278,7 +278,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             lines.push(line); ids.push(m.id); size += line.length + 1
           }
           return { ids, prompt: `Room messages for this resumed turn (each line includes its message ID, sender, and reply metadata):\n${lines.join('\n')}` }
-        })
+        } })
         if (posted?.ok === false) return posted.text
         if (typeof result === 'string' && result.startsWith('error:')) return posted ? `sent [${posted.msg.id}] ${formatMsg(posted.msg)}; ${result}` : result
         resumed = true

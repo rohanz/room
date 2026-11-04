@@ -157,10 +157,8 @@ describe('0.16.38 shell write classifier in the redesign hook', () => {
 })
 
 describe('shell classifier integration', () => {
-  it.each([['Bash', 'cp app.py api/tax.py >/dev/null'], ['PowerShell', 'Set-Content -Path api/tax.py -Value x']])('warns and records %s writes', async (tool, command) => {
+  it.each([['Bash', 'cp app.py api/tax.py >/dev/null'], ['PowerShell', 'Set-Content -Path api/tax.py -Value x']])('warns on %s writes', async (tool, command) => {
     expect(await run(command, tool)).toContain('Kieran changed api/tax.py')
-    const file = join(sessionDirectory(join(dir, '.git'), SID), 'write-intents.json')
-    expect(JSON.parse(readFileSync(file, 'utf8')).writes).toContainEqual({ path: join(dir, 'api/tax.py'), at: expect.any(Number) })
   })
 })
 
@@ -261,5 +259,197 @@ describe('before-edit receipts under the redesign local-state directory', () => 
     finally { copySpy.mockRestore(); linkSpy.mockRestore(); renameSpy.mockRestore() }
     expect(readFileSync(file, 'utf8')).toBe(code === 'EPERM' ? '{"at":1}' : '{"at":2}')
     expect(fs.readdirSync(receiptsDir()).filter(name => name.includes('.pruning.'))).toEqual([])
+  })
+})
+
+describe('bounded hook reads, replies and temp files', () => {
+  const stateDir = () => sessionDirectory(join(dir, '.git'), SID)
+  const quietStderr = () => vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+  it('removes its own temp file when an atomic JSON write fails', async () => {
+    const { writeJsonAtomic } = await import(join(HOOKS, 'common.mjs'))
+    const file = join(stateDir(), 'hook.json')
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw Object.assign(new Error('EXDEV'), { code: 'EXDEV' }) })
+    try { expect(() => writeJsonAtomic(file, { a: 1 })).not.toThrow() } finally { spy.mockRestore() }
+    expect(fs.readdirSync(stateDir()).filter(name => name.endsWith('.tmp'))).toEqual([])
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ companyTold: true })
+  })
+
+  it('ignores a JSON state file over its cap with a diagnostic', async () => {
+    const { readJson, readBoundedText } = await import(join(HOOKS, 'common.mjs'))
+    const file = join(stateDir(), 'big.json')
+    writeFileSync(file, JSON.stringify({ padding: 'x'.repeat(200) }))
+    const stderr = quietStderr()
+    try {
+      expect(readJson(file, 'fallback', 100)).toBe('fallback')
+      expect(stderr.mock.calls.join('')).toContain('big.json is over 100 bytes')
+    } finally { stderr.mockRestore() }
+    expect(readBoundedText(file, 100)).toEqual({ oversized: true })
+    expect(readJson(file, 'fallback', 1000)).toMatchObject({ padding: expect.any(String) })
+    expect(readJson(join(stateDir(), 'absent.json'), 'fallback')).toBe('fallback')
+  })
+
+  it('reads stdin under a byte cap and a deadline', async () => {
+    const { readStdinJson, inputIncomplete } = await import(join(HOOKS, 'common.mjs'))
+    const { PassThrough } = await import('node:stream')
+    const valid = new PassThrough()
+    const payload = { tool_input: { content: 'y'.repeat(100_000) } }
+    const parsed = readStdinJson(valid, { maxBytes: 200_000, deadlineMs: 5000 })
+    valid.end(JSON.stringify(payload))
+    expect(await parsed).toEqual(payload)
+    const stderr = quietStderr()
+    try {
+      const big = new PassThrough()
+      const over = readStdinJson(big, { maxBytes: 1000, deadlineMs: 5000 })
+      big.write('x'.repeat(1001))
+      const overValue = await over
+      expect(overValue).toEqual({})
+      expect(inputIncomplete(overValue)).toBe('input over 1000 bytes')
+      // Over the cap, the complete routing fields of the prefix survive; the content does not.
+      const write = new PassThrough()
+      const routed = readStdinJson(write, { maxBytes: 1000, deadlineMs: 5000 })
+      write.write(JSON.stringify({ session_id: 's', tool_name: 'Write', effort: { level: 'high' }, tool_input: { file_path: 'api/tax.py', content: 'y'.repeat(5000) } }))
+      const routedValue = await routed
+      expect(routedValue).toEqual({ session_id: 's', tool_name: 'Write', effort: { level: 'high' }, tool_input: { file_path: 'api/tax.py' } })
+      expect(big.destroyed && write.destroyed).toBe(true)
+      const stuck = new PassThrough()
+      const stuckValue = await readStdinJson(stuck, { maxBytes: 1000, deadlineMs: 20 })
+      expect(stuckValue).toEqual({})
+      expect(inputIncomplete(stuckValue)).toBe('input not complete within 20 ms')
+      // All bytes arrived but the stream never ended: the whole event, not a partial one.
+      const open = new PassThrough()
+      const openValue = readStdinJson(open, { maxBytes: 1000, deadlineMs: 20 })
+      open.write(JSON.stringify({ session_id: 's' }))
+      expect(inputIncomplete(await openValue)).toBeUndefined()
+      const text = stderr.mock.calls.join('')
+      expect(text).toContain('hook input over 1000 bytes')
+      expect(text).toContain('not complete within 20 ms')
+    } finally { stderr.mockRestore() }
+  })
+
+  it('keeps only complete fields from a cut-off input prefix', async () => {
+    const { prefixFields } = await import(join(HOOKS, 'common.mjs'))
+    const full = JSON.stringify({ a: 'x', n: 12, b: true, z: null, list: ['p', { q: 1 }], deep: { inner: { v: 'w' } }, tool_input: { file_path: 'f "q".py', old_string: 'o\\"' } })
+    expect(prefixFields(full)).toEqual({ a: 'x', n: 12, b: true, z: null, deep: {}, tool_input: { file_path: 'f "q".py', old_string: 'o\\"' } })
+    for (let cut = 0; cut < full.length; cut++) {
+      const got = prefixFields(full.slice(0, cut))
+      // Every value returned at any cut equals the full value or is a prefix-free subset of it.
+      for (const [key, value] of Object.entries(got)) {
+        if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) expect(JSON.parse(full)[key][k]).toEqual(v)
+        else expect(JSON.parse(full)[key]).toEqual(value)
+      }
+    }
+    expect(prefixFields(JSON.stringify({ tool_input: { command: 'c'.repeat(5000) } }))).toEqual({ tool_input: {} })
+    expect(prefixFields('not json')).toEqual({})
+  })
+
+  function runHook(input: (stdin: NodeJS.WritableStream) => void, cwd = HOOKS): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = execFile('node', [join(HOOKS, 'before-edit.mjs')], { cwd, env: { ...process.env, PWD: cwd }, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }))
+      child.stdin!.on('error', () => { /* the hook stops reading at the cap or deadline */ })
+      input(child.stdin!)
+    })
+  }
+  const context = (stdout: string) => JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+
+  it('routes a Write over the stdin cap by its path and says the rest was not read', async () => {
+    const { STDIN_MAX_BYTES } = await import(join(HOOKS, 'common.mjs'))
+    const { stdout, stderr } = await runHook(stdin => stdin.end(JSON.stringify({ cwd: dir, session_id: SID, tool_name: 'Write', tool_input: { file_path: 'api/tax.py', content: 'x'.repeat(STDIN_MAX_BYTES) } })))
+    expect(context(stdout)).toContain(`Room read only the start of this tool call (input over ${STDIN_MAX_BYTES} bytes): claims and nearby work were checked for api/tax.py only`)
+    expect(context(stdout)).toContain('Claim before editing: Kieran changed api/tax.py.')
+    expect(stderr).toContain('hook input over')
+  })
+
+  it('says coordination is unavailable for a shell command over the cap', async () => {
+    const { STDIN_MAX_BYTES } = await import(join(HOOKS, 'common.mjs'))
+    const { stdout } = await runHook(stdin => stdin.end(JSON.stringify({ cwd: dir, session_id: SID, tool_name: 'Bash', tool_input: { command: `echo ${'x'.repeat(STDIN_MAX_BYTES)} > api/tax.py` } })))
+    expect(context(stdout)).toContain('Room could not read this whole tool call (input over')
+    expect(context(stdout)).not.toContain('Claim before editing')
+  })
+
+  it('routes a valid input that finishes after the stdin deadline', async () => {
+    const event = JSON.stringify({ cwd: dir, session_id: SID, tool_name: 'Edit', tool_input: { file_path: 'api/tax.py', old_string: 'x', new_string: 'y' } })
+    const cut = event.indexOf('"old_string"')
+    const { stdout } = await runHook(stdin => { stdin.write(event.slice(0, cut)); setTimeout(() => stdin.end(event.slice(cut)), 2600) })
+    expect(context(stdout)).toContain('Room read only the start of this tool call (input not complete within 2000 ms): claims and nearby work were checked for api/tax.py only')
+    expect(context(stdout)).toContain('Claim before editing: Kieran changed api/tax.py.')
+  })
+
+  it('says coordination is unavailable when no input arrives before the deadline', async () => {
+    const { stdout } = await runHook(stdin => { setTimeout(() => stdin.end('{}'), 2600) }, dir)
+    expect(context(stdout)).toContain('Room could not read this whole tool call (input not complete within 2000 ms)')
+  })
+
+  it('settles requests when the MCP endpoint sends an oversized or malformed reply', async () => {
+    const net = await import('node:net')
+    const { openMcp, selectReply } = await import(join(HOOKS, 'common.mjs'))
+    const replies: ((socket: import('node:net').Socket) => void)[] = [
+      socket => socket.write('x'.repeat(5000)),
+      socket => socket.write('not json\n'),
+    ]
+    const stderr = quietStderr()
+    try {
+      for (const reply of replies) {
+        const server = net.createServer(socket => socket.once('data', () => reply(socket)))
+        await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+        writeFileSync(join(stateDir(), 'mcp.json'), JSON.stringify({ port: (server.address() as import('node:net').AddressInfo).port, key: 'k' }))
+        const mcp = await openMcp(stateDir(), 2000, 1000)
+        expect(await mcp.request({ op: 'select' })).toBeUndefined()
+        expect(await mcp.request({ op: 'select' })).toBeUndefined()
+        mcp.close()
+        await new Promise(r => server.close(r))
+      }
+    } finally { stderr.mockRestore() }
+    expect(selectReply({ ok: true, batch: 'b', items: 'x', notices: [] })).toBeUndefined()
+    expect(selectReply({ ok: true, batch: 'b', items: [{}], notices: [] })).toBeUndefined()
+    expect(selectReply({ ok: true, batch: 'b', items: [], notices: [1] })).toBeUndefined()
+    expect(selectReply({ ok: true, items: [], notices: [] })).toBeUndefined()
+    const good = { ok: true, batch: 'b', items: [{ line: 'hi' }], notices: [], more: 0 }
+    expect(selectReply(good)).toBe(good)
+  })
+
+  it('never confirms a select reply of the wrong shape, so its items stay owed', async () => {
+    const net = await import('node:net')
+    const ops: string[] = []
+    const server = net.createServer(socket => {
+      let buffered = ''
+      socket.on('data', chunk => {
+        buffered += chunk
+        for (let nl = buffered.indexOf('\n'); nl >= 0; nl = buffered.indexOf('\n')) {
+          const req = JSON.parse(buffered.slice(0, nl)); buffered = buffered.slice(nl + 1)
+          ops.push(req.op)
+          socket.write(JSON.stringify(req.op === 'select' ? { ok: true, batch: 'b1', items: 'not an array', notices: [] } : { ok: true }) + '\n')
+        }
+      })
+    })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+    try {
+      writeFileSync(join(stateDir(), 'mcp.json'), JSON.stringify({ port: (server.address() as import('node:net').AddressInfo).port, key: 'k' }))
+      writeFileSync(join(stateDir(), 'state.json'), JSON.stringify({ at: Date.now(), company: false, owedCount: 2, claims: [] }))
+      const out = await run('git status', 'Bash')
+      expect(JSON.parse(out).hookSpecificOutput.additionalContext).toContain('2 messages pending')
+      expect(ops).toEqual(['select'])
+    } finally { await new Promise(r => server.close(r)) }
+  })
+
+  it('reads a bounded directory batch and a bounded cursor when pruning', async () => {
+    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
+    const receipts = join(dir, '.git/room/hook-receipts')
+    mkdirSync(receipts, { recursive: true })
+    const now = Date.now(), old = new Date(now - 8 * 86400_000)
+    for (let i = 0; i < 40; i++) {
+      const file = join(receipts, `r-${String(i).padStart(2, '0')}.json`)
+      writeFileSync(file, '{}'); fs.utimesSync(file, old, old)
+    }
+    writeFileSync(join(receipts, '.prune-cursor'), 'z'.repeat(300))
+    pruneHookReceipts(receipts, now, 10)
+    const left = fs.readdirSync(receipts).filter(name => name.endsWith('.json')).length
+    expect(left).toBeLessThan(40)
+    expect(left).toBeGreaterThanOrEqual(30)
+    for (let pass = 0; pass < 10 && fs.readdirSync(receipts).some(name => name.endsWith('.json')); pass++) {
+      fs.utimesSync(join(receipts, '.pruned'), old, old)
+      pruneHookReceipts(receipts, now, 10)
+    }
+    expect(fs.readdirSync(receipts).filter(name => name.endsWith('.json'))).toEqual([])
   })
 })

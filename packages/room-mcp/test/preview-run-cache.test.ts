@@ -35,10 +35,10 @@ afterEach(async () => { for (const root of roots.splice(0)) await disposePreview
 it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes only two merged paths on a warm preview', async () => {
   const { ancestor, session } = fixture(true)
   const counts = { firstBase: 0, secondBase: 0, secondWrites: [] as string[] }
-  const first = await runInMergedTree(session(), ancestor, merged, command, new Map(), { baseMaterialized: () => counts.firstBase++ })
-  const second = await runInMergedTree(session(), ancestor, merged, command, new Map(), {
+  const first = await runInMergedTree(session(), ancestor, merged, command, { observe: { baseMaterialized: () => counts.firstBase++ } })
+  const second = await runInMergedTree(session(), ancestor, merged, command, { observe: {
     baseMaterialized: () => counts.secondBase++, mergedWrite: rel => counts.secondWrites.push(rel),
-  })
+  } })
   expect(first.passed, first.text).toBe(true)
   expect(second.passed, second.text).toBe(true)
   expect(counts).toEqual({ firstBase: 1, secondBase: 0, secondWrites: ['src/00/f00000.txt', 'src/00/f00001.txt'] })
@@ -92,7 +92,7 @@ it('applies merged deletions and modes without losing ancestor files', async () 
   ])
   const result = await runInMergedTree(session(), ancestor, changes,
     'test ! -e src/00/f00002.txt && test -x bin/check.sh && test -f src/49/f04999.txt && echo "1 passed"',
-    new Map([['bin/check.sh', 0o755]]))
+    { modes: new Map([['bin/check.sh', 0o755]]) })
   expect(result.passed, result.text).toBe(true)
   const cache = await previewCachePath(repo)
   expect(fs.readFileSync(path.join(cache, 'src/00/f00002.txt'), 'utf8')).toBe('base 2\n')
@@ -109,8 +109,8 @@ it('moves the cached ancestor without rebuilding the full tree', async () => {
   const next = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   let baseCopies = 0
   const result = await runInMergedTree(session(), next, merged,
-    `${command} && test "$(cat ${rel})" = "new ancestor" && echo "1 passed"`, new Map(),
-    { baseMaterialized: () => baseCopies++ })
+    `${command} && test "$(cat ${rel})" = "new ancestor" && echo "1 passed"`,
+    { observe: { baseMaterialized: () => baseCopies++ } })
   expect(result.passed, result.text).toBe(true)
   expect(baseCopies).toBe(0)
   expect(result.text).toContain('(cached base)')
@@ -121,9 +121,9 @@ it('uses an isolated fresh tree when two checks overlap in one clone', async () 
   expect((await runInMergedTree(session(), ancestor, merged, command)).passed).toBe(true)
   let started!: () => void
   const prepared = new Promise<void>(resolve => { started = resolve })
-  const first = runInMergedTree(session(), ancestor, merged, `sleep 1; ${command}`, new Map(), {
+  const first = runInMergedTree(session(), ancestor, merged, `sleep 1; ${command}`, { observe: {
     mergedWrite: rel => { if (rel === 'src/00/f00001.txt') started() },
-  })
+  } })
   await prepared
   const materializations: string[] = []
   let maxDelay = 0
@@ -139,9 +139,9 @@ it('uses an isolated fresh tree when two checks overlap in one clone', async () 
   }) as typeof fs.rmSync)
   let second!: Awaited<ReturnType<typeof runInMergedTree>>
   try {
-    second = await runInMergedTree(session(), ancestor, merged, command, new Map(), {
+    second = await runInMergedTree(session(), ancestor, merged, command, { observe: {
       baseMaterialized: () => materializations.push('fresh'),
-    })
+    } })
     await new Promise<void>(resolve => setTimeout(resolve, 0))
   } finally { clearInterval(timer); remove.mockRestore() }
   expect((await first).passed).toBe(true)
@@ -158,9 +158,9 @@ it('uses a fresh tree when a cached worktree has lost its gitfile', async () => 
   fs.unlinkSync(path.join(cache, '.git'))
   execFileSync('git', ['-C', repo, 'worktree', 'prune'])
   let baseCopies = 0
-  const result = await runInMergedTree(session(), ancestor, merged, command, new Map(), {
+  const result = await runInMergedTree(session(), ancestor, merged, command, { observe: {
     baseMaterialized: () => baseCopies++,
-  })
+  } })
   expect(result.passed, result.text).toBe(true)
   expect(baseCopies).toBe(1)
   expect(result.text).toContain('fresh base after cache failure')

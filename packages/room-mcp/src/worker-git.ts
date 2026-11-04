@@ -125,7 +125,7 @@ export const collectHeadRef = (tag: string, id: string) => `refs/room/collect-he
 export const collectBaseRef = (tag: string, id: string) => `refs/room/collect-base/${tag}/${id}`
 
 /** Compare checkout output against the lead, including commits after collection's captured HEAD. */
-async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, capturedHead?: string): Promise<string[]> {
+export async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, capturedHead?: string): Promise<string[]> {
   const exclusions = workerOwnedPaths(w).exclusions
   const [changed, untracked, committed] = await Promise.all([
     git(w.dir, ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--', '.', ...exclusions]),
@@ -278,9 +278,22 @@ export async function cleanupPreparedWorktree(repoDir: string, prepared: Prepare
   }
 }
 
+export interface PrepareWorktreeOptions {
+  /** Paths linked rather than carried; undefined reads `.roomlinks`. */
+  linkExclusions?: string[]
+  /** Journal hook called before each preparation step. */
+  onStep?: (step: PrepStep, facts: Partial<PrepJournal>) => Promise<void>
+  /** Carry the lead's uncommitted work into the worktree (default true). */
+  carry?: boolean
+}
+
 /** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
-export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions?: string[],
-  onStep?: (step: PrepStep, facts: Partial<PrepJournal>) => Promise<void>, retry = 0, carry = true): Promise<PreparedWorktree> {
+export function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', options: PrepareWorktreeOptions = {}): Promise<PreparedWorktree> {
+  return prepareWorktreeAttempt(repoDir, tag, leadName, options, 0)
+}
+
+async function prepareWorktreeAttempt(repoDir: string, tag: string, leadName: string, options: PrepareWorktreeOptions, retry: number): Promise<PreparedWorktree> {
+  const { linkExclusions, onStep, carry = true } = options
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
   const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
@@ -395,7 +408,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
       await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs })
       if (retry >= 2) throw new Error('lead changed repeatedly during carry; try spawning again when HEAD is stable')
-      return prepareWorktree(repoDir, tag, leadName, linkExclusions, onStep, retry + 1, carry)
+      return prepareWorktreeAttempt(repoDir, tag, leadName, options, retry + 1)
     }
     try {
       await internalGit(dir, ['reset', '--hard', base])
@@ -412,8 +425,23 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   }
 }
 
+export interface CleanupWorkerOptions {
+  /** Collection already applied the output: remove the worktree with --force. */
+  collected?: boolean
+  /** Discard: a failed worker or moved tip does not block removal. */
+  discarded?: boolean
+  /** Receives descriptions of processes terminated in the worktree. */
+  terminatedProcesses?: string[]
+  processOptions?: Parameters<typeof terminateWorktreeProcesses>[1]
+  leadName?: string
+  workers?: Iterable<WorktreeOwnershipRecord>
+  /** Receives what kept the worktree, instead of logging a recovery ref. */
+  preservation?: WorkerCleanupPreservation
+}
+
 /** Remove only owned Room worktrees; failures require explicit discard. */
-export async function cleanupWorker(leadDir: string, w: LocalWorker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = [], preservation?: WorkerCleanupPreservation): Promise<boolean> {
+export async function cleanupWorker(leadDir: string, w: LocalWorker, options: CleanupWorkerOptions = {}): Promise<boolean> {
+  const { collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = [], preservation } = options
   // All lifecycle paths converge here. The owner operation lease must be held by
   // callers while checking this snapshot and removing the checkout.
   const available = async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, onTestFinished, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
+import fs, { mkdtempSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import http from 'node:http'
@@ -143,15 +143,34 @@ describe('local mode (no server)', () => {
     } else expect(worker.browserUrl).toContain('not built')
   })
 
-  it('a worker in its lead\'s clone starts the relay when the lead\'s relay is gone', async () => {
+  it('a worker in its lead\'s clone waits while the lead\'s relay is gone, and joins once the lead is back', async () => {
     const clone = repo('room-localjoin-dead-')
     const room = `local/${basename(clone)}`
-    // The lead crashed before this worker joined; the canonical common dir proves authority.
+    // The lead crashed before this worker joined: the worker never starts a relay of its own.
     const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
     execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'room/w', wt], { stdio: 'pipe' })
-    const worker = await joinSession({ dir: wt, room, server: 'local', name: 'Ada', tag: 'w', leadClone: realpathSync(join(clone, '.git')), log: () => {} }); sessions.push(worker)
-    expect(worker.local?.owned).toBe(true)
-    expect(worker.roomName).toBe(room)
+    const as = { dir: wt, room, server: 'local', name: 'Ada', tag: 'w', leadClone: realpathSync(join(clone, '.git')), joinOnly: true, log: () => {} }
+    await expect(joinSession(as)).rejects.toMatchObject({ code: 1, message: expect.stringContaining("waiting for the lead's session to start the local relay") })
+    expect(existsSync(join(clone, '.git', 'room', 'relay.json'))).toBe(false)
+    const lead = await joinSession({ dir: clone, room, server: 'local', name: 'Ada', log: () => {} }); sessions.push(lead)
+    const worker = await joinSession(as); sessions.push(worker)
+    expect(worker.local?.owned).toBe(false)
+    expect(worker.roomUrl).toBe(lead.roomUrl)
+  })
+
+  it('a session in a worker\'s worktree without worker variables waits for the lead\'s relay instead of starting one', async () => {
+    const clone = repo('room-localjoin-nested-')
+    const room = `local/${basename(clone)}`
+    const wt = join(clone, '.room', 'workers', 'w')
+    execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'room/w', wt], { stdio: 'pipe' })
+    // A nested host launched by hand: not joinOnly, no ROOM_* variables, but not a lead either.
+    const as = { dir: wt, room, server: 'local', name: 'Ada', tag: 'w', log: () => {} }
+    await expect(joinSession(as)).rejects.toMatchObject({ code: 1, message: expect.stringContaining("waiting for the lead's session to start the local relay") })
+    expect(existsSync(join(clone, '.git', 'room', 'relay.json'))).toBe(false)
+    const lead = await joinSession({ dir: clone, room, server: 'local', name: 'Ada', log: () => {} }); sessions.push(lead)
+    const nested = await joinSession(as); sessions.push(nested)
+    expect(nested.local?.owned).toBe(false)
+    expect(nested.roomUrl).toBe(lead.roomUrl)
   })
 
   it('a worker in another repository than its lead\'s is refused for good, and never touches that repository\'s relay', async () => {
@@ -188,4 +207,30 @@ describe('local mode (no server)', () => {
     // Closing a local room forgets its saved history and leaves, so it comes last.
     expect(await tools.call('room_close', { confirm: true })).toContain('local room')
   })
+
+  it('leaving while the relay cannot save its state says so, and the relay keeps serving and owning the room until exit', async () => {
+    const clone = repo('room-unsaved-leave-')
+    let s: Session | null = await joinSession({ dir: clone, log: () => {} })
+    const joined = s
+    expect(joined.local?.owned).toBe(true)
+    const tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: clone })
+    const rename = fs.renameSync
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).endsWith('.ydoc')) throw Object.assign(new Error('ENOSPC: no space left on device, rename'), { code: 'ENOSPC' })
+      return rename(from, to)
+    })
+    try {
+      const reply = await tools.call('room_leave', {})
+      expect(reply).toMatch(/^left local\//)
+      expect(reply).toContain('WARN: local room state could not be saved: ENOSPC: no space left on device, rename; the relay kept running until exit')
+      expect(joined.local!.owned).toBe(true)
+      const health = await fetch(`${joined.local!.httpUrl}/health`)
+      expect(health.ok).toBe(true)
+    } finally {
+      vi.restoreAllMocks()
+      await joined.local!.stop()
+      await tools.shutdown()
+    }
+    expect(joined.local!.owned).toBe(false)
+  }, 60_000)
 })

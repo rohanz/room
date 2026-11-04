@@ -147,6 +147,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!s.local) out.push(`sharing level: ${sharingLevel}; ${sharingHumanChoices(sharingLevel)}`)
       if (s.local && publisher) out.push(publisher)
       if (s.local?.canonicalWarning) out.push(`WARN: ${s.local.canonicalWarning}`)
+      if (s.local?.ownerWarning) out.push(`WARN: ${s.local.ownerWarning}`)
       const delivery = formatDeliveryDegradation(state.deliveryDegradation())
       if (delivery) out.push(delivery)
       if (state.hasCompany(s).company) {

@@ -9,6 +9,7 @@ import { completionId, completionMessage, participantRecord, RoomDoc, ROOM_DOC_M
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
+import { scanRunLog } from './run-log-facts.js'
 import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, missingClaudeSession, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { HOST_ENDED, idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
@@ -858,11 +859,16 @@ export class WorkerRegistry {
     const messageId = completionId(id, n, report.done.k)
     if (report.posted === messageId || run.posted && !run.posted.endsWith(':no-report')) return false
     await post(messageId, record, report)
-    await this.writeReport(id, { ...report, posted: messageId })
+    // A retiring record admits no report write; its run carries the posted id, so retirement can complete.
+    if (['prepared', 'active'].includes(record.phase)) await this.writeReport(id, { ...report, posted: messageId })
+    else await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: messageId } : value), seq: old.seq + 1 }))
     return true
   }
 
   async postObservedFailure(id: string, n: number, post: (message: NonNullable<ReturnType<typeof completionMessage>>) => Promise<void>): Promise<boolean> {
+    // Bring this run's log facts up to date in yielding chunks before reading any state the decision depends on.
+    const scanned = this.read(id), scannedRun = scanned?.runs.find(value => value.n === n)
+    if (scanned && scannedRun?.mode === 'resume') await scanRunLog(workerLogFile(scanned), scannedRun.logStart)
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
     const exit = this.exits(id).find(value => value.run === n)
     const report = this.reports(id).find(value => value.run === n)
@@ -902,6 +908,10 @@ export class WorkerRegistry {
   /** A collection that did not finish returns the worker to `active`; a finished one retires it (beginRetirement). */
   async abortCollect(id: string): Promise<WorkerRecord> {
     return this.update(id, old => ({ ...old, phase: 'active', seq: old.seq + 1 }))
+  }
+  /** Output was applied but the host's clean exit is unconfirmed: stay live, never retired, until cleanup finishes. */
+  async deferCollectCleanup(id: string, reason: string): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, phase: 'active', collectPending: { at: old.collectPending?.at ?? this.now(), reason }, seq: old.seq + 1 }))
   }
 
   /**
@@ -1105,7 +1115,7 @@ export class WorkerRegistry {
     }
     if (!record.discard!.steps.cleanup) {
       if (owned) {
-        if (!await cleanupWorker(leadDir, own, true, true, [], {}, record.lead.participant, workers)) return
+        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers })) return
       } else if (!borrowed) {
         await pruneMissingWorkerWorktree(leadDir, own)
         cleanupWorkerLogs(leadDir, own)

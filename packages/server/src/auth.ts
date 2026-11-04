@@ -19,6 +19,7 @@ import crypto from 'node:crypto'
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose'
 import { FileStore, type Store, type StoredSession } from './store.js'
 import { assertValidParticipantName, validParticipantName } from './names.js'
+import { envCount } from './settings.js'
 
 export type { StoredSession } from './store.js'
 export type Provider = 'github' | 'oidc'
@@ -49,6 +50,8 @@ export interface AuthOptions {
   sessionTtlMs?: number
   /** How long a started login may take before the client must start again. Default 15 min. */
   loginTtlMs?: number
+  /** Login attempts awaiting completion (ROOM_MAX_PENDING_LOGINS). Default 1000. */
+  maxPendingLogins?: number
   log?: (line: string) => void
   onSessionRemoved?: (session: string, reason: 'session expired' | 'logged out', removed?: StoredSession) => void
 }
@@ -79,6 +82,12 @@ type Pending =
   | { provider: 'oidc'; verifier: string; nonce: string; exp: number; interval: number; result?: { session: string; login: string } | { error: string } }
 
 export const FAKE_CLIENT_ID = 'fake'
+/** IdP metadata and keys are cached, then refreshed: endpoint and key rotation take effect without a restart. */
+export const OIDC_DISCOVERY_TTL_MS = 60 * 60 * 1000
+const OIDC_JWKS_TTL_MS = 10 * 60 * 1000
+/** A token naming an unknown key refetches the key set at most this often, so forged key ids cannot drive refetches. */
+export const OIDC_JWKS_REFRESH_COOLDOWN_MS = 60 * 1000
+const OIDC_RETRY_MS = 60 * 1000
 const message = (e: unknown) => e instanceof Error ? e.message : String(e)
 
 export class Auth {
@@ -95,7 +104,7 @@ export class Auth {
   private readonly ttl: number
   private readonly loginTtl: number
   private readonly devices = new Map<string, Pending>()
-  private readonly maxPending = Number(process.env.ROOM_MAX_PENDING_LOGINS ?? 1000)
+  private readonly maxPending: number
   private readonly sessions = new Map<string, StoredSession>()
   /** Logged out here, but the store still holds them: deleted again on the next logout or reconciliation. */
   private readonly owedDeletes = new Map<string, StoredSession>()
@@ -103,7 +112,10 @@ export class Auth {
   private readonly unknownDeletes = new Set<string>()
   /** Whether the store was read at startup; until it is, reconciliation adopts stored sessions. */
   private loaded = false
-  private discovery?: { doc: Discovery; jwks?: { set: JSONWebKeySet; at: number } }
+  private discovery?: { doc: Discovery; at: number; retryAt: number }
+  private discoveryFlight?: Promise<Discovery>
+  private keys?: { uri: string; set: JSONWebKeySet; at: number }
+  private keysFlight?: Promise<JSONWebKeySet>
 
   constructor(private readonly o: AuthOptions = {}) {
     const production = o.production ?? process.env.NODE_ENV === 'production'
@@ -116,6 +128,7 @@ export class Auth {
     this.now = o.now ?? Date.now
     this.ttl = o.sessionTtlMs ?? 90 * 24 * 60 * 60 * 1000
     this.loginTtl = o.loginTtlMs ?? 15 * 60 * 1000
+    this.maxPending = o.maxPendingLogins ?? envCount(process.env, 'ROOM_MAX_PENDING_LOGINS', 1000)
     this.ready = this.load()
   }
   private async load(): Promise<void> {
@@ -205,26 +218,55 @@ export class Auth {
 
   // ---- OIDC authorization code + PKCE ----
 
+  /** The discovery document is refreshed after OIDC_DISCOVERY_TTL_MS; while the IdP fails, the last good
+   *  document stays in use and the refresh is retried at most every OIDC_RETRY_MS. One request at a time. */
   private async discover(): Promise<Discovery> {
-    if (this.discovery) return this.discovery.doc
-    const oidc = this.o.oidc!
-    const url = `${oidc.issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`
+    const d = this.discovery
+    if (d && (d.at + OIDC_DISCOVERY_TTL_MS > this.now() || d.retryAt > this.now())) return d.doc
+    this.discoveryFlight ??= this.fetchDiscovery().finally(() => { this.discoveryFlight = undefined })
+    try { return await this.discoveryFlight }
+    catch (e) {
+      if (!d) throw e
+      d.retryAt = this.now() + OIDC_RETRY_MS
+      this.o.log?.(`oidc: discovery refresh failed; keeping the previous document: ${message(e)}`)
+      return d.doc
+    }
+  }
+  private async fetchDiscovery(): Promise<Discovery> {
+    const url = `${this.o.oidc!.issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`
     const res = await this.request(url, { headers: { accept: 'application/json' } })
     if (!res.ok) throw new Error(`OIDC discovery failed: HTTP ${res.status} from ${url}`)
     const doc = await res.json() as Discovery
     if (!doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) throw new Error('OIDC discovery document lacks authorization_endpoint, token_endpoint or jwks_uri')
-    this.discovery = { doc }
+    this.discovery = { doc, at: this.now(), retryAt: 0 }
     return doc
   }
-  private async jwks(): Promise<JSONWebKeySet> {
-    const doc = await this.discover()
-    const d = this.discovery!
-    if (d.jwks && d.jwks.at + 10 * 60 * 1000 > this.now()) return d.jwks.set
-    const res = await this.request(doc.jwks_uri, { headers: { accept: 'application/json' } })
-    if (!res.ok) throw new Error(`OIDC JWKS failed: HTTP ${res.status}`)
-    const set = await res.json() as JSONWebKeySet
-    d.jwks = { set, at: this.now() }
-    return set
+  /** The key set for `doc`, cached for OIDC_JWKS_TTL_MS. `refresh` (a token named an unknown key) refetches
+   *  it unless it was fetched within OIDC_JWKS_REFRESH_COOLDOWN_MS; returns undefined when refused. */
+  private async jwks(doc: Discovery, refresh = false): Promise<JSONWebKeySet | undefined> {
+    const cached = this.keys?.uri === doc.jwks_uri ? this.keys : undefined
+    if (cached && !refresh && cached.at + OIDC_JWKS_TTL_MS > this.now()) return cached.set
+    if (cached && refresh && cached.at + OIDC_JWKS_REFRESH_COOLDOWN_MS > this.now()) return undefined
+    this.keysFlight ??= (async () => {
+      const res = await this.request(doc.jwks_uri, { headers: { accept: 'application/json' } })
+      if (!res.ok) throw new Error(`OIDC JWKS failed: HTTP ${res.status}`)
+      const set = await res.json() as JSONWebKeySet
+      this.keys = { uri: doc.jwks_uri, set, at: this.now() }
+      return set
+    })().finally(() => { this.keysFlight = undefined })
+    return this.keysFlight
+  }
+  /** Verifies against the cached keys; only a token naming a key the set lacks triggers one refresh.
+   *  A signature that fails under a known key is final: it never refetches. */
+  private async verifyIdToken(idToken: string, doc: Discovery) {
+    const options = { issuer: doc.issuer ?? this.o.oidc!.issuer, audience: this.o.oidc!.clientId, currentDate: new Date(this.now()) }
+    try { return await jwtVerify(idToken, createLocalJWKSet((await this.jwks(doc))!), options) }
+    catch (e) {
+      if ((e as { code?: string }).code !== 'ERR_JWKS_NO_MATCHING_KEY') throw e
+      const fresh = await this.jwks(doc, true)
+      if (!fresh) throw e
+      return jwtVerify(idToken, createLocalJWKSet(fresh), options)
+    }
   }
   private redirectUri(): string { return `${this.o.oidc!.publicUrl.replace(/\/+$/, '')}/auth/callback` }
 
@@ -266,7 +308,7 @@ export class Auth {
     } catch (e) { return fail(d, `token endpoint unreachable: ${e instanceof Error ? e.message : e}`) }
     let claims: { email?: string; email_verified?: boolean; preferred_username?: string; nonce?: string; sub?: string }
     try {
-      const { payload } = await jwtVerify(idToken, createLocalJWKSet(await this.jwks()), { issuer: doc.issuer ?? oidc.issuer, audience: oidc.clientId, currentDate: new Date(this.now()) })
+      const { payload } = await this.verifyIdToken(idToken, doc)
       claims = payload as typeof claims
     } catch (e) { return fail(d, `ID token rejected: ${e instanceof Error ? e.message : e}`) }
     if (claims.nonce !== d.nonce) return fail(d, 'ID token nonce mismatch')

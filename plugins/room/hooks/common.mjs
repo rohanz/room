@@ -1,14 +1,167 @@
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
 import net from 'node:net'
+import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
-export const HOOKS_VERSION = '0.17.30'
+export const HOOKS_VERSION = '0.17.31'
 
-export function readStdinJson() {
-  try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
+/**
+ * Hook input carries the whole tool input, so a Write of a large file arrives here in full. 32 MB keeps
+ * ordinary large edits coordinated; past it, or past the deadline, the hook works from the complete fields
+ * in the first STDIN_PREFIX_BYTES (see readStdinJson) and tells the agent what it could not check.
+ */
+export const STDIN_MAX_BYTES = 32 * 1024 * 1024
+const STDIN_DEADLINE_MS = 2000
+/** Bytes of an unfinished input scanned for routing fields (session, cwd, tool name, file path). */
+const STDIN_PREFIX_BYTES = 64 * 1024
+/** A routing string longer than this is not routing metadata (a file's content, a long command): skipped. */
+const PREFIX_FIELD_MAX_CHARS = 4096
+/** Set on the event readStdinJson returns when the input was over the cap or late: the reason, in words. */
+const INCOMPLETE = Symbol('room hook input incomplete')
+/** Why this event holds only part of the hook input, or undefined when it holds all of it. */
+export const inputIncomplete = ev => ev?.[INCOMPLETE]
+/** Small per-session records (session.json, hook.json, runtime.json, mcp.json). */
+const JSON_MAX_BYTES = 1024 * 1024
+/** state.json lists every open claim and nearby path in the room. */
+export const STATE_MAX_BYTES = 16 * 1024 * 1024
+/** One MCP endpoint reply line. Its inbox is bounded by the hook context cap, far below this. */
+const MCP_REPLY_MAX_CHARS = 1024 * 1024
+
+/** A diagnostic for a hook that gave up: stderr (shown in host debug output) and the shared hook log. */
+function hookDiagnostic(line) {
+  const text = `${new Date().toISOString()} ${path.basename(process.argv[1] ?? 'hook')}: ${line}\n`
+  try { process.stderr.write(`[room] ${line}\n`) } catch { /* ignore */ }
+  try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), text) } catch { /* ignore */ }
+}
+
+const parseObject = text => {
+  try {
+    const value = JSON.parse(text || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined
+  } catch { return undefined }
+}
+
+/**
+ * The hook event from stdin, or `{}` when it is absent or invalid. Over `maxBytes`, or not finished by
+ * `deadlineMs`, it is the complete fields found in the first STDIN_PREFIX_BYTES (prefixFields), marked with
+ * the reason (inputIncomplete), and a diagnostic is logged: the hook can still route the edit by its path,
+ * and tells the agent what it could not check.
+ */
+export function readStdinJson(stream = process.stdin, { maxBytes = STDIN_MAX_BYTES, deadlineMs = STDIN_DEADLINE_MS } = {}) {
+  return new Promise(resolve => {
+    const chunks = []
+    let size = 0, done = false
+    const finish = (value, problem) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      stream.off('data', onData); stream.off('end', onEnd); stream.off('error', onEnd)
+      stream.pause?.()
+      if (problem) { hookDiagnostic(`${problem}; Room checked only the fields in its first ${STDIN_PREFIX_BYTES} bytes`); stream.destroy?.() }
+      resolve(value)
+    }
+    const partial = reason => {
+      const value = prefixFields(Buffer.concat(chunks).subarray(0, STDIN_PREFIX_BYTES).toString('utf8'))
+      return Object.defineProperty(value, INCOMPLETE, { value: reason })
+    }
+    const onData = chunk => {
+      size += chunk.length
+      if (size > maxBytes) {
+        // Keep the prefix, drop the rest: the hook never holds more than the cap.
+        if (size - chunk.length < STDIN_PREFIX_BYTES) chunks.push(chunk)
+        return finish(partial(`input over ${maxBytes} bytes`), `hook input over ${maxBytes} bytes`)
+      }
+      chunks.push(chunk)
+    }
+    const onEnd = () => finish(parseObject(Buffer.concat(chunks).toString('utf8')) ?? {})
+    const timer = setTimeout(() => {
+      // Everything may have arrived with only the end of stream missing.
+      const whole = chunks.length ? parseObject(Buffer.concat(chunks).toString('utf8')) : undefined
+      if (whole) finish(whole)
+      else finish(partial(`input not complete within ${deadlineMs} ms`), `hook input not complete within ${deadlineMs} ms`)
+    }, deadlineMs)
+    stream.on('data', onData); stream.once('end', onEnd); stream.once('error', onEnd)
+  })
+}
+
+/** End index (after the closing quote) of the JSON string starting at `text[start]`, or -1 when it is cut off. */
+function jsonStringEnd(text, start) {
+  for (let from = start + 1; ;) {
+    const quote = text.indexOf('"', from)
+    if (quote < 0) return -1
+    let slashes = 0
+    while (text[quote - 1 - slashes] === '\\') slashes++
+    if (slashes % 2 === 0) return quote + 1
+    from = quote + 1
+  }
+}
+
+/**
+ * The complete fields of a JSON object cut off at any point: top-level strings, numbers, booleans and nulls,
+ * and the same inside top-level objects (tool_input, effort). A value cut off, inside an array or deeper, or a
+ * string over PREFIX_FIELD_MAX_CHARS is left out, so nothing returned is a truncated value.
+ */
+export function prefixFields(text) {
+  const out = {}
+  const frames = []
+  let i = 0
+  while (i < text.length && /\s/.test(text[i])) i++
+  if (text[i] !== '{') return out
+  frames.push({ object: true, target: out, expectKey: true })
+  i++
+  const set = (top, value) => { if (top.target && top.key !== undefined) top.target[top.key] = value }
+  while (i < text.length && frames.length) {
+    const c = text[i]
+    const top = frames.at(-1)
+    if (c === ',') { if (top.object) { top.expectKey = true; top.key = undefined }; i++; continue }
+    if (c === ':' || /\s/.test(c)) { i++; continue }
+    if (c === '}' || c === ']') { frames.pop(); i++; continue }
+    if (c === '"') {
+      const end = jsonStringEnd(text, i)
+      if (end < 0) break
+      if (top.object && top.expectKey) {
+        try { top.key = JSON.parse(text.slice(i, end)) } catch { break }
+        top.expectKey = false
+      } else if (end - i <= PREFIX_FIELD_MAX_CHARS + 2) {
+        try { set(top, JSON.parse(text.slice(i, end))) } catch { /* invalid escape: leave it out */ }
+      }
+      i = end
+      continue
+    }
+    if (c === '{' || c === '[') {
+      const nested = c === '{' && frames.length === 1 && top.key !== undefined ? {} : undefined
+      if (nested) set(top, nested)
+      frames.push({ object: c === '{', target: nested, expectKey: c === '{' })
+      i++
+      continue
+    }
+    const literal = /^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(text.slice(i, i + 64))?.[0]
+    if (!literal) break
+    // A literal touching the end of the prefix may be cut short (a number's digits).
+    if (i + literal.length >= text.length) break
+    set(top, JSON.parse(literal))
+    i += literal.length
+  }
+  return out
+}
+
+/** A file of at most `maxBytes` as `{text}`; `{oversized}` when larger; undefined when absent, unreadable or growing. */
+export function readBoundedText(file, maxBytes) {
+  let fd
+  try {
+    fd = fs.openSync(file, 'r')
+    const size = fs.fstatSync(fd).size
+    if (size > maxBytes) return { oversized: true }
+    // One byte past the stat size shows growth after the stat without allocating the whole cap.
+    const bytes = Buffer.alloc(size + 1)
+    let count = 0
+    for (let n; count < bytes.length && (n = fs.readSync(fd, bytes, count, bytes.length - count, count)) > 0;) count += n
+    return count > size ? undefined : { text: bytes.toString('utf8', 0, count) }
+  } catch { return undefined }
+  finally { if (fd !== undefined) { try { fs.closeSync(fd) } catch { /* best effort */ } } }
 }
 
 /** Walk up from cwd to the directory containing .git (file or dir). */
@@ -35,8 +188,12 @@ export function gitStatePath(root, name) {
   return path.join(dotgit, name)
 }
 
-export function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
+/** Parsed JSON of a file of at most `maxBytes`, else `fallback`; an oversized file is logged and ignored. */
+export function readJson(file, fallback, maxBytes = JSON_MAX_BYTES) {
+  const read = readBoundedText(file, maxBytes)
+  if (read?.oversized) { hookDiagnostic(`${path.basename(file)} is over ${maxBytes} bytes; ignored`); return fallback }
+  if (read === undefined) return fallback
+  try { return JSON.parse(read.text) } catch { return fallback }
 }
 
 /** Newest real assistant model in a bounded JSONL transcript tail. */
@@ -64,19 +221,22 @@ export function sessionDir(root, sessionId) {
 
 /** Temp-and-rename, so a reader never sees half a file (ledger R5). */
 export function writeJsonAtomic(file, value) {
+  const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-    const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
     fs.writeFileSync(temp, JSON.stringify(value) + '\n', { mode: 0o600 })
     fs.renameSync(temp, file)
-  } catch { /* hooks are best effort */ }
+  } catch {
+    // Hooks are best effort; remove only this call's own temp file.
+    try { fs.rmSync(temp, { force: true }) } catch { /* best effort */ }
+  }
 }
 
 /**
  * A connection to this session's MCP arbitration endpoint (mcp.json), or undefined when it cannot be
  * reached within `budgetMs`. `request` answers one JSON line, or undefined when the budget runs out.
  */
-export async function openMcp(dir, budgetMs) {
+export async function openMcp(dir, budgetMs, maxReply = MCP_REPLY_MAX_CHARS) {
   const endpoint = readJson(path.join(dir, 'mcp.json'), null)
   if (!Number.isInteger(endpoint?.port) || typeof endpoint?.key !== 'string') return undefined
   const deadline = Date.now() + budgetMs
@@ -90,20 +250,35 @@ export async function openMcp(dir, budgetMs) {
   })
   if (!connected) { socket.destroy(); return undefined }
   let buffered = ''
+  let failed = false
   const waiting = []
+  // A reply over the cap or not JSON breaks the line protocol: stop reading and settle every request
+  // unanswered. Nothing selected is confirmed, so its lease expires and the items stay owed.
+  const fail = problem => {
+    if (failed) return
+    failed = true
+    buffered = ''
+    if (problem) hookDiagnostic(problem)
+    socket.destroy()
+    for (const w of waiting.splice(0)) w(undefined)
+  }
   socket.on('data', chunk => {
+    if (failed) return
     buffered += chunk
-    for (let nl = buffered.indexOf('\n'); nl >= 0; nl = buffered.indexOf('\n')) {
+    for (let nl = buffered.indexOf('\n'); nl >= 0 && !failed; nl = buffered.indexOf('\n')) {
       const line = buffered.slice(0, nl)
       buffered = buffered.slice(nl + 1)
+      if (line.length > maxReply) return fail(`MCP endpoint reply over ${maxReply} characters`)
       let reply
-      try { reply = JSON.parse(line) } catch { reply = undefined }
+      try { reply = JSON.parse(line) } catch { return fail('MCP endpoint sent a reply that is not JSON') }
       waiting.shift()?.(reply)
     }
+    if (buffered.length > maxReply) fail(`MCP endpoint reply over ${maxReply} characters`)
   })
-  socket.once('close', () => { for (const w of waiting.splice(0)) w(undefined) })
+  socket.once('close', () => fail())
   return {
     request(body, ms = Math.max(0, deadline - Date.now())) {
+      if (failed) return Promise.resolve(undefined)
       return new Promise(resolve => {
         const timer = setTimeout(() => resolve(undefined), ms)
         waiting.push(reply => { clearTimeout(timer); resolve(reply) })
@@ -112,6 +287,18 @@ export async function openMcp(dir, budgetMs) {
     },
     close() { socket.destroy() },
   }
+}
+
+/**
+ * A `select` reply the hooks can print, or undefined. Anything else is treated as no answer: nothing is
+ * printed or confirmed, so the batch's lease expires and its items stay owed.
+ */
+export function selectReply(reply) {
+  if (reply?.ok !== true || typeof reply.batch !== 'string') return undefined
+  if (!Array.isArray(reply.items) || !reply.items.every(m => typeof m?.line === 'string')) return undefined
+  if (!Array.isArray(reply.notices) || !reply.notices.every(n => typeof n === 'string')) return undefined
+  if (reply.more !== undefined && !(Number.isSafeInteger(reply.more) && reply.more >= 0)) return undefined
+  return reply
 }
 
 /** Write to stdout and call back once the bytes were accepted (the handoff the ledger receipts). */
@@ -242,17 +429,6 @@ function processTable(readers, onReadError) {
     }
   } catch (error) { onReadError(error) /* no identity: bind by other means (registry §17) */ }
   return table
-}
-
-/** Keep write evidence per host session: two sessions in one worktree have separate directories. */
-export function recordWriteIntents(dir, root, paths, now = Date.now()) {
-  if (!paths.length) return
-  const file = path.join(dir, 'write-intents.json')
-  const prior = readJson(file, null)
-  const writes = (Array.isArray(prior?.writes) ? prior.writes : []).filter(w =>
-    typeof w?.path === 'string' && Number.isFinite(w.at) && w.at <= now && now - w.at < 600_000)
-  for (const p of paths) writes.push({ path: path.resolve(root, p), at: now })
-  writeJsonAtomic(file, { at: now, writes: writes.slice(-200) })
 }
 
 // Both hook manifests include shell tools. Bash is Codex's documented canonical name;
@@ -512,6 +688,9 @@ export function hookReceiptFile(stateDir, sessionId) {
 const RECEIPT_MAX_AGE_MS = 7 * 86400_000
 const RECEIPT_PRUNE_EVERY_MS = 10 * 60_000
 const RECEIPT_PRUNE_SCAN = 500
+/** Directory entries read per pruning pass; only RECEIPT_PRUNE_SCAN of them are kept and statted. */
+const RECEIPT_PRUNE_LIST = 5000
+const RECEIPT_CURSOR_MAX_BYTES = 255
 const RECEIPT_MAX_BYTES = 4096
 /** Read only bounded receipt bytes, including files supplied by another local process. */
 export function readReceipt(file) {
@@ -526,7 +705,7 @@ export function readReceipt(file) {
 /**
  * Record this session's before-edit receipt (throttled to one write per 5 s) with a temp file and a rename in
  * the receipts directory: no read-modify-write of shared state, no lock, no wait. At most every ten minutes,
- * remove receipts older than a week, checking at most 500 files per pass and advancing a cursor. Never throws.
+ * remove receipts older than a week (pruneHookReceipts). Never throws.
  */
 export function writeHookReceipt(stateDir, rawId, now = Date.now()) {
   const sessionId = receiptSessionId(rawId)
@@ -549,19 +728,37 @@ export function writeHookReceipt(stateDir, rawId, now = Date.now()) {
   pruneHookReceipts(dir, now)
   return true
 }
-export function pruneHookReceipts(dir, now = Date.now()) {
+/**
+ * One bounded pass: stream at most `listLimit` directory entries, keep the 500 smallest names after the
+ * persisted cursor (wrapping to the start when none are left), stat only those, and advance the cursor.
+ * A directory larger than `listLimit` is pruned within the entries each pass reads; deleting stale ones
+ * brings the rest into reach.
+ */
+export function pruneHookReceipts(dir, now = Date.now(), listLimit = RECEIPT_PRUNE_LIST) {
   const marker = path.join(dir, '.pruned')
   const cursorFile = path.join(dir, '.prune-cursor')
   try { if (now - fs.statSync(marker).mtimeMs < RECEIPT_PRUNE_EVERY_MS) return } catch { /* never pruned */ }
   try {
     fs.writeFileSync(marker, '')
-    // Names are cheap to enumerate; only 500 files are statted in one hook call.
-    const names = fs.readdirSync(dir).filter(name => /\.(json|tmp)$/.test(name)).sort()
-    let cursor = ''
-    try { cursor = fs.readFileSync(cursorFile, 'utf8').slice(0, 255) } catch { /* first pass */ }
-    const start = names.findIndex(name => name > cursor)
-    const offset = start < 0 ? 0 : start
-    const batch = names.slice(offset, offset + RECEIPT_PRUNE_SCAN)
+    const cursorRead = readBoundedText(cursorFile, RECEIPT_CURSOR_MAX_BYTES)
+    const cursor = cursorRead?.text ?? ''
+    const after = [], wrapped = []
+    // Sorted, at most RECEIPT_PRUNE_SCAN long: insert in order, drop the largest.
+    const keep = (list, name) => {
+      if (list.length >= RECEIPT_PRUNE_SCAN && name >= list.at(-1)) return
+      let i = list.length
+      while (i > 0 && list[i - 1] > name) i--
+      list.splice(i, 0, name)
+      if (list.length > RECEIPT_PRUNE_SCAN) list.pop()
+    }
+    const handle = fs.opendirSync(dir)
+    try {
+      for (let read = 0, entry; read < listLimit && (entry = handle.readSync()) !== null; read++) {
+        if (!/\.(json|tmp)$/.test(entry.name)) continue
+        keep(entry.name > cursor ? after : wrapped, entry.name)
+      }
+    } finally { handle.closeSync() }
+    const batch = after.length ? after : wrapped
     fs.writeFileSync(cursorFile, batch.at(-1) ?? '')
     for (const name of batch) {
       const file = path.join(dir, name)

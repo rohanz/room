@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
 import type { LocalWorker } from '../worker-status.js'
-import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
+import type { ShareLevel, SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
 import type { ConflictSet } from '../conflict-set.js'
 import type { PrInfo } from '../prs.js'
@@ -16,7 +16,7 @@ import type { Batch, Ledger } from '../ledger.js'
 import type { SessionBinding } from '../binding.js'
 import { registryForDir } from '../worker-registry.js'
 import { realStateInput } from '../worker-status.js'
-import { readBoundedDiskText } from './disk-text.js'
+import { readContainedRepoText } from './disk-text.js'
 
 export interface ToolDef {
   name: string
@@ -39,7 +39,8 @@ export interface ToolCtx {
   join?: (o: JoinOptions) => Promise<Session>
   /** Injectable team admission preflight for simulated joins. */
   admit?: typeof import('../session.js').checkTeamAdmission
-  leave?: (s: Session) => Promise<void>
+  /** Resolves to a warning when the session's state could not be saved on leaving (leaveSession). */
+  leave?: (s: Session) => Promise<string | void>
   /** Injectable for tests (default: DELETE /rooms on the session's server). Returns the rooms closed. */
   close?: (s: Session) => Promise<string[]>
   /** Debounce for the automatic conflict checks; default 2s. */
@@ -55,7 +56,7 @@ export interface ToolCtx {
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
   /** Pull-request integration; injectable for tests. */
-  prs?: { fetch?: (s: Session, opts?: { head?: boolean; branch?: string }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
+  prs?: { fetch?: (s: Session, opts?: { head?: boolean; branch?: string; signal?: AbortSignal }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests. */
   spawner?: Spawner
   worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean; base?: string }>
@@ -86,7 +87,7 @@ export interface HandlerState {
   now: () => number
   log: (line: string) => void
   doJoin: (o: JoinOptions) => Promise<Session>
-  doLeave: (s: Session) => Promise<void>
+  doLeave: (s: Session) => Promise<string | void>
   doClose: (s: Session) => Promise<string[]>
   /** The session's delivery ledger: the only selector and receipt writer. */
   ledger: Ledger
@@ -193,18 +194,6 @@ export async function trustedWorker(s: Session, person: string): Promise<LocalWo
 export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)"
 
 /** Resolve both lexical and symlink paths before reading anything outside git. */
-export async function workerText(dir: string, rel: string): Promise<string | null> {
-  if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe worker path: ' + rel)
-  const root = fs.realpathSync(dir)
-  const candidate = path.resolve(root, rel)
-  if (!isInsideRoot(root, candidate)) throw new Error('unsafe worker path: ' + rel)
-  try {
-    const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
-    if (!result.ok) throw new Error('unsafe worker symlink: ' + rel)
-    const real = result.path
-    return await readBoundedDiskText(real, 'utf8', { root, path: candidate })
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw e
-  }
+export function workerText(dir: string, rel: string): Promise<string | null> {
+  return readContainedRepoText(dir, rel, 'worker')
 }

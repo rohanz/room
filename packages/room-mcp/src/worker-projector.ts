@@ -12,6 +12,7 @@ import { statusOf, workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
 import { postWorkerMessage } from './post.js'
 import { followUpAnswer, missingClaudeSession, resumeAccepted } from './worker-process.js'
+import { scanRunLog } from './run-log-facts.js'
 
 /** Which of the lead's workers a writer in `roomKey` owns: those that joined it, or those projected into it. */
 export type ProjectorRole = 'joined' | 'projected'
@@ -27,6 +28,10 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
 export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown): Promise<WorkerRecord[] | undefined> {
   const roomKey = s.roomName, fence = s.daemon.fence
   if (!fence) return undefined
+  // Read this lead's resumed runs' logs in yielding chunks first, so the facts read inside the transaction
+  // come from the cache. The projectable lists are taken after these awaits: a worker may have started retiring.
+  await warmRunLogs(s, registry.list().filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
+  if (s.daemon.fence !== fence) return undefined
   const { write: all, retire: retiring } = registry.projectable(lead, roomKey)
   const write = all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
@@ -109,6 +114,15 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
     if (!undelivered.has(record.id)) await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
   }
   return write.map(({ record }) => record)
+}
+
+/** Brings the cached facts of each resumed run's log up to date; a status read on them then reads nothing. */
+async function warmRunLogs(s: Session, records: WorkerRecord[]): Promise<void> {
+  for (const record of records) {
+    const run = record.runs.at(-1)
+    if (run?.mode !== 'resume') continue
+    await scanRunLog(path.join(s.dir, '.room', 'workers', `${record.tag}.log`), run.logStart)
+  }
 }
 
 /** The lead's own view of one of its workers, straight from its registry (room_state's worker lines). */

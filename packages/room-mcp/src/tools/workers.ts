@@ -1,7 +1,7 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
-import { WORKER_EFFORTS } from '../worker-config.js'
+import { WORKER_EFFORTS, workerPortsInUse } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
 import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
@@ -231,7 +231,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
       const hostSessionId = host === 'claude' ? randomUUID() : undefined
-      const usedPorts = registry.list().flatMap(record => typeof record.port === 'number' ? [record.port] : [])
+      const usedPorts = workerPortsInUse(registry.list())
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
@@ -253,9 +253,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!suppliedDir) {
           await registry.update(id, old => ({ ...old, phase: 'preparing', seq: old.seq + 1 }))
           try {
-            prepared = await timed('prepare', () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths,
-              async (step, facts) => { await registry.update(id, old => ({ ...old,
-                prep: { ...old.prep, ...facts, step }, seq: old.seq + 1 })) }, 0, a.carry !== false))
+            prepared = await timed('prepare', () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, {
+              linkExclusions: linkPaths, carry: a.carry !== false,
+              onStep: async (step, facts) => { await registry.update(id, old => ({ ...old,
+                prep: { ...old.prep, ...facts, step }, seq: old.seq + 1 })) } }))
             base = prepared.base; created = prepared.created
             carried = prepared.carried; carryFailed = prepared.carryFailed ?? false; carryError = prepared.carryError
             carriedBase = prepared.carriedBase; carriedUntracked = prepared.carriedUntracked; skippedCarry = prepared.skippedCarry
@@ -281,17 +282,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, deps: deps.prompt, sessionId: hostSessionId },
           { setHandle: (workerId, proc) => rooms.setHandle(s, workerId, proc),
             watch: (_workerId, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
-          async pid => { await registry.update(id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
-          async result => {
+          { onLaunched: async pid => { await registry.update(id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
+          onSpawn: async result => {
             await registry.update(id, old => ({ ...old, phase: 'active', port: result.port,
               budget: { ...old.budget, nice: result.nice }, link,
               runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: result.proc.pid,
                 ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
-          }, async (code, signal) => {
+          }, onExit: async (code, signal) => {
             await registry.writeExit(id, { run: 1, code, ...(signal ? { signal } : {}), witnessed: true, at: now() })
             rooms.dropHandle(s, id)
             await registry.postObservedFailure(id, 1, message => postWorkerMessage(s.post, record, message))
-          }))
+          } }))
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {

@@ -185,8 +185,10 @@ cursor, status and bus messages.
 
 Besides tool replies, the MCP process watches the room and posts on your behalf:
 - an `interrupt` when your uncommitted edit lands inside someone else's open claim and you hold none there (the holder gets a `notify`);
-- a `notify` when a file you changed no longer merges cleanly with a teammate's version (an `fyi` when it does again);
-- an `fyi` on join when it evicts uncommitted work of someone absent for more than `ROOM_STALE_DAYS` (default 7).
+- a `notify` when a file you changed no longer merges cleanly with a teammate's version (an `fyi` when it does again).
+
+The hub (team server or local relay), not this process, removes an offline participant's overlay, scope and claims
+after its fixed seven days. `ROOM_STALE_DAYS` (default 7) only changes when `room_state` marks offline claims `stale`.
 
 Merge previews behind the conflict notices run at most four per ten seconds per client, coalescing
 further changes, and a pair whose texts have not changed is not re-merged.

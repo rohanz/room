@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { allocateWorkerPort, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
+import { allocateWorkerPort, workerPortsInUse, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
 import { cleanupWorker } from '../src/worker-git.js'
 import { signalWorker, terminateWorktreeProcesses } from '../src/worker-process.js'
 import { RoomDoc } from '@room/shared'
@@ -87,17 +87,17 @@ describe('worker lifecycle cleanup', () => {
       git('worktree', 'add', '-qb', 'room/a', dir)
       const names: string[] = []
       const signal = vi.fn()
-      expect(await cleanupWorker(root, done('a', dir), true, false, names, {
+      expect(await cleanupWorker(root, done('a', dir), { collected: true, terminatedProcesses: names, processOptions: {
         list: () => [{ pid: 12345, cwd: dir, command: 'astro dev' }], signal, probe: () => ({}), sleep: async () => {},
-      })).toBe(true)
+      } })).toBe(true)
       expect(names).toEqual(['astro dev (pid 12345)'])
       expect(signal).toHaveBeenCalledWith(12345, 'SIGTERM')
       const explicit = join(root, 'existing-checkout')
       git('worktree', 'add', '-qb', 'room/explicit', explicit)
       signal.mockClear()
-      expect(await cleanupWorker(root, done('explicit', explicit), true, false, [], {
+      expect(await cleanupWorker(root, done('explicit', explicit), { collected: true, processOptions: {
         list: () => [{ pid: 12345, cwd: explicit, command: 'editor' }], signal, sleep: async () => {},
-      }, 'lead')).toBe(false)
+      }, leadName: 'lead' })).toBe(false)
       expect(signal).not.toHaveBeenCalled()
       expect(existsSync(explicit)).toBe(true)
     } finally { await disposePreviewFixture(root, { registries: [root] }) }
@@ -135,6 +135,16 @@ describe('worker lifecycle cleanup', () => {
   it('allocates a distinct port from the bounded worker range', () => {
     expect(allocateWorkerPort([4400, 4401])).toBe(4402)
     expect(allocateWorkerPort([4499])).toBe(4400)
+  })
+
+  it('frees the ports of retired and abandoned workers so a checkout can outlive the port range', () => {
+    const records = [
+      { port: 4400, phase: 'active' }, { port: 4401, phase: 'retired' }, { port: 4402, phase: 'abandoned' },
+      { port: 4403, phase: 'retiring' }, { phase: 'active' },
+    ]
+    expect(workerPortsInUse(records)).toEqual([4400, 4403])
+    const hundredRetired = Array.from({ length: 100 }, (_, i) => ({ port: 4400 + i, phase: 'retired' }))
+    expect(allocateWorkerPort(workerPortsInUse(hundredRetired))).toBe(4400)
     expect(workerEnv({ PORT: '3000' }, { PORT: '4402' }).PORT).toBe('4402')
     expect(workerEnv({ PORT: '3000' }, {}).PORT).toBeUndefined()
     expect(workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: 'local', room: 'room', dir: '/tmp/a', tag: 'a', lead: 'lead', owner: 'lead', share: 'intent', gen: 1, id: 'id', logDir: '/tmp', isWorker: false, port: 4402 }).PORT).toBe('4402')

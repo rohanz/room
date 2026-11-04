@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DiskBatch } from '../src/disk-batch.js'
+import { DiskBatch, MAX_PENDING_PATHS, MAX_SETTLE_MS } from '../src/disk-batch.js'
 
 afterEach(() => vi.useRealTimers())
 describe('disk publish scheduling', () => {
@@ -147,6 +147,47 @@ describe('disk publish scheduling', () => {
     batch.published('a'); batch.add('a', false)
     await vi.advanceTimersByTimeAsync(300)
     expect(run).toHaveBeenCalledTimes(1)
+    batch.stop()
+  })
+})
+
+describe('watcher backlog bounds', () => {
+  it('schedules a burst wider than the engine argument limit without throwing', async () => {
+    vi.useFakeTimers()
+    const run = vi.fn()
+    const batch = new DiskBatch(run, 20)
+    for (let i = 0; i < 200_000; i++) batch.add(`wide/${i}`, true)
+    expect(batch.size).toBeLessThanOrEqual(MAX_PENDING_PATHS + 1)
+    await vi.advanceTimersByTimeAsync(MAX_SETTLE_MS)
+    expect(run).toHaveBeenCalledTimes(1)
+    const [paths, overflow] = run.mock.calls[0]
+    expect(paths.size).toBe(MAX_PENDING_PATHS)
+    expect(overflow).toBe(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(batch.size).toBe(0)
+    batch.stop()
+  })
+  it('a repeat of a retained path still counts once the backlog is full', async () => {
+    vi.useFakeTimers()
+    const run = vi.fn()
+    const batch = new DiskBatch(run, 20)
+    for (let i = 0; i < MAX_PENDING_PATHS; i++) batch.add(`p/${i}`, false)
+    batch.add('p/0', true)
+    await vi.advanceTimersByTimeAsync(MAX_SETTLE_MS)
+    expect(run.mock.calls[0][0].get('p/0')).toBe(true)
+    expect(run.mock.calls[0][1]).toBe(false)
+    batch.stop()
+  })
+  it('continuous arrivals cannot postpone a batch past the maximum settle latency', async () => {
+    vi.useFakeTimers()
+    const run = vi.fn()
+    const batch = new DiskBatch(run, 300)
+    for (let i = 0; i < 400 && !run.mock.calls.length; i++) {
+      batch.add(`busy/${i}`, false)
+      await vi.advanceTimersByTimeAsync(40)
+    }
+    expect(run).toHaveBeenCalled()
+    expect(run.mock.calls[0][0].size).toBeLessThanOrEqual(MAX_SETTLE_MS / 40 + 1)
     batch.stop()
   })
 })

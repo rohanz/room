@@ -6,9 +6,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, writeStdout, processChain, companyLine, CONTEXT_CAP, fitLines, joinedLength } from './common.mjs'
+import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, selectReply, writeStdout, processChain, companyLine, CONTEXT_CAP, fitLines, joinedLength, STATE_MAX_BYTES } from './common.mjs'
 
-const ev = readStdinJson()
+const ev = await readStdinJson()
 const root = gitRoot(ev.cwd)
 const id = ev.session_id ?? ev.thread_id ?? ev.sessionId
 const flag = process.argv.indexOf('--host')
@@ -39,7 +39,7 @@ writeJsonAtomic(path.join(dir, 'session.json'), {
 const lines = []
 let confirm
 const mcp = await openMcp(dir, 300)
-const selected = mcp && await mcp.request({ op: 'select', sessionId: id, startup: true })
+const selected = mcp ? selectReply(await mcp.request({ op: 'select', sessionId: id, startup: true })) : undefined
 if (selected?.ok) {
   lines.push(...selected.notices)
   if (selected.items.length) {
@@ -50,7 +50,7 @@ if (selected?.ok) {
   if (selected.items.length || selected.notices.length) confirm = selected.batch
 }
 // state.json is rewritten only when something changes: with this session's MCP answering, any age is current.
-const state = readJson(path.join(dir, 'state.json'), null)
+const state = readJson(path.join(dir, 'state.json'), null, STATE_MAX_BYTES)
 const current = typeof state?.at === 'number' && state.at <= now && (now - state.at < 60_000 || selected?.ok === true)
 const announced = current && typeof state.room === 'string' && state.room.length > 0 && state.company === true
 writeJsonAtomic(path.join(dir, 'hook.json'), { ...readJson(path.join(dir, 'hook.json'), {}), companyTold: announced })

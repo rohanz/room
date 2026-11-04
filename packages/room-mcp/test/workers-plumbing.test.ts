@@ -146,7 +146,7 @@ describe('worker plumbing', () => {
     symlinkSync(join(repo, 'modified.txt'), join(repo, 'absolute-internal.txt'))
     symlinkSync('missing.txt', join(repo, 'dangling.txt'))
     writeFileSync(join(repo, 'keep-new.txt'), 'small')
-    const prepared = await prepareWorktree(repo, 'skips', 'rohanz', ['data'])
+    const prepared = await prepareWorktree(repo, 'skips', 'rohanz', { linkExclusions: ['data'] })
     expect(prepared.carried?.paths).toContain('keep-new.txt')
     expect(prepared.skippedCarry?.map(x => x.path)).toEqual(expect.arrayContaining(['data/input.txt', 'large.bin', 'vendor/nested/', 'escape.txt', 'absolute-internal.txt', 'dangling.txt']))
     for (const p of ['data', 'large.bin', 'vendor/nested', 'escape.txt', 'absolute-internal.txt', 'dangling.txt']) expect(existsSync(join(prepared.dir, p))).toBe(false)

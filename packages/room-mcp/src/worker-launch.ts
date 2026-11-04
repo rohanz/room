@@ -74,10 +74,20 @@ async function reserveWorkerName(s: Session, name: string, workerId: string, log
   catch (e) { log(`could not reserve ${name} for the worker: ${e instanceof Error ? e.message : String(e)}`); return undefined }
 }
 
+/** Durable writes at each launch phase, in the order they run. */
+export interface WorkerLaunchLifecycle {
+  /** The host process exists (pid known); runs before the follow-up delivery is confirmed. */
+  onLaunched(pid: number): Promise<void>
+  /** The launch is confirmed: delivery passed and identity was captured. */
+  onSpawn(result: WorkerLaunchResult): Promise<void>
+  /** The watched process exited; errors are logged, never rethrown. */
+  onExit(code: number | null, signal?: NodeJS.Signals | null): Promise<void>
+}
+
 /** The caller records the launch intent before entering this boundary. */
 export async function launchWorkerProcess(policy: Policy, command: Command, host: LaunchHost,
-  onLaunched: (pid: number) => Promise<void>, onSpawn: (result: WorkerLaunchResult) => Promise<void>,
-  onExit: (code: number | null, signal?: NodeJS.Signals | null) => Promise<void>): Promise<WorkerLaunchResult> {
+  lifecycle: WorkerLaunchLifecycle): Promise<WorkerLaunchResult> {
+  const { onLaunched, onSpawn, onExit } = lifecycle
   const { session: s, id, tag } = policy
   let reservation: ReturnType<typeof reserveWorkerPort> | undefined
   let passed = false

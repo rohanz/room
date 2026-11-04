@@ -1,6 +1,7 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { execFile } from 'node:child_process'
-import { containedRepoPath } from '@room/roomd'
+import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
 import { gitBlobInfoMany, gitCatFileBatch, gitCommitMissing, observeGit } from '@room/roomd/git'
 
 /** Local reads use the same per-file ceiling as the default publisher. */
@@ -140,4 +141,24 @@ export async function readBoundedDiskText(file: string, encoding: BufferEncoding
     }
     throw new Error(`file too large for Room read (over ${limit} bytes): ${file}`)
   } finally { await handle.close() }
+}
+
+/**
+ * A checkout's file text by repository-relative path, or null when it does not exist. Both the lexical
+ * path and every symlink must stay inside the checkout; `subject` names the checkout in refusals
+ * ("unsafe worker path", "unsafe room symlink").
+ */
+export async function readContainedRepoText(dir: string, rel: string, subject: 'worker' | 'room'): Promise<string | null> {
+  if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error(`unsafe ${subject} path: ${rel}`)
+  const root = fs.realpathSync(dir)
+  const candidate = path.resolve(root, rel)
+  if (!isInsideRoot(root, candidate)) throw new Error(`unsafe ${subject} path: ${rel}`)
+  try {
+    const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
+    if (!result.ok) throw new Error(`unsafe ${subject} symlink: ${rel}`)
+    return await readBoundedDiskText(result.path, 'utf8', { root, path: candidate })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw e
+  }
 }

@@ -143,7 +143,7 @@ it('rollback recovery skips invalid recorded paths before writing them', async (
   const originalPath = process.env.PATH
   process.env.PATH = bin + path.delimiter + originalPath
   startsPreviewMaintenance = true
-  try { await expect(cleanupWorker(lead, w, true, true, [], { list: () => [] })).rejects.toThrow(/cleanup failed:.*late failure.*reconstructed base/) }
+  try { await expect(cleanupWorker(lead, w, { collected: true, discarded: true, processOptions: { list: () => [] } })).rejects.toThrow(/cleanup failed:.*late failure.*reconstructed base/) }
   finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
   expect(fs.existsSync(path.join(lead, 'escape'))).toBe(false)
 })

@@ -1,4 +1,7 @@
 // Compile the hosted server; native bindings and optional drivers resolve from runtime node_modules.
+//
+// Run:        npm run build:server   (from the repository root; paths are cwd-relative). Needs `npm ci`.
+// Overwrites: packages/server/dist/server.mjs (not committed; the image build runs this). Deploys: deploy/DEPLOYING.md.
 import { build } from 'esbuild'
 import fs from 'node:fs/promises'
 

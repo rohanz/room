@@ -60,7 +60,7 @@ describe('reviewed worker write failures', () => {
       spawner: () => proc, log: () => {} },
     mode === 'fresh' ? { mode, task: 'test', links: [] } : { mode, sessionId: 'thread', followUp: 'test' },
     { setHandle: () => { handles++ }, watch: (_id, child, cb) => child.onExit(cb), aborted: () => false },
-    async () => { throw new Error('launch fact disk full') }, async () => {}, async () => {})
+    { onLaunched: async () => { throw new Error('launch fact disk full') }, onSpawn: async () => {}, onExit: async () => {} })
     await expect(run).rejects.toMatchObject({ delivered: true, stopped: true, message: 'launch fact disk full' } satisfies Partial<WorkerLaunchError>)
     expect(handles).toBe(1)
     expect(kills).toBe(1)

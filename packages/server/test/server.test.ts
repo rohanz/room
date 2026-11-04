@@ -248,6 +248,9 @@ describe('room server with the fake GitHub issuer', () => {
       if (entries.some(entry => entry.event === 'identity_violation' && entry.room === repo)) break
       await new Promise(resolve => setTimeout(resolve, 25))
     }
+    const listing = await fetch(`${base}/audit`, { headers: { authorization: `Bearer ${session}` } })
+    expect(listing.headers.get('x-room-audit-complete')).toBe('true')
+    expect(listing.headers.get('x-room-audit-gaps')).toBeNull()
     expect(entries).toContainEqual(expect.objectContaining({
       event: 'identity_violation', room: repo, login: 'bob', reason: expect.stringMatching(/update applied: scopes mutation for alice/),
     }))

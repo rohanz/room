@@ -216,16 +216,16 @@ const CARRIED_LINE = /carried your uncommitted work into its worktree: (\d+) tra
 
 describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () => {
   it('refuses to reuse a stale worker directory switched to another branch', async () => {
-    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [])
+    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })
     git(prepared.dir, 'switch', '-qc', 'unrelated')
-    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [])).rejects.toThrow(/unmanaged/)
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })).rejects.toThrow(/unmanaged/)
   })
   it('refuses a replacement repository at a former worker path', async () => {
-    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', [])
+    const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })
     git(repo, 'worktree', 'remove', '--force', prepared.dir)
     fs.mkdirSync(prepared.dir, { recursive: true })
     git(prepared.dir, 'init', '-q', '-b', 'room/replacement')
-    await expect(prepareWorktree(repo, 'replacement', 'rohanz', [])).rejects.toThrow(/unmanaged/)
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })).rejects.toThrow(/unmanaged/)
   })
   it('can spawn from HEAD without carrying tracked or untracked lead changes', async () => {
     put(repo, 'shared.txt', lines([2, 'lead edit']))
@@ -252,14 +252,14 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   it('removes the private carry refs after normal worker cleanup without a carry owner record', async () => {
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
-    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', [])
+    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', { linkExclusions: [] })
     expect(git(repo, 'rev-parse', 'refs/room/carry/retired')).toBe(prepared.base)
     expect(git(repo, 'ls-tree', '-r', '--name-only', 'refs/room/carry-untracked/retired')).toBe('untracked.txt')
     const record = path.join(repo, '.git', 'room-carry', 'retired.json')
     expect(fs.existsSync(record)).toBe(false)
     const w = { tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
     startsPreviewMaintenance = true
-    expect(await cleanupWorker(repo, w, true, false, [], { list: () => [] })).toBe(true)
+    expect(await cleanupWorker(repo, w, { collected: true, processOptions: { list: () => [] } })).toBe(true)
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry/retired')).toThrow()
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry-untracked/retired')).toThrow()
     expect(fs.existsSync(record)).toBe(false)
@@ -274,7 +274,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     process.env.PATH = bin + path.delimiter + originalPath
     const w = { tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
     startsPreviewMaintenance = true
-    try { await expect(cleanupWorker(repo, w, true, false, [], { list: () => [] })).rejects.toThrow(/cleanup/) }
+    try { await expect(cleanupWorker(repo, w, { collected: true, processOptions: { list: () => [] } })).rejects.toThrow(/cleanup/) }
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(prepared.dir)).toBe(true)
     expect(git(repo, 'rev-parse', `refs/heads/${prepared.branch}`)).toBeTruthy()
@@ -294,7 +294,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   it('saves a discard patch when carried and linked paths lie under ignored directories', async () => {
     // The databricks layout: the lead carried data/raw/static/*, and data/raw/ is ignored in the worker.
     put(repo, 'data/raw/static/stops.csv', 'id\n1\n'); put(repo, 'data/processed/out.csv', 'p\n')
-    const prepared = await prepareWorktree(repo, 'ignored-parent', 'rohanz', ['data/processed'])
+    const prepared = await prepareWorktree(repo, 'ignored-parent', 'rohanz', { linkExclusions: ['data/processed'] })
     expect(prepared.carriedUntracked?.map(x => x.path)).toContain('data/raw/static/stops.csv')
     put(prepared.dir, '.gitignore', 'secret.env\nbuild/\ndata/raw/\n.venv/\ndata/processed/\n')
     put(prepared.dir, '.venv/lib/site.py', 'x\n'); put(prepared.dir, 'keep.txt', 'worker edit\n')

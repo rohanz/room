@@ -44,24 +44,51 @@ export async function relayIdentity(port: number, key: string, timeoutMs = 800):
   return probe.timedOut ? undefined : probe.identity
 }
 
-/** relayIdentity plus whether the listener answered at all: a refused port is decisive, a timeout may be load. */
-export async function relayIdentityProbe(port: number, key: string, timeoutMs = 800): Promise<{ identity?: { health: Record<string, unknown>; proven: boolean }; timedOut: boolean }> {
+const HEALTH_MAX_BYTES = 2048
+type IdentityProbe = { identity?: { health: Record<string, unknown>; proven: boolean }; timedOut: boolean }
+
+/**
+ * relayIdentity plus whether the listener answered at all: a refused port is decisive, a timeout may be load.
+ * `timeoutMs` is both the socket inactivity limit and an absolute deadline for the whole exchange, so a
+ * listener that drips bytes cannot stretch it. Settles once, on the first of end, abort, error, close,
+ * deadline or the byte cap; the request is destroyed on settlement.
+ */
+export async function relayIdentityProbe(port: number, key: string, timeoutMs = 800): Promise<IdentityProbe> {
   const nonce = crypto.randomBytes(16).toString('hex')
-  return new Promise<{ identity?: { health: Record<string, unknown>; proven: boolean }; timedOut: boolean }>(done => {
-    const resolve = (identity: { health: Record<string, unknown>; proven: boolean } | undefined) => done({ identity, timedOut: false })
+  return new Promise<IdentityProbe>(done => {
+    let settled = false
+    const finish = (result: IdentityProbe) => {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      req.destroy()
+      done(result)
+    }
+    const answer = (identity: IdentityProbe['identity']) => finish({ identity, timedOut: false })
+    const deadline = setTimeout(() => finish({ timedOut: true }), timeoutMs)
     const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs, headers: { 'x-room-nonce': nonce } }, res => {
-      let body = ''
-      res.on('data', c => { body += c; if (body.length > 2048) req.destroy() })
+      const chunks: Buffer[] = []
+      let length = 0
+      res.on('data', (chunk: Buffer) => {
+        length += chunk.length
+        if (length > HEALTH_MAX_BYTES) answer(undefined)
+        else chunks.push(chunk)
+      })
       res.on('end', () => {
         try {
-          const health = JSON.parse(body) as Record<string, unknown>
-          if (res.statusCode !== 200 || !health || typeof health !== 'object') { resolve(undefined); return }
-          resolve({ health, proven: sameProof(health.proof, relayProof(key, nonce, port)) })
-        } catch { resolve(undefined) }
+          const health = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
+          if (res.statusCode !== 200 || !health || typeof health !== 'object') { answer(undefined); return }
+          answer({ health, proven: sameProof(health.proof, relayProof(key, nonce, port)) })
+        } catch { answer(undefined) }
       })
+      // A response cut short emits these instead of end.
+      res.on('aborted', () => answer(undefined))
+      res.on('error', () => answer(undefined))
+      res.on('close', () => answer(undefined))
     })
-    req.on('timeout', () => { req.destroy(); done({ timedOut: true }) })
-    req.on('error', () => resolve(undefined))
+    req.on('timeout', () => finish({ timedOut: true }))
+    req.on('error', () => answer(undefined))
+    req.on('close', () => answer(undefined))
   })
 }
 

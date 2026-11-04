@@ -102,6 +102,93 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
   })
 }
 
+/*
+ * Quarantine: a check whose processes outlived the cleanup deadline may have left a descendant in another process
+ * group (detached, so the lock helper's group wait does not see it) with the tree as its working directory or its
+ * output pipe open. The entry then gets a marker file; whoever next holds its lock neither resets, reuses nor removes
+ * it until no process of this user has a working directory inside it, and clears the marker only then. When that
+ * cannot be read (no /proc or lsof), the entry stays quarantined and checks use temporary trees.
+ */
+export const previewQuarantinePath = (entry: string): string => `${entry}.quarantine`
+
+export async function quarantinePreview(entry: string, reason: string): Promise<void> {
+  await fs.promises.writeFile(previewQuarantinePath(entry), JSON.stringify({ reason, at: new Date().toISOString(), pid: process.pid }), { mode: 0o600 })
+}
+
+let cwdsForTests: (() => Promise<string[] | undefined>) | undefined
+/** Test seam: the working directories the quarantine probe sees (undefined: unreadable). */
+export function setPreviewCwdsForTests(read?: () => Promise<string[] | undefined>): void { cwdsForTests = read }
+
+/**
+ * Working directories of this user's processes, or undefined when the listing is not complete: a quarantine clears
+ * only on a complete listing, so every unreadable or partial result fails closed.
+ * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that belongs to another user
+ * (EACCES/EPERM with a foreign owner) is not ours to wait for; any other failure makes the listing incomplete.
+ * macOS: only a clean, complete lsof listing counts; an error, timeout or overflowed buffer is incomplete.
+ */
+async function processCwds(): Promise<string[] | undefined> {
+  if (cwdsForTests) return cwdsForTests()
+  if (process.platform === 'linux') {
+    const pids = await fs.promises.readdir('/proc').catch(() => undefined)
+    if (!pids) return undefined
+    const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
+    return procCwds(pids.filter(name => /^\d+$/.test(name)), uid,
+      pid => fs.promises.readlink(`/proc/${pid}/cwd`), pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, () => undefined))
+  }
+  if (process.platform !== 'darwin' || typeof process.getuid !== 'function') return undefined
+  const uid = String(process.getuid())
+  return new Promise(resolve => {
+    execFile('lsof', ['-a', '-d', 'cwd', '-u', uid, '-Fn'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout) => resolve(lsofCwds(error, stdout)))
+  })
+}
+
+/** macOS: only a clean, complete lsof listing counts; an error, timeout or overflowed buffer is incomplete. */
+export function lsofCwds(error: Error | null, stdout: string): string[] | undefined {
+  if (error) return undefined
+  const cwds = stdout.split('\n').filter(line => line.startsWith('n')).map(line => line.slice(1))
+  // lsof lists this process itself, so an empty listing is not a complete one.
+  return cwds.length ? cwds : undefined
+}
+
+/**
+ * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that another user owns
+ * (EACCES/EPERM) is not ours to wait for; any other failure, including our own unreadable process, makes
+ * the listing incomplete.
+ */
+export async function procCwds(pids: string[], uid: number | undefined, readCwd: (pid: string) => Promise<string>,
+  ownerOf: (pid: string) => Promise<number | undefined>): Promise<string[] | undefined> {
+  const cwds: string[] = []
+  for (const pid of pids) {
+    try { cwds.push((await readCwd(pid)).replace(/ \(deleted\)$/, '')) }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ESRCH') continue
+      if (code === 'EACCES' || code === 'EPERM') {
+        const owner = await ownerOf(pid)
+        if (owner === undefined || owner !== uid) continue
+      }
+      return undefined
+    }
+  }
+  return cwds
+}
+
+/**
+ * Whether a quarantined entry may be used again, removing its marker when so. An entry without a marker is usable.
+ * The caller holds the entry's lock.
+ */
+export async function clearPreviewQuarantine(entry: string): Promise<boolean> {
+  const marker = previewQuarantinePath(entry)
+  const marked = await fs.promises.lstat(marker).then(() => true, error => (error as NodeJS.ErrnoException).code !== 'ENOENT')
+  if (!marked) return true
+  const real = await fs.promises.realpath(entry).catch(() => path.resolve(entry))
+  const cwds = await processCwds()
+  if (!cwds || cwds.some(cwd => cwd === real || cwd.startsWith(`${real}${path.sep}`))) return false
+  await fs.promises.rm(marker, { force: true })
+  return true
+}
+
 type PreviewMeta = { bytes: number; used: number }
 export const previewMetaPath = (entry: string): string => `${entry}.meta.json`
 

@@ -28,7 +28,7 @@ it('takes the launched worker\'s start time and executable from one probe read',
     budget: { threads: 1, memGb: 1, nice: 10 }, server: 'local', isWorker: false,
     spawner: () => proc, probe: () => answers[Math.min(reads++, 1)], log: () => {} },
   { mode: 'fresh', task: 'test', links: [] },
-  { setHandle: () => {}, watch: () => {}, aborted: () => false }, async () => {}, async () => {}, async () => {})
+  { setHandle: () => {}, watch: () => {}, aborted: () => false }, { onLaunched: async () => {}, onSpawn: async () => {}, onExit: async () => {} })
   expect(result).toMatchObject({ processStartTime: 'darwin:1:5', processExecutable: 'codex' })
   expect(reads).toBe(1)
 })
@@ -46,7 +46,7 @@ it('retries an unreadable owned-child identity before publishing the durable lau
     budget: { threads: 1, memGb: 1, nice: 10 }, server: 'local', isWorker: false,
     spawner: () => proc, probe, log: () => {} },
   { mode: 'fresh', task: 'test', links: [] },
-  { setHandle: () => {}, watch: () => {}, aborted: () => false }, async () => {}, persisted, async () => {})
+  { setHandle: () => {}, watch: () => {}, aborted: () => false }, { onLaunched: async () => {}, onSpawn: persisted, onExit: async () => {} })
   expect(persisted).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
     processStartTime: identity.startTime, processExecutable: identity.executable,
   }))
@@ -91,7 +91,7 @@ it.each(['unreadable', 'missing handle', 'cancelled'] as const)('stops the owned
     budget: { threads: 1, memGb: 1, nice: 10 }, server: 'local', isWorker: false, platform: 'win32',
     spawner: () => proc, probe, log: () => {} },
   { mode: 'fresh', task: 'test', links: [] },
-  { setHandle: () => {}, watch: (_id, _proc, cb) => { onExit = cb }, aborted: () => aborted }, async () => {}, persisted, async () => {})
+  { setHandle: () => {}, watch: (_id, _proc, cb) => { onExit = cb }, aborted: () => aborted }, { onLaunched: async () => {}, onSpawn: persisted, onExit: async () => {} })
   await expect(operation).rejects.toMatchObject({ delivered: true, stopped: true, pid: 4242,
     phase: failure === 'cancelled' ? 'cancelled' : 'start' })
   expect(kill).toHaveBeenCalledTimes(1)
