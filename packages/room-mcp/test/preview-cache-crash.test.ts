@@ -6,7 +6,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
 import { previewCachePath, runInMergedTree, waitForPreviewSweepForTests } from '../src/tools/files.js'
-import { tryPreviewLock } from '../src/preview-cache.js'
+import { processAlive, tryPreviewLock } from '../src/preview-cache.js'
 import type { Session } from '../src/session.js'
 
 const filesModule = fileURLToPath(new URL('../src/tools/files.ts', import.meta.url))
@@ -101,7 +101,8 @@ it('keeps an orphaned check and eviction off the cached tree until the check exi
     if (!checkPid && fs.existsSync(ready)) checkPid = (JSON.parse(fs.readFileSync(ready, 'utf8')) as { pid: number }).pid
     if (checkPid) {
       try { process.kill(checkPid, 'SIGKILL') } catch { /* already exited */ }
-      await until(() => { try { process.kill(checkPid!, 0); return false } catch { return true } })
+      // Exited is enough: without an init process to reap it, the orphan stays a zombie that kill(pid, 0) still sees.
+      await until(() => !processAlive(checkPid!))
     }
     if (cache) await until(async () => {
       const unlock = await tryPreviewLock(cache!)

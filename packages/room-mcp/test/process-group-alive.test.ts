@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { processGroupAlive, readProcessGroupTable } from '../src/preview-cache.js'
+import { processAlive, processGroupAlive, readProcessGroupTable } from '../src/preview-cache.js'
 
 describe('process group liveness treats zombies as gone', () => {
   const table = (rows: { pgid: number; stat: string }[]) => () => rows
@@ -22,6 +22,11 @@ describe('process group liveness treats zombies as gone', () => {
       child.kill('SIGKILL'); await exited
       expect(processGroupAlive(child.pid!, unreadable)).toBe(false)
     } finally { child.kill('SIGKILL') }
+  })
+  it('a single process that is a zombie is not alive; a running one is', () => {
+    expect(processAlive(99, () => [{ pid: 99, stat: 'Z' }])).toBe(false)
+    expect(processAlive(99, () => [{ pid: 99, stat: 'R+' }])).toBe(true)
+    expect(processAlive(99, () => [])).toBe(false)
   })
   it.runIf(process.platform !== 'win32')('reads the real process table and sees this process group', () => {
     const rows = readProcessGroupTable()

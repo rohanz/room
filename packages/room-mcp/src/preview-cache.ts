@@ -37,6 +37,23 @@ export function readProcessGroupTable(): { pgid: number; stat: string }[] {
  * look alive forever and its cached tree could never be reclaimed. When the process table cannot be read, the signal
  * probe is the fallback.
  */
+/** Whether one process is still running (a zombie has exited and only awaits reaping). Same fallback as the group check. */
+export function processAlive(pid: number, table: () => { pid: number; stat: string }[] = readProcessTable): boolean {
+  let rows: { pid: number; stat: string }[]
+  try { rows = table() }
+  catch { try { process.kill(pid, 0); return true } catch { return false } }
+  return rows.some(row => row.pid === pid && !row.stat.startsWith('Z'))
+}
+
+/** `pid stat` rows for every process. */
+function readProcessTable(): { pid: number; stat: string }[] {
+  const text = execFileSync('ps', ['-A', '-o', 'pid=,stat='], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
+  return text.split('\n').flatMap(line => {
+    const [pid, stat] = line.trim().split(/\s+/)
+    return pid && stat && /^\d+$/.test(pid) ? [{ pid: Number(pid), stat }] : []
+  })
+}
+
 export function processGroupAlive(pgid: number, table: () => { pgid: number; stat: string }[] = readProcessGroupTable): boolean {
   let rows: { pgid: number; stat: string }[]
   try { rows = table() }
