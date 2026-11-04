@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.29
+
+- Hygiene: two helpers that 0.17.28 added as exports but used only inside their own modules are module-private again (knip failed the 0.17.28 CI run before its tests ran). No behaviour change.
+
 ## 0.17.28
 
 - Collect: an ignored file that is empty or has the same bytes as the lead checkout's at the same path no longer keeps a collected worker's worktree, nor does an ignored directory holding only such files. In a user's repository one 2-byte ignored test fixture, written identically in the lead, kept 27 of 41 collected workers' worktrees; the 30 retained worktrees and their `.venv`s held 4.1 GB, plus 728 MB of preview cache. Ignored output the lead lacks or holds differently still retains the worktree and is named in the reply; discard's ignored-artifact refusal uses the same rule.

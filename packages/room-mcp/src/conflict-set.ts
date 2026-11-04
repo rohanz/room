@@ -78,7 +78,7 @@ const peerMerge = (slot: Pick<ConflictSlot, 'kind' | 'path'>): boolean => slot.k
 const openInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'conflict'
 const clearedInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'clean' && slot.clearedFrom === 'conflict'
 /** Files named in a peer notice; room_state lists every file. */
-export const PEER_NOTICE_FILES = 8
+const PEER_NOTICE_FILES = 8
 /**
  * The id of the per-peer merge notice for one episode state. Every notice for the same owner and peer shares the
  * `cf:<pair>:peer:` prefix, so a later one replaces an earlier one that was not yet delivered (supersededConflictNotices).

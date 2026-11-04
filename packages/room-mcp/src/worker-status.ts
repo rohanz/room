@@ -16,7 +16,7 @@ export interface ExitObservation { run: number; code: number | null; signal?: st
 /** A witnessed exit that carries neither a code nor a signal (earlier releases dropped the signal). */
 export const HOST_ENDED = 'host process ended without an exit code or signal'
 /** How a witnessed run ended, from the exit Room recorded: the signal, the code, or neither. */
-export function exitReason(exit: Pick<ExitObservation, 'code' | 'signal'>): string {
+function exitReason(exit: Pick<ExitObservation, 'code' | 'signal'>): string {
   if (exit.signal) return `killed by ${exit.signal}`
   return exit.code != null ? `exit ${exit.code}` : HOST_ENDED
 }
