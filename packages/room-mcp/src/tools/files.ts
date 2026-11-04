@@ -24,7 +24,7 @@ import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
-import { evictPreviewLru, previewCapBytes, touchPreview, tryPreviewLock, type PreviewUnlock } from '../preview-cache.js'
+import { evictPreviewLru, previewCapBytes, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
 import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { leadsCheckout } from '../checkout-lead.js'
@@ -664,10 +664,8 @@ export function execFileLimit(err: { code?: unknown; killed?: boolean } | null, 
 const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock }>()
 const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
 
-function previewGroupAlive(pid: number): boolean {
-  try { process.kill(-pid, 0); return true }
-  catch { return false }
-}
+/** A check's process group counts as alive only while a non-zombie member remains (preview-cache.ts). */
+const previewGroupAlive = (pid: number): boolean => processGroupAlive(pid)
 
 function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock?: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
   return new Promise((resolve, reject) => {

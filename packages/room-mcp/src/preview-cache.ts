@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -22,6 +22,28 @@ export function setPreviewLockUnavailableForTests(value = false): void { lockUna
 
 export type PreviewUnlock = (() => Promise<void>) & { trackProcess(pid: number): Promise<void> }
 
+/** `pgid stat` rows for every process, as `ps -A -o pgid=,stat=` prints them on BSD and GNU ps alike. */
+export function readProcessGroupTable(): { pgid: number; stat: string }[] {
+  const text = execFileSync('ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
+  return text.split('\n').flatMap(line => {
+    const [pgid, stat] = line.trim().split(/\s+/)
+    return pgid && stat && /^\d+$/.test(pgid) ? [{ pgid: Number(pgid), stat }] : []
+  })
+}
+
+/**
+ * Whether a process group still has a running member. A zombie (exited, not yet reaped: `stat` starts with Z) keeps
+ * `kill(-pgid, 0)` succeeding, so an orphaned check whose parent died in a container without an init process would
+ * look alive forever and its cached tree could never be reclaimed. When the process table cannot be read, the signal
+ * probe is the fallback.
+ */
+export function processGroupAlive(pgid: number, table: () => { pgid: number; stat: string }[] = readProcessGroupTable): boolean {
+  let rows: { pgid: number; stat: string }[]
+  try { rows = table() }
+  catch { try { process.kill(-pgid, 0); return true } catch { return false } }
+  return rows.some(row => row.pgid === pgid && !row.stat.startsWith('Z'))
+}
+
 export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | undefined> {
   const file = `${entry}.lock`
   const command = lockUnavailableForTests ? undefined : process.platform === 'darwin' ? 'lockf' : process.platform === 'linux' ? 'flock' : undefined
@@ -29,7 +51,7 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
   await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   // Read every process group while the owner is alive. EOF may mean normal
   // release or a killed owner; either way, wait for its children before unlock.
-  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; for pgid in $groups; do while kill -0 "-$pgid" 2>/dev/null; do sleep 0.2; done; done'
+  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { ps -A -o pgid=,stat= 2>/dev/null | awk -v g="$1" \'$1==g && $2 !~ /^Z/ {f=1} END {exit !f}\'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done'
   const args = command === 'lockf'
     ? ['-t', '0', file, 'sh', '-c', helper]
     : ['-n', file, 'sh', '-c', helper]
