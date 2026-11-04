@@ -24798,8 +24798,8 @@ function parseWindowsProcessTable(output) {
       const millis = Date.parse(creationDate);
       if (Number.isFinite(millis) && new Date(millis).toISOString() === creationDate.slice(0, 23) + "Z") startTime = `windows:${creationDate}`;
     }
-    const executable = typeof name === "string" && name ? windowsProcessName(name) || void 0 : void 0;
-    table.set(pid, { ppid, startTime, executable });
+    const executable2 = typeof name === "string" && name ? windowsProcessName(name) || void 0 : void 0;
+    table.set(pid, { ppid, startTime, executable: executable2 });
   }
   return table;
 }
@@ -24859,12 +24859,12 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
       if (!/^\d+$/.test(startTicks ?? "")) return unreadable2();
       const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
       if (!bootId) return unreadable2();
-      const executable = linuxProcessName({
+      const executable2 = linuxProcessName({
         comm: () => readers.readFile(`/proc/${pid}/comm`),
         cmdline: () => readers.readFile(`/proc/${pid}/cmdline`),
         exe: () => readers.readLink(`/proc/${pid}/exe`)
       });
-      return { startTime: `linux:${bootId}:${startTicks}`, executable };
+      return { startTime: `linux:${bootId}:${startTicks}`, executable: executable2 };
     }
     if (readers.platform === "win32") {
       const info = readWindowsProcessTable(readers, pid, WINDOWS_SYNC_READ_MS).get(pid);
@@ -24876,12 +24876,12 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
       if (startSeconds2 === void 0) return unreadable2();
       const boot = boottime().match(/sec\s*=\s*(\d+)/)?.[1];
       if (!boot) return unreadable2();
-      let executable;
+      let executable2;
       try {
-        executable = path6.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
+        executable2 = path6.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
       } catch {
       }
-      return { startTime: `darwin:${boot}:${startSeconds2}`, executable };
+      return { startTime: `darwin:${boot}:${startSeconds2}`, executable: executable2 };
     }
   } catch {
   }
@@ -33764,10 +33764,10 @@ function workerPriority(command2, env = process.env, platform = process.platform
   const nice = Number.isFinite(value2) ? Math.max(0, Math.min(19, Math.trunc(value2))) : 10;
   if (platform === "win32" || nice === 0) return { ...command2, nice: 0 };
   for (const dir of (env.PATH ?? "/usr/bin:/bin").split(path17.delimiter)) {
-    const executable = path17.resolve(dir, "nice");
+    const executable2 = path17.resolve(dir, "nice");
     try {
-      fs19.accessSync(executable, fs19.constants.X_OK);
-      if (fs19.statSync(executable).isFile()) return { cmd: executable, args: ["-n", String(nice), command2.cmd, ...command2.args], nice };
+      fs19.accessSync(executable2, fs19.constants.X_OK);
+      if (fs19.statSync(executable2).isFile()) return { cmd: executable2, args: ["-n", String(nice), command2.cmd, ...command2.args], nice };
     } catch {
     }
   }
@@ -34155,8 +34155,8 @@ function ownershipBy(pid, w, probe) {
   if (!w.processStartTime) return "unknown";
   if (!info?.startTime || !info.executable) return "unknown";
   if (!sameStartTime(info.startTime, w.processStartTime)) return "not-ours";
-  const executable = info.startTime.startsWith("windows:") ? windowsProcessName(info.executable) : path18.basename(info.executable);
-  return executable === w.host || executable === "node" ? "ours" : "not-ours";
+  const executable2 = info.startTime.startsWith("windows:") ? windowsProcessName(info.executable) : path18.basename(info.executable);
+  return executable2 === w.host || executable2 === "node" ? "ours" : "not-ours";
 }
 function pidIsOurWorker(pid, w, probe = probeProcess) {
   return workerProcessOwnership(pid, w, probe) === "ours";
@@ -38120,7 +38120,8 @@ function addCarriedUntrackedModes(modes, worker) {
   return modes;
 }
 function mergedFileMode(rel, initialMode, participants) {
-  let mode2 = initialMode;
+  const leadExecutable = executable(initialMode);
+  let decided;
   for (const participant of participants) {
     if (participant.ownedPaths?.includes(rel) || participant.unchangedCarried?.has(rel)) continue;
     const src = path28.join(participant.dir, rel);
@@ -38134,14 +38135,16 @@ function mergedFileMode(rel, initialMode, participants) {
       throw e;
     }
     if (!stat4.isFile()) continue;
-    const workerMode = stat4.mode & 511, baseMode = participant.baseModes.get(rel);
+    const baseMode = participant.baseModes.get(rel);
     if (baseMode === void 0 && participant.carriedPaths?.has(rel)) continue;
-    if (workerMode === baseMode) continue;
-    if (mode2 !== initialMode && mode2 !== workerMode) throw new Error("conflicting file modes: " + rel);
-    if (baseMode !== void 0 && initialMode !== baseMode && initialMode !== workerMode) throw new Error("conflicting file modes: " + rel);
-    mode2 = workerMode;
+    const workerExecutable = executable(stat4.mode), baseExecutable = baseMode === void 0 ? void 0 : executable(baseMode);
+    if (workerExecutable === baseExecutable) continue;
+    if (decided !== void 0 && decided !== workerExecutable) throw new Error("conflicting file modes: " + rel);
+    if (baseExecutable !== void 0 && leadExecutable !== baseExecutable && leadExecutable !== workerExecutable) throw new Error("conflicting file modes: " + rel);
+    decided = workerExecutable;
   }
-  return mode2;
+  if (decided === void 0) return initialMode;
+  return decided ? initialMode | 73 : initialMode & ~73;
 }
 function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
@@ -38890,7 +38893,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     await fs31.promises.rm(index, { force: true });
   }
 }
-var defs2, previewGenerations, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, previewProcesses, previewProcessGate, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
+var defs2, previewGenerations, executable, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, previewProcesses, previewProcessGate, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -38937,6 +38940,7 @@ var init_files = __esm({
       }
     ];
     previewGenerations = /* @__PURE__ */ new WeakMap();
+    executable = (mode2) => (mode2 & 73) !== 0;
     SETUP_TIMEOUT_MS = 10 * 6e4;
     checkLimits = { timeoutMs: 5 * 6e4, maxBuffer: 4 * 1024 * 1024 };
     PreviewProcessLimit = class extends Error {

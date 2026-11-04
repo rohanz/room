@@ -546,9 +546,18 @@ export function addCarriedUntrackedModes(modes: Map<string, number>, worker: Pic
   return modes
 }
 
-/** A mode change belongs to a worker only when it differs from that worker's carried base; carried files it left unchanged (baseline.ts) supply none. */
+/** Git records only whether a file is executable; the other permission bits are the checkout's umask, not a change. */
+const executable = (mode: number): boolean => (mode & 0o111) !== 0
+
+/**
+ * A mode change belongs to a worker only when it differs from that worker's carried base; carried files it left
+ * unchanged (baseline.ts) supply none. Only the executable bit is compared, as Git does: a lead whose umask leaves
+ * files group-writable (0664) must not conflict with a worker's 0644 base or 0755 change. The result keeps the lead's
+ * other bits and applies the decided executable bit.
+ */
 export function mergedFileMode(rel: string, initialMode: number, participants: { dir: string; baseModes: ReadonlyMap<string, number>; ownedPaths?: { includes(rel: string): boolean }; unchangedCarried?: ReadonlySet<string>; carriedPaths?: ReadonlySet<string> }[]): number {
-  let mode = initialMode
+  const leadExecutable = executable(initialMode)
+  let decided: boolean | undefined
   for (const participant of participants) {
     if (participant.ownedPaths?.includes(rel) || participant.unchangedCarried?.has(rel)) continue
     const src = path.join(participant.dir, rel)
@@ -559,14 +568,16 @@ export function mergedFileMode(rel: string, initialMode: number, participants: {
       stat = fs.lstatSync(src)
     } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; throw e }
     if (!stat.isFile()) continue
-    const workerMode = stat.mode & 0o777, baseMode = participant.baseModes.get(rel)
+    const baseMode = participant.baseModes.get(rel)
     if (baseMode === undefined && participant.carriedPaths?.has(rel)) continue
-    if (workerMode === baseMode) continue
-    if (mode !== initialMode && mode !== workerMode) throw new Error('conflicting file modes: ' + rel)
-    if (baseMode !== undefined && initialMode !== baseMode && initialMode !== workerMode) throw new Error('conflicting file modes: ' + rel)
-    mode = workerMode
+    const workerExecutable = executable(stat.mode), baseExecutable = baseMode === undefined ? undefined : executable(baseMode)
+    if (workerExecutable === baseExecutable) continue
+    if (decided !== undefined && decided !== workerExecutable) throw new Error('conflicting file modes: ' + rel)
+    if (baseExecutable !== undefined && leadExecutable !== baseExecutable && leadExecutable !== workerExecutable) throw new Error('conflicting file modes: ' + rel)
+    decided = workerExecutable
   }
-  return mode
+  if (decided === undefined) return initialMode
+  return decided ? initialMode | 0o111 : initialMode & ~0o111
 }
 
 /** Materialize one merged byte image without following links from an archived ancestor. */

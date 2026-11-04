@@ -662,6 +662,22 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(preview).toContain('worker recreated')
   })
 
+  it('(R3b) collect applies a worker\'s executable bit when the lead\'s umask leaves files group-writable', async () => {
+    // Debian gives a user whose primary group is their own a umask of 002: the lead's staged file is 0664 on disk while
+    // Git records 100644 for it. Only the executable bit is a change; the other bits are the lead's own.
+    leadWip()
+    fs.chmodSync(path.join(repo, 'staged-new.txt'), 0o664)
+    const t = world()
+    const { dir } = await t.spawn('umask')
+    fs.chmodSync(path.join(dir, 'staged-new.txt'), 0o755)
+    await t.finish('umask')
+    const reply = await t.call('room_collect', {})
+    expect(reply, reply).not.toContain('conflicting file modes')
+    const mode = fs.statSync(path.join(repo, 'staged-new.txt')).mode & 0o777
+    expect(mode & 0o111, reply).not.toBe(0)
+    expect(mode & 0o020, reply).toBe(0o020)
+  })
+
   it('(R3) collect keeps a committed worker change of a carried tracked file', async () => {
     leadWip()
     const t = world()
