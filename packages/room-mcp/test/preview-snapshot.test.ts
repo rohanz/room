@@ -200,11 +200,26 @@ it.each(['heartbeat', 'revision'])('runs with two idle peers receiving only a %s
     return base
   }
   const reply = await preview({ people: ['ben', 'chris'], run: 'test "$(cat ben.txt)" = snapshot && test "$(cat chris.txt)" = stable && echo "1 passed"' })
-  expect(updates).toBe(6) // selection + one build, no metadata-induced retries
+  expect(updates).toBe(3) // one base capture per side, no metadata-induced retries
   expect(reply).toContain('tests: PASSED (exit 0)')
   expect(reply).toMatch(/snapshot inputs sha256: [a-f0-9]{64}/)
   expect(reply).not.toContain('SNAPSHOT result')
   expect(session.lastPreview?.testsPassed).toBe(true)
+})
+
+it('uses the captured participant base for both ancestry and committed path enumeration', async () => {
+  const { session, state, base } = fixture()
+  const git = (...args: string[]) => execFileSync('git', ['-C', root!, ...args], { encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(root!, 'later.txt'), 'later commit\n')
+  git('add', 'later.txt'); git('commit', '-qm', 'later')
+  const later = git('rev-parse', 'HEAD')
+  git('reset', '--hard', base)
+  let reads = 0
+  state.baseFor = () => ++reads === 1 ? base : later
+  const result = await buildCombinedTree(state, session, [])
+  expect(result.ancestor).toBe(base)
+  expect(result.paths).not.toContain('later.txt')
+  expect(result.complete).toBe(true)
 })
 
 it.each(['content', 'paths', 'base', 'authority', 'sharing', 'text availability'])('still detects real %s movement and names the changed input', async kind => {

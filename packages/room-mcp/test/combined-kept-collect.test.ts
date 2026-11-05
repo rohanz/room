@@ -3,7 +3,8 @@ import { manifestHeadOf, RoomDoc } from '@room/shared'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import * as gitModule from '@room/roomd/git'
 import { acknowledgeKeptPublication } from '../src/kept-publication.js'
 import type { Session } from '../src/session.js'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
@@ -95,6 +96,46 @@ it('ignores registry bookkeeping but tracks own-caller baseline, collection ref 
   const baselineSnapshot = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   await t.registry.update(record.id, old => ({ ...old, carriedUntracked: [{ path: 'new.txt', sha: 'a'.repeat(40) }], seq: old.seq + 1 }))
   expect(baselineSnapshot.moved()).toContain('lead+api')
+})
+
+it.each(['collection ref', 'HEAD'])('does not certify a baseline from a split %s read during an A→B→A move', async input => {
+  const t = await fixture(), record = t.registry.reservedByTagOrName('lead+api')!
+  const ref = `refs/room/collect-head/${record.tag}/${record.id}`
+  const a = git(t.root, 'rev-parse', 'HEAD'), b = record.base!
+  // Neither inheritance nor the lead's actual HEAD proves this private baseline.
+  await t.registry.update(record.id, old => ({ ...old, carriedBase: undefined, seq: old.seq + 1 }))
+  if (input === 'collection ref') git(t.root, 'update-ref', ref, a)
+  else git(t.root, 'update-ref', '-d', ref)
+  const targetRef = input === 'collection ref' ? ref : git(t.root, 'symbolic-ref', 'HEAD')
+  const file = path.join(t.registry.commonDir, targetRef)
+  const readFile = fs.readFileSync, realGit = gitModule.git
+  let captured = false, restored = false
+  const restore = () => { fs.writeFileSync(file, a + '\n'); restored = true }
+  const reader = vi.spyOn(fs, 'readFileSync').mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
+    if (String(args[0]) !== file) return readFile(...args)
+    if (captured) { restore(); return readFile(...args) }
+    const value = readFile(...args)
+    captured = true
+    fs.writeFileSync(file, b + '\n')
+    return value
+  })
+  const resolver = vi.spyOn(gitModule, 'git').mockImplementation(async (dir, args) => {
+    const value = await realGit(dir, args)
+    // The old independent provenance read sees B, then freshness sees A again.
+    if (captured && !restored && args[0] === 'rev-parse'
+      && args.at(-1) === (input === 'collection ref' ? ref : 'HEAD')) restore()
+    return value
+  })
+  try {
+    const result = await t.preview('lead', ['lead+api'])
+    expect(captured).toBe(true)
+    expect(restored).toBe(true)
+    expect(result.isCurrent()).toBe(true)
+    expect(result.complete).toBe(false)
+    expect(result.gaps).toContainEqual(expect.objectContaining({ kind: 'provenance', person: record.name,
+      why: expect.stringContaining('worker baseline provenance could not be verified') }))
+    expect(result.deltaBases.get(record.name)).not.toBe(b)
+  } finally { reader.mockRestore(); resolver.mockRestore(); restore() }
 })
 
 it('proves a kept worker baseline after a real refresh rebase onto the committed lead tree', async () => {

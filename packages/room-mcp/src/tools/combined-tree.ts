@@ -9,10 +9,10 @@ import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { carryRef, collectHeadRef, workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
-import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
+import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
 import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
-import { carriedFrom, localWorkerBaseline, localWorkers, registrySnapshotForDir } from '../worker-registry.js'
+import { localWorkers, registrySnapshotForDir } from '../worker-registry.js'
 import { keptPublicationMatches } from '../kept-publication.js'
 import type { LocalWorker } from '../worker-status.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
@@ -194,9 +194,15 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
 async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number } = {}) {
   const { rooms } = state
+  const capturedBases = new Map<Session, Map<string, string>>()
   const baseFor = (session: Session, person: string) => {
-    const fallback = state.baseFor(session, person)
-    return snapshots.get(person)?.snap?.head.base ?? fallback
+    let bases = capturedBases.get(session)
+    if (!bases) { bases = new Map(); capturedBases.set(session, bases) }
+    if (!bases.has(person)) {
+      const fallback = state.baseFor(session, person)
+      bases.set(person, snapshots.get(person)?.snap?.head.base ?? fallback)
+    }
+    return bases.get(person)!
   }
   /** Per-file byte ceiling for local and Git reads; collection raises it, previews keep the default. */
   const limit = options.limit ?? DISK_TEXT_LIMIT
@@ -363,16 +369,6 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     return ancestry.get(key)!
   }
   const allSides = [{ person: caller.me.name, session: caller }, ...participants]
-  // One relation per side for this build, reused by provenance, pairing and the
-  // lead-absent check. Freshness still re-reads records when the result is used.
-  const relations = new Map<string, ReturnType<typeof carriedFrom>>()
-  const relationFor = (dir: string, person: string) => {
-    const key = `${dir}\0${person}`
-    if (!relations.has(key)) relations.set(key, carriedFrom(dir, person))
-    return relations.get(key)
-  }
-  for (const { person, session } of allSides) relationFor(session.dir, person)
-  const callerCarried = relationFor(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline
   const includedNames = new Set(allSides.map(side => side.person))
   const registry = registrySnapshotForDir(caller.dir)
   const records = new Map(allSides.flatMap(({ person }) => {
@@ -380,6 +376,14 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     return record?.name === person && record.room === caller.roomName && !['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)
       ? [[person, record] as const] : []
   }))
+  // Derive provenance and safety inputs from the exact records checked by
+  // lifecycle freshness, rather than resolving the reservation independently.
+  const relations = new Map([...records].flatMap(([person, record]) => {
+    const baseline = workerBaseline(record)
+    return baseline ? [[person, { baseline, lead: record.lead.participant }] as const] : []
+  }))
+  const relationFor = (_dir: string, person: string) => relations.get(person)
+  const callerCarried = relationFor(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline
   const workersById = new Map((records.size ? localWorkers(caller.dir) : []).map(worker => [worker.id, worker]))
   // Use the same incarnation as the captured record, even when an unrelated
   // legacy record happens to reuse a participant name.
@@ -416,33 +420,49 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     depth(a.person) - depth(b.person) || (workerStates.get(a.person)?.finishedAt ?? 0) - (workerStates.get(b.person)?.finishedAt ?? 0)
       || ((records.get(a.person)?.tag ?? a.person) < (records.get(b.person)?.tag ?? b.person) ? -1
         : (records.get(a.person)?.tag ?? a.person) > (records.get(b.person)?.tag ?? b.person) ? 1 : 0)) : participants
-  const refValues = new Map<string, string | undefined>()
-  const refValue = async (ref: string) => {
-    if (!refValues.has(ref)) refValues.set(ref, await git(caller.dir, ['rev-parse', '--verify', ref]).then(text => text.trim(), () => undefined))
-    return refValues.get(ref)
-  }
   // Compare relevant ref values. Repacking or rewriting an identical loose ref
   // changes its stat, but not the base applied by the preview. Never spawn sync Git.
-  const refStamp = (ref: string) => {
-    try { return fs.readFileSync(path.join(registry.commonDir, ref), 'utf8').trim() }
+  const refStamp = (ref: string, seen = new Set<string>()): string | undefined => {
+    if (seen.has(ref)) return undefined
+    seen.add(ref)
+    try {
+      const value = fs.readFileSync(path.join(registry.commonDir, ref), 'utf8').trim()
+      return value.startsWith('ref: ') ? refStamp(value.slice(5), seen) : value
+    }
     catch {
       try {
         const line = fs.readFileSync(path.join(registry.commonDir, 'packed-refs'), 'utf8').split('\n').find(line => line.endsWith(' ' + ref))
-        return line?.split(' ')[0] ?? 'absent'
-      } catch { return 'absent' }
+        return line?.split(' ')[0]
+      } catch { return undefined }
     }
   }
-  const callerGitDir = (await git(caller.dir, ['rev-parse', '--absolute-git-dir'])).trim()
-  const headStamp = () => { try { const head = fs.readFileSync(path.join(callerGitDir, 'HEAD'), 'utf8'); return head + ':' + (head.startsWith('ref: ') ? refStamp(head.slice(5).trim()) : '') } catch { return 'absent' } }
-  const capturedHead = headStamp()
-  const localHead = (await git(caller.dir, ['rev-parse', 'HEAD'])).trim()
+  const refValues = new Map<string, string | undefined>()
+  const refValue = (ref: string) => {
+    if (!refValues.has(ref)) refValues.set(ref, refStamp(ref))
+    return refValues.get(ref)
+  }
+  const headStamp = (gitDir: string) => {
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
+      return { head, value: head.startsWith('ref: ') ? refStamp(head.slice(5)) : head }
+    } catch { return { head: undefined, value: undefined } }
+  }
+  const heads = new Map<string, { person: string; gitDir: string; captured: ReturnType<typeof headStamp> }>()
+  const captureHead = async (dir: string, person: string) => {
+    if (!heads.has(dir)) {
+      const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+      heads.set(dir, { person, gitDir, captured: headStamp(gitDir) })
+    }
+    return heads.get(dir)!.captured.value
+  }
+  const localHead = await captureHead(caller.dir, caller.me.name)
   const workerInputs = (record: NonNullable<ReturnType<typeof registry.read>>) => JSON.stringify([
     record.base, record.carriedBase, [...record.carriedUntracked ?? []].sort((a, b) => a.path.localeCompare(b.path)).map(file => [file.path, file.sha, file.mode]),
     [...record.link ?? []].sort(), record.name, record.tag, record.dir, record.branch, record.lead.participant, record.phase,
   ])
   const lifecycle = [...records].map(([person, record]) => ({ person, id: record.id, inputs: workerInputs(record),
     key: [workerStates.get(person)?.finishedAt ?? 0, record.tag].join(':'),
-    refs: [collectHeadRef(record.tag, record.id), carryRef(record.tag)].map(ref => [ref, refStamp(ref)] as const) }))
+    refs: [collectHeadRef(record.tag, record.id), carryRef(record.tag)].map(ref => [ref, refValue(ref)] as const) }))
   const proven = new Map<string, Baseline>()
   const publicationProofs: { person: string; id: string; publisher: string; session: Session; base: string; valid: boolean }[] = []
   if (anchor) for (const { person, session } of contributors) {
@@ -450,15 +470,15 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (!relation || !record || rootFor(person) !== anchorName) continue
     const baseline = await pairBaseline(relation.baseline, undefined, ancestor, descends)
     if (!baseline) continue
-    const collectionHead = await refValue(collectHeadRef(record.tag, record.id))
+    const collectionHead = refValue(collectHeadRef(record.tag, record.id))
     const delivered = collectionHead === baseline.sha
       && (await git(caller.dir, ['log', '-1', '--format=%s', baseline.sha])).trim() === 'room: kept collection baseline'
-    const carry = await refValue(carryRef(record.tag))
+    const carry = refValue(carryRef(record.tag))
     const inherited = record.carriedBase === baseline.sha && (carry === undefined || carry === baseline.sha)
     const parentSnapshot = snapshots.get(relation.lead)?.snap
     const parentWorker = previewWorker(session, relation.lead)
     const parentHead = relation.lead === caller.me.name ? localHead
-      : parentWorker ? (await git(parentWorker.dir, ['rev-parse', 'HEAD'])).trim()
+      : parentWorker ? await captureHead(parentWorker.dir, relation.lead)
       : parentSnapshot?.fenceValid && parentSnapshot.head.complete && parentSnapshot.head.fence === parentSnapshot.record?.git?.fence
         && parentSnapshot.head.base === parentSnapshot.record.git.base ? parentSnapshot.record.git.head : undefined
     if (delivered || inherited || (!!parentHead && await descends(baseline.sha, parentHead))) {
@@ -567,7 +587,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const worker = previewWorker(session, person)
     const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
     return { person, root: dir ? rootOf(dir) : undefined,
-      linkedInputs: workerOwnedPaths(localWorkerBaseline(session.dir, person)) }
+      linkedInputs: workerOwnedPaths(records.get(person)) }
   })
   const diskDirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
   for (const p of pathSet) {
@@ -872,7 +892,10 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const settled = settledWorkers()
     const changes = [...settledRuns.keys()].filter(person => !settled.has(person))
       .map(person => ({ person, detail: `${person}: worker resumed or restarted` }))
-    if (headStamp() !== capturedHead) changes.push({ person: caller.me.name, detail: `${caller.me.name}: Git HEAD` })
+    for (const { person, gitDir, captured } of heads.values()) {
+      const current = headStamp(gitDir)
+      if (current.head !== captured.head || current.value !== captured.value) changes.push({ person, detail: `${person}: Git HEAD` })
+    }
     for (const captured of lifecycle) {
       const current = registry.read(captured.id)
       const worker = localWorkers(caller.dir, record => record.id === captured.id)[0]

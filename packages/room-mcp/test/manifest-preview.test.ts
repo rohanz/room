@@ -295,13 +295,13 @@ it('names the accepted base after a combined-tree retry', async () => {
   let reads = 0
   state.baseFor = (_s: Session, person: string) => {
     if (person !== 'ben') return head.base
-    if (++reads === 2) publish(c2, 3)
-    return reads >= 2 ? c2 : c1
+    if (++reads === 1) publish(c2, 3)
+    return c2
   }
   startsPreviewMaintenance = true
   const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat app.py)" = newest && echo "1 passed"' })
   const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
-  expect(reads).toBeGreaterThanOrEqual(3)
+  expect(reads).toBe(2) // one capture in each build; the first publication forces a retry
   expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true })
   expect(result).toContain(`ben at ${c2.slice(0, 10)}`)
   expect(result).not.toContain('(pushed to origin/r17-b)')
@@ -323,7 +323,7 @@ it('labels live changes from the accepted retry snapshot', async () => {
   let reads = 0
   state.baseFor = (_s: Session, person: string) => {
     if (person !== 'ben') return head.base
-    if (++reads === 2) {
+    if (++reads === 1) {
       entries.set('tests.txt', { change: 'M', state: 'shared', hash: gitBlobHash('live\n'), size: 5, at: Date.now(), fence: '1' })
       texts.set('tests.txt', new Y.Text('live\n'))
       room.manifestHead.set('ben', { ...head, base, rev: 2, semRev: 3 })
@@ -333,7 +333,7 @@ it('labels live changes from the accepted retry snapshot', async () => {
   startsPreviewMaintenance = true
   const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat tests.txt)" = live && echo "1 passed"' })
   const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
-  expect(reads).toBeGreaterThanOrEqual(3)
+  expect(reads).toBe(2) // one capture in each build; the first publication forces a retry
   expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true })
   expect(result).toContain(`ben at ${base.slice(0, 10)} + live changes`)
   expect(note).toContain(`ben at ${base.slice(0, 10)} + live changes`)
