@@ -660,15 +660,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
    */
   const prepareMergePlan = async (run: CollectRun, selected: CollectCandidate[], workerRoots: ReadonlyMap<LocalWorker, string>): Promise<{ refusal: string } | MergePlan> => {
     const { a, lead, leadRoot, out, nextPhase } = run
-    const heads = new Map<string, string>()
-    heads.set(lead.me.name, (await git(lead.dir, ['rev-parse', 'HEAD'])).trim())
-    for (const { w } of selected) heads.set(w.name, (await git(w.dir, ['rev-parse', 'HEAD'])).trim())
     // Latin-1 transports bytes losslessly through the text engine, including binary additions.
-    const result = await buildCombinedTree({ ...state, baseFor: (_s, person) => heads.get(person)!, shareOf: () => 'full' }, lead,
+    // Resolve each HEAD inside the assembly capture used by all merge consumers.
+    const result = await buildCombinedTree({ ...state, baseFor: () => 'HEAD', shareOf: () => 'full' }, lead,
       selected.map(({ s, w }) => ({ session: s, person: w.name })), {
         diskOnly: true, encoding: 'latin1', skipCallerOnly: true, limit: COLLECT_FILE_LIMIT,
         roots: new Map([[path.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path.resolve(w.dir), workerRoots.get(w)!] as const)]),
       })
+    const heads = new Map([[lead.me.name, result.inputs.headFor(lead.dir)!]])
+    const capturedWorkers = new Map(selected.map(({ s, w }) => {
+      const captured = result.inputs.worker(s, w.name)
+      if (!captured || captured.id !== w.id) throw new Error(`${w.name}: worker authorization changed during collection; nothing written, retry`)
+      heads.set(w.name, result.inputs.headFor(captured.dir)!)
+      return [w.name, captured] as const
+    }))
     const provenance = result.gaps.filter(gap => gap.kind === 'provenance')
     if (provenance.length) return { refusal: [...out, 'Nothing written; preview provenance is incomplete: ' + provenance.map(gap => `${gap.person}${gap.path ? ': ' + gap.path : ''}: ${gap.why}`).join('; ') + '. All selected workers kept.'].join('\n') }
     const unsupported = result.ignoredNotes.filter(note => !note.includes('gitignored') && !note.includes('linked input'))
@@ -684,7 +689,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (result.conflictingPaths.size) return { refusal: [...out, 'Nothing written; conflicting files: ' + [...result.conflictingPaths].map(([p, names]) => p + ' (' + tags(names) + ')').join('; '), 'Collect one at a time, or resolve by hand using room_read.'].join('\n') }
     const snapshots = new Map<string, Awaited<ReturnType<typeof keptSnapshot>>>()
     if (a.keep === true) for (const { w } of selected) snapshots.set(w.id,
-      await keptSnapshot(w, workerRoots.get(w)!, heads.get(w.name)!, result.paths, result.scratch.get(w.name)))
+      await keptSnapshot(capturedWorkers.get(w.name)!, workerRoots.get(w)!, heads.get(w.name)!, result.paths, result.scratch.get(w.name)))
     const changes: MergePlan['changes'] = []
     nextPhase('prepare')
     // A worker's mode change is judged against its own base, like its text.
@@ -692,8 +697,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const unchangedCarried = new Map<string, Set<string>>()
     for (const { w } of selected) {
       const base = result.deltaBases.get(w.name)!
-      baseModes.set(w.name, addCarriedUntrackedModes(await gitTreeModes(lead.dir, base), w))
-      unchangedCarried.set(w.name, carriedUnchangedPaths(workerBaseline(w)))
+      const record = result.inputs.records.get(w.name)!
+      baseModes.set(w.name, addCarriedUntrackedModes(await gitTreeModes(lead.dir, base), record))
+      unchangedCarried.set(w.name, carriedUnchangedPaths(workerBaseline(record)))
     }
     const destinations: MergePlan['destinations'] = []
     let preparedCount = 0
@@ -705,7 +711,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const before = boundedCollectText(file, identity)
       if ((before === null ? null : before.toString('latin1')) !== result.initial.get(p)) throw new Error(p + ' changed during collection; nothing written, retry')
       const oldMode = identity?.mode ?? 0o644
-      const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w)!, baseModes: baseModes.get(w.name)!, ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) })))
+      const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => {
+        const record = result.inputs.records.get(w.name)!
+        return { dir: workerRoots.get(w)!, baseModes: baseModes.get(w.name)!, ownedPaths: workerOwnedPaths(record), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(record.carriedUntracked?.map(entry => entry.path) ?? []) }
+      }))
       const after = text === null ? null : Buffer.from(text, 'latin1')
       if ((before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode === oldMode) || (before === null && after === null)) continue
       changes.push({ p, file, before, after, mode, oldMode })

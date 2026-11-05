@@ -332,21 +332,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (base === result.callerBase || !gitRecord || gitRecord.base !== base) return []
         let pushed = false
         if (gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base) {
-          try { pushed = (await git(caller.dir, ['rev-parse', '--verify', `refs/remotes/${gitRecord.upstream}`])).trim() === base }
-          catch { /* A starting anchor alone cannot prove this participant pushed it. */ }
+          pushed = result.inputs.refValue(`refs/remotes/${gitRecord.upstream}`) === base
         }
         const location = pushed ? ` (pushed to ${gitRecord.upstream})` : ''
         const live = liveShared ? ' + live changes' : ''
         return [`${person} at ${base.slice(0, 10)}${location}${live}`]
       }))).flat()
-      const missingNotes: string[] = []
-      for (const { person, session } of participants) {
-        const ownLocalWorker = localWorkers(session.dir, record => record.name === person)[0]
-        const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker)
-        const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name)
-        const missing = !!ownLocalWorker && facts?.worktree === 'vanished' && ownLocalWorker.lead === caller.me.name
-        if (missing) missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)
-      }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       const movedReply = (moved: string[], details: string[] = []) => {
@@ -357,6 +348,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const settler = previewSettler(state, participants)
       try { for (;;) {
         const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { settler, resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
+        const missingNotes = result.inputs.missingNotes
         const anchors = await anchorsFor(result)
         const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps } = result
@@ -381,12 +373,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (run) {
           if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
           else {
-            const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
-              const w = result.diskWorkers.get(person)
-              if (!w) return undefined
+            const modeParticipants = (await Promise.all(participants.map(async ({ person, session }) => {
+              const w = result.inputs.worker(session, person)
+              const record = result.inputs.records.get(person)
+              if (!w || !record) return undefined
               const dir = result.roots.get(path.resolve(w.dir))
               if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
-              return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
+              return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), record), ownedPaths: workerOwnedPaths(record), unchangedCarried: carriedUnchangedPaths(workerBaseline(record)), carriedPaths: new Set(record.carriedUntracked?.map(entry => entry.path) ?? []) }
             }))).filter((x): x is NonNullable<typeof x> => !!x)
             const modes = new Map<string, number>()
             let modeCount = 0

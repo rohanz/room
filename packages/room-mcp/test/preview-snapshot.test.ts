@@ -222,6 +222,15 @@ it('uses the captured participant base for both ancestry and committed path enum
   expect(result.complete).toBe(true)
 })
 
+it('uses the captured commit for a symbolic HEAD base fallback', async () => {
+  const { session, state, base } = fixture()
+  state.baseFor = () => 'HEAD'
+  const result = await buildCombinedTree(state, session, [])
+  expect(result.ancestor).toBe(base)
+  expect(result.callerBase).toBe(base)
+  expect(result.snapshotInputs).toEqual([`ana (local working tree, base ${base.slice(0, 10)})`])
+})
+
 it.each(['content', 'paths', 'base', 'authority', 'sharing', 'text availability'])('still detects real %s movement and names the changed input', async kind => {
   const { room, session, state, publish } = fixture()
   const result = await buildCombinedTree(state, session, ['ben', 'chris'].map(person => ({ person, session })))
@@ -266,7 +275,7 @@ it('keeps construction retries bounded and never runs a command on an unsettled 
 it('rebuilds a snapshot that moved after construction before starting the command', async () => {
   const { room, state, preview, publish, base } = fixture()
   const runs = path.join(root!, 'runs')
-  // anchorsFor awaits this remote-anchor lookup after buildCombinedTree has captured its inputs.
+  // AssemblyInputs resolves this displayed remote anchor after capturing publications.
   room.participants.set('ben\0git', { ...room.participants.get('ben\0git')!, upstream: 'origin/main', ahead: 0 })
   // Give Ben a distinct published commit so anchorsFor actually performs the lookup.
   const peer = execFileSync('git', ['-C', root!, 'commit-tree', `${base}^{tree}`, '-p', base, '-m', 'peer anchor'], { encoding: 'utf8' }).trim()

@@ -11,10 +11,10 @@ import { carryRef, collectHeadRef, workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
 import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
-import { trustedWorker, type HandlerState } from './context.js'
-import { localWorkers, registrySnapshotForDir } from '../worker-registry.js'
+import type { HandlerState } from './context.js'
+import { registryForDir, registrySnapshotForDir } from '../worker-registry.js'
 import { keptPublicationMatches } from '../kept-publication.js'
-import type { LocalWorker } from '../worker-status.js'
+import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
 
 interface PreviewGap { person: string; path?: string; why: string; kind?: 'provenance' }
@@ -99,9 +99,13 @@ export function previewSettler(state: HandlerState, participants: readonly Parti
 export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number; settler?: ReturnType<typeof previewSettler> } = {}) {
   const settler = options.settler ?? previewSettler(state, participants)
   for (;;) {
-    const result = await buildCombinedTreeOnce(state, caller, participants, options)
-    if (result.current) return result
-    if (!await settler.settle(result.settledWorkers())) throw new PreviewMoved(result.moved(), result.movementDetails())
+    try {
+      const result = await buildCombinedTreeOnce(state, caller, participants, options)
+      if (result.current) return result
+      if (!await settler.settle(result.settledWorkers())) throw new PreviewMoved(result.moved(), result.movementDetails())
+    } catch (error) {
+      if (!(error instanceof PreviewMoved) || !await settler.settle()) throw error
+    }
   }
 }
 
@@ -191,66 +195,217 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
     + (folders.length ? `; saved under ${andList(folders)}` : '') + (unsaved ? `; NOT saved (lost when the worktree is removed; copy with mode=copy first): ${unsaved}` : '')
 }
 
+/** Values used by every consumer of one assembly. Only this boundary reads live
+ * registry/publication/base/ref/HEAD inputs; authorization re-reads validate the
+ * captured record and never replace it. Freshness compares against these values. */
+class AssemblyInputs {
+  private readonly registry: ReturnType<typeof registrySnapshotForDir>
+  readonly records = new Map<string, WorkerRecord>()
+  readonly workerStates = new Map<string, LocalWorker>()
+  private readonly publications = new Map<Session, Map<string, ParticipantSnapshot | undefined>>()
+  readonly snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
+  readonly publicationLinks: PublicationLink[] = []
+  readonly stale = new Set<string>()
+  readonly contacts = new Map<string, string>()
+  readonly missingNotes: string[] = []
+  readonly acceptedRecords = new Map<string, ParticipantGit>()
+  private readonly bases = new Map<Session, Map<string, string>>()
+  private readonly workers = new Map<Session, Map<string, LocalWorker>>()
+  private readonly refs = new Map<string, string | undefined>()
+  private readonly heads = new Map<string, { person: string; gitDir: string; captured: { head: string | undefined; value: string | undefined } }>()
+  private readonly settledRuns = new Map<string, { id: string; run: string }>()
+  readonly publicationProofs: { person: string; id: string; publisher: string; session: Session; base: string; valid: boolean }[] = []
+
+  private constructor(state: HandlerState, caller: Session, participants: readonly Participant[], diskOnly: boolean) {
+    this.registry = registrySnapshotForDir(caller.dir)
+    const { snapshots, publicationLinks, stale, acceptedRecords } = this
+    if (!diskOnly) for (const { person, session } of participants) {
+      const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []
+      let publications = this.publications.get(session)
+      if (!publications) { publications = new Map(); this.publications.set(session, publications) }
+      const read = (name: string) => {
+        if (!publications.has(name)) publications.set(name, snapshot(session.room, name, view))
+        return publications.get(name)
+      }
+      const { snap, links } = checkoutPublication(session.room, person, view, read)
+      this.contacts.set(person, checkoutContact(session.room, person, view))
+      publicationLinks.push(...links.map(snap => ({ person, session, name: snap.name, inputs: publicationInputs(snap, p => snap.texts.get(p)) })))
+      const missing = links.at(-1)?.head.publisher ?? person
+      if (!snap && !links.some(link => link.name === missing)) publicationLinks.push({ person, session, name: missing, inputs: undefined })
+      if (snap && stalePublication(session.room, snap, state.now?.() ?? Date.now())) stale.add(person)
+      snapshots.set(person, { session, snap })
+      const record = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view)
+      if (record !== 'updating') acceptedRecords.set(person, { ...record })
+    }
+
+    for (const { person, session } of [{ person: caller.me.name, session: caller }, ...participants]) {
+      if (!this.bases.has(session)) this.bases.set(session, new Map())
+      const bases = this.bases.get(session)!
+      if (!bases.has(person)) {
+        const fallback = state.baseFor(session, person)
+        bases.set(person, snapshots.get(person)?.snap?.head.base ?? fallback)
+      }
+      if (this.records.has(person)) continue
+      const record = this.registry.reservedByTagOrName(person)
+      if (!record || record.name !== person || record.room !== caller.roomName
+        || ['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)) continue
+      this.records.set(person, record)
+      if (record.lead.participant === caller.me.name && !fs.existsSync(record.dir))
+        this.missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)
+      const status = this.registry.status(record.id)
+      if (status) this.workerStates.set(person, realStateInput(record, status))
+      for (const ref of [collectHeadRef(record.tag, record.id), carryRef(record.tag)]) this.captureRef(ref)
+    }
+  }
+
+  static async capture(state: HandlerState, caller: Session, participants: readonly Participant[], diskOnly: boolean) {
+    const inputs = new AssemblyInputs(state, caller, participants, diskOnly)
+    for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
+      const record = inputs.records.get(person)
+      if (!record || record.lead.participant !== session.me.name) continue
+      let byPerson = inputs.workers.get(session)
+      if (!byPerson) { byPerson = new Map(); inputs.workers.set(session, byPerson) }
+      if (byPerson.has(person)) continue
+      const trusted = await (await registryForDir(session.dir)).trusted({ participant: session.me.name, room: session.roomName, dir: session.dir }, record.tag)
+      if (!trusted) continue
+      // A newer authorized record is not the source of any assembly value. A
+      // mismatch invalidates this attempt even if the registry later moves back.
+      if (trusted.record.id !== record.id || workerInputs(trusted.record) !== workerInputs(record))
+        throw new PreviewMoved([person], [`${person}: worker record changed during disk authorization`])
+      const captured = inputs.workerStates.get(person)
+      if (!captured || runOf(realStateInput(trusted.record, trusted.status)) !== runOf(captured))
+        throw new PreviewMoved([person], [`${person}: worker run changed during disk authorization`])
+      const worker = { ...captured, dir: fs.realpathSync(record.dir) }
+      const real = await workerRealState(session.dir, worker)
+      if (decidePreview(real, true) !== 'disk') continue
+      inputs.workerStates.set(person, worker)
+      byPerson.set(person, worker)
+      if (real.finished) inputs.settledRuns.set(person, { id: record.id, run: runOf(worker) })
+    }
+    // Displayed pushed-anchor facts are inputs too. Reuse their first ref
+    // value rather than resolving a newer value after assembly in files.ts.
+    for (const record of inputs.acceptedRecords.values()) if (record.upstream) {
+      const ref = `refs/remotes/${record.upstream}`
+      if (!inputs.refs.has(ref)) inputs.refs.set(ref,
+        await git(caller.dir, ['rev-parse', '--verify', ref]).then(value => value.trim(), () => undefined))
+    }
+    await inputs.captureHead(caller.dir, caller.me.name)
+    for (const byPerson of inputs.workers.values()) for (const [person, worker] of byPerson)
+      await inputs.captureHead(worker.dir, person)
+    // baseFor's no-publication fallback is symbolic. Every Git consumer must
+    // use the captured commit, never resolve HEAD again halfway through a build.
+    for (const [session, bases] of inputs.bases) for (const [person, base] of bases) if (base === 'HEAD') {
+      const head = inputs.headFor(inputs.worker(session, person)?.dir ?? caller.dir)
+      if (!head) throw new Error('preview HEAD is unavailable')
+      bases.set(person, head)
+    }
+    return inputs
+  }
+
+  baseFor(session: Session, person: string): string {
+    const base = this.bases.get(session)?.get(person)
+    if (base === undefined) throw new Error('uncaptured preview base: ' + person)
+    return base
+  }
+  worker(session: Session, person: string) { return this.workers.get(session)?.get(person) }
+  refValue(ref: string) {
+    if (!this.refs.has(ref)) throw new Error('uncaptured preview ref: ' + ref)
+    return this.refs.get(ref)
+  }
+  private captureRef(ref: string) {
+    if (!this.refs.has(ref)) this.refs.set(ref, this.readRef(ref))
+    return this.refs.get(ref)
+  }
+  private readRef(ref: string, seen = new Set<string>()): string | undefined {
+    if (seen.has(ref)) return undefined
+    seen.add(ref)
+    try {
+      const value = fs.readFileSync(path.join(this.registry.commonDir, ref), 'utf8').trim()
+      return value.startsWith('ref: ') ? this.readRef(value.slice(5), seen) : value
+    } catch {
+      try {
+        const line = fs.readFileSync(path.join(this.registry.commonDir, 'packed-refs'), 'utf8').split('\n').find(line => line.endsWith(' ' + ref))
+        return line?.split(' ')[0]
+      } catch { return undefined }
+    }
+  }
+  private readHead(gitDir: string, ref: (name: string) => string | undefined) {
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
+      return { head, value: head.startsWith('ref: ') ? ref(head.slice(5)) : head }
+    } catch { return { head: undefined, value: undefined } }
+  }
+  private async captureHead(dir: string, person: string) {
+    if (this.heads.has(dir)) return
+    const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    this.heads.set(dir, { person, gitDir, captured: this.readHead(gitDir, ref => this.captureRef(ref)) })
+  }
+  headFor(dir: string) {
+    if (!this.heads.has(dir)) throw new Error('uncaptured preview HEAD: ' + dir)
+    return this.heads.get(dir)!.captured.value
+  }
+  settledWorkers() {
+    return new Set([...this.settledRuns].filter(([, captured]) => {
+      const record = this.registry.read(captured.id), status = record && this.registry.status(record.id)
+      const worker = record && status && realStateInput(record, status)
+      return !!worker && worker.status !== 'running' && runOf(worker) === captured.run
+    }).map(([person]) => person))
+  }
+  movement(state: HandlerState) {
+    const settled = this.settledWorkers()
+    const changes = [...this.settledRuns.keys()].filter(person => !settled.has(person))
+      .map(person => ({ person, detail: `${person}: worker resumed or restarted` }))
+    const currentRefs = new Map<string, string | undefined>()
+    const refValue = (ref: string) => {
+      if (!currentRefs.has(ref)) currentRefs.set(ref, this.readRef(ref))
+      return currentRefs.get(ref)
+    }
+    for (const { person, gitDir, captured } of this.heads.values()) {
+      const current = this.readHead(gitDir, refValue)
+      if (current.head !== captured.head || current.value !== captured.value) changes.push({ person, detail: `${person}: Git HEAD` })
+    }
+    const currentRecords = new Map<string, WorkerRecord | undefined>()
+    for (const [person, record] of this.records) {
+      const current = this.registry.read(record.id)
+      currentRecords.set(record.id, current)
+      const status = current && this.registry.status(current.id)
+      if (!current || workerInputs(current) !== workerInputs(record)) changes.push({ person, detail: `${person}: worker baseline, paths or lifecycle` })
+      if ([status?.finishedAt ?? 0, current?.tag].join(':') !== [this.workerStates.get(person)?.finishedAt ?? 0, record.tag].join(':'))
+        changes.push({ person, detail: `${person}: merge order` })
+      for (const ref of [collectHeadRef(record.tag, record.id), carryRef(record.tag)])
+        if (refValue(ref) !== this.refs.get(ref)) changes.push({ person, detail: `${person}: baseline ref ${ref}` })
+    }
+    for (const proof of this.publicationProofs) {
+      const meta = snapshotMetadata(proof.session.room, proof.publisher, viewOf(state, proof.session))
+      const valid = keptPublicationMatches(proof.session, currentRecords.get(proof.id)?.keptPublication, meta, proof.base)
+      if (valid !== proof.valid) changes.push({ person: proof.person, detail: `${proof.person}: post-baseline publication availability` })
+    }
+    changes.push(...publicationMovement(state, this.publicationLinks.filter(({ person }) => !this.settledRuns.has(person))))
+    return changes
+  }
+}
+const runOf = (w: LocalWorker) => [w.status, w.pid, w.startedAt, w.finishedAt, w.exitCode].join(':')
+const workerInputs = (record: WorkerRecord) => JSON.stringify([
+  record.base, record.carriedBase, [...record.carriedUntracked ?? []].sort((a, b) => a.path.localeCompare(b.path)).map(file => [file.path, file.sha, file.mode]),
+  [...record.link ?? []].sort(), record.name, record.tag, record.dir, record.branch, record.room, record.lead, record.phase, record.sharedWith, record.capabilities,
+])
+
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
 async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number } = {}) {
-  const { rooms } = state
-  const capturedBases = new Map<Session, Map<string, string>>()
-  const baseFor = (session: Session, person: string) => {
-    let bases = capturedBases.get(session)
-    if (!bases) { bases = new Map(); capturedBases.set(session, bases) }
-    if (!bases.has(person)) {
-      const fallback = state.baseFor(session, person)
-      bases.set(person, snapshots.get(person)?.snap?.head.base ?? fallback)
-    }
-    return bases.get(person)!
-  }
-  /** Per-file byte ceiling for local and Git reads; collection raises it, previews keep the default. */
+  const inputs = await AssemblyInputs.capture(state, caller, participants, !!options.diskOnly)
+  const { snapshots, stale, acceptedRecords, records, workerStates, publicationProofs } = inputs
+  const baseFor = (session: Session, person: string) => inputs.baseFor(session, person)
+  const previewWorker = (session: Session, person: string) => inputs.worker(session, person)
+  const settledWorkers = () => inputs.settledWorkers()
   const limit = options.limit ?? DISK_TEXT_LIMIT
   const people = participants.map(p => p.person)
-  const snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
-  const publicationLinks: PublicationLink[] = []
-  const stale = new Set<string>()
-  const acceptedRecords = new Map<string, ParticipantGit>()
-  if (!options.diskOnly) for (const { person, session } of participants) {
-    const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []
-    const { snap, links } = checkoutPublication(session.room, person, view)
-    publicationLinks.push(...links.map(snap => ({ person, session, name: snap.name, inputs: publicationInputs(snap, p => snap.texts.get(p)) })))
-    const missing = links.at(-1)?.head.publisher ?? person
-    if (!snap && !links.some(link => link.name === missing)) publicationLinks.push({ person, session, name: missing, inputs: undefined })
-    if (snap && stalePublication(session.room, snap, state.now?.() ?? Date.now())) stale.add(person)
-    snapshots.set(person, { session, snap })
-    const record = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view)
-    if (record !== 'updating') acceptedRecords.set(person, { ...record })
-  }
   const gaps: PreviewGap[] = []
-  // The caller's own workers' worktrees on this machine are authoritative in any room: their commits and uncommitted
-  // edits count before (or without) daemon publication, and after the worker exits and withdraws its overlay.
-  const previewWorkers = new WeakMap<Session, Map<string, Awaited<ReturnType<typeof trustedWorker>>>>()
-  // A finished worker read from its worktree cannot move the preview: its exit (last publish, ended lease) only changes its overlay.
-  // The exemption holds only for the run captured here; a resumed or restarted worker is checked again.
-  const settledRuns = new Map<string, { dir: string; lead: string; run: string }>()
-  const runOf = (w: LocalWorker) => [w.status, w.pid, w.startedAt, w.finishedAt, w.exitCode].join(':')
-  const settledWorkers = () => new Set([...settledRuns].filter(([person, captured]) => {
-    const now = localWorkers(captured.dir, record => record.name === person && record.lead.participant === captured.lead)[0]
-    return !!now && now.status !== 'running' && runOf(now) === captured.run
-  }).map(([person]) => person))
-  for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
-    let byPerson = previewWorkers.get(s)
-    if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
-    if (byPerson.has(person)) continue
-    const candidate = await trustedWorker(s, person)
-    const real = candidate && await workerRealState(s.dir, candidate)
-    const worker = real && decidePreview(real, true) === 'disk' ? candidate : undefined
-    if (worker && real?.finished) settledRuns.set(person, { dir: s.dir, lead: s.me.name, run: runOf(worker) })
-    byPerson.set(person, worker)
-  }
-  const previewWorker = (s: Session, person: string) => previewWorkers.get(s)?.get(person)
   const coverageLines: string[] = []
   for (const [person, { session, snap }] of snapshots) {
     if (previewWorker(session, person)) { coverageLines.push(`${person}: trusted local worktree`); continue }
     if (!snap) { gaps.push({ person, why: 'no manifest record' }); coverageLines.push(`${person}: no manifest record`); continue }
     const age = Math.max(0, Math.floor(((state.now?.() ?? Date.now()) - snap.head.scannedAt) / 1000))
-    const contact = checkoutContact(session.room, person, viewOf(state, session))
+    const contact = inputs.contacts.get(person) ?? person
     if (snap.name === person && contact !== person) coverageLines.push(`${person}: address ${contact} for this checkout`)
     if (snap.name !== person) coverageLines.push(`${person}: checkout publication by ${snap.name}; address ${contact} for this checkout`)
     if (stale.has(person)) gaps.push({ person, why: `stale publication from ${snap.name} (scanned ${age}s ago); ask the active session to refresh` })
@@ -370,12 +525,6 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }
   const allSides = [{ person: caller.me.name, session: caller }, ...participants]
   const includedNames = new Set(allSides.map(side => side.person))
-  const registry = registrySnapshotForDir(caller.dir)
-  const records = new Map(allSides.flatMap(({ person }) => {
-    const record = registry.reservedByTagOrName(person)
-    return record?.name === person && record.room === caller.roomName && !['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)
-      ? [[person, record] as const] : []
-  }))
   // Derive provenance and safety inputs from the exact records checked by
   // lifecycle freshness, rather than resolving the reservation independently.
   const relations = new Map([...records].flatMap(([person, record]) => {
@@ -384,13 +533,6 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }))
   const relationFor = (_dir: string, person: string) => relations.get(person)
   const callerCarried = relationFor(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline
-  const workersById = new Map((records.size ? localWorkers(caller.dir) : []).map(worker => [worker.id, worker]))
-  // Use the same incarnation as the captured record, even when an unrelated
-  // legacy record happens to reuse a participant name.
-  const workerStates = new Map([...records].flatMap(([person, record]) => {
-    const worker = workersById.get(record.id)
-    return worker ? [[person, worker] as const] : []
-  }))
   const callerBaseline = await pairBaseline(callerWorker, undefined, ancestor, descends)
   const rootFor = (name: string): string | undefined => {
     const seen = new Set<string>()
@@ -420,65 +562,22 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     depth(a.person) - depth(b.person) || (workerStates.get(a.person)?.finishedAt ?? 0) - (workerStates.get(b.person)?.finishedAt ?? 0)
       || ((records.get(a.person)?.tag ?? a.person) < (records.get(b.person)?.tag ?? b.person) ? -1
         : (records.get(a.person)?.tag ?? a.person) > (records.get(b.person)?.tag ?? b.person) ? 1 : 0)) : participants
-  // Compare relevant ref values. Repacking or rewriting an identical loose ref
-  // changes its stat, but not the base applied by the preview. Never spawn sync Git.
-  const refStamp = (ref: string, seen = new Set<string>()): string | undefined => {
-    if (seen.has(ref)) return undefined
-    seen.add(ref)
-    try {
-      const value = fs.readFileSync(path.join(registry.commonDir, ref), 'utf8').trim()
-      return value.startsWith('ref: ') ? refStamp(value.slice(5), seen) : value
-    }
-    catch {
-      try {
-        const line = fs.readFileSync(path.join(registry.commonDir, 'packed-refs'), 'utf8').split('\n').find(line => line.endsWith(' ' + ref))
-        return line?.split(' ')[0]
-      } catch { return undefined }
-    }
-  }
-  const refValues = new Map<string, string | undefined>()
-  const refValue = (ref: string) => {
-    if (!refValues.has(ref)) refValues.set(ref, refStamp(ref))
-    return refValues.get(ref)
-  }
-  const headStamp = (gitDir: string) => {
-    try {
-      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
-      return { head, value: head.startsWith('ref: ') ? refStamp(head.slice(5)) : head }
-    } catch { return { head: undefined, value: undefined } }
-  }
-  const heads = new Map<string, { person: string; gitDir: string; captured: ReturnType<typeof headStamp> }>()
-  const captureHead = async (dir: string, person: string) => {
-    if (!heads.has(dir)) {
-      const gitDir = (await git(dir, ['rev-parse', '--absolute-git-dir'])).trim()
-      heads.set(dir, { person, gitDir, captured: headStamp(gitDir) })
-    }
-    return heads.get(dir)!.captured.value
-  }
-  const localHead = await captureHead(caller.dir, caller.me.name)
-  const workerInputs = (record: NonNullable<ReturnType<typeof registry.read>>) => JSON.stringify([
-    record.base, record.carriedBase, [...record.carriedUntracked ?? []].sort((a, b) => a.path.localeCompare(b.path)).map(file => [file.path, file.sha, file.mode]),
-    [...record.link ?? []].sort(), record.name, record.tag, record.dir, record.branch, record.lead.participant, record.phase,
-  ])
-  const lifecycle = [...records].map(([person, record]) => ({ person, id: record.id, inputs: workerInputs(record),
-    key: [workerStates.get(person)?.finishedAt ?? 0, record.tag].join(':'),
-    refs: [collectHeadRef(record.tag, record.id), carryRef(record.tag)].map(ref => [ref, refValue(ref)] as const) }))
+  const localHead = inputs.headFor(caller.dir)
   const proven = new Map<string, Baseline>()
-  const publicationProofs: { person: string; id: string; publisher: string; session: Session; base: string; valid: boolean }[] = []
   if (anchor) for (const { person, session } of contributors) {
     const relation = relationFor(session.dir, person), record = records.get(person)
     if (!relation || !record || rootFor(person) !== anchorName) continue
     const baseline = await pairBaseline(relation.baseline, undefined, ancestor, descends)
     if (!baseline) continue
-    const collectionHead = refValue(collectHeadRef(record.tag, record.id))
+    const collectionHead = inputs.refValue(collectHeadRef(record.tag, record.id))
     const delivered = collectionHead === baseline.sha
       && (await git(caller.dir, ['log', '-1', '--format=%s', baseline.sha])).trim() === 'room: kept collection baseline'
-    const carry = refValue(carryRef(record.tag))
+    const carry = inputs.refValue(carryRef(record.tag))
     const inherited = record.carriedBase === baseline.sha && (carry === undefined || carry === baseline.sha)
     const parentSnapshot = snapshots.get(relation.lead)?.snap
     const parentWorker = previewWorker(session, relation.lead)
     const parentHead = relation.lead === caller.me.name ? localHead
-      : parentWorker ? await captureHead(parentWorker.dir, relation.lead)
+      : parentWorker ? inputs.headFor(parentWorker.dir)
       : parentSnapshot?.fenceValid && parentSnapshot.head.complete && parentSnapshot.head.fence === parentSnapshot.record?.git?.fence
         && parentSnapshot.head.base === parentSnapshot.record.git.base ? parentSnapshot.record.git.head : undefined
     if (delivered || inherited || (!!parentHead && await descends(baseline.sha, parentHead))) {
@@ -836,7 +935,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       const prior = owners.get(p) ?? [caller.me.name]
       const pairNames: string[] = []
       for (const owner of prior) {
-        const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
+        const ownerSession = owner === caller.me.name ? caller : allSides.find(side => side.person === owner)!.session
         const ownerRaw = await previewText(ownerSession, p, owner)
         const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
         const pairResult = await gitMergeFile(b ?? '', ownerText ?? '', theirs ?? '', { ours: owner, base: 'base', theirs: person })
@@ -888,29 +987,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
 
   if (anchor) out.unshift(`preview anchor: ${anchorName} (${anchored ? 'published snapshot' : 'local working tree'}); contributors use canonical collection order`)
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  const movement = () => {
-    const settled = settledWorkers()
-    const changes = [...settledRuns.keys()].filter(person => !settled.has(person))
-      .map(person => ({ person, detail: `${person}: worker resumed or restarted` }))
-    for (const { person, gitDir, captured } of heads.values()) {
-      const current = headStamp(gitDir)
-      if (current.head !== captured.head || current.value !== captured.value) changes.push({ person, detail: `${person}: Git HEAD` })
-    }
-    for (const captured of lifecycle) {
-      const current = registry.read(captured.id)
-      const worker = localWorkers(caller.dir, record => record.id === captured.id)[0]
-      if (!current || workerInputs(current) !== captured.inputs) changes.push({ person: captured.person, detail: `${captured.person}: worker baseline, paths or lifecycle` })
-      if ([worker?.finishedAt ?? 0, current?.tag].join(':') !== captured.key) changes.push({ person: captured.person, detail: `${captured.person}: merge order` })
-      for (const [ref, value] of captured.refs) if (refStamp(ref) !== value) changes.push({ person: captured.person, detail: `${captured.person}: baseline ref ${ref}` })
-    }
-    for (const proof of publicationProofs) {
-      const meta = snapshotMetadata(proof.session.room, proof.publisher, viewOf(state, proof.session))
-      const valid = keptPublicationMatches(proof.session, registry.read(proof.id)?.keptPublication, meta, proof.base)
-      if (valid !== proof.valid) changes.push({ person: proof.person, detail: `${proof.person}: post-baseline publication availability` })
-    }
-    changes.push(...publicationMovement(state, publicationLinks.filter(({ person }) => !settledRuns.has(person))))
-    return changes
-  }
+  const movement = () => inputs.movement(state)
   const moved = () => [...new Set(movement().map(change => change.person))]
   const movementDetails = () => [...new Set(movement().map(change => change.detail))]
   const isCurrent = () => moved().length === 0
@@ -923,7 +1000,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         : snap ? `rev ${snap.head.rev}` : 'no manifest record'
     return `${person} (${source}, base ${base.slice(0, 10)})`
   })
-  return { ancestor, deltaBases, includedParticipants, snapshotInputs, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, movementDetails, settledWorkers }
+  return { inputs, ancestor, deltaBases, includedParticipants, snapshotInputs, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, movementDetails, settledWorkers }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

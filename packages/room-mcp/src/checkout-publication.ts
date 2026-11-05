@@ -3,12 +3,13 @@ import { snapshot, manifestHeadOf, type ParticipantSnapshot, type ParticipantVie
 /** Follow only fenced publisher links, retaining every link for the preview's move check.
  * The requested participant remains the contributor/lineage identity; text and Git facts
  * belong to the terminal publisher. Cycles and unavailable links remain explicit gaps. */
-export function checkoutPublication(room: RoomDoc, name: string, view: readonly ParticipantView[]) {
+export function checkoutPublication(room: RoomDoc, name: string, view: readonly ParticipantView[],
+  read: (name: string) => ParticipantSnapshot | undefined = name => snapshot(room, name, view)) {
   const links: ParticipantSnapshot[] = []
   const seen = new Set<string>()
   while (!seen.has(name)) {
     seen.add(name)
-    const snap = snapshot(room, name, view)
+    const snap = read(name)
     if (!snap) return { links, snap: undefined }
     links.push(snap)
     if (!snap.fenceValid || snap.head.coverage.kind !== 'none' || snap.head.coverage.reason !== 'not-publisher') return { links, snap }

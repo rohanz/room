@@ -8,6 +8,8 @@ import * as gitModule from '@room/roomd/git'
 import { acknowledgeKeptPublication } from '../src/kept-publication.js'
 import type { Session } from '../src/session.js'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
+import { handlers as previewHandlers } from '../src/tools/files.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { prepareWorktree } from '../src/worker-git.js'
@@ -298,4 +300,72 @@ it('gaps a lead-absent later baseline that reverts an earlier delivery back to t
   const result = await t.preview('lead+api', ['lead+backend', 'lead+consumer'])
   expect(result.complete).toBe(false)
   expect(result.gaps.some(g => g.path === 'shared.txt' && g.why.includes('include lead'))).toBe(true)
+})
+
+
+it('uses one captured carried baseline for freshness, text and executable modes when the registry changes during assembly', async () => {
+  const t = await carriedFixture(), record = t.registry.reservedByTagOrName('lead+carry')!
+  // The worker chmods a carried untracked file. Until its baseline moves this
+  // is its own mode change; afterwards the lead's independent 0644 mode wins.
+  fs.chmodSync(path.join(t.root, 'new.txt'), 0o644)
+  fs.chmodSync(path.join(t.worker.dir, 'new.txt'), 0o755)
+  await t.registry.update(record.id, old => ({ ...old,
+    carriedUntracked: old.carriedUntracked!.map(file => ({ ...file, mode: 0o644 })), seq: old.seq + 1 }))
+  const realGit = gitModule.git
+  let changed = false, offset = 0
+  const spy = vi.spyOn(gitModule, 'git').mockImplementation(async (dir, args) => {
+    // roomRemote was between trustedWorker's capture and the later registry
+    // capture. The old preview certified B's freshness while applying A's mode.
+    if (!changed && args[0] === 'remote') {
+      changed = true
+      await t.registry.update(record.id, old => ({ ...old,
+        carriedUntracked: old.carriedUntracked!.map(file => ({ ...file, mode: 0o755 })), seq: old.seq + 1 }))
+    }
+    return realGit(dir, args)
+  })
+  const state = { S: () => t.lead, rooms: { all: () => [t.lead], holding: () => t.lead, holdingWorker: () => t.lead },
+    others: () => [t.worker.me.name], presences: () => [], myWorkers: () => localWorkers(t.root),
+    baseFor: (_s: Session, person: string) => manifestHeadOf(t.room, person)?.base ?? t.prepared.base,
+    now: () => Date.now() + offset,
+    ctx: { sleep: async (ms: number) => { offset += ms; await new Promise<void>(resolve => setImmediate(resolve)) } },
+  } as unknown as HandlerState
+  try {
+    const reply = await previewHandlers(state).room_preview_merge({ person: t.worker.me.name,
+      run: 'test ! -x new.txt && test "$(cat own.txt)" = "worker own comment" && echo "1 passed"' })
+    expect(changed).toBe(true)
+    expect(reply).toContain('tests: PASSED (exit 0)')
+    expect(reply).not.toContain('SNAPSHOT result')
+    expect(t.lead.lastPreview?.testsPassed).toBe(true)
+    expect(fs.statSync(path.join(t.root, 'new.txt')).mode & 0o777).toBe(0o644)
+    expect(fs.statSync(path.join(t.worker.dir, 'new.txt')).mode & 0o777).toBe(0o755)
+  } finally { spy.mockRestore(); await disposePreviewFixture(t.root) }
+})
+
+it('rejects a disk authorization from a different captured worker record even when the registry moves back', async () => {
+  const t = await carriedFixture(), record = t.registry.reservedByTagOrName('lead+carry')!
+  const trusted = t.registry.trusted.bind(t.registry)
+  let authorizations = 0, offset = 0
+  const spy = vi.spyOn(t.registry, 'trusted').mockImplementation(async (...args) => {
+    authorizations++
+    if (authorizations !== 1) return trusted(...args)
+    await t.registry.update(record.id, old => ({ ...old,
+      carriedUntracked: old.carriedUntracked!.map(file => ({ ...file, mode: 0o755 })), seq: old.seq + 1 }))
+    const authorized = await trusted(...args)
+    // Freshness alone would see A again; the authorization used B. This attempt
+    // must be rejected before any B-authorized worktree enters the A assembly.
+    await t.registry.update(record.id, old => ({ ...old, carriedUntracked: record.carriedUntracked, seq: old.seq + 1 }))
+    return authorized
+  })
+  const state = { baseFor: (_s: Session, person: string) => manifestHeadOf(t.room, person)?.base ?? t.prepared.base,
+    now: () => Date.now() + offset,
+    ctx: { sleep: async (ms: number) => { offset += ms; await new Promise<void>(resolve => setImmediate(resolve)) } },
+  } as unknown as HandlerState
+  try {
+    const result = await buildCombinedTree(state, t.lead, [{ person: t.worker.me.name, session: t.lead }])
+    expect(authorizations).toBe(2)
+    expect(result.complete).toBe(true)
+    expect(result.isCurrent()).toBe(true)
+    expect(result.inputs.records.get(record.name)?.carriedUntracked).toEqual(record.carriedUntracked)
+    expect(result.diskWorkers.get(record.name)?.carriedUntracked).toEqual(record.carriedUntracked)
+  } finally { spy.mockRestore() }
 })
