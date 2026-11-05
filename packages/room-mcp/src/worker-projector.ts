@@ -8,7 +8,7 @@ import type { Session } from './session.js'
 import path from 'node:path'
 import { completionMessage, type WorkerView } from '@room/shared'
 import { backgroundAtExit, openWorkerReader, type WorkerRegistry } from './worker-registry.js'
-import { snapshotRead } from './worker-store.js'
+import { requireWorkerEvidence, workerEvidence, snapshotRead } from './worker-store.js'
 import { statusOf, workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
 import { postWorkerMessage } from './post.js'
@@ -38,14 +38,17 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   if (!current()) return undefined
   const before = await registry.snapshot()
   if (!current() || !before.available) return undefined
-  const { write: all, retire: retiring } = (await registry.projectable(lead, roomKey))
+  requireWorkerEvidence(workerEvidence(before))
+  const { write: all, retire: retiring } = requireWorkerEvidence(await registry.projectable(lead, roomKey))
   if (!current()) return undefined
   const write = all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
   const post = releasePoster(s.post)
   const listed = new Set([...write.map(({ record }) => record.id), ...retire.map(record => record.id)])
   const facts = await registry.snapshot()
-  if (!facts.available || facts.revision !== before.revision || !current()) return undefined
+  if (!facts.available || !current()) return undefined
+  requireWorkerEvidence(workerEvidence(facts))
+  if (facts.revision !== before.revision) return undefined
   s.room.doc.transact(() => {
     for (const { record, status } of write) {
       const run = status.run

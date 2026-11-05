@@ -86,6 +86,31 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     expect((await registry.list()).map(record => record.id)).toEqual([first.id])
   })
 
+  it.each([
+    { evidence: 'undecodable', action: 'spawn' }, { evidence: 'quarantined', action: 'spawn' },
+    { evidence: 'undecodable', action: 'resume' }, { evidence: 'quarantined', action: 'resume' },
+  ] as const)('refuses $action when occupancy has $evidence worker evidence', async ({ evidence, action }) => {
+    const registry = await open(), first = intent(registry.commonDir)
+    await registry.writeIntent(first, 1)
+    await registry.finishOperation(first.id)
+    const resumable = { ...intent(registry.commonDir, 'resumable'), hostSessionId: 'retained', phase: 'active' as const,
+      runs: [{ ...first.runs[0], launch: { outcome: 'never' as const, error: 'launch failed' } }] }
+    const workersDir = path.join(registry.root, 'workers')
+    fs.writeFileSync(path.join(workersDir, `${resumable.id}.json`), JSON.stringify(resumable))
+    const file = path.join(workersDir, `${first.id}.json`)
+    fs.writeFileSync(file, '{malformed')
+    if (evidence === 'quarantined') {
+      const quarantine = path.join(registry.root, 'quarantine')
+      fs.mkdirSync(quarantine, { recursive: true })
+      fs.renameSync(file, path.join(quarantine, `${first.id}.json.bad-test`))
+    }
+    const admission = action === 'spawn' ? registry.writeIntent(intent(registry.commonDir, 'overflow'), 1)
+      : registry.resume(resumable.id, 1, { nonce: 'next', busFrontier: 0, logStart: 0 })
+    await expect(admission).rejects.toThrow(new RegExp(`blocked.*${first.id}`))
+    expect(fs.existsSync(path.join(registry.root, 'tags', 'overflow.json'))).toBe(false)
+    expect(JSON.parse(fs.readFileSync(path.join(workersDir, `${resumable.id}.json`), 'utf8')).runs).toHaveLength(1)
+  })
+
   it('permits nested discard to stop in its own lane but refuses another call and a stale owner release', async () => {
     const registry = await open(), first = intent(registry.commonDir)
     await registry.writeIntent(first)
@@ -132,9 +157,11 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     // Corruption injection is intentionally the only direct lifecycle-file access in this suite.
     fs.writeFileSync(path.join(registry.root, 'workers', `${bad.id}.json`), '{malformed')
     const restarted = await open(registry.commonDir)
-    expect((await restarted.read(bad.id))).toBeUndefined()
-    expect((await restarted.list()).map(record => record.id)).toEqual([good.id])
-    await expect(restarted.writeIntent({ ...bad, id: 'w_replacement' })).rejects.toThrow('tag in use')
+    const snapshot = await restarted.snapshot()
+    expect(snapshot.available && snapshot.workers.map(fact => fact.record.id)).toEqual([good.id])
+    expect(snapshot.available && snapshot.blockers).toEqual([expect.stringContaining(bad.id)])
+    expect((await restarted.read(good.id))?.id).toBe(good.id)
+    await expect(restarted.writeIntent({ ...bad, id: 'w_replacement' })).rejects.toThrow(new RegExp(`blocked.*${bad.id}`))
     const quarantined = fs.readdirSync(path.join(registry.root, 'quarantine'))
     expect(quarantined).toHaveLength(1)
     expect(fs.readFileSync(path.join(registry.root, 'quarantine', quarantined[0]), 'utf8')).toBe('{malformed')

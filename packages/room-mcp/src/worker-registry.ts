@@ -10,7 +10,7 @@ import { statusOf, realStateInput, type LocalWorker, type WorkerRecord, type Wor
 import type { InstanceToken } from './leases.js'
 import type { RetiredWorker } from '@room/shared'
 import { safeId, safeTag } from './worker-codecs.js'
-import { recordStatus, snapshotRead, snapshotReserved, snapshotFreshness, type WorkerQuery, type WorkerStore, type WorkerSnapshot, type AvailableWorkerSnapshot, type WorkerFacts, type WorkerCommand, type WorkerFreshness } from './worker-store.js'
+import { requireWorkerEvidence, workerEvidence, type BlockedWorkerEvidence, recordStatus, snapshotRead, snapshotReserved, snapshotFreshness, type WorkerQuery, type WorkerStore, type WorkerSnapshot, type AvailableWorkerSnapshot, type WorkerFacts, type WorkerCommand, type WorkerFreshness } from './worker-store.js'
 import { IdleClaimsJournal } from './idle-claims.js'
 export type { RegistryOptions, LegacySource } from './worker-file-store.js'
 export type { IdleClaimsAction } from './idle-claims.js'
@@ -183,9 +183,7 @@ export class WorkerRegistry {
   onChange(listener: (id?: string) => void): () => void { return this.backend().onChange(listener) }
   snapshot(query?: WorkerQuery): Promise<WorkerSnapshot> { return this.store.snapshot(query) }
   private async facts(query?: WorkerQuery): Promise<AvailableWorkerSnapshot> {
-    const snapshot = await this.snapshot(query)
-    if (!snapshot.available) throw new Error(`worker snapshot unavailable: ${snapshot.detail}`)
-    return snapshot
+    return requireWorkerEvidence(workerEvidence(await this.snapshot(query)))
   }
   command(id: string, command: WorkerCommand, expectedSeq?: number): Promise<WorkerRecord> { return this.store.command(id, command, expectedSeq) }
   async read(id: string): Promise<WorkerRecord | undefined> {
@@ -210,8 +208,10 @@ export class WorkerRegistry {
     return this.file ? this.file.enrichedStatus(fact)
       : Promise.resolve(statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, () => 'unknown'))
   }
-  async checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): Promise<{ record: WorkerRecord; status: WorkerStatusResult }[]> {
-    const snapshot = await this.facts(), users: { record: WorkerRecord; status: WorkerStatusResult }[] = []
+  async checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): Promise<{ record: WorkerRecord; status: WorkerStatusResult }[] | BlockedWorkerEvidence> {
+    const snapshot = workerEvidence(await this.snapshot())
+    if ('reason' in snapshot) return snapshot
+    const users: { record: WorkerRecord; status: WorkerStatusResult }[] = []
     for (const fact of snapshot.workers) {
       const record = fact.record
       if (record.id !== owner.id && !['retiring', 'retired', 'abandoned'].includes(record.phase) && path.resolve(record.dir) === path.resolve(owner.dir))
@@ -259,9 +259,11 @@ export class WorkerRegistry {
     for (const fact of (await this.facts()).workers) if (['starting', 'running', 'unknown', 'ambiguous'].includes((await this.enrich(fact)).status)) count++
     return count
   }
-  async projectable(lead: string, roomKey: string): Promise<{ write: { record: WorkerRecord; status: WorkerStatusResult }[]; retire: WorkerRecord[] }> {
+  async projectable(lead: string, roomKey: string): Promise<{ write: { record: WorkerRecord; status: WorkerStatusResult }[]; retire: WorkerRecord[] } | BlockedWorkerEvidence> {
+    const snapshot = workerEvidence(await this.snapshot())
+    if ('reason' in snapshot) return snapshot
     const write: { record: WorkerRecord; status: WorkerStatusResult }[] = [], retire: WorkerRecord[] = []
-    for (const fact of (await this.facts()).workers) {
+    for (const fact of snapshot.workers) {
       const record = fact.record
       if (record.lead.participant !== lead || record.room !== roomKey && record.projectedInto !== roomKey) continue
       if (record.phase === 'retiring') { if (record.cleanup?.[roomKey] === 'pending') retire.push(record); continue }

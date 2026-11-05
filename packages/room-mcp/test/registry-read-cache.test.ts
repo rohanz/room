@@ -131,6 +131,19 @@ describe('worker registry read cache', () => {
     }
   })
 
+  it('blocks checkout authority when a borrower record cannot be decoded', async () => {
+    const { dir } = repo()
+    try {
+      const { record: owner } = await seedRegistryWorker(dir, 'owner')
+      const { record: borrower } = await seedRegistryWorker(dir, 'borrower', { dir: owner.dir, sharedWith: owner.id })
+      const reader = await openWorkerReader(dir)
+      writeFileSync(join(reader.root, 'workers', `${borrower.id}.json`), '{malformed')
+      expect(await reader.checkoutUsers(owner)).toMatchObject({ reason: 'blocked', blockers: [expect.stringContaining(borrower.id)] })
+      expect(await reader.projectable(owner.lead.participant, owner.room)).toMatchObject({ reason: 'blocked' })
+      await expect(reader.occupancy()).rejects.toThrow(borrower.id)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it.each(['record', 'report', 'exit'] as const)('read-only access preserves malformed %s bytes and reports blocking evidence', async kind => {
     const { dir } = repo()
     try {
@@ -143,9 +156,11 @@ describe('worker registry read cache', () => {
       const tree = (root: string): unknown[] => fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
         .map(entry => [entry.name, entry.isDirectory() ? tree(join(root, entry.name)) : fs.readFileSync(join(root, entry.name)).toString('hex')])
       const before = tree(reader.root)
-      if (kind === 'record') { expect(await reader.read(record.id)).toBeUndefined(); expect(await reader.list()).toEqual([]) }
-      else if (kind === 'report') expect(await reader.reports(record.id)).toEqual([])
-      else expect(await reader.exits(record.id)).toEqual([])
+      if (kind === 'record') {
+        await expect(reader.read(record.id)).rejects.toMatchObject({ reason: 'blocked' })
+        await expect(reader.list()).rejects.toMatchObject({ reason: 'blocked' })
+      } else if (kind === 'report') await expect(reader.reports(record.id)).rejects.toMatchObject({ reason: 'blocked' })
+      else await expect(reader.exits(record.id)).rejects.toMatchObject({ reason: 'blocked' })
       const facts = await reader.snapshot()
       expect(tree(reader.root)).toEqual(before)
       expect(facts.available && facts.blockers.some(value => value.includes(path.basename(file)))).toBe(true)

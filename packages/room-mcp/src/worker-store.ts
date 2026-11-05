@@ -17,6 +17,22 @@ export type WorkerSnapshot =
   | { available: true; revision: string; workers: WorkerFacts[]; reservations: Record<string, string>; blockers: string[]; operations?: string[]; orphanRuns?: Record<string, { reports: RunReport[]; exits: ExitObservation[] }> }
   | { available: false; reason: 'unavailable'; detail: string }
 export type AvailableWorkerSnapshot = Extract<WorkerSnapshot, { available: true }>
+/** Unknown lifecycle evidence cannot authorize a destructive or capacity decision. */
+export interface BlockedWorkerEvidence { reason: 'blocked'; blockers: string[] }
+export class WorkerEvidenceBlocked extends Error {
+  readonly reason = 'blocked'
+  constructor(readonly blockers: string[]) { super(`worker evidence blocked: ${blockers.join('; ')}`) }
+}
+/** Operation boundaries report the blocker without proceeding with an empty result. */
+export function requireWorkerEvidence<T>(result: T | BlockedWorkerEvidence): T {
+  if (result && typeof result === 'object' && 'reason' in result && result.reason === 'blocked')
+    throw new WorkerEvidenceBlocked((result as BlockedWorkerEvidence).blockers)
+  return result as T
+}
+export function workerEvidence(snapshot: WorkerSnapshot): AvailableWorkerSnapshot | BlockedWorkerEvidence {
+  if (!snapshot.available) throw new Error(`worker snapshot unavailable: ${snapshot.detail}`)
+  return snapshot.blockers.length ? { reason: 'blocked', blockers: snapshot.blockers } : snapshot
+}
 export interface WorkerFreshness {
   id: string; name: string; lead: string; dir: string; reported: 'done' | 'exited' | 'none'
   run: string; seq: number; busy: boolean; revision: string

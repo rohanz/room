@@ -1,3 +1,4 @@
+import { requireWorkerEvidence } from '../worker-store.js'
 import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import fs from 'node:fs'
@@ -200,7 +201,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!resume) return `error: ${addressedWorker.tag} is running, so nothing was rebased and nothing sent. Room rebases only a stopped worker: ask it to call room_done (priority=interrupt), wait for its done, then send again with refresh=true; or respawn it to start from your HEAD.`
         const registry = await registryForDir(s.dir)
         const record = (await registry.read(addressedWorker.id))
-        const refused = record ? refreshRefusal(s.dir, record, (await registry.checkoutUsers(record)).map(user => user.record.tag)) : 'it has no local worker record'
+        const refused = record ? refreshRefusal(s.dir, record, requireWorkerEvidence(await registry.checkoutUsers(record)).map(user => user.record.tag)) : 'it has no local worker record'
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
       }
       const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
@@ -247,7 +248,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const record = await registry.read(addressedWorker!.id)
             if (!record) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`
             // Checked again under the lease: a dir= worker may have started in this checkout since the first check.
-            const refusedNow = refreshRefusal(s.dir, record, (await registry.checkoutUsers(record)).map(user => user.record.tag))
+            const refusedNow = refreshRefusal(s.dir, record, requireWorkerEvidence(await registry.checkoutUsers(record)).map(user => user.record.tag))
             if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
             let outcome: RefreshOutcome
             try { outcome = await refreshWorkerBase(s.dir, record) }

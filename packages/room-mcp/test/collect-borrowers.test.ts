@@ -2,12 +2,25 @@ import { base, git, httpxWorkers, lead, put, setup, worker } from './collect-fix
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { autoRetire } from '../src/retire.js'
+import { autoRetire, removeCollectedCheckout } from '../src/retire.js'
 import { cleanupWorker, type WorkerCleanupPreservation } from '../src/worker-git.js'
 import { registryForDir } from '../src/worker-registry.js'
 import { realStateInput } from '../src/worker-status.js'
 import { finishWorker, workerByTag } from './registry-fixture.js'
 describe('room_collect', () => {
+
+  it('keeps a collected owner checkout when a borrower record becomes malformed', async () => {
+    const t = httpxWorkers('running')
+    await t.sync()
+    const registry = await registryForDir(lead)
+    const record = (await registry.read('w_port-fix'))!, status = (await registry.status(record.id))!
+    fs.writeFileSync(path.join(registry.root, 'workers', 'w_port-bools.json'), '{malformed')
+    const result = await removeCollectedCheckout(t.s, record, realStateInput(record, status),
+      { alive: () => false, probe: () => undefined, list: () => [] }, { justCollected: true })
+    expect(result).toMatchObject({ removed: false, reason: expect.stringMatching(/blocked.*w_port-bools/) })
+    expect(fs.existsSync(worker)).toBe(true)
+    expect((await registry.read(record.id))?.phase).toBe('active')
+  })
 
   it('detaches port-bools, then discards port-fix and its worktree', async () => {
     const t = httpxWorkers()

@@ -1,3 +1,4 @@
+import { requireWorkerEvidence } from './worker-store.js'
 /** Retirement keyed by worker ID (registry §12): the registry records it, each room's projector cleans up. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -45,7 +46,9 @@ export type RemoveCheckoutOptions = {
  */
 export async function removeCollectedCheckout(s: Session, record: WorkerRecord | undefined, w: LocalWorker, processes: CollectedProcesses, o: RemoveCheckoutOptions = {}): Promise<CleanupResult> {
   const registry = await registryForDir(s.dir)
-  const users = record ? (await registry.checkoutUsers(record)) : []
+  const evidence = record ? await registry.checkoutUsers(record) : []
+  if ('reason' in evidence) return { removed: false, reason: `worker evidence blocked: ${evidence.blockers.join('; ')}` }
+  const users = evidence
   if (users.length && !o.retireUser) return { removed: false, reason: `its worktree is shared with ${users.map(user => user.record.tag).join(', ')}` }
   for (const { record: user } of users) await o.retireUser!(user)
   const nested = (await registry.list()).filter(other => other.lead.participant === w.name && !['retiring', 'retired', 'abandoned'].includes(other.phase))
@@ -229,7 +232,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
         const fresh = (await registry.read(record.id))
         if (!fresh || fresh.seq !== record.seq || rooms.hasHandle(s, w) || !rooms.tracking(s)) continue
         const borrower = !!fresh.sharedWith || !!(await registry.worktreeOwner(fresh))
-        const users = borrower ? [] : (await registry.checkoutUsers(fresh))
+        const users = borrower ? [] : requireWorkerEvidence(await registry.checkoutUsers(fresh))
         if (!borrower && !users.length) {
           if (!await cleanupWorker(s.dir, w, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue
         }

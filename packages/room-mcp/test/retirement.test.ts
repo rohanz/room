@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFil
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, manifestPaths } from '@room/shared'
-import { closeRegistryForDir, localWorkers } from '../src/worker-registry.js'
+import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
 import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
@@ -95,6 +95,22 @@ it('does not inspect a separate checkout that Room does not own even if its bran
 })
 
 describe('git facts and lead evaluation', () => {
+  it('retains checkout and coordination when a borrower record blocks auto-retirement', async () => {
+    const { dir } = repo(), r = registry(dir)
+    try {
+      const prepared = await prepareWorktree(dir, 'w', 'lead'), owner = { ...worker(prepared.dir), base: prepared.base }
+      const borrower = { ...owner, id: 'w_borrower', tag: 'borrower', name: 'lead+borrower', sharedWith: fixtureId(owner), status: 'running' as const }
+      await registerWorkers(r.s, [owner, borrower])
+      r.room.addClaim({ by: owner.name, byKind: 'agent', path: 'a', from: 1, to: 1, intent: 'work' })
+      const store = await registryForDir(dir)
+      writeFileSync(join(store.root, 'workers', `${fixtureId(borrower)}.json`), '{malformed')
+      await expect(r.rooms.autoRetire()).rejects.toThrow(fixtureId(borrower))
+      expect(existsSync(owner.dir)).toBe(true)
+      expect((await store.read(fixtureId(owner)))?.phase).toBe('active')
+      expect(r.room.openClaims().some(c => c.by === owner.name)).toBe(true)
+    } finally { r.close() }
+  })
+
   it('auto-retires a worker whose worktree vanished and keeps unmerged commits', async () => {
     const { dir, git } = repo(), r = registry(dir)
     const prepared = await prepareWorktree(dir, 'w', 'lead')

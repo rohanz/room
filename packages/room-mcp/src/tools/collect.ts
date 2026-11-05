@@ -1,3 +1,4 @@
+import { requireWorkerEvidence } from '../worker-store.js'
 import { asyncFilter } from '../async-filter.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -105,7 +106,7 @@ async function stopOwnedWorktreeProcesses(leadDir: string, w: LocalWorker, leadN
   if (w.id) {
     const registry = await registryForDir(leadDir)
     const record = (await registry.read(w.id))
-    if (!record || record.sharedWith || (await registry.worktreeOwner(record)) || (await registry.checkoutUsers(record)).length) return []
+    if (!record || record.sharedWith || (await registry.worktreeOwner(record)) || requireWorkerEvidence(await registry.checkoutUsers(record)).length) return []
   }
   try { return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe, list }) }
   catch (e) {
@@ -182,7 +183,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     try { await registry.beginOperation(owner.id, 'collect') } catch { return }
     try {
       const fresh = (await registry.read(owner.id))
-      if (!fresh || fresh.phase !== 'retired' || !fresh.keptWorktree || (await registry.checkoutUsers(fresh)).length) return
+      if (!fresh || fresh.phase !== 'retired' || !fresh.keptWorktree || requireWorkerEvidence(await registry.checkoutUsers(fresh)).length) return
       const status = (await registry.status(fresh.id))
       if (!status) return
       const w = { ...realStateInput(fresh, status), status: 'done' as const, exitCode: 0 }
@@ -320,7 +321,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     try { await registry.beginOperation(active.id, 'discard') }
     catch { return 'error: this worker is already being handled or retired' }
     try {
-      const shared = !borrowed && fs.existsSync(r.keptWorktree!) && (await registry.checkoutUsers(active))[0]
+      const shared = !borrowed && fs.existsSync(r.keptWorktree!) && requireWorkerEvidence(await registry.checkoutUsers(active))[0]
       if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`
       const missing = !borrowed && decideDiscard(await workerRealState(s.dir, w)) === 'prune'
       const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir)
@@ -376,7 +377,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     try {
     const sharedResults: string[] = []
     if (!borrowed) {
-      const users = (await registry.checkoutUsers((await registry.read(w.id))!))
+      const users = requireWorkerEvidence(await registry.checkoutUsers((await registry.read(w.id))!))
       const running = users.find(({ status }) => !['done', 'failed', 'stopped'].includes(status.status))
       if (running && fs.existsSync(w.dir)) return `error: discard refused; ${running.record.tag} is still running in ${w.tag}'s worktree: ${w.dir}`
       for (const { record: user } of users) {
@@ -904,7 +905,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             continue
           }
           // A live borrower keeps the owner's checkout: the owner retires now and the checkout follows the borrower.
-          const running = record && (await registry.checkoutUsers(record)).find(({ status }) => !['done', 'failed', 'stopped'].includes(status.status))
+          const running = record && requireWorkerEvidence(await registry.checkoutUsers(record)).find(({ status }) => !['done', 'failed', 'stopped'].includes(status.status))
           if (running) {
             out.push(`kept ${w.tag}'s worktree: ${running.record.tag} is still running in it`)
             retire(w.summary ?? '', w.dir, `shared checkout: ${running.record.tag}`)

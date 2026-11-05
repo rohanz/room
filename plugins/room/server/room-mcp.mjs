@@ -32367,6 +32367,138 @@ var init_worker_state = __esm({
   }
 });
 
+// packages/room-mcp/src/worker-store.ts
+function requireWorkerEvidence(result2) {
+  if (result2 && typeof result2 === "object" && "reason" in result2 && result2.reason === "blocked")
+    throw new WorkerEvidenceBlocked(result2.blockers);
+  return result2;
+}
+function workerEvidence(snapshot2) {
+  if (!snapshot2.available) throw new Error(`worker snapshot unavailable: ${snapshot2.detail}`);
+  return snapshot2.blockers.length ? { reason: "blocked", blockers: snapshot2.blockers } : snapshot2;
+}
+function applyWorkerCommand(old, command3) {
+  const next = { ...old, seq: old.seq + 1 };
+  switch (command3.type) {
+    case "prepare-start":
+      return { ...next, phase: "preparing" };
+    case "prepare-step":
+      return { ...next, prep: { ...old.prep, ...command3.facts, step: command3.step } };
+    case "prepare-finish":
+      return { ...next, ...command3.facts, phase: "prepared", prep: {
+        ...old.prep,
+        step: "prepared",
+        created: command3.created,
+        branchCreated: command3.branchCreated,
+        branchExisted: old.prep.branchExisted ?? (command3.branchCreated ? false : void 0)
+      } };
+    case "activate":
+      return { ...next, phase: "active" };
+    case "launch": {
+      const run2 = old.runs.at(-1);
+      if (!run2 || run2.n !== command3.run || command3.nonce !== void 0 && run2.nonce !== command3.nonce) throw new Error("worker run changed");
+      return {
+        ...next,
+        ...command3.phase ? { phase: command3.phase } : {},
+        ..."port" in command3 ? { port: command3.port } : {},
+        ..."hostSessionId" in command3 ? { hostSessionId: command3.hostSessionId } : {},
+        ...command3.nice !== void 0 ? { budget: { ...old.budget, nice: command3.nice } } : {},
+        ..."link" in command3 ? { link: command3.link } : {},
+        runs: old.runs.map((value5) => value5.n === command3.run ? { ...value5, launch: command3.launch } : value5)
+      };
+    }
+    case "run-prompts":
+      if (old.runs.at(-1)?.n !== command3.run) throw new Error("worker run changed");
+      return { ...next, runs: old.runs.map((value5) => value5.n === command3.run ? { ...value5, promptMsgIds: command3.promptMsgIds } : value5) };
+    case "run-posted":
+      if (!old.runs.some((run2) => run2.n === command3.run)) throw new Error("worker run missing");
+      return { ...next, runs: old.runs.map((value5) => value5.n === command3.run ? { ...value5, posted: command3.messageId } : value5) };
+    case "collect-keep":
+      return {
+        ...next,
+        base: command3.base,
+        collectedKeep: true,
+        carriedBase: void 0,
+        carriedUntracked: void 0,
+        collectPending: void 0,
+        phase: "active",
+        keptPublication: command3.keptPublication && { ...command3.keptPublication, base: command3.base }
+      };
+    case "kept-publication":
+      if (old.base !== command3.expectedBase) throw new Error("worker base changed");
+      return { ...next, keptPublication: command3.publication };
+    case "rebase":
+      if (old.base !== command3.expectedBase) throw new Error("worker base changed");
+      return {
+        ...next,
+        base: command3.base,
+        collectedKeep: old.collectedKeep || command3.collectedKeep || void 0,
+        carriedBase: command3.carriedBase,
+        carriedUntracked: command3.carriedUntracked,
+        keptPublication: command3.keptPublication
+      };
+    case "retired-checkout-kept":
+      return {
+        ...next,
+        keptWorktree: command3.dir,
+        archive: { ...old.archive, keptWorktree: command3.dir, keptReason: command3.reason }
+      };
+    case "retired-checkout-removed": {
+      const { keptWorktree: _kept, keptReason: _reason, ...archive } = old.archive ?? {};
+      return { ...next, keptWorktree: void 0, archive };
+    }
+  }
+}
+function recordStatus(fact) {
+  const { record: record2 } = fact;
+  const ordered = [...record2.runs].sort((a, b) => a.n - b.n);
+  let index = ordered.length - 1;
+  while (ordered[index]?.mode === "resume" && ordered[index]?.launch?.outcome === "never") index--;
+  if (!["retired", "abandoned", "collecting", "discarding", "retiring"].includes(record2.phase) && ordered[index]?.launch?.outcome === "launched") return void 0;
+  return statusOf(record2, record2.runs, [], [], (identity3) => fact.liveness?.find((probe) => probe.identity.pid === identity3.pid && probe.identity.startTime === identity3.startTime && probe.identity.executable === identity3.executable)?.state ?? "unknown");
+}
+function snapshotReserved(snapshot2, tag) {
+  const record2 = snapshot2.available ? snapshotRead(snapshot2, snapshot2.reservations[tag]) : void 0;
+  return record2?.tag === tag ? record2 : void 0;
+}
+function snapshotFreshness(snapshot2, id3) {
+  const fact = snapshot2.available ? snapshot2.workers.find((fact2) => fact2.record.id === id3) : void 0;
+  if (!fact || !snapshot2.available) return void 0;
+  const { record: record2, reports, exits, busy: busy2 } = fact, run2 = record2.runs.at(-1);
+  const reported = run2 && reports.some((report) => report.run === run2.n && report.nonce === run2.nonce && !!report.done) ? "done" : run2 && exits.some((exit) => exit.run === run2.n) ? "exited" : "none";
+  return {
+    id: record2.id,
+    name: record2.name,
+    lead: record2.lead.participant,
+    dir: record2.dir,
+    reported,
+    run: run2 ? `${run2.n}:${run2.nonce}` : "",
+    seq: record2.seq,
+    busy: busy2,
+    revision: snapshot2.revision
+  };
+}
+function snapshotStatus(snapshot2, id3, alive = () => "unknown", nowMs) {
+  const fact = snapshot2.available ? snapshot2.workers.find((fact2) => fact2.record.id === id3) : void 0;
+  return fact && statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, alive, nowMs);
+}
+var WorkerEvidenceBlocked, snapshotRead;
+var init_worker_store = __esm({
+  "packages/room-mcp/src/worker-store.ts"() {
+    "use strict";
+    init_worker_status();
+    WorkerEvidenceBlocked = class extends Error {
+      constructor(blockers) {
+        super(`worker evidence blocked: ${blockers.join("; ")}`);
+        this.blockers = blockers;
+      }
+      blockers;
+      reason = "blocked";
+    };
+    snapshotRead = (snapshot2, id3) => snapshot2.available ? snapshot2.workers.find((fact) => fact.record.id === id3)?.record : void 0;
+  }
+});
+
 // packages/room-mcp/src/worker-deps.ts
 import fs28 from "node:fs";
 import path26 from "node:path";
@@ -34193,121 +34325,6 @@ var init_parse = __esm({
       spec14,
       spec15
     ];
-  }
-});
-
-// packages/room-mcp/src/worker-store.ts
-function applyWorkerCommand(old, command3) {
-  const next = { ...old, seq: old.seq + 1 };
-  switch (command3.type) {
-    case "prepare-start":
-      return { ...next, phase: "preparing" };
-    case "prepare-step":
-      return { ...next, prep: { ...old.prep, ...command3.facts, step: command3.step } };
-    case "prepare-finish":
-      return { ...next, ...command3.facts, phase: "prepared", prep: {
-        ...old.prep,
-        step: "prepared",
-        created: command3.created,
-        branchCreated: command3.branchCreated,
-        branchExisted: old.prep.branchExisted ?? (command3.branchCreated ? false : void 0)
-      } };
-    case "activate":
-      return { ...next, phase: "active" };
-    case "launch": {
-      const run2 = old.runs.at(-1);
-      if (!run2 || run2.n !== command3.run || command3.nonce !== void 0 && run2.nonce !== command3.nonce) throw new Error("worker run changed");
-      return {
-        ...next,
-        ...command3.phase ? { phase: command3.phase } : {},
-        ..."port" in command3 ? { port: command3.port } : {},
-        ..."hostSessionId" in command3 ? { hostSessionId: command3.hostSessionId } : {},
-        ...command3.nice !== void 0 ? { budget: { ...old.budget, nice: command3.nice } } : {},
-        ..."link" in command3 ? { link: command3.link } : {},
-        runs: old.runs.map((value5) => value5.n === command3.run ? { ...value5, launch: command3.launch } : value5)
-      };
-    }
-    case "run-prompts":
-      if (old.runs.at(-1)?.n !== command3.run) throw new Error("worker run changed");
-      return { ...next, runs: old.runs.map((value5) => value5.n === command3.run ? { ...value5, promptMsgIds: command3.promptMsgIds } : value5) };
-    case "run-posted":
-      if (!old.runs.some((run2) => run2.n === command3.run)) throw new Error("worker run missing");
-      return { ...next, runs: old.runs.map((value5) => value5.n === command3.run ? { ...value5, posted: command3.messageId } : value5) };
-    case "collect-keep":
-      return {
-        ...next,
-        base: command3.base,
-        collectedKeep: true,
-        carriedBase: void 0,
-        carriedUntracked: void 0,
-        collectPending: void 0,
-        phase: "active",
-        keptPublication: command3.keptPublication && { ...command3.keptPublication, base: command3.base }
-      };
-    case "kept-publication":
-      if (old.base !== command3.expectedBase) throw new Error("worker base changed");
-      return { ...next, keptPublication: command3.publication };
-    case "rebase":
-      if (old.base !== command3.expectedBase) throw new Error("worker base changed");
-      return {
-        ...next,
-        base: command3.base,
-        collectedKeep: old.collectedKeep || command3.collectedKeep || void 0,
-        carriedBase: command3.carriedBase,
-        carriedUntracked: command3.carriedUntracked,
-        keptPublication: command3.keptPublication
-      };
-    case "retired-checkout-kept":
-      return {
-        ...next,
-        keptWorktree: command3.dir,
-        archive: { ...old.archive, keptWorktree: command3.dir, keptReason: command3.reason }
-      };
-    case "retired-checkout-removed": {
-      const { keptWorktree: _kept, keptReason: _reason, ...archive } = old.archive ?? {};
-      return { ...next, keptWorktree: void 0, archive };
-    }
-  }
-}
-function recordStatus(fact) {
-  const { record: record2 } = fact;
-  const ordered = [...record2.runs].sort((a, b) => a.n - b.n);
-  let index = ordered.length - 1;
-  while (ordered[index]?.mode === "resume" && ordered[index]?.launch?.outcome === "never") index--;
-  if (!["retired", "abandoned", "collecting", "discarding", "retiring"].includes(record2.phase) && ordered[index]?.launch?.outcome === "launched") return void 0;
-  return statusOf(record2, record2.runs, [], [], (identity3) => fact.liveness?.find((probe) => probe.identity.pid === identity3.pid && probe.identity.startTime === identity3.startTime && probe.identity.executable === identity3.executable)?.state ?? "unknown");
-}
-function snapshotReserved(snapshot2, tag) {
-  const record2 = snapshot2.available ? snapshotRead(snapshot2, snapshot2.reservations[tag]) : void 0;
-  return record2?.tag === tag ? record2 : void 0;
-}
-function snapshotFreshness(snapshot2, id3) {
-  const fact = snapshot2.available ? snapshot2.workers.find((fact2) => fact2.record.id === id3) : void 0;
-  if (!fact || !snapshot2.available) return void 0;
-  const { record: record2, reports, exits, busy: busy2 } = fact, run2 = record2.runs.at(-1);
-  const reported = run2 && reports.some((report) => report.run === run2.n && report.nonce === run2.nonce && !!report.done) ? "done" : run2 && exits.some((exit) => exit.run === run2.n) ? "exited" : "none";
-  return {
-    id: record2.id,
-    name: record2.name,
-    lead: record2.lead.participant,
-    dir: record2.dir,
-    reported,
-    run: run2 ? `${run2.n}:${run2.nonce}` : "",
-    seq: record2.seq,
-    busy: busy2,
-    revision: snapshot2.revision
-  };
-}
-function snapshotStatus(snapshot2, id3, alive = () => "unknown", nowMs) {
-  const fact = snapshot2.available ? snapshot2.workers.find((fact2) => fact2.record.id === id3) : void 0;
-  return fact && statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, alive, nowMs);
-}
-var snapshotRead;
-var init_worker_store = __esm({
-  "packages/room-mcp/src/worker-store.ts"() {
-    "use strict";
-    init_worker_status();
-    snapshotRead = (snapshot2, id3) => snapshot2.available ? snapshot2.workers.find((fact) => fact.record.id === id3)?.record : void 0;
   }
 });
 
@@ -37869,14 +37886,17 @@ async function projectWorkers(s, registry2, lead, role, origin, active = () => t
   if (!current2()) return void 0;
   const before = await registry2.snapshot();
   if (!current2() || !before.available) return void 0;
-  const { write: all2, retire: retiring } = await registry2.projectable(lead, roomKey2);
+  requireWorkerEvidence(workerEvidence(before));
+  const { write: all2, retire: retiring } = requireWorkerEvidence(await registry2.projectable(lead, roomKey2));
   if (!current2()) return void 0;
   const write2 = all2.filter(({ record: record2 }) => inRole(record2, roomKey2, role));
   const retire = retiring.filter((record2) => inRole(record2, roomKey2, role));
   const post = releasePoster(s.post);
   const listed = /* @__PURE__ */ new Set([...write2.map(({ record: record2 }) => record2.id), ...retire.map((record2) => record2.id)]);
   const facts = await registry2.snapshot();
-  if (!facts.available || facts.revision !== before.revision || !current2()) return void 0;
+  if (!facts.available || !current2()) return void 0;
+  requireWorkerEvidence(workerEvidence(facts));
+  if (facts.revision !== before.revision) return void 0;
   s.room.doc.transact(() => {
     for (const { record: record2, status } of write2) {
       const run2 = status.run;
@@ -40438,7 +40458,9 @@ async function retireWorker(rooms, s, id3, archive, extra = {}) {
 }
 async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
   const registry2 = await registryForDir(s.dir);
-  const users = record2 ? await registry2.checkoutUsers(record2) : [];
+  const evidence = record2 ? await registry2.checkoutUsers(record2) : [];
+  if ("reason" in evidence) return { removed: false, reason: `worker evidence blocked: ${evidence.blockers.join("; ")}` };
+  const users = evidence;
   if (users.length && !o.retireUser) return { removed: false, reason: `its worktree is shared with ${users.map((user) => user.record.tag).join(", ")}` };
   for (const { record: user } of users) await o.retireUser(user);
   const nested = (await registry2.list()).filter((other) => other.lead.participant === w.name && !["retiring", "retired", "abandoned"].includes(other.phase));
@@ -40639,7 +40661,7 @@ async function autoRetire(s, rooms) {
         const fresh = await registry2.read(record2.id);
         if (!fresh || fresh.seq !== record2.seq || rooms.hasHandle(s, w) || !rooms.tracking(s)) continue;
         const borrower = !!fresh.sharedWith || !!await registry2.worktreeOwner(fresh);
-        const users = borrower ? [] : await registry2.checkoutUsers(fresh);
+        const users = borrower ? [] : requireWorkerEvidence(await registry2.checkoutUsers(fresh));
         if (!borrower && !users.length) {
           if (!await cleanupWorker(s.dir, w, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue;
         }
@@ -40677,6 +40699,7 @@ var LEGACY_UNCONFIRMED;
 var init_retire = __esm({
   "packages/room-mcp/src/retire.ts"() {
     "use strict";
+    init_worker_store();
     init_src();
     init_policy_store();
     init_worker_registry();
@@ -45042,7 +45065,7 @@ async function cleanupWorker(leadDir, w, options = {}) {
     const registry2 = await registryForDir2(leadDir);
     const record2 = await registry2.read(w.id);
     if (!record2) return w.branch === `room/${w.tag}` && (await registry2.list()).every((peer) => path48.resolve(peer.dir) !== path48.resolve(w.dir) || peer.tag === w.tag);
-    return !record2.sharedWith && !await registry2.worktreeOwner(record2) && (await registry2.checkoutUsers(record2)).length === 0;
+    return !record2.sharedWith && !await registry2.worktreeOwner(record2) && requireWorkerEvidence(await registry2.checkoutUsers(record2)).length === 0;
   };
   if (!await available()) return false;
   if (!discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
@@ -45284,6 +45307,7 @@ var WORKERS_DIR, lstatOrUndefined, collectHeadRef, collectBaseRef, privateWorker
 var init_worker_git = __esm({
   "packages/room-mcp/src/worker-git.ts"() {
     "use strict";
+    init_worker_store();
     init_src();
     init_src4();
     init_git();
@@ -45942,7 +45966,17 @@ var init_worker_file_store = __esm({
         });
       }
       occupancy() {
-        return this.list().filter((r) => ["starting", "running", "unknown", "ambiguous"].includes(this.status(r.id)?.status ?? "")).length;
+        const previousBlockers = this.decodeBlockers;
+        this.decodeBlockers = /* @__PURE__ */ new Set();
+        try {
+          const count = this.list().filter((r) => ["starting", "running", "unknown", "ambiguous"].includes(this.status(r.id)?.status ?? "")).length;
+          const blockers = [...this.decodeBlockers, ...files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file))];
+          if (blockers.length) throw new WorkerEvidenceBlocked(blockers);
+          return count;
+        } finally {
+          for (const blocker of this.decodeBlockers) previousBlockers?.add(blocker);
+          this.decodeBlockers = previousBlockers;
+        }
       }
       reports(id3) {
         if (!safeId(id3)) throw new Error("invalid worker id");
@@ -46082,8 +46116,9 @@ var init_worker_file_store = __esm({
             }
             const known = new Set(workers.map((fact) => fact.record.id));
             for (const id3 of runOwners) if (safeId(id3) && !known.has(id3)) orphanRuns[id3] = { reports: this.reports(id3), exits: this.exits(id3) };
-            if (selectedId && safeId(selectedId) && !records.length) this.decodeBlockers.add(`workers/${selectedId}.json: unavailable reserved record`);
-            const blockers = [...this.decodeBlockers, ...query2?.recordOnly ? [] : files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file))];
+            if (reservationId && !records.length) this.decodeBlockers.add(`workers/${reservationId}.json: unavailable reserved record`);
+            const quarantine = !query2?.recordOnly || !selected || !records.length ? files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file)) : [];
+            const blockers = [...this.decodeBlockers, ...quarantine.filter((name) => !query2?.recordOnly || !selected || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))];
             const after = this.factRevision(query2);
             if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns };
           }
@@ -47336,9 +47371,7 @@ var init_worker_registry = __esm({
         return this.store.snapshot(query2);
       }
       async facts(query2) {
-        const snapshot2 = await this.snapshot(query2);
-        if (!snapshot2.available) throw new Error(`worker snapshot unavailable: ${snapshot2.detail}`);
-        return snapshot2;
+        return requireWorkerEvidence(workerEvidence(await this.snapshot(query2)));
       }
       command(id3, command3, expectedSeq) {
         return this.store.command(id3, command3, expectedSeq);
@@ -47370,7 +47403,9 @@ var init_worker_registry = __esm({
         return this.file ? this.file.enrichedStatus(fact) : Promise.resolve(statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, () => "unknown"));
       }
       async checkoutUsers(owner) {
-        const snapshot2 = await this.facts(), users = [];
+        const snapshot2 = workerEvidence(await this.snapshot());
+        if ("reason" in snapshot2) return snapshot2;
+        const users = [];
         for (const fact of snapshot2.workers) {
           const record2 = fact.record;
           if (record2.id !== owner.id && !["retiring", "retired", "abandoned"].includes(record2.phase) && path51.resolve(record2.dir) === path51.resolve(owner.dir))
@@ -47419,8 +47454,10 @@ var init_worker_registry = __esm({
         return count;
       }
       async projectable(lead, roomKey2) {
+        const snapshot2 = workerEvidence(await this.snapshot());
+        if ("reason" in snapshot2) return snapshot2;
         const write2 = [], retire = [];
-        for (const fact of (await this.facts()).workers) {
+        for (const fact of snapshot2.workers) {
           const record2 = fact.record;
           if (record2.lead.participant !== lead || record2.room !== roomKey2 && record2.projectedInto !== roomKey2) continue;
           if (record2.phase === "retiring") {
@@ -61496,6 +61533,7 @@ function createPrs(deps) {
 }
 
 // packages/room-mcp/src/tools/messaging.ts
+init_worker_store();
 init_src();
 import fs64 from "node:fs";
 
@@ -61968,7 +62006,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
         if (!resume) return `error: ${addressedWorker.tag} is running, so nothing was rebased and nothing sent. Room rebases only a stopped worker: ask it to call room_done (priority=interrupt), wait for its done, then send again with refresh=true; or respawn it to start from your HEAD.`;
         const registry2 = await registryForDir(s.dir);
         const record2 = await registry2.read(addressedWorker.id);
-        const refused = record2 ? refreshRefusal(s.dir, record2, (await registry2.checkoutUsers(record2)).map((user) => user.record.tag)) : "it has no local worker record";
+        const refused = record2 ? refreshRefusal(s.dir, record2, requireWorkerEvidence(await registry2.checkoutUsers(record2)).map((user) => user.record.tag)) : "it has no local worker record";
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`;
       }
       const paths = sendType === "changed" && Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
@@ -62016,7 +62054,7 @@ ${baseNote}` };
             const registry2 = await registryForDir(s.dir);
             const record2 = await registry2.read(addressedWorker.id);
             if (!record2) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`;
-            const refusedNow = refreshRefusal(s.dir, record2, (await registry2.checkoutUsers(record2)).map((user) => user.record.tag));
+            const refusedNow = refreshRefusal(s.dir, record2, requireWorkerEvidence(await registry2.checkoutUsers(record2)).map((user) => user.record.tag));
             if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`;
             let outcome;
             try {
@@ -63282,6 +63320,10 @@ var Ledger = class {
   supplyWorkers(s, snapshot2) {
     this.workerSnapshots.set(s, snapshot2);
   }
+  workerEvidenceReady(s) {
+    const facts = this.workerSnapshots.get(s);
+    return !process.env.ROOM_WORKER_ID || !!facts?.available && facts.blockers.length === 0;
+  }
   /** A session may deliver for P only while it is P's holder (or no holder is recorded yet, before wave 4). */
   fenced(s) {
     if (s.lease) return s.lease.fence() !== void 0;
@@ -63332,7 +63374,7 @@ var Ledger = class {
   /** What `s` is owed now, reserved or not: for counts and wake decisions, never a receipt. */
   candidates(s) {
     if (!this.fenced(s)) return [];
-    if (process.env.ROOM_WORKER_ID && !this.workerSnapshots.get(s)?.available) return [];
+    if (!this.workerEvidenceReady(s)) return [];
     this.prune(s);
     const cursor = this.route(s);
     const prompt = new Set(this.promptIds(s));
@@ -63472,7 +63514,7 @@ var Ledger = class {
   /** The cursor, with this call's routing decisions recorded: a broadcast `messageForMe` rejects goes to `routed` (MF2). */
   route(s) {
     const cursor = this.cursor(s);
-    if (process.env.ROOM_WORKER_ID && !this.workerSnapshots.get(s)?.available) return cursor;
+    if (!this.workerEvidenceReady(s)) return cursor;
     const context2 = this.o.route(s);
     const onBus = /* @__PURE__ */ new Set();
     let changed = false;
@@ -63498,7 +63540,7 @@ var Ledger = class {
     const spawn7 = ownSpawnFrontier(s, facts);
     cursor = kept ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) } : { participant: s.me.name, frontier: ownLaunchFrontier(s, facts) ?? highestSeq(s.room), routed: /* @__PURE__ */ new Set() };
     if (spawn7 !== void 0) cursor.addressedFrom = spawn7;
-    if (process.env.ROOM_WORKER_ID && !facts?.available) return cursor;
+    if (!this.workerEvidenceReady(s)) return cursor;
     this.cursors.set(s, cursor);
     if (!kept) this.persistCursor(s, cursor);
     return cursor;
@@ -63971,6 +64013,7 @@ init_session();
 init_context();
 
 // packages/room-mcp/src/tools/collect.ts
+init_worker_store();
 init_async_filter();
 init_src();
 init_git();
@@ -64122,7 +64165,7 @@ async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors,
   if (w.id) {
     const registry2 = await registryForDir(leadDir);
     const record2 = await registry2.read(w.id);
-    if (!record2 || record2.sharedWith || await registry2.worktreeOwner(record2) || (await registry2.checkoutUsers(record2)).length) return [];
+    if (!record2 || record2.sharedWith || await registry2.worktreeOwner(record2) || requireWorkerEvidence(await registry2.checkoutUsers(record2)).length) return [];
   }
   try {
     return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe, list });
@@ -64194,7 +64237,7 @@ function handlers9(state) {
     }
     try {
       const fresh = await registry2.read(owner.id);
-      if (!fresh || fresh.phase !== "retired" || !fresh.keptWorktree || (await registry2.checkoutUsers(fresh)).length) return;
+      if (!fresh || fresh.phase !== "retired" || !fresh.keptWorktree || requireWorkerEvidence(await registry2.checkoutUsers(fresh)).length) return;
       const status = await registry2.status(fresh.id);
       if (!status) return;
       const w = { ...realStateInput(fresh, status), status: "done", exitCode: 0 };
@@ -64335,7 +64378,7 @@ function handlers9(state) {
       return "error: this worker is already being handled or retired";
     }
     try {
-      const shared = !borrowed && fs70.existsSync(r.keptWorktree) && (await registry2.checkoutUsers(active))[0];
+      const shared = !borrowed && fs70.existsSync(r.keptWorktree) && requireWorkerEvidence(await registry2.checkoutUsers(active))[0];
       if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`;
       const missing2 = !borrowed && decideDiscard(await workerRealState(s.dir, w)) === "prune";
       const ignored = missing2 || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir);
@@ -64394,7 +64437,7 @@ repeat with force=true to delete them`;
     try {
       const sharedResults = [];
       if (!borrowed) {
-        const users = await registry2.checkoutUsers(await registry2.read(w.id));
+        const users = requireWorkerEvidence(await registry2.checkoutUsers(await registry2.read(w.id)));
         const running = users.find(({ status }) => !["done", "failed", "stopped"].includes(status.status));
         if (running && fs70.existsSync(w.dir)) return `error: discard refused; ${running.record.tag} is still running in ${w.tag}'s worktree: ${w.dir}`;
         for (const { record: user } of users) {
@@ -64924,7 +64967,7 @@ repeat with force=true to delete them`;
             await finishOne();
             continue;
           }
-          const running = record2 && (await registry2.checkoutUsers(record2)).find(({ status }) => !["done", "failed", "stopped"].includes(status.status));
+          const running = record2 && requireWorkerEvidence(await registry2.checkoutUsers(record2)).find(({ status }) => !["done", "failed", "stopped"].includes(status.status));
           if (running) {
             out.push(`kept ${w.tag}'s worktree: ${running.record.tag} is still running in it`);
             retire(w.summary ?? "", w.dir, `shared checkout: ${running.record.tag}`);
@@ -65964,7 +66007,8 @@ async function joinedPresenceWorkers(sessions, hasWrite = async (dir, room, lead
   const reader = await openWorkerReader(dir);
   const facts = await reader.snapshot();
   if (!facts.available || facts.blockers.length) return true;
-  return (await reader.projectable(lead, room)).write.length > 0;
+  const projectable = await reader.projectable(lead, room);
+  return "reason" in projectable || projectable.write.length > 0;
 }) {
   for (const s of sessions) {
     try {

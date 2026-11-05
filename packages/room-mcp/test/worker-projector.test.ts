@@ -1,3 +1,4 @@
+import { requireWorkerEvidence } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 /**
  * The lead-side writers of worker facts (registry §12–§13): views in the room a worker joined, retirement
@@ -50,6 +51,41 @@ function live(room: RoomDoc, name: string, workerId: string): void {
 }
 
 describe('projectable(lead, roomKey) and the joined-room projector', () => {
+  it('preserves worker views and coordination when its record becomes malformed', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'blocked')
+    const s = session(LOCAL, 'lead-s1')
+    live(s.room, w.name, w.id)
+    await projectWorkers(s, registry, lead.name, 'joined')
+    const view = s.room.workerViews.get(w.id)
+    expect(view).toBeDefined()
+    writeFileSync(join(registry.root, 'workers', `${w.id}.json`), '{malformed')
+    await expect(projectWorkers(s, registry, lead.name, 'joined')).rejects.toThrow(w.id)
+    expect(s.room.workerViews.get(w.id)).toEqual(view)
+    expect(s.room.scope(w.name)).toBeDefined()
+    expect(s.room.openClaims().some(c => c.by === w.name)).toBe(true)
+  })
+
+  it.each([1, 2, 3])('retains the view when projection snapshot acquisition %i has blockers', async stage => {
+    const registry = await registryForDir(dir), w = await worker(registry, 'later-blocked')
+    const s = session(LOCAL, 'lead-s1')
+    live(s.room, w.name, w.id)
+    await projectWorkers(s, registry, lead.name, 'joined')
+    const view = s.room.workerViews.get(w.id), snapshot = registry.snapshot.bind(registry)
+    let acquisitions = 0
+    const spy = vi.spyOn(registry, 'snapshot').mockImplementation(async query => {
+      const facts = await snapshot(query)
+      return !query && ++acquisitions === stage && facts.available
+        ? { ...facts, workers: [], blockers: [`workers/${w.id}.json: invalid worker record`] } : facts
+    })
+    try {
+      await expect(projectWorkers(s, registry, lead.name, 'joined')).rejects.toMatchObject({ reason: 'blocked' })
+      expect(s.room.workerViews.get(w.id)).toEqual(view)
+      expect(s.room.scope(w.name)).toBeDefined()
+      expect(s.room.openClaims().some(c => c.by === w.name)).toBe(true)
+    } finally { spy.mockRestore() }
+  })
+
   it('M10 recovers an unposted witnessed failure after the first completion post fails', async () => {
     const registry = await registryForDir(dir)
     const w = await worker(registry, 'recover')
@@ -162,9 +198,9 @@ describe('projectable(lead, roomKey) and the joined-room projector', () => {
     const s = session(LOCAL, 'lead-s1')
     await projectWorkers(s, registry, lead.name, 'joined')
     expect(s.room.workerViews.get(w.id)).toMatchObject({ id: w.id, tag: 'money', name: 'rohanz+money', lead: lead.name, mode: 'local', fence: 'lead-s1', run: 1 })
-    expect((await registry.projectable(lead.name, LOCAL)).write.map(x => x.record.id)).toEqual([w.id])
-    expect((await registry.projectable(lead.name, TEAM)).write.map(x => x.record.id)).toEqual([w.id])
-    expect((await registry.projectable('someone-else', LOCAL)).write).toEqual([])
+    expect(requireWorkerEvidence(await registry.projectable(lead.name, LOCAL)).write.map(x => x.record.id)).toEqual([w.id])
+    expect(requireWorkerEvidence(await registry.projectable(lead.name, TEAM)).write.map(x => x.record.id)).toEqual([w.id])
+    expect(requireWorkerEvidence(await registry.projectable('someone-else', LOCAL)).write).toEqual([])
     // A dead incarnation's view, and a view left by an older session of this lead, are replaced or removed.
     s.room.workerViews.set('w_gone', { ...s.room.workerViews.get(w.id)!, id: 'w_gone', fence: 'lead-s0' })
     ;(s.daemon as unknown as { fence: string }).fence = 'lead-s2'

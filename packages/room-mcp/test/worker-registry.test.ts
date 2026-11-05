@@ -484,10 +484,10 @@ describe('WorkerRegistry durable store', () => {
     const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
     fs.writeFileSync(file, '{not-json')
     const reopened = await openRegistry(dir, { migrate: false })
-    expect((await reopened.list())).toEqual([])
+    await expect(reopened.list()).rejects.toMatchObject({ reason: 'blocked' })
     expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
     expect(fs.existsSync(path.join(dir, 'room', 'registry', 'tags', 'tests.json'))).toBe(true)
-    await expect(reopened.writeIntent({ ...intent(), id: 'w_02' })).rejects.toThrow(/tag in use/)
+    await expect(reopened.writeIntent({ ...intent(), id: 'w_02' })).rejects.toThrow(/blocked.*w_01/)
   })
 
   it('quarantines structurally corrupt records without aborting healthy recovery (S4)', async () => {
@@ -497,10 +497,10 @@ describe('WorkerRegistry durable store', () => {
     const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
     fs.writeFileSync(file, JSON.stringify({ v: 1, id: 'w_01', phase: 'prepared', runs: [{ n: 1 }] }))
     const reopened = await openRegistry(dir, { migrate: false, liveness: identity => identity.pid ? 'alive' : (() => { throw new Error('missing pid') })() })
-    expect((await reopened.read('w_01'))).toBeUndefined()
+    await expect(reopened.read('w_01')).rejects.toMatchObject({ reason: 'blocked' })
     expect((await reopened.read('w_02'))).toBeDefined()
     expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
-    await expect(reopened.writeIntent({ ...intent(), id: 'w_03' })).rejects.toThrow(/tag in use/)
+    await expect(reopened.writeIntent({ ...intent(), id: 'w_03' })).rejects.toThrow(/blocked.*w_01/)
   })
 
   it('releases claims at 8h idle with exactly one notice, and resets after activity', async () => {

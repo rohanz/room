@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import { idleLabel, RoomDoc } from '@room/shared'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, joinedPresenceWorkers, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
 import type { ProcessInfo } from '@room/relay/process'
 import { writeSessionRecord, type Session } from '../src/session.js'
+
+import { closeRegistryForDir, WorkerRegistry } from '../src/worker-registry.js'
+import { seedRegistryWorker } from './registry-fixture.js'
 
 const MIN = 60_000
 function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
@@ -26,6 +29,23 @@ function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
   const at = async (ms: number) => { now = ms; await presence.tick() }
   return { presence, events, published, state, at, advanceTo: (ms: number) => { now = ms } }
 }
+
+it('keeps presence when worker evidence becomes blocked during projectable acquisition', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'presence-blocked-worker-'))
+  let spy: ReturnType<typeof vi.spyOn> | undefined
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir })
+    const { registry, record } = await seedRegistryWorker(dir, 'blocked-presence')
+    const snapshot = WorkerRegistry.prototype.snapshot
+    spy = vi.spyOn(WorkerRegistry.prototype, 'snapshot').mockImplementationOnce(async function (this: WorkerRegistry, query) {
+      const facts = await snapshot.call(this, query)
+      writeFileSync(join(registry.root, 'workers', `${record.id}.json`), '{malformed')
+      return facts
+    })
+    const s = { dir, roomName: record.room, me: { name: record.lead.participant } } as Session
+    expect(await joinedPresenceWorkers([s])).toBe(true)
+  } finally { spy?.mockRestore(); await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true }) }
+})
 
 describe('presence end and the idle lease (registry §18)', () => {
   it('keeps a bound session with a chain but no hostPid even when its processes are gone', async () => {

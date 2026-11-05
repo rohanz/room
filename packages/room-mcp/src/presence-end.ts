@@ -58,7 +58,8 @@ export async function joinedPresenceWorkers(sessions: readonly Session[], hasWri
     const reader = await openWorkerReader(dir)
     const facts = await reader.snapshot()
     if (!facts.available || facts.blockers.length) return true
-    return (await reader.projectable(lead, room)).write.length > 0
+    const projectable = await reader.projectable(lead, room)
+    return 'reason' in projectable || projectable.write.length > 0
   }): Promise<boolean> {
   for (const s of sessions) {
     try { if (await hasWrite(s.dir, s.roomName, s.me.name)) return true }

@@ -74,6 +74,11 @@ export class Ledger {
 
   constructor(private readonly o: LedgerOptions) {}
 
+  private workerEvidenceReady(s: Session): boolean {
+    const facts = this.workerSnapshots.get(s)
+    return !process.env.ROOM_WORKER_ID || !!facts?.available && facts.blockers.length === 0
+  }
+
   /** A session may deliver for P only while it is P's holder (or no holder is recorded yet, before wave 4). */
   fenced(s: Session): boolean {
     // A joined session is fenced by its name lease's epoch (hub §4.1, §7); paused, it writes no receipt.
@@ -127,7 +132,7 @@ export class Ledger {
   candidates(s: Session): Msg[] {
     if (!this.fenced(s)) return []
     // A worker's launch and prompt facts must arrive before delivery can choose a frontier.
-    if (process.env.ROOM_WORKER_ID && !this.workerSnapshots.get(s)?.available) return []
+    if (!this.workerEvidenceReady(s)) return []
     this.prune(s)
     const cursor = this.route(s)
     const prompt = new Set(this.promptIds(s))
@@ -263,7 +268,7 @@ export class Ledger {
   /** The cursor, with this call's routing decisions recorded: a broadcast `messageForMe` rejects goes to `routed` (MF2). */
   private route(s: Session): Cursor {
     const cursor = this.cursor(s)
-    if (process.env.ROOM_WORKER_ID && !this.workerSnapshots.get(s)?.available) return cursor
+    if (!this.workerEvidenceReady(s)) return cursor
     const context = this.o.route(s)
     const onBus = new Set<string>()
     let changed = false
@@ -289,8 +294,8 @@ export class Ledger {
       ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) }
       : { participant: s.me.name, frontier: ownLaunchFrontier(s, facts) ?? highestSeq(s.room), routed: new Set() }
     if (spawn !== undefined) cursor.addressedFrom = spawn
-    // A missing worker snapshot cannot establish a durable launch frontier.
-    if (process.env.ROOM_WORKER_ID && !facts?.available) return cursor
+    // Missing or blocked worker evidence cannot establish a durable launch frontier.
+    if (!this.workerEvidenceReady(s)) return cursor
     this.cursors.set(s, cursor)
     if (!kept) this.persistCursor(s, cursor)
     return cursor

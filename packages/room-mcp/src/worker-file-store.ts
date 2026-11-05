@@ -19,7 +19,7 @@ import { realStateInput } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
-import { applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
+import { WorkerEvidenceBlocked, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
 import { sameStartTime } from '@room/relay/process'
 
 export interface LegacySource {
@@ -475,7 +475,21 @@ export class FileWorkerStore {
       return next
     })
   }
-  occupancy(): number { return this.list().filter(r => ['starting', 'running', 'unknown', 'ambiguous'].includes(this.status(r.id)?.status ?? '')).length }
+  occupancy(): number {
+    const previousBlockers = this.decodeBlockers
+    this.decodeBlockers = new Set()
+    try {
+      const count = this.list().filter(r => ['starting', 'running', 'unknown', 'ambiguous'].includes(this.status(r.id)?.status ?? '')).length
+      // list/status may quarantine an undecodable record. Both that decode failure and durable
+      // quarantine evidence make occupancy unknown, including on the next admission or restart.
+      const blockers = [...this.decodeBlockers, ...files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file))]
+      if (blockers.length) throw new WorkerEvidenceBlocked(blockers)
+      return count
+    } finally {
+      for (const blocker of this.decodeBlockers) previousBlockers?.add(blocker)
+      this.decodeBlockers = previousBlockers
+    }
+  }
   reports(id: string): RunReport[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.report.json').flatMap(f => {
     const report = this.readFact(f, reportShape)
     if (report && path.basename(f) !== `${report.run}.report.json`) { this.invalid(f, 'run report filename mismatch'); return [] }
@@ -588,8 +602,13 @@ export class FileWorkerStore {
         else try { runOwners = fs.readdirSync(path.join(this.root, 'runs')) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
         const known = new Set(workers.map(fact => fact.record.id))
         for (const id of runOwners) if (safeId(id) && !known.has(id)) orphanRuns[id] = { reports: this.reports(id), exits: this.exits(id) }
-        if (selectedId && safeId(selectedId) && !records.length) this.decodeBlockers.add(`workers/${selectedId}.json: unavailable reserved record`)
-        const blockers = [...this.decodeBlockers, ...(query?.recordOnly ? [] : files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file)))]
+        if (reservationId && !records.length) this.decodeBlockers.add(`workers/${reservationId}.json: unavailable reserved record`)
+        // Record projections omit run evidence, but cannot turn a quarantined worker into an
+        // empty inventory. A genuinely absent unreserved ID is still distinct from blocked state.
+        const quarantine = !query?.recordOnly || !selected || !records.length
+          ? files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file)) : []
+        const blockers = [...this.decodeBlockers, ...quarantine.filter(name => !query?.recordOnly || !selected
+          || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))]
         const after = this.factRevision(query)
         if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns }
       }
