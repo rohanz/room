@@ -17,6 +17,8 @@ A D client finding a live session-owned relay refuses normal use and names its P
 
 An old or negotiation-only writer that reconnects to the daemon is refused before document sync because it lacks the daemon lifecycle contract, even when schema 2/proto 1 matches. This batch retains the existing encrypted read-only viewer route; it does not enforce the proposed viewer negotiation gate. Close old viewers during the drain and reopen with updated assets. Writer runtime enforcement must not be taken as evidence that all viewers negotiated a daemon profile. If an old lead starts an in-session relay after a daemon crash, updated clients retain their replicas, refuse that runtime and require another old-owner drain before daemon restart. The drain record cannot fence old binaries.
 
+**Rehearse first.** `npx tsx scripts/cutover-rehearsal.mts --old <pre-daemon plugin dir>` runs two sessions on the old plugin's real bundle in a throwaway clone, leaves unread mail, drains them, cuts over with this checkout's plugin and checks the health rows, the daemon runtime, the drain record, mail delivery and the documented stop. Run it on each platform before cutting over a live clone.
+
 ### Roll back the local daemon
 
 Stop new launches/reconnect loops, disconnect all daemon writers and close viewers. From the clone, run the installed standalone bundle (replace `<installed-plugin>` with that plugin's directory):

@@ -20,6 +20,7 @@
     "server:dev": "tsx packages/server/src/index.ts"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": ">=1.30.0 <2",
     "@types/node": "^22.15.0",
     "esbuild": "0.28.2",
     "knip": "6.38.0",
