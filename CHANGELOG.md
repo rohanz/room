@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.17.35
 
 - **Combined previews no longer refuse idle peers as "moved".** A preview treated publication heartbeats, manifest and Git revision bumps, worker sequence numbers and ref timestamps as movement, so previews refused even when nobody was editing. Movement now means a change to what the preview applies (content, paths, base, sharing, authority, acknowledgement or ref values), and a refusal names what moved and which baseline or HEAD it could not verify.
+- **A preview reads each input once.** Every ref, HEAD, registry record, publication and base a preview uses is captured once per assembly and shared by provenance, freshness checks, file modes and text. A ref that moved and moved back, or a worker record that changed between two reads, could otherwise certify the wrong base or the wrong executable bit.
 
 ## 0.17.34
 
