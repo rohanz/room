@@ -15298,9 +15298,10 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
           $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
           if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Cannot repair Room state owned by $childOwner : $child" };
-          $childAcl.SetAccessRuleProtection($false,$false);
-          foreach ($rule in $rules) { if (!$rule.IsInherited) { $childAcl.RemoveAccessRuleSpecific($rule) } };
-          Set-Acl -LiteralPath $child -AclObject $childAcl;
+          # icacls /reset re-enables inheritance and removes every explicit entry. A Get-Acl/Set-Acl round trip
+          # cannot do this: Set-Acl persists the inherited entries it read back as explicit ones.
+          & (Join-Path $env:SystemRoot 'System32\\icacls.exe') $child /reset /q | Out-Null;
+          if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
           $childAcl=Get-Acl -LiteralPath $child;
           $rules=@($childAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));
         };

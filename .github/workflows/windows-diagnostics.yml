@@ -1,0 +1,25 @@
+name: Windows diagnostics
+
+# Probes Windows behaviour that CI tests depend on. Runs by hand, or on a pull request that changes the probe.
+# Never a required check.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/windows-powershell-probe.mjs
+      - .github/workflows/windows-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  powershell-probe:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: PowerShell from detached and attached node children
+        run: node scripts/windows-powershell-probe.mjs
