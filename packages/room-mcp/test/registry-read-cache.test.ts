@@ -11,7 +11,7 @@ import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { ConflictSet } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
-import { carriedFrom, localWorkerBaseline, openWorkerReader, WorkerRegistry } from '../src/worker-registry.js'
+import { localWorkerBaseline, openWorkerReader, WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 
@@ -77,12 +77,7 @@ describe('registry reads during a conflict check', () => {
     const session = { room, awareness: { getStates: () => states } as unknown as Awareness,
       provider: { synced: true, on() {}, off() {} }, me: { name: 'lead', kind: 'agent' }, dir, post,
       lease: { fence: () => '1' } } as unknown as Session
-    const calls = new Map<string, number>()
-    const baselines = new Map(await Promise.all(names.map(async person => [person, await carriedFrom(dir, person)] as const)))
-    const set = new ConflictSet(session, 'lead', session, () => {}, 0, person => {
-      calls.set(person, (calls.get(person) ?? 0) + 1)
-      return baselines.get(person)
-    }, async () => undefined)
+    const set = new ConflictSet(session, 'lead', session, () => {}, 0, undefined, async () => undefined)
     // Files written within the last two seconds are always reread; this pass runs after that window.
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 5000)
@@ -91,21 +86,28 @@ describe('registry reads during a conflict check', () => {
       // Warm: the first lookup of each record reads it once.
       await set.reconcile('warm')
       const cold = reads.count()
+      expect(cold).toBeGreaterThan(0)
       expect(cold).toBeLessThanOrEqual(2 * names.length)
-      reads.reset(); calls.clear()
+      reads.reset()
       await set.reconcile('check')
       const warm = reads.count()
-      console.log(JSON.stringify({ peers: PEERS, retired: RETIRED, coldReads: cold, warmReads: warm, carriedFromCalls: Object.fromEntries(calls) }))
-      // Unchanged files are not read again; nothing scales with retired records.
+      console.log(JSON.stringify({ peers: PEERS, retired: RETIRED, coldReads: cold, warmReads: warm }))
       expect(warm).toBe(0)
-      // One carriedFrom lookup per participant per pass, guards included.
-      for (const name of names) expect(calls.get(name) ?? 0).toBeLessThanOrEqual(1)
-      // The inputs key reuses one lookup per participant as well.
-      calls.clear()
-      ;(set as unknown as { inputsKey(): string }).inputsKey()
-      for (const name of names) expect(calls.get(name) ?? 0).toBeLessThanOrEqual(1)
     } finally { vi.useRealTimers(); reads.restore(); set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
   })
+})
+
+it('memoizes a supplied carried callback separately from production baseline acquisition', async () => {
+  const { dir } = repo(), room = new RoomDoc()
+  const session = { dir, room, me: { name: 'lead', kind: 'agent' },
+    awareness: { getStates: () => new Map([[1, { user: { name: 'lead', kind: 'agent' } }]]) } } as unknown as Session
+  const callback = vi.fn(() => undefined)
+  const set = new ConflictSet(session, 'lead', session, () => {}, 0, callback)
+  try {
+    const pass = await (set as unknown as { carriedPass(): Promise<(name: string) => unknown> }).carriedPass()
+    pass('lead'); pass('lead'); pass('lead')
+    expect(callback).toHaveBeenCalledTimes(1)
+  } finally { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
 })
 
 describe('worker registry read cache', () => {
@@ -127,6 +129,39 @@ describe('worker registry read cache', () => {
       expect(row.fsCalls).toHaveLength(1)
       expect(row.fsCalls[0]).toBeLessThanOrEqual(6 * row.workers + 10)
     }
+  })
+
+  it.each(['record', 'report', 'exit'] as const)('read-only access preserves malformed %s bytes and reports blocking evidence', async kind => {
+    const { dir } = repo()
+    try {
+      const { record } = await seedRegistryWorker(dir, 'broken')
+      const reader = await openWorkerReader(dir)
+      const file = kind === 'record' ? join(reader.root, 'workers', `${record.id}.json`)
+        : join(reader.root, 'runs', record.id, `1.${kind}.json`)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      writeFileSync(file, '{malformed')
+      const tree = (root: string): unknown[] => fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+        .map(entry => [entry.name, entry.isDirectory() ? tree(join(root, entry.name)) : fs.readFileSync(join(root, entry.name)).toString('hex')])
+      const before = tree(reader.root)
+      if (kind === 'record') { expect(await reader.read(record.id)).toBeUndefined(); expect(await reader.list()).toEqual([]) }
+      else if (kind === 'report') expect(await reader.reports(record.id)).toEqual([])
+      else expect(await reader.exits(record.id)).toEqual([])
+      const facts = await reader.snapshot()
+      expect(tree(reader.root)).toEqual(before)
+      expect(facts.available && facts.blockers.some(value => value.includes(path.basename(file)))).toBe(true)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it.each(['null', '{}', '{"id":"unsafe/id"}'])('blocks a corrupt baseline reservation (%s) without changing it', async bytes => {
+    const { dir } = repo()
+    try {
+      await seedRegistryWorker(dir, 'broken')
+      const reader = await openWorkerReader(dir), file = join(reader.root, 'tags', 'broken.json')
+      writeFileSync(file, bytes)
+      const snapshot = await reader.snapshot({ tag: 'broken', recordOnly: true })
+      expect(fs.readFileSync(file, 'utf8')).toBe(bytes)
+      expect(snapshot.available && snapshot.blockers.some(value => value.includes('broken.json'))).toBe(true)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('resolves a participant to its reserved incarnation, never a retired one with the same name', async () => {

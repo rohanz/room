@@ -265,9 +265,10 @@ it.each(['snapshot', 'completion'] as const)('stopping during awaited %s prevent
   const gate = new Promise<void>(resolve => { release = resolve })
   const snapshot = registry.snapshot.bind(registry), completion = registry.postCompletion.bind(registry)
   const spy = stage === 'snapshot'
-    ? vi.spyOn(registry, 'snapshot').mockImplementationOnce(async query => { entered(); await gate; return snapshot(query) })
+    ? vi.spyOn(registry, 'snapshot').mockImplementationOnce(snapshot).mockImplementationOnce(async query => { entered(); await gate; return snapshot(query) })
     : vi.spyOn(registry, 'postCompletion').mockImplementationOnce(async (...args) => { entered(); await gate; return completion(...args) })
   const projector = new WorkerProjector(old, registry)
+  const projectable = vi.spyOn(registry, 'projectable')
   try {
     const pending = projector.project()
     await entering
@@ -275,13 +276,14 @@ it.each(['snapshot', 'completion'] as const)('stopping during awaited %s prevent
     release()
     await pending
     expect(old.room.messages()).toEqual([])
+    if (stage === 'snapshot') expect(projectable).not.toHaveBeenCalled()
     expect((await registry.reports(w.id))[0].posted).toBeUndefined()
     spy.mockRestore()
     await projectWorkers(next, registry, lead.name, 'joined')
     expect(next.room.messages().filter(message => message.type === 'done')).toHaveLength(1)
     expect((await registry.reports(w.id))[0].posted).toBe(`wk:${w.id}:1`)
   } finally {
-    release(); projector.stop(); spy.mockRestore()
+    release(); projector.stop(); spy.mockRestore(); projectable.mockRestore()
     old.awareness.destroy(); old.room.doc.destroy(); next.awareness.destroy(); next.room.doc.destroy()
   }
 })

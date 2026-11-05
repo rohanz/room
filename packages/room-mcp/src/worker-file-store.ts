@@ -92,6 +92,15 @@ const readCachedJson = <T>(file: string): T | undefined => {
   catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined; throw e }
   return text === undefined ? undefined : JSON.parse(text) as T
 }
+/** Decode only: preserve malformed bytes and let the owning caller decide how to handle evidence. */
+function decodeFact<T>(file: string, valid: (value: unknown) => value is T, why: string):
+  { ok: true; value: T | undefined } | { ok: false; error: unknown } {
+  try {
+    const value = readCachedJson<unknown>(file)
+    if (value === undefined) return { ok: true, value: undefined }
+    return valid(value) ? { ok: true, value } : { ok: false, error: why }
+  } catch (error) { return { ok: false, error } }
+}
 const cachedFiles = (dir: string, suffix: string): string[] =>
   [...cached(dir, () => files(dir, suffix), `${dir}\0*${suffix}`) ?? []]
 const crockford = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
@@ -263,7 +272,7 @@ export class FileWorkerStore {
   private readonly heldOperations = new Map<string, string>()
   private timer?: ReturnType<typeof setInterval>
   private watchQueued = false
-  private constructor(readonly commonDir: string, private readonly options: RegistryOptions) {
+  private constructor(readonly commonDir: string, private readonly options: RegistryOptions, private readonly readOnly = false) {
     this.root = path.join(commonDir, 'room', 'registry')
     this.alive = options.liveness ?? liveness
     this.now = options.now ?? Date.now
@@ -280,7 +289,7 @@ export class FileWorkerStore {
 
   /** No lifecycle initialization, recovery, migration, or background work for display readers. */
   static async openReader(commonDir: string, options: RegistryOptions = {}): Promise<FileWorkerStore> {
-    return new FileWorkerStore(commonDir, { ...options, migrate: false, watch: false })
+    return new FileWorkerStore(commonDir, { ...options, migrate: false, watch: false }, true)
   }
   close(): void { clearInterval(this.timer); this.timer = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
   private watch(): void {
@@ -329,13 +338,15 @@ export class FileWorkerStore {
     try { return fs.readdirSync(path.join(this.root, 'quarantine')).some(name => name.startsWith(`${id}.json.bad-`)) }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e }
   }
-  private readFact<T>(file: string, valid: (value: unknown) => value is T): T | undefined {
-    try {
-      const value = readCachedJson<unknown>(file)
-      if (value === undefined) return undefined
-      if (valid(value)) return value
-      this.quarantine(file, 'invalid registry fact')
-    } catch (e) { this.quarantine(file, e) }
+  private decodeBlockers?: Set<string>
+  private invalid(file: string, why: unknown): void {
+    this.decodeBlockers?.add(`${path.relative(this.root, file)}: ${String(why)}`)
+    if (!this.readOnly) this.quarantine(file, why)
+  }
+  private readFact<T>(file: string, valid: (value: unknown) => value is T, why = 'invalid registry fact'): T | undefined {
+    const decoded = decodeFact(file, valid, why)
+    if (decoded.ok) return decoded.value
+    this.invalid(file, decoded.error)
     return undefined
   }
   /** `id` names the one worker that changed; none means any may have (another instance's writes). */
@@ -343,23 +354,17 @@ export class FileWorkerStore {
   onChange(listener: (id?: string) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
   read(id: string): WorkerRecord | undefined {
-    const file = this.workerFile(id)
-    try {
-      const record = readCachedJson<WorkerRecord>(file)
+    return this.readFact(this.workerFile(id), (record): record is WorkerRecord => {
       // Optional diagnostic corruption cannot hide an otherwise valid worker or
       // certify freshness. Unknown required paths stay pending until refresh.
-      if (record?.keptPublication !== undefined && !keptPublicationShape(record.keptPublication))
+      if (object(record) && record.keptPublication !== undefined && !keptPublicationShape(record.keptPublication))
         record.keptPublication = { paths: [], pending: true, overflow: true }
-      if (record && !recordShape(record, id)) {
-        this.quarantine(file, 'invalid worker record')
-        return undefined
-      }
-      return record
-    } catch (e) { this.quarantine(file, e); return undefined }
+      return recordShape(record, id)
+    }, 'invalid worker record')
   }
   list(): WorkerRecord[] { return cachedFiles(path.join(this.root, 'workers'), '.json').flatMap(file => {
     const id = path.basename(file, '.json')
-    if (!safeId(id)) { this.quarantine(file, 'invalid worker filename'); return [] }
+    if (!safeId(id)) { this.invalid(file, 'invalid worker filename'); return [] }
     const record = this.read(id)
     return record ? [record] : []
   }) }
@@ -473,12 +478,12 @@ export class FileWorkerStore {
   occupancy(): number { return this.list().filter(r => ['starting', 'running', 'unknown', 'ambiguous'].includes(this.status(r.id)?.status ?? '')).length }
   reports(id: string): RunReport[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.report.json').flatMap(f => {
     const report = this.readFact(f, reportShape)
-    if (report && path.basename(f) !== `${report.run}.report.json`) { this.quarantine(f, 'run report filename mismatch'); return [] }
+    if (report && path.basename(f) !== `${report.run}.report.json`) { this.invalid(f, 'run report filename mismatch'); return [] }
     return report ? [report] : []
   }) }
   exits(id: string): ExitObservation[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.exit.json').flatMap(f => {
     const observation = this.readFact(f, exitShape)
-    if (observation && path.basename(f) !== `${observation.run}.exit.json`) { this.quarantine(f, 'exit filename mismatch'); return [] }
+    if (observation && path.basename(f) !== `${observation.run}.exit.json`) { this.invalid(f, 'exit filename mismatch'); return [] }
     return observation ? [observation] : []
   }) }
 
@@ -548,13 +553,19 @@ export class FileWorkerStore {
   async snapshot(query?: WorkerQuery): Promise<WorkerSnapshot> {
     if (query && !query.workerId && !query.tag && !query.recordOnly) query = undefined
     const previousReads = snapshotReads
+    const previousBlockers = this.decodeBlockers
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         snapshotReads = new Map()
+        this.decodeBlockers = new Set()
         const before = this.factRevision(query)
-        const selectedId = query?.workerId ?? (query?.tag ? readCachedJson<{ id?: string }>(this.tagFile(query.tag))?.id : undefined)
+        const reservation = query?.tag ? readCachedJson<unknown>(this.tagFile(query.tag)) : undefined
+        const reservationId = object(reservation) && typeof reservation.id === 'string' && safeId(reservation.id) ? reservation.id : undefined
+        if (reservation !== undefined && !reservationId) this.decodeBlockers.add(`tags/${query!.tag}.json: invalid reservation`)
+        const selectedId = query?.workerId ?? reservationId
         const selected = query?.workerId || query?.tag
         const records = selected ? selectedId && safeId(selectedId) ? [this.read(selectedId)].filter((record): record is WorkerRecord => !!record) : [] : this.list()
+        if (query?.tag && records.some(record => record.tag !== query.tag)) this.decodeBlockers.add(`tags/${query.tag}.json: record tag mismatch`)
         const workers = records.map(record => ({ record, reports: query?.recordOnly ? [] : this.reports(record.id), exits: query?.recordOnly ? [] : this.exits(record.id), busy: query?.recordOnly ? true : this.operationInProgress(record.id),
           ...(query?.captureLiveness ? { liveness: this.statusLiveness(record, query.recordOnly) } : {}) }))
         const reservations: Record<string, string> = Object.create(null)
@@ -577,13 +588,14 @@ export class FileWorkerStore {
         else try { runOwners = fs.readdirSync(path.join(this.root, 'runs')) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
         const known = new Set(workers.map(fact => fact.record.id))
         for (const id of runOwners) if (safeId(id) && !known.has(id)) orphanRuns[id] = { reports: this.reports(id), exits: this.exits(id) }
-        const blockers = query?.recordOnly ? [] : files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file))
+        if (selectedId && safeId(selectedId) && !records.length) this.decodeBlockers.add(`workers/${selectedId}.json: unavailable reserved record`)
+        const blockers = [...this.decodeBlockers, ...(query?.recordOnly ? [] : files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file)))]
         const after = this.factRevision(query)
         if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns }
       }
       return { available: false, reason: 'unavailable', detail: 'worker facts changed during snapshot' }
     } catch (error) { return { available: false, reason: 'unavailable', detail: String(error) } }
-    finally { snapshotReads = previousReads }
+    finally { snapshotReads = previousReads; this.decodeBlockers = previousBlockers }
   }
   private factRevision(query?: WorkerQuery): string {
     const hash = createHash('sha256').update(this.commonDir).update(JSON.stringify(query ?? {}))

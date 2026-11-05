@@ -252,7 +252,7 @@ describe('presence end and the idle lease (registry §18)', () => {
 })
 
 
-it('does not expire presence when activity arrives during an awaited worker decision', async () => {
+it.each(['activity', 'stop'] as const)('does not expire presence when %s arrives during an awaited worker decision', async action => {
   let resolve!: (value: boolean) => void
   let entered!: () => void
   const waiting = new Promise<void>(done => { entered = done })
@@ -262,7 +262,8 @@ it('does not expire presence when activity arrives during an awaited worker deci
     f.advanceTo(IDLE_LEASE_MS + 1)
     const tick = f.presence.tick()
     await waiting
-    f.presence.activity()
+    if (action === 'activity') f.presence.activity()
+    else f.presence.stop()
     resolve(false)
     await tick
     expect(f.presence.hasLeft).toBe(false)

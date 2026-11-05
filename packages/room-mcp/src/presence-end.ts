@@ -212,6 +212,7 @@ export class PresenceEnd {
   private readonly episodeId: string
   private published?: number
   private left = false
+  private stopped = false
   private lastStale?: string
   private ticking?: Promise<void>
   private readonly timer?: ReturnType<typeof setInterval>
@@ -227,7 +228,7 @@ export class PresenceEnd {
     }
   }
 
-  stop(): void { clearInterval(this.timer) }
+  stop(): void { this.stopped = true; clearInterval(this.timer) }
 
   /** A Room tool call handled for this session, or a hook contact for its bound session. Returns the idle time it ended. */
   activity(): number {
@@ -258,26 +259,29 @@ export class PresenceEnd {
   }
 
   private async run(): Promise<void> {
+    if (this.stopped) return
     this.publish()
     const host = await this.options.hostAlive()
+    if (this.stopped) return
     const verdict: HostLiveness = typeof host === 'object' ? host : { alive: host }
     if (verdict.stale !== this.lastStale) { this.lastStale = verdict.stale; if (verdict.stale) this.options.log?.(`host liveness: ${verdict.stale}`) }
     if (verdict.alive === false) { this.options.hostEnded('host session ended'); return }
     if (this.options.hostKind !== 'shared-app-server' || this.left) return
     try { await this.options.replayPending?.() }
     catch (error) { this.options.log?.(`idle claim notice replay pending: ${error instanceof Error ? error.message : String(error)}`); return }
+    if (this.stopped) return
     const idle = this.idleMs()
     if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       // Retry a pending journal even after its first pass removed every held claim and scope.
       try { await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`) }
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
-    if (this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return
+    if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return
     const epoch = this.epoch
     let leadsWorkers = true
     try { leadsWorkers = await this.options.leadsWorkers() }
     catch (error) { this.options.log?.(`worker state unavailable: ${String(error)}`) }
-    if (epoch === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
+    if (!this.stopped && epoch === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
       this.left = true
       this.options.log?.(`idle ${Math.floor(idle / MINUTE)} min with nothing held: leaving presence (idle lease)`)
       try { await this.options.leave(idle) }

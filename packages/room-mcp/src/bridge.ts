@@ -191,7 +191,9 @@ export class Bridge {
     const attach = async (registry: WorkerRegistry) => {
       if (this.stopped) return
       this.registry = registry
-      this.facts = await registry.snapshot()
+      const facts = await registry.snapshot()
+      if (this.stopped) return
+      this.facts = facts
       this.unobserve.push(registry.onChange(() => { this.storageEpoch++; this.facts = undefined; this.schedule() }))
       for (const c of l.openClaims()) this.mirrorClaim(c.id)
       this.schedule()
@@ -233,7 +235,7 @@ export class Bridge {
     if (this.registry) {
       try {
         const facts = await this.registry.snapshot()
-        if (!facts.available) return
+        if (this.stopped || !facts.available) return
         this.facts = facts
       } catch (error) { this.o.log?.(`bridge: worker facts unavailable: ${String(error)}`); return }
     }
@@ -283,7 +285,7 @@ export class Bridge {
     const authority = this.team.daemon.fence
     if (!authority) return
     const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this, () => !this.stopped)
-    const currentAuthority = () => this.team.daemon.fence === authority
+    const currentAuthority = () => !this.stopped && this.team.daemon.fence === authority
     if (!written || !currentAuthority()) return
     const keep = new Set(written.map(r => r.id))
     const lead = this.team.me.name
@@ -297,6 +299,7 @@ export class Bridge {
     for (const record of written) {
       if (this.stopped || !currentAuthority()) return
       await this.projectWorker(record)
+      if (!currentAuthority()) return
       await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record.name })
     }
   }
@@ -316,14 +319,14 @@ export class Bridge {
    * inherited from the source, never upgraded (N2).
    */
   private async projectWorker(record: WorkerRecord, retry = 0): Promise<void> {
-    if (!this.registry) return
+    if (this.stopped || !this.registry) return
     const facts = await this.registry.snapshot()
-    if (!facts.available) return
+    if (this.stopped || !facts.available) return
     this.facts = facts
     const epoch = this.storageEpoch
     const fresh = async () => {
       const latest = await this.registry!.snapshot()
-      if (!latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false
+      if (this.stopped || !latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false
       this.facts = latest
       return true
     }
@@ -570,7 +573,7 @@ export class Bridge {
   }
 
   private mirrorClaim(localId: string): void {
-    if (this.mirrored.has(localId)) return
+    if (this.stopped || this.mirrored.has(localId)) return
     const c = this.local.room.claims.get(localId)
     if (!c) return
     const tag = this.tagOf(c.by)

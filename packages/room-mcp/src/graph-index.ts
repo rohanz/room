@@ -176,7 +176,12 @@ export class GraphIndex {
   private ownPublicationKey: string | undefined = ''
   private stopped = false
   private carriedSnapshot?: WorkerSnapshot
-  private get workerQuery(): { tag: string } { return { tag: this.me.slice(this.me.lastIndexOf('+') + 1) } }
+  private get workerQuery(): { tag: string; recordOnly: true } | undefined {
+    const plus = this.me.lastIndexOf('+')
+    return plus > 0 ? { tag: this.me.slice(plus + 1), recordOnly: true } : undefined
+  }
+  /** One baseline acquisition for the queued indexing pass, independent of file count. */
+  private baselinePass?: Promise<WorkerSnapshot>
   private initialStarted = false
   private discovering = false
   private jitterTimer?: ReturnType<typeof setTimeout>
@@ -636,7 +641,7 @@ export class GraphIndex {
 
   /** The baseline read for a deletion may include a worker's carried, untracked blob. */
   private deletionBaseline(path: string): string {
-    if (!this.carriedSnapshot?.available) return 'unavailable'
+    if (this.workerQuery && !this.carriedSnapshot?.available) return 'unavailable'
     const baseline = snapshotBaseline(this.carriedSnapshot, this.me)?.baseline
     return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path)?.sha, baseline?.carriedCommit ?? false])
   }
@@ -884,6 +889,7 @@ export class GraphIndex {
           // path ever refreshed would be remembered for the session's lifetime.
           this.revisions.delete(path)
         }
+        if (!this.pending.size) this.baselinePass = undefined
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing)
           this.publishing = setTimeout(() => { void this.publish(this.phase) }, 100)
@@ -941,8 +947,9 @@ export class GraphIndex {
       const ownFileUnavailable = myEntry?.state === 'shared' && !mineDeleted && mine === undefined
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
       // An own manifest entry uses facts acquired before Git/parser awaits. Base files need none.
-      const registry = myEntry ? await openWorkerReader(this.dir) : undefined
-      const facts = await registry?.snapshot(this.workerQuery)
+      const query = this.workerQuery
+      const registry = myEntry && query ? await openWorkerReader(this.dir) : undefined
+      const facts = registry ? await (this.baselinePass ??= registry.snapshot(query)) : undefined
       if (facts && (!facts.available || facts.blockers.length)) throw new Error('worker baseline unavailable or blocked')
       if (facts) this.carriedSnapshot = facts
       const own = myEntry ? snapshotBaseline(facts, this.me)?.baseline : undefined
@@ -972,7 +979,10 @@ export class GraphIndex {
       }
       if (facts?.available && registry) {
         const latest = await registry.snapshot(this.workerQuery)
-        if (!latest.available || latest.revision !== facts.revision) return false
+        if (!latest.available || latest.revision !== facts.revision) {
+          this.baselinePass = undefined
+          return false
+        }
       }
       if (this.stopped) return true
       if (generation !== this.generation) return false

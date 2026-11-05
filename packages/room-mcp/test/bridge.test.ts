@@ -123,6 +123,41 @@ async function setup(options: { policy?: ReturnType<typeof testPolicyStore>; sta
 }
 
 describe('Bridge: a lead in a team room with a local workers room', () => {
+  it('does not attach observers or recreate mirrors when stopped during the initial snapshot', async () => {
+    const t = await setup({ start: false })
+    t.local.a.addClaim({ by: worker.name, byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'edit' })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const snapshot = t.registry.snapshot.bind(t.registry)
+    const delayed = vi.spyOn(t.registry, 'snapshot').mockImplementationOnce(async query => { await gate; return snapshot(query) })
+    const observing = vi.spyOn(t.registry, 'onChange')
+    try {
+      t.bridge.start()
+      t.bridge.stop()
+      release()
+      await settle()
+      expect(observing).not.toHaveBeenCalled()
+      expect(t.team.a.openClaims()).toEqual([])
+    } finally { release(); delayed.mockRestore(); observing.mockRestore() }
+  })
+
+  it('does not reconcile conflicts after shutdown during an awaited worker projection', async () => {
+    const t = await setup({ start: false })
+    let release!: () => void, entered!: () => void
+    const entering = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const internals = t.bridge as unknown as { projectWorker(): Promise<void>; o: { reconcileConflicts?: () => Promise<void> } }
+    const reconcile = vi.fn(async () => {})
+    internals.o.reconcileConflicts = reconcile
+    const projection = vi.spyOn(internals, 'projectWorker').mockImplementation(async () => { entered(); await gate })
+    try {
+      const pending = t.bridge.project()
+      await entering
+      t.bridge.stop(); release(); await pending
+      expect(reconcile).not.toHaveBeenCalled()
+    } finally { release(); projection.mockRestore() }
+  })
+
   it('keeps an addressed team interrupt relayed between spawn and worker join', async () => {
     const t = await setup()
     const old = hubAppend<NoteMsg>(t.local.a, lead, { type: 'note', text: 'before spawn', priority: 'notify' })

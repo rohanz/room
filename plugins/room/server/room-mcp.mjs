@@ -34689,8 +34689,11 @@ var init_graph_index = __esm({
       stopped = false;
       carriedSnapshot;
       get workerQuery() {
-        return { tag: this.me.slice(this.me.lastIndexOf("+") + 1) };
+        const plus = this.me.lastIndexOf("+");
+        return plus > 0 ? { tag: this.me.slice(plus + 1), recordOnly: true } : void 0;
       }
+      /** One baseline acquisition for the queued indexing pass, independent of file count. */
+      baselinePass;
       initialStarted = false;
       discovering = false;
       jitterTimer;
@@ -35180,7 +35183,7 @@ var init_graph_index = __esm({
       }
       /** The baseline read for a deletion may include a worker's carried, untracked blob. */
       deletionBaseline(path70) {
-        if (!this.carriedSnapshot?.available) return "unavailable";
+        if (this.workerQuery && !this.carriedSnapshot?.available) return "unavailable";
         const baseline2 = snapshotBaseline(this.carriedSnapshot, this.me)?.baseline;
         return JSON.stringify([baseline2?.sha ?? this.base, baseline2?.untracked.get(path70)?.sha, baseline2?.carriedCommit ?? false]);
       }
@@ -35447,6 +35450,7 @@ var init_graph_index = __esm({
               this.pending.delete(path70);
               this.revisions.delete(path70);
             }
+            if (!this.pending.size) this.baselinePass = void 0;
             if (!this.stopped && !this.pending.size) {
               clearTimeout(this.publishing);
               this.publishing = setTimeout(() => {
@@ -35505,8 +35509,9 @@ var init_graph_index = __esm({
           const mine = myEntry && myEntry.change !== "D" ? this.ownText(path70) : void 0;
           const mineDeleted = myEntry?.change === "D";
           const ownFileUnavailable = myEntry?.state === "shared" && !mineDeleted && mine === void 0;
-          const registry2 = myEntry ? await openWorkerReader(this.dir) : void 0;
-          const facts = await registry2?.snapshot(this.workerQuery);
+          const query2 = this.workerQuery;
+          const registry2 = myEntry && query2 ? await openWorkerReader(this.dir) : void 0;
+          const facts = registry2 ? await (this.baselinePass ??= registry2.snapshot(query2)) : void 0;
           if (facts && (!facts.available || facts.blockers.length)) throw new Error("worker baseline unavailable or blocked");
           if (facts) this.carriedSnapshot = facts;
           const own2 = myEntry ? snapshotBaseline(facts, this.me)?.baseline : void 0;
@@ -35534,7 +35539,10 @@ var init_graph_index = __esm({
           }
           if (facts?.available && registry2) {
             const latest = await registry2.snapshot(this.workerQuery);
-            if (!latest.available || latest.revision !== facts.revision) return false;
+            if (!latest.available || latest.revision !== facts.revision) {
+              this.baselinePass = void 0;
+              return false;
+            }
           }
           if (this.stopped) return true;
           if (generation !== this.generation) return false;
@@ -37855,11 +37863,14 @@ async function projectWorkers(s, registry2, lead, role, origin, active = () => t
   const roomKey2 = s.roomName, fence = s.daemon.fence;
   const current2 = () => active() && s.daemon.fence === fence;
   if (!fence || !current2()) return void 0;
-  await warmRunLogs(s, (await registry2.list()).filter((record2) => record2.lead.participant === lead && !["retired", "abandoned"].includes(record2.phase)));
+  const records = await registry2.list();
+  if (!current2()) return void 0;
+  await warmRunLogs(s, records.filter((record2) => record2.lead.participant === lead && !["retired", "abandoned"].includes(record2.phase)));
   if (!current2()) return void 0;
   const before = await registry2.snapshot();
-  if (!before.available) return void 0;
+  if (!current2() || !before.available) return void 0;
   const { write: all2, retire: retiring } = await registry2.projectable(lead, roomKey2);
+  if (!current2()) return void 0;
   const write2 = all2.filter(({ record: record2 }) => inRole(record2, roomKey2, role));
   const retire = retiring.filter((record2) => inRole(record2, roomKey2, role));
   const post = releasePoster(s.post);
@@ -38259,7 +38270,9 @@ var init_bridge = __esm({
         const attach = async (registry2) => {
           if (this.stopped) return;
           this.registry = registry2;
-          this.facts = await registry2.snapshot();
+          const facts = await registry2.snapshot();
+          if (this.stopped) return;
+          this.facts = facts;
           this.unobserve.push(registry2.onChange(() => {
             this.storageEpoch++;
             this.facts = void 0;
@@ -38309,7 +38322,7 @@ var init_bridge = __esm({
         if (this.registry) {
           try {
             const facts = await this.registry.snapshot();
-            if (!facts.available) return;
+            if (this.stopped || !facts.available) return;
             this.facts = facts;
           } catch (error2) {
             this.o.log?.(`bridge: worker facts unavailable: ${String(error2)}`);
@@ -38370,7 +38383,7 @@ var init_bridge = __esm({
         const authority = this.team.daemon.fence;
         if (!authority) return;
         const written = await projectWorkers(this.team, registry2, this.local.me.name, "projected", this, () => !this.stopped);
-        const currentAuthority = () => this.team.daemon.fence === authority;
+        const currentAuthority = () => !this.stopped && this.team.daemon.fence === authority;
         if (!written || !currentAuthority()) return;
         const keep = new Set(written.map((r) => r.id));
         const lead = this.team.me.name;
@@ -38386,6 +38399,7 @@ var init_bridge = __esm({
         for (const record2 of written) {
           if (this.stopped || !currentAuthority()) return;
           await this.projectWorker(record2);
+          if (!currentAuthority()) return;
           await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record2.name });
         }
       }
@@ -38403,14 +38417,14 @@ var init_bridge = __esm({
        * inherited from the source, never upgraded (N2).
        */
       async projectWorker(record2, retry = 0) {
-        if (!this.registry) return;
+        if (this.stopped || !this.registry) return;
         const facts = await this.registry.snapshot();
-        if (!facts.available) return;
+        if (this.stopped || !facts.available) return;
         this.facts = facts;
         const epoch = this.storageEpoch;
         const fresh = async () => {
           const latest = await this.registry.snapshot();
-          if (!latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false;
+          if (this.stopped || !latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false;
           this.facts = latest;
           return true;
         };
@@ -38660,7 +38674,7 @@ var init_bridge = __esm({
         return { all: all2, carried };
       }
       mirrorClaim(localId) {
-        if (this.mirrored.has(localId)) return;
+        if (this.stopped || this.mirrored.has(localId)) return;
         const c = this.local.room.claims.get(localId);
         if (!c) return;
         const tag = this.tagOf(c.by);
@@ -45382,6 +45396,15 @@ function cached2(file, load2, slot = file, validate2 = false) {
   snapshotReads?.set(slot, { key: stat4.key, value: value5 });
   return value5;
 }
+function decodeFact(file, valid, why) {
+  try {
+    const value5 = readCachedJson(file);
+    if (value5 === void 0) return { ok: true, value: void 0 };
+    return valid(value5) ? { ok: true, value: value5 } : { ok: false, error: why };
+  } catch (error2) {
+    return { ok: false, error: error2 };
+  }
+}
 function base32(value5, length2) {
   let out = "";
   for (let n = 0; n < length2; n++) {
@@ -45627,9 +45650,10 @@ var init_worker_file_store = __esm({
     LegacySnapshotUnavailable = class extends Error {
     };
     FileWorkerStore = class _FileWorkerStore {
-      constructor(commonDir2, options) {
+      constructor(commonDir2, options, readOnly = false) {
         this.commonDir = commonDir2;
         this.options = options;
+        this.readOnly = readOnly;
         this.root = path49.join(commonDir2, "room", "registry");
         this.alive = options.liveness ?? liveness;
         this.now = options.now ?? Date.now;
@@ -45637,6 +45661,7 @@ var init_worker_file_store = __esm({
       }
       commonDir;
       options;
+      readOnly;
       root;
       alive;
       now;
@@ -45656,7 +45681,7 @@ var init_worker_file_store = __esm({
       }
       /** No lifecycle initialization, recovery, migration, or background work for display readers. */
       static async openReader(commonDir2, options = {}) {
-        return new _FileWorkerStore(commonDir2, { ...options, migrate: false, watch: false });
+        return new _FileWorkerStore(commonDir2, { ...options, migrate: false, watch: false }, true);
       }
       close() {
         clearInterval(this.timer);
@@ -45753,15 +45778,15 @@ var init_worker_file_store = __esm({
           throw e;
         }
       }
-      readFact(file, valid) {
-        try {
-          const value5 = readCachedJson(file);
-          if (value5 === void 0) return void 0;
-          if (valid(value5)) return value5;
-          this.quarantine(file, "invalid registry fact");
-        } catch (e) {
-          this.quarantine(file, e);
-        }
+      decodeBlockers;
+      invalid(file, why) {
+        this.decodeBlockers?.add(`${path49.relative(this.root, file)}: ${String(why)}`);
+        if (!this.readOnly) this.quarantine(file, why);
+      }
+      readFact(file, valid, why = "invalid registry fact") {
+        const decoded = decodeFact(file, valid, why);
+        if (decoded.ok) return decoded.value;
+        this.invalid(file, decoded.error);
         return void 0;
       }
       /** `id` names the one worker that changed; none means any may have (another instance's writes). */
@@ -45773,26 +45798,17 @@ var init_worker_file_store = __esm({
         return () => this.listeners.delete(listener);
       }
       read(id3) {
-        const file = this.workerFile(id3);
-        try {
-          const record2 = readCachedJson(file);
-          if (record2?.keptPublication !== void 0 && !keptPublicationShape(record2.keptPublication))
+        return this.readFact(this.workerFile(id3), (record2) => {
+          if (object5(record2) && record2.keptPublication !== void 0 && !keptPublicationShape(record2.keptPublication))
             record2.keptPublication = { paths: [], pending: true, overflow: true };
-          if (record2 && !recordShape(record2, id3)) {
-            this.quarantine(file, "invalid worker record");
-            return void 0;
-          }
-          return record2;
-        } catch (e) {
-          this.quarantine(file, e);
-          return void 0;
-        }
+          return recordShape(record2, id3);
+        }, "invalid worker record");
       }
       list() {
         return cachedFiles(path49.join(this.root, "workers"), ".json").flatMap((file) => {
           const id3 = path49.basename(file, ".json");
           if (!safeId(id3)) {
-            this.quarantine(file, "invalid worker filename");
+            this.invalid(file, "invalid worker filename");
             return [];
           }
           const record2 = this.read(id3);
@@ -45933,7 +45949,7 @@ var init_worker_file_store = __esm({
         return files(path49.join(this.root, "runs", id3), ".report.json").flatMap((f) => {
           const report = this.readFact(f, reportShape);
           if (report && path49.basename(f) !== `${report.run}.report.json`) {
-            this.quarantine(f, "run report filename mismatch");
+            this.invalid(f, "run report filename mismatch");
             return [];
           }
           return report ? [report] : [];
@@ -45944,7 +45960,7 @@ var init_worker_file_store = __esm({
         return files(path49.join(this.root, "runs", id3), ".exit.json").flatMap((f) => {
           const observation = this.readFact(f, exitShape);
           if (observation && path49.basename(f) !== `${observation.run}.exit.json`) {
-            this.quarantine(f, "exit filename mismatch");
+            this.invalid(f, "exit filename mismatch");
             return [];
           }
           return observation ? [observation] : [];
@@ -46021,13 +46037,19 @@ var init_worker_file_store = __esm({
       async snapshot(query2) {
         if (query2 && !query2.workerId && !query2.tag && !query2.recordOnly) query2 = void 0;
         const previousReads = snapshotReads;
+        const previousBlockers = this.decodeBlockers;
         try {
           for (let attempt = 0; attempt < 3; attempt++) {
             snapshotReads = /* @__PURE__ */ new Map();
+            this.decodeBlockers = /* @__PURE__ */ new Set();
             const before = this.factRevision(query2);
-            const selectedId = query2?.workerId ?? (query2?.tag ? readCachedJson(this.tagFile(query2.tag))?.id : void 0);
+            const reservation = query2?.tag ? readCachedJson(this.tagFile(query2.tag)) : void 0;
+            const reservationId = object5(reservation) && typeof reservation.id === "string" && safeId(reservation.id) ? reservation.id : void 0;
+            if (reservation !== void 0 && !reservationId) this.decodeBlockers.add(`tags/${query2.tag}.json: invalid reservation`);
+            const selectedId = query2?.workerId ?? reservationId;
             const selected = query2?.workerId || query2?.tag;
             const records = selected ? selectedId && safeId(selectedId) ? [this.read(selectedId)].filter((record2) => !!record2) : [] : this.list();
+            if (query2?.tag && records.some((record2) => record2.tag !== query2.tag)) this.decodeBlockers.add(`tags/${query2.tag}.json: record tag mismatch`);
             const workers = records.map((record2) => ({
               record: record2,
               reports: query2?.recordOnly ? [] : this.reports(record2.id),
@@ -46042,8 +46064,8 @@ var init_worker_file_store = __esm({
               const tag = path49.basename(file, ".json");
               if (!safeTag(tag)) continue;
               try {
-                const reservation = readCachedJson(file);
-                if (typeof reservation?.id === "string") reservations[tag] = reservation.id;
+                const reservation2 = readCachedJson(file);
+                if (typeof reservation2?.id === "string") reservations[tag] = reservation2.id;
               } catch {
               }
             }
@@ -46060,7 +46082,8 @@ var init_worker_file_store = __esm({
             }
             const known = new Set(workers.map((fact) => fact.record.id));
             for (const id3 of runOwners) if (safeId(id3) && !known.has(id3)) orphanRuns[id3] = { reports: this.reports(id3), exits: this.exits(id3) };
-            const blockers = query2?.recordOnly ? [] : files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file));
+            if (selectedId && safeId(selectedId) && !records.length) this.decodeBlockers.add(`workers/${selectedId}.json: unavailable reserved record`);
+            const blockers = [...this.decodeBlockers, ...query2?.recordOnly ? [] : files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file))];
             const after = this.factRevision(query2);
             if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns };
           }
@@ -46069,6 +46092,7 @@ var init_worker_file_store = __esm({
           return { available: false, reason: "unavailable", detail: String(error2) };
         } finally {
           snapshotReads = previousReads;
+          this.decodeBlockers = previousBlockers;
         }
       }
       factRevision(query2) {
@@ -66056,10 +66080,12 @@ var PresenceEnd = class {
   episodeId;
   published;
   left = false;
+  stopped = false;
   lastStale;
   ticking;
   timer;
   stop() {
+    this.stopped = true;
     clearInterval(this.timer);
   }
   /** A Room tool call handled for this session, or a hook contact for its bound session. Returns the idle time it ended. */
@@ -66095,8 +66121,10 @@ var PresenceEnd = class {
     return this.ticking;
   }
   async run() {
+    if (this.stopped) return;
     this.publish();
     const host2 = await this.options.hostAlive();
+    if (this.stopped) return;
     const verdict = typeof host2 === "object" ? host2 : { alive: host2 };
     if (verdict.stale !== this.lastStale) {
       this.lastStale = verdict.stale;
@@ -66113,6 +66141,7 @@ var PresenceEnd = class {
       this.options.log?.(`idle claim notice replay pending: ${error2 instanceof Error ? error2.message : String(error2)}`);
       return;
     }
+    if (this.stopped) return;
     const idle = this.idleMs();
     if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       try {
@@ -66122,7 +66151,7 @@ var PresenceEnd = class {
         return;
       }
     }
-    if (this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return;
+    if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return;
     const epoch = this.epoch;
     let leadsWorkers = true;
     try {
@@ -66130,7 +66159,7 @@ var PresenceEnd = class {
     } catch (error2) {
       this.options.log?.(`worker state unavailable: ${String(error2)}`);
     }
-    if (epoch === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
+    if (!this.stopped && epoch === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
       this.left = true;
       this.options.log?.(`idle ${Math.floor(idle / MINUTE)} min with nothing held: leaving presence (idle lease)`);
       try {

@@ -32,11 +32,14 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   if (!fence || !current()) return undefined
   // Read this lead's resumed runs' logs in yielding chunks first, so the facts read inside the transaction
   // come from the cache. The projectable lists are taken after these awaits: a worker may have started retiring.
-  await warmRunLogs(s, (await registry.list()).filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
+  const records = await registry.list()
+  if (!current()) return undefined
+  await warmRunLogs(s, records.filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
   if (!current()) return undefined
   const before = await registry.snapshot()
-  if (!before.available) return undefined
+  if (!current() || !before.available) return undefined
   const { write: all, retire: retiring } = (await registry.projectable(lead, roomKey))
+  if (!current()) return undefined
   const write = all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
   const post = releasePoster(s.post)
