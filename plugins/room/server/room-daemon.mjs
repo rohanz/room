@@ -15242,35 +15242,40 @@ function windowsPowerShellEnv(file) {
 }
 function windowsAclScript(protectNew, createDirectory, repair) {
   return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+    $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
+    function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
+    function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
+    function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
+    function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
+    function Grants($acl) { @(Rules $acl | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value}) };
     function PrivateAcl($directory) {
-      if ($directory) { $acl=New-Object Security.AccessControl.DirectorySecurity; $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
-      else { $acl=New-Object Security.AccessControl.FileSecurity; $inherit=[Security.AccessControl.InheritanceFlags]::None };
+      if ($directory) { $acl=[Security.AccessControl.DirectorySecurity]::new(); $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
+      else { $acl=[Security.AccessControl.FileSecurity]::new(); $inherit=[Security.AccessControl.InheritanceFlags]::None };
       $acl.SetOwner($u); $acl.SetAccessRuleProtection($true,$false);
-      foreach ($sid in @($u.Value,'S-1-5-18','S-1-5-32-544')) {
-        $identity=New-Object Security.Principal.SecurityIdentifier($sid);
-        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl',$inherit,'None','Allow')))
+      foreach ($sid in $trusted) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl',$inherit,'None','Allow'))
       }; return $acl
     };
     $created=$false; $repaired=$false;
-    ${createDirectory ? "if (!(Test-Path -LiteralPath $p)) { [IO.Directory]::CreateDirectory($p,(PrivateAcl $true)) | Out-Null; $created=$true };" : ""}
-    $item=Get-Item -Force -LiteralPath $p; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Room state must not be a reparse point' };
-    $a=Get-Acl -LiteralPath $p;
-    $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value});
+    ${createDirectory ? "if (!([IO.Directory]::Exists($p) -or [IO.File]::Exists($p))) { [IO.Directory]::CreateDirectory($p,(PrivateAcl $true)) | Out-Null; $created=$true };" : ""}
+    if ([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::ReparsePoint) { throw 'Room state must not be a reparse point' };
+    $isDir=IsDir $p;
+    $a=ReadAcl $p; $g=Grants $a;
     $o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;
     # An elevated administrator's new directories are owned by BUILTIN\\Administrators (Windows Server default); that
     # user can already rewrite the ACL, so the repair may take ownership back for them.
-    $elevated=(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
+    $elevated=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
     $owned=($o -eq $u.Value) -or ($o -eq 'S-1-5-32-544' -and $elevated);
-    $broad=@($g | Where-Object {$_ -notin @($u.Value,'S-1-5-18','S-1-5-32-544')});
+    $broad=@($g | Where-Object {$_ -notin $trusted});
     ${repair ? `$inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';
-    $inheritable=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {
+    $inheritable=@(Rules $a | Where-Object {
       $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -eq $u.Value -and
       ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
     }).Count -gt 0;` : ""}
-    ${repair ? `# Count and reject reparse points before Set-Acl can propagate through an oversized subtree.
-    $pending=New-Object 'System.Collections.Generic.Stack[string]'; $pending.Push($p);
-    $children=New-Object 'System.Collections.Generic.List[string]';
+    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree.
+    $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
+    $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
       foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
         if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
@@ -15281,34 +15286,34 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       }
     };` : ""}
     ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
-      Set-Acl -LiteralPath $p -AclObject (PrivateAcl $item.PSIsContainer); $repaired=!$created;
+      WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
       ${repair ? "$inheritable=$true;" : ""}
-      $a=Get-Acl -LiteralPath $p;
-      $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
+      $a=ReadAcl $p; $g=Grants $a
     };` : ""}
     ${repair ? `# Establish inheritance for the whole existing subtree before caching this root. Never follow reparse points.
-    if (!$inheritable -or !$a.AreAccessRulesProtected -or @($g | Where-Object {$_ -notin @($u.Value,'S-1-5-18','S-1-5-32-544')}).Count -gt 0 -or
+    if (!$inheritable -or !$a.AreAccessRulesProtected -or @($g | Where-Object {$_ -notin $trusted}).Count -gt 0 -or
         $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
+    $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
     foreach ($child in $children) {
-        $childItem=Get-Item -Force -LiteralPath $child;
-        if ($childItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
-        $childAcl=Get-Acl -LiteralPath $child;
-        $rules=@($childAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));
-        $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @($u.Value,'S-1-5-18','S-1-5-32-544')});
+        if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+        $childAcl=ReadAcl $child; $rules=Rules $childAcl;
+        $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted});
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
           $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
           if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Cannot repair Room state owned by $childOwner : $child" };
-          # icacls /reset re-enables inheritance and removes every explicit entry. A Get-Acl/Set-Acl round trip
-          # cannot do this: Set-Acl persists the inherited entries it read back as explicit ones.
-          & (Join-Path $env:SystemRoot 'System32\\icacls.exe') $child /reset /q | Out-Null;
+          # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
+          # read with its inherited entries would persist those entries as explicit ones.
+          & $icacls $child /reset /q | Out-Null;
           if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
-          $childAcl=Get-Acl -LiteralPath $child;
-          $rules=@($childAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));
+          $childAcl=ReadAcl $child; $rules=Rules $childAcl
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
-            @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @($u.Value,'S-1-5-18','S-1-5-32-544')}).Count -gt 0) { throw "Room state descendant is not private: $child" };
+            @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
     };` : ""}
-    @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
+    # SIDs and booleans only, so the report is built without ConvertTo-Json.
+    $bool={ param($v) if ($v) { 'true' } else { 'false' } };
+    '{"owner":"' + $a.GetOwner([Security.Principal.SecurityIdentifier]).Value + '","user":"' + $u.Value + '","protected":' + (& $bool $a.AreAccessRulesProtected) +
+      ',"directory":' + (& $bool $isDir) + ',"repaired":' + (& $bool $repaired) + ',"grants":[' + ((@($g) | ForEach-Object { '"' + $_ + '"' }) -join ',') + ']}'`;
 }
 function windowsAclError(file, error) {
   const e = error;
