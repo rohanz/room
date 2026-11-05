@@ -19,7 +19,7 @@ it('writes below an existing root that rejects mkdir with Windows EPERM', () => 
   writeAtomic(file, { value: 1 })
   writeAtomic(file, { value: 2 })
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ value: 2 })
-})
+}, process.platform === 'win32' ? 90_000 : undefined) // each new private directory runs one PowerShell ACL inspection, slow to start on CI
 
 // On Windows, writeAtomic creates directories through PowerShell's CreateDirectory with the private ACL (no window
 // with an inherited ACL), so fs.mkdirSync is never called there and these interception tests do not apply.

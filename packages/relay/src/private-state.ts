@@ -48,7 +48,11 @@ function windowsAcl(file: string, protectNew = false, createDirectory = false, r
     $item=Get-Item -Force -LiteralPath $p; if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Room state must not be a reparse point' };
     $a=Get-Acl -LiteralPath $p;
     $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value});
-    $owned=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $u.Value;
+    $o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+    # An elevated administrator's new directories are owned by BUILTIN\\Administrators (Windows Server default); that
+    # user can already rewrite the ACL, so the repair may take ownership back for them.
+    $elevated=(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
+    $owned=($o -eq $u.Value) -or ($o -eq 'S-1-5-32-544' -and $elevated);
     $broad=@($g | Where-Object {$_ -notin @($u.Value,'S-1-5-18','S-1-5-32-544')});
     ${protectNew || repair ? `if ($owned -and (${protectNew ? '$true' : '!$a.AreAccessRulesProtected -or $broad.Count -gt 0'})) {
       Set-Acl -LiteralPath $p -AclObject (PrivateAcl $item.PSIsContainer); $repaired=!$created;
