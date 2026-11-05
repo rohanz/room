@@ -4,12 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, probeCredential, runDoctor, type DoctorFacts } from '../src/doctor.js'
+import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, probeCredential, runDoctor, hookCompatibilityWarning, type DoctorFacts } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 import { createWakeSender } from '../src/wake-path.js'
 import { handlers as scopeHandlers } from '../src/tools/scope.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { RoomDoc } from '@room/shared'
+import { CURRENT_COMPAT } from '@room/hub-core'
 import { Awareness } from 'y-protocols/awareness'
 
 const { version } = JSON.parse(readFileSync(new URL('../../../plugins/room/.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { version: string }
@@ -214,9 +215,26 @@ describe('doctor report', () => {
   it('checks the server schema and hub protocol, including storage failure', () => {
     const healthy = { ...base(), server: 'wss://fixture.invalid', serverHealth: true, serverSchema: 2, serverHub: 1 }
     expect(evaluateDoctor(healthy).find(r => r.name === 'team server')).toMatchObject({ level: 'PASS' })
-    expect(evaluateDoctor({ ...healthy, serverSchema: undefined }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: 'the server is older than Room 0.17: deploy 0.17' })
-    expect(evaluateDoctor({ ...healthy, serverHub: 2 }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: 'server schema 2, hub 2; need schema 2, hub 1' })
+    expect(evaluateDoctor({ ...healthy, serverSchema: undefined }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: expect.stringMatching(/server.*update|update.*server/i) })
+    expect(evaluateDoctor({ ...healthy, serverHub: 2 }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: expect.stringMatching(/server.*contract/i) })
     expect(evaluateDoctor({ ...healthy, serverStorage: 'failing' }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: "the server's storage is failing" })
+  })
+  it('reports overlapping contract ranges independently of release and refuses malformed ads', () => {
+    const f = { ...base(), server: 'wss://fixture.invalid', serverHealth: true, serverCompat: { ...CURRENT_COMPAT, release: '99.0.0' } }
+    expect(evaluateDoctor(f).find(r => r.name === 'team server')).toMatchObject({ level: 'PASS', finding: expect.stringContaining('hub 1') })
+    expect(evaluateDoctor({ ...f, serverCompat: { bootstrap: 1 } }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL' })
+    expect(evaluateDoctor({ ...f, serverCompat: { ...CURRENT_COMPAT, hub: { min: 9, max: 9 } } }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL' })
+  })
+  it('surfaces hook degradation only for the current endpoint incarnation', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'room-hook-diagnostic-'))
+    writeFileSync(path.join(dir, 'mcp.json'), JSON.stringify({ pid: 123, incarnation: 'current' }))
+    const status = path.join(dir, 'hook-compat.json')
+    writeFileSync(status, JSON.stringify({ pid: 123, incarnation: 'current', degraded: 'failed' }))
+    expect(hookCompatibilityWarning(dir)).toMatch(/hook.*Messages remain owed/)
+    writeFileSync(status, JSON.stringify({ pid: 123, incarnation: 'old', degraded: 'failed' }))
+    expect(hookCompatibilityWarning(dir)).toBeUndefined()
+    writeFileSync(status, JSON.stringify({ pid: 123, incarnation: 'current' }))
+    expect(hookCompatibilityWarning(dir)).toBeUndefined()
   })
   it('validates a saved credential in a header without putting it in the URL', async () => {
     const fetcher = vi.fn(async (url: string, opts: RequestInit) => {

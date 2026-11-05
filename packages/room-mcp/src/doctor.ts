@@ -1,4 +1,6 @@
 import fs from 'node:fs'
+import { compatibilityFromHealth } from './client-compat.js'
+import { createSessionBinding } from './binding.js'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
@@ -36,9 +38,9 @@ export interface DoctorFacts {
   sessionBound?: boolean
   deliveryPath?: WakePathStatus
   deliveryHost?: string
-  server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string
+  server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string; serverCompat?: unknown
   credential?: boolean; credentialError?: string; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
-  relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
+  hookCompatibility?: string; relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
 }
 
 /** Counts refer only to retained ledger entries. Handoff means host content, never model comprehension. */
@@ -148,9 +150,18 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     if (f.serverRedirect) add('WARN', 'team server', `server redirected /health (${f.serverRedirect}); check ROOM_SERVER`, 'Check ROOM_SERVER and server status')
     else if (!f.serverHealth) add('WARN', 'team server', '/health unavailable', 'Check ROOM_SERVER and server status')
     else if (f.serverStorage === 'failing') add('FAIL', 'team server', "the server's storage is failing", 'Check server storage before joining')
-    else if (f.serverSchema === undefined) add('FAIL', 'team server', 'the server is older than Room 0.17: deploy 0.17', 'Deploy Room 0.17 on the server')
-    else if (f.serverSchema !== 2 || f.serverHub !== 1) add('FAIL', 'team server', `server schema ${f.serverSchema}, hub ${f.serverHub ?? 'missing'}; need schema 2, hub 1`, 'Deploy a compatible Room 0.17 server')
-    else add('PASS', 'team server', 'schema 2, hub 1; storage healthy')
+    // Without an advertisement the exact 0.17 baseline is the contract; a server reporting anything else predates it.
+    else if (!('serverCompat' in f) && f.serverSchema === undefined) add('FAIL', 'team server', 'the server is older than Room 0.17; update the server to 0.17.0 or newer', 'Deploy Room 0.17 or newer on the server')
+    else if (!('serverCompat' in f) && (f.serverSchema !== 2 || f.serverHub !== 1)) add('FAIL', 'team server', `the server reports schema ${f.serverSchema}, hub ${f.serverHub ?? 'missing'}; the supported contract without negotiation is schema 2, hub 1: update the server`, 'Deploy a compatible Room server')
+    else {
+      try {
+        const profile = compatibilityFromHealth({ ok: true, schema: f.serverSchema, hub: f.serverHub, ...('serverCompat' in f ? { compat: f.serverCompat } : {}) })
+        const ad = profile.offer
+        add('PASS', 'team server', `hub ${ad.hub.min}${ad.hub.max === ad.hub.min ? '' : `–${ad.hub.max}`}; read schemas ${ad.schemas.read.join(',')}; write schemas ${ad.schemas.write.join(',')}; ${profile.legacy ? 'legacy adapter' : 'negotiating contract'}; storage healthy`)
+      } catch (error) {
+        add('FAIL', 'team server', error instanceof Error ? error.message : String(error), 'Update the affected Room client or server, then reconnect Room (/mcp) or restart the session')
+      }
+    }
     if (f.credentialError) add('FAIL', 'team login', f.credentialError, 'Repair or move aside the credentials file, then run room_login')
     else if (!f.credential && f.sharedToken) add('PASS', 'team login', 'shared token configured; login check does not apply')
     else if (!f.credential) add('WARN', 'team login', 'login missing', 'Run room_login')
@@ -159,6 +170,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     else if (f.credentialStatus === 'rejected') add('WARN', 'team login', 'credential present; the server did not confirm it', 'Deploy Room 0.17, then retry room doctor')
     else add('WARN', 'team login', 'credential present (not verified)', 'Check server connection, then retry room doctor')
   } else add(f.relayFile ? f.relayHealth ? 'PASS' : 'WARN' : 'PASS', 'local relay', f.relayFile ? f.relayHealth ? 'discovery and /health OK' : 'discovery exists; /health unavailable' : 'not started yet', 'Join the local room to start its relay')
+  if (f.hookCompatibility) add('WARN', 'hook delivery contract', f.hookCompatibility, 'Update the hook or reconnect Room (/mcp) or restart the session')
   if (f.legacyRelay) add('WARN', 'Room 0.16 session', 'a Room 0.16 local relay is still running in this clone', 'End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)')
   if (f.canonicalRelayWarning) add('WARN', 'canonical relay', f.canonicalRelayWarning, 'Quit the older Room session or reconnect Room there')
   add(f.inSession ? f.stale ? 'WARN' : 'PASS' : 'PASS', 'running session', f.inSession ? f.stale ?? 'matches installed bundle' : 'n/a', 'Restart the host session or reconnect Room (/mcp)')
@@ -199,12 +211,12 @@ export function codexHooksRoot(marketplaces: unknown, name: string | undefined):
   } catch { /* an older marketplace layout */ }
   return path.resolve(root, entry ?? path.join('plugins', 'room'))
 }
-export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string; schema?: number; hub?: number; storage?: string }> {
+export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string; schema?: number; hub?: number; storage?: string; compat?: unknown }> {
   try {
     const r = await fetcher(url, { signal: AbortSignal.timeout(3000), redirect: 'manual' })
     if (!r.ok) return { ok: false, ...(r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {}) }
-    const body = await r.json() as { ok?: boolean; schema?: number; hub?: number; storage?: string }
-    return { ok: body.ok === true, schema: body.schema, hub: body.hub, storage: body.storage }
+    const body = await r.json() as { ok?: boolean; schema?: number; hub?: number; storage?: string; compat?: unknown }
+    return { ok: body.ok === true, schema: body.schema, hub: body.hub, storage: body.storage, ...('compat' in body ? { compat: body.compat } : {}) }
   } catch { return { ok: false } }
 }
 export async function probeCredential(url: string, session: string, fetcher: typeof fetch = fetch): Promise<{ status: 'valid' | 'rejected' | 'unverified'; login?: string }> {
@@ -216,6 +228,21 @@ export async function probeCredential(url: string, session: string, fetcher: typ
     return typeof body.login === 'string' && body.login ? { status: 'valid', login: body.login } : { status: 'unverified' }
   } catch { return { status: 'unverified' } }
 }
+/** A failed negotiation is local diagnostic state, scoped to the live endpoint; never a receipt. */
+export function hookCompatibilityWarning(dir?: string): string | undefined {
+  if (!dir) return undefined
+  try {
+    const parse = (name: string) => {
+      const file = path.join(dir, name)
+      if (fs.statSync(file).size > 4096) throw new Error('oversize hook endpoint diagnostic')
+      return JSON.parse(fs.readFileSync(file, 'utf8'))
+    }
+    const endpoint = parse('mcp.json'), status = parse('hook-compat.json')
+    if (status.degraded && typeof endpoint.incarnation === 'string' && status.incarnation === endpoint.incarnation && status.pid === endpoint.pid)
+      return 'Room hook and running MCP have no verified common contract; update the hook or reconnect Room (/mcp) or restart the session. Messages remain owed.'
+  } catch { /* missing, stale or partially written diagnostic */ }
+}
+
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
 async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
   const [gitVersion, head, claudeJson, claudeMarketsJson, codexJson, codexMarketsJson, claudeVersion] = await Promise.all([
@@ -261,6 +288,7 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
       f.serverSchema = health.schema
       f.serverHub = health.hub
       f.serverStorage = health.storage
+      if ('compat' in health) f.serverCompat = health.compat
       if (session) {
         u.pathname = '/auth/me'
         const credential = await probeCredential(u.toString(), session)
@@ -279,6 +307,7 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
         f.canonicalRelayWarning = canonicalRelayWarning(port, common, identity, info).warning
     }
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
+  f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir())
   return f
 }
 export interface DoctorOptions {

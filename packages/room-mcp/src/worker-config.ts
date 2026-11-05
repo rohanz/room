@@ -1,4 +1,8 @@
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { CURRENT_COMPAT, parseAdvertisement, selectContract, type CompatAdvertisement } from '@room/hub-core'
+import { WORKER_RECORD_SCHEMA } from '@room/shared'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -182,18 +186,40 @@ export function leadClaudePluginDir(env: NodeJS.ProcessEnv = process.env, module
   return installedPath && path.resolve(installedPath) === resolved ? undefined : resolved
 }
 
-function installedCodexRoomVersion(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const root = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'plugins', 'cache', 'room', 'room')
+export interface WorkerContract { release: string; compat: CompatAdvertisement; workerRecordSchema: number }
+
+/** Resolve the installed entry selected by Codex, then authenticate its descriptor against its executable. */
+export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env): WorkerContract | undefined {
   try {
-    return fs.readdirSync(root).filter(v => /^\d+\.\d+\.\d+$/.test(v) && fs.existsSync(path.join(root, v, '.codex-plugin', 'plugin.json')))
-      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1)
+    const listing = JSON.parse(execFileSync('codex', ['plugin', 'list', '--json'], { env, encoding: 'utf8', timeout: 2500, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })) as { installed?: { pluginId?: string; version?: string; enabled?: boolean }[] }
+    const entries = listing.installed?.filter(row => row.pluginId === 'room@room' && row.enabled !== false)
+    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return undefined
+    const root = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'plugins', 'cache', 'room', 'room', entries[0].version, 'server')
+    if (fs.statSync(path.join(root, 'compat.json')).size > 4096 || fs.statSync(path.join(root, 'room-mcp.mjs')).size > 64 * 1024 * 1024) return undefined
+    const raw = fs.readFileSync(path.join(root, 'compat.json'), 'utf8')
+    const descriptor = JSON.parse(raw)
+    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return undefined
+    return { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
   } catch { return undefined }
 }
 
-export function codexRoomVersionMismatch(leadVersion = pluginManifest.version, installed = installedCodexRoomVersion()): string | undefined {
-  return installed && installed !== leadVersion
-    ? `Codex has Room ${installed}, but this lead runs Room ${leadVersion}; install Room ${leadVersion} for Codex, or use host claude`
-    : undefined
+export function codexRoomCompatibilityMismatch(
+  lead: WorkerContract = { release: pluginManifest.version, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA },
+  installed: WorkerContract | undefined = undefined,
+  diagnostic?: (line: string) => void,
+): string | undefined {
+  if (arguments.length < 2) installed = installedCodexRoomContract()
+  if (!installed) return "Codex's installed Room executable contract is unverified; update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker"
+  const selected = selectContract(installed.compat, lead.compat, { activeSchema: 2 })
+  if (selected.ok && installed.workerRecordSchema === lead.workerRecordSchema) {
+    if (installed.release !== lead.release) diagnostic?.(`Codex Room ${installed.release} and lead Room ${lead.release} have compatible protocol and worker record contracts`)
+    return undefined
+  }
+  const newer = installed.release.localeCompare(lead.release, undefined, { numeric: true }) > 0
+  const reason = installed.workerRecordSchema !== lead.workerRecordSchema
+    ? `worker record schemas differ (lead ${lead.workerRecordSchema}, Codex ${installed.workerRecordSchema})`
+    : selected.ok ? '' : selected.error.text
+  return `Codex has Room ${installed.release}, but this lead runs Room ${lead.release}: ${reason}; ${newer ? 'reconnect Room with /mcp or restart the session to load the installed Room contract' : 'update Room for Codex to a compatible protocol and worker record schema'}`
 }
 export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string, options: WorkerCommandOptions = {}): { cmd: string; args: string[] } {
   if (effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)

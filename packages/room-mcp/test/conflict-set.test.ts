@@ -14,7 +14,8 @@ import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, notic
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
-import { registrySnapshotForDir } from '../src/worker-registry.js'
+import { carriedFrom, registrySnapshotForDir } from '../src/worker-registry.js'
+import { seedRegistryWorker } from './registry-fixture.js'
 import * as roomd from '@room/roomd'
 import * as gitModule from '@room/roomd/git'
 import * as parseEngine from '../src/parse/engine.js'
@@ -1107,6 +1108,9 @@ describe('derived pair slots', () => {
         if (typeof args[0] === 'string' && args[0].startsWith(`${workers}/`) && args[0].endsWith('.json')) recordReads++
         return original(...args)
       }) as typeof fs.readFileSync)
+      // The registry cache rereads files written in the last two seconds; these checks run after that window.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(Date.now() + 5000)
       try {
         const running = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
           async () => ({ id: 'w_123', status: 'running', dir: workerDir }))
@@ -1119,9 +1123,10 @@ describe('derived pair slots', () => {
         const done = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
           async () => ({ id: 'w_123', status: 'done', dir: workerDir, run: '1:run', seq: 2 }))
         await (done as any).releaseLandedWorkerClaims('1')
-        expect(recordReads).toBe(2)
+        // Initial and latest freshness checks read that one record; the unchanged second is a stat-validated cache hit.
+        expect(recordReads).toBe(1)
         expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
-      } finally { read.mockRestore() }
+      } finally { vi.useRealTimers(); read.mockRestore() }
     } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
   })
 
@@ -2090,6 +2095,52 @@ describe('derived pair slots', () => {
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
       expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
       expect(parseEngine.languageLoadAttemptsForTest('python')).toBe(0)
+    } finally { f.cleanup() }
+  })
+
+  it('publishes nothing computed from a carried baseline the registry replaced during an awaited comparison', async () => {
+    const f = fixture()
+    const log = vi.fn()
+    try {
+      // The registry fixture names a worker `lead+<tag>` under lead `lead`.
+      const W = 'lead+w', B = 'lead'
+      f.holder(W); f.holder(B)
+      f.entry(W, undefined); f.entry(B, undefined)
+      f.room.manifestHead.set(B, { ...f.room.manifestHead.get(B)!, textPrefixes: ['api.py'] })
+      const oldText = 'def call(a):\n    return a\n'
+      const blob = execFileSync('git', ['-C', f.dir, 'hash-object', '-w', '--stdin'], { input: oldText, encoding: 'utf8' }).trim()
+      const add = (name: string, path: string, text: string) => {
+        f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey(name, '1'), path, text)
+      }
+      add(W, 'consumer.py', 'from api import call\ncall(1)\n')
+      add(B, 'api.py', 'def call(a, b):\n    return a + b\n')
+      const { registry, record } = await seedRegistryWorker(f.dir, 'w', { base: f.base, dir: f.dir, carriedUntracked: [{ path: 'api.py', sha: blob }] })
+      // The first lookup of each pass schedules a registry write for the pass's first await (its Git work).
+      // The rewrite keeps the carried values, so only freshness, not a changed result, can stop publication.
+      let rewrites = 0, armed = true
+      const lookup = (person: string) => {
+        const value = carriedFrom(f.dir, person)
+        if (armed && person === W && rewrites < 2) {
+          rewrites++
+          setImmediate(() => { void registry.update(record.id, prior => ({ ...prior, seq: prior.seq + 1 })) })
+        }
+        return value
+      }
+      const set = new ConflictSet(f.session(W), W, f.session(W), log, 0, lookup)
+      const key = slotKey(W, 'contract', B, 'api.py', 'call')
+      try {
+        await set.reconcile('carried source moves')
+        expect(rewrites).toBe(2)
+        expect(f.room.doc.getMap('conflicts').get(key)).toBeUndefined()
+        expect(f.post).not.toHaveBeenCalled()
+        expect(log.mock.calls.some(([line]) => String(line).includes('inputs moved twice'))).toBe(true)
+        // With the source at rest the same pass publishes: the stale passes were withheld, not unable.
+        armed = false
+        await set.reconcile('carried source at rest')
+        expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
+        expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === W)).toBe(true)
+      } finally { set.stop() }
     } finally { f.cleanup() }
   })
 

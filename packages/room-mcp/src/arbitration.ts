@@ -8,6 +8,7 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { randomBytes } from 'node:crypto'
 import { writeAtomic } from './leases.js'
 import { probeOwnProcess } from './worker-process.js'
@@ -39,12 +40,34 @@ export interface Arbitration { readonly port: number; close(): Promise<void> }
 
 export async function startArbitration(o: ArbitrationOptions): Promise<Arbitration> {
   const key = randomBytes(24).toString('hex')
-  const batches = new Map<string, { batch: Batch; sessionId: string }>()
-  const handle = (req: Record<string, unknown>): object => {
-    if (req.key !== key) return { ok: false, reason: 'key' }
+  const incarnation = randomBytes(16).toString('hex')
+  type Selection = { sessionId: string; id: string }
+  type Connection = { selection?: Selection; rejected?: boolean }
+  const batches = new Map<string, { batch: Batch; sessionId: string; selectionId?: string }>()
+  const handle = (req: Record<string, unknown>, connection: Connection): object => {
+    if (req.key !== key) { if (req.op === 'hello') connection.rejected = true; return { ok: false, reason: 'key' } }
+    if (connection.rejected) return { ok: false, reason: 'incompatible' }
+    if (req.op === 'hello') {
+      const bound = o.binding.bound()
+      if (!bound || o.canSelect?.() === false) { connection.rejected = true; return { ok: false, reason: 'unbound' } }
+      if (req.sessionId !== bound.id) { connection.rejected = true; return { ok: false, reason: 'foreign' } }
+      if (connection.selection || req.bootstrap !== 1 || !Number.isSafeInteger(req.min) || !Number.isSafeInteger(req.max) || Number(req.min) < 1 || Number(req.max) > 65535 || Number(req.max) < Number(req.min) || Number(req.min) > 1 || Number(req.max) < 1 || !req.capabilities || typeof req.capabilities !== 'object' || Array.isArray(req.capabilities) || Object.keys(req.capabilities).length > 32 || Object.entries(req.capabilities as Record<string, unknown>).some(([name, versions]) => name.length > 64 || !/^[A-Za-z][A-Za-z0-9.-]*$/.test(name) || !Array.isArray(versions) || versions.length > 8 || versions.some(v => !Number.isSafeInteger(v) || v < 1 || v > 65535))) {
+        connection.rejected = true
+        return { ok: false, reason: 'incompatible', side: 'hook', code: 'hook-incompatible' }
+      }
+      connection.selection = { sessionId: bound.id, id: randomBytes(16).toString('hex') }
+      return { ok: true, protocol: 1, incarnation, selectionId: connection.selection.id }
+    }
+    const selection = connection.selection
+    if (selection && (o.binding.bound()?.id !== selection.sessionId || req.sessionId !== selection.sessionId || req.protocol !== 1 || req.incarnation !== incarnation || req.selectionId !== selection.id)) {
+      connection.rejected = true
+      return { ok: false, reason: 'foreign' }
+    }
+    // Supplying selection fields without hello cannot bypass connection binding.
+    if (!selection && ('selectionId' in req || 'protocol' in req || 'incarnation' in req)) return { ok: false, reason: 'invalid' }
     if (req.op === 'confirm') {
       const pending = typeof req.batch === 'string' ? batches.get(req.batch) : undefined
-      if (pending) {
+      if (pending && pending.selectionId === selection?.id) {
         batches.delete(pending.batch.id)
         if (o.binding.bound()?.id === pending.sessionId && o.canSelect?.() !== false) { o.ledger.commit(pending.batch); return { ok: true } }
         o.ledger.release(pending.batch)
@@ -61,7 +84,7 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
     o.onContact?.()
     const { batch, items, notices, more } = o.select()
     if (!items.length && !notices.length) { o.ledger.release(batch); return { ok: true, batch: batch.id, items, notices, more, leaseMs: 0 } }
-    batches.set(batch.id, { batch, sessionId: bound.id })
+    batches.set(batch.id, { batch, sessionId: bound.id, ...(selection ? { selectionId: selection.id } : {}) })
     // A lease that ends first releases the batch; a late confirm still records a real handoff.
     const forget = setTimeout(() => batches.delete(batch.id), 60_000)
     forget.unref?.()
@@ -70,6 +93,7 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
   const server = net.createServer(socket => {
     socket.setEncoding('utf8')
     let buffered = ''
+    const connection: Connection = {}
     socket.on('data', chunk => {
       buffered += chunk
       if (buffered.length > 64 * 1024) { socket.destroy(); return }
@@ -77,7 +101,7 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
         const line = buffered.slice(0, nl)
         buffered = buffered.slice(nl + 1)
         let reply: object
-        try { reply = handle(JSON.parse(line) as Record<string, unknown>) }
+        try { reply = handle(JSON.parse(line) as Record<string, unknown>, connection) }
         catch (e) { o.log?.(`arbitration: ${e instanceof Error ? e.message : String(e)}`); reply = { ok: false, reason: 'invalid' } }
         socket.write(JSON.stringify(reply) + '\n')
       }
@@ -97,7 +121,7 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
       const file = path.join(dir, 'mcp.json')
-      writeAtomic(file, { port, key, pid: process.pid, startTime: self?.startTime ?? '' })
+      writeAtomic(file, { port, key, pid: process.pid, startTime: self?.startTime ?? '', hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: pluginManifest.version })
       fs.chmodSync(file, 0o600)
       written = file
     } catch (e) { o.log?.(`arbitration: could not publish its endpoint: ${e instanceof Error ? e.message : String(e)}`) }

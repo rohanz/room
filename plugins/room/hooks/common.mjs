@@ -6,7 +6,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
-export const HOOKS_VERSION = '0.17.32'
+export const HOOKS_VERSION = '0.17.33'
 
 /**
  * Hook input carries the whole tool input, so a Write of a large file arrives here in full. 32 MB keeps
@@ -236,9 +236,18 @@ export function writeJsonAtomic(file, value) {
  * A connection to this session's MCP arbitration endpoint (mcp.json), or undefined when it cannot be
  * reached within `budgetMs`. `request` answers one JSON line, or undefined when the budget runs out.
  */
-export async function openMcp(dir, budgetMs, maxReply = MCP_REPLY_MAX_CHARS) {
+export async function openMcp(dir, budgetMs, maxReply = MCP_REPLY_MAX_CHARS, hostSessionId) {
   const endpoint = readJson(path.join(dir, 'mcp.json'), null)
   if (!Number.isInteger(endpoint?.port) || typeof endpoint?.key !== 'string') return undefined
+  const diagnostic = () => {
+    const text = 'Room hook and running MCP have no verified common contract; update the hook or reconnect Room (/mcp) or restart the session. Messages remain owed.'
+    hookDiagnostic(text)
+    writeJsonAtomic(path.join(dir, 'hook-compat.json'), { at: Date.now(), pid: endpoint.pid, incarnation: endpoint.incarnation, degraded: text })
+  }
+  const advertised = Object.hasOwn(endpoint, 'hookCompat')
+  const range = endpoint.hookCompat
+  const sessionId = advertised ? hostSessionId ?? readJson(path.join(dir, 'session.json'), null)?.session_id : undefined
+  if (advertised && (range?.bootstrap !== 1 || !Number.isSafeInteger(range.min) || !Number.isSafeInteger(range.max) || range.min < 1 || range.max > 65535 || range.max < range.min || range.min > 1 || range.max < 1 || typeof sessionId !== 'string' || !sessionId)) { diagnostic(); return undefined }
   const deadline = Date.now() + budgetMs
   const socket = net.connect({ host: '127.0.0.1', port: endpoint.port })
   socket.setEncoding('utf8')
@@ -276,17 +285,27 @@ export async function openMcp(dir, budgetMs, maxReply = MCP_REPLY_MAX_CHARS) {
     if (buffered.length > maxReply) fail(`MCP endpoint reply over ${maxReply} characters`)
   })
   socket.once('close', () => fail())
-  return {
+  let selection
+  const connection = {
     request(body, ms = Math.max(0, deadline - Date.now())) {
       if (failed) return Promise.resolve(undefined)
       return new Promise(resolve => {
-        const timer = setTimeout(() => resolve(undefined), ms)
+        const timer = setTimeout(() => { fail(); resolve(undefined) }, Math.max(0, Math.min(ms, deadline - Date.now())))
         waiting.push(reply => { clearTimeout(timer); resolve(reply) })
-        socket.write(JSON.stringify({ ...body, key: endpoint.key }) + '\n')
+        socket.write(JSON.stringify({ ...body, ...(selection ? { sessionId, protocol: 1, selectionId: selection.selectionId, incarnation: selection.incarnation } : {}), key: endpoint.key }) + '\n')
       })
     },
     close() { socket.destroy() },
   }
+  if (advertised) {
+    const reply = await connection.request({ op: 'hello', sessionId, bootstrap: 1, min: 1, max: 1, capabilities: {} })
+    if (reply?.ok !== true || reply.protocol !== 1 || typeof reply.selectionId !== 'string' || !reply.selectionId || typeof reply.incarnation !== 'string' || !reply.incarnation || (endpoint.incarnation !== undefined && reply.incarnation !== endpoint.incarnation)) {
+      connection.close(); diagnostic(); return undefined
+    }
+    selection = reply
+    writeJsonAtomic(path.join(dir, 'hook-compat.json'), { at: Date.now(), pid: endpoint.pid, incarnation: reply.incarnation })
+  }
+  return connection
 }
 
 /**

@@ -2,8 +2,17 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { githubPushChecker } from '../src/admit.js'
 import { CredentialSockets, PermissionRevalidator, ConnectionReservations, PendingAdmissions, OutboundBudget } from '../src/sockets.js'
+import { CURRENT_COMPAT } from '@room/hub-core'
 
 describe('credential sockets and tickets', () => {
+  it('binds a private copy of the negotiation offer to its room and read-only authority', () => {
+    const registry = new CredentialSockets(), offer = structuredClone(CURRENT_COMPAT)
+    const credential = { kind: 'view' as const, value: 'view-key' }
+    const ticket = registry.mint('local/demo', credential, true, offer).ticket
+    offer.hub.max = 9
+    expect(registry.take(ticket, 'local/demo')).toEqual({ credential, readOnly: true, compat: CURRENT_COMPAT })
+    expect(registry.take(ticket, 'local/demo')).toBeUndefined()
+  })
   it('closes live sockets and invalidates tickets when a session is removed', () => {
     const registry = new CredentialSockets()
     const socket = { close: vi.fn(), once: vi.fn() }

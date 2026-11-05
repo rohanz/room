@@ -1,7 +1,7 @@
 /** Retirement keyed by worker ID (registry §12): the registry records it, each room's projector cleans up. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { manifestPaths, type RetiredWorker } from '@room/shared'
+import { manifestPaths, ROOM_STALE_MS, type RetiredWorker } from '@room/shared'
 import { PolicyStore } from './policy-store.js'
 import type { Rooms } from './registry.js'
 import type { Session } from './session.js'
@@ -162,6 +162,8 @@ async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, p
 export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   const registry = await registryForDir(s.dir)
   const probe = rooms.probe.bind(rooms)
+  // Retired records otherwise accumulate for the clone's lifetime; the room's archive entry outlives them.
+  await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
   for (const record of registry.list()) {
     if (record.lead.participant !== s.me.name || record.room !== s.roomName) continue
     const processes: CollectedProcesses = { probe, list: rooms.listCwdProcesses, alive: async w =>

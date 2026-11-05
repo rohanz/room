@@ -2063,7 +2063,7 @@ var require_fast_deep_equal = __commonJS({
       if (a === b) return true;
       if (a && b && typeof a == "object" && typeof b == "object") {
         if (a.constructor !== b.constructor) return false;
-        var length2, i, keys2;
+        var length2, i, keys3;
         if (Array.isArray(a)) {
           length2 = a.length;
           if (length2 != b.length) return false;
@@ -2074,13 +2074,13 @@ var require_fast_deep_equal = __commonJS({
         if (a.constructor === RegExp) return a.source === b.source && a.flags === b.flags;
         if (a.valueOf !== Object.prototype.valueOf) return a.valueOf() === b.valueOf();
         if (a.toString !== Object.prototype.toString) return a.toString() === b.toString();
-        keys2 = Object.keys(a);
-        length2 = keys2.length;
+        keys3 = Object.keys(a);
+        length2 = keys3.length;
         if (length2 !== Object.keys(b).length) return false;
         for (i = length2; i-- !== 0; )
-          if (!Object.prototype.hasOwnProperty.call(b, keys2[i])) return false;
+          if (!Object.prototype.hasOwnProperty.call(b, keys3[i])) return false;
         for (i = length2; i-- !== 0; ) {
-          var key2 = keys2[i];
+          var key2 = keys3[i];
           if (!equal(a[key2], b[key2])) return false;
         }
         return true;
@@ -4639,7 +4639,7 @@ var require_core = __commonJS({
       errorsText(errors = this.errors, { separator = ", ", dataVar = "data" } = {}) {
         if (!errors || errors.length === 0)
           return "No errors";
-        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text, msg) => text + separator + msg);
+        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text2, msg) => text2 + separator + msg);
       }
       $dataMetaSchema(metaSchema, keywordsJsonPointers) {
         const rules = this.RULES.all;
@@ -5068,8 +5068,8 @@ var require_multipleOf = __commonJS({
         const { gen, data, schemaCode, it } = cxt;
         const prec = it.opts.multipleOfPrecision;
         const res = gen.let("res");
-        const invalid = prec ? (0, codegen_1._)`Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}` : (0, codegen_1._)`${res} !== parseInt(${res})`;
-        cxt.fail$data((0, codegen_1._)`(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid}))`);
+        const invalid2 = prec ? (0, codegen_1._)`Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}` : (0, codegen_1._)`${res} !== parseInt(${res})`;
+        cxt.fail$data((0, codegen_1._)`(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid2}))`);
       }
     };
     exports.default = def;
@@ -7748,10 +7748,10 @@ var init_encoding = __esm({
             writeVarUint8Array(encoder3, data);
           } else {
             write(encoder3, 118);
-            const keys2 = Object.keys(data);
-            writeVarUint(encoder3, keys2.length);
-            for (let i = 0; i < keys2.length; i++) {
-              const key2 = keys2[i];
+            const keys3 = Object.keys(data);
+            writeVarUint(encoder3, keys3.length);
+            for (let i = 0; i < keys3.length; i++) {
+              const key2 = keys3[i];
               writeVarString(encoder3, key2);
               writeAny(encoder3, data[key2]);
             }
@@ -10867,7 +10867,7 @@ var init_yjs = __esm({
           if (this.transaction.doc._transactionCleanups.length === 0) {
             throw create3(errorComputeChanges);
           }
-          const keys2 = /* @__PURE__ */ new Map();
+          const keys3 = /* @__PURE__ */ new Map();
           const target = this.target;
           const changed = (
             /** @type Set<string|null> */
@@ -10913,10 +10913,10 @@ var init_yjs = __esm({
                   return;
                 }
               }
-              keys2.set(key2, { action, oldValue });
+              keys3.set(key2, { action, oldValue });
             }
           });
-          this._keys = keys2;
+          this._keys = keys3;
         }
         return this._keys;
       }
@@ -12234,7 +12234,7 @@ var init_yjs = __esm({
       }
       return negatedAttributes;
     };
-    insertText = (transaction, parent, currPos, text, attributes) => {
+    insertText = (transaction, parent, currPos, text2, attributes) => {
       currPos.currentAttributes.forEach((_val, key2) => {
         if (attributes[key2] === void 0) {
           attributes[key2] = null;
@@ -12244,10 +12244,10 @@ var init_yjs = __esm({
       const ownClientId = doc.clientID;
       minimizeAttributeChanges(currPos, attributes);
       const negatedAttributes = insertAttributes(transaction, parent, currPos, attributes);
-      const content = text.constructor === String ? new ContentString(
+      const content = text2.constructor === String ? new ContentString(
         /** @type {string} */
-        text
-      ) : text instanceof AbstractType ? new ContentType(text) : new ContentEmbed(text);
+        text2
+      ) : text2 instanceof AbstractType ? new ContentType(text2) : new ContentEmbed(text2);
       let { left, right, index } = currPos;
       if (parent._searchMarker) {
         updateMarkerChanges(parent._searchMarker, currPos.index, content.getLength());
@@ -12773,9 +12773,9 @@ var init_yjs = __esm({
        * @return {YText}
        */
       clone() {
-        const text = new _YText();
-        text.applyDelta(this.toDelta());
-        return text;
+        const text2 = new _YText();
+        text2.applyDelta(this.toDelta());
+        return text2;
       }
       /**
        * Creates YTextEvent and calls observers.
@@ -12970,8 +12970,8 @@ var init_yjs = __esm({
        *                                    Text.
        * @public
        */
-      insert(index, text, attributes) {
-        if (text.length <= 0) {
+      insert(index, text2, attributes) {
+        if (text2.length <= 0) {
           return;
         }
         const y = this.doc;
@@ -12984,10 +12984,10 @@ var init_yjs = __esm({
                 attributes[k] = v;
               });
             }
-            insertText(transaction, this, pos, text, attributes);
+            insertText(transaction, this, pos, text2, attributes);
           });
         } else {
-          this._pending.push(() => this.insert(index, text, attributes));
+          this._pending.push(() => this.insert(index, text2, attributes));
         }
       }
       /**
@@ -13567,14 +13567,14 @@ var init_yjs = __esm({
       toString() {
         const attrs = this.getAttributes();
         const stringBuilder = [];
-        const keys2 = [];
+        const keys3 = [];
         for (const key2 in attrs) {
-          keys2.push(key2);
+          keys3.push(key2);
         }
-        keys2.sort();
-        const keysLen = keys2.length;
+        keys3.sort();
+        const keysLen = keys3.length;
         for (let i = 0; i < keysLen; i++) {
-          const key2 = keys2[i];
+          const key2 = keys3[i];
           stringBuilder.push(key2 + '="' + attrs[key2] + '"');
         }
         const nodeName = this.nodeName.toLocaleLowerCase();
@@ -13833,9 +13833,9 @@ var init_yjs = __esm({
        * @return {YXmlText}
        */
       clone() {
-        const text = new _YXmlText();
-        text.applyDelta(this.toDelta());
-        return text;
+        const text2 = new _YXmlText();
+        text2.applyDelta(this.toDelta());
+        return text2;
       }
       /**
        * Creates a Dom Element that mirrors this YXmlText.
@@ -15848,9 +15848,9 @@ var init_delivery = __esm({
           break;
         }
         if (unknown2) this.cacheRoots();
-        for (const [type, keys2] of tx.changed) {
+        for (const [type, keys3] of tx.changed) {
           if (!(type instanceof YMap) || !this.rootNames.get(type)?.startsWith("seen:")) continue;
-          for (const key2 of keys2) if (key2 !== null) this.changed.add(key2);
+          for (const key2 of keys3) if (key2 !== null) this.changed.add(key2);
         }
         const changed = this.changed;
         this.changed = /* @__PURE__ */ new Set();
@@ -16603,9 +16603,9 @@ function formatPatch(patch, headerOptions) {
   }
   return ret.join("\n") + "\n";
 }
-function splitLines(text) {
-  const hasTrailingNl = text.endsWith("\n");
-  const result2 = text.split("\n").map((line) => line + "\n");
+function splitLines(text2) {
+  const hasTrailingNl = text2.endsWith("\n");
+  const result2 = text2.split("\n").map((line) => line + "\n");
   if (hasTrailingNl) {
     result2.pop();
   } else {
@@ -16765,24 +16765,24 @@ function defaultPriority(msg) {
   if (!kind) throw new Error(`unregistered message kind: ${msg.type}`);
   return typeof kind.priority === "function" ? kind.priority(msg) : kind.priority;
 }
-function lineStart(text, oneBasedLine) {
+function lineStart(text2, oneBasedLine) {
   let index = 0;
   for (let line = 1; line < Math.max(1, oneBasedLine); line++) {
-    const newline = text.indexOf("\n", index);
-    if (newline < 0) return text.length;
+    const newline = text2.indexOf("\n", index);
+    if (newline < 0) return text2.length;
     index = newline + 1;
   }
   return index;
 }
-function lineAt(text, index) {
+function lineAt(text2, index) {
   let line = 1;
-  for (let i = 0; i < Math.min(index, text.length); i++) if (text[i] === "\n") line++;
+  for (let i = 0; i < Math.min(index, text2.length); i++) if (text2[i] === "\n") line++;
   return line;
 }
-function makeAnchor(text, from2, to2) {
+function makeAnchor(text2, from2, to2) {
   return {
-    from: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), from2))),
-    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), to2)))
+    from: relativePositionToJSON(createRelativePositionFromTypeIndex(text2, lineStart(text2.toString(), from2))),
+    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text2, lineStart(text2.toString(), to2)))
   };
 }
 var validColorIndex, RoomDoc;
@@ -16953,8 +16953,8 @@ var init_doc = __esm({
         if (archived.id !== id3) throw new Error("retirement id does not match record");
         const name = archived.name;
         this.doc.transact(() => {
-          const cached2 = this.doc.getMap("completedPublications");
-          for (const [key2, value2] of cached2) if (value2.worker.id === id3) cached2.delete(key2);
+          const cached3 = this.doc.getMap("completedPublications");
+          for (const [key2, value2] of cached3) if (value2.worker.id === id3) cached3.delete(key2);
           if (this.workerOwnsName(id3, name)) {
             this.clearWorkerCoordination(name, "retired", post);
             const conflicts = this.doc.getMap("conflicts");
@@ -17015,11 +17015,11 @@ var init_doc = __esm({
       clearPersonBaseTexts(person) {
         for (const key2 of this.ownedBaseTexts.keys()) if (this.isPersonBaseTextKey(key2, person)) this.ownedBaseTexts.delete(key2);
       }
-      setBaseText(person, sha, relpath, text, origin) {
+      setBaseText(person, sha, relpath, text2, origin) {
         const key2 = this.baseTextKey(person, sha, relpath);
-        if (this.ownedBaseTexts.get(key2) === text) return;
+        if (this.ownedBaseTexts.get(key2) === text2) return;
         this.doc.transact(() => {
-          this.ownedBaseTexts.set(key2, text);
+          this.ownedBaseTexts.set(key2, text2);
         }, origin);
       }
       // ---- overlays ----------------------------------------------------------
@@ -17045,18 +17045,18 @@ var init_doc = __esm({
         const previous = existing?.toString() ?? "";
         if (existing && previous === content) return;
         this.doc.transact(() => {
-          let text = this.overlayText(person, relpath);
-          if (!text) {
-            text = new YText();
-            this.overlay(person).set(relpath, text);
+          let text2 = this.overlayText(person, relpath);
+          if (!text2) {
+            text2 = new YText();
+            this.overlay(person).set(relpath, text2);
           }
           let index = 0;
-          const before = text === existing ? previous : text.toString();
+          const before = text2 === existing ? previous : text2.toString();
           for (const [kind, value2] of prepared?.before === before ? prepared.ops : boundedTextDiff(before, content)) {
             if (kind === 0) index += value2.length;
-            else if (kind === -1) text.delete(index, value2.length);
+            else if (kind === -1) text2.delete(index, value2.length);
             else {
-              text.insert(index, value2);
+              text2.insert(index, value2);
               index += value2.length;
             }
           }
@@ -17065,17 +17065,17 @@ var init_doc = __esm({
       /** Publisher-only apply of an overlay diff prepared against its fenced incarnation. */
       applyPreparedOverlayDiff(person, relpath, prepared, origin) {
         this.doc.transact(() => {
-          let text = this.overlayText(person, relpath);
-          if (!text) {
-            text = new YText();
-            this.overlay(person).set(relpath, text);
+          let text2 = this.overlayText(person, relpath);
+          if (!text2) {
+            text2 = new YText();
+            this.overlay(person).set(relpath, text2);
           }
           let index = 0;
           for (const [kind, value2] of prepared.ops) {
             if (kind === 0) index += value2.length;
-            else if (kind === -1) text.delete(index, value2.length);
+            else if (kind === -1) text2.delete(index, value2.length);
             else {
-              text.insert(index, value2);
+              text2.insert(index, value2);
               index += value2.length;
             }
           }
@@ -17119,10 +17119,10 @@ var init_doc = __esm({
         return person ? this.overlayText(person, relpath)?.toString() : void 0;
       }
       lineCount(relpath, person) {
-        const text = this.text(relpath, person);
-        if (text === void 0) return 0;
-        const count = text.split("\n").length;
-        return text.endsWith("\n") ? count - 1 : count;
+        const text2 = this.text(relpath, person);
+        if (text2 === void 0) return 0;
+        const count = text2.split("\n").length;
+        return text2.endsWith("\n") ? count - 1 : count;
       }
       // ---- meta --------------------------------------------------------------
       get meta() {
@@ -17165,8 +17165,8 @@ var init_doc = __esm({
         }, origin);
       }
       addClaim(input, origin) {
-        const text = this.overlayText(input.by, input.path);
-        const anchor3 = text && !input.mirrorOf ? makeAnchor(text, input.from, input.to) : void 0;
+        const text2 = this.overlayText(input.by, input.path);
+        const anchor3 = text2 && !input.mirrorOf ? makeAnchor(text2, input.from, input.to) : void 0;
         const claim2 = { ...input, id: newId("c_"), at: Date.now(), ...anchor3 ? { anchor: anchor3 } : {} };
         this.doc.transact(() => {
           this.claims.set(claim2.id, claim2);
@@ -17175,8 +17175,8 @@ var init_doc = __esm({
       }
       claimRange(claim2) {
         if (claim2.mirrorOf) return { from: claim2.from, to: claim2.to };
-        const text = this.overlayText(claim2.by, claim2.path);
-        if (!text || !claim2.anchor) return { from: claim2.from, to: claim2.to };
+        const text2 = this.overlayText(claim2.by, claim2.path);
+        if (!text2 || !claim2.anchor) return { from: claim2.from, to: claim2.to };
         try {
           const from2 = createAbsolutePositionFromRelativePosition(
             createRelativePositionFromJSON(claim2.anchor.from),
@@ -17186,9 +17186,9 @@ var init_doc = __esm({
             createRelativePositionFromJSON(claim2.anchor.to),
             this.doc
           );
-          if (!from2 || !to2 || from2.type !== text || to2.type !== text) return { from: claim2.from, to: claim2.to };
-          const fromLine = lineAt(text.toString(), from2.index);
-          const toLine = lineAt(text.toString(), to2.index);
+          if (!from2 || !to2 || from2.type !== text2 || to2.type !== text2) return { from: claim2.from, to: claim2.to };
+          const fromLine = lineAt(text2.toString(), from2.index);
+          const toLine = lineAt(text2.toString(), to2.index);
           return { from: fromLine, to: Math.max(fromLine, toLine) };
         } catch {
           return { from: claim2.from, to: claim2.to };
@@ -17205,9 +17205,9 @@ var init_doc = __esm({
       moveClaim(id3, from2, to2, origin, claimedHash) {
         const claim2 = this.claims.get(id3);
         if (!claim2) return void 0;
-        const text = this.overlayText(claim2.by, claim2.path);
+        const text2 = this.overlayText(claim2.by, claim2.path);
         const { anchor: _oldAnchor, claimedHash: _oldHash, ...rest } = claim2;
-        const next = { ...rest, from: from2, to: to2, ...claimedHash !== void 0 ? { claimedHash } : {}, ...text && !claim2.mirrorOf ? { anchor: makeAnchor(text, from2, to2) } : {} };
+        const next = { ...rest, from: from2, to: to2, ...claimedHash !== void 0 ? { claimedHash } : {}, ...text2 && !claim2.mirrorOf ? { anchor: makeAnchor(text2, from2, to2) } : {} };
         this.doc.transact(() => {
           this.claims.set(id3, next);
         }, origin);
@@ -17300,8 +17300,8 @@ function participantsView(doc, awareness, now) {
     current2.set(name, [...current2.get(name) ?? [], state]);
   }
   return [...names].sort().map((name) => {
-    const cached2 = retainedPublication(doc, name);
-    const record2 = participantRecord(doc, name) ?? (cached2 ? { holder: cached2.holder, git: cached2.git } : void 0);
+    const cached3 = retainedPublication(doc, name);
+    const record2 = participantRecord(doc, name) ?? (cached3 ? { holder: cached3.holder, git: cached3.git } : void 0);
     const presences = current2.get(name) ?? [];
     const own2 = record2?.holder ? presences.find((state) => state.sessionId === record2.holder?.sessionId) : void 0;
     const fresh = !!own2;
@@ -17585,8 +17585,8 @@ function digestPath(roomSalt, path60) {
   if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error("invalid roomSalt");
   return createHash("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path60), "utf8").digest("hex");
 }
-function gitBlobHash(text, format = "sha1") {
-  const bytes = Buffer.from(text);
+function gitBlobHash(text2, format = "sha1") {
+  const bytes = Buffer.from(text2);
   return createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 var init_manifest_node = __esm({
@@ -17646,7 +17646,7 @@ function snapshot(room, name, view) {
   const texts = /* @__PURE__ */ new Map();
   if (meta2.retained) return { ...meta2, texts: new Map(meta2.retained.texts) };
   const overlay = room.overlays.get(manifestKey(name, meta2.head.fence));
-  for (const [path60, text] of overlay?.entries() ?? []) texts.set(path60, text.toString());
+  for (const [path60, text2] of overlay?.entries() ?? []) texts.set(path60, text2.toString());
   return { ...meta2, texts };
 }
 function snapshotPath(room, name, view, path60) {
@@ -17685,9 +17685,9 @@ async function versionOf(snap, path60, env = {}) {
   const entry = snap.entries.get(path60);
   if (entry) {
     if (entry.change === "D") return { kind: "deleted", entry };
-    const text = entry.state === "shared" ? snap.texts.get(path60) : entry.hash ? await env.known?.(entry.hash) : void 0;
+    const text2 = entry.state === "shared" ? snap.texts.get(path60) : entry.hash ? await env.known?.(entry.hash) : void 0;
     const hashText = env.hashText ?? (async (value2, format) => (await Promise.resolve().then(() => (init_manifest_node(), manifest_node_exports))).gitBlobHash(value2, format));
-    if (text !== void 0 && entry.hash && await hashText(text, entry.hash.length === 64 ? "sha256" : "sha1") === entry.hash) return { kind: "text", text, entry };
+    if (text2 !== void 0 && entry.hash && await hashText(text2, entry.hash.length === 64 ? "sha256" : "sha1") === entry.hash) return { kind: "text", text: text2, entry };
     if (entry.state === "held") return { kind: "held", entry, why: entry.held ?? "text not shared" };
     return { kind: "unknown", why: "updating", detail: "shared text is missing or does not match its hash" };
   }
@@ -17846,8 +17846,8 @@ function validMessageShape(value2) {
 function claimReleaseText(path60, from2, to2, sha) {
   return `released your claim on ${path60}:${from2}-${to2}: that code changed in ${sha}`;
 }
-function parseClaimRelease(text) {
-  const match = /^released your claim on ([^\n]+):(\d+)-(\d+): that code changed in ([0-9a-f]+)$/i.exec(text);
+function parseClaimRelease(text2) {
+  const match = /^released your claim on ([^\n]+):(\d+)-(\d+): that code changed in ([0-9a-f]+)$/i.exec(text2);
   if (!match) return void 0;
   const from2 = Number(match[2]), to2 = Number(match[3]);
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2)) return void 0;
@@ -17933,8 +17933,8 @@ var init_messages = __esm({
 });
 
 // packages/shared/src/format.ts
-function withLineNumbers(text) {
-  const lines2 = text.split("\n");
+function withLineNumbers(text2) {
+  const lines2 = text2.split("\n");
   if (lines2.length > 1 && lines2[lines2.length - 1] === "") lines2.pop();
   const w = String(lines2.length).length;
   return lines2.map((l, i) => `${String(i + 1).padStart(w)}| ${l}`).join("\n");
@@ -18019,8 +18019,8 @@ function lcsRuns(old, next, lo, oldHi, newHi) {
 }
 function prepareClaimLineMap(ownerVersion, myText) {
   const nextLines = linesOf(myText);
-  if (ownerVersion === void 0) return (range) => ({ from: range.from, to: range.to, approximate: true });
-  if (ownerVersion === myText) return (range) => ({ from: range.from, to: range.to, approximate: false });
+  if (ownerVersion === void 0) return (range2) => ({ from: range2.from, to: range2.to, approximate: true });
+  if (ownerVersion === myText) return (range2) => ({ from: range2.from, to: range2.to, approximate: false });
   const oldLines = linesOf(ownerVersion);
   const ids = /* @__PURE__ */ new Map();
   const intern = (lines2) => Int32Array.from(lines2, (line) => {
@@ -18041,28 +18041,28 @@ function prepareClaimLineMap(ownerVersion, myText) {
     const a = runs[r], b = runs[r + 1];
     if (a.oldAt + a.length < b.oldAt || a.newAt + a.length < b.newAt) hunks.push({ oldAt: a.oldAt + a.length, oldEnd: b.oldAt, newAt: a.newAt + a.length, newEnd: b.newAt });
   }
-  return (range) => {
+  return (range2) => {
     let start = Number.POSITIVE_INFINITY, end = 0;
     const take = (from2, to2) => {
       start = Math.min(start, from2);
       end = Math.max(end, to2);
     };
     for (const run2 of runs) {
-      const lo = Math.max(range.from - 1, run2.oldAt), hi = Math.min(range.to - 1, run2.oldAt + run2.length - 1);
+      const lo = Math.max(range2.from - 1, run2.oldAt), hi = Math.min(range2.to - 1, run2.oldAt + run2.length - 1);
       if (lo <= hi) take(lo - run2.oldAt + run2.newAt + 1, hi - run2.oldAt + run2.newAt + 1);
     }
     for (const h of hunks) {
-      const changed = h.oldEnd > h.oldAt && h.oldAt + 1 <= range.to && h.oldEnd >= range.from;
-      const inserted = h.oldEnd === h.oldAt && h.oldAt >= range.from && h.oldAt < range.to;
+      const changed = h.oldEnd > h.oldAt && h.oldAt + 1 <= range2.to && h.oldEnd >= range2.from;
+      const inserted = h.oldEnd === h.oldAt && h.oldAt >= range2.from && h.oldAt < range2.to;
       if (!changed && !inserted) continue;
       const last2 = Math.max(h.newAt + 1, h.newEnd);
       if (middle !== void 0) {
         take(h.newAt + 1, last2);
         continue;
       }
-      return { from: range.from, to: range.to, approximate: true };
+      return { from: range2.from, to: range2.to, approximate: true };
     }
-    if (!Number.isFinite(start)) start = Math.min(Math.max(1, range.from), Math.max(1, nextLines.length));
+    if (!Number.isFinite(start)) start = Math.min(Math.max(1, range2.from), Math.max(1, nextLines.length));
     return { ...clampRange(start, Math.max(start, end), nextLines.length), approximate: false };
   };
 }
@@ -18080,7 +18080,7 @@ var init_claims = __esm({
     init_identity();
     init_format();
     init_near();
-    linesOf = (text) => text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+    linesOf = (text2) => text2.endsWith("\n") ? text2.slice(0, -1).split("\n") : text2.split("\n");
     MYERS_STEPS = 2e6;
     LCS_CELLS = 1e6;
   }
@@ -18153,10 +18153,10 @@ var init_wake = __esm({
 });
 
 // packages/shared/src/graph.ts
-function whitespaceOutsideLiterals(text, separator) {
+function whitespaceOutsideLiterals(text2, separator) {
   const chunks = [];
   let quote2 = "", escaped = false, pending = false;
-  for (const ch of text.trim()) {
+  for (const ch of text2.trim()) {
     if (quote2) {
       chunks.push(ch);
       if (escaped) escaped = false;
@@ -18176,11 +18176,11 @@ function whitespaceOutsideLiterals(text, separator) {
   }
   return chunks.join("");
 }
-function definitionLines(path60, text, parse3) {
+function definitionLines(path60, text2, parse3) {
   const lines2 = /* @__PURE__ */ new Map();
-  if (text === "") return { status: "ok", lines: lines2, method: "parsed" };
+  if (text2 === "") return { status: "ok", lines: lines2, method: "parsed" };
   if (!parse3) return unavailable("no-parser", "contract analysis requires a parser");
-  const parsed = parse3(path60, text);
+  const parsed = parse3(path60, text2);
   if (!parsed) return unavailable("parser-unavailable", `parser unavailable for ${path60}`);
   const add2 = (name, signature) => {
     const display = normalized(boundedSignature(signature));
@@ -18263,13 +18263,13 @@ function del(m, k, v) {
   s.delete(v);
   if (!s.size) m.delete(k);
 }
-function symbolRange(path60, text, symbol, parse3) {
-  const parsed = parse3?.(path60, text);
+function symbolRange(path60, text2, symbol, parse3) {
+  const parsed = parse3?.(path60, text2);
   if (parsed) {
     const definition = parsed.defs.find((candidate) => candidate.name === symbol || definitionName(candidate) === symbol);
     return definition ? { from: definition.from, to: definition.to } : void 0;
   }
-  const lines2 = text.split("\n");
+  const lines2 = text2.split("\n");
   const ext = path60.slice(path60.lastIndexOf(".") + 1);
   const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (ext === "py") {
@@ -18319,17 +18319,17 @@ var init_graph = __esm({
     PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
     JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
     KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
-    regexExtractor = (path60, text) => {
+    regexExtractor = (path60, text2) => {
       const ext = path60.slice(path60.lastIndexOf(".") + 1);
       const defs10 = /* @__PURE__ */ new Set();
       if (ext === "py") {
-        for (const m of text.matchAll(PY_DEF)) defs10.add(m[1]);
-        for (const m of text.matchAll(PY_ASSIGN)) defs10.add(m[1]);
+        for (const m of text2.matchAll(PY_DEF)) defs10.add(m[1]);
+        for (const m of text2.matchAll(PY_ASSIGN)) defs10.add(m[1]);
       } else if (["js", "jsx", "ts", "tsx", "mjs", "mts", "cjs"].includes(ext)) {
-        for (const m of text.matchAll(JS_DEF)) defs10.add(m[1] ?? m[2]);
+        for (const m of text2.matchAll(JS_DEF)) defs10.add(m[1] ?? m[2]);
       } else return void 0;
       const refs = /* @__PURE__ */ new Set();
-      for (const m of text.matchAll(WORD)) {
+      for (const m of text2.matchAll(WORD)) {
         const w = m[0];
         if (w.length < 3 || KEYWORDS.has(w) || defs10.has(w)) continue;
         refs.add(w);
@@ -18345,7 +18345,7 @@ var init_graph = __esm({
     tooManyDefinitions = () => unavailable("too-many-definitions", `over the ${CONTRACT_MAX_DEFINITIONS} definition contract analysis cap`);
     normalized = (line) => whitespaceOutsideLiterals(line, " ");
     comparable = (line) => whitespaceOutsideLiterals(line, "");
-    boundedSignature = (text) => text.length > CONTRACT_SIGNATURE_MAX_CHARS ? text.slice(0, CONTRACT_SIGNATURE_MAX_CHARS) + "\u2026" : text;
+    boundedSignature = (text2) => text2.length > CONTRACT_SIGNATURE_MAX_CHARS ? text2.slice(0, CONTRACT_SIGNATURE_MAX_CHARS) + "\u2026" : text2;
     definitionName = (definition) => definition.container ? `${definition.container}.${definition.name}` : definition.name;
     COMMON_SYMBOL_FILE_THRESHOLD = 5;
     SymbolGraph = class {
@@ -18368,9 +18368,9 @@ var init_graph = __esm({
         return this.files.has(path60);
       }
       /** Index or re-index one file. Returns false when the extractor does not handle it. */
-      set(path60, text) {
+      set(path60, text2) {
         this.remove(path60);
-        const syms = this.extract(path60, text);
+        const syms = this.extract(path60, text2);
         if (!syms) return false;
         this.files.set(path60, syms);
         const provider = providerPaths(path60);
@@ -18473,9 +18473,9 @@ var init_graph = __esm({
 });
 
 // packages/shared/src/areas.ts
-function parseCodeowners(text) {
+function parseCodeowners(text2) {
   const rules = [];
-  for (const raw of text.split("\n")) {
+  for (const raw of text2.split("\n")) {
     const line = raw.replace(/\r$/, "");
     if (!line.trim() || line.trim().startsWith("#")) continue;
     const tokens = splitLine(line);
@@ -18570,8 +18570,8 @@ var init_areas = __esm({
         this.res = rules.map((r) => patternToRegExp(r.pattern));
         this.source = rules.length ? "codeowners" : "toplevel";
       }
-      static fromCodeowners(text) {
-        return new _Areas(parseCodeowners(text));
+      static fromCodeowners(text2) {
+        return new _Areas(parseCodeowners(text2));
       }
       static topLevel() {
         return new _Areas([]);
@@ -18915,7 +18915,12 @@ function generationParams(doc, base) {
 function roomConnection(doc) {
   return { params: generationParams(doc, { schema: "2" }), disableBc: true };
 }
-var GENERATION_KEY, docGeneration, GENERATION_PARAM, FRESH_GENERATION, UNCOMPACTED, STALE_REPLICA_CODE, STALE_REPLICA_REASON, received;
+function generationGate(stated, current2) {
+  const room = current2 ?? UNCOMPACTED;
+  if (stated === null) return room === UNCOMPACTED ? "accept" : "update";
+  return stated === FRESH_GENERATION || stated === room ? "accept" : "stale";
+}
+var GENERATION_KEY, docGeneration, GENERATION_PARAM, FRESH_GENERATION, UNCOMPACTED, STALE_REPLICA_CODE, STALE_REPLICA_REASON, COMPACTED_UPDATE_REASON, received;
 var init_compact = __esm({
   "packages/shared/src/compact.ts"() {
     "use strict";
@@ -18930,7 +18935,17 @@ var init_compact = __esm({
     UNCOMPACTED = "0";
     STALE_REPLICA_CODE = 4409;
     STALE_REPLICA_REASON = "this room's document was compacted when the server restarted; rejoin with a fresh copy";
+    COMPACTED_UPDATE_REASON = "update Room to 0.17.0 or later (browser: reload the page): this room's document was compacted";
     received = /* @__PURE__ */ new WeakMap();
+  }
+});
+
+// packages/shared/src/schema.ts
+var WORKER_RECORD_SCHEMA;
+var init_schema = __esm({
+  "packages/shared/src/schema.ts"() {
+    "use strict";
+    WORKER_RECORD_SCHEMA = 1;
   }
 });
 
@@ -18960,6 +18975,7 @@ var init_src = __esm({
     init_parsed();
     init_build_output();
     init_compact();
+    init_schema();
   }
 });
 
@@ -19194,18 +19210,18 @@ async function gitShowManyImpl(dir, base, relpaths, configuredTimeoutMs, blobs) 
   const maxBytes = blobs ? batchOutputBytes(names, batch.map((p) => blobs.get(p).size)) : void 0;
   const objects = await gitCatFileBatch(dir, names, configuredTimeoutMs, maxBytes);
   for (const [i, p] of batch.entries()) {
-    const object4 = objects[i];
-    let text;
-    if (object4?.type === "blob") {
-      if (!blobs) text = object4.bytes.toString("utf8");
+    const object5 = objects[i];
+    let text2;
+    if (object5?.type === "blob") {
+      if (!blobs) text2 = object5.bytes.toString("utf8");
       else {
         try {
-          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(object4.bytes);
+          text2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(object5.bytes);
         } catch {
         }
       }
     }
-    out.set(p, text);
+    out.set(p, text2);
   }
   return out;
 }
@@ -19214,15 +19230,15 @@ async function gitCatFileBatch(dir, objects, configuredTimeoutMs, maxBytes = GIT
   const raw = await gitStream(
     dir,
     ["cat-file", "--batch"],
-    objects.map((object4) => `${object4}
+    objects.map((object5) => `${object5}
 `).join(""),
     { timeoutMs: wholeTreeTimeoutMs(objects.length, configuredTimeoutMs), maxBytes }
   );
   const out = [];
   let at = 0;
-  for (const object4 of objects) {
+  for (const object5 of objects) {
     const eol = raw.indexOf(10, at);
-    if (eol < 0) throw new Error(`git cat-file --batch output ended before ${object4}`);
+    if (eol < 0) throw new Error(`git cat-file --batch output ended before ${object5}`);
     const header = raw.subarray(at, eol).toString();
     at = eol + 1;
     const [, type, size2] = header.split(" ");
@@ -19238,7 +19254,7 @@ async function gitCatFileBatch(dir, objects, configuredTimeoutMs, maxBytes = GIT
 }
 function batchOutputBytes(objects, sizes) {
   let total = 0;
-  for (const [i, object4] of objects.entries()) total += Buffer.byteLength(object4) + BATCH_HEADER_BYTES + sizes[i];
+  for (const [i, object5] of objects.entries()) total += Buffer.byteLength(object5) + BATCH_HEADER_BYTES + sizes[i];
   return total;
 }
 async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
@@ -19247,7 +19263,7 @@ async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
 async function gitBlobInfoById(dir, ids) {
   return gitObjectInfoMany(dir, ids, (id3) => id3);
 }
-async function gitObjectInfoMany(dir, relpaths, object4, configuredTimeoutMs) {
+async function gitObjectInfoMany(dir, relpaths, object5, configuredTimeoutMs) {
   const paths = [];
   for (const p of relpaths) {
     if (paths.length % 32 === 0) await setImmediate2();
@@ -19255,7 +19271,7 @@ async function gitObjectInfoMany(dir, relpaths, object4, configuredTimeoutMs) {
   }
   const out = /* @__PURE__ */ new Map();
   if (!paths.length) return out;
-  const names = paths.map(object4);
+  const names = paths.map(object5);
   const raw = (await gitStream(
     dir,
     ["cat-file", "--batch-check", "-Z"],
@@ -19283,7 +19299,7 @@ async function gitShowManyCapped(dir, base, relpaths, perBlobCap, knownInfo) {
   let bytes = 0;
   const flush = async () => {
     if (!group.length) return;
-    for (const [p, text] of await gitShowManyImpl(dir, base, group, void 0, info)) result2.set(p, text);
+    for (const [p, text2] of await gitShowManyImpl(dir, base, group, void 0, info)) result2.set(p, text2);
     group = [];
     bytes = 0;
   };
@@ -19407,23 +19423,23 @@ function workerBaseline(worker) {
     untracked: new Map((worker.carriedUntracked ?? []).map((file) => [file.path, { sha: file.sha, mode: file.mode }]))
   };
 }
-async function carriedPaths(baseline) {
+async function carriedPaths(baseline2) {
   let tracked = Promise.resolve([]);
-  if (baseline.carriedCommit) {
-    tracked = committedPaths.get(baseline.sha) ?? boundedGit(baseline.dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseline.sha], UNKNOWN_WHOLE_TREE_PATHS).then((out) => out.toString().split("\0").filter(Boolean));
-    if (!committedPaths.has(baseline.sha)) {
-      committedPaths.set(baseline.sha, tracked);
+  if (baseline2.carriedCommit) {
+    tracked = committedPaths.get(baseline2.sha) ?? boundedGit(baseline2.dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseline2.sha], UNKNOWN_WHOLE_TREE_PATHS).then((out) => out.toString().split("\0").filter(Boolean));
+    if (!committedPaths.has(baseline2.sha)) {
+      committedPaths.set(baseline2.sha, tracked);
       void tracked.catch(() => {
-        if (committedPaths.get(baseline.sha) === tracked) committedPaths.delete(baseline.sha);
+        if (committedPaths.get(baseline2.sha) === tracked) committedPaths.delete(baseline2.sha);
       });
       if (committedPaths.size > MAX_COMMITTED_PATHS) committedPaths.delete(committedPaths.keys().next().value);
     }
   }
-  return [...await tracked, ...baseline.untracked.keys()];
+  return [...await tracked, ...baseline2.untracked.keys()];
 }
 async function pairBaseline(me, other, ancestor, descends) {
-  for (const baseline of [other, me]) {
-    if (baseline && (baseline.sha === ancestor || await descends(ancestor, baseline.sha))) return baseline;
+  for (const baseline2 of [other, me]) {
+    if (baseline2 && (baseline2.sha === ancestor || await descends(ancestor, baseline2.sha))) return baseline2;
   }
   return void 0;
 }
@@ -19446,16 +19462,16 @@ function boundedGit(dir, args2, wholeTreePaths, env, maxBuffer = 64 * 1024 * 102
     });
   });
 }
-async function checkoutText(dir, object4, path60, encoding = "utf8", maxBytes) {
+async function checkoutText(dir, object5, path60, encoding = "utf8", maxBytes) {
   if (maxBytes !== void 0) {
-    const rawSize = Number((await boundedGit(dir, ["cat-file", "-s", object4], void 0, void 0, 128)).toString().trim());
-    if (!Number.isSafeInteger(rawSize) || rawSize < 0) throw new Error(`invalid blob size for ${object4}`);
+    const rawSize = Number((await boundedGit(dir, ["cat-file", "-s", object5], void 0, void 0, 128)).toString().trim());
+    if (!Number.isSafeInteger(rawSize) || rawSize < 0) throw new Error(`invalid blob size for ${object5}`);
     if (rawSize > maxBytes) return void 0;
   }
   try {
     const output = await boundedGit(
       dir,
-      ["cat-file", "--filters", `--path=${path60}`, object4],
+      ["cat-file", "--filters", `--path=${path60}`, object5],
       void 0,
       void 0,
       maxBytes === void 0 ? 64 * 1024 * 1024 : maxBytes + 1
@@ -19495,11 +19511,11 @@ function carriedContentHashes(dir, paths, write2 = false) {
     fs2.rmSync(scratch, { recursive: true, force: true });
   }
 }
-function carriedUnchanged(baseline, path60) {
-  const carried = baseline.untracked.get(path60);
+function carriedUnchanged(baseline2, path60) {
+  const carried = baseline2.untracked.get(path60);
   if (!carried || !validRepoPath(path60, CARRIED_PATH)) return false;
   try {
-    const root = fs2.realpathSync(baseline.dir);
+    const root = fs2.realpathSync(baseline2.dir);
     if (!containedRepoPath(root, nodePath.join(root, path60), { leaf: "replace-link" }).ok) return false;
     const stat4 = fs2.lstatSync(nodePath.join(root, path60));
     if (!stat4.isFile() && !stat4.isSymbolicLink()) return false;
@@ -19510,18 +19526,18 @@ function carriedUnchanged(baseline, path60) {
     throw e;
   }
 }
-function carriedUnchangedPaths(baseline) {
+function carriedUnchangedPaths(baseline2) {
   const unchanged = /* @__PURE__ */ new Set();
-  if (!baseline?.untracked.size) return unchanged;
+  if (!baseline2?.untracked.size) return unchanged;
   let root;
   try {
-    root = fs2.realpathSync(baseline.dir);
+    root = fs2.realpathSync(baseline2.dir);
   } catch (e) {
     if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return unchanged;
     throw e;
   }
   const files3 = [];
-  for (const [path60, carried] of baseline.untracked) {
+  for (const [path60, carried] of baseline2.untracked) {
     if (!validRepoPath(path60, CARRIED_PATH)) continue;
     let stat4;
     try {
@@ -19532,7 +19548,7 @@ function carriedUnchangedPaths(baseline) {
       throw e;
     }
     if (stat4.isSymbolicLink()) {
-      if (carriedUnchanged(baseline, path60)) unchanged.add(path60);
+      if (carriedUnchanged(baseline2, path60)) unchanged.add(path60);
       continue;
     }
     if (!stat4.isFile() || carried.mode !== void 0 && (stat4.mode & 511) !== carried.mode) continue;
@@ -19543,27 +19559,27 @@ function carriedUnchangedPaths(baseline) {
     hashes = carriedContentHashes(root, files3);
   } catch (e) {
     if (/timed out/.test(String(e))) throw e;
-    for (const path60 of files3) if (carriedUnchanged(baseline, path60)) unchanged.add(path60);
+    for (const path60 of files3) if (carriedUnchanged(baseline2, path60)) unchanged.add(path60);
     return unchanged;
   }
   files3.forEach((path60, i) => {
-    if (hashes[i] === baseline.untracked.get(path60).sha) unchanged.add(path60);
+    if (hashes[i] === baseline2.untracked.get(path60).sha) unchanged.add(path60);
   });
   return unchanged;
 }
-async function carriedCommitUnchangedPaths(baseline, paths) {
+async function carriedCommitUnchangedPaths(baseline2, paths) {
   const unchanged = /* @__PURE__ */ new Set();
   if (!paths.length) return unchanged;
   let root;
   try {
-    root = fs2.realpathSync(baseline.dir);
+    root = fs2.realpathSync(baseline2.dir);
   } catch (e) {
     if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return unchanged;
     throw e;
   }
   const wanted = new Set(paths);
   const tree = /* @__PURE__ */ new Map();
-  for (const entry of (await boundedGit(root, ["ls-tree", "-r", "-z", baseline.sha], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0")) {
+  for (const entry of (await boundedGit(root, ["ls-tree", "-r", "-z", baseline2.sha], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0")) {
     const tab = entry.indexOf("	");
     if (tab < 0 || !wanted.has(entry.slice(tab + 1))) continue;
     const [mode2, type, sha] = entry.slice(0, tab).split(" ");
@@ -19610,13 +19626,13 @@ async function carriedCommitUnchangedPaths(baseline, paths) {
   return unchanged;
 }
 async function workerChangedPaths(worker) {
-  const baseline = workerBaseline(worker);
-  const base = baseline?.sha ?? "HEAD";
+  const baseline2 = workerBaseline(worker);
+  const base = baseline2?.sha ?? "HEAD";
   const exclusions = [".room", ...worker.link ?? []].map((p) => `:(exclude,literal)${p}`);
   const tracked = (await boundedGit(worker.dir, ["diff", "--no-renames", "--name-only", "-z", base, "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
   const untracked = (await boundedGit(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
-  const unchanged = carriedUnchangedPaths(baseline);
-  return [.../* @__PURE__ */ new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter((p) => !unchanged.has(p)).sort();
+  const unchanged = carriedUnchangedPaths(baseline2);
+  return [.../* @__PURE__ */ new Set([...tracked, ...untracked, ...baseline2?.untracked.keys() ?? []])].filter((p) => !unchanged.has(p)).sort();
 }
 var carriesWork, committedPaths, MAX_COMMITTED_PATHS, MissingBaseBlob, stdinPathLine;
 var init_baseline = __esm({
@@ -19624,7 +19640,7 @@ var init_baseline = __esm({
     "use strict";
     init_repo_path();
     init_git();
-    carriesWork = (baseline) => !!baseline && (baseline.carriedCommit || baseline.untracked.size > 0);
+    carriesWork = (baseline2) => !!baseline2 && (baseline2.carriedCommit || baseline2.untracked.size > 0);
     committedPaths = /* @__PURE__ */ new Map();
     MAX_COMMITTED_PATHS = 128;
     MissingBaseBlob = class extends Error {
@@ -20033,9 +20049,9 @@ var init_share_level = __esm({
 });
 
 // packages/roomd/src/roomignore.ts
-function parseRoomIgnore(text, maxPatterns = Infinity) {
+function parseRoomIgnore(text2, maxPatterns = Infinity) {
   const rules = [];
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of text2.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, "");
     if (!line || line.startsWith("#")) continue;
     if (rules.length >= maxPatterns) throw new TooManyPatterns(maxPatterns);
@@ -20099,13 +20115,13 @@ function defaultExcludedPath(relpath) {
 function defaultIgnoredPath(relpath) {
   return relpath.split("/").some((segment2) => DEFAULT_IGNORED_DIRS.has(segment2) || segment2 === ".DS_Store" || segment2 === ".coverage" || segment2.endsWith(".egg-info") || /\.(?:pyc|pyo|npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment2) || segment2.endsWith("~") || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment2));
 }
-function rulesFromText(text, sizeCap, budget) {
+function rulesFromText(text2, sizeCap, budget) {
   return Object.freeze({
-    roomIgnore: parseRoomIgnore(text ?? ""),
+    roomIgnore: parseRoomIgnore(text2 ?? ""),
     sizeCap,
     budget,
-    unavailable: text === void 0,
-    id: createHash2("sha256").update(JSON.stringify([text ?? null, sizeCap, budget])).digest("hex")
+    unavailable: text2 === void 0,
+    id: createHash2("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
   });
 }
 function publishesFiles(inputs) {
@@ -20309,8 +20325,8 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
         facts.push({ path: p, kind: "file", baseHash, size: stat4.size, changed: changed.has(p) });
         continue;
       }
-      const cached2 = oversizedCache.get(p);
-      const hash4 = cached2?.base === inputs.head && cached2.size === stat4.size && cached2.mtimeMs === stat4.mtimeMs ? cached2.hash : (await git(dir, ["hash-object", "--no-filters", "--", p])).trim();
+      const cached3 = oversizedCache.get(p);
+      const hash4 = cached3?.base === inputs.head && cached3.size === stat4.size && cached3.mtimeMs === stat4.mtimeMs ? cached3.hash : (await git(dir, ["hash-object", "--no-filters", "--", p])).trim();
       oversizedCache.set(p, { base: inputs.head, size: stat4.size, mtimeMs: stat4.mtimeMs, hash: hash4 });
       facts.push({ path: p, kind: "file", baseHash, hash: hash4, size: stat4.size });
       continue;
@@ -20347,15 +20363,15 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       continue;
     }
     const hash3 = createHash3(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-    let text;
+    let text2;
     let binary = false;
     try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      text2 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
       binary = true;
     }
     const isChanged = (changed.has(p) || !!baseHash) && hash3 !== baseHash;
-    const publishable = isChanged && authorizesText(inputs.policy, p) && text !== void 0;
+    const publishable = isChanged && authorizesText(inputs.policy, p) && text2 !== void 0;
     const budgetOmitted = publishable && retainedTextBytes + bytes.length > inputs.rules.budget;
     if (publishable && !budgetOmitted) retainedTextBytes += bytes.length;
     facts.push({
@@ -20364,7 +20380,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       hash: hash3,
       baseHash,
       size: bytes.length,
-      ...publishable && !budgetOmitted ? { text } : {},
+      ...publishable && !budgetOmitted ? { text: text2 } : {},
       binary,
       ...budgetOmitted ? { budgetOmitted: true } : {},
       at: stat4.mtimeMs,
@@ -20647,27 +20663,27 @@ var init_publisher = __esm({
               continue;
             }
             const permit = authorizesText(next.policy, path60);
-            const text = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(incarnation, path60)?.toString() : void 0;
+            const text2 = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(incarnation, path60)?.toString() : void 0;
             const baseText = permit ? host.roomDoc.ownedBaseTexts.get(`${host.name}\0${next.head}:${path60}`) : void 0;
             const baseSize = baseText === void 0 ? 0 : Buffer.byteLength(baseText);
-            if (text !== void 0 && budget + Buffer.byteLength(text) > next.rules.budget || baseBudget + baseSize > next.rules.budget) {
+            if (text2 !== void 0 && budget + Buffer.byteLength(text2) > next.rules.budget || baseBudget + baseSize > next.rules.budget) {
               facts.push({ path: path60, change: entry.change, excluded: true });
               factPaths.add(path60);
               this.excludedPaths.add(path60);
               continue;
             }
-            if (text !== void 0) budget += Buffer.byteLength(text);
+            if (text2 !== void 0) budget += Buffer.byteLength(text2);
             baseBudget += baseSize;
             facts.push({
               path: path60,
               change: entry.change,
               ...permit ? { hash: entry.hash, size: entry.size, baseHash: entry.baseHash } : {},
-              ...text !== void 0 ? { text } : {},
+              ...text2 !== void 0 ? { text: text2 } : {},
               binary: entry.held === "binary",
               at: entry.at
             });
             factPaths.add(path60);
-            if (text !== void 0 || entry.change === "D") retainedText.add(path60);
+            if (text2 !== void 0 || entry.change === "D") retainedText.add(path60);
           }
           for (const path60 of this.excludedPaths) if (!factPaths.has(path60)) facts.push({ path: path60, change: "M", excluded: true });
         }
@@ -20694,8 +20710,8 @@ var init_publisher = __esm({
         this.markDirty();
       }
       reconcileFailed(error2) {
-        const text = message(error2);
-        if (!this.errors.hit(text)) this.host.log(`warn: ${text}`);
+        const text2 = message(error2);
+        if (!this.errors.hit(text2)) this.host.log(`warn: ${text2}`);
         this.markDirty();
       }
       markDirty() {
@@ -20759,21 +20775,21 @@ var init_publisher = __esm({
           carriedRead = true;
           if (!valid()) throw new StalePublication("publication inputs changed during base read");
           const raw = await checkoutText(this.host.dir, sha, fact.path, "latin1", inputs.rules.sizeCap);
-          let text;
+          let text2;
           if (raw !== void 0) {
             try {
-              text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(raw, "latin1"));
+              text2 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(raw, "latin1"));
             } catch {
             }
           }
-          const bytes = text === void 0 ? 0 : Buffer.byteLength(text);
+          const bytes = text2 === void 0 ? 0 : Buffer.byteLength(text2);
           if (carriedBytes + bytes > inputs.rules.budget) {
             fact.budgetOmitted = true;
             continue;
           }
           carriedBytes += bytes;
           fact.baseSize = bytes;
-          carriedTexts.set(fact.path, text);
+          carriedTexts.set(fact.path, text2);
         }
         if (carriedRead) desired = await planYielding(inputs, disk, this.host.roomDoc.ensureRoomSalt());
         for (const p of carriedTexts.keys()) if (desired.entries.get(p)?.state !== "shared") carriedTexts.delete(p);
@@ -20790,7 +20806,7 @@ var init_publisher = __esm({
           if (baseBlobs.get(p) !== void 0 && !carried?.untracked.has(p)) baseTextPaths.push(p);
         }
         const baseTexts = await gitShowManyCapped(this.host.dir, inputs.head, baseTextPaths, inputs.rules.sizeCap, baseBlobs);
-        for (const [p, text] of carriedTexts) baseTexts.set(p, text);
+        for (const [p, text2] of carriedTexts) baseTexts.set(p, text2);
         const facts = [];
         const textOps = /* @__PURE__ */ new Map();
         let lastYield = performance.now();
@@ -23242,7 +23258,7 @@ var require_websocket = __commonJS({
     var http3 = __require("http");
     var net3 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes7, createHash: createHash22 } = __require("crypto");
+    var { randomBytes: randomBytes7, createHash: createHash24 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -23910,7 +23926,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash22("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash24("sha1").update(key2 + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -24279,7 +24295,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http3 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash22 } = __require("crypto");
+    var { createHash: createHash24 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -24586,7 +24602,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash22("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash24("sha1").update(key2 + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -25504,6 +25520,275 @@ var init_local_migrate = __esm({
   }
 });
 
+// packages/hub-core/src/negotiation.ts
+function freeze2(value2) {
+  if (value2 && typeof value2 === "object") {
+    for (const child of Object.values(value2)) freeze2(child);
+    Object.freeze(value2);
+  }
+  return value2;
+}
+function baseline() {
+  return { bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] }, capabilities: { "room.generation": [1], "room.manifest": [1], "room.ledger": [1] }, legacy: { schema: 2, hub: 1 } };
+}
+function invalid(message2) {
+  throw new CompatibilityValidationError(message2);
+}
+function object3(value2, label) {
+  if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) invalid(`${label} must be an object`);
+  return value2;
+}
+function keys2(value2, allowed, label) {
+  if (Object.keys(value2).some((key2) => !allowed.includes(key2))) invalid(`${label} has unknown fields`);
+}
+function integer2(value2) {
+  return Number.isSafeInteger(value2) && value2 > 0 && value2 <= MAX_CONTRACT_VERSION;
+}
+function versions(value2, label, allowEmpty = false) {
+  if (!Array.isArray(value2) || value2.length > 8 || !allowEmpty && !value2.length || !value2.every(integer2) || new Set(value2).size !== value2.length) invalid(`${label} must be an explicit set of at most eight positive versions`);
+  return [...value2].sort((a, b) => a - b);
+}
+function range(value2, label) {
+  const r = object3(value2, label);
+  keys2(r, ["min", "max"], label);
+  if (!integer2(r.min) || !integer2(r.max) || r.min > r.max) invalid(`${label} must be a bounded inclusive version range`);
+  return { min: r.min, max: r.max };
+}
+function capabilities(value2, label) {
+  const caps = object3(value2, label), entries = Object.entries(caps);
+  if (entries.length > 32) invalid(`${label} has more than 32 names`);
+  const result2 = {};
+  for (const [name, set] of entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    if (name.length > 64 || !/^[a-zA-Z][a-zA-Z0-9-]*(?:\.[a-zA-Z0-9-]+)+$/.test(name)) invalid(`${label} has an invalid namespaced ASCII name`);
+    Object.defineProperty(result2, name, { value: versions(set, `${label}.${name}`), enumerable: true, writable: true, configurable: true });
+  }
+  return result2;
+}
+function bounded(value2, max2, label) {
+  let json;
+  try {
+    json = JSON.stringify(value2);
+  } catch {
+    invalid(`${label} is not JSON`);
+  }
+  if (json === void 0 || new TextEncoder().encode(json).length > max2) invalid(`${label} exceeds ${max2} UTF-8 bytes`);
+}
+function text(value2, label, max2 = 256) {
+  if (typeof value2 !== "string" || !value2.length || value2.length > max2) invalid(`${label} must be a nonempty string of at most ${max2} characters`);
+  return value2;
+}
+function parseAdvertisement(value2) {
+  bounded(value2, COMPAT_MAX_BYTES, "compat");
+  const ad = object3(value2, "compat");
+  keys2(ad, ["bootstrap", "hub", "schemas", "capabilities", "requiredCapabilities", "legacy", "release"], "compat");
+  if (ad.bootstrap !== COMPAT_BOOTSTRAP) invalid("unsupported bootstrap; implement bootstrap 1");
+  const schemas = object3(ad.schemas, "schemas");
+  keys2(schemas, ["read", "write"], "schemas");
+  const result2 = { bootstrap: 1, hub: range(ad.hub, "hub"), schemas: { read: versions(schemas.read, "schemas.read"), write: versions(schemas.write, "schemas.write", true) }, capabilities: capabilities(ad.capabilities, "capabilities") };
+  if (ad.requiredCapabilities !== void 0) result2.requiredCapabilities = capabilities(ad.requiredCapabilities, "requiredCapabilities");
+  if (ad.legacy !== void 0) {
+    const legacy = object3(ad.legacy, "legacy");
+    keys2(legacy, ["schema", "hub"], "legacy");
+    if (legacy.schema !== 2 || legacy.hub !== 1 || result2.hub.min > 1 || !result2.schemas.read.includes(2) || !result2.schemas.write.includes(2)) invalid("legacy requires the implemented schema-2/proto-1 profile");
+    result2.legacy = { schema: 2, hub: 1 };
+  }
+  if (ad.release !== void 0) result2.release = text(ad.release, "release", 128);
+  return result2;
+}
+function selectContract(clientInput, serverInput, policy) {
+  let client = null, server = null;
+  const refuse = (code, change, message2, missingCapabilities = {}) => ({ ok: false, error: { code, side: change.side, text: message2, requiredChanges: [change], missingCapabilities, supported: { client, server } } });
+  try {
+    client = parseAdvertisement(clientInput);
+  } catch (e) {
+    return refuse("invalid-advertisement", { side: "client", action: "update", contract: "advertisement" }, `Update/restart the client with a valid bootstrap-1 advertisement: ${e.message}`);
+  }
+  try {
+    server = parseAdvertisement(serverInput);
+  } catch (e) {
+    return refuse("invalid-advertisement", { side: "server", action: "update", contract: "advertisement" }, `Update/restart the server with a valid bootstrap-1 advertisement: ${e.message}`);
+  }
+  if (!integer2(policy.activeSchema)) return refuse("schema-incompatible", { side: "room", action: "configure", contract: "schema", versions: server.schemas.read }, "Configure the room with an implemented active schema; no migration is automatic");
+  const schemaChanges = [];
+  for (const [side, ad] of [["server", server], ["client", client]]) {
+    if (!ad.schemas.read.includes(policy.activeSchema) || !policy.readOnly && !ad.schemas.write.includes(policy.activeSchema)) schemaChanges.push({ side, action: "update", contract: "schema", versions: [policy.activeSchema] });
+  }
+  if (schemaChanges.length) return { ok: false, error: { code: "schema-incompatible", side: schemaChanges[0].side, text: `Update/restart the ${schemaChanges.map((c) => c.side).join(" and ")} to ${policy.readOnly ? "read" : "read and write"} document schema ${policy.activeSchema}`, requiredChanges: schemaChanges, missingCapabilities: {}, supported: { client, server } } };
+  const min2 = Math.max(client.hub.min, server.hub.min), max2 = Math.min(client.hub.max, server.hub.max);
+  if (min2 > max2) {
+    const side = client.hub.max < server.hub.min ? "client" : "server", target = side === "client" ? server.hub : client.hub;
+    return refuse("hub-incompatible", { side, action: "update", contract: "hub", range: target }, `Update/restart the ${side} to support hub protocol ${target.min}\u2013${target.max}`);
+  }
+  let roomRequired;
+  try {
+    bounded(policy.requiredCapabilities ?? {}, COMPAT_MAX_BYTES, "room requirements");
+    roomRequired = capabilities(policy.requiredCapabilities ?? {}, "room requirements");
+  } catch (e) {
+    return refuse("invalid-advertisement", { side: "room", action: "configure", contract: "advertisement" }, `Configure valid room requirements: ${e.message}`);
+  }
+  const requirements = [["client", client.requiredCapabilities ?? {}], ["server", server.requiredCapabilities ?? {}], ["room", roomRequired]];
+  for (const [owner, required2] of requirements) for (const [name, set] of Object.entries(required2)) {
+    const registered = CAPABILITY_REGISTRY[name];
+    if (!registered || !set.some((v) => registered.versions[v])) return refuse("capability-incompatible", { side: owner, action: owner === "room" ? "configure" : "update", contract: "capability", capability: name, versions: set }, `${owner === "room" ? "Configure the room requirements" : `Update/restart the ${owner}`} for required capability ${name} version ${set.join(" or ")}; this implementation has no registered version in that set`, { [name]: set });
+  }
+  let lastFailure;
+  const candidates = /* @__PURE__ */ new Set([max2, min2]);
+  for (const entry of Object.values(CAPABILITY_REGISTRY)) for (const version3 of Object.values(entry.versions)) {
+    if (version3.hub.max >= min2 && version3.hub.max <= max2) candidates.add(version3.hub.max);
+  }
+  for (const hub of [...candidates].sort((a, b) => b - a)) {
+    const selected = {};
+    for (const [name, entry] of Object.entries(CAPABILITY_REGISTRY)) {
+      const accepted = requirements.flatMap(([, required2]) => required2[name] ? [required2[name]] : []);
+      const common = (client.capabilities[name] ?? []).filter((v) => server.capabilities[name]?.includes(v) && accepted.every((set) => set.includes(v)));
+      for (const v of common.sort((a, b) => b - a)) {
+        const rule = entry.versions[v];
+        if (rule && hub >= rule.hub.min && hub <= rule.hub.max && rule.schemas.includes(policy.activeSchema)) {
+          selected[name] = v;
+          break;
+        }
+      }
+    }
+    let removed;
+    do {
+      removed = false;
+      for (const [name, v] of Object.entries(selected)) {
+        const dependencies = CAPABILITY_REGISTRY[name].versions[v].dependencies;
+        if (Object.entries(dependencies).some(([dep, set]) => !set.includes(selected[dep]))) {
+          delete selected[name];
+          removed = true;
+        }
+      }
+    } while (removed);
+    const changes = [], missing2 = {};
+    for (const [owner, required2] of requirements) for (const [name, set] of Object.entries(required2)) {
+      if (set.includes(selected[name])) continue;
+      const registered = CAPABILITY_REGISTRY[name];
+      const sides = [];
+      if (!registered || !set.some((v) => registered.versions[v])) sides.push(owner);
+      else {
+        if (!set.some((v) => client.capabilities[name]?.includes(v))) sides.push("client");
+        if (!set.some((v) => server.capabilities[name]?.includes(v))) sides.push("server");
+        if (!sides.length) sides.push(owner);
+      }
+      missing2[name] = [.../* @__PURE__ */ new Set([...missing2[name] ?? [], ...set])].sort((a, b) => a - b);
+      for (const side of sides) {
+        const change = { side, action: side === "room" ? "configure" : "update", contract: "capability", capability: name, versions: set };
+        if (!changes.some((c) => JSON.stringify(c) === JSON.stringify(change))) changes.push(change);
+      }
+    }
+    if (!changes.length) return { ok: true, selection: { bootstrap: 1, hub, schema: policy.activeSchema, capabilities: selected } };
+    const guidance = changes.map((c) => `${c.side === "room" ? "Configure the room" : `Update/restart the ${c.side}`} for ${c.capability} version ${c.versions.join(" or ")}`);
+    lastFailure = { ok: false, error: { code: "capability-incompatible", side: changes[0].side, text: `${guidance.join("; ")}; required schema/protocol dependencies must also be supported`, requiredChanges: changes, missingCapabilities: missing2, supported: { client, server } } };
+  }
+  return lastFailure;
+}
+function legacyAdvertisement(health) {
+  if (!health || typeof health !== "object" || Array.isArray(health)) return null;
+  const h = health;
+  return h.ok === true && h.schema === 2 && h.hub === 1 && !Object.hasOwn(h, "compat") ? baseline() : null;
+}
+function legacyHello(id3, client, sessionId) {
+  return { v: 1, id: id3, op: "hello", proto: 1, schema: 2, client, sessionId };
+}
+function validateSelection(value2, clientInput, serverInput, policy = {}) {
+  const s = object3(value2, "selection");
+  keys2(s, ["bootstrap", "hub", "schema", "capabilities"], "selection");
+  if (s.bootstrap !== 1 || !integer2(s.hub) || !integer2(s.schema)) invalid("invalid selected contract");
+  if (policy.activeSchema !== void 0 && policy.activeSchema !== s.schema) invalid("selection changed the active room schema");
+  const caps = object3(s.capabilities, "selected capabilities");
+  const offered = capabilities(Object.fromEntries(Object.entries(caps).map(([name, v]) => [name, [v]])), "selected capabilities");
+  const client = parseAdvertisement(clientInput), server = parseAdvertisement(serverInput);
+  for (const [side, peer] of [["client", client], ["server", server]]) {
+    if (s.hub < peer.hub.min || s.hub > peer.hub.max) invalid(`selection is outside the ${side} hub offer`);
+    for (const [name, set] of Object.entries(offered)) if (!peer.capabilities[name]?.includes(set[0])) invalid(`selection is outside the ${side} capability offer: ${name}`);
+  }
+  const narrow = (peer) => ({ ...peer, hub: { min: s.hub, max: s.hub }, capabilities: offered, legacy: void 0 });
+  const result2 = selectContract(narrow(client), narrow(server), { ...policy, activeSchema: s.schema });
+  if (!result2.ok) invalid(result2.error.text);
+  if (Object.keys(result2.selection.capabilities).length !== Object.keys(offered).length) invalid("selection includes an unregistered capability or unsupported dependency");
+  return result2.selection;
+}
+function parseBootstrapFrame(value2) {
+  bounded(value2, BOOTSTRAP_MAX_BYTES, "bootstrap frame");
+  const f = object3(value2, "bootstrap frame");
+  if (f.v !== 1) invalid("bootstrap envelope must be v1");
+  if (f.op === "compat-hello") {
+    keys2(f, ["v", "op", "id", "sessionId", "offer"], "hello");
+    return { v: 1, op: "compat-hello", id: text(f.id, "id"), sessionId: text(f.sessionId, "sessionId", BOOTSTRAP_SESSION_ID_MAX_LENGTH), offer: parseAdvertisement(f.offer) };
+  }
+  if (f.op === "compat-ack") {
+    keys2(f, ["v", "op", "id", "selectionId"], "ack");
+    return { v: 1, op: "compat-ack", id: text(f.id, "id"), selectionId: text(f.selectionId, "selectionId") };
+  }
+  if (f.ok === true && !Object.hasOwn(f, "selection")) {
+    keys2(f, ["v", "re", "ok"], "acknowledged");
+    return { v: 1, re: text(f.re, "re"), ok: true };
+  }
+  if (f.ok === true) {
+    keys2(f, ["v", "re", "ok", "selectionId", "selection", "compat", "generation", "policyRevision", "incarnation", "ttlMs", "renewMs", "requiredCapabilities"], "selection");
+    const s = object3(f.selection, "selection");
+    keys2(s, ["bootstrap", "hub", "schema", "capabilities"], "selection");
+    if (s.bootstrap !== 1 || !integer2(s.hub) || !integer2(s.schema)) invalid("invalid selected contract");
+    const caps = object3(s.capabilities, "selected capabilities"), selected = {};
+    capabilities(Object.fromEntries(Object.entries(caps).map(([name, v]) => [name, [v]])), "selected capabilities");
+    for (const [name, v] of Object.entries(caps)) selected[name] = v;
+    for (const key2 of ["policyRevision", "incarnation", "ttlMs", "renewMs"]) if (!Number.isSafeInteger(f[key2]) || f[key2] < (key2.endsWith("Ms") ? 1 : 0)) invalid(`invalid ${key2}`);
+    return { v: 1, re: text(f.re, "re"), ok: true, selectionId: text(f.selectionId, "selectionId"), selection: { bootstrap: 1, hub: s.hub, schema: s.schema, capabilities: selected }, compat: parseAdvertisement(f.compat), generation: text(f.generation, "generation"), policyRevision: f.policyRevision, incarnation: f.incarnation, ttlMs: f.ttlMs, renewMs: f.renewMs, requiredCapabilities: capabilities(f.requiredCapabilities, "requiredCapabilities") };
+  }
+  if (f.ok === false) {
+    keys2(f, ["v", "re", "ok", "error"], "refusal");
+    const e = object3(f.error, "refusal error");
+    keys2(e, ["code", "side", "text", "requiredChanges", "missingCapabilities", "supported"], "refusal error");
+    if (!["invalid-advertisement", "hub-incompatible", "schema-incompatible", "capability-incompatible"].includes(e.code) || !["client", "server", "room"].includes(e.side)) invalid("invalid refusal code or side");
+    text(e.text, "error text", 2048);
+    if (!Array.isArray(e.requiredChanges) || !e.requiredChanges.length) invalid("missing required changes");
+    capabilities(e.missingCapabilities, "missingCapabilities");
+    const supported = object3(e.supported, "supported");
+    keys2(supported, ["client", "server"], "supported");
+    for (const side of ["client", "server"]) if (supported[side] !== null) parseAdvertisement(supported[side]);
+    for (const change of e.requiredChanges) {
+      const c = object3(change, "required change");
+      keys2(c, ["side", "action", "contract", "versions", "range", "capability"], "required change");
+      if (!["client", "server", "room"].includes(c.side) || !["update", "configure"].includes(c.action) || !["advertisement", "hub", "schema", "capability"].includes(c.contract)) invalid("invalid required change");
+      if (c.versions !== void 0) versions(c.versions, "required versions");
+      if (c.range !== void 0) range(c.range, "required range");
+      if (c.capability !== void 0) capabilities({ [text(c.capability, "capability", 64)]: [1] }, "required capability");
+    }
+    return { v: 1, re: text(f.re, "re"), ok: false, error: e };
+  }
+  return invalid("unknown bootstrap frame");
+}
+var COMPAT_BOOTSTRAP, COMPAT_MAX_BYTES, BOOTSTRAP_MAX_BYTES, BOOTSTRAP_SESSION_ID_MAX_LENGTH, BOOTSTRAP_HELLO_TIMEOUT_MS, BOOTSTRAP_ACK_TIMEOUT_MS, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, BOOTSTRAP_MAX_BUFFERED_BYTES, MAX_CONTRACT_VERSION, CAPABILITY_REGISTRY, LEGACY_COMPAT, CURRENT_COMPAT, CompatibilityValidationError;
+var init_negotiation = __esm({
+  "packages/hub-core/src/negotiation.ts"() {
+    "use strict";
+    COMPAT_BOOTSTRAP = 1;
+    COMPAT_MAX_BYTES = 1024;
+    BOOTSTRAP_MAX_BYTES = 8192;
+    BOOTSTRAP_SESSION_ID_MAX_LENGTH = 128;
+    BOOTSTRAP_HELLO_TIMEOUT_MS = 5e3;
+    BOOTSTRAP_ACK_TIMEOUT_MS = 5e3;
+    BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL = 8;
+    BOOTSTRAP_MAX_BUFFERED_BYTES = 1024 * 1024;
+    MAX_CONTRACT_VERSION = 65535;
+    CAPABILITY_REGISTRY = freeze2({
+      "room.generation": { scope: "connection", wire: "schema/gen query and 4403/4409 fencing", documentEffects: "meta.generation identifies a replica epoch", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
+      "room.manifest": { scope: "room", wire: "schema-2 manifest records", documentEffects: "baseline per-participant manifests and sharing revisions", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
+      "room.ledger": { scope: "room", wire: "proto-1 ordered post and baseline event vocabulary", documentEffects: "schema-2 bus, mail, archive, outcomes and receipts; no stronger durability", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
+      "room.worker-handover": { scope: "participant", wire: "reserved; not implemented", documentEffects: "reserved; grants no worker lifecycle guarantee", versions: {} }
+    });
+    LEGACY_COMPAT = freeze2(baseline());
+    CURRENT_COMPAT = freeze2(baseline());
+    CompatibilityValidationError = class extends Error {
+      constructor(message2) {
+        super(message2);
+        this.name = "CompatibilityValidationError";
+      }
+    };
+  }
+});
+
 // packages/hub-core/src/protocol.ts
 function encodeFrame(frame) {
   const enc = createEncoder();
@@ -25534,6 +25819,7 @@ var init_protocol = __esm({
     "use strict";
     init_encoding();
     init_decoding();
+    init_negotiation();
     MSG_HUB = 7;
     HUB_PROTO = 1;
     HUB_ORIGIN = /* @__PURE__ */ Symbol("room-hub");
@@ -25586,11 +25872,11 @@ function hubHolder(v) {
 }
 function visible(doc) {
   let epoch, seq;
-  let invalid = false;
+  let invalid2 = false;
   const see = (v, kind) => {
     if (v === void 0) return;
     if (!isCounter(v)) {
-      invalid = true;
+      invalid2 = true;
       return;
     }
     if (kind === "epoch") epoch = higher(epoch, v);
@@ -25602,12 +25888,12 @@ function visible(doc) {
   for (const m of doc.bus.toArray()) see(m?.seq, "seq");
   for (const m of doc.mail.values()) see(m?.seq, "seq");
   const rawIncarnation = meta2.get("hubIncarnation");
-  if (rawIncarnation !== void 0 && (!Number.isSafeInteger(rawIncarnation) || rawIncarnation < 0 || rawIncarnation >= 2 ** 32)) invalid = true;
+  if (rawIncarnation !== void 0 && (!Number.isSafeInteger(rawIncarnation) || rawIncarnation < 0 || rawIncarnation >= 2 ** 32)) invalid2 = true;
   const incarnation = Math.max(
     isCounter(rawIncarnation) ? rawIncarnation : -1,
     ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
   );
-  return { epoch, seq, incarnation, invalid };
+  return { epoch, seq, incarnation, invalid: invalid2 };
 }
 async function startHub(host) {
   const hub = new RoomHub(host);
@@ -25876,10 +26162,10 @@ var init_hub = __esm({
         return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session);
       }
       storageUnavailable() {
-        const text = this.host.unavailable?.();
-        if (text) {
+        const text2 = this.host.unavailable?.();
+        if (text2) {
           this.unavailableSince ??= this.host.mono();
-          return text;
+          return text2;
         }
         if (this.unavailableSince !== void 0) {
           this.unavailableSince = void 0;
@@ -25891,8 +26177,8 @@ var init_hub = __esm({
         return void 0;
       }
       unavailable(fail) {
-        const text = this.storageUnavailable();
-        return text ? fail("unavailable", text, { retryMs: 1e3 }) : void 0;
+        const text2 = this.storageUnavailable();
+        return text2 ? fail("unavailable", text2, { retryMs: 1e3 }) : void 0;
       }
       limited(key2, limit) {
         const now = this.host.mono();
@@ -26019,7 +26305,7 @@ var init_hub = __esm({
       // ---- requests ----
       handle(conn, frame, p, frameBytes) {
         const re = hubReplyId(frame);
-        const fail = (reason, text, extra = {}) => ({ v: 1, re, ok: false, reason, text, ...extra });
+        const fail = (reason, text2, extra = {}) => ({ v: 1, re, ok: false, reason, text: text2, ...extra });
         try {
           return this.handleSafe(conn, frame, p, fail, frameBytes);
         } catch (error2) {
@@ -26230,7 +26516,7 @@ var init_hub = __esm({
         if (!aliased.length) return;
         const owedCopy = (m) => !!m.to && !(m.from === m.to && m.fromKind !== "human") && !this.doc.outcomes.has(m.id) && !this.doc.seen(m.to).has(m.id);
         const ids = new Set(aliased.map(([, m]) => m.id));
-        const keys2 = /* @__PURE__ */ new Set([...aliased.map(([key2]) => key2), ...ids]);
+        const keys3 = /* @__PURE__ */ new Set([...aliased.map(([key2]) => key2), ...ids]);
         const copies = /* @__PURE__ */ new Map();
         for (const [, m] of entries) if (ids.has(m.id)) {
           const list = copies.get(m.id);
@@ -26244,7 +26530,7 @@ var init_hub = __esm({
           if (winner || !busOwed) target.set(id3, winner ?? list[0]);
         }
         this.doc.doc.transact(() => {
-          for (const key2 of keys2) {
+          for (const key2 of keys3) {
             const want = target.get(key2);
             if (!want) {
               if (this.doc.mail.has(key2)) this.doc.mail.delete(key2);
@@ -27401,6 +27687,19 @@ function stateRequestLimiter(now = Date.now) {
 function relayDocs() {
   return /* @__PURE__ */ new Map();
 }
+function boundRelayBootstrapInput(conn) {
+  const receiver = conn._receiver;
+  const maximum = receiver?._maxPayload;
+  if (!receiver || typeof maximum !== "number" || !Number.isFinite(maximum) || maximum < 0) throw new Error("unsupported websocket receiver payload limit; update/restart Room");
+  return {
+    remaining: (bytes) => {
+      receiver._maxPayload = Math.max(1, Math.min(maximum || Infinity, bytes));
+    },
+    restore: () => {
+      receiver._maxPayload = maximum;
+    }
+  };
+}
 function dropSocket(conn) {
   totalQueued -= queued.get(conn) ?? 0;
   queued.delete(conn);
@@ -27496,7 +27795,7 @@ function getDoc(docs, name, opts) {
 }
 function startRoomHub(d, room, rt, commonDir2, log2) {
   const roomDoc = d.room = new RoomDoc(d.doc);
-  startHub({
+  d.hubReady = startHub({
     doc: roomDoc,
     mono: rt.mono,
     wall: rt.wall,
@@ -27545,6 +27844,7 @@ function attach(docs, conn, req, opts) {
     conn.off("message", handshake);
     dropSocket(conn);
     sessions.delete(conn);
+    bootstrapInputs.delete(conn);
   });
   timer.unref?.();
   let hello = false;
@@ -27569,12 +27869,25 @@ function attach(docs, conn, req, opts) {
         });
         return;
       }
+      if (safeUrl(req.url).searchParams.get("negotiate") === "1" && raw.byteLength > BOOTSTRAP_MAX_BYTES + 16) {
+        clearTimeout(timer);
+        conn.close(4406, "compatibility frame exceeds limit");
+        return;
+      }
       const first = session.decrypt(raw);
       clearTimeout(timer);
       handshakeCleanup.delete(conn);
       conn.off("message", handshake);
-      attachReady(docs, conn, name, opts, first);
-      conn.emit("message", first, true);
+      if (safeUrl(req.url).searchParams.get("negotiate") === "1") attachNegotiating(docs, conn, name, req, opts, first);
+      else {
+        const legacy = selectContract(LEGACY_COMPAT, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly });
+        if (!legacy.ok) {
+          conn.close(4406, "legacy contract retired; update this client");
+          return;
+        }
+        attachReady(docs, conn, name, opts, first, req);
+        conn.emit("message", first, true);
+      }
     } catch {
       clearTimeout(timer);
       conn.close(1008, "invalid secure frame");
@@ -27587,10 +27900,172 @@ function attach(docs, conn, req, opts) {
     clearTimeout(timer);
     dropSocket(conn);
     sessions.delete(conn);
+    bootstrapInputs.delete(conn);
   });
 }
-function attachReady(docs, conn, name, opts, first) {
+function attachNegotiating(docs, conn, name, req, opts, first) {
+  let phase = "hello";
+  let hello;
+  let selection;
+  let selectedDoc;
+  let timer, expiresAt = 0, bytes = 0;
+  const cleanup = () => {
+    clearTimeout(timer);
+    conn.off("message", receive);
+    handshakeCleanup.delete(conn);
+  };
+  const refuse = (reason) => {
+    cleanup();
+    phase = "done";
+    conn.close(4406, reason.slice(0, 120));
+  };
+  const deadline = (ms2) => {
+    expiresAt = Date.now() + ms2;
+    clearTimeout(timer);
+    timer = setTimeout(() => refuse("compatibility handshake timed out; reconnect Room"), ms2);
+    timer.unref?.();
+  };
+  const current2 = () => conn.readyState === conn.OPEN && !!selectedDoc && !selectedDoc.closed && (!opts.hub || opts.hub.lock.held());
+  const receivePlain = async (plain) => {
+    if (Date.now() >= expiresAt) {
+      refuse("compatibility handshake timed out; reconnect Room");
+      return;
+    }
+    bytes += plain.byteLength;
+    if (bytes > BOOTSTRAP_MAX_BYTES || plain[0] !== MSG_HUB) {
+      refuse("compatibility hello/ack required before sync");
+      return;
+    }
+    bootstrapInputs.get(conn).remaining(BOOTSTRAP_MAX_BYTES - bytes + 16);
+    let frame;
+    try {
+      const decoder = createDecoder(plain);
+      readVarUint(decoder);
+      frame = parseBootstrapFrame(decodeFrame(decoder));
+      if (hasContent(decoder)) throw new Error("trailing bootstrap bytes");
+    } catch {
+      refuse("invalid compatibility frame; update this client");
+      return;
+    }
+    if (phase === "hello") {
+      if (!("op" in frame) || frame.op !== "compat-hello") {
+        refuse("compatibility hello required");
+        return;
+      }
+      hello = frame;
+      phase = "selecting";
+      const selected = selectContract(frame.offer, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly });
+      if (!selected.ok) {
+        send(conn, encodeFrame({ v: 1, re: frame.id, ok: false, error: selected.error }));
+        refuse(compatibilityDetail(selected.error));
+        return;
+      }
+      selectedDoc = getDoc(docs, name, opts);
+      await selectedDoc.hubReady;
+      if (conn.readyState !== conn.OPEN) return;
+      if (Date.now() >= expiresAt) {
+        refuse("compatibility handshake timed out; reconnect Room");
+        return;
+      }
+      if (opts.hub && !selectedDoc.hub) {
+        cleanup();
+        phase = "done";
+        conn.close(1013, "relay hub unavailable; retry");
+        return;
+      }
+      if (phase !== "selecting" || !current2()) {
+        refuse("relay authority changed; reconnect Room");
+        return;
+      }
+      if (!relayGeneration(conn, req, selectedDoc)) {
+        cleanup();
+        phase = "done";
+        return;
+      }
+      selection = {
+        v: 1,
+        re: frame.id,
+        ok: true,
+        selectionId: crypto5.randomBytes(16).toString("hex"),
+        selection: selected.selection,
+        compat: CURRENT_COMPAT,
+        generation: docGeneration(selectedDoc.doc) ?? "0",
+        policyRevision: 1,
+        incarnation: selectedDoc.hub?.incarnation ?? 0,
+        ttlMs: LEASE_TTL_MS,
+        renewMs: LEASE_RENEW_MS,
+        requiredCapabilities: {}
+      };
+      const encoded = encodeFrame(selection);
+      if (encoded.byteLength > BOOTSTRAP_MAX_BYTES) {
+        refuse("relay compatibility selection exceeds limit");
+        return;
+      }
+      phase = "ack";
+      deadline(BOOTSTRAP_ACK_TIMEOUT_MS);
+      send(conn, encoded);
+      return;
+    }
+    if (phase !== "ack" || !("op" in frame) || frame.op !== "compat-ack" || frame.selectionId !== selection?.selectionId) {
+      refuse("unexpected compatibility frame; reconnect Room");
+      return;
+    }
+    if (!current2() || (docGeneration(selectedDoc.doc) ?? "0") !== selection.generation || (selectedDoc.hub?.incarnation ?? 0) !== selection.incarnation) {
+      refuse("relay authority changed; reconnect Room");
+      return;
+    }
+    if (!relayGeneration(conn, req, selectedDoc)) {
+      cleanup();
+      phase = "done";
+      return;
+    }
+    if (!opts.readOnly && selectedDoc.hub) {
+      const registered = selectedDoc.hub.handle(conn, legacyHello(frame.id, hello.offer.release ?? "Room", hello.sessionId), { local: true });
+      if (!registered.ok) {
+        cleanup();
+        phase = "done";
+        conn.close(1013, "relay hub session unavailable; reconnect Room");
+        return;
+      }
+    }
+    phase = "done";
+    cleanup();
+    bootstrapInputs.get(conn).restore();
+    bootstrapInputs.delete(conn);
+    send(conn, encodeFrame({ v: 1, re: frame.id, ok: true }));
+    conn.emit("room-compatible");
+    attachReady(docs, conn, name, opts, void 0, req, true);
+  };
+  const receive = (raw, binary) => {
+    if (phase === "done" || conn.readyState !== conn.OPEN) return;
+    try {
+      if (!binary) throw new Error("binary secure frames required");
+      const length2 = raw instanceof ArrayBuffer ? raw.byteLength : Array.isArray(raw) ? raw.reduce((sum, part) => sum + part.byteLength, 0) : raw.byteLength;
+      if (length2 > BOOTSTRAP_MAX_BYTES + 16) {
+        refuse("compatibility frame exceeds limit");
+        return;
+      }
+      const plain = sessions.get(conn).decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw);
+      void receivePlain(plain).catch(() => refuse("relay compatibility unavailable; reconnect Room"));
+    } catch {
+      refuse("invalid encrypted compatibility frame");
+    }
+  };
+  handshakeCleanup.set(conn, cleanup);
+  conn.on("message", receive);
+  conn.once("close", cleanup);
+  deadline(BOOTSTRAP_HELLO_TIMEOUT_MS);
+  void receivePlain(first).catch(() => refuse("relay compatibility unavailable; reconnect Room"));
+}
+function relayGeneration(conn, req, d) {
+  const decision = generationGate(safeUrl(req.url).searchParams.get("gen"), docGeneration(d.doc));
+  if (decision === "accept") return true;
+  conn.close(decision === "stale" ? STALE_REPLICA_CODE : 4403, decision === "stale" ? STALE_REPLICA_REASON : COMPACTED_UPDATE_REASON);
+  return false;
+}
+function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
   const d = getDoc(docs, name, opts);
+  if (!relayGeneration(conn, req, d)) return;
   d.conns.set(conn, /* @__PURE__ */ new Set());
   if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes);
   const allowState = stateRequestLimiter();
@@ -27604,6 +28079,16 @@ function attachReady(docs, conn, name, opts, first) {
     } catch {
       conn.close(1008, "invalid secure frame");
       return;
+    }
+    if (negotiated && buf[0] === MSG_HUB) {
+      try {
+        const frame = decodeFrame(buf);
+        if (frame.op === "compat-hello" || frame.op === "compat-ack") {
+          conn.close(4406, "selection is immutable; reconnect Room");
+          return;
+        }
+      } catch {
+      }
     }
     if (!allowState(buf, conn.bufferedAmount)) {
       conn.close(1013, "too many state requests");
@@ -27678,6 +28163,7 @@ function attachReady(docs, conn, name, opts, first) {
 function relayConnectionHandler(docs, opts) {
   opts = { ...opts, awareness: awarenessLimits(opts.awareness) };
   const admission = opts.admissionState ?? new RelayAdmission(docs, opts.admission);
+  let pending = 0;
   return (conn, req) => {
     let release;
     conn.on("error", (error2) => {
@@ -27691,6 +28177,7 @@ function relayConnectionHandler(docs, opts) {
       handshakeCleanup.get(conn)?.();
       handshakeCleanup.delete(conn);
       sessions.delete(conn);
+      bootstrapInputs.delete(conn);
       dropSocket(conn);
       try {
         conn.terminate();
@@ -27698,7 +28185,36 @@ function relayConnectionHandler(docs, opts) {
       }
     });
     try {
-      safeUrl(req.url);
+      const target = safeUrl(req.url);
+      if (target.searchParams.has("negotiate") && target.searchParams.get("negotiate") !== "1") {
+        conn.close(4406, "unsupported bootstrap; update this client");
+        return;
+      }
+      if (target.searchParams.get("negotiate") === "1") {
+        try {
+          const bound = boundRelayBootstrapInput(conn);
+          bound.remaining(BOOTSTRAP_MAX_BYTES + 16);
+          bootstrapInputs.set(conn, bound);
+        } catch (error2) {
+          opts.log?.(`relay bootstrap: ${error2 instanceof Error ? error2.message : String(error2)}`);
+          conn.close(1011, "relay bootstrap unavailable; update/restart Room");
+          return;
+        }
+        if (pending >= BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL) {
+          conn.close(1013, "relay negotiation limit reached");
+          return;
+        }
+        pending++;
+        let released = false;
+        const done = () => {
+          if (!released) {
+            released = true;
+            pending--;
+          }
+        };
+        conn.once("close", done);
+        conn.once("room-compatible", done);
+      }
       const name = relayRoomName(req.url), reason = admission.refusal(name);
       if (reason) {
         conn.close(1013, reason);
@@ -27719,7 +28235,7 @@ function relayFile(commonDir2) {
 function readRelayInfo(commonDir2) {
   try {
     const v = JSON.parse(fs13.readFileSync(relayFile(commonDir2), "utf8"));
-    return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key, ...typeof v.canonicalWarning === "string" ? { canonicalWarning: v.canonicalWarning } : {}, ...v.lead === true ? { lead: true } : {} } : void 0;
+    return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { ...v.discovery !== void 0 ? { discovery: v.discovery } : {}, ..."compat" in v ? { compat: v.compat } : {}, ...typeof v.runtime === "string" ? { runtime: v.runtime } : {}, schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key, ...typeof v.canonicalWarning === "string" ? { canonicalWarning: v.canonicalWarning } : {}, ...v.lead === true ? { lead: true } : {} } : void 0;
   } catch {
     return void 0;
   }
@@ -27741,13 +28257,30 @@ function cloneId(commonDir2) {
   }
   return crypto5.createHash("sha256").update(real).digest("hex");
 }
-async function probeRelay(port, commonDir2, key2, timeoutMs2 = 800) {
+function compatibilityDetail(error2) {
+  const changes = error2.requiredChanges.map((change) => `${change.action} ${change.side} ${change.contract}${change.capability ? ` ${change.capability}` : ""}${change.range ? ` to ${change.range.min}-${change.range.max}` : change.versions ? ` to ${change.versions.join(",")}` : ""}`);
+  return `${error2.text} (${error2.side}; ${error2.code})${changes.length ? `; ${changes.join("; ")}` : ""}`;
+}
+function relayContract(health) {
+  try {
+    if (health.discovery !== void 0 && health.discovery !== 1) return { compatible: false, detail: "unsupported relay discovery format; update this client" };
+    if (health.runtime !== void 0 && health.runtime !== "session-relay") return { compatible: false, detail: "unsupported local runtime; update this client for the running relay" };
+    const offer = "compat" in health ? parseAdvertisement(health.compat) : legacyAdvertisement(health);
+    if (!offer) return { compatible: false, detail: "the relay does not implement the supported schema-2/proto-1 legacy adapter; update the relay" };
+    const selected = selectContract(CURRENT_COMPAT, offer, { activeSchema: 2 });
+    return selected.ok ? { compatible: true } : { compatible: false, detail: `${compatibilityDetail(selected.error)}` };
+  } catch {
+    return { compatible: false, detail: "invalid relay compatibility advertisement; update or restart the relay" };
+  }
+}
+async function probeRelayContract(port, commonDir2, key2, timeoutMs2) {
   const probe = await relayIdentityProbe(port, key2, timeoutMs2);
-  if (probe.timedOut) return "slow";
-  const identity3 = probe.identity;
-  const h = identity3?.health;
-  if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return "none";
-  return identity3.proven && h.clone === cloneId(commonDir2) ? "ours" : "foreign";
+  if (probe.timedOut) return { status: "slow" };
+  const identity3 = probe.identity, h = identity3?.health;
+  if (h?.local !== true) return { status: "none" };
+  if (!identity3.proven || h.clone !== cloneId(commonDir2)) return { status: "foreign" };
+  const contract = relayContract(h);
+  return { status: contract.compatible ? "ours" : "incompatible", detail: contract.detail };
 }
 function canonicalRelayWarning(port, commonDir2, identity3, info) {
   const h = identity3?.health;
@@ -27763,6 +28296,7 @@ function isLoopback(addr) {
 }
 function startRelay(port, opts = {}) {
   return new Promise((resolve5, reject) => {
+    parseAdvertisement(CURRENT_COMPAT);
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir");
     const docOptions = {
       commonDir: opts.commonDir,
@@ -27873,7 +28407,7 @@ function startRelay(port, opts = {}) {
         if (url.pathname === "/health") {
           const nonce = req.headers["x-room-nonce"];
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}, ...opts.key && typeof nonce === "string" && /^[a-f0-9]{32}$/.test(nonce) ? { proof: relayProof(opts.key, nonce, boundPort()) } : {} }));
+          res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, pid: process.pid, discovery: 1, runtime: "session-relay", compat: CURRENT_COMPAT, ...opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}, ...opts.key && typeof nonce === "string" && /^[a-f0-9]{32}$/.test(nonce) ? { proof: relayProof(opts.key, nonce, boundPort()) } : {} }));
           return;
         }
         if (req.method === "DELETE" && url.pathname === "/memory") {
@@ -27947,6 +28481,7 @@ Connection: close\r
         const url = safeUrl(req.url);
         if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
         if (obsolete(req, url)) return refuse(400, "use Authorization: Room-Proof or a browser ticket");
+        if (url.searchParams.has("negotiate") && url.searchParams.get("negotiate") !== "1") return refuse(426, "unsupported bootstrap; update this client");
         if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: this local room uses schema 2");
         try {
           decodeURIComponent((req.url ?? "/").split("?")[0]);
@@ -28035,7 +28570,7 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
     const file = relayFile(commonDir2), tmp = `${file}.${process.pid}.tmp`;
     try {
       fs13.mkdirSync(path10.dirname(file), { recursive: true, mode: 448 });
-      fs13.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2, canonicalWarning, ...lead ? { lead: true } : {} }) + "\n", { mode: 384 });
+      fs13.writeFileSync(tmp, JSON.stringify({ discovery: 1, runtime: "session-relay", compat: CURRENT_COMPAT, schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2, canonicalWarning, ...lead ? { lead: true } : {} }) + "\n", { mode: 384 });
       fs13.chmodSync(tmp, 384);
       fs13.renameSync(tmp, file);
     } catch (e) {
@@ -28049,7 +28584,9 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
   const recorded = async () => {
     const info = readRelayInfo(commonDir2);
     if (!info) return void 0;
-    const who2 = await probeRelay(info.port, commonDir2, info.key);
+    const result2 = await probeRelayContract(info.port, commonDir2, info.key, 800);
+    const who2 = result2.status;
+    if (who2 === "incompatible") throw new LocalRelayCompatibilityError(info.port, info.pid, result2.detail ?? "no supported contract");
     if (who2 === "slow" && !lead) log2(`local room ${room}: the relay on 127.0.0.1:${info.port} (pid ${info.pid}) did not answer the join probe in time; treating it as not running`);
     if (who2 === "foreign") log2(`local room ${room}: ${relayFile(commonDir2)} names a relay on 127.0.0.1:${info.port} that does not serve this clone with its key; treating the file as stale`);
     return who2 === "ours" ? info : void 0;
@@ -28090,7 +28627,12 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
           owned = await start(want, lock);
         } catch (e) {
           if (e.code !== "EADDRINUSE") throw e;
-          const collision = canonicalRelayWarning(want, commonDir2, await relayIdentity(want, key2), readRelayInfo(commonDir2));
+          const identity3 = await relayIdentity(want, key2);
+          if (identity3?.proven && identity3.health.clone === cloneId(commonDir2)) {
+            const contract = relayContract(identity3.health);
+            if (!contract.compatible) throw new LocalRelayCompatibilityError(want, typeof identity3.health.pid === "number" ? identity3.health.pid : readRelayInfo(commonDir2)?.pid, contract.detail ?? "no supported contract");
+          }
+          const collision = canonicalRelayWarning(want, commonDir2, identity3, readRelayInfo(commonDir2));
           owned = await start(0, lock);
           canonicalWarning = collision.warning;
           log2(`local room ${room}: ${collision.warning ?? (collision.roomRelay ? `port ${want} is held by another clone's Room relay; using a free port` : `port ${want} is taken by something else; using a free port`)}`);
@@ -28122,10 +28664,16 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
       if (!canonicalRelayWarning(canonicalPort, commonDir2, identity3, readRelayInfo(commonDir2)).warning) canonicalWarning = void 0;
     }
     if (owned || lost) return;
-    const who2 = await probeRelay(port, commonDir2, key2, probeTimeoutMs);
+    const result2 = await probeRelayContract(port, commonDir2, key2, probeTimeoutMs);
+    const who2 = result2.status;
     if (stopped) return;
     if (who2 === "ours") {
       misses = 0;
+      return;
+    }
+    if (who2 === "incompatible") {
+      lost = new LocalRelayCompatibilityError(port, readRelayInfo(commonDir2)?.pid, result2.detail ?? "no supported contract").message;
+      log2(lost);
       return;
     }
     if (who2 === "foreign") {
@@ -28216,7 +28764,7 @@ async function ensureLocalRelay(commonDir2, room, opts = {}) {
     }
   };
 }
-var MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, handshakeCleanup, failedSockets, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, LIVENESS_PROBE_TIMEOUT_MS, LIVENESS_MISSES_BEFORE_LOST, LOOPBACK, NoLocalRelay;
+var MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, bootstrapInputs, handshakeCleanup, failedSockets, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, LIVENESS_PROBE_TIMEOUT_MS, LIVENESS_MISSES_BEFORE_LOST, LocalRelayCompatibilityError, LOOPBACK, NoLocalRelay;
 var init_src3 = __esm({
   "packages/relay/src/index.ts"() {
     "use strict";
@@ -28251,6 +28799,7 @@ var init_src3 = __esm({
     RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024;
     socketBudgets = /* @__PURE__ */ new WeakMap();
     sessions = /* @__PURE__ */ new WeakMap();
+    bootstrapInputs = /* @__PURE__ */ new WeakMap();
     handshakeCleanup = /* @__PURE__ */ new WeakMap();
     failedSockets = /* @__PURE__ */ new WeakSet();
     queued = /* @__PURE__ */ new Map();
@@ -28260,6 +28809,12 @@ var init_src3 = __esm({
     LOCAL_FILE = path10.join("room", "relay.json");
     LIVENESS_PROBE_TIMEOUT_MS = 2500;
     LIVENESS_MISSES_BEFORE_LOST = 3;
+    LocalRelayCompatibilityError = class extends Error {
+      constructor(port, pid, detail) {
+        super(`WARN: local relay${pid === void 0 ? "" : ` (pid ${pid})`} on 127.0.0.1:${port} is incompatible: ${detail}; drain local clients, let the owner save and exit, then restart Room on the compatible installed version`);
+        this.name = "LocalRelayCompatibilityError";
+      }
+    };
     LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
     NoLocalRelay = class extends Error {
       constructor(room) {
@@ -28278,42 +28833,111 @@ function authorizedWebSocket(credentials) {
   };
   return class AuthorizedWebSocket extends wrapper_default {
     secure;
-    pending = [];
+    encrypted = false;
     opened = false;
+    failed = false;
     timer;
+    selection;
+    helloId = "compat-hello";
+    ackId = "compat-ack";
     constructor(address, protocols) {
       const url = new URL(address.toString());
+      if (credentials.negotiation) url.searchParams.set("negotiate", "1");
       if (credentials.key || credentials.viewKey) {
         const port = Number(url.port);
         if (url.protocol !== "ws:" || url.hostname !== "127.0.0.1" || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("local relay requires ws://127.0.0.1:<port>");
-        super(address, protocols, { headers: { ...headers, ...credentials.key ? { authorization: localProofHeader(credentials.key, "GET", url.pathname + url.search, port) } : {} } });
+        super(url, protocols, { headers: { ...headers, ...credentials.key ? { authorization: localProofHeader(credentials.key, "GET", url.pathname + url.search, port) } : {} } });
         this.secure = new SecureSession(credentials.key ?? credentials.viewKey, decodeURIComponent(url.pathname.slice(1)), "client");
         this.timer = setTimeout(() => this.close(1008, "secure handshake timeout"), 5e3);
         this.timer.unref?.();
-      } else super(address, protocols, { headers });
+      } else super(url, protocols, { headers });
       this.on("error", () => {
       });
+      this.on("unexpected-response", (request, response) => {
+        if (response.statusCode === 426) this.refuse("Room server refused the supported contract; update the affected Room client or server, then reconnect Room (/mcp) or restart the session");
+        else request.destroy(new Error(`Unexpected server response: ${response.statusCode}`));
+        request.socket?.destroy();
+        response.destroy();
+      });
+    }
+    deadline(reason) {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.refuse(reason), 5e3);
+      this.timer.unref?.();
+    }
+    refuse(text2) {
+      if (this.failed) return false;
+      this.failed = true;
+      clearTimeout(this.timer);
+      credentials.negotiation?.onRefusal?.(text2);
+      this.close(4406, "Room contract refused");
+      return false;
+    }
+    sendPlain(data, cb) {
+      const raw = data instanceof ArrayBuffer ? new Uint8Array(data) : Array.isArray(data) ? Buffer.concat(data) : data;
+      if (this.secure) super.send(this.secure.encrypt(raw), cb);
+      else super.send(data, cb);
+    }
+    authenticated() {
+      clearTimeout(this.timer);
+      const negotiation = credentials.negotiation;
+      if (!negotiation) {
+        this.opened = true;
+        return super.emit("open");
+      }
+      this.deadline("Room server did not select a contract within 5 seconds; check or update the server");
+      this.sendPlain(Buffer.from(encodeFrame({ v: 1, op: "compat-hello", id: this.helloId, sessionId: negotiation.sessionId, offer: negotiation.offer })));
+      return true;
+    }
+    application(raw) {
+      if (this.failed) return false;
+      if (this.opened) return super.emit("message", raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength), true);
+      const negotiation = credentials.negotiation;
+      if (!negotiation) return this.refuse("Room received data before authentication");
+      if (raw.byteLength > 8192) return this.refuse("Room server bootstrap response exceeded 8 KiB");
+      try {
+        const frame = decodeFrame(raw);
+        if (frame.v !== 1 || frame.re !== (this.selection ? this.ackId : this.helloId)) throw new Error("Unexpected Room frame before contract selection completed");
+        if (frame.ok !== true) {
+          const refusal = parseBootstrapFrame(frame);
+          if ("error" in refusal) return this.refuse(refusal.error.text);
+          throw new Error("Room server refused contract selection");
+        }
+        if (!this.selection) {
+          const selection = parseBootstrapFrame(frame);
+          validateSelection(selection.selection, negotiation.offer, selection.compat, { requiredCapabilities: selection.requiredCapabilities });
+          this.selection = selection;
+          this.deadline("Room server did not acknowledge contract selection within 5 seconds; reconnect Room (/mcp) or restart the session");
+          this.sendPlain(Buffer.from(encodeFrame({ v: 1, op: "compat-ack", id: this.ackId, selectionId: selection.selectionId })));
+          return true;
+        }
+        clearTimeout(this.timer);
+        negotiation.onSelection?.(this.selection);
+        this.opened = true;
+        return super.emit("open");
+      } catch (error2) {
+        return this.refuse(error2 instanceof Error ? error2.message : "Invalid Room server contract selection");
+      }
     }
     emit(event, ...args2) {
-      if (!this.secure) return super.emit(event, ...args2);
       if (event === "open") {
-        super.send(this.secure.clientHello());
-        return true;
+        if (this.secure) {
+          super.send(this.secure.clientHello());
+          return true;
+        }
+        return this.authenticated();
       }
       if (event === "message") {
+        const data = args2[0];
+        const raw = data instanceof ArrayBuffer ? new Uint8Array(data) : Array.isArray(data) ? Buffer.concat(data) : data;
+        if (!this.secure) return this.application(raw);
         try {
-          const data = args2[0];
-          const raw = data instanceof ArrayBuffer ? new Uint8Array(data) : Array.isArray(data) ? Buffer.concat(data) : data;
-          if (!this.opened) {
+          if (!this.encrypted) {
             this.secure.acceptRelayHello(raw);
-            this.opened = true;
-            clearTimeout(this.timer);
-            super.emit("open");
-            for (const item of this.pending.splice(0)) this.send(item.data, item.options, item.cb);
-            return true;
+            this.encrypted = true;
+            return this.authenticated();
           }
-          const plain = this.secure.decrypt(raw);
-          return super.emit("message", plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength), true);
+          return this.application(this.secure.decrypt(raw));
         } catch {
           this.close(1008, "invalid secure frame");
           return false;
@@ -28323,21 +28947,12 @@ function authorizedWebSocket(credentials) {
       return super.emit(event, ...args2);
     }
     send(data, options, cb) {
-      if (!this.secure) {
-        super.send(data, options, cb);
+      if (typeof options === "function") cb = options;
+      if (!this.opened || this.failed) {
+        cb?.(new Error("Room contract selection is not complete"));
         return;
       }
-      if (typeof options === "function") {
-        cb = options;
-        options = void 0;
-      }
-      if (!this.opened) {
-        this.pending.push({ data, options, cb });
-        return;
-      }
-      const frame = this.secure.encrypt(data instanceof ArrayBuffer ? new Uint8Array(data) : Buffer.from(data));
-      if (options) super.send(frame, options, cb);
-      else super.send(frame, cb);
+      this.sendPlain(data, cb);
     }
   };
 }
@@ -28346,6 +28961,7 @@ var init_ws_auth = __esm({
     "use strict";
     init_wrapper();
     init_src3();
+    init_src2();
   }
 });
 
@@ -28839,9 +29455,9 @@ ${reason}`);
 // packages/roomd/src/reanchor.ts
 import { createHash as createHash6 } from "node:crypto";
 import { setImmediate as setImmediate7 } from "node:timers/promises";
-function claimDigest(text, from2, to2) {
+function claimDigest(text2, from2, to2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
-  const lines2 = splitLines2(text);
+  const lines2 = splitLines2(text2);
   return to2 <= lines2.length ? digestLines(lines2.slice(from2 - 1, to2)) : void 0;
 }
 function lineHash(line) {
@@ -28886,12 +29502,12 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
       uncertain.push(claim2.id);
       continue;
     }
-    const text = texts.get(claim2.path);
-    if (text === void 0) {
+    const text2 = texts.get(claim2.path);
+    if (text2 === void 0) {
       releases.push({ id: claim2.id, path: claim2.path, from: claim2.from, to: claim2.to });
       continue;
     }
-    if (!await tick(text.length)) {
+    if (!await tick(text2.length)) {
       uncertain.push(claim2.id);
       continue;
     }
@@ -28901,7 +29517,7 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
       options.progress?.delete(claim2.id);
       progress = void 0;
     }
-    const lines2 = progress?.lines ?? splitLines2(text);
+    const lines2 = progress?.lines ?? splitLines2(text2);
     const width = claim2.to - claim2.from + 1;
     if (!claim2.claimedHash) {
       uncertain.push(claim2.id);
@@ -28942,7 +29558,7 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
       const firstLineHash = originalLines?.length === width && digestLines(originalLines) === claim2.claimedHash ? lineHash(originalLines[0]) : void 0;
       progress = { key: key2, lines: lines2, prefix: prefix2, next: 0, found: 0, at: -1, firstLineHash };
       if (previous !== void 0) {
-        if (!await tick(previous.length + text.length)) {
+        if (!await tick(previous.length + text2.length)) {
           uncertain.push(claim2.id);
           continue;
         }
@@ -28951,7 +29567,7 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
           uncertain.push(claim2.id);
           continue;
         }
-        const candidate = mappedCandidate(claim2, previous, text, Math.max(1, budget - work));
+        const candidate = mappedCandidate(claim2, previous, text2, Math.max(1, budget - work));
         if (options.valid && !options.valid()) {
           uncertain.push(claim2.id);
           continue;
@@ -29015,9 +29631,9 @@ var init_reanchor = __esm({
     DEFAULT_WORK_BUDGET = 4e6;
     BASE = 16777619;
     digestLines = (lines2) => createHash6("sha256").update(lines2.join("\n"), "utf8").digest("hex");
-    splitLines2 = (text) => {
-      const lines2 = text.split("\n");
-      if (text.endsWith("\n")) lines2.pop();
+    splitLines2 = (text2) => {
+      const lines2 = text2.split("\n");
+      if (text2.endsWith("\n")) lines2.pop();
       return lines2;
     };
   }
@@ -31081,8 +31697,8 @@ function observeCallback(fn, report) {
 function machineIdentity(log2) {
   if (process.env.ROOM_MACHINE_ID) return process.env.ROOM_MACHINE_ID;
   const file = path12.join(process.env.XDG_CONFIG_HOME || path12.join(os2.homedir(), ".config"), "room", "machine-id");
-  const cached2 = machineIdentities.get(file);
-  if (cached2) return cached2;
+  const cached3 = machineIdentities.get(file);
+  if (cached3) return cached3;
   try {
     fs15.mkdirSync(path12.dirname(file), { recursive: true, mode: 448 });
     const temporary = `${file}.${process.pid}.${randomBytes2(8).toString("hex")}`;
@@ -31392,8 +32008,13 @@ var init_src4 = __esm({
         } catch {
         }
         this.roomName = decodedRoomName;
+        let compatibilityError;
+        this.compatibilityError = () => compatibilityError;
         this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
-          WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
+          WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, ...options.negotiation ? { negotiation: { ...options.negotiation, onRefusal: (text2) => {
+            compatibilityError = text2;
+            options.negotiation?.onRefusal?.(text2);
+          } } } : {} }),
           ...roomConnection(this.roomDoc.doc)
         });
         options.onProvider?.(this.provider);
@@ -31589,16 +32210,16 @@ var init_src4 = __esm({
        * (none at startup, which withholds all file text) and leaves publication incomplete until it is usable again.
        */
       loadRoomIgnore() {
-        let text, ignore;
+        let text2, ignore;
         try {
           if (!this.isSafeRoomPath(ROOMIGNORE, false)) throw new Error("it is a symbolic link or leaves the checkout");
           try {
-            text = readBoundedFileSync(this.abs(ROOMIGNORE), ROOMIGNORE_MAX_BYTES);
+            text2 = readBoundedFileSync(this.abs(ROOMIGNORE), ROOMIGNORE_MAX_BYTES);
           } catch (error2) {
             if (error2.code !== "ENOENT") throw error2;
-            text = "";
+            text2 = "";
           }
-          ignore = parseRoomIgnore(text, ROOMIGNORE_MAX_PATTERNS);
+          ignore = parseRoomIgnore(text2, ROOMIGNORE_MAX_PATTERNS);
         } catch (error2) {
           const problem = errMsg(error2);
           if (this.roomIgnoreProblem === void 0) {
@@ -31609,7 +32230,7 @@ var init_src4 = __esm({
         }
         if (this.roomIgnoreProblem !== void 0) this.log(`${ROOMIGNORE} readable again`);
         this.roomIgnoreProblem = void 0;
-        this.roomIgnoreText = text;
+        this.roomIgnoreText = text2;
         this.roomIgnore = ignore;
         if (ignore.patterns) this.log(`${ROOMIGNORE}: ${ignore.patterns} pattern(s)`);
       }
@@ -31729,20 +32350,36 @@ var init_src4 = __esm({
         this.lastActive = Date.now();
         this.setStatus(this.currentStatus());
       }
+      compatibilityError = () => void 0;
       waitForSync() {
+        const compatibilityError = this.compatibilityError();
+        if (compatibilityError) return Promise.reject(new RoomdError(compatibilityError, 2));
         if (this.provider.synced) return Promise.resolve();
         return new Promise((resolve5, reject) => {
           const timer = setTimeout(() => {
-            this.provider.off("sync", onSync);
+            cleanup();
             reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1));
           }, this.connectTimeoutMs);
-          const onSync = (synced) => {
-            if (!synced) return;
+          const cleanup = () => {
             clearTimeout(timer);
             this.provider.off("sync", onSync);
-            resolve5();
+            this.provider.off("connection-close", onClose);
+          };
+          const onClose = () => {
+            const error2 = this.compatibilityError();
+            if (error2) {
+              cleanup();
+              reject(new RoomdError(error2, 2));
+            }
+          };
+          const onSync = (synced) => {
+            if (synced) {
+              cleanup();
+              resolve5();
+            }
           };
           this.provider.on("sync", onSync);
+          this.provider.on("connection-close", onClose);
         });
       }
       writeRoomFile() {
@@ -32035,10 +32672,10 @@ var init_src4 = __esm({
             const current2 = this.roomDoc.claims.get(release.id);
             if (current2?.by !== this.name || current2.mirrorOf) continue;
             this.roomDoc.removeClaim(release.id, this);
-            const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
-            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary: text } });
-            notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text } });
-            this.log(text);
+            const text2 = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
+            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary: text2 } });
+            notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text: text2 } });
+            this.log(text2);
           }
         }, this);
         for (const n of notices) this.post(n.from, n.body, n.id);
@@ -32051,8 +32688,8 @@ var init_src4 = __esm({
       }
       /** The lead's work carried into this worker for the worktree's lifetime. */
       carried() {
-        const baseline = workerBaseline(this.carriedFrom);
-        return carriesWork(baseline) ? baseline : void 0;
+        const baseline2 = workerBaseline(this.carriedFrom);
+        return carriesWork(baseline2) ? baseline2 : void 0;
       }
       /** A worker's base is the commit its lead carried it from (registry pins it); base.ts decides when a team room uses it. */
       workerBase() {
@@ -32077,14 +32714,14 @@ var init_src4 = __esm({
           await new Promise((resolve5) => setImmediate(resolve5));
           const overlay = this.roomDoc.text(c.path, incarnation);
           const oldText = oldTexts.get(c.path);
-          const range = overlay !== void 0 && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to };
+          const range2 = overlay !== void 0 && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to };
           const source = overlay === void 0 ? oldText : overlay;
-          const hash3 = c.claimedHash ?? this.claimDigests.get(c.id) ?? (source === void 0 || Buffer.byteLength(source) > this.sizeCap ? void 0 : claimDigest(source, range.from, range.to));
-          const block = (text) => {
-            if (text === void 0 || Buffer.byteLength(text) > this.sizeCap || claimDigest(text, range.from, range.to) !== hash3) return void 0;
-            return text.split("\n").slice(range.from - 1, range.to).join("\n");
+          const hash3 = c.claimedHash ?? this.claimDigests.get(c.id) ?? (source === void 0 || Buffer.byteLength(source) > this.sizeCap ? void 0 : claimDigest(source, range2.from, range2.to));
+          const block = (text2) => {
+            if (text2 === void 0 || Buffer.byteLength(text2) > this.sizeCap || claimDigest(text2, range2.from, range2.to) !== hash3) return void 0;
+            return text2.split("\n").slice(range2.from - 1, range2.to).join("\n");
           };
-          snapshots.push({ ...c, ...range, claimedHash: hash3, anchorText: block(overlay) ?? block(oldText), oldText, claimState: JSON.stringify(c) });
+          snapshots.push({ ...c, ...range2, claimedHash: hash3, anchorText: block(overlay) ?? block(oldText), oldText, claimState: JSON.stringify(c) });
         }
         return snapshots;
       }
@@ -32243,10 +32880,10 @@ var init_src4 = __esm({
             const current2 = this.roomDoc.claims.get(release.id);
             if (current2?.by !== this.name || current2.mirrorOf) continue;
             this.roomDoc.removeClaim(release.id, this);
-            const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
-            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary: text } });
-            notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text } });
-            this.log(text);
+            const text2 = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
+            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary: text2 } });
+            notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text: text2 } });
+            this.log(text2);
           }
         }, this);
         pending.claims.delete(id3);
@@ -32467,9 +33104,9 @@ var init_src4 = __esm({
             if (!this.stopped && this.inputs.policy.publisher && epoch === this.checkoutEpoch) this.applyIgnoredDirs(next);
           } catch (error2) {
             this.ignoredDirsStale = true;
-            const text = errMsg(error2);
-            if (this.ignoredDirsFailure !== text) this.log(`warn: could not list gitignored folders (${text}); keeping the last known ${this.ignoredDirs.size}, and watching new ones file by file`);
-            this.ignoredDirsFailure = text;
+            const text2 = errMsg(error2);
+            if (this.ignoredDirsFailure !== text2) this.log(`warn: could not list gitignored folders (${text2}); keeping the last known ${this.ignoredDirs.size}, and watching new ones file by file`);
+            this.ignoredDirsFailure = text2;
           } finally {
             this.ignoredDirsRefresh = void 0;
           }
@@ -32770,6 +33407,95 @@ var init_connection = __esm({
     "use strict";
     OFFLINE_GRACE_MS = 2e3;
     connections = /* @__PURE__ */ new WeakMap();
+  }
+});
+
+// plugins/room/.claude-plugin/plugin.json
+var plugin_default;
+var init_plugin = __esm({
+  "plugins/room/.claude-plugin/plugin.json"() {
+    plugin_default = {
+      name: "room",
+      version: "0.17.33",
+      description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
+      author: {
+        name: "Rohan",
+        url: "https://github.com/rohanz/room"
+      },
+      repository: "https://github.com/rohanz/room",
+      license: "PolyForm-Noncommercial-1.0.0",
+      keywords: [
+        "collaboration",
+        "multiplayer",
+        "crdt",
+        "agents"
+      ],
+      hooks: "./hooks/claude.json",
+      mcpServers: {
+        room: {
+          command: "node",
+          args: [
+            "${CLAUDE_PLUGIN_ROOT}/server/room-mcp.mjs"
+          ],
+          env: {
+            ROOM_HOST: "claude"
+          }
+        }
+      }
+    };
+  }
+});
+
+// packages/room-mcp/src/leases.ts
+var init_leases2 = __esm({
+  "packages/room-mcp/src/leases.ts"() {
+    "use strict";
+    init_leases();
+  }
+});
+
+// packages/room-mcp/src/client-compat.ts
+import { createHash as createHash8 } from "node:crypto";
+import { existsSync as existsSync2, readFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+function compatibilityFromHealth(health, learned = false) {
+  if (health && typeof health === "object" && "compat" in health) {
+    let offer;
+    try {
+      offer = parseAdvertisement(health.compat);
+    } catch (error2) {
+      throw new Error(`Room server advertised an invalid compatibility contract; update the server (${error2 instanceof Error ? error2.message : String(error2)})`);
+    }
+    const results = offer.schemas.write.map((activeSchema) => selectContract(CURRENT_COMPAT, offer, { activeSchema }));
+    if (!results.some((r) => r.ok)) {
+      const refusal = results.find((r) => !r.ok);
+      throw new Error(refusal && !refusal.ok ? refusal.error.text : "Room server has no supported writable schema; update the server");
+    }
+    return { offer, legacy: false };
+  }
+  if (learned) throw new Error("Room server negotiation advertisement disappeared; refusing a protocol downgrade. Restore negotiation on the server and reconnect Room (/mcp) or restart the session");
+  return { offer: LEGACY_COMPAT, legacy: true };
+}
+function compatibilityFloor(commonDir2, identity3, fingerprint) {
+  const file = join3(commonDir2, "room", "compat", `${createHash8("sha256").update(identity3).digest("hex")}.json`);
+  return {
+    learned() {
+      if (!existsSync2(file)) return false;
+      const record2 = JSON.parse(readFileSync(file, "utf8"));
+      if (record2.v !== 1 || record2.bootstrap !== 1 || record2.identity !== identity3 || record2.fingerprint !== fingerprint) throw new Error("Room compatibility floor is invalid; restore the private compatibility state before reconnecting");
+      return true;
+    },
+    remember() {
+      writeAtomic(file, { v: 1, bootstrap: 1, identity: identity3, ...fingerprint ? { fingerprint } : {}, at: Date.now() });
+    }
+  };
+}
+var init_client_compat = __esm({
+  "packages/room-mcp/src/client-compat.ts"() {
+    "use strict";
+    init_src2();
+    init_leases2();
+    init_src2();
   }
 });
 
@@ -33820,14 +34546,6 @@ var init_parse = __esm({
   }
 });
 
-// packages/room-mcp/src/leases.ts
-var init_leases2 = __esm({
-  "packages/room-mcp/src/leases.ts"() {
-    "use strict";
-    init_leases();
-  }
-});
-
 // packages/room-mcp/src/run-log-facts.ts
 import fs18 from "node:fs";
 function emptyFacts() {
@@ -33852,8 +34570,8 @@ function apply(entry, event) {
   if (event.type === "turn.started") remember2(facts.codexTurns, event.thread_id ?? entry.codexThread);
   if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") facts.codexAnswer = event.item.text.trim();
 }
-function consume(entry, text) {
-  let pending = entry.pending + text, end;
+function consume(entry, text2) {
+  let pending = entry.pending + text2, end;
   while ((end = pending.indexOf("\n")) >= 0) {
     const line = pending.slice(0, end).trim();
     pending = pending.slice(end + 1);
@@ -33876,14 +34594,14 @@ function prefixIntact(entry, fd) {
 }
 function current(file, start, stat4, fd) {
   const key2 = keyOf(file, start);
-  const cached2 = cache.get(key2);
-  const sameFile = cached2 && cached2.dev === stat4.dev && cached2.ino === stat4.ino;
-  const unchanged = sameFile && stat4.size === cached2.size && stat4.mtimeMs === cached2.mtimeMs;
-  const appendedOnly = sameFile && stat4.size > cached2.size && prefixIntact(cached2, fd);
-  if (cached2 && (unchanged || appendedOnly)) {
+  const cached3 = cache.get(key2);
+  const sameFile = cached3 && cached3.dev === stat4.dev && cached3.ino === stat4.ino;
+  const unchanged = sameFile && stat4.size === cached3.size && stat4.mtimeMs === cached3.mtimeMs;
+  const appendedOnly = sameFile && stat4.size > cached3.size && prefixIntact(cached3, fd);
+  if (cached3 && (unchanged || appendedOnly)) {
     cache.delete(key2);
-    cache.set(key2, cached2);
-    return cached2;
+    cache.set(key2, cached3);
+    return cached3;
   }
   const entry = { file, start, dev: stat4.dev, ino: stat4.ino, size: 0, mtimeMs: 0, offset: Math.min(start, stat4.size), pending: "", head: Buffer.alloc(0), tail: Buffer.alloc(0), facts: emptyFacts() };
   cache.delete(key2);
@@ -33927,11 +34645,11 @@ function runLogFacts(file, start) {
   } catch {
     return emptyFacts();
   }
-  const key2 = keyOf(file, start), cached2 = cache.get(key2);
-  if (cached2 && cached2.dev === stat4.dev && cached2.ino === stat4.ino && cached2.size === stat4.size && cached2.mtimeMs === stat4.mtimeMs && cached2.offset >= stat4.size) {
+  const key2 = keyOf(file, start), cached3 = cache.get(key2);
+  if (cached3 && cached3.dev === stat4.dev && cached3.ino === stat4.ino && cached3.size === stat4.size && cached3.mtimeMs === stat4.mtimeMs && cached3.offset >= stat4.size) {
     cache.delete(key2);
-    cache.set(key2, cached2);
-    return cached2.facts;
+    cache.set(key2, cached3);
+    return cached3.facts;
   }
   let fd;
   try {
@@ -33961,42 +34679,6 @@ var init_run_log_facts = __esm({
     keyOf = (file, start) => `${start}\0${file}`;
     remember2 = (set, id3) => {
       if (typeof id3 === "string" && set.size < ID_CAP) set.add(id3);
-    };
-  }
-});
-
-// plugins/room/.claude-plugin/plugin.json
-var plugin_default;
-var init_plugin = __esm({
-  "plugins/room/.claude-plugin/plugin.json"() {
-    plugin_default = {
-      name: "room",
-      version: "0.17.32",
-      description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
-      author: {
-        name: "Rohan",
-        url: "https://github.com/rohanz/room"
-      },
-      repository: "https://github.com/rohanz/room",
-      license: "PolyForm-Noncommercial-1.0.0",
-      keywords: [
-        "collaboration",
-        "multiplayer",
-        "crdt",
-        "agents"
-      ],
-      hooks: "./hooks/claude.json",
-      mcpServers: {
-        room: {
-          command: "node",
-          args: [
-            "${CLAUDE_PLUGIN_ROOT}/server/room-mcp.mjs"
-          ],
-          env: {
-            ROOM_HOST: "claude"
-          }
-        }
-      }
     };
   }
 });
@@ -34092,6 +34774,8 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 // packages/room-mcp/src/worker-config.ts
 import fs20 from "node:fs";
+import { execFileSync as execFileSync4 } from "node:child_process";
+import { createHash as createHash9 } from "node:crypto";
 import path17 from "node:path";
 import os5 from "node:os";
 import { fileURLToPath } from "node:url";
@@ -34246,16 +34930,32 @@ function leadClaudePluginDir(env = process.env, modulePath = fileURLToPath(impor
   }
   return installedPath && path17.resolve(installedPath) === resolved ? void 0 : resolved;
 }
-function installedCodexRoomVersion(env = process.env) {
-  const root = path17.join(env.CODEX_HOME || path17.join(os5.homedir(), ".codex"), "plugins", "cache", "room", "room");
+function installedCodexRoomContract(env = process.env) {
   try {
-    return fs20.readdirSync(root).filter((v) => /^\d+\.\d+\.\d+$/.test(v) && fs20.existsSync(path17.join(root, v, ".codex-plugin", "plugin.json"))).sort((a, b) => a.localeCompare(b, void 0, { numeric: true })).at(-1);
+    const listing = JSON.parse(execFileSync4("codex", ["plugin", "list", "--json"], { env, encoding: "utf8", timeout: 2500, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] }));
+    const entries = listing.installed?.filter((row) => row.pluginId === "room@room" && row.enabled !== false);
+    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return void 0;
+    const root = path17.join(env.CODEX_HOME || path17.join(os5.homedir(), ".codex"), "plugins", "cache", "room", "room", entries[0].version, "server");
+    if (fs20.statSync(path17.join(root, "compat.json")).size > 4096 || fs20.statSync(path17.join(root, "room-mcp.mjs")).size > 64 * 1024 * 1024) return void 0;
+    const raw = fs20.readFileSync(path17.join(root, "compat.json"), "utf8");
+    const descriptor = JSON.parse(raw);
+    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash9("sha256").update(fs20.readFileSync(path17.join(root, "room-mcp.mjs"))).digest("hex")) return void 0;
+    return { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
   } catch {
     return void 0;
   }
 }
-function codexRoomVersionMismatch(leadVersion = plugin_default.version, installed = installedCodexRoomVersion()) {
-  return installed && installed !== leadVersion ? `Codex has Room ${installed}, but this lead runs Room ${leadVersion}; install Room ${leadVersion} for Codex, or use host claude` : void 0;
+function codexRoomCompatibilityMismatch(lead = { release: plugin_default.version, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA }, installed = void 0, diagnostic) {
+  if (arguments.length < 2) installed = installedCodexRoomContract();
+  if (!installed) return "Codex's installed Room executable contract is unverified; update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker";
+  const selected = selectContract(installed.compat, lead.compat, { activeSchema: 2 });
+  if (selected.ok && installed.workerRecordSchema === lead.workerRecordSchema) {
+    if (installed.release !== lead.release) diagnostic?.(`Codex Room ${installed.release} and lead Room ${lead.release} have compatible protocol and worker record contracts`);
+    return void 0;
+  }
+  const newer = installed.release.localeCompare(lead.release, void 0, { numeric: true }) > 0;
+  const reason = installed.workerRecordSchema !== lead.workerRecordSchema ? `worker record schemas differ (lead ${lead.workerRecordSchema}, Codex ${installed.workerRecordSchema})` : selected.ok ? "" : selected.error.text;
+  return `Codex has Room ${installed.release}, but this lead runs Room ${lead.release}: ${reason}; ${newer ? "reconnect Room with /mcp or restart the session to load the installed Room contract" : "update Room for Codex to a compatible protocol and worker record schema"}`;
 }
 function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort, options = {}) {
   if (effort !== void 0 && !WORKER_EFFORTS.includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join("|")}`);
@@ -34288,6 +34988,8 @@ var WORKER_PORT_START, WORKER_PORT_END, warnedMissingNice, WORKER_THREAD_CAPS, W
 var init_worker_config = __esm({
   "packages/room-mcp/src/worker-config.ts"() {
     "use strict";
+    init_src2();
+    init_src();
     init_plugin();
     init_config();
     init_room_name();
@@ -34302,7 +35004,7 @@ var init_worker_config = __esm({
 });
 
 // packages/room-mcp/src/worker-process.ts
-import { execFileSync as execFileSync4, spawn as spawn2 } from "node:child_process";
+import { execFileSync as execFileSync5, spawn as spawn2 } from "node:child_process";
 import fs21 from "node:fs";
 import path18 from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -34385,15 +35087,15 @@ function workerLogTail(logFile, logStart = 0) {
       } catch {
         return "";
       }
-    }).map((text) => stripVTControlCharacters(text)).filter(Boolean).slice(-5).join("\n").slice(-600);
+    }).map((text2) => stripVTControlCharacters(text2)).filter(Boolean).slice(-5).join("\n").slice(-600);
   } catch {
     return "";
   }
 }
-function transience(text, status, category) {
-  if (LIMIT_REACHED.test(text)) return void 0;
-  if (category === "overloaded" || status === 529 || CAPACITY.test(text)) return "model capacity";
-  if (category === "rate_limit" || status === 429 || RATE_LIMIT.test(text)) return "rate limit";
+function transience(text2, status, category) {
+  if (LIMIT_REACHED.test(text2)) return void 0;
+  if (category === "overloaded" || status === 529 || CAPACITY.test(text2)) return "model capacity";
+  if (category === "rate_limit" || status === 429 || RATE_LIMIT.test(text2)) return "rate limit";
   return void 0;
 }
 function hostFailure(logFile, host, logStart = 0) {
@@ -34430,14 +35132,14 @@ function hostFailure(logFile, host, logStart = 0) {
       status = event.api_error_status;
     }
   }
-  const text = (failed ?? error2)?.replace(/\s+/g, " ").trim();
-  if (!text) return void 0;
-  const transient = transience(text, status, category);
-  return transient ? { text, transient } : { text };
+  const text2 = (failed ?? error2)?.replace(/\s+/g, " ").trim();
+  if (!text2) return void 0;
+  const transient = transience(text2, status, category);
+  return transient ? { text: text2, transient } : { text: text2 };
 }
 function hostFailureLine(failure, host, resumable2) {
-  const text = failure.text.replace(/\s+/g, " ").trim();
-  const clipped = text.length > FAILURE_TEXT_MAX ? `${text.slice(0, FAILURE_TEXT_MAX - 1)}\u2026` : text;
+  const text2 = failure.text.replace(/\s+/g, " ").trim();
+  const clipped = text2.length > FAILURE_TEXT_MAX ? `${text2.slice(0, FAILURE_TEXT_MAX - 1)}\u2026` : text2;
   if (!failure.transient) return `${host}: ${clipped}`;
   const retry = resumable2 ? "room_send it to resume, or respawn it, to retry" : "respawn it with dir= its worktree to retry and keep its edits";
   return `${host}: ${clipped} (transient ${failure.transient}: ${retry})`;
@@ -34530,7 +35232,7 @@ function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
 }
 function processName(pid) {
   try {
-    return path18.basename(execFileSync4("ps", ["-o", "comm=", "-p", String(pid)], {
+    return path18.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 3e3,
       env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
@@ -34552,7 +35254,7 @@ function listCwdProcesses(platform = process.platform) {
       }
     }
   } else if (platform === "darwin") {
-    const output = execFileSync4("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
+    const output = execFileSync5("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
     let pid = 0;
     for (const line of output.split("\n")) {
       if (line.startsWith("p")) pid = Number(line.slice(1));
@@ -35297,7 +35999,7 @@ var init_worker_deps = __esm({
 });
 
 // packages/room-mcp/src/tools/reader-diff.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 function boundedTwoFilesPatch(p, before, after, person) {
   const a = before.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const b = after.match(/[^\n]*\n|[^\n]+$/g) ?? [];
@@ -35347,8 +36049,8 @@ function boundedTwoFilesPatch(p, before, after, person) {
       }
     }
     const lines2 = [];
-    for (const [text, prefix2] of [[a.slice(a0, a1), "-"], [b.slice(b0, b1), "+"]]) {
-      for (const line of text) {
+    for (const [text2, prefix2] of [[a.slice(a0, a1), "-"], [b.slice(b0, b1), "+"]]) {
+      for (const line of text2) {
         lines2.push(prefix2 + (line.endsWith("\n") ? line.slice(0, -1) : line));
         if (!line.endsWith("\n")) lines2.push("\\ No newline at end of file");
       }
@@ -35383,20 +36085,20 @@ function boundedTwoFilesPatch(p, before, after, person) {
   patch.hunks = hunks;
   return formatPatch(patch);
 }
-function diffPage(text, cursor, digest = createHash8("sha256").update(text).digest("hex")) {
+function diffPage(text2, cursor, digest = createHash10("sha256").update(text2).digest("hex")) {
   let start = 0;
   if (cursor !== void 0) {
     const match = typeof cursor === "string" && /^([a-f0-9]{64}):([1-9][0-9]*)$/.exec(cursor);
     if (!match || !Number.isSafeInteger(Number(match[2]))) return "error: invalid diff cursor; restart room_read with diff=true and no cursor";
-    if (match[1] !== digest || Number(match[2]) >= text.length) return "error: diff changed since the previous page; restart room_read with diff=true and no cursor";
+    if (match[1] !== digest || Number(match[2]) >= text2.length) return "error: diff changed since the previous page; restart room_read with diff=true and no cursor";
     start = Number(match[2]);
   }
-  if (start === 0 && text.length <= PAGE_CHARS) return text;
-  let end = Math.min(start + PAGE_CHARS, text.length);
-  if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
-  const next = end < text.length ? `continue room_read with the same person/path, diff=true, cursor="${digest}:${end}"` : "end of diff";
-  return `diff page ${start + 1}-${end} of ${text.length} characters (partial patch)
-${text.slice(start, end)}
+  if (start === 0 && text2.length <= PAGE_CHARS) return text2;
+  let end = Math.min(start + PAGE_CHARS, text2.length);
+  if (end < text2.length && /[\uD800-\uDBFF]/.test(text2[end - 1])) end--;
+  const next = end < text2.length ? `continue room_read with the same person/path, diff=true, cursor="${digest}:${end}"` : "end of diff";
+  return `diff page ${start + 1}-${end} of ${text2.length} characters (partial patch)
+${text2.slice(start, end)}
 [${next}]`;
 }
 var PAGE_CHARS;
@@ -35409,7 +36111,7 @@ var init_reader_diff = __esm({
 });
 
 // packages/room-mcp/src/read-diff-cache.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 var READ_DIFF_LIMITS, DIFF_RESTART, ReadDiffCache, readDiffCache;
 var init_read_diff_cache = __esm({
   "packages/room-mcp/src/read-diff-cache.ts"() {
@@ -35444,18 +36146,18 @@ var init_read_diff_cache = __esm({
         }
         return void 0;
       }
-      start(owner, request, text, fingerprint) {
+      start(owner, request, text2, fingerprint) {
         this.clear(owner, request);
-        if (text.length <= PAGE_CHARS) return text;
-        const bytes = 2 * (text.length + request.length + fingerprint.length + 64) + 512;
+        if (text2.length <= PAGE_CHARS) return text2;
+        const bytes = 2 * (text2.length + request.length + fingerprint.length + 64) + 512;
         if (bytes > this.limits.entryBytes || bytes > this.limits.bytes)
           return "error: diff exceeds the bounded continuation cache; use room_state(all=true) to discover changed paths and room_read(diff=true, path=...) for individual files";
         while (this.entries.size >= this.limits.entries || this.bytes + bytes > this.limits.bytes) this.remove(this.entries.values().next().value);
-        const digest = createHash9("sha256").update(text).digest("hex");
+        const digest = createHash11("sha256").update(text2).digest("hex");
         const entry = {
           owner: new WeakRef(owner),
           request,
-          text,
+          text: text2,
           fingerprint,
           digest,
           bytes,
@@ -35464,7 +36166,7 @@ var init_read_diff_cache = __esm({
         entry.timer.unref();
         this.entries.add(entry);
         this.bytes += bytes;
-        return diffPage(text, void 0, digest);
+        return diffPage(text2, void 0, digest);
       }
       page(entry, cursor, fingerprint) {
         if (!this.entries.has(entry)) return DIFF_RESTART;
@@ -36103,9 +36805,9 @@ var init_choice = __esm({
 // packages/room-mcp/src/names.ts
 import fs26 from "node:fs";
 import path22 from "node:path";
-import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID4 } from "node:crypto";
 function nameLeaseFile(commonDir2, roomKey2, name) {
-  return path22.join(commonDir2, "room", "names", `${createHash10("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
+  return path22.join(commonDir2, "room", "names", `${createHash12("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
 }
 function readLease(file) {
   try {
@@ -36705,7 +37407,7 @@ var init_post = __esm({
 // packages/room-mcp/src/policy-store.ts
 import fs28 from "node:fs";
 import path25 from "node:path";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 async function legacyBaseline(dir) {
   const file = path25.join(await gitCommonDir(dir), "room", "sharing", "legacy-baseline.json");
   const choice = await choiceFile(dir);
@@ -36737,7 +37439,7 @@ async function legacyBaseline(dir) {
   });
 }
 async function sharingFile(dir, room, participant) {
-  const hash3 = createHash11("sha256").update(room).update("\0").update(participant).digest("hex");
+  const hash3 = createHash13("sha256").update(room).update("\0").update(participant).digest("hex");
   return path25.join(await gitCommonDir(dir), "room", "sharing", `${hash3}.json`);
 }
 var emptyGrant, levels, shareLevel, sorted, clean, PolicyStore, CeilingSource;
@@ -36908,7 +37610,7 @@ var init_policy_store = __esm({
         return this.update((old) => ({ ...old, disclosed: { level, version: version3 }, updatedAt: Date.now() }), false);
       }
       static retire(dir, room, participant, server) {
-        const hash3 = createHash11("sha256").update(room).update("\0").update(participant).digest("hex");
+        const hash3 = createHash13("sha256").update(room).update("\0").update(participant).digest("hex");
         const file = path25.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash3}.json`);
         fs28.rmSync(file, { force: true });
         const privateGit = worktreeGitDirFromDotGit(dir);
@@ -37093,6 +37795,10 @@ async function adoptLegacyKept(s, rooms, record2, processes) {
 async function autoRetire(s, rooms) {
   const registry2 = await registryForDir(s.dir);
   const probe = rooms.probe.bind(rooms);
+  await registry2.pruneRetired(ROOM_STALE_MS).catch((error2) => {
+    process.stderr.write(`[room] retired record retention: ${error2}
+`);
+  });
   for (const record2 of registry2.list()) {
     if (record2.lead.participant !== s.me.name || record2.room !== s.roomName) continue;
     const processes = { probe, list: rooms.listCwdProcesses, alive: async (w2) => rooms.hasHandle(s, w2) || !processExited(await workerRealState(s.dir, w2, { process: true, probe })) };
@@ -38111,7 +38817,7 @@ function diff3WithinBudget(a, o, b) {
   return true;
 }
 async function gitMergeFile(base, ours, theirs, labels) {
-  const clean3 = (text) => ({ status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] });
+  const clean3 = (text2) => ({ status: "clean", algorithm: "git", text: text2, chunks: [{ ok: text2.split("\n") }], conflicts: [] });
   if (ours === theirs || theirs === base) return clean3(ours);
   if (ours === base) return clean3(theirs);
   const dir = fs31.mkdtempSync(path29.join(os7.tmpdir(), "room-merge-file-"));
@@ -38154,8 +38860,8 @@ function fallback(base, ours, theirs, labels, fallbackReason) {
   }
   const a = ours.split("\n"), o = base.split("\n"), b = theirs.split("\n");
   const edits = Math.max(1, Math.min(128, Math.floor(2e6 / Math.max(1, a.length + o.length + b.length))));
-  const bounded3 = diff3WithinBudget(a, o, b) && diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits });
-  const raw = bounded3 ? diff3Merge(a, o, b) : [{ conflict: { a, o, b, aIndex: 0, oIndex: 0, bIndex: 0 } }];
+  const bounded4 = diff3WithinBudget(a, o, b) && diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits });
+  const raw = bounded4 ? diff3Merge(a, o, b) : [{ conflict: { a, o, b, aIndex: 0, oIndex: 0, bIndex: 0 } }];
   const chunks = [];
   const rendered = [];
   const conflicts = [];
@@ -38163,7 +38869,7 @@ function fallback(base, ours, theirs, labels, fallbackReason) {
   for (const part of raw) {
     if (part.ok) {
       chunks.push({ ok: part.ok });
-      for (const text of part.ok) rendered.push(text);
+      for (const text2 of part.ok) rendered.push(text2);
       line += part.ok.length;
       continue;
     }
@@ -38172,19 +38878,19 @@ function fallback(base, ours, theirs, labels, fallbackReason) {
     chunks.push({ conflict });
     conflicts.push(conflict);
     rendered.push(`<<<<<<< ${labels.ours}`);
-    for (const text of conflict.a) rendered.push(text);
+    for (const text2 of conflict.a) rendered.push(text2);
     rendered.push(`||||||| ${labels.base}`);
-    for (const text of conflict.o) rendered.push(text);
+    for (const text2 of conflict.o) rendered.push(text2);
     rendered.push("=======");
-    for (const text of conflict.b) rendered.push(text);
+    for (const text2 of conflict.b) rendered.push(text2);
     rendered.push(`>>>>>>> ${labels.theirs}`);
     line += conflict.o.length;
   }
   return { status: conflicts.length ? "conflict" : "clean", algorithm: "fallback", fallbackReason, text: rendered.join("\n"), chunks, conflicts };
 }
-function parseGitMerge(text, labels, exitCode) {
-  if (exitCode === 0) return { status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] };
-  const lines2 = text.split("\n");
+function parseGitMerge(text2, labels, exitCode) {
+  if (exitCode === 0) return { status: "clean", algorithm: "git", text: text2, chunks: [{ ok: text2.split("\n") }], conflicts: [] };
+  const lines2 = text2.split("\n");
   const chunks = [];
   const conflicts = [];
   let plain = [];
@@ -38214,7 +38920,7 @@ function parseGitMerge(text, labels, exitCode) {
   }
   flush();
   if (!conflicts.length) throw new Error(`git merge-file exited ${exitCode} without conflict markers`);
-  return { status: "conflict", algorithm: "git", text, chunks, conflicts };
+  return { status: "conflict", algorithm: "git", text: text2, chunks, conflicts };
 }
 var warnedFallback;
 var init_merge = __esm({
@@ -38241,9 +38947,9 @@ function readBoundedHistoricalText(dir, base, rel) {
   }
   const entry = { text: readHistoricalFromGit(dir, base, rel), bytes: 0 };
   historical.set(key2, entry);
-  entry.text.then((text) => {
+  entry.text.then((text2) => {
     if (historical.get(key2) !== entry) return;
-    entry.bytes = text === void 0 ? 0 : Buffer.byteLength(text);
+    entry.bytes = text2 === void 0 ? 0 : Buffer.byteLength(text2);
     historicalBytes += entry.bytes;
     for (const [old, value2] of historical) {
       if (historical.size <= HISTORICAL_ENTRIES && historicalBytes <= HISTORICAL_BYTES) break;
@@ -38256,9 +38962,9 @@ function readBoundedHistoricalText(dir, base, rel) {
   return entry.text;
 }
 async function readHistoricalFromGit(dir, base, rel) {
-  const text = (await readBoundedHistoricalTexts(dir, base, [rel])).get(rel);
-  if (text instanceof HistoricalTextTooLarge) throw text;
-  return text;
+  const text2 = (await readBoundedHistoricalTexts(dir, base, [rel])).get(rel);
+  if (text2 instanceof HistoricalTextTooLarge) throw text2;
+  return text2;
 }
 async function readBoundedHistoricalTexts(dir, base, rels) {
   const info = await gitBlobInfoMany(dir, base, rels);
@@ -38286,9 +38992,9 @@ async function readBoundedHistoricalTexts(dir, base, rels) {
   if (group.length) await flush();
   return out;
 }
-async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize, limit = DISK_TEXT_LIMIT) {
+async function readBoundedCheckoutText(dir, object5, rel, encoding = "utf8", filtered = true, knownSize, limit = DISK_TEXT_LIMIT) {
   const size2 = knownSize ?? await new Promise((resolve5, reject) => {
-    const args2 = ["cat-file", "-s", object4], done = observeGit(args2);
+    const args2 = ["cat-file", "-s", object5], done = observeGit(args2);
     execFile7("git", args2, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
@@ -38302,7 +39008,7 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
   if (size2 === void 0) return void 0;
   if (!Number.isSafeInteger(size2) || size2 < 0 || size2 > limit) throw new HistoricalTextTooLarge(rel);
   return new Promise((resolve5, reject) => {
-    const args2 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object4] : ["cat-file", "-p", object4];
+    const args2 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object5] : ["cat-file", "-p", object5];
     const done = observeGit(args2);
     execFile7("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: limit + 1 }, (error2, stdout, stderr2) => {
       done();
@@ -38515,7 +39221,7 @@ var init_share = __esm({
 // packages/room-mcp/src/kept-publication.ts
 import fs34 from "node:fs";
 import path31 from "node:path";
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash14 } from "node:crypto";
 async function acknowledgeKeptPublication(s, previous, paths, written = [], timeoutMs2 = 5e3, retryNow = false) {
   const required2 = [.../* @__PURE__ */ new Set([...previous?.paths ?? [], ...paths])].sort();
   const publisher = checkoutPublisher(s) ?? s.me.name, head = manifestHeadOf(s.room, publisher);
@@ -38546,7 +39252,7 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
       (async () => {
         const [format, expectedHead] = (await git(s.dir, ["rev-parse", "--show-object-format", "HEAD"])).trim().split("\n");
         if (format !== "sha1" && format !== "sha256") return pending;
-        const hash3 = (bytes2) => createHash12(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
+        const hash3 = (bytes2) => createHash14(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
         const required2 = /* @__PURE__ */ new Map();
         const root = fs34.realpathSync(s.dir);
         const diskHash = async (p) => {
@@ -38554,8 +39260,8 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
           try {
             const safe = containedRepoPath(root, file, { leaf: "read-contained-link" });
             if (!safe.ok) throw new Error("unsafe publication verification path");
-            const text = await readBoundedDiskText(safe.path, "latin1", { root, path: file });
-            return hash3(Buffer.from(text, "latin1"));
+            const text2 = await readBoundedDiskText(safe.path, "latin1", { root, path: file });
+            return hash3(Buffer.from(text2, "latin1"));
           } catch (error2) {
             if (error2.code !== "ENOENT") throw error2;
             return null;
@@ -38580,8 +39286,8 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
           if (entry && (entry.fence !== head.fence || entry.state !== "shared" && (entry.held !== "binary" || !entry.hash))) return pending;
           if (!entry && (!meta2.roomSalt || head.excluded.includes(digestPath(meta2.roomSalt, p)))) return pending;
           if (entry?.state === "shared" && entry.change !== "D") {
-            const text = s.room.overlayText(`${publisher}\0${head.fence}`, p)?.toString();
-            if (text === void 0 || hash3(Buffer.from(text, "utf8")) !== entry.hash) return pending;
+            const text2 = s.room.overlayText(`${publisher}\0${head.fence}`, p)?.toString();
+            if (text2 === void 0 || hash3(Buffer.from(text2, "utf8")) !== entry.hash) return pending;
           }
           const published = entry?.change === "D" ? null : entry?.hash ?? base.get(p)?.hash ?? null;
           if (published !== expected) {
@@ -38819,21 +39525,21 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const committedTexts = /* @__PURE__ */ new Map();
   const gitAt = (sha, relpath, size2) => {
     const key2 = `${sha}:${relpath}`;
-    let text = committedTexts.get(key2);
-    if (!text) {
-      text = readBoundedCheckoutText(caller.dir, key2, relpath, "utf8", true, size2);
-      committedTexts.set(key2, text);
+    let text2 = committedTexts.get(key2);
+    if (!text2) {
+      text2 = readBoundedCheckoutText(caller.dir, key2, relpath, "utf8", true, size2);
+      committedTexts.set(key2, text2);
     }
-    return text;
+    return text2;
   };
   const remoteVersion = async (s, person, p) => {
-    let versions = remoteVersions.get(person);
-    if (!versions) {
-      versions = /* @__PURE__ */ new Map();
-      remoteVersions.set(person, versions);
+    let versions2 = remoteVersions.get(person);
+    if (!versions2) {
+      versions2 = /* @__PURE__ */ new Map();
+      remoteVersions.set(person, versions2);
     }
-    const cached2 = versions.get(p);
-    if (cached2) return cached2;
+    const cached3 = versions2.get(p);
+    if (cached3) return cached3;
     const snap = snapshots.get(person)?.snap;
     let version3 = await versionOf(snap, p, {
       gitAt,
@@ -38843,13 +39549,13 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const blob = carried?.untracked.get(p);
     if (carried && blob && snap) {
       const proven2 = snap.head.base === carried.sha || await descends(carried.sha, snap.head.base);
-      const text = proven2 ? await readBoundedCheckoutText(caller.dir, blob.sha, p, "utf8").catch((error2) => {
+      const text2 = proven2 ? await readBoundedCheckoutText(caller.dir, blob.sha, p, "utf8").catch((error2) => {
         if (error2 instanceof HistoricalTextTooLarge) return error2;
         throw error2;
       }) : void 0;
-      version3 = typeof text === "string" ? { kind: "base", text } : text instanceof HistoricalTextTooLarge ? { kind: "unknown", why: "too-large", detail: "historical text exceeds Room read limit" } : { kind: "unknown", why: "fetch", detail: proven2 ? `${person}'s carried base blob is unavailable` : `${person}'s published base does not follow its carried base` };
+      version3 = typeof text2 === "string" ? { kind: "base", text: text2 } : text2 instanceof HistoricalTextTooLarge ? { kind: "unknown", why: "too-large", detail: "historical text exceeds Room read limit" } : { kind: "unknown", why: "fetch", detail: proven2 ? `${person}'s carried base blob is unavailable` : `${person}'s published base does not follow its carried base` };
     }
-    versions.set(p, version3);
+    versions2.set(p, version3);
     return version3;
   };
   const previewText = async (s, p, person) => {
@@ -38857,8 +39563,8 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : void 0);
     if (!dir) {
       const version3 = await remoteVersion(s, person, p);
-      const text = version3.kind === "text" ? version3.text : version3.kind === "base" ? version3.text ?? null : version3.kind === "deleted" ? null : void 0;
-      return options.encoding === "latin1" && typeof text === "string" ? Buffer.from(text, "utf8").toString("latin1") : text;
+      const text2 = version3.kind === "text" ? version3.text : version3.kind === "base" ? version3.text ?? null : version3.kind === "deleted" ? null : void 0;
+      return options.encoding === "latin1" && typeof text2 === "string" ? Buffer.from(text2, "utf8").toString("latin1") : text2;
     }
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: "allow" })) throw new Error("unsafe preview path: " + p);
     const root = rootOf(dir);
@@ -38941,7 +39647,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const contributors = anchor3 ? allSides.filter((side) => side.person !== anchorName).sort((a, b) => depth(a.person) - depth(b.person) || (workerStates.get(a.person)?.finishedAt ?? 0) - (workerStates.get(b.person)?.finishedAt ?? 0) || ((records.get(a.person)?.tag ?? a.person) < (records.get(b.person)?.tag ?? b.person) ? -1 : (records.get(a.person)?.tag ?? a.person) > (records.get(b.person)?.tag ?? b.person) ? 1 : 0)) : participants;
   const refValues = /* @__PURE__ */ new Map();
   const refValue = async (ref) => {
-    if (!refValues.has(ref)) refValues.set(ref, await git(caller.dir, ["rev-parse", "--verify", ref]).then((text) => text.trim(), () => void 0));
+    if (!refValues.has(ref)) refValues.set(ref, await git(caller.dir, ["rev-parse", "--verify", ref]).then((text2) => text2.trim(), () => void 0));
     return refValues.get(ref);
   };
   const refStamp = (ref) => {
@@ -38976,17 +39682,17 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   if (anchor3) for (const { person, session } of contributors) {
     const relation = relationFor(session.dir, person), record2 = records.get(person);
     if (!relation || !record2 || rootFor(person) !== anchorName) continue;
-    const baseline = await pairBaseline(relation.baseline, void 0, ancestor, descends);
-    if (!baseline) continue;
-    const delivered = await refValue(collectHeadRef(record2.tag, record2.id)) === baseline.sha && (await git(caller.dir, ["log", "-1", "--format=%s", baseline.sha])).trim() === "room: kept collection baseline";
+    const baseline2 = await pairBaseline(relation.baseline, void 0, ancestor, descends);
+    if (!baseline2) continue;
+    const delivered = await refValue(collectHeadRef(record2.tag, record2.id)) === baseline2.sha && (await git(caller.dir, ["log", "-1", "--format=%s", baseline2.sha])).trim() === "room: kept collection baseline";
     const carry = await refValue(carryRef(record2.tag));
-    const inherited = record2.carriedBase === baseline.sha && (carry === void 0 || carry === baseline.sha);
+    const inherited = record2.carriedBase === baseline2.sha && (carry === void 0 || carry === baseline2.sha);
     const parentSnapshot = snapshots.get(relation.lead)?.snap;
     const parentWorker = previewWorker(session, relation.lead);
     const parentHead = relation.lead === caller.me.name ? localHead : parentWorker ? (await git(parentWorker.dir, ["rev-parse", "HEAD"])).trim() : parentSnapshot?.fenceValid && parentSnapshot.head.complete && parentSnapshot.head.fence === parentSnapshot.record?.git?.fence && parentSnapshot.head.base === parentSnapshot.record.git.base ? parentSnapshot.record.git.head : void 0;
-    if (delivered || inherited || !!parentHead && await descends(baseline.sha, parentHead)) {
-      proven.set(person, baseline);
-      if (relation.lead !== caller.me.name && !parentWorker && (delivered || inherited || !!record2.carriedUntracked?.length) && !keptPublicationMatches(session, record2.keptPublication, parentSnapshot, baseline.sha)) {
+    if (delivered || inherited || !!parentHead && await descends(baseline2.sha, parentHead)) {
+      proven.set(person, baseline2);
+      if (relation.lead !== caller.me.name && !parentWorker && (delivered || inherited || !!record2.carriedUntracked?.length) && !keptPublicationMatches(session, record2.keptPublication, parentSnapshot, baseline2.sha)) {
         gaps.push({ kind: "provenance", person: relation.lead, why: `${relation.lead}'s published snapshot has no acknowledged post-baseline scan for ${person}; message its lead without refresh to retry publication` });
       }
     } else gaps.push({ kind: "provenance", person, why: "worker baseline provenance could not be verified" });
@@ -39168,7 +39874,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (!historicalInfo.has(sha)) historicalInfo.set(sha, gitBlobInfoMany(caller.dir, sha, pathSet));
     return historicalInfo.get(sha);
   };
-  const entryAt = async (baseline, p) => baseline?.untracked.get(p)?.sha ?? (await infoAt(baseline?.sha ?? ancestor)).get(p)?.hash ?? null;
+  const entryAt = async (baseline2, p) => baseline2?.untracked.get(p)?.sha ?? (await infoAt(baseline2?.sha ?? ancestor)).get(p)?.hash ?? null;
   const textAt = async (sha, p) => {
     const key2 = sha + ":" + p;
     if (!baseTexts.has(key2)) {
@@ -39183,15 +39889,15 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (!pair) return textAt(ancestor, p);
     if (!pair.untracked.has(p)) return textAt(pair.sha, p);
     const sha = pair.untracked.get(p).sha, key2 = pair.dir + "\0" + sha + "\0" + p;
-    let text = carriedTexts.get(key2);
-    if (!text) {
-      text = readBoundedCheckoutText(pair.dir, sha, p, options.encoding, true, void 0, limit).then((carried) => {
+    let text2 = carriedTexts.get(key2);
+    if (!text2) {
+      text2 = readBoundedCheckoutText(pair.dir, sha, p, options.encoding, true, void 0, limit).then((carried) => {
         if (carried === void 0) throw new MissingBaseBlob(p);
         return carried;
       });
-      carriedTexts.set(key2, text);
+      carriedTexts.set(key2, text2);
     }
-    return text;
+    return text2;
   };
   const pairBaseAt = async (person, p) => {
     const shared = sharedBaselines.get(person);
@@ -39221,19 +39927,19 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   if (!anchor3) {
     const baselines = [];
     for (const { person, session } of allSides) {
-      const baseline = await pairBaseline(relationFor(session.dir, person)?.baseline, void 0, ancestor, descends);
-      if (baseline) baselines.push(baseline);
+      const baseline2 = await pairBaseline(relationFor(session.dir, person)?.baseline, void 0, ancestor, descends);
+      if (baseline2) baselines.push(baseline2);
     }
     if (baselines.length >= 2) for (const p of [...pathSet]) {
       const original = await entryAt(void 0, p);
-      const versions = await Promise.all(baselines.map(async (baseline) => ({ baseline, entry: await entryAt(baseline, p) })));
-      const changed = versions.filter((value2) => value2.entry !== original);
+      const versions2 = await Promise.all(baselines.map(async (baseline2) => ({ baseline: baseline2, entry: await entryAt(baseline2, p) })));
+      const changed = versions2.filter((value2) => value2.entry !== original);
       let inheritedRevert = false;
-      for (const later of versions.filter((value2) => value2.entry === original)) for (const prior of changed) {
+      for (const later of versions2.filter((value2) => value2.entry === original)) for (const prior of changed) {
         if (prior.baseline.sha !== later.baseline.sha && await descends(prior.baseline.sha, later.baseline.sha)) inheritedRevert = true;
       }
       if (new Set(changed.map((value2) => value2.entry)).size < 2 && !inheritedRevert) continue;
-      const workers = (inheritedRevert ? versions : changed).map((value2) => value2.baseline.worker);
+      const workers = (inheritedRevert ? versions2 : changed).map((value2) => value2.baseline.worker);
       const leads2 = [...new Set(workers.map((name) => records.get(name)?.lead.participant).filter(Boolean))];
       gaps.push({ kind: "provenance", person: workers.join(", "), path: p, why: `start from different delivered versions; include ${leads2.join(", ") || "their lead"} in the preview` });
       ignoredNotes.push(`NOT previewed: ${p}: ${workers.join(", ")} start from different delivered versions; include ${leads2.join(", ") || "their lead"} in the preview`);
@@ -39292,9 +39998,9 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   for (const p of paths) {
     await new Promise((resolve5) => setImmediate(resolve5));
     const mine = await previewText(anchor3?.session ?? caller, p, anchorName);
-    const text = mine === void 0 ? await textAt(ancestor, p) : mine;
-    merged.set(p, text);
-    if (text !== await baseAt(anchorBaseline, p)) owners.set(p, [anchorName]);
+    const text2 = mine === void 0 ? await textAt(ancestor, p) : mine;
+    merged.set(p, text2);
+    if (text2 !== await baseAt(anchorBaseline, p)) owners.set(p, [anchorName]);
   }
   const initial = new Map(merged);
   const out = [];
@@ -39329,7 +40035,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
         owners.set(p, [...owners.get(p) ?? [], person]);
         continue;
       }
-      if (mine === null || theirs === null || [b, mine, theirs].some((text) => text?.includes("\0"))) {
+      if (mine === null || theirs === null || [b, mine, theirs].some((text2) => text2?.includes("\0"))) {
         const prior2 = owners.get(p) ?? [caller.me.name];
         conflictingPaths.set(p, [.../* @__PURE__ */ new Set([...conflictingPaths.get(p) ?? [], ...prior2, person])]);
         hardCount++;
@@ -39386,10 +40092,10 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       conflictCount++;
       if (!unresolved) {
         resolvable.push(p);
-        const text = resolvedLines.join("\n") + (resolvedLines.length ? "\n" : "");
-        merged.set(p, text);
+        const text2 = resolvedLines.join("\n") + (resolvedLines.length ? "\n" : "");
+        merged.set(p, text2);
         owners.set(p, [...prior, person]);
-        if (options.resolve === true) resolvedText.set(p, text);
+        if (options.resolve === true) resolvedText.set(p, text2);
       } else hardCount++;
       if (unresolved && b === null) conflicts.push(`${p}: ${andList([...conflictsWith, person])} each created this new file (not in the base) with different contents \u2014 needs a human or a rewrite`);
       else conflicts.push(`${p}${unresolved ? "" : " (resolvable)"}
@@ -40205,8 +40911,8 @@ async function procCwds(pids, uid, read3, since) {
   return cwds;
 }
 async function linuxProcessStart(pid) {
-  linuxBootMs ??= fs38.promises.readFile("/proc/stat", "utf8").then((text) => {
-    const m = /^btime (\d+)$/m.exec(text);
+  linuxBootMs ??= fs38.promises.readFile("/proc/stat", "utf8").then((text2) => {
+    const m = /^btime (\d+)$/m.exec(text2);
     return m ? Number(m[1]) * 1e3 : void 0;
   }, () => void 0);
   const boot = await linuxBootMs;
@@ -40221,8 +40927,8 @@ async function clearPreviewQuarantine(entry) {
   const marked = await fs38.promises.lstat(marker).then(() => true, (error2) => error2.code !== "ENOENT");
   if (!marked) return true;
   const real = await fs38.promises.realpath(entry).catch(() => path35.resolve(entry));
-  const since = await fs38.promises.readFile(marker, "utf8").then((text) => {
-    const v = JSON.parse(text).since;
+  const since = await fs38.promises.readFile(marker, "utf8").then((text2) => {
+    const v = JSON.parse(text2).since;
     return typeof v === "number" ? v : void 0;
   }, () => void 0);
   const cwds = await processCwds(since);
@@ -40258,9 +40964,9 @@ async function touchPreview(entry, cap, now = Date.now()) {
   await fs38.promises.rename(temporary, file);
 }
 async function evictPreviewLru(root, cap, remove) {
-  const keys2 = await fs38.promises.readdir(root).catch(() => []);
+  const keys3 = await fs38.promises.readdir(root).catch(() => []);
   const entries = [];
-  for (const key2 of keys2.filter((name) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name))) {
+  for (const key2 of keys3.filter((name) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name))) {
     const folder = path35.join(root, key2);
     if (!(await fs38.promises.lstat(folder).catch(() => void 0))?.isDirectory()) continue;
     for (const name of await fs38.promises.readdir(folder)) {
@@ -40414,7 +41120,7 @@ __export(files_exports, {
 });
 import { execFile as execFile9, spawn as spawn4 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
-import { createHash as createHash13, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash15, randomUUID as randomUUID6 } from "node:crypto";
 import fs39 from "node:fs";
 import os9 from "node:os";
 import path36 from "node:path";
@@ -40457,8 +41163,8 @@ function handlers2(state) {
     const s = rooms.holding(person, caller);
     const ownDisk = person === s.me.name;
     const request = JSON.stringify([caller.me.name, s.me.name, s.roomName, s.dir, person, typeof a.path === "string" && a.path ? a.path : null]);
-    const cached2 = a.cursor === void 0 ? void 0 : readDiffCache.get(caller, request, a.cursor);
-    if (a.cursor !== void 0 && !cached2) return DIFF_RESTART;
+    const cached3 = a.cursor === void 0 ? void 0 : readDiffCache.get(caller, request, a.cursor);
+    if (a.cursor !== void 0 && !cached3) return DIFF_RESTART;
     for (let attempt = 0; attempt < 2; attempt++) {
       const snap = ownDisk ? void 0 : snapshot(s.room, person, participantsView(s.room, s.awareness, Date.now()));
       const callerSnap = !ownDisk ? snapshot(caller.room, caller.me.name, participantsView(caller.room, caller.awareness, Date.now())) : void 0;
@@ -40467,8 +41173,8 @@ function handlers2(state) {
       const theirBase = worker?.base ?? (ownDisk ? baseFor(s, person) : snap?.head.base ?? baseFor(s, person));
       const note = !worker && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
 ` : "";
-      const label = (text) => `${worker ? WORKTREE_NOTE + "\n" : ""}${note}${text}`;
-      const fingerprint = createHash13("sha256");
+      const label = (text2) => `${worker ? WORKTREE_NOTE + "\n" : ""}${note}${text2}`;
+      const fingerprint = createHash15("sha256");
       const record2 = (...values) => {
         fingerprint.update(JSON.stringify(values));
       };
@@ -40494,9 +41200,9 @@ function handlers2(state) {
         throw error2;
       };
       const one = async (p) => {
-        const gap = (text) => {
-          record2("gap", p, text);
-          return cached2 ? "" : text;
+        const gap = (text2) => {
+          record2("gap", p, text2);
+          return cached3 ? "" : text2;
         };
         let version3;
         try {
@@ -40525,7 +41231,7 @@ function handlers2(state) {
         }
         const live = l === null ? "" : l ?? b;
         record2("file", p, b, live);
-        return cached2 || live === b ? "" : boundedTwoFilesPatch(p, b, live, person);
+        return cached3 || live === b ? "" : boundedTwoFilesPatch(p, b, live, person);
       };
       try {
         let result2;
@@ -40548,7 +41254,7 @@ function handlers2(state) {
         }
         if (current2()) {
           const signature = fingerprint.digest("hex");
-          return cached2 ? readDiffCache.page(cached2, a.cursor, signature) : readDiffCache.start(caller, request, result2, signature);
+          return cached3 ? readDiffCache.page(cached3, a.cursor, signature) : readDiffCache.start(caller, request, result2, signature);
         }
       } catch (error2) {
         if (current2()) throw error2;
@@ -40745,8 +41451,8 @@ ${s.graph.contractCoverageNote}` : ""}`;
           out.unshift(...dropped, ...missingNotes);
           if (skippedNote) out.push(skippedNote);
           if (!complete) out.push(`PARTIAL preview: ${gapLines.join("; ")}; the combined code was NOT fully checked`);
-          for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---
-${text}--- end ${p} ---`);
+          for (const [p, text2] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---
+${text2}--- end ${p} ---`);
           out.push(`final combined tree: ${merged.size} path(s) applied${result2.callerOnly ? ` (plus ${result2.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
           if (anchors.length) out.push(`included ${anchors.join(", ")}`);
           if (noTestsNote) out.push(noTestsNote);
@@ -40991,7 +41697,7 @@ function canonicalPreviewClonePath(cloneDir) {
 }
 async function previewKeyPath(cloneDir, repoDir = cloneDir) {
   const common = await fs39.promises.realpath(await gitCommonDir(repoDir));
-  const key2 = createHash13("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
+  const key2 = createHash15("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
   const root = path36.join(common, "room-preview");
   await rejectPreviewLink(root);
   return path36.join(root, key2);
@@ -41243,7 +41949,7 @@ async function checkoutSettings(dir) {
   }
   const systemAttributes = await systemAttributePaths(dir);
   const relevant = [...values].filter(([key2]) => checkoutConfigKeys.has(key2) || /^filter\..+\.(smudge|clean|process|required)$/.test(key2)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const hash3 = createHash13("sha256").update(JSON.stringify(relevant)).update("\0");
+  const hash3 = createHash15("sha256").update(JSON.stringify(relevant)).update("\0");
   for (const [kind, identity3, file] of [
     ["info", infoAttributes, infoAttributes],
     ["user", userIdentity, userAttributes],
@@ -41502,10 +42208,10 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   return !!stat4;
 }
 function previewCheckKey(ancestor, merged, cmd, modes) {
-  const hash3 = createHash13("sha256").update(ancestor).update("\0").update(cmd);
+  const hash3 = createHash15("sha256").update(ancestor).update("\0").update(cmd);
   for (const rel of [...merged.keys()].sort()) {
-    const text = merged.get(rel);
-    hash3.update("\0").update(rel).update("\0").update(text === null ? "deleted" : `${modes.get(rel) ?? ""}:${text}`);
+    const text2 = merged.get(rel);
+    hash3.update("\0").update(rel).update("\0").update(text2 === null ? "deleted" : `${modes.get(rel) ?? ""}:${text2}`);
   }
   return hash3.digest("hex");
 }
@@ -41514,12 +42220,12 @@ function stoppedPreviewReply(s, key2, cmd) {
   return previous !== void 0 ? { passed: false, text: `refusing repeated preview command: ${JSON.stringify(cmd)} previously hit the time limit on these same inputs; check was not run. Previous stopped result (not current evidence):
 ${previous}` } : void 0;
 }
-function rememberStoppedPreview(s, key2, text) {
+function rememberStoppedPreview(s, key2, text2) {
   let history = stoppedPreviewChecks.get(s);
   if (!history) stoppedPreviewChecks.set(s, history = /* @__PURE__ */ new Map());
   history.delete(key2);
-  history.set(key2, text.length > STOPPED_PREVIEW_TEXT_BYTES ? `${text.slice(0, STOPPED_PREVIEW_TEXT_BYTES)}
-[stopped output truncated]` : text);
+  history.set(key2, text2.length > STOPPED_PREVIEW_TEXT_BYTES ? `${text2.slice(0, STOPPED_PREVIEW_TEXT_BYTES)}
+[stopped output truncated]` : text2);
   while (history.size > STOPPED_PREVIEW_HISTORY) history.delete(history.keys().next().value);
 }
 async function runInMergedTree(s, ancestor, merged, cmd, options = {}) {
@@ -41536,7 +42242,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let quarantined = false;
   let skippedQuarantine = false;
   let release;
-  let cached2 = false;
+  let cached3 = false;
   let reused = false;
   let cacheReady = false;
   let setupMs = 0;
@@ -41546,7 +42252,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let stage = "setup";
   const setupStart = performance4.now();
   let checkStart = 0, checkStartedAt = Date.now();
-  const inputHash = createHash13("sha256").update(ancestor);
+  const inputHash = createHash15("sha256").update(ancestor);
   for (const [rel, value2] of [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     inputHash.update(JSON.stringify([rel, value2, modes.get(rel) ?? 420]));
   }
@@ -41572,8 +42278,8 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
           previewProcesses.getStore().lock = unlock;
         }
       }
-      cached2 = !!release;
-      if (cached2) {
+      cached3 = !!release;
+      if (cached3) {
         dir = cache2;
         try {
           await preparePreviewEntry(s.dir, dir);
@@ -41582,12 +42288,12 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
         } catch (error2) {
           await removePreviewEntry(s.dir, dir, true);
           console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
-          cached2 = false;
+          cached3 = false;
           cacheFailure = true;
           dir = void 0;
         }
       }
-      if (!cached2) {
+      if (!cached3) {
         dir = await fs39.promises.mkdtemp(path36.join(os9.tmpdir(), "room-merge-"));
         dir = await fs39.promises.realpath(dir);
         observe?.baseMaterialized?.();
@@ -41649,7 +42355,7 @@ ${verdict.text}${result2.stopped ? "\nstopped leftover processes from the check"
     const elapsed = () => stage === "setup" ? `setup ${Math.round(performance4.now() - setupStart)}ms` : `check ${Math.round(performance4.now() - checkStart)}ms`;
     if (error2 instanceof PreviewCleanupIncomplete) {
       survivors = true;
-      if (cached2 && dir) {
+      if (cached3 && dir) {
         try {
           await quarantinePreview(dir, `cleanup did not finish within ${error2.graceMs}ms`, checkStartedAt);
           quarantined = true;
@@ -41657,7 +42363,7 @@ ${verdict.text}${result2.stopped ? "\nstopped leftover processes from the check"
           console.warn(`room preview: could not quarantine ${dir}: ${failure instanceof Error ? failure.message : String(failure)}`);
         }
       }
-      const kept = !cached2 ? "" : quarantined ? " and is quarantined: no later check resets, reuses or removes it while any process has its working directory inside it" : " and stays locked by this session until it exits";
+      const kept = !cached3 ? "" : quarantined ? " and is quarantined: no later check resets, reuses or removes it while any process has its working directory inside it" : " and stays locked by this session until it exits";
       const why = error2.reason instanceof PreviewProcessLimit ? `it was stopped at ${error2.reason.limit}, and ` : error2.reason instanceof PreviewCancelled ? "it was cancelled, and " : "";
       return { passed: false, text: `merged-tree ${stage} did not finish: "${cmd}" ${why}process cleanup did not finish within ${error2.graceMs / 1e3}s (${elapsed()}): a process from it is still running or still holds its output open; this is NOT a pass.
 ${evidence}
@@ -41693,7 +42399,7 @@ command completion: ${stage === "setup" ? "not run" : "incomplete"}` };
     previewProcesses.getStore().signal = void 0;
     try {
       if (dir && !survivors) {
-        if (cached2 && cacheReady) {
+        if (cached3 && cacheReady) {
           try {
             await resetPreviewTree(s.dir, dir, ancestor);
           } catch (error2) {
@@ -41702,18 +42408,18 @@ command completion: ${stage === "setup" ? "not run" : "incomplete"}` };
             console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
             if (completed) completed.text += "\nwarning: preview cache abandoned after the check; next preview uses a new cache";
           }
-        } else if (!cached2) await fs39.promises.rm(dir, { recursive: true, force: true });
-        if (cached2 && cacheReady) await touchPreview(dir, previewCapBytes());
+        } else if (!cached3) await fs39.promises.rm(dir, { recursive: true, force: true });
+        if (cached3 && cacheReady) await touchPreview(dir, previewCapBytes());
       }
     } catch (error2) {
       console.warn(`room preview cleanup: ${error2 instanceof Error ? error2.message : String(error2)}`);
       if (completed) completed.text += "\nwarning: preview cache abandoned after the check; next preview uses a new cache";
     } finally {
       if (survivors) {
-        if (!cached2 || quarantined) void release?.().catch(() => void 0);
+        if (!cached3 || quarantined) void release?.().catch(() => void 0);
       } else await release?.();
       if (release) previewProcesses.getStore().lock = void 0;
-      const evict = cached2 || previewCapBytes() === 0;
+      const evict = cached3 || previewCapBytes() === 0;
       const key2 = await previewKeyPath(s.dir).catch(() => void 0);
       if (key2) previewMaintenance((async () => {
         await reclaimOrphanEntries(s.dir);
@@ -41887,8 +42593,8 @@ function generatedPythonEnvironment(root, rel) {
     const config2 = path37.join(dir, "pyvenv.cfg");
     const configStat = fs40.lstatSync(config2);
     if (!configStat.isFile() || configStat.size > 16 * 1024) return false;
-    const text = fs40.readFileSync(config2, "utf8");
-    if (!/^home\s*=\s*\S/m.test(text) || !/^version(?:_info)?\s*=\s*\d+\.\d+/m.test(text)) return false;
+    const text2 = fs40.readFileSync(config2, "utf8");
+    if (!/^home\s*=\s*\S/m.test(text2) || !/^version(?:_info)?\s*=\s*\d+\.\d+/m.test(text2)) return false;
     const directories = /* @__PURE__ */ new Set(["bin", "Scripts", "lib", "Lib", "include", "Include", "share"]);
     const files3 = /* @__PURE__ */ new Set(["pyvenv.cfg", ".gitignore", "CACHEDIR.TAG", ".lock"]);
     for (const name of fs40.readdirSync(dir)) {
@@ -42562,6 +43268,7 @@ __export(worker_registry_exports, {
   admitWorkerEnvironment: () => admitWorkerEnvironment,
   backgroundAtExit: () => backgroundAtExit,
   carriedFrom: () => carriedFrom,
+  carriedSourceToken: () => carriedSourceToken,
   closeRegistryForDir: () => closeRegistryForDir,
   localWorkerBaseline: () => localWorkerBaseline,
   localWorkers: () => localWorkers,
@@ -42573,9 +43280,24 @@ __export(worker_registry_exports, {
 });
 import fs41 from "node:fs";
 import path38 from "node:path";
-import { createHash as createHash14, randomBytes as randomBytes4 } from "node:crypto";
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { createHash as createHash16, randomBytes as randomBytes4 } from "node:crypto";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { performance as performance5 } from "node:perf_hooks";
+function cached2(file, load2, slot = file) {
+  const stat4 = statKey(file);
+  if (stat4 === void 0) {
+    readCache.delete(slot);
+    return void 0;
+  }
+  const hit = readCache.get(slot);
+  if (hit?.key === stat4.key && !hit.racy) return hit.value;
+  const racy = BigInt(Date.now()) * 1000000n - stat4.newest <= RACY_NS;
+  const value2 = load2();
+  readCache.delete(slot);
+  if (readCache.size >= READ_CACHE_MAX) readCache.delete(readCache.keys().next().value);
+  readCache.set(slot, { key: stat4.key, value: value2, racy });
+  return value2;
+}
 function base32(value2, length2) {
   let out = "";
   for (let n = 0; n < length2; n++) {
@@ -42660,12 +43382,15 @@ async function admitWorkerEnvironment(dir, env = process.env, bound) {
   }
 }
 function localWorkerBaseline(dir, participant) {
+  const plus = participant.lastIndexOf("+");
+  if (plus < 1) return void 0;
   let record2;
   try {
-    record2 = registrySnapshotForDir(dir).list().find((r) => r.name === participant && !["retired", "abandoned"].includes(r.phase));
+    record2 = registrySnapshotForDir(dir).reserved(participant.slice(plus + 1));
   } catch {
     return void 0;
   }
+  if (record2 && (record2.name !== participant || ["retired", "abandoned"].includes(record2.phase))) record2 = void 0;
   return record2 && {
     name: record2.name,
     dir: record2.dir,
@@ -42693,8 +43418,17 @@ function localWorkers(dir, keep = () => true) {
 }
 function carriedFrom(dir, participant) {
   const source = localWorkerBaseline(dir, participant);
-  const baseline = workerBaseline(source);
-  return source && baseline ? { baseline, lead: source.lead } : void 0;
+  const baseline2 = workerBaseline(source);
+  return source && baseline2 ? { baseline: baseline2, lead: source.lead } : void 0;
+}
+function carriedSourceToken(dir, participant) {
+  const plus = participant.lastIndexOf("+");
+  if (plus < 1) return "";
+  try {
+    return registrySnapshotForDir(dir).sourceToken(participant.slice(plus + 1));
+  } catch (error2) {
+    return `unavailable:${String(error2)}`;
+  }
 }
 function workerCarried(dir, env = process.env) {
   const id3 = env.ROOM_WORKER_ID;
@@ -42761,7 +43495,7 @@ async function leaseRetry(fn, deadline = performance5.now() + GUARD_WAIT_MS2) {
 function commitExists(commonDir2, oid) {
   if (typeof oid !== "string" || !/^[0-9a-f]{40,64}$/.test(oid)) return false;
   try {
-    execFileSync5("git", ["--git-dir", commonDir2, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
+    execFileSync6("git", ["--git-dir", commonDir2, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -42770,7 +43504,7 @@ function commitExists(commonDir2, oid) {
 function legacySession(dir, oldId, host) {
   if (!oldId) return void 0;
   try {
-    const gitDir = execFileSync5("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    const gitDir = execFileSync6("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     const local = readJson2(path38.join(gitDir, "room-session.json"));
     return local?.worker_id === oldId && local.host === host && typeof local.session_id === "string" ? local.session_id : void 0;
   } catch {
@@ -42827,7 +43561,7 @@ function legacyDisplay(commonDir2) {
 function discoverLegacyWorktrees(commonDir2) {
   let output;
   try {
-    output = execFileSync5("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+    output = execFileSync6("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8" });
   } catch {
     return [];
   }
@@ -42866,7 +43600,7 @@ function discoverLegacyWorktrees(commonDir2) {
   }
   return out;
 }
-var readJson2, files, crockford, id2, synthetic, registries, MAX_PROCESS_REGISTRIES, workerMcpLogFile, resumable, missing, safeId, safeTag, GUARD_WAIT_MS2, GUARD_POLL_MS, guardBusy, pauseForGuard, object3, tokenShape, processShape, runShape, keptPublicationShape, recordShape, reportShape, admittedHost, laterDone, exitShape, LegacySnapshotUnavailable, WorkerRegistry;
+var readJson2, files, READ_CACHE_MAX, RACY_NS, readCache, statKey, readCachedJson, cachedFiles, crockford, id2, synthetic, registries, MAX_PROCESS_REGISTRIES, workerMcpLogFile, resumable, missing, safeId, safeTag, GUARD_WAIT_MS2, GUARD_POLL_MS, guardBusy, pauseForGuard, object4, tokenShape, processShape, runShape, keptPublicationShape, recordShape, reportShape, admittedHost, laterDone, exitShape, LegacySnapshotUnavailable, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
@@ -42899,6 +43633,29 @@ var init_worker_registry = __esm({
         throw e;
       }
     };
+    READ_CACHE_MAX = 4096;
+    RACY_NS = 2000000000n;
+    readCache = /* @__PURE__ */ new Map();
+    statKey = (file) => {
+      try {
+        const s = fs41.statSync(file, { bigint: true });
+        return { key: `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`, newest: s.mtimeNs > s.ctimeNs ? s.mtimeNs : s.ctimeNs };
+      } catch (e) {
+        if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return void 0;
+        throw e;
+      }
+    };
+    readCachedJson = (file) => {
+      let text2;
+      try {
+        text2 = cached2(file, () => fs41.readFileSync(file, "utf8"));
+      } catch (e) {
+        if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return void 0;
+        throw e;
+      }
+      return text2 === void 0 ? void 0 : JSON.parse(text2);
+    };
+    cachedFiles = (dir, suffix) => [...cached2(dir, () => files(dir, suffix), `${dir}\0*${suffix}`) ?? []];
     crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     id2 = () => `w_${base32(BigInt(Date.now()), 10)}${base32(BigInt(`0x${randomBytes4(10).toString("hex")}`), 16)}`;
     synthetic = () => ({ pid: process.pid, startTime: "", executable: "", sessionId: `mcp:${process.pid}`, nonce: randomBytes4(16).toString("hex") });
@@ -42918,13 +43675,13 @@ var init_worker_registry = __esm({
       if (remaining <= 0) throw new Error(`registry guard wait exceeded ${GUARD_WAIT_MS2} ms: ${error2.message}`);
       await new Promise((resolve5) => setTimeout(resolve5, Math.min(GUARD_POLL_MS, remaining)));
     };
-    object3 = (value2) => !!value2 && typeof value2 === "object" && !Array.isArray(value2);
-    tokenShape = (value2) => object3(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string" && typeof value2.sessionId === "string" && typeof value2.nonce === "string";
-    processShape = (value2) => object3(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string";
+    object4 = (value2) => !!value2 && typeof value2 === "object" && !Array.isArray(value2);
+    tokenShape = (value2) => object4(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string" && typeof value2.sessionId === "string" && typeof value2.nonce === "string";
+    processShape = (value2) => object4(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string";
     runShape = (value2) => {
-      if (!object3(value2) || !Number.isSafeInteger(value2.n) || value2.n < 1 || !["fresh", "resume"].includes(value2.mode) || typeof value2.intentAt !== "number" || typeof value2.nonce !== "string" || !Number.isSafeInteger(value2.busFrontier) || !Array.isArray(value2.promptMsgIds) || !tokenShape(value2.launcher) || typeof value2.logStart !== "number") return false;
+      if (!object4(value2) || !Number.isSafeInteger(value2.n) || value2.n < 1 || !["fresh", "resume"].includes(value2.mode) || typeof value2.intentAt !== "number" || typeof value2.nonce !== "string" || !Number.isSafeInteger(value2.busFrontier) || !Array.isArray(value2.promptMsgIds) || !tokenShape(value2.launcher) || typeof value2.logStart !== "number") return false;
       if (value2.launch === void 0) return true;
-      if (!object3(value2.launch)) return false;
+      if (!object4(value2.launch)) return false;
       switch (value2.launch.outcome) {
         case "launched":
           return Number.isSafeInteger(value2.launch.pid) && (value2.launch.process === void 0 || processShape(value2.launch.process));
@@ -42938,12 +43695,12 @@ var init_worker_registry = __esm({
           return false;
       }
     };
-    keptPublicationShape = (value2) => object3(value2) && typeof value2.pending === "boolean" && Array.isArray(value2.paths) && value2.paths.length <= 2e3 && value2.paths.every((p) => typeof p === "string") && value2.paths.reduce((bytes, p) => bytes + Buffer.byteLength(p), 0) <= 128 * 1024 && (value2.overflow === void 0 || typeof value2.overflow === "boolean") && (value2.base === void 0 || typeof value2.base === "string" && /^[0-9a-f]{40,64}$/.test(value2.base)) && (value2.ack === void 0 || object3(value2.ack) && typeof value2.ack.publisher === "string" && typeof value2.ack.sessionId === "string" && typeof value2.ack.fence === "string" && Number.isSafeInteger(value2.ack.rev) && Number(value2.ack.rev) >= 0 && (value2.ack.roomSalt === void 0 || typeof value2.ack.roomSalt === "string" && /^[a-f0-9]{64}$/i.test(value2.ack.roomSalt)));
-    recordShape = (value2, id3) => object3(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object3(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object3(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && (value2.logFile === void 0 || typeof value2.logFile === "string") && object3(value2.prep) && typeof value2.prep.step === "string" && (value2.keptPublication === void 0 || keptPublicationShape(value2.keptPublication)) && object3(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
-    reportShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && (value2.hostProcess === void 0 || value2.hostProcess === null || processShape(value2.hostProcess)) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object3(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed) && (value2.done.k === void 0 || Number.isSafeInteger(value2.done.k) && value2.done.k >= 1));
+    keptPublicationShape = (value2) => object4(value2) && typeof value2.pending === "boolean" && Array.isArray(value2.paths) && value2.paths.length <= 2e3 && value2.paths.every((p) => typeof p === "string") && value2.paths.reduce((bytes, p) => bytes + Buffer.byteLength(p), 0) <= 128 * 1024 && (value2.overflow === void 0 || typeof value2.overflow === "boolean") && (value2.base === void 0 || typeof value2.base === "string" && /^[0-9a-f]{40,64}$/.test(value2.base)) && (value2.ack === void 0 || object4(value2.ack) && typeof value2.ack.publisher === "string" && typeof value2.ack.sessionId === "string" && typeof value2.ack.fence === "string" && Number.isSafeInteger(value2.ack.rev) && Number(value2.ack.rev) >= 0 && (value2.ack.roomSalt === void 0 || typeof value2.ack.roomSalt === "string" && /^[a-f0-9]{64}$/i.test(value2.ack.roomSalt)));
+    recordShape = (value2, id3) => object4(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object4(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object4(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && (value2.logFile === void 0 || typeof value2.logFile === "string") && object4(value2.prep) && typeof value2.prep.step === "string" && (value2.keptPublication === void 0 || keptPublicationShape(value2.keptPublication)) && object4(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
+    reportShape = (value2) => object4(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && (value2.hostProcess === void 0 || value2.hostProcess === null || processShape(value2.hostProcess)) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object4(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed) && (value2.done.k === void 0 || Number.isSafeInteger(value2.done.k) && value2.done.k >= 1));
     admittedHost = (report) => report.hostProcess !== void 0 ? report.hostProcess ?? void 0 : report.chain[1];
     laterDone = (a, b) => (a.k ?? 1) !== (b.k ?? 1) ? (a.k ?? 1) > (b.k ?? 1) : a.at >= b.at;
-    exitShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && (value2.code === null || Number.isSafeInteger(value2.code)) && typeof value2.at === "number" && typeof value2.witnessed === "boolean" && (value2.signal === void 0 || typeof value2.signal === "string");
+    exitShape = (value2) => object4(value2) && Number.isSafeInteger(value2.run) && (value2.code === null || Number.isSafeInteger(value2.code)) && typeof value2.at === "number" && typeof value2.witnessed === "boolean" && (value2.signal === void 0 || typeof value2.signal === "string");
     LegacySnapshotUnavailable = class extends Error {
     };
     WorkerRegistry = class _WorkerRegistry {
@@ -43095,7 +43852,7 @@ var init_worker_registry = __esm({
         return path38.join(this.commonDir, "room", "sessions", sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims");
       }
       idleClaimsFile(roomKey2, sessionId, idleEpoch) {
-        const key2 = createHash14("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
+        const key2 = createHash16("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
         return path38.join(this.idleClaimsDir(sessionId), `${key2}.json`);
       }
       pendingIdleClaims(roomKey2, sessionId, idleEpoch, participant) {
@@ -43182,7 +43939,7 @@ var init_worker_registry = __esm({
       read(id3) {
         const file = this.workerFile(id3);
         try {
-          const record2 = readJson2(file);
+          const record2 = readCachedJson(file);
           if (record2?.keptPublication !== void 0 && !keptPublicationShape(record2.keptPublication))
             record2.keptPublication = { paths: [], pending: true, overflow: true };
           if (record2 && !recordShape(record2, id3)) {
@@ -43196,7 +43953,7 @@ var init_worker_registry = __esm({
         }
       }
       list() {
-        return files(path38.join(this.root, "workers"), ".json").flatMap((file) => {
+        return cachedFiles(path38.join(this.root, "workers"), ".json").flatMap((file) => {
           const id3 = path38.basename(file, ".json");
           if (!safeId(id3)) {
             this.quarantine(file, "invalid worker filename");
@@ -43209,9 +43966,18 @@ var init_worker_registry = __esm({
       /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
       reserved(tag) {
         if (!safeTag(tag)) return void 0;
-        const reservation = readJson2(this.tagFile(tag));
+        const reservation = readCachedJson(this.tagFile(tag));
         const record2 = reservation?.id ? this.read(reservation.id) : void 0;
         return record2?.tag === tag ? record2 : void 0;
+      }
+      /** The stat keys behind `reserved(tag)` (see carriedSourceToken). */
+      sourceToken(tag) {
+        if (!safeTag(tag)) return "";
+        const tagFile = this.tagFile(tag);
+        const reservation = statKey(tagFile);
+        const id3 = reservation && readCachedJson(tagFile)?.id;
+        const record2 = id3 && safeId(id3) ? statKey(this.workerFile(id3)) : void 0;
+        return `${reservation?.key ?? "-"}|${id3 ?? ""}|${record2?.key ?? "-"}`;
       }
       reservedByTagOrName(tagOrName) {
         const direct = this.reserved(tagOrName);
@@ -43442,7 +44208,7 @@ var init_worker_registry = __esm({
           this.heldOperations.set(id3, op);
           return true;
         }
-        const existing = this.readFact(file, (value2) => object3(value2) && typeof value2.op === "string" && tokenShape(value2.holder) && typeof value2.at === "number");
+        const existing = this.readFact(file, (value2) => object4(value2) && typeof value2.op === "string" && tokenShape(value2.holder) && typeof value2.at === "number");
         if (existing?.holder.nonce === this.identity.nonce) {
           if (existing.op === "discard" && op === "stop" && this.heldOperations.get(id3) === "discard") return false;
           throw new Error(`worker operation lease held by another call: ${id3}`);
@@ -43458,7 +44224,7 @@ var init_worker_registry = __esm({
       }
       async withCollectLease(worktree, work) {
         const canonical = fs41.realpathSync(worktree);
-        const key2 = createHash14("sha256").update(canonical).digest("hex");
+        const key2 = createHash16("sha256").update(canonical).digest("hex");
         const file = path38.join(this.root, "collect", `${key2}.json`);
         const deadline = performance5.now() + GUARD_WAIT_MS2;
         for (; ; ) {
@@ -43635,6 +44401,64 @@ var init_worker_registry = __esm({
           ...facts
         };
       }
+      /**
+       * Retention: remove retired and abandoned records older than `maxAgeMs` (their room archive entry is the durable
+       * copy), with their run facts, adoption and the tag reservation that still names them. A record whose kept
+       * worktree still exists, or whose checkout a live record borrows, stays. Nothing is removed before migration ends.
+       */
+      async pruneRetired(maxAgeMs) {
+        if (!readJson2(path38.join(this.root, "migration.json"))?.done) return [];
+        const ended = (record2) => record2.phase === "retired" || record2.phase === "abandoned";
+        const borrowers = (records2) => new Set(records2.filter((record2) => !ended(record2)).flatMap((record2) => [record2.sharedWith, this.worktreeOwner(record2)?.id]).filter(Boolean));
+        const expiredAt = (record2, borrowed) => {
+          if (!ended(record2) || borrowed.has(record2.id)) return void 0;
+          if (record2.keptWorktree && fs41.existsSync(record2.keptWorktree)) return void 0;
+          let at = record2.phase === "retired" ? record2.archive?.retiredAt : void 0;
+          if (at === void 0) try {
+            at = fs41.statSync(this.workerFile(record2.id)).mtimeMs;
+          } catch {
+            return void 0;
+          }
+          return this.now() - at >= maxAgeMs ? at : void 0;
+        };
+        const records = this.list(), removed = [];
+        const snapshotBorrowed = borrowers(records);
+        for (const candidate of records) {
+          if (expiredAt(candidate, snapshotBorrowed) === void 0 || this.operationInProgress(candidate.id)) continue;
+          try {
+            if (!await this.beginOperation(candidate.id, "prune")) continue;
+          } catch {
+            continue;
+          }
+          try {
+            const record2 = this.read(candidate.id);
+            const at = record2 && expiredAt(record2, borrowers(this.list()));
+            if (!record2 || at === void 0) continue;
+            const gone = await guarded2(this.opFile(record2.id), () => {
+              const op = readJson2(this.opFile(record2.id));
+              if (op?.op !== "prune" || op.holder?.nonce !== this.identity.nonce) return false;
+              const current2 = this.read(record2.id);
+              if (current2?.seq !== record2.seq || current2.phase !== record2.phase) return false;
+              fs41.rmSync(this.workerFile(record2.id), { force: true });
+              return true;
+            });
+            if (!gone) continue;
+            await guarded2(this.tagFile(record2.tag), () => {
+              if (readJson2(this.tagFile(record2.tag))?.id === record2.id) fs41.rmSync(this.tagFile(record2.tag), { force: true });
+            }).catch((error2) => process.stderr.write(`[room] worker record ${record2.id} removed; its tag reservation stays: ${error2}
+`));
+            fs41.rmSync(path38.join(this.root, "runs", record2.id), { recursive: true, force: true });
+            fs41.rmSync(this.adoptionFile(record2.id), { force: true });
+            process.stderr.write(`[room] removed ${record2.phase} worker record ${record2.tag} (${record2.id}) from ${new Date(at).toISOString()}: older than the room's ${Math.round(maxAgeMs / 864e5)}-day expiry
+`);
+            removed.push(record2);
+          } finally {
+            await this.finishOperation(candidate.id);
+          }
+        }
+        if (removed.length) this.changed();
+        return removed;
+      }
       /** Retirement step 4: a room's projector finished its cleanup; the last room makes the record `retired`. */
       async finishCleanup(id3, roomKey2) {
         const current2 = this.read(id3);
@@ -43689,7 +44513,7 @@ var init_worker_registry = __esm({
       /** Store the hash before linking a stable patch; replay validates the published bytes. */
       async recordDiscardPatch(id3, bytes) {
         const file = path38.join(this.root, "patches", `${id3}.patch`);
-        const sha256 = createHash14("sha256").update(bytes).digest("hex");
+        const sha256 = createHash16("sha256").update(bytes).digest("hex");
         const record2 = this.read(id3);
         if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
         if (record2.discard.patch && record2.discard.patch.path !== file) throw new Error("discard patch path changed");
@@ -43707,7 +44531,7 @@ var init_worker_registry = __esm({
           if (error2.code !== "ENOENT") throw error2;
         }
         if (existing) {
-          if (existing.isFile() && createHash14("sha256").update(fs41.readFileSync(file)).digest("hex") === sha256) return file;
+          if (existing.isFile() && createHash16("sha256").update(fs41.readFileSync(file)).digest("hex") === sha256) return file;
           this.quarantine(file, "discard patch hash mismatch");
         }
         const scratch = path38.join(this.root, "patches", `${id3}.${randomBytes4(8).toString("hex")}.tmp`);
@@ -43827,7 +44651,7 @@ var init_worker_registry = __esm({
           if (published) {
             const expected = path38.join(this.root, "patches", `${id3}.patch`);
             if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-            const valid = fs41.existsSync(expected) && fs41.lstatSync(expected).isFile() && createHash14("sha256").update(fs41.readFileSync(expected)).digest("hex") === published.sha256;
+            const valid = fs41.existsSync(expected) && fs41.lstatSync(expected).isFile() && createHash16("sha256").update(fs41.readFileSync(expected)).digest("hex") === published.sha256;
             if (!valid) {
               if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
               await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
@@ -43896,7 +44720,7 @@ var init_worker_registry = __esm({
         if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) return;
         const leadDir = path38.dirname(path38.dirname(path38.dirname(record2.dir)));
         if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
-        const run2 = (...args2) => execFileSync5("git", ["--git-dir", this.commonDir, ...args2], { encoding: "utf8" }).trim();
+        const run2 = (...args2) => execFileSync6("git", ["--git-dir", this.commonDir, ...args2], { encoding: "utf8" }).trim();
         if (prep.created === true && fs41.existsSync(record2.dir)) {
           const listing = run2("worktree", "list", "--porcelain");
           const canonical = fs41.realpathSync(record2.dir);
@@ -43947,7 +44771,7 @@ var init_worker_registry = __esm({
           const run2 = record2.runs.at(-1);
           if (!run2) continue;
           const hadOp = fs41.existsSync(this.opFile(record2.id));
-          const op = this.readFact(this.opFile(record2.id), (value2) => object3(value2) && tokenShape(value2.holder));
+          const op = this.readFact(this.opFile(record2.id), (value2) => object4(value2) && tokenShape(value2.holder));
           if (hadOp && !op) continue;
           if (op && this.alive(op.holder) === "dead") await leaseRetry(() => recover(this.opFile(record2.id), () => true));
           const report = this.reports(record2.id).find((value2) => value2.run === run2.n && value2.nonce === run2.nonce);
@@ -44143,9 +44967,9 @@ function symbolCost(path60, symbols) {
   }
   return { symbols: count, bytes };
 }
-async function consumesSymbol(consumer, text, provider, symbol, known) {
-  if (!isSourcePath(consumer) || text.length > MAX_BYTES) return false;
-  const [parsed] = await parseInWorker(consumer, [text]);
+async function consumesSymbol(consumer, text2, provider, symbol, known) {
+  if (!isSourcePath(consumer) || text2.length > MAX_BYTES) return false;
+  const [parsed] = await parseInWorker(consumer, [text2]);
   if (!parsed) return false;
   const wanted = bareSymbol(symbol);
   if (![...parsed.refs, ...parsed.ownRefs].some((ref) => bareSymbol(ref) === wanted)) return false;
@@ -44176,10 +45000,10 @@ function touchedPaths(events, root, known) {
   }
   return paths;
 }
-function hashOf(text) {
+function hashOf(text2) {
   let h = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
+  for (let i = 0; i < text2.length; i++) {
+    h ^= text2.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
@@ -44369,14 +45193,14 @@ var init_graph_index = __esm({
         }
         const read3 = readBoundedHistoricalTexts(this.dir, base, batch);
         for (const p of batch) {
-          const text = read3.then((texts) => {
+          const text2 = read3.then((texts) => {
             const value2 = texts.get(p);
             if (value2 instanceof HistoricalTextTooLarge) throw value2;
             return value2;
           }, () => readBoundedHistoricalText(this.dir, base, p));
-          text.catch(() => {
+          text2.catch(() => {
           });
-          this.baseTexts.set(p, text);
+          this.baseTexts.set(p, text2);
         }
         return this.baseTexts.get(path60);
       }
@@ -44788,8 +45612,8 @@ var init_graph_index = __esm({
           return version4.kind === "text" && version4.entry.hash ? { text: version4.text, source: { kind: "entry", person, fence: peer.head.fence, hash: version4.entry.hash } } : void 0;
         }
         if (!mine) {
-          const text = await this.graphText(this.base, path60);
-          return text === void 0 ? void 0 : { text, source: { kind: "base", base: this.base } };
+          const text2 = await this.graphText(this.base, path60);
+          return text2 === void 0 ? void 0 : { text: text2, source: { kind: "base", base: this.base } };
         }
         const version3 = await versionOf(mine, path60, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) });
         return version3.kind === "base" && version3.text !== void 0 ? { text: version3.text, source: { kind: "base", base: mine.head.base } } : void 0;
@@ -44804,8 +45628,8 @@ var init_graph_index = __esm({
       }
       /** The baseline read for a deletion may include a worker's carried, untracked blob. */
       deletionBaseline(path60) {
-        const baseline = carriedFrom(this.dir, this.me)?.baseline;
-        return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path60)?.sha, baseline?.carriedCommit ?? false]);
+        const baseline2 = carriedFrom(this.dir, this.me)?.baseline;
+        return JSON.stringify([baseline2?.sha ?? this.base, baseline2?.untracked.get(path60)?.sha, baseline2?.carriedCommit ?? false]);
       }
       entryAuthorized(person, path60, entry) {
         const head = this.room.manifestHead.get(person);
@@ -44892,8 +45716,8 @@ var init_graph_index = __esm({
         return bytes;
       }
       priority(path60) {
-        const cached2 = this.priorityCache.get(path60);
-        if (cached2 !== void 0) return cached2;
+        const cached3 = this.priorityCache.get(path60);
+        if (cached3 !== void 0) return cached3;
         const head = this.room.manifestHead.get(this.me);
         const claims = this.priorityClaimPaths ??= this.room.openClaims().map((claim2) => claim2.path);
         const rank2 = head && this.room.manifest.get(manifestKey(this.me, head.fence))?.has(path60) ? 0 : claims.some((prefix2) => containsPath(prefix2, path60)) ? 1 : 2;
@@ -45031,9 +45855,9 @@ var init_graph_index = __esm({
         this.syncRetainedCost(path60);
         if (existed) this.changedResolution();
       }
-      setGraph(path60, text) {
+      setGraph(path60, text2) {
         const before = JSON.stringify(this.graph.symbolsOf(path60));
-        this.graph.set(path60, text);
+        this.graph.set(path60, text2);
         this.graphRevision++;
         if (JSON.stringify(this.graph.symbolsOf(path60)) !== before) this.changedResolution();
       }
@@ -45112,11 +45936,11 @@ var init_graph_index = __esm({
       async runRefreshOnce(path60) {
         if (!this.stopped) {
           const revision = this.revisions.get(path60), generation = this.generation;
-          const text = await this.textFor(path60);
+          const text2 = await this.textFor(path60);
           const publicationSource = snapshotPath(this.room, this.me, [], path60);
           const publication = await this.publicationTextFor(path60);
           const publicText = publication?.text;
-          const heldBy = text === void 0 && this.ownTextAuthorized(path60) ? [...this.room.manifestHead.keys()].filter((person) => {
+          const heldBy = text2 === void 0 && this.ownTextAuthorized(path60) ? [...this.room.manifestHead.keys()].filter((person) => {
             if (person === this.me) return false;
             const fence = this.room.manifestHead.get(person)?.fence;
             if (!fence) return false;
@@ -45130,17 +45954,17 @@ var init_graph_index = __esm({
           const ownFileUnavailable = myEntry?.state === "shared" && !mineDeleted && mine === void 0;
           const own2 = myEntry ? carriedFrom(this.dir, this.me)?.baseline : void 0;
           const read3 = (sha, file) => this.historicalText(sha, file);
-          const baseRead = mine !== void 0 || mineDeleted ? await (own2?.untracked.has(path60) ? readBoundedCheckoutText(own2.dir, own2.untracked.get(path60).sha, path60).then((text2) => {
-            if (text2 === void 0) throw new Error(`carried baseline blob ${own2.untracked.get(path60).sha} for ${path60} is unavailable`);
-            return text2;
+          const baseRead = mine !== void 0 || mineDeleted ? await (own2?.untracked.has(path60) ? readBoundedCheckoutText(own2.dir, own2.untracked.get(path60).sha, path60).then((text3) => {
+            if (text3 === void 0) throw new Error(`carried baseline blob ${own2.untracked.get(path60).sha} for ${path60} is unavailable`);
+            return text3;
           }) : read3(own2?.sha ?? this.base, path60)).then(
-            (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
+            (text3) => text3 === void 0 ? { kind: "absent" } : { kind: "available", text: text3 },
             (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
           ) : void 0;
           const baseText = ownFileUnavailable ? void 0 : baseRead?.kind === "available" ? baseRead.text : "";
           const [parsed, publicParsed, baseParsed, emptyParsed] = await this.parser.parse(
             path60,
-            [text, publicText, baseText, ""].map((value2) => value2 !== void 0 && value2.length <= MAX_BYTES ? value2 : void 0)
+            [text2, publicText, baseText, ""].map((value2) => value2 !== void 0 && value2.length <= MAX_BYTES ? value2 : void 0)
           );
           const symbols = parsed ? {
             defs: parsed.defs.map((definition) => definition.name),
@@ -45164,12 +45988,12 @@ var init_graph_index = __esm({
             return revision === this.revisions.get(path60);
           }
           this.uncoveredPaths.delete(path60);
-          if (!symbols || text === void 0) {
+          if (!symbols || text2 === void 0) {
             this.cache.delete(path60);
             this.removeGraph(path60);
           } else {
             this.cache.set(path60, symbols);
-            this.setGraph(path60, text);
+            this.setGraph(path60, text2);
           }
           if (publicText === void 0 || publicText.length > MAX_BYTES) {
             this.publishedCache.delete(path60);
@@ -45425,16 +46249,16 @@ function serverKey(server) {
   }
 }
 function load(file) {
-  let text;
+  let text2;
   try {
-    text = fs43.readFileSync(file, "utf8");
+    text2 = fs43.readFileSync(file, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return {};
     throw unreadable(file, e);
   }
   let value2;
   try {
-    value2 = JSON.parse(text);
+    value2 = JSON.parse(text2);
   } catch (e) {
     throw unreadable(file, e);
   }
@@ -45472,9 +46296,9 @@ var init_credentials = __esm({
 // packages/room-mcp/src/publisher-lease.ts
 import fs44 from "node:fs";
 import path40 from "node:path";
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash17 } from "node:crypto";
 function publisherLeaseFile(commonDir2, worktree) {
-  return path40.join(commonDir2, "room", "publishers", `${createHash15("sha256").update(worktree).digest("hex")}.json`);
+  return path40.join(commonDir2, "room", "publishers", `${createHash17("sha256").update(worktree).digest("hex")}.json`);
 }
 async function guarded3(fn) {
   const deadline = performance.now() + GUARD_WAIT_MS3;
@@ -46371,15 +47195,15 @@ var init_bridge = __esm({
 });
 
 // packages/room-mcp/src/session.ts
-import { existsSync as existsSync2, readFileSync, readdirSync, statSync } from "node:fs";
-import { createHash as createHash16 } from "node:crypto";
-import { execFileSync as execFileSync6 } from "node:child_process";
-import { basename as basename3, dirname as dirname3, join as join3, resolve as resolve3 } from "node:path";
+import { existsSync as existsSync3, readFileSync as readFileSync2, readdirSync, statSync } from "node:fs";
+import { createHash as createHash18 } from "node:crypto";
+import { execFileSync as execFileSync7 } from "node:child_process";
+import { basename as basename3, dirname as dirname3, join as join4, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 function findLocalViewer() {
   const here = dirname3(fileURLToPath3(import.meta.url));
   for (const file of [resolve3(here, "..", "web", "viewer.html"), resolve3(here, "..", "..", "web", "dist", "viewer.html")]) {
-    if (existsSync2(file)) return file;
+    if (existsSync3(file)) return file;
   }
   return void 0;
 }
@@ -46390,12 +47214,12 @@ function localBrowserLink(roomUrl, name, view, viewerFile = findLocalViewer(), w
 }
 function sessionDirectory(commonDir2, sessionId) {
   if (!sessionId) throw new Error("session ID is required");
-  const sid = createHash16("sha256").update(sessionId).digest("hex").slice(0, 16);
-  return join3(commonDir2, "room", "sessions", sid);
+  const sid = createHash18("sha256").update(sessionId).digest("hex").slice(0, 16);
+  return join4(commonDir2, "room", "sessions", sid);
 }
 function readSessionFile(commonDir2, sessionId, name) {
   try {
-    return JSON.parse(readFileSync(join3(sessionDirectory(commonDir2, sessionId), name), "utf8"));
+    return JSON.parse(readFileSync2(join4(sessionDirectory(commonDir2, sessionId), name), "utf8"));
   } catch (e) {
     if (e.code === "ENOENT") return void 0;
     throw e;
@@ -46406,7 +47230,7 @@ function readSessionRecord(commonDir2, sessionId) {
   return record2?.session_id === sessionId ? record2 : void 0;
 }
 function sessionRecords(commonDir2) {
-  const root = join3(commonDir2, "room", "sessions");
+  const root = join4(commonDir2, "room", "sessions");
   let entries;
   try {
     entries = readdirSync(root);
@@ -46417,8 +47241,8 @@ function sessionRecords(commonDir2) {
   const records = [];
   for (const entry of entries) {
     try {
-      const record2 = JSON.parse(readFileSync(join3(root, entry, "session.json"), "utf8"));
-      if (record2?.session_id && sessionDirectory(commonDir2, record2.session_id) === join3(root, entry)) records.push(record2);
+      const record2 = JSON.parse(readFileSync2(join4(root, entry, "session.json"), "utf8"));
+      if (record2?.session_id && sessionDirectory(commonDir2, record2.session_id) === join4(root, entry)) records.push(record2);
     } catch (e) {
       if (e instanceof SyntaxError || ["ENOENT", "ENOTDIR"].includes(e.code ?? "")) continue;
       throw e;
@@ -46435,14 +47259,14 @@ function sameProcess(a, b) {
 }
 function defaultCommonDir(cwd) {
   try {
-    return resolve3(cwd, execFileSync6("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+    return resolve3(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
   } catch {
     return void 0;
   }
 }
 function parentCommandLine() {
   try {
-    return execFileSync6("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return "";
   }
@@ -46475,12 +47299,11 @@ function codexArguments(parent, commandLine) {
   }
   return void 0;
 }
-function admitCodexThread(id3, log2) {
+function admitCodexThread(id3) {
   if (!/^[A-Za-z0-9-]{1,128}$/.test(id3)) return;
   if (!codexThreadId) codexThreadId = id3;
-  else if (id3 !== codexThreadId && !codexThreadConflictsLogged.has(id3) && codexThreadConflictsLogged.size < 32) {
-    codexThreadConflictsLogged.add(id3);
-    log2?.(`ignoring Codex thread ${id3}; this MCP is bound to ${codexThreadId}`);
+  else if (id3 !== codexThreadId) {
+    throw new Error("Room cannot share one MCP process across Codex chats (mcp_connection_sharing + mcp_2026_07_28); disable mcp_connection_sharing for Room, or wait for a Room release that supports pooling.");
   }
 }
 function admittedCodexThread() {
@@ -46714,27 +47537,95 @@ function applySessionPolicy(daemon, policy) {
   revokeLeadProjections(daemon.roomDoc, daemon.name, daemon.fence, policy);
   daemon.applyInputs({ ...daemon.inputs, policy });
 }
+async function discoverCompatibility(server, dir, localKey, log2) {
+  const url = new URL(server);
+  const common = await realGitCommonDir(dir);
+  const identity3 = localKey ? `local:${common}` : url.origin;
+  const floor2 = compatibilityFloor(common, identity3, localKey ? createHash18("sha256").update(localKey).digest("hex") : void 0);
+  let health;
+  if (localKey) health = await relayHealth(Number(url.port), localKey);
+  else try {
+    const response = await serverFetch(`${httpOf2(server)}/health`, { timeoutMs: 2e4, retry: false, redirect: "manual" }, log2);
+    if (!response.ok) throw new RoomdError(`Room server compatibility discovery failed (HTTP ${response.status}); check the configured origin and retry`, 2);
+    const reader = response.body?.getReader();
+    if (!reader) throw new RoomdError("Room server compatibility discovery returned no body", 2);
+    const chunks = [];
+    let bytes = 0;
+    try {
+      for (; ; ) {
+        const next = await reader.read();
+        if (next.done) break;
+        bytes += next.value.byteLength;
+        if (bytes > 16 * 1024) throw new Error("Room server health response exceeds 16 KiB");
+        chunks.push(next.value);
+      }
+      try {
+        health = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        throw new RoomdError("Room server compatibility discovery returned malformed JSON; update the server", 2);
+      }
+    } finally {
+      await reader.cancel().catch(() => {
+      });
+    }
+  } catch {
+    health = void 0;
+  }
+  let profile;
+  try {
+    profile = compatibilityFromHealth(health, floor2.learned());
+  } catch (error2) {
+    throw new RoomdError(error2 instanceof Error ? error2.message : String(error2), 2);
+  }
+  if (!profile.legacy) negotiatingOrigins.add(server);
+  else negotiatingOrigins.delete(server);
+  return { ...profile, remember: () => {
+    if (!profile.legacy) floor2.remember();
+  } };
+}
 async function startAutoTaggedRoomd(options, explicitTag) {
   assertValidParticipantName(options.name);
   if (options.owner) assertValidParticipantName(options.owner);
   if (options.label) assertValidParticipantName(options.label);
   if (explicitTag) assertValidParticipantName(explicitTag);
   const owner = options.owner ?? (explicitTag && options.name.endsWith(`+${explicitTag}`) ? options.name.slice(0, -explicitTag.length - 1) : options.name);
-  const doc = new Doc2();
+  const binding = createSessionBinding(options.dir);
+  const sessionId = options.sessionId ?? binding.id();
   const url = new URL(options.room);
   const encodedRoom = url.pathname.split("/").pop();
   url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/"));
-  const probe = await timed("connect", () => options.providerFactory ? options.providerFactory(url.toString().replace(/\/$/, ""), encodedRoom, doc) : new WebsocketProvider(url.toString().replace(/\/$/, ""), encodedRoom, doc, {
-    WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
+  const server = url.toString().replace(/\/$/, "");
+  const compatibility = options.providerFactory ? void 0 : options.compatibility ?? await discoverCompatibility(server, options.dir, options.localKey, options.log);
+  let selected;
+  let compatibilityRefusal;
+  let currentProvider;
+  const negotiation = compatibility && !compatibility.legacy ? {
+    offer: CLIENT_COMPAT,
+    sessionId,
+    onSelection: (_reply) => {
+      compatibility.remember();
+      compatibilityRefusal = void 0;
+    },
+    onRefusal: (text2) => {
+      compatibilityRefusal = text2;
+      if (currentProvider) currentProvider.shouldConnect = false;
+    }
+  } : void 0;
+  if (compatibility?.legacy) {
+    const baseline2 = selectContract(CURRENT_COMPAT, LEGACY_COMPAT, { activeSchema: 2 });
+    if (baseline2.ok) selected = { ...baseline2.selection, legacy: true };
+  }
+  const doc = new Doc2();
+  const probe = await timed("connect", () => options.providerFactory ? options.providerFactory(server, encodedRoom, doc) : new WebsocketProvider(server, encodedRoom, doc, {
+    WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, negotiation }),
     ...roomConnection(doc)
   }));
+  currentProvider = probe;
   const closeProbe = () => {
     probe.destroy();
     probe.awareness.destroy();
     doc.destroy();
   };
-  const binding = createSessionBinding(options.dir);
-  const sessionId = options.sessionId ?? binding.id();
   const boundAtJoin = binding.bound()?.id;
   const hostCurrent = () => !boundAtJoin || binding.bound()?.id === sessionId;
   const token = processToken(sessionId);
@@ -46745,21 +47636,36 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   const hub = new HubClient({ transport: hubTransport(probe), client: "room-mcp", sessionId, local: !!options.localKey });
   let chosen;
   try {
+    if (compatibilityRefusal) throw new RoomdError(compatibilityRefusal, 2);
     if (!probe.synced) await timed("sync", () => inPhase("sync", () => new Promise((resolve5, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        probe.off("sync", onSync);
+        probe.off("connection-close", onClose);
+      };
+      const onClose = () => {
+        if (compatibilityRefusal) {
+          cleanup();
+          reject(new RoomdError(compatibilityRefusal, 2));
+        }
+      };
       const onSync = (synced) => {
         if (synced) {
-          clearTimeout(timer);
-          probe.off("sync", onSync);
+          cleanup();
           resolve5();
         }
       };
       const timer = setTimeout(() => {
-        probe.off("sync", onSync);
+        cleanup();
         reject(new RoomdError(`could not sync with ${options.room} within ${options.connectTimeoutMs ?? 15e3}ms`, 1));
       }, options.connectTimeoutMs ?? 15e3);
       probe.on("sync", onSync);
+      probe.on("connection-close", onClose);
     })));
-    const reachable = await hub.hello().then(() => true, () => false);
+    const reachable = await hub.hello().then(() => true, (error2) => {
+      if (error2 instanceof HubError && error2.reason === "version") throw new RoomdError(error2.message, 2);
+      return false;
+    });
     const epoch = Number(process.env.ROOM_NAME_EPOCH);
     const commonDir2 = await gitCommonDir(options.dir);
     chosen = await timed("name", () => inPhase("name", () => chooseName({
@@ -46817,7 +47723,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     }
   });
   let daemon;
-  const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, ...daemonOptions } = options;
+  const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, compatibility: _compatibility, ...daemonOptions } = options;
   let post;
   let started;
   let startupCapClose = () => void 0;
@@ -46849,6 +47755,10 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     else policyStore.setPublisher(false);
     started = daemon = await timed("daemon start", () => startRoomd({
       ...daemonOptions,
+      negotiation: negotiation ? { ...negotiation, onSelection: (reply) => {
+        negotiation.onSelection(reply);
+        selected = { ...reply.selection, legacy: false };
+      } } : void 0,
       name,
       label,
       sessionId,
@@ -46857,6 +47767,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       carried: workerCarried(options.dir),
       // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
       onProvider: (provider) => {
+        currentProvider = provider;
         startupCapClose = captureCapClose(provider);
       },
       post: (from2, body, opts) => {
@@ -46916,7 +47827,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     records.stop();
     await stop(reason);
   };
-  return { daemon: started, me: { name, kind: options.kind ?? "agent", owner, ...label ? { label } : {} }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose() };
+  return { daemon: started, me: { name, kind: options.kind ?? "agent", owner, ...label ? { label } : {} }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose(), contract: () => started.provider.wsconnected ? selected : void 0, compatibilityRefusal: () => compatibilityRefusal };
 }
 function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurrent, lease }) {
   const publishRuntime = () => {
@@ -46944,7 +47855,7 @@ function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurr
     if (!dir) return;
     const stamp = ["session.json", "runtime.json"].map((f) => {
       try {
-        return `${statSync(join3(dir, f)).mtimeMs}`;
+        return `${statSync(join4(dir, f)).mtimeMs}`;
       } catch {
         return "-";
       }
@@ -46954,7 +47865,7 @@ function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurr
       publishRuntime();
     }
     try {
-      const activity = JSON.parse(readFileSync(join3(dir, "hook-activity.json"), "utf8"));
+      const activity = JSON.parse(readFileSync2(join4(dir, "hook-activity.json"), "utf8"));
       if (activity.session_id !== binding.bound()?.id || activity.event !== "PreToolUse") return;
       if (typeof activity.at !== "number" || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return;
       lastActivity = activity.at;
@@ -47072,6 +47983,7 @@ async function joinSession(opts) {
   const name = label ? `${owner}+${label}` : owner;
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
+  const compatibility = await discoverCompatibility(server, dir, void 0, opts.log);
   let pre = await timed("preflight", () => preflight(config2.credentialsPath, server, roomName, creds));
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError("room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed", 2);
@@ -47092,7 +48004,7 @@ async function joinSession(opts) {
   const shareMax = await timed("preflight", () => serverShareMax(server, shareRequested, fetchServer));
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
   const view = await timed("view token", () => viewToken(server, roomName, creds, opts.log));
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ""}`;
   const session = {
@@ -47118,7 +48030,13 @@ async function joinSession(opts) {
     serverLog: opts.log,
     ...token ? { token } : {},
     hub,
-    post
+    post,
+    get contract() {
+      return contract();
+    },
+    get compatibilityRefusal() {
+      return compatibilityRefusal();
+    }
   };
   indexWhileLeading(session, opts.reuse?.graph, opts.log);
   const untrackShare = ceilingFor(server, shareMax).subscribe(policyStore);
@@ -47166,14 +48084,14 @@ async function joinLocal(dir, opts) {
   let replica;
   const lead = !opts.joinOnly && !await inRoomWorkerWorktree(dir);
   const local = await inPhase("relay", () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: !!opts.joinOnly, lead, seed: () => encodeStateAsUpdate(replica ?? new Doc2()) }).catch((e) => {
-    throw e instanceof NoLocalRelay ? new RoomdError(`waiting for the lead's session to start the local relay: your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e;
+    throw e instanceof NoLocalRelay ? new RoomdError(`waiting for the lead's session to start the local relay: your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e instanceof LocalRelayCompatibilityError ? new RoomdError(e.message, 2) : e;
   }));
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
-  let daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose;
+  let daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal;
   try {
     ;
-    ({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag));
+    ({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag));
   } catch (e) {
     await local.stop();
     throw e;
@@ -47200,7 +48118,13 @@ async function joinLocal(dir, opts) {
     shareRequested: policyStore.requested,
     local,
     hub,
-    post
+    post,
+    get contract() {
+      return contract();
+    },
+    get compatibilityRefusal() {
+      return compatibilityRefusal();
+    }
   };
   indexWhileLeading(session, void 0, opts.log);
   trackConnection(session);
@@ -47212,7 +48136,7 @@ function captureCapClose(provider) {
   let seen;
   const onClose = (e) => {
     const close = e && typeof e === "object" ? e : void 0;
-    if (close?.code === ROOM_SIZE_CAP_CODE || close?.code === STALE_REPLICA_CODE) seen = { code: close.code, reason: close.reason };
+    if (close?.code === ROOM_SIZE_CAP_CODE || close?.code === STALE_REPLICA_CODE || close?.code === 4406) seen = { code: close.code, reason: close.reason };
   };
   p.on?.("connection-close", onClose);
   return () => {
@@ -47268,11 +48192,11 @@ function watchClosed(s, log2, startupClose) {
       log2?.(`${s.roomName}: ${s.rejected.reason}; your last edits are not in the room; retrying in 60 seconds`);
       return;
     }
-    if (close?.code !== ROOM_CLOSED_CODE && close?.code !== 4401 && close?.code !== 4403) return;
+    if (close?.code !== ROOM_CLOSED_CODE && close?.code !== 4401 && close?.code !== 4403 && close?.code !== 4406 && !s.compatibilityRefusal) return;
     if (retry) clearTimeout(retry);
     if (verify) clearTimeout(verify);
     const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
-    const reason = close.code === 4401 ? `logged out of ${server}: run room_login` : close.code === 4403 ? `access to ${s.roomName} was revoked` : close.reason || "room closed";
+    const reason = s.compatibilityRefusal || close?.code === 4406 ? s.compatibilityRefusal || close?.reason || "Room contract refused; update the affected client or server and reconnect Room (/mcp)" : close?.code === 4401 ? `logged out of ${server}: run room_login` : close?.code === 4403 ? `access to ${s.roomName} was revoked` : close?.reason || "room closed";
     s.closed = { reason };
     try {
       p.disconnect?.();
@@ -47310,6 +48234,7 @@ async function checkTeamAdmission(rawServer, roomName, opts = {}) {
   const credentialsPath2 = opts.credentialsPath ?? credentialsPath();
   const parsed = parseServer(rawServer);
   const { login: _login, ...creds } = await resolveAuth(credentialsPath2, parsed.server, roomName, opts.token ?? parsed.token, opts.log);
+  if (opts.dir) await discoverCompatibility(parsed.server, opts.dir, void 0, opts.log);
   const pre = await preflight(credentialsPath2, parsed.server, roomName, creds, opts.log);
   if (!pre || pre.canonical) return;
   if (pre.missing) {
@@ -47322,11 +48247,15 @@ async function checkTeamAdmission(rawServer, roomName, opts = {}) {
 }
 async function preflight(credentialsPath2, server, roomName, auth, log2) {
   try {
-    const res = await serverFetch(`${httpOf2(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 2e4 }, log2);
+    const res = await serverFetch(`${httpOf2(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 2e4 }, log2);
     if (res.ok) {
       const body = await res.json();
       if (body.hub !== 1) return { reason: "this Room server has no 0.17 hub; ask its operator to deploy Room 0.17" };
       return body.room && body.room !== roomName ? { reason: "", canonical: body.room } : void 0;
+    }
+    if (res.status === 426) {
+      const body = await res.json();
+      return { reason: body.error?.text ?? body.text ?? "Room server refused this contract; update the affected client or server", status: 426 };
     }
     if (res.status === 401) {
       const reason = (await res.text()).trim() || "unauthorized";
@@ -47346,7 +48275,7 @@ async function preflight(credentialsPath2, server, roomName, auth, log2) {
 }
 async function createRoom(server, roomName, auth, log2) {
   try {
-    const res = await serverFetch(`${httpOf2(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 2e4 }, log2);
+    const res = await serverFetch(`${httpOf2(server)}/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 2e4 }, log2);
     if (res.ok) return void 0;
     return (await res.text()).trim() || `HTTP ${res.status}`;
   } catch (e) {
@@ -47354,7 +48283,7 @@ async function createRoom(server, roomName, auth, log2) {
   }
 }
 async function closeRoom(server, roomName, auth, log2) {
-  const res = await serverFetch(`${httpOf2(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 2e4 }, log2);
+  const res = await serverFetch(`${httpOf2(server)}/rooms`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 2e4 }, log2);
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2);
   const body = await res.json().catch(() => ({}));
   return body.closed ?? [];
@@ -47369,7 +48298,7 @@ async function authFor(s) {
 async function viewToken(server, roomName, auth, log2) {
   if (!auth.token && !auth.session) return void 0;
   try {
-    const res = await serverFetch(`${httpOf2(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 2e4 }, log2);
+    const res = await serverFetch(`${httpOf2(server)}/view-token`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 2e4 }, log2);
     if (!res.ok) return void 0;
     return (await res.json()).view;
   } catch {
@@ -47417,11 +48346,14 @@ async function leaveSession(s) {
   }
   return void 0;
 }
-var timed, DEFAULT_WEB, VIEWER_MISSING, codexThreadId, codexThreadConflictsLogged, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, SERVER_RETRY_MS, SERVER_ATTEMPT_MS, SERVER_RETRY_PAUSE_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, staleListeners, httpOf2;
+var timed, CLIENT_COMPAT, DEFAULT_WEB, VIEWER_MISSING, codexThreadId, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, SERVER_RETRY_MS, SERVER_ATTEMPT_MS, SERVER_RETRY_PAUSE_MS, negotiatingOrigins, contractBody, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, staleListeners, httpOf2;
 var init_session = __esm({
   "packages/room-mcp/src/session.ts"() {
     "use strict";
     init_connection();
+    init_plugin();
+    init_client_compat();
+    init_src2();
     init_y_websocket();
     init_yjs();
     init_room_name();
@@ -47454,9 +48386,9 @@ var init_session = __esm({
     init_timing();
     init_bridge();
     timed = (name, work) => currentToolTiming()?.phase(name, work) ?? Promise.resolve().then(work);
+    CLIENT_COMPAT = { ...CURRENT_COMPAT, release: plugin_default.version };
     DEFAULT_WEB = "http://localhost:5173";
     VIEWER_MISSING = "not built; run npm run build -w @room/web";
-    codexThreadConflictsLogged = /* @__PURE__ */ new Set();
     NoRoom = class extends RoomdError {
       constructor(roomName, detail, server) {
         super(detail, 3);
@@ -47479,6 +48411,8 @@ var init_session = __esm({
     SERVER_RETRY_MS = 45e3;
     SERVER_ATTEMPT_MS = 25e3;
     SERVER_RETRY_PAUSE_MS = 3e3;
+    negotiatingOrigins = /* @__PURE__ */ new Set();
+    contractBody = (server) => negotiatingOrigins.has(server) ? { compat: CLIENT_COMPAT } : {};
     ROOM_CLOSED_CODE = 4001;
     ROOM_SIZE_CAP_CODE = 4413;
     SIZE_CAP_RETRY_MS = 6e4;
@@ -47531,18 +48465,18 @@ var init_local_migration = __esm({
 });
 
 // packages/room-mcp/src/binding.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 import fs47 from "node:fs";
 import path42 from "node:path";
 function isCodexExecWorker(env = process.env) {
   return !!env.ROOM_WORKER_ID && env.ROOM_WORKER_HOST === "codex";
 }
-function createSessionBinding(cwd, env = process.env, now = Date.now, options = {}) {
+function createSessionBinding(cwd, env = process.env, now = Date.now) {
   let commonDir2;
   let commonCheckedAt = -Infinity;
   let parent;
   let parentArgs;
-  let cached2;
+  let cached3;
   let ownGitDir;
   const migrated = /* @__PURE__ */ new Set();
   const common = () => {
@@ -47550,7 +48484,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
     if (commonDir2 === void 0 || commonDir2 === null) {
       commonCheckedAt = now();
       try {
-        commonDir2 = path42.resolve(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+        commonDir2 = path42.resolve(cwd, execFileSync8("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
       } catch {
         commonDir2 = null;
       }
@@ -47560,22 +48494,22 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
   const self = identity(probeOwnProcess(), process.pid);
   const bound = () => {
     const codexThreadId2 = admittedCodexThread();
-    if (cached2 && cached2.codexThreadId === codexThreadId2 && now() - cached2.at < RECHECK_MS) return cached2.value;
+    if (cached3 && cached3.codexThreadId === codexThreadId2 && now() - cached3.at < RECHECK_MS) return cached3.value;
     if (parent === void 0) {
       parent = identity(probeProcessNow(process.ppid), process.ppid) ?? null;
       try {
-        parentArgs = execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+        parentArgs = execFileSync8("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         parentArgs = "";
       }
     }
     const dir = common();
     const value2 = dir ? boundSession({ commonDir: dir, cwd, env, ...parent ? { parent } : {}, parentArgs }) : void 0;
-    cached2 = { at: now(), value: value2, codexThreadId: codexThreadId2 };
+    cached3 = { at: now(), value: value2, codexThreadId: codexThreadId2 };
     return value2;
   };
   return {
-    admitCodexThread: (id3) => admitCodexThread(id3, options.log),
+    admitCodexThread,
     bound,
     id: () => bound()?.id ?? syntheticSessionId(self ?? { pid: process.pid, startTime: "", executable: "" }),
     dir: () => {
@@ -47584,7 +48518,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now, options = 
       const target = sessionDirectory(dir, b.id);
       if (!migrated.has(b.id)) {
         try {
-          ownGitDir ??= execFileSync7(
+          ownGitDir ??= execFileSync8(
             "git",
             ["-C", cwd, "rev-parse", "--absolute-git-dir"],
             { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }
@@ -47766,9 +48700,9 @@ function floatSafeRemainder(val, step2) {
   return ratio - roundedRatio;
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-function defineLazy(object4, key2, getter) {
+function defineLazy(object5, key2, getter) {
   let value2 = void 0;
-  Object.defineProperty(object4, key2, {
+  Object.defineProperty(object5, key2, {
     get() {
       if (value2 === EVALUATING) {
         return void 0;
@@ -47780,7 +48714,7 @@ function defineLazy(object4, key2, getter) {
       return value2;
     },
     set(v) {
-      Object.defineProperty(object4, key2, {
+      Object.defineProperty(object5, key2, {
         value: v
         // configurable: true,
       });
@@ -47816,12 +48750,12 @@ function getElementAtPath(obj, path60) {
   return path60.reduce((acc, key2) => acc?.[key2], obj);
 }
 function promiseAllObject(promisesObj) {
-  const keys2 = Object.keys(promisesObj);
-  const promises = keys2.map((key2) => promisesObj[key2]);
+  const keys3 = Object.keys(promisesObj);
+  const promises = keys3.map((key2) => promisesObj[key2]);
   return Promise.all(promises).then((results) => {
     const resolvedObj = {};
-    for (let i = 0; i < keys2.length; i++) {
-      resolvedObj[keys2[i]] = results[i];
+    for (let i = 0; i < keys3.length; i++) {
+      resolvedObj[keys3[i]] = results[i];
     }
     return resolvedObj;
   });
@@ -49931,10 +50865,10 @@ function handlePropertyResult(result2, final, key2, input, optin, optout) {
 }
 var NO_SYMBOL_KEYS = [];
 function normalizeDef(def) {
-  const keys2 = Object.keys(def.shape);
+  const keys3 = Object.keys(def.shape);
   const ownSymbols = Object.getOwnPropertySymbols(def.shape);
   const symbolKeys = ownSymbols.length ? ownSymbols : NO_SYMBOL_KEYS;
-  const allKeys = symbolKeys.length ? [...keys2, ...symbolKeys] : keys2;
+  const allKeys = symbolKeys.length ? [...keys3, ...symbolKeys] : keys3;
   for (const k of allKeys) {
     if (!def.shape?.[k]?._zod?.traits?.has("$ZodType")) {
       throw new Error(`Invalid element at key "${String(k)}": expected a Zod schema`);
@@ -49946,8 +50880,8 @@ function normalizeDef(def) {
     allKeys,
     symbolKeys,
     // string-only: handleCatchall matches it against `for...in`, which never yields a symbol
-    keySet: new Set(keys2),
-    numKeys: keys2.length,
+    keySet: new Set(keys3),
+    numKeys: keys3.length,
     optionalKeys: new Set(okeys)
   };
 }
@@ -50392,19 +51326,19 @@ function handleIntersectionResults(result2, left, right) {
   let unrecIssue;
   const keyIssues = /* @__PURE__ */ new Map();
   const collect = (iss, side) => {
-    let keys2;
+    let keys3;
     if (iss.code === "unrecognized_keys" && !iss.path?.length) {
       unrecIssue ?? (unrecIssue = iss);
-      keys2 = iss.keys;
+      keys3 = iss.keys;
     } else if (iss.code === "invalid_key" && iss.origin === "record" && iss.path?.length === 1) {
       const k = String(iss.path[0]);
       if (!keyIssues.has(k))
         keyIssues.set(k, iss);
-      keys2 = [k];
+      keys3 = [k];
     } else {
       return false;
     }
-    for (const k of keys2) {
+    for (const k of keys3) {
       if (!unrecKeys.has(k))
         unrecKeys.set(k, {});
       unrecKeys.get(k)[side] = true;
@@ -50907,9 +51841,9 @@ function cloneIssues(issues) {
 }
 var recursive = /* @__PURE__ */ new WeakMap();
 function isRecursive(inst, stack) {
-  const cached2 = recursive.get(inst);
-  if (cached2 !== void 0)
-    return cached2;
+  const cached3 = recursive.get(inst);
+  if (cached3 !== void 0)
+    return cached3;
   if (stack.has(inst))
     return true;
   stack.add(inst);
@@ -52038,8 +52972,8 @@ function compactTypeUnion(schema) {
     if (!option || typeof option !== "object")
       return;
     compactTypeUnion(option);
-    const keys2 = Object.keys(option);
-    if (keys2.length !== 1 || keys2[0] !== "type")
+    const keys3 = Object.keys(option);
+    if (keys3.length !== 1 || keys3[0] !== "type")
       return;
     const type = option.type;
     for (const member of Array.isArray(type) ? type : [type]) {
@@ -52073,8 +53007,8 @@ function foldObjects(members2) {
   }
   const properties = {};
   const required2 = /* @__PURE__ */ new Set();
-  for (const object4 of objects) {
-    for (const key2 in object4.properties) {
+  for (const object5 of objects) {
+    for (const key2 in object5.properties) {
       if (Object.prototype.hasOwnProperty.call(properties, key2))
         continue;
       const parts = [];
@@ -52088,18 +53022,18 @@ function foldObjects(members2) {
       const merged = parts.length === 1 ? parts[0] : foldObjects(parts) ?? { allOf: parts };
       assignProp(properties, key2, merged);
     }
-    for (const key2 of object4.required ?? [])
+    for (const key2 of object5.required ?? [])
       required2.add(key2);
   }
   const folded = { type: "object", properties };
   if (required2.size)
     folded.required = [...required2];
-  if (objects.every((object4) => object4.additionalProperties === false)) {
+  if (objects.every((object5) => object5.additionalProperties === false)) {
     folded.additionalProperties = false;
   } else {
     const constraints = [];
-    for (const object4 of objects) {
-      const constraint = undeclaredConstraint(object4);
+    for (const object5 of objects) {
+      const constraint = undeclaredConstraint(object5);
       if (constraint && !constraints.some((seen) => JSON.stringify(seen) === JSON.stringify(constraint)))
         constraints.push(constraint);
     }
@@ -53600,11 +54534,11 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   inst._zod.processJSONSchema = (ctx, json, params2) => enumProcessor(inst, ctx, json, params2);
   inst.enum = def.entries;
   inst.options = Object.values(def.entries);
-  const keys2 = new Set(Object.keys(def.entries));
+  const keys3 = new Set(Object.keys(def.entries));
   inst.extract = (values, params2) => {
     const newEntries = {};
     for (const value2 of values) {
-      if (keys2.has(value2)) {
+      if (keys3.has(value2)) {
         newEntries[value2] = def.entries[value2];
       } else
         throw new Error(`Key ${value2} not found in enum`);
@@ -53619,7 +54553,7 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   inst.exclude = (values, params2) => {
     const newEntries = { ...def.entries };
     for (const value2 of values) {
-      if (keys2.has(value2)) {
+      if (keys3.has(value2)) {
         delete newEntries[value2];
       } else
         throw new Error(`Key ${value2} not found in enum`);
@@ -56742,11 +57676,11 @@ var Server = class extends Protocol {
    *
    * The new capabilities will be merged with any existing capabilities previously given (e.g., at initialization).
    */
-  registerCapabilities(capabilities) {
+  registerCapabilities(capabilities2) {
     if (this.transport) {
       throw new Error("Cannot register capabilities after connecting to transport");
     }
-    this._capabilities = mergeCapabilities(this._capabilities, capabilities);
+    this._capabilities = mergeCapabilities(this._capabilities, capabilities2);
   }
   /**
    * Override request handler registration to enforce server-side validation for tools/call.
@@ -57062,6 +57996,21 @@ var Server = class extends Protocol {
   }
 };
 
+// packages/room-mcp/src/mcp-server.ts
+var PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
+var RoomMcpServer = class extends Server {
+  // SDK 1.30 has no supported-version option. Its constructor registers initialize
+  // through this public method, so wrap that handler without accessing SDK internals.
+  setRequestHandler(schema, handler) {
+    if (schema !== InitializeRequestSchema) return super.setRequestHandler(schema, handler);
+    super.setRequestHandler(schema, async (request, extra) => {
+      const result2 = await handler(request, extra);
+      const requested = InitializeRequestSchema.parse(request).params.protocolVersion;
+      return { ...result2, protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0] };
+    });
+  }
+};
+
 // packages/room-mcp/src/index.ts
 init_src();
 
@@ -57073,7 +58022,7 @@ init_config();
 
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
-import { execFile as execFile11, execFileSync as execFileSync8 } from "node:child_process";
+import { execFile as execFile11, execFileSync as execFileSync9 } from "node:child_process";
 
 // packages/room-mcp/src/codex-app-server.ts
 init_wrapper();
@@ -57195,7 +58144,7 @@ var parentArgsCache;
 function claudeParentArgs() {
   if (parentArgsCache !== void 0) return parentArgsCache;
   try {
-    parentArgsCache = execFileSync8("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
+    parentArgsCache = execFileSync9("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
   } catch {
     parentArgsCache = "";
   }
@@ -57257,9 +58206,9 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
     });
   });
 }
-function codexQueue(threadId, text) {
+function codexQueue(threadId, text2) {
   return new Promise((resolve5, reject) => {
-    execFile11("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err, _out, stderr2) => err ? reject(new Error(String(stderr2 || err.message).trim())) : resolve5());
+    execFile11("codex", ["queue", "--thread", threadId, "--message", text2], { timeout: 1e4 }, (err, _out, stderr2) => err ? reject(new Error(String(stderr2 || err.message).trim())) : resolve5());
   });
 }
 function createWakeSender(o) {
@@ -57276,21 +58225,21 @@ function createWakeSender(o) {
       throw e;
     }
   };
-  const send2 = async (target, text) => {
+  const send2 = async (target, text2) => {
     const key2 = `${target.host}\0${target.id}`;
     if (lastTarget !== key2) last2 = void 0;
     lastTarget = key2;
     const env = o.env ?? process.env;
     const selected = mode(env);
     if (selected === "off") return void 0;
-    if (target.host === "codex") return attempt("queue", () => (o.queue ?? codexQueue)(target.id, text));
+    if (target.host === "codex") return attempt("queue", () => (o.queue ?? codexQueue)(target.id, text2));
     const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
-    const channel = () => attempt("channel", () => sendChannelNotification(text, o.notify));
+    const channel = () => attempt("channel", () => sendChannelNotification(text2, o.notify));
     if (selected === "channels") return o.channel === "" ? void 0 : channel();
     const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
     if (!socket) return selected === "auto" && admitted() ? channel() : void 0;
     try {
-      return await attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text));
+      return await attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text2));
     } catch (error2) {
       if (selected === "auto" && admitted()) {
         try {
@@ -57310,7 +58259,7 @@ function createMidTurnSender(o = {}) {
   let last2;
   let lastTarget;
   let lastFailure;
-  const send2 = async (target, text) => {
+  const send2 = async (target, text2) => {
     const key2 = `${target.host}\0${target.id}`;
     if (lastTarget !== key2) last2 = void 0;
     lastTarget = key2;
@@ -57319,7 +58268,7 @@ function createMidTurnSender(o = {}) {
     last2 = { via: "turn", at: Date.now(), outcome: "attempting" };
     let result2;
     try {
-      result2 = await (o.post ?? postCodexToolOutput)({ socketPath: codexControlSocket(env), threadId: target.id, text, clientVersion: o.clientVersion });
+      result2 = await (o.post ?? postCodexToolOutput)({ socketPath: codexControlSocket(env), threadId: target.id, text: text2, clientVersion: o.clientVersion });
     } catch (e) {
       last2 = { ...last2, outcome: "failed" };
       throw e;
@@ -57407,12 +58356,12 @@ init_context();
 init_disk_text();
 init_worker_registry();
 import fs48 from "node:fs";
-import { createHash as createHash17, randomUUID as randomUUID7 } from "node:crypto";
+import { createHash as createHash19, randomUUID as randomUUID7 } from "node:crypto";
 var mergeTurns = (result2, prev) => {
   const turns = (prev?.mergeTurns ?? 0) + (result2.status === "conflict" && prev?.settled === "conflict" && !result2.merges !== !prev.merges ? 1 : 0);
   return turns ? { mergeTurns: turns } : {};
 };
-var hash = (value2) => createHash17("sha256").update(value2).digest("hex");
+var hash = (value2) => createHash19("sha256").update(value2).digest("hex");
 var slotKey = (owner, kind, other, path60, subject = "") => [owner, kind, other, path60, subject].join("\0");
 var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
 var peerMerge = (slot) => slot.kind === "merge" && slot.path !== "*";
@@ -57421,7 +58370,7 @@ var clearedInEpisode = (slot) => slot.settled === "clean" && slot.clearedFrom ==
 var PEER_NOTICE_FILES = 8;
 var peerNoticeId = (owner, other, episode, open3, cleared) => `cf:${hash([owner, other, "merge"].join("\0"))}:peer:${episode}:${open3.length ? hash(JSON.stringify([open3.map((s) => [s.path, s.epoch]), cleared.map((s) => [s.path, s.epoch])])) : "clean"}`;
 var atLines = (lines2) => lines2?.length ? ` at lines ${lines2.join(", ")}` : "";
-var bounded = (items, sep) => items.slice(0, PEER_NOTICE_FILES).join(sep) + (items.length > PEER_NOTICE_FILES ? `${sep}and ${items.length - PEER_NOTICE_FILES} more` : "");
+var bounded2 = (items, sep) => items.slice(0, PEER_NOTICE_FILES).join(sep) + (items.length > PEER_NOTICE_FILES ? `${sep}and ${items.length - PEER_NOTICE_FILES} more` : "");
 var files2 = (n) => `${n} file${n === 1 ? "" : "s"}`;
 function openMergeConflicts(room, owner) {
   return [...room.doc.getMap("conflicts").values()].filter((s) => s.owner === owner && peerMerge(s) && s.settled === "conflict").map((s) => ({ other: s.other, path: s.path, lines: s.lines ?? [] })).sort((a, b) => a.other.localeCompare(b.other) || a.path.localeCompare(b.path));
@@ -57565,14 +58514,14 @@ var ConflictSlots = class {
     const id3 = peerNoticeId(owner, other, episode, open3, cleared);
     const latest = (slots) => Math.max(0, ...slots.map((s) => s.turnedAt ?? s.checkedAt));
     const priority2 = open3.length && latest(open3) >= latest(cleared) ? "notify" : "fyi";
-    const clearedNote = cleared.length ? `; ${files2(cleared.length)} cleared: ${bounded(cleared.map((s) => s.path), ", ")}` : "";
-    const text = open3.length ? open3.length === 1 && !cleared.length ? `${open3[0].path} conflicts with ${other}'s version${atLines(open3[0].lines)}` : `${files2(open3.length)} conflict${open3.length === 1 ? "s" : ""} with ${other}'s version: ${bounded(open3.map((s) => `${s.path}${atLines(s.lines)}`), "; ")}${clearedNote}` : cleared.length === 1 ? `the conflict with ${other} cleared` : `${files2(cleared.length)} no longer conflict with ${other}'s version: ${bounded(cleared.map((s) => s.path), ", ")}`;
+    const clearedNote = cleared.length ? `; ${files2(cleared.length)} cleared: ${bounded2(cleared.map((s) => s.path), ", ")}` : "";
+    const text2 = open3.length ? open3.length === 1 && !cleared.length ? `${open3[0].path} conflicts with ${other}'s version${atLines(open3[0].lines)}` : `${files2(open3.length)} conflict${open3.length === 1 ? "s" : ""} with ${other}'s version: ${bounded2(open3.map((s) => `${s.path}${atLines(s.lines)}`), "; ")}${clearedNote}` : cleared.length === 1 ? `the conflict with ${other} cleared` : `${files2(cleared.length)} no longer conflict with ${other}'s version: ${bounded2(cleared.map((s) => s.path), ", ")}`;
     const body = {
       type: "merge-conflict",
       path: (open3[0] ?? cleared[0]).path,
       to: owner,
       priority: priority2,
-      text,
+      text: text2,
       ...open3.length ? {} : { clearedFrom: "conflict" }
     };
     try {
@@ -57627,11 +58576,11 @@ var ConflictSlots = class {
     const held = this.room.openClaims().filter((c) => c.by === slot.other && c.path === slot.path && !c.path.endsWith("/"));
     const claimed = (claims) => `${slot.other}'s claim${claims.length > 1 ? "s" : ""}${claims.length ? ` at line${claims.length > 1 || claims[0].from !== claims[0].to ? "s" : ""} ${claims.sort((a, b) => a.from - b.from).map((c) => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(", ")}` : ""}`;
     const ownClaim = () => claimed(held.filter((c) => c.id === slot.subject));
-    const text = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `the ${slot.clearedFrom === "possible" ? "possible conflict" : slot.merges ? "overlap" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? slot.earlierSha !== void 0 ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}` : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
+    const text2 = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `the ${slot.clearedFrom === "possible" ? "possible conflict" : slot.merges ? "overlap" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? slot.earlierSha !== void 0 ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}` : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
     const clearedFrom = status === "clean" ? slot.clearedFrom : void 0;
     const merges = slot.kind === "edit-in-claim" && slot.merges === "clean" && (status === "conflict" || clearedFrom === "conflict") ? { merges: "clean" } : void 0;
     const mergeNote = merges && status === "conflict" ? "; merges cleanly" : "";
-    const body = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text, ...clearedFrom ? { clearedFrom } : {} } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text: text + mergeNote, ...clearedFrom ? { clearedFrom } : {}, ...merges };
+    const body = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text: text2, ...clearedFrom ? { clearedFrom } : {} } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text: text2 } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text: text2 + mergeNote, ...clearedFrom ? { clearedFrom } : {}, ...merges };
     try {
       const posted = await this.post(ROOM, body, { id: id3, auto: true });
       if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
@@ -57682,12 +58631,12 @@ var changedRanges = (base, live) => {
   return ranges;
 };
 var asText = (v) => v.kind === "text" ? v.text : v.kind === "base" ? v.text ?? "" : v.kind === "deleted" ? "" : void 0;
-async function boundedBaseline(dir, baseline, path60) {
+async function boundedBaseline(dir, baseline2, path60) {
   try {
-    const carried = baseline.untracked.get(path60);
-    const text = carried ? await readBoundedCheckoutText(baseline.dir, carried.sha, path60) : await readBoundedHistoricalText(dir, baseline.sha, path60);
-    if (carried && text === void 0) throw new MissingBaseBlob(path60);
-    return text === void 0 ? { kind: "absent" } : { kind: "available", text };
+    const carried = baseline2.untracked.get(path60);
+    const text2 = carried ? await readBoundedCheckoutText(baseline2.dir, carried.sha, path60) : await readBoundedHistoricalText(dir, baseline2.sha, path60);
+    if (carried && text2 === void 0) throw new MissingBaseBlob(path60);
+    return text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 };
   } catch (error2) {
     return { kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) };
   }
@@ -57787,7 +58736,6 @@ var ConflictSet = class _ConflictSet {
   stopped = false;
   inputCheck;
   scheduledInputs = "";
-  carriedInput;
   starts = [];
   contractCache = new ContractAnalysisCache();
   guard;
@@ -57841,15 +58789,34 @@ var ConflictSet = class _ConflictSet {
     this.schedulePeriodic();
     if (this.team.provider.synced) this.schedule(0);
   }
+  /**
+   * One check pass's carried-baseline lookup: each participant's registry facts are read at most once per
+   * pass. Pair inputs built from these values cannot notice a registry change, so each lookup also records
+   * its sources' freshness token (taken before the read), and the stale-inputs guard requires `current()`:
+   * a carried baseline replaced during an awaited comparison makes the pass stale, never published.
+   */
+  carriedPass() {
+    const memo2 = /* @__PURE__ */ new Map(), tokens = /* @__PURE__ */ new Map();
+    const lookup = (participant) => {
+      if (!this.carriedFrom) return void 0;
+      if (!memo2.has(participant)) {
+        tokens.set(participant, carriedSourceToken(this.team.dir, participant));
+        memo2.set(participant, this.carriedFrom(participant));
+      }
+      return memo2.get(participant);
+    };
+    return Object.assign(lookup, { current: () => [...tokens].every(([participant, token]) => carriedSourceToken(this.team.dir, participant) === token) });
+  }
   /** Pair facts, excluding publication clocks, unrelated edits, and display-only graph edges. */
-  pairInputs(other, views) {
+  pairInputs(other, views, carriedOf) {
     const room = this.team.room;
     const mine = snapshotMetadata(room, this.owner, views), theirs = snapshotMetadata(room, other, views);
     const claims = room.openClaims().filter((c) => c.by === this.owner || c.by === other);
     const graph = room.graphs.get(other);
     const worker = room.workerViewOf(other);
     const contracts = !!graph?.observed?.length;
-    const carried = this.carriedInput?.lead === other ? this.carriedInput.baseline : void 0;
+    const own2 = carriedOf(this.owner);
+    const carried = own2?.lead === other ? own2.baseline : void 0;
     const all2 = mine?.head.base !== theirs?.head.base || !!carried && carriesWork(carried) || contracts;
     const paths = /* @__PURE__ */ new Set();
     for (const path60 of mine?.entries.keys() ?? []) if (all2 || theirs?.entries.has(path60) || claims.some((c) => coversPath(c.path, path60))) paths.add(path60);
@@ -57899,16 +58866,16 @@ var ConflictSet = class _ConflictSet {
       worker ? [worker.id, worker.lead, worker.status, worker.run] : void 0,
       contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : void 0,
       carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : void 0,
-      this.carriedFrom?.(other)?.baseline.sha
+      carriedOf(other)?.baseline.sha
     ]));
   }
   inputsKey() {
-    this.carriedInput = this.carriedFrom?.(this.owner);
+    const carriedOf = this.carriedPass();
     const room = this.team.room, views = participantsView(room, this.team.awareness, Date.now());
     const names = neighbours(views, this.owner).names().filter((name) => this.owner === this.team.me.name || name !== this.team.me.name);
     return JSON.stringify([
       this.team.lease?.fence(),
-      names.map((name) => [name, this.pairInputs(name, views)]),
+      names.map((name) => [name, this.pairInputs(name, views, carriedOf)]),
       room.openClaims().filter((c) => c.by === this.owner),
       [...room.workerViews.values()].filter((w) => w.lead === this.owner).map((w) => [w.id, w.status, w.run])
     ]);
@@ -58046,9 +59013,9 @@ var ConflictSet = class _ConflictSet {
       const worker = await trustedWorker(this.notices, this.owner).catch(() => void 0);
       if (worker && worker.id === snap.head.projectedFrom) {
         try {
-          const text = await workerText(worker.dir, path60);
-          if (text !== null && gitBlobHash(text, projectedEntry.hash.length === 64 ? "sha256" : "sha1") === projectedEntry.hash)
-            return { kind: "text", text, entry: projectedEntry };
+          const text2 = await workerText(worker.dir, path60);
+          if (text2 !== null && gitBlobHash(text2, projectedEntry.hash.length === 64 ? "sha256" : "sha1") === projectedEntry.hash)
+            return { kind: "text", text: text2, entry: projectedEntry };
         } catch {
         }
       }
@@ -58077,7 +59044,7 @@ var ConflictSet = class _ConflictSet {
     await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${key2}\0${why}`), why });
   }
   async run(reason) {
-    this.carriedInput = this.carriedFrom?.(this.owner);
+    const carriedOf = this.carriedPass();
     this.fileWork = 0;
     const room = this.team.room;
     const leaseFence = this.team.lease?.fence();
@@ -58093,24 +59060,25 @@ var ConflictSet = class _ConflictSet {
     if (ownGit === "updating" || ownNonPublisher && !ownPublisher) return;
     const authority = () => !this.stopped && this.team.lease?.fence() === leaseFence;
     const claimInputs = JSON.stringify(room.openClaims().filter((c) => c.by === this.owner));
-    this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims().filter((c) => c.by === this.owner)) === claimInputs;
+    this.guard = () => authority() && carriedOf.current() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims().filter((c) => c.by === this.owner)) === claimInputs;
     const nb = neighbours(views, this.owner);
     const names = new Set(nb.names());
     for (const [key2, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) this.drop(key2);
     names.delete(this.owner);
     if (this.owner !== this.team.me.name) names.delete(this.team.me.name);
-    const capturedPairs = new Map([...names].map((name) => [name, this.pairInputs(name, views)]));
+    const capturedPairs = new Map([...names].map((name) => [name, this.pairInputs(name, views, carriedOf)]));
     for (const other of [...names].sort()) {
       const pairInputs = capturedPairs.get(other);
-      if (this.pairInputs(other, participantsView(room, this.team.awareness, Date.now())) !== pairInputs) throw new StaleConflictInputs();
+      if (!carriedOf.current() || this.pairInputs(other, participantsView(room, this.team.awareness, Date.now()), carriedOf) !== pairInputs) throw new StaleConflictInputs();
       let replayable = true;
       try {
         const theirs = snapshot(room, other, views);
         const theirGit = acceptedGit(theirs?.record ?? participantRecord(room, other), views);
         const graphInput = room.graphs.get(other)?.observed;
-        this.guard = () => !this.stopped && authority() && this.pairInputs(
+        this.guard = () => !this.stopped && authority() && carriedOf.current() && this.pairInputs(
           other,
-          participantsView(room, this.team.awareness, Date.now())
+          participantsView(room, this.team.awareness, Date.now()),
+          carriedOf
         ) === pairInputs;
         const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other);
         if (!theirs && !participantRecord(room, other)) {
@@ -58163,19 +59131,19 @@ var ConflictSet = class _ConflictSet {
           this.unknownContracts(other, why);
           continue;
         }
-        await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), mine, theirs);
+        await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), mine, theirs, carriedOf);
         this.drop(slotKey(this.owner, "merge", other, "*"));
-        const ours = this.carriedFrom?.(this.owner), theirsCarried = this.carriedFrom?.(other);
+        const ours = carriedOf(this.owner), theirsCarried = carriedOf(other);
         const leadPair = ours?.lead === other || theirsCarried?.lead === this.owner;
         const descends = (sha) => sha === pair.mergeBase || git(this.team.dir, ["merge-base", "--is-ancestor", pair.mergeBase, sha]).then(() => true, () => false);
-        const baseline = leadPair ? await pairBaseline(
+        const baseline2 = leadPair ? await pairBaseline(
           ours?.lead === other ? ours.baseline : void 0,
           theirsCarried?.lead === this.owner ? theirsCarried.baseline : void 0,
           pair.mergeBase,
           (ancestor, sha) => git(this.team.dir, ["merge-base", "--is-ancestor", ancestor, sha]).then(() => true, () => false)
         ) : void 0;
         const sharedBaselines = !leadPair && ours && theirsCarried && (await Promise.all([descends(ours.baseline.sha), descends(theirsCarried.baseline.sha)])).every(Boolean) ? [ours.baseline, theirsCarried.baseline] : void 0;
-        const mergeBase2 = baseline?.sha ?? pair.mergeBase;
+        const mergeBase2 = baseline2?.sha ?? pair.mergeBase;
         const changed = async (snap, base) => {
           try {
             const committed = await git(this.team.dir, ["diff", "--no-renames", "--name-only", "-z", `${mergeBase2}..${base}`]);
@@ -58202,14 +59170,14 @@ var ConflictSet = class _ConflictSet {
         }
         const ownMergePaths = new Set(aPaths);
         const unchangedCarried = /* @__PURE__ */ new Set();
-        const carried = this.carriedFrom?.(this.owner);
+        const carried = ours;
         if (carried?.lead === other && carriesWork(carried.baseline)) {
           for (const path60 of aPaths) {
             await this.fileTurn();
-            const baseline2 = await boundedBaseline(this.team.dir, carried.baseline, path60);
-            if (baseline2.kind === "unavailable") continue;
+            const baseline3 = await boundedBaseline(this.team.dir, carried.baseline, path60);
+            if (baseline3.kind === "unavailable") continue;
             const ownText = asText(await this.read(mine, path60));
-            if (ownText !== void 0 && ownText === (baseline2.kind === "absent" ? "" : baseline2.text)) {
+            if (ownText !== void 0 && ownText === (baseline3.kind === "absent" ? "" : baseline3.text)) {
               ownMergePaths.delete(path60);
               unchangedCarried.add(path60);
             }
@@ -58411,10 +59379,10 @@ var ConflictSet = class _ConflictSet {
       );
     }
   }
-  async contracts(other, myPaths, mine, theirs) {
+  async contracts(other, myPaths, mine, theirs, carriedOf) {
     this.withdrawUnauthorizedContracts();
     const graph = this.team.room.graphs.get(other);
-    const carried = this.carriedFrom?.(this.owner);
+    const carried = carriedOf(this.owner);
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline);
     if (!carriedProvider && graph?.uncoveredTruncated) {
       this.unknownContracts(other, "contract coverage gap list truncated");
@@ -58472,9 +59440,9 @@ var ConflictSet = class _ConflictSet {
         const cacheKey = hash(JSON.stringify([carried.baseline.sha, path60, oldText, after]));
         let parsed = this.contractCache.get(cacheKey);
         if (!parsed) {
-          const versions = await parseInWorker(path60, [oldText, after]);
-          const preparsed = /* @__PURE__ */ new Map([[oldText, versions[0]], [after, versions[1]]]);
-          parsed = observedContractAnalysis(oldText, after, path60, (_path, text) => preparsed.get(text));
+          const versions2 = await parseInWorker(path60, [oldText, after]);
+          const preparsed = /* @__PURE__ */ new Map([[oldText, versions2[0]], [after, versions2[1]]]);
+          parsed = observedContractAnalysis(oldText, after, path60, (_path, text2) => preparsed.get(text2));
           if (!this.stopped) this.contractCache.set(cacheKey, parsed);
         }
         if (parsed.status === "unavailable") {
@@ -58506,12 +59474,12 @@ var ConflictSet = class _ConflictSet {
       for (const path60 of myPaths) {
         await this.fileTurn();
         if (!this.contractPathAuthorized(mine, path60)) continue;
-        const text = await this.readableConsumer(mine, path60);
-        if (text === void 0) {
+        const text2 = await this.readableConsumer(mine, path60);
+        if (text2 === void 0) {
           this.unknownContracts(other, "consumer version is not readable");
           return;
         }
-        if (text && await consumesSymbol(path60, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path60);
+        if (text2 && await consumesSymbol(path60, text2, change.path, change.symbol, this.team.graph?.graph)) uses.push(path60);
       }
       uses.sort();
       if (!uses.length) continue;
@@ -58749,24 +59717,24 @@ function handlers3(state) {
       const t = directory ? void 0 : await readText(s, p, s.me.name);
       const isNew = t === void 0 || t === null;
       const n = isNew ? 1 : lines2(t);
-      let range;
+      let range2;
       let wholeNewFile = false;
       const symbol = typeof a.symbol === "string" && a.symbol.trim() ? a.symbol.trim() : void 0;
       if (directory) {
-        range = { from: 1, to: Number.MAX_SAFE_INTEGER };
+        range2 = { from: 1, to: Number.MAX_SAFE_INTEGER };
       } else if (symbol) {
         const [parsed] = isNew ? [] : await parseInWorker(p, [t]);
         const r0 = isNew ? void 0 : symbolRange(p, t, symbol, () => parsed);
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`;
-        range = r0;
+        range2 = r0;
       } else if (Number.isFinite(Number(a.from)) && Number.isFinite(Number(a.to))) {
-        range = { from: Number(a.from), to: Number(a.to) };
+        range2 = { from: Number(a.from), to: Number(a.to) };
       } else {
         if (!isNew && await baseText(s, p).catch(() => "") !== void 0) return `error: file claims need symbol or both from and to; to claim all of ${p}, pass from=1 and to=<last line>`;
         wholeNewFile = true;
-        range = { from: 1, to: n };
+        range2 = { from: 1, to: n };
       }
-      const r = directory ? range : clampRange(range.from, range.to, n);
+      const r = directory ? range2 : clampRange(range2.from, range2.to, n);
       const localDigest = !isNew && !directory ? claimDigest(t, r.from, r.to) : void 0;
       const claimedHash = authorizesText(s.policyStore.policy, p) ? localDigest : void 0;
       const intentFull = symbol ? `${symbol}: ${intent}` : intent;
@@ -58804,12 +59772,12 @@ function handlers3(state) {
         const first = group[0];
         const map2 = await claimMapInMyText(s, first, t ?? "");
         for (const c of group) {
-          const range2 = map2(c);
-          if (claimsOverlap({ path: c.path, ...range2 }, { path: p, ...r })) overlaps.push({ claim: c, range: range2 });
+          const range3 = map2(c);
+          if (claimsOverlap({ path: c.path, ...range3 }, { path: p, ...r })) overlaps.push({ claim: c, range: range3 });
         }
       }
-      for (const { claim: o, range: range2 } of overlaps)
-        out.push(range2.approximate ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} \xB7 ${o.intent}); their lines may have shifted relative to yours` : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`);
+      for (const { claim: o, range: range3 } of overlaps)
+        out.push(range3.approximate ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} \xB7 ${o.intent}); their lines may have shifted relative to yours` : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
         if (!s.graph.isReady) out.push(`partial: ${s.graph.indexingStatus}`);
         for (const pl2 of plans) {
@@ -58886,9 +59854,9 @@ function releaseClaimsOnDone(s, keep, name = s.me.name, clearScope = true) {
   if (released.length) void s.post(s.me, { type: "note", priority: "fyi", text: `${name} released ${released.length} claim(s)${plans ? `; ended ${plans} plan(s)` : ""}` });
   return released.length;
 }
-function postPlanChange(s, c, plan2, status, text, replacedBy, priority2) {
+function postPlanChange(s, c, plan2, status, text2, replacedBy, priority2) {
   const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter((p) => p !== s.me.name);
-  const base = { type: "plan", status, claimId: c.id, path: c.path, plan: plan2, text, ...replacedBy ? { replacedBy } : {}, priority: priority2 ?? "interrupt" };
+  const base = { type: "plan", status, claimId: c.id, path: c.path, plan: plan2, text: text2, ...replacedBy ? { replacedBy } : {}, priority: priority2 ?? "interrupt" };
   const orig = s.post(s.me, { ...base, priority: "fyi" });
   for (const p of deps) void s.post(s.me, { ...base, to: p, copyOf: orig.id }, { auto: true });
   return deps.length ? [`plan ${status}: ${formatPlans([plan2])} \u2014 told ${deps.map((d) => `${d}'s agent`).join(", ")} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan2])} \u2014 nobody had been shown it`];
@@ -59053,9 +60021,9 @@ function propertyValueAt(source, start) {
 function excludesRoom(name, source) {
   source = stripComments(source);
   if (!ROOM_TOKEN.test(source)) return false;
-  const nested = (keys2) => {
+  const nested = (keys3) => {
     let values = [source];
-    for (const key2 of keys2) values = values.flatMap((value2) => propertyValues(value2, key2));
+    for (const key2 of keys3) values = values.flatMap((value2) => propertyValues(value2, key2));
     return values.some((value2) => ROOM_TOKEN.test(value2));
   };
   if (name.startsWith("vite.config.")) return nested(["server", "watch", "ignored"]);
@@ -59271,7 +60239,7 @@ function handlers4(state) {
       if (a.host !== void 0 && a.host !== "codex" && a.host !== "claude") return "error: host must be codex or claude";
       const host = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === "codex" ? "codex" : "claude";
       if (host === "codex" && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
-        const mismatch = codexRoomVersionMismatch();
+        const mismatch = codexRoomCompatibilityMismatch(void 0, installedCodexRoomContract(), state.log);
         if (mismatch) return `error: ${mismatch}`;
       }
       const runtime = workerRuntime(host, typeof a.model === "string" ? a.model : void 0, requestedEffort);
@@ -59676,12 +60644,13 @@ init_src4();
 init_local();
 
 // packages/room-mcp/src/tools/scope.ts
+init_binding();
 init_src4();
 import path49 from "node:path";
 
 // packages/room-mcp/src/browser-open.ts
 import { spawn as spawn5 } from "node:child_process";
-import { createHash as createHash18, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash20, randomUUID as randomUUID9 } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path45 from "node:path";
 function launchBrowserHandler(command2, args2) {
@@ -59710,11 +60679,11 @@ async function openRoomBrowser(url, directory, options = {}) {
   const quoted = JSON.stringify(url).replace(/[<>&\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const escaped = url.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const script = `location.replace(${quoted})`;
-  const digest = createHash18("sha256").update(script).digest("base64");
+  const digest = createHash20("sha256").update(script).digest("base64");
   const html = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${digest}'; base-uri 'none'"><title>Opening Room</title><p>Opening your room. <a href="${escaped}">Continue to Room</a></p><script>${script}</script>`;
   await mkdir(directory, { recursive: true, mode: 448 });
   const destination = new URLSearchParams(parsed.hash.slice(1)).get("room") ?? parsed.href.split("#")[0];
-  const name = createHash18("sha256").update(destination).digest("hex").slice(0, 24);
+  const name = createHash20("sha256").update(destination).digest("hex").slice(0, 24);
   const entry = path45.join(directory, `${name}.html`), temporary = path45.join(directory, `${randomUUID9()}.tmp`);
   try {
     await writeFile(temporary, html, { mode: 384, flag: "wx" });
@@ -59734,6 +60703,8 @@ async function openRoomBrowser(url, directory, options = {}) {
 init_config();
 
 // packages/room-mcp/src/doctor.ts
+init_client_compat();
+init_binding();
 init_config();
 init_credentials();
 import fs51 from "node:fs";
@@ -59745,8 +60716,8 @@ import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // packages/room-mcp/src/stale-version.ts
 init_plugin();
-import { existsSync as existsSync3, readFileSync as readFileSync2, readdirSync as readdirSync2 } from "node:fs";
-import { basename as basename4, dirname as dirname4, join as join4, resolve as resolve4 } from "node:path";
+import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync2 } from "node:fs";
+import { basename as basename4, dirname as dirname4, join as join5, resolve as resolve4 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 function version2(value2) {
   if (typeof value2 !== "string" || !/^\d+\.\d+\.\d+$/.test(value2)) return void 0;
@@ -59762,17 +60733,17 @@ function pluginRoot(modulePath) {
   return basename4(dir) === "src" && basename4(dirname4(dir)) === "room-mcp" ? resolve4(dir, "../../../plugins/room") : resolve4(dir, "..");
 }
 function createStaleVersionWarning(modulePath = fileURLToPath4(import.meta.url), runningVersion = plugin_default.version, disk = {}) {
-  const readFile = disk.readFile ?? ((path60) => readFileSync2(path60, "utf8"));
-  const exists = disk.exists ?? existsSync3;
+  const readFile = disk.readFile ?? ((path60) => readFileSync3(path60, "utf8"));
+  const exists = disk.exists ?? existsSync4;
   const readdir3 = disk.readdir ?? readdirSync2;
   const now = disk.now ?? Date.now;
   const ttlMs = disk.ttlMs ?? 3e4;
   const root = pluginRoot(modulePath);
   let checkedAt = -Infinity;
-  let cached2;
+  let cached3;
   const readVersion = (dir) => {
     try {
-      const parsed = JSON.parse(readFile(join4(dir, ".claude-plugin", "plugin.json")));
+      const parsed = JSON.parse(readFile(join5(dir, ".claude-plugin", "plugin.json")));
       const value2 = parsed && typeof parsed === "object" && "version" in parsed ? parsed.version : void 0;
       return version2(value2) ? value2 : void 0;
     } catch {
@@ -59781,17 +60752,17 @@ function createStaleVersionWarning(modulePath = fileURLToPath4(import.meta.url),
   };
   return () => {
     const time3 = now();
-    if (time3 - checkedAt < ttlMs) return cached2;
+    if (time3 - checkedAt < ttlMs) return cached3;
     checkedAt = time3;
-    cached2 = void 0;
+    cached3 = void 0;
     const running = version2(runningVersion);
     if (!running) return void 0;
     let installed;
-    if (exists(join4(root, ".orphaned_at"))) {
+    if (exists(join5(root, ".orphaned_at"))) {
       try {
         for (const entry of readdir3(dirname4(root))) {
-          const sibling = join4(dirname4(root), entry);
-          if (exists(join4(sibling, ".orphaned_at"))) continue;
+          const sibling = join5(dirname4(root), entry);
+          if (exists(join5(sibling, ".orphaned_at"))) continue;
           const candidate = readVersion(sibling);
           if (candidate && (!installed || compare3(version2(candidate), version2(installed)) > 0)) installed = candidate;
         }
@@ -59799,9 +60770,9 @@ function createStaleVersionWarning(modulePath = fileURLToPath4(import.meta.url),
       }
     } else installed = readVersion(root);
     if (installed && compare3(version2(installed), running) > 0) {
-      cached2 = `this session runs Room ${runningVersion}; ${installed} is installed. Restart the session or reconnect Room (/mcp) to use it.`;
+      cached3 = `this session runs Room ${runningVersion}; ${installed} is installed. Restart the session or reconnect Room (/mcp) to use it.`;
     }
-    return cached2;
+    return cached3;
   };
 }
 
@@ -59842,8 +60813,8 @@ function atLeast(raw, min2) {
   for (let i = 0; i < 3; i++) if (got[i] !== min2[i]) return got[i] > min2[i];
   return true;
 }
-function hookVersion(text) {
-  return text?.match(/export const HOOKS_VERSION = ['"]([^'"]+)['"]/)?.[1];
+function hookVersion(text2) {
+  return text2?.match(/export const HOOKS_VERSION = ['"]([^'"]+)['"]/)?.[1];
 }
 function codexRoomHookTrustStatus(toml) {
   if (!toml) return "absent";
@@ -59914,9 +60885,17 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
     if (f.serverRedirect) add2("WARN", "team server", `server redirected /health (${f.serverRedirect}); check ROOM_SERVER`, "Check ROOM_SERVER and server status");
     else if (!f.serverHealth) add2("WARN", "team server", "/health unavailable", "Check ROOM_SERVER and server status");
     else if (f.serverStorage === "failing") add2("FAIL", "team server", "the server's storage is failing", "Check server storage before joining");
-    else if (f.serverSchema === void 0) add2("FAIL", "team server", "the server is older than Room 0.17: deploy 0.17", "Deploy Room 0.17 on the server");
-    else if (f.serverSchema !== 2 || f.serverHub !== 1) add2("FAIL", "team server", `server schema ${f.serverSchema}, hub ${f.serverHub ?? "missing"}; need schema 2, hub 1`, "Deploy a compatible Room 0.17 server");
-    else add2("PASS", "team server", "schema 2, hub 1; storage healthy");
+    else if (!("serverCompat" in f) && f.serverSchema === void 0) add2("FAIL", "team server", "the server is older than Room 0.17; update the server to 0.17.0 or newer", "Deploy Room 0.17 or newer on the server");
+    else if (!("serverCompat" in f) && (f.serverSchema !== 2 || f.serverHub !== 1)) add2("FAIL", "team server", `the server reports schema ${f.serverSchema}, hub ${f.serverHub ?? "missing"}; the supported contract without negotiation is schema 2, hub 1: update the server`, "Deploy a compatible Room server");
+    else {
+      try {
+        const profile = compatibilityFromHealth({ ok: true, schema: f.serverSchema, hub: f.serverHub, ..."serverCompat" in f ? { compat: f.serverCompat } : {} });
+        const ad = profile.offer;
+        add2("PASS", "team server", `hub ${ad.hub.min}${ad.hub.max === ad.hub.min ? "" : `\u2013${ad.hub.max}`}; read schemas ${ad.schemas.read.join(",")}; write schemas ${ad.schemas.write.join(",")}; ${profile.legacy ? "legacy adapter" : "negotiating contract"}; storage healthy`);
+      } catch (error2) {
+        add2("FAIL", "team server", error2 instanceof Error ? error2.message : String(error2), "Update the affected Room client or server, then reconnect Room (/mcp) or restart the session");
+      }
+    }
     if (f.credentialError) add2("FAIL", "team login", f.credentialError, "Repair or move aside the credentials file, then run room_login");
     else if (!f.credential && f.sharedToken) add2("PASS", "team login", "shared token configured; login check does not apply");
     else if (!f.credential) add2("WARN", "team login", "login missing", "Run room_login");
@@ -59925,6 +60904,7 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
     else if (f.credentialStatus === "rejected") add2("WARN", "team login", "credential present; the server did not confirm it", "Deploy Room 0.17, then retry room doctor");
     else add2("WARN", "team login", "credential present (not verified)", "Check server connection, then retry room doctor");
   } else add2(f.relayFile ? f.relayHealth ? "PASS" : "WARN" : "PASS", "local relay", f.relayFile ? f.relayHealth ? "discovery and /health OK" : "discovery exists; /health unavailable" : "not started yet", "Join the local room to start its relay");
+  if (f.hookCompatibility) add2("WARN", "hook delivery contract", f.hookCompatibility, "Update the hook or reconnect Room (/mcp) or restart the session");
   if (f.legacyRelay) add2("WARN", "Room 0.16 session", "a Room 0.16 local relay is still running in this clone", "End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)");
   if (f.canonicalRelayWarning) add2("WARN", "canonical relay", f.canonicalRelayWarning, "Quit the older Room session or reconnect Room there");
   add2(f.inSession ? f.stale ? "WARN" : "PASS" : "PASS", "running session", f.inSession ? f.stale ?? "matches installed bundle" : "n/a", "Restart the host session or reconnect Room (/mcp)");
@@ -59983,7 +60963,7 @@ async function probeHealth(url, fetcher = fetch) {
     const r = await fetcher(url, { signal: AbortSignal.timeout(3e3), redirect: "manual" });
     if (!r.ok) return { ok: false, ...r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {} };
     const body = await r.json();
-    return { ok: body.ok === true, schema: body.schema, hub: body.hub, storage: body.storage };
+    return { ok: body.ok === true, schema: body.schema, hub: body.hub, storage: body.storage, ..."compat" in body ? { compat: body.compat } : {} };
   } catch {
     return { ok: false };
   }
@@ -59997,6 +60977,20 @@ async function probeCredential(url, session, fetcher = fetch) {
     return typeof body.login === "string" && body.login ? { status: "valid", login: body.login } : { status: "unverified" };
   } catch {
     return { status: "unverified" };
+  }
+}
+function hookCompatibilityWarning(dir) {
+  if (!dir) return void 0;
+  try {
+    const parse3 = (name) => {
+      const file = path46.join(dir, name);
+      if (fs51.statSync(file).size > 4096) throw new Error("oversize hook endpoint diagnostic");
+      return JSON.parse(fs51.readFileSync(file, "utf8"));
+    };
+    const endpoint = parse3("mcp.json"), status = parse3("hook-compat.json");
+    if (status.degraded && typeof endpoint.incarnation === "string" && status.incarnation === endpoint.incarnation && status.pid === endpoint.pid)
+      return "Room hook and running MCP have no verified common contract; update the hook or reconnect Room (/mcp) or restart the session. Messages remain owed.";
+  } catch {
   }
 }
 async function collectDoctorFacts(dir, inSession = false, selected) {
@@ -60076,6 +61070,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
       f.serverSchema = health.schema;
       f.serverHub = health.hub;
       f.serverStorage = health.storage;
+      if ("compat" in health) f.serverCompat = health.compat;
       if (session) {
         u.pathname = "/auth/me";
         const credential = await probeCredential(u.toString(), session);
@@ -60096,6 +61091,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
   } catch (error2) {
     f.configError = error2 instanceof Error ? error2.message : String(error2);
   }
+  f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir());
   return f;
 }
 async function runDoctor(dir, { inSession = false, selected, sessionWarning, sessionBound } = {}) {
@@ -60247,9 +61243,9 @@ import fs53 from "node:fs";
 import path48 from "node:path";
 import { StringDecoder as StringDecoder2 } from "node:string_decoder";
 var ACTIVITY_MAX = 80;
-var clean2 = (text) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+var clean2 = (text2) => text2.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 var str2 = (value2) => typeof value2 === "string" && value2.trim() ? value2 : void 0;
-function bounded2(verb, subject = "", max2 = ACTIVITY_MAX) {
+function bounded3(verb, subject = "", max2 = ACTIVITY_MAX) {
   const label = clean2(subject ? `${verb} ${subject}` : verb);
   if (label.length <= max2 || !subject) return label.slice(0, max2);
   return `${verb} \u2026${clean2(subject).slice(-(max2 - verb.length - 2))}`;
@@ -60292,7 +61288,7 @@ function commandLabel(command2) {
   const program = path48.posix.basename(first);
   if (!/^[\w.+/~-]+$/.test(first) || first.startsWith("-") || !/^[\w.+-]{1,40}$/.test(program)) return "running a command";
   if (TRIVIAL.has(program)) return void 0;
-  return bounded2("running", SUBCOMMANDS.get(program)?.includes(second) ? `${program} ${second}` : program);
+  return bounded3("running", SUBCOMMANDS.get(program)?.includes(second) ? `${program} ${second}` : program);
 }
 function toolLabel(name) {
   const tool = name.startsWith("mcp__") ? name.split("__").at(-1) ?? name : name;
@@ -60306,9 +61302,9 @@ function claudeTool(name, input, dir) {
     case "MultiEdit":
     case "Write":
     case "NotebookEdit":
-      return file ? bounded2("editing", shownPath(file, dir)) : void 0;
+      return file ? bounded3("editing", shownPath(file, dir)) : void 0;
     case "Read":
-      return file ? bounded2("reading", shownPath(file, dir)) : void 0;
+      return file ? bounded3("reading", shownPath(file, dir)) : void 0;
     case "Bash": {
       const command2 = str2(input.command);
       return command2 ? commandLabel(command2) : void 0;
@@ -60333,7 +61329,7 @@ function codexItem(item, dir) {
       const paths = item.changes.map((c) => str2(c?.path)).filter((p) => !!p);
       if (!paths.length) return void 0;
       const more = paths.length > 1 ? ` (+${paths.length - 1} more)` : "";
-      return bounded2("editing", shownPath(paths[0], dir), ACTIVITY_MAX - more.length) + more;
+      return bounded3("editing", shownPath(paths[0], dir), ACTIVITY_MAX - more.length) + more;
     }
     case "command_execution": {
       const command2 = str2(item.command);
@@ -60606,6 +61602,9 @@ ${url}`;
         const wakeNote = claudeWakeNote(s, "company");
         if (wakeNote) out.unshift(wakeNote);
       }
+      const hookWarning = hookCompatibilityWarning(createSessionBinding(s.dir).dir());
+      if (hookWarning) out.push(`WARN: ${hookWarning}`);
+      if (s.compatibilityRefusal) out.push(`WARN: ${s.compatibilityRefusal}`);
       if (s.closed) out.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}`);
       if (typeof a.path === "string" && a.path) {
         out.push(await pathState(a));
@@ -60755,9 +61754,9 @@ ${url}`;
       out.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       let cut = false;
       for (const x of msgs) {
-        const text = formatRoomMessage(s, x);
-        const line = a.all === true ? text : oneLine(text);
-        cut ||= line.length < text.trimEnd().length;
+        const text2 = formatRoomMessage(s, x);
+        const line = a.all === true ? text2 : oneLine(text2);
+        cut ||= line.length < text2.trimEnd().length;
         out.push(`  - [${x.id}] ${line}`);
       }
       if (cut) out.push("  (long messages cut to one line; room_state all=true shows them in full)");
@@ -60802,14 +61801,14 @@ function createAreas(deps) {
     if (hit?.head === head) return hit.areas;
     let areas = Areas.topLevel();
     for (const p of CODEOWNERS_PATHS) {
-      let text;
+      let text2;
       try {
-        text = await gitShow(s.dir, head, p);
+        text2 = await gitShow(s.dir, head, p);
       } catch {
-        text = void 0;
+        text2 = void 0;
       }
-      if (text !== void 0) {
-        areas = Areas.fromCodeowners(text);
+      if (text2 !== void 0) {
+        areas = Areas.fromCodeowners(text2);
         log2(`areas from ${p}: ${areas.areas.join(", ") || "(none)"}`);
         break;
       }
@@ -60887,9 +61886,9 @@ function createAreas(deps) {
   return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine: claimLine2, ledgerLines, scopeLine: scopeLine2, personLine: personLine2 };
 }
 var RECENT_LINE_MAX = 160;
-var oneLine = (text) => {
-  const first = text.split("\n", 1)[0].trimEnd();
-  return first.length > RECENT_LINE_MAX ? `${first.slice(0, RECENT_LINE_MAX - 1)}\u2026` : first === text.trimEnd() ? first : `${first}\u2026`;
+var oneLine = (text2) => {
+  const first = text2.split("\n", 1)[0].trimEnd();
+  return first.length > RECENT_LINE_MAX ? `${first.slice(0, RECENT_LINE_MAX - 1)}\u2026` : first === text2.trimEnd() ? first : `${first}\u2026`;
 };
 var CLAIM_PLACES = 3;
 var dirOf = (key2) => key2.endsWith("/") ? key2 : key2.slice(0, key2.lastIndexOf("/") + 1);
@@ -60911,10 +61910,10 @@ function claimPlaces(paths) {
   for (const key2 of places.keys()) if (!key2.endsWith("/")) files3.set(dirOf(key2), (files3.get(dirOf(key2)) ?? 0) + 1);
   regroup((key2) => !key2.endsWith("/") && dirOf(key2) && files3.get(dirOf(key2)) > 1 ? dirOf(key2) : key2);
   while (places.size > CLAIM_PLACES) {
-    const keys2 = [...places.keys()];
+    const keys3 = [...places.keys()];
     let deepest = "";
-    for (let i = 0; i < keys2.length; i++) for (let j = i + 1; j < keys2.length; j++) {
-      const common = commonDir(dirOf(keys2[i]), dirOf(keys2[j]));
+    for (let i = 0; i < keys3.length; i++) for (let j = i + 1; j < keys3.length; j++) {
+      const common = commonDir(dirOf(keys3[i]), dirOf(keys3[j]));
       if (common.length > deepest.length) deepest = common;
     }
     if (!deepest) break;
@@ -61153,7 +62152,7 @@ function handlers6(state) {
       if (choice.server !== LOCAL) {
         const admit2 = ctx.admit ?? checkTeamAdmission;
         try {
-          await timed2("preflight", () => admit2(choice.server, targetRoom, { token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true, log: log2 }));
+          await timed2("preflight", () => admit2(choice.server, targetRoom, { dir, token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true, log: log2 }));
         } catch (e) {
           return refused(e);
         }
@@ -61862,8 +62861,8 @@ init_git();
 init_kept_publication();
 var WAIT_DEFAULT = 3e4;
 var WAIT_MAX = 1e5;
-var questionPreview = (text) => {
-  const line = text.replace(/\s+/g, " ").trim();
+var questionPreview = (text2) => {
+  const line = text2.replace(/\s+/g, " ").trim();
   return line.length > 80 ? `${line.slice(0, 79)}\u2026` : line;
 };
 var WAIT_SIGNAL = /* @__PURE__ */ Symbol("room_wait request signal");
@@ -61929,8 +62928,8 @@ function handlers8(state) {
     return { text: `nobody called ${name} is or was in this room; participants: ${[...roomNames].sort().join(", ")}`, terminal: true };
   };
   const unavailableQuestion = (s, questionId) => {
-    const cached2 = unavailableQuestions.get(questionId);
-    if (cached2) return cached2;
+    const cached3 = unavailableQuestions.get(questionId);
+    if (cached3) return cached3;
     const question = s.room.message(questionId);
     if (question?.type !== "question") return void 0;
     if (!question.to) return void 0;
@@ -61990,8 +62989,8 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       }
       const exactWorkerRoom = to2 && wsr && wsr !== lead && (myWorkers(wsr).some((w) => w.name === to2) || wsr.room.retiredWorkers().some((w) => w.name === to2)) ? wsr : void 0;
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
-      const text = typeof a.text === "string" && a.text ? a.text : typeof a.message === "string" ? a.message : "";
-      if (!text) return "error: text is required";
+      const text2 = typeof a.text === "string" && a.text ? a.text : typeof a.message === "string" ? a.message : "";
+      if (!text2) return "error: text is required";
       if (to2 === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
       if (to2 && !rooms.all().some((room) => known(room).has(to2))) {
         const valid = [...new Set(rooms.all().flatMap((room) => [...known(room)]))].sort();
@@ -62022,7 +63021,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       }
       const paths = sendType === "changed" && Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
       const symbols = sendType === "changed" && Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
-      const body = sendType === "changed" ? withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: alias(s, question?.from ?? to2), inReplyTo: inferredQuestionId ?? a.inReplyTo, text }) : withPr({ type: "note", text, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
+      const body = sendType === "changed" ? withPr({ type: "changed", paths, summary: text2, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text: text2, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: alias(s, question?.from ?? to2), inReplyTo: inferredQuestionId ?? a.inReplyTo, text: text2 }) : withPr({ type: "note", text: text2, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
       let posted;
       let baseNote;
       const sent = () => {
@@ -62059,7 +63058,7 @@ ${baseNote}` };
       };
       let resumed = false;
       if (resume) {
-        const result2 = await rooms.resumeWorker(s, addressedWorker, text, { spawner: state.ctx?.spawner, claudeChannel: state.ctx?.config?.claudeChannel, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async () => {
+        const result2 = await rooms.resumeWorker(s, addressedWorker, text2, { spawner: state.ctx?.spawner, claudeChannel: state.ctx?.config?.claudeChannel, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async () => {
           if (refresh) {
             const tag = addressedWorker.tag;
             const registry2 = await registryForDir(s.dir);
@@ -62382,7 +63381,7 @@ init_disk_text();
 init_git();
 import fs56 from "node:fs";
 import path51 from "node:path";
-import { createHash as createHash19, randomUUID as randomUUID11 } from "node:crypto";
+import { createHash as createHash21, randomUUID as randomUUID11 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -62495,14 +63494,14 @@ var HooksBridge = class {
         if (entry?.change === "D") return "";
         if (entry?.hash) {
           try {
-            let text;
-            if (entry.state === "shared") text = owner.texts.get(c.path);
+            let text2;
+            if (entry.state === "shared") text2 = owner.texts.get(c.path);
             else {
               const size2 = Number((await git(this.s.dir, ["cat-file", "-s", entry.hash])).trim());
               if (!Number.isSafeInteger(size2) || size2 > DISK_TEXT_LIMIT) return void 0;
-              text = await git(this.s.dir, ["cat-file", "-p", entry.hash]);
+              text2 = await git(this.s.dir, ["cat-file", "-p", entry.hash]);
             }
-            if (text !== void 0 && Buffer.byteLength(text) <= DISK_TEXT_LIMIT && gitBlobHash(text, entry.hash.length === 64 ? "sha256" : "sha1") === entry.hash) return text;
+            if (text2 !== void 0 && Buffer.byteLength(text2) <= DISK_TEXT_LIMIT && gitBlobHash(text2, entry.hash.length === 64 ? "sha256" : "sha1") === entry.hash) return text2;
           } catch {
           }
         } else if (!entry && !(owner.roomSalt && owner.head.excluded.includes(digestPath(owner.roomSalt, c.path)))) {
@@ -62540,7 +63539,7 @@ var HooksBridge = class {
 var hookHealth = /* @__PURE__ */ new WeakMap();
 var PROCESS_STARTED_AT = Date.now();
 function hookReceiptPath(sessionDir, sessionId) {
-  return path51.join(sessionDir, "..", "..", "hook-receipts", createHash19("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
+  return path51.join(sessionDir, "..", "..", "hook-receipts", createHash21("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
 }
 function readBoundedJson(file) {
   let fd;
@@ -62655,8 +63654,8 @@ var CodexTurnProbe = class {
     return age !== void 0 && age >= 0 && age < CONTACT_MS ? { kind: "active", source: "contact" } : { kind: "unknown", source: "legacy", reason: "no-turn-evidence" };
   }
   async find(threadId) {
-    const cached2 = this.cursors.get(threadId);
-    if (cached2) return cached2.file;
+    const cached3 = this.cursors.get(threadId);
+    if (cached3) return cached3.file;
     if (!/^[a-zA-Z0-9-]{1,128}$/.test(threadId)) return void 0;
     const root = path52.join(this.options.home?.() ?? process.env.CODEX_HOME ?? path52.join(os14.homedir(), ".codex"), "sessions");
     try {
@@ -62765,10 +63764,10 @@ var CodexTurnProbe = class {
     }
   }
   parseEvent(line) {
-    const text = typeof line === "string" ? line : line.toString("utf8");
-    if (!text.includes("task_started") && !text.includes("task_complete") && !text.includes("turn_aborted")) return void 0;
+    const text2 = typeof line === "string" ? line : line.toString("utf8");
+    if (!text2.includes("task_started") && !text2.includes("task_complete") && !text2.includes("turn_aborted")) return void 0;
     try {
-      const record2 = JSON.parse(text);
+      const record2 = JSON.parse(text2);
       if (record2.type === "event_msg" && typeof record2.payload?.type === "string" && TURN_EVENTS.has(record2.payload.type)) return record2.payload.type;
     } catch {
     }
@@ -63214,8 +64213,8 @@ var WakeReconciler = class {
         if (!sha) continue;
         const key2 = `${s.roomName}\0${m.id}`;
         live.add(key2);
-        const cached2 = this.releaseChecks.get(key2);
-        if (cached2?.own || cached2 && now - cached2.at < RELEASE_RECHECK_MS) continue;
+        const cached3 = this.releaseChecks.get(key2);
+        if (cached3?.own || cached3 && now - cached3.at < RELEASE_RECHECK_MS) continue;
         checks.push({ s, sha, key: key2 });
       }
     }
@@ -63268,11 +64267,11 @@ init_leases2();
 init_worker_registry();
 import fs59 from "node:fs";
 import path54 from "node:path";
-import { createHash as createHash20, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash22, randomUUID as randomUUID12 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
-function noticeId2(kind, text) {
-  return `n:${kind}:${createHash20("sha256").update(text).digest("hex").slice(0, 16)}`;
+function noticeId2(kind, text2) {
+  return `n:${kind}:${createHash22("sha256").update(text2).digest("hex").slice(0, 16)}`;
 }
 var Batch = class {
   constructor(id3, kind, leaseMs) {
@@ -63430,8 +64429,8 @@ var Ledger = class {
    * Offer a local notice until a confirmed handoff receipts it. `onDelivered` runs after that receipt, or
    * at once when notices.json already holds one (a crash between the receipt and the caller's own record).
    */
-  notice(kind, text, onDelivered) {
-    const n = { id: noticeId2(kind, text), text };
+  notice(kind, text2, onDelivered) {
+    const n = { id: noticeId2(kind, text2), text: text2 };
     if (onDelivered) this.onDelivered.set(n.id, onDelivered);
     if (this.deliveredNotices()[n.id]) this.fireDelivered(n.id);
     else if (!this.pendingNotices.has(n.id)) {
@@ -63597,7 +64596,7 @@ function spawnFrontier(s, id3, name) {
 
 // packages/room-mcp/src/relevance.ts
 init_src();
-import { execFileSync as execFileSync9 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 var RECHECK_MS2 = 5e3;
 function createRelevance(now = Date.now) {
   const integrated = /* @__PURE__ */ new Map();
@@ -63608,7 +64607,7 @@ function createRelevance(now = Date.now) {
     if (!sha) return true;
     let head;
     try {
-      head = execFileSync9("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
+      head = execFileSync10("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
     } catch {
       return true;
     }
@@ -63617,7 +64616,7 @@ function createRelevance(now = Date.now) {
     if (known === true) return false;
     if (known !== void 0 && now() - known < RECHECK_MS2) return true;
     try {
-      execFileSync9("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
+      execFileSync10("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
       integrated.set(key2, true);
       return false;
     } catch {
@@ -63674,8 +64673,8 @@ var SoloGate = class {
 function workerNotice(m, workers) {
   if (workers.has(m.from)) return true;
   if (m.from !== "room" || !("text" in m) || typeof m.text !== "string") return false;
-  const text = m.text;
-  return [...workers].some((name) => text.includes(name));
+  const text2 = m.text;
+  return [...workers].some((name) => text2.includes(name));
 }
 
 // packages/room-mcp/src/tools/state.ts
@@ -63816,7 +64815,7 @@ function createHandlerState(ctx) {
   const inboxServices = createInbox({ ledger: ledger2, rooms, log: log2, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion });
   const prs = createPrs({ ctx, presences, log: log2, now });
   const share = createShare();
-  const join5 = createJoin({
+  const join6 = createJoin({
     ctx,
     log: log2,
     doJoin,
@@ -63826,11 +64825,11 @@ function createHandlerState(ctx) {
     presences,
     runningWorkers: (s) => registryRunningWorkers(s, rooms)
   });
-  const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, log: log2, cleanupMine: join5.cleanupMine, now });
+  const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, log: log2, cleanupMine: join6.cleanupMine, now });
   const company = (s) => hasCompany(s, workers.runningWorkers(s).map((r) => r.w), now());
   const state = {
     ...workers,
-    ...join5,
+    ...join6,
     ...share,
     ...prs,
     ...inboxServices,
@@ -63986,8 +64985,8 @@ init_timing();
 init_leases2();
 import fs60 from "node:fs";
 import path55 from "node:path";
-import { createHash as createHash21, randomBytes as randomBytes5 } from "node:crypto";
-var hash2 = (text) => createHash21("sha256").update(text).digest("hex");
+import { createHash as createHash23, randomBytes as randomBytes5 } from "node:crypto";
+var hash2 = (text2) => createHash23("sha256").update(text2).digest("hex");
 var CollectionReview = class {
   file;
   constructor(registryRoot, worktree) {
@@ -64707,7 +65706,7 @@ repeat with force=true to delete them`;
     }
     const destinations = [];
     let preparedCount = 0;
-    for (const [p, text] of result2.merged) {
+    for (const [p, text2] of result2.merged) {
       if (preparedCount++ % COLLECT_YIELD_EVERY === 0) await setImmediate8();
       const file = safePath(leadRoot, p);
       const identity3 = fileIdentity(file);
@@ -64716,7 +65715,7 @@ repeat with force=true to delete them`;
       if ((before === null ? null : before.toString("latin1")) !== result2.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
       const oldMode = identity3?.mode ?? 420;
       const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w), baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
-      const after = text === null ? null : Buffer.from(text, "latin1");
+      const after = text2 === null ? null : Buffer.from(text2, "latin1");
       if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
       changes.push({ p, file, before, after, mode: mode2, oldMode });
     }
@@ -65083,6 +66082,7 @@ function createTools(ctx) {
     if (toolCallAborted()) return "error: tool call cancelled";
     const current2 = ctx.getSession();
     current2?.daemon.touch();
+    if (current2?.compatibilityRefusal && !["room_state", "room_leave"].includes(name)) return `error: ${current2.compatibilityRefusal}`;
     const closed = current2?.closed;
     const offlineTool = name === "room_state" || name === "room_send" || name === "room_wait" || name === "room_collect";
     if (closed && name !== "room_leave" && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith("logged out") ? "run room_login, then room_leave and room_join" : closed.reason.includes("revoked") ? "ask for access, then room_leave and room_join" : "room_leave, then room_create to reopen"}`;
@@ -65148,8 +66148,8 @@ not done: ${name} writes under your name, and coordination is paused; retry once
     waiting: () => waits > 0,
     joinedSessions: () => state.rooms.all(),
     attachWorkersRoom: (s, lead) => state.rooms.add(s, "workers", lead),
-    startupNotice(text) {
-      startup = ledger2.notice("startup", text);
+    startupNotice(text2) {
+      startup = ledger2.notice("startup", text2);
       withdrawStartup();
     },
     hookSelect(budget = INBOX_BUDGET) {
@@ -65160,7 +66160,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       const notices = ledger2.notices(batch).map((n) => n.text);
       if (s?.rejected) notices.unshift(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`);
       const line = ({ s: source, m }) => `${source === s ? "" : "[workers room] "}${formatMsg(m)}`;
-      const room = budget - notices.reduce((n, text) => n + text.length + 1, 0);
+      const room = budget - notices.reduce((n, text2) => n + text2.length + 1, 0);
       const { chosen, more } = s ? selectWithin(ledger2, [s, ...ws && ws !== s ? [ws] : []], batch, room, (c) => line(c).length + 3, false, state.audible) : { chosen: [], more: 0 };
       const items = chosen.map((c) => ({ id: c.m.id, priority: c.m.priority, line: line(c) }));
       return { batch, items, notices, more };
@@ -65212,12 +66212,12 @@ not done: ${name} writes under your name, and coordination is paused; retry once
 
 ${body}` : body;
           const warning = name === "room_state" ? staleVersionWarning() : void 0;
-          const text = warning ? `${warning}
+          const text2 = warning ? `${warning}
 ${result2}` : result2;
           if (signal?.aborted) ledger2.release(batch);
-          else if (handoff2) handoff2({ text, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
+          else if (handoff2) handoff2({ text: text2, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
           else ledger2.commit(batch);
-          return text;
+          return text2;
         } catch (e) {
           ledger2.release(batch);
           throw e;
@@ -65643,9 +66643,9 @@ var FlushedStdioTransport = class extends StdioServerTransport {
     });
   }
 };
-function carries(message2, text) {
+function carries(message2, text2) {
   const content = "result" in message2 ? message2.result.content : void 0;
-  return Array.isArray(content) && content.some((c) => typeof c?.text === "string" && c.text.includes(text));
+  return Array.isArray(content) && content.some((c) => typeof c?.text === "string" && c.text.includes(text2));
 }
 
 // packages/room-mcp/src/index.ts
@@ -65653,6 +66653,7 @@ init_session();
 init_binding();
 
 // packages/room-mcp/src/arbitration.ts
+init_plugin();
 init_leases2();
 init_worker_process();
 import fs62 from "node:fs";
@@ -65661,12 +66662,40 @@ import path57 from "node:path";
 import { randomBytes as randomBytes6 } from "node:crypto";
 async function startArbitration(o) {
   const key2 = randomBytes6(24).toString("hex");
+  const incarnation = randomBytes6(16).toString("hex");
   const batches = /* @__PURE__ */ new Map();
-  const handle = (req) => {
-    if (req.key !== key2) return { ok: false, reason: "key" };
+  const handle = (req, connection) => {
+    if (req.key !== key2) {
+      if (req.op === "hello") connection.rejected = true;
+      return { ok: false, reason: "key" };
+    }
+    if (connection.rejected) return { ok: false, reason: "incompatible" };
+    if (req.op === "hello") {
+      const bound2 = o.binding.bound();
+      if (!bound2 || o.canSelect?.() === false) {
+        connection.rejected = true;
+        return { ok: false, reason: "unbound" };
+      }
+      if (req.sessionId !== bound2.id) {
+        connection.rejected = true;
+        return { ok: false, reason: "foreign" };
+      }
+      if (connection.selection || req.bootstrap !== 1 || !Number.isSafeInteger(req.min) || !Number.isSafeInteger(req.max) || Number(req.min) < 1 || Number(req.max) > 65535 || Number(req.max) < Number(req.min) || Number(req.min) > 1 || Number(req.max) < 1 || !req.capabilities || typeof req.capabilities !== "object" || Array.isArray(req.capabilities) || Object.keys(req.capabilities).length > 32 || Object.entries(req.capabilities).some(([name, versions2]) => name.length > 64 || !/^[A-Za-z][A-Za-z0-9.-]*$/.test(name) || !Array.isArray(versions2) || versions2.length > 8 || versions2.some((v) => !Number.isSafeInteger(v) || v < 1 || v > 65535))) {
+        connection.rejected = true;
+        return { ok: false, reason: "incompatible", side: "hook", code: "hook-incompatible" };
+      }
+      connection.selection = { sessionId: bound2.id, id: randomBytes6(16).toString("hex") };
+      return { ok: true, protocol: 1, incarnation, selectionId: connection.selection.id };
+    }
+    const selection = connection.selection;
+    if (selection && (o.binding.bound()?.id !== selection.sessionId || req.sessionId !== selection.sessionId || req.protocol !== 1 || req.incarnation !== incarnation || req.selectionId !== selection.id)) {
+      connection.rejected = true;
+      return { ok: false, reason: "foreign" };
+    }
+    if (!selection && ("selectionId" in req || "protocol" in req || "incarnation" in req)) return { ok: false, reason: "invalid" };
     if (req.op === "confirm") {
       const pending = typeof req.batch === "string" ? batches.get(req.batch) : void 0;
-      if (pending) {
+      if (pending && pending.selectionId === selection?.id) {
         batches.delete(pending.batch.id);
         if (o.binding.bound()?.id === pending.sessionId && o.canSelect?.() !== false) {
           o.ledger.commit(pending.batch);
@@ -65688,7 +66717,7 @@ async function startArbitration(o) {
       o.ledger.release(batch);
       return { ok: true, batch: batch.id, items, notices, more, leaseMs: 0 };
     }
-    batches.set(batch.id, { batch, sessionId: bound.id });
+    batches.set(batch.id, { batch, sessionId: bound.id, ...selection ? { selectionId: selection.id } : {} });
     const forget = setTimeout(() => batches.delete(batch.id), 6e4);
     forget.unref?.();
     return { ok: true, batch: batch.id, items, notices, more, leaseMs: o.hookLeaseMs ?? HOOK_LEASE_MS };
@@ -65696,6 +66725,7 @@ async function startArbitration(o) {
   const server = net2.createServer((socket) => {
     socket.setEncoding("utf8");
     let buffered = "";
+    const connection = {};
     socket.on("data", (chunk) => {
       buffered += chunk;
       if (buffered.length > 64 * 1024) {
@@ -65707,7 +66737,7 @@ async function startArbitration(o) {
         buffered = buffered.slice(nl + 1);
         let reply;
         try {
-          reply = handle(JSON.parse(line));
+          reply = handle(JSON.parse(line), connection);
         } catch (e) {
           o.log?.(`arbitration: ${e instanceof Error ? e.message : String(e)}`);
           reply = { ok: false, reason: "invalid" };
@@ -65737,7 +66767,7 @@ async function startArbitration(o) {
     try {
       fs62.mkdirSync(dir, { recursive: true, mode: 448 });
       const file = path57.join(dir, "mcp.json");
-      writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "" });
+      writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "", hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: plugin_default.version });
       fs62.chmodSync(file, 384);
       written = file;
     } catch (e) {
@@ -65767,7 +66797,7 @@ function removeOwn(file, key2) {
 // packages/room-mcp/src/workspace.ts
 init_src4();
 import fs63 from "node:fs";
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 var samePlace = (a, b) => {
   try {
     return fs63.realpathSync(a) === fs63.realpathSync(b);
@@ -65783,7 +66813,7 @@ function fallbackWorkspace(env, processDir) {
   const pwd = value2("PWD");
   return pwd && samePlace(pwd, processDir) ? pwd : processDir;
 }
-var parentCommand = () => execFileSync10("ps", ["-o", "command=", "-p", String(process.ppid)], {
+var parentCommand = () => execFileSync11("ps", ["-o", "command=", "-p", String(process.ppid)], {
   encoding: "utf8",
   timeout: 1e3,
   stdio: ["ignore", "pipe", "ignore"]
@@ -65800,7 +66830,7 @@ function deferForSharedCodex(env, readParent = parentCommand, platform = process
 }
 var worktreeRoot = (dir) => {
   try {
-    return execFileSync10("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+    return execFileSync11("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
   } catch {
     return void 0;
   }
@@ -65991,8 +67021,8 @@ async function releaseIdleHeld(s, idleEpoch, idleMs, monotonicMs, pendingOnly = 
       monotonicMs,
       doc: s.room,
       ownsParticipant: () => lease.fence() === fence,
-      postNotice: async (id3, text) => {
-        const posted = await s.post(s.me, { type: "note", text, priority: "notify" }, { id: id3, auto: true });
+      postNotice: async (id3, text2) => {
+        const posted = await s.post(s.me, { type: "note", text: text2, priority: "notify" }, { id: id3, auto: true });
         if (!posted.ok) throw new Error(posted.text);
         return posted;
       }
@@ -66228,7 +67258,7 @@ async function main() {
   } });
   setLatestCpuProfile(() => cpu.latest);
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? "");
-  const mcp = new Server(
+  const mcp = new RoomMcpServer(
     { name: "room", version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: AGENT_INSTRUCTIONS() }
   );
@@ -66424,7 +67454,7 @@ async function main() {
   const transport = new FlushedStdioTransport();
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const threadId = codexThreadFromMeta(req.params);
-    if (threadId) admitCodexThread(threadId, log);
+    if (threadId) admitCodexThread(threadId);
     extra.signal.addEventListener("abort", () => transport.forget(extra.requestId), { once: true });
     const result2 = await timing.run(req.params.name, async () => {
       if (req.params.name === "room_state" && req.params.arguments?.check === true) {

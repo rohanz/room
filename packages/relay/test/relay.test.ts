@@ -91,7 +91,7 @@ describe('local relay', () => {
     const common = await makeCommonDir()
     const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
     expect(a.owned).toBe(true)
-    expect(readRelayInfo(common)?.port).toBe(a.port)
+    expect(readRelayInfo(common)).toMatchObject({ port: a.port, discovery: 1, runtime: 'session-relay', compat: { bootstrap: 1 }, lead: true })
     const b = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
     expect(b.owned).toBe(false)
     expect(b.port).toBe(a.port)
@@ -134,7 +134,7 @@ describe('local relay browser view', () => {
       const html = await get(`http://127.0.0.1:${relay.port}/index.html`)
       expect(html.status).toBe(404)
       const health = await get(`http://127.0.0.1:${relay.port}/health`)
-      expect(JSON.parse(health.body)).toEqual({ ok: true, local: true, schema: 2, hub: 1 })
+      expect(JSON.parse(health.body)).toMatchObject({ ok: true, local: true, schema: 2, hub: 1, discovery: 1, runtime: 'session-relay', compat: { bootstrap: 1 } })
       const old = await new Promise<{ code: number; text: string }>(resolve => {
         const ws = new WebSocket(`ws://127.0.0.1:${relay.port}/local%2Fx`)
         ws.on('unexpected-response', (_request, response) => { resolve({ code: response.statusCode ?? 0, text: response.statusMessage ?? '' }); ws.terminate() })

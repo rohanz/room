@@ -19,6 +19,14 @@ import { clearFixtureProcesses, finishFixtureProcess, fixtureLiveness, fixturePr
 import { testPolicyStore } from './policy-fixture.js'
 import { registerWorkers } from './registry-fixture.js'
 
+// Lifecycle processes are synthetic. Give their executable a compatible test contract instead of
+// consulting this machine's installed plugin; worker-contract.test.ts verifies real descriptor reads.
+vi.mock('../src/worker-config.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/worker-config.js')>()
+  const { CURRENT_COMPAT } = await import('@room/hub-core')
+  return { ...actual, installedCodexRoomContract: vi.fn(() => ({ release: 'test-install', compat: CURRENT_COMPAT, workerRecordSchema: 1 })) }
+})
+
 vi.mock('../src/leases.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/leases.js')>()
   return { ...actual, liveness: (identity: Parameters<typeof actual.liveness>[0]) => fixtureLiveness(identity, actual.liveness) }

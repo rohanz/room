@@ -25,7 +25,7 @@ import { authorizesText, rulesFromText, defaultIgnoredPath, type SharingPolicy, 
 import type { ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
 export { policyFromLevel, authorizesText, rulesFromText, plan, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type ExclusionRules } from './policy.js'
-import { authorizedWebSocket } from './ws-auth.js'
+import { authorizedWebSocket, type SocketNegotiation } from './ws-auth.js'
 export { authorizedWebSocket } from './ws-auth.js'
 import { WebsocketProvider } from 'y-websocket'
 import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease, type ClaimSearchProgress } from './reanchor.js'
@@ -157,6 +157,8 @@ export interface RoomdOptions {
   post?: (from: Identity, body: PostBody<Msg>, opts: { id?: string; auto: true }) => unknown
   /** Settles durable departing grants after a successful full scan. */
   onFullScan?: (policy: SharingPolicy, entries: ReadonlyMap<string, PlannedEntry>, unsettled: readonly string[]) => Promise<void>
+  /** Each publisher socket independently selects its contract before syncing or publishing. */
+  negotiation?: SocketNegotiation
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
   /** Called with the daemon's provider as soon as it exists, before startup connects and publishes. */
@@ -438,10 +440,12 @@ class Daemon implements Roomd {
     let decodedRoomName = roomName
     try { decodedRoomName = decodeURIComponent(roomName) } catch { /* use the literal name */ }
     this.roomName = decodedRoomName
+    let compatibilityError: string | undefined
+    this.compatibilityError = () => compatibilityError
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
-          WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
+          WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, ...(options.negotiation ? { negotiation: { ...options.negotiation, onRefusal: (text: string) => { compatibilityError = text; options.negotiation?.onRefusal?.(text) } } } : {}) }) as any,
           ...roomConnection(this.roomDoc.doc),
         })
     options.onProvider?.(this.provider)
@@ -797,20 +801,22 @@ class Daemon implements Roomd {
     this.setStatus(this.currentStatus())
   }
 
+  private compatibilityError: () => string | undefined = () => undefined
+
   private waitForSync(): Promise<void> {
+    const compatibilityError = this.compatibilityError()
+    if (compatibilityError) return Promise.reject(new RoomdError(compatibilityError, 2))
     if (this.provider.synced) return Promise.resolve()
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.provider.off('sync', onSync)
+        cleanup()
         reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1))
       }, this.connectTimeoutMs)
-      const onSync = (synced: boolean) => {
-        if (!synced) return
-        clearTimeout(timer)
-        this.provider.off('sync', onSync)
-        resolve()
-      }
+      const cleanup = () => { clearTimeout(timer); this.provider.off('sync', onSync); this.provider.off('connection-close', onClose) }
+      const onClose = () => { const error = this.compatibilityError(); if (error) { cleanup(); reject(new RoomdError(error, 2)) } }
+      const onSync = (synced: boolean) => { if (synced) { cleanup(); resolve() } }
       this.provider.on('sync', onSync)
+      this.provider.on('connection-close', onClose)
     })
   }
 

@@ -49,6 +49,51 @@ const files = (dir: string, suffix: string): string[] => {
   try { return fs.readdirSync(dir).filter(n => n.endsWith(suffix)).map(n => path.join(dir, n)) }
   catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []; throw e }
 }
+/**
+ * Worker records, tag reservations and the record listing are read through a process-wide cache keyed by
+ * path and validated by a stat on every call (device, inode, size, mtime and ctime). An unchanged file is not
+ * read again, but only once the cached text was read after the file's last timestamp tick had certainly ended.
+ *
+ * A stat cannot prove that two writes got different timestamps: nanosecond fields do not establish nanosecond
+ * resolution, and a file system may keep whole seconds (or two, as FAT does). So an entry is "racy" when the
+ * file's newer timestamp was within RACY_NS of the clock at the time it was read: a later write in that same
+ * tick could leave an identical stat. A racy entry is never a hit; the next call reads the file again, and the
+ * first read made after the window has passed is trusted, because any write after it lands in a later tick.
+ * A full reread is the content check here: record text is small, and a head/tail sample would miss an edit in
+ * the middle of a JSON record. Each hit parses the cached text, so callers own the value they receive.
+ */
+const READ_CACHE_MAX = 4096
+const RACY_NS = 2_000_000_000n
+const readCache = new Map<string, { key: string; value: string | string[]; racy: boolean }>()
+const statKey = (file: string): { key: string; newest: bigint } | undefined => {
+  try {
+    const s = fs.statSync(file, { bigint: true })
+    return { key: `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`, newest: s.mtimeNs > s.ctimeNs ? s.mtimeNs : s.ctimeNs }
+  } catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined; throw e }
+}
+function cached<T extends string | string[]>(file: string, load: () => T, slot = file): T | undefined {
+  // Stat before reading: a write racing the read leaves a key that no longer matches, never a stale hit.
+  const stat = statKey(file)
+  if (stat === undefined) { readCache.delete(slot); return undefined }
+  const hit = readCache.get(slot)
+  if (hit?.key === stat.key && !hit.racy) return hit.value as T
+  // The clock is read just before the read it qualifies, so a hit never reads it. A timestamp ahead of this
+  // clock (another host's clock on a shared file system) is racy too.
+  const racy = BigInt(Date.now()) * 1_000_000n - stat.newest <= RACY_NS
+  const value = load()
+  readCache.delete(slot)
+  if (readCache.size >= READ_CACHE_MAX) readCache.delete(readCache.keys().next().value as string)
+  readCache.set(slot, { key: stat.key, value, racy })
+  return value
+}
+const readCachedJson = <T>(file: string): T | undefined => {
+  let text: string | undefined
+  try { text = cached(file, () => fs.readFileSync(file, 'utf8')) }
+  catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined; throw e }
+  return text === undefined ? undefined : JSON.parse(text) as T
+}
+const cachedFiles = (dir: string, suffix: string): string[] =>
+  [...cached(dir, () => files(dir, suffix), `${dir}\0*${suffix}`) ?? []]
 const crockford = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 function base32(value: bigint, length: number): string {
   let out = ''
@@ -127,10 +172,15 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
 /**
  * This clone's current worker under a participant name, as a carried-baseline source with its lead: a local
  * fact from the registry (registry §14), for merge bases and carried-work checks, never from the room.
+ * A worker is named `<owner>+<tag>`, and a record that is neither retired nor abandoned holds its tag's
+ * reservation, so one reservation and one record answer it without listing every record.
  */
 export function localWorkerBaseline(dir: string, participant: string): (BaselineSource & { lead: string }) | undefined {
+  const plus = participant.lastIndexOf('+')
+  if (plus < 1) return undefined
   let record: WorkerRecord | undefined
-  try { record = registrySnapshotForDir(dir).list().find(r => r.name === participant && !['retired', 'abandoned'].includes(r.phase)) } catch { return undefined }
+  try { record = registrySnapshotForDir(dir).reserved(participant.slice(plus + 1)) } catch { return undefined }
+  if (record && (record.name !== participant || ['retired', 'abandoned'].includes(record.phase))) record = undefined
   return record && { name: record.name, dir: record.dir, base: record.base, carriedBase: record.carriedBase,
     carriedUntracked: record.carriedUntracked, link: record.link, lead: record.lead.participant }
 }
@@ -158,6 +208,16 @@ export function carriedFrom(dir: string, participant: string): { baseline: Basel
   const source = localWorkerBaseline(dir, participant)
   const baseline = workerBaseline(source)
   return source && baseline ? { baseline, lead: source.lead } : undefined
+}
+/**
+ * A freshness token for `carriedFrom(dir, participant)`: the stat keys of the two files it reads, the tag
+ * reservation and the record that reservation names. Every registry write replaces or creates a file (a new
+ * inode), so a changed source changes this token even when both writes share one timestamp tick.
+ */
+export function carriedSourceToken(dir: string, participant: string): string {
+  const plus = participant.lastIndexOf('+')
+  if (plus < 1) return ''
+  try { return registrySnapshotForDir(dir).sourceToken(participant.slice(plus + 1)) } catch (error) { return `unavailable:${String(error)}` }
 }
 
 /** A worker daemon's carried baseline, read from its lead's registry record (F2): the room never supplies it. */
@@ -541,7 +601,7 @@ export class WorkerRegistry {
   read(id: string): WorkerRecord | undefined {
     const file = this.workerFile(id)
     try {
-      const record = readJson<WorkerRecord>(file)
+      const record = readCachedJson<WorkerRecord>(file)
       // Optional diagnostic corruption cannot hide an otherwise valid worker or
       // certify freshness. Unknown required paths stay pending until refresh.
       if (record?.keptPublication !== undefined && !keptPublicationShape(record.keptPublication))
@@ -553,7 +613,7 @@ export class WorkerRegistry {
       return record
     } catch (e) { this.quarantine(file, e); return undefined }
   }
-  list(): WorkerRecord[] { return files(path.join(this.root, 'workers'), '.json').flatMap(file => {
+  list(): WorkerRecord[] { return cachedFiles(path.join(this.root, 'workers'), '.json').flatMap(file => {
     const id = path.basename(file, '.json')
     if (!safeId(id)) { this.quarantine(file, 'invalid worker filename'); return [] }
     const record = this.read(id)
@@ -562,9 +622,18 @@ export class WorkerRegistry {
   /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
   reserved(tag: string): WorkerRecord | undefined {
     if (!safeTag(tag)) return undefined
-    const reservation = readJson<{ id?: string }>(this.tagFile(tag))
+    const reservation = readCachedJson<{ id?: string }>(this.tagFile(tag))
     const record = reservation?.id ? this.read(reservation.id) : undefined
     return record?.tag === tag ? record : undefined
+  }
+  /** The stat keys behind `reserved(tag)` (see carriedSourceToken). */
+  sourceToken(tag: string): string {
+    if (!safeTag(tag)) return ''
+    const tagFile = this.tagFile(tag)
+    const reservation = statKey(tagFile)
+    const id = reservation && readCachedJson<{ id?: string }>(tagFile)?.id
+    const record = id && safeId(id) ? statKey(this.workerFile(id)) : undefined
+    return `${reservation?.key ?? '-'}|${id ?? ''}|${record?.key ?? '-'}`
   }
   reservedByTagOrName(tagOrName: string): WorkerRecord | undefined {
     const direct = this.reserved(tagOrName)
@@ -752,7 +821,7 @@ export class WorkerRegistry {
     return released
   }
 
-  async beginOperation(id: string, op: 'resume' | 'stop' | 'collect' | 'discard'): Promise<boolean> {
+  async beginOperation(id: string, op: 'resume' | 'stop' | 'collect' | 'discard' | 'prune'): Promise<boolean> {
     const file = this.opFile(id)
     if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
     const existing = this.readFact(file, (value): value is { op: string; holder: InstanceToken; at: number } =>
@@ -931,6 +1000,63 @@ export class WorkerRegistry {
       ...(record.model ? { model: record.model } : {}), task: record.task, files: [], fileCount: 0,
       startedAt: record.createdAt, finishedAt: status?.finishedAt ?? at, retiredAt: at, outcome: 'dismissed',
       ...(record.stop && record.stop.reason !== 'discarded' ? { stopReason: record.stop.reason } : {}), ...facts }
+  }
+
+  /**
+   * Retention: remove retired and abandoned records older than `maxAgeMs` (their room archive entry is the durable
+   * copy), with their run facts, adoption and the tag reservation that still names them. A record whose kept
+   * worktree still exists, or whose checkout a live record borrows, stays. Nothing is removed before migration ends.
+   */
+  async pruneRetired(maxAgeMs: number): Promise<WorkerRecord[]> {
+    if (!readJson<MigrationMap>(path.join(this.root, 'migration.json'))?.done) return []
+    const ended = (record: WorkerRecord) => record.phase === 'retired' || record.phase === 'abandoned'
+    const borrowers = (records: WorkerRecord[]) => new Set(records.filter(record => !ended(record))
+      .flatMap(record => [record.sharedWith, this.worktreeOwner(record)?.id]).filter(Boolean))
+    /** Every retention predicate, on one reading of the registry; undefined keeps the record. */
+    const expiredAt = (record: WorkerRecord, borrowed: Set<string | undefined>): number | undefined => {
+      if (!ended(record) || borrowed.has(record.id)) return undefined
+      if (record.keptWorktree && fs.existsSync(record.keptWorktree)) return undefined
+      let at = record.phase === 'retired' ? record.archive?.retiredAt : undefined
+      if (at === undefined) try { at = fs.statSync(this.workerFile(record.id)).mtimeMs } catch { return undefined }
+      return this.now() - at >= maxAgeMs ? at : undefined
+    }
+    // This first reading only selects candidates; nothing is removed on its strength.
+    const records = this.list(), removed: WorkerRecord[] = []
+    const snapshotBorrowed = borrowers(records)
+    for (const candidate of records) {
+      if (expiredAt(candidate, snapshotBorrowed) === undefined || this.operationInProgress(candidate.id)) continue
+      // Retention is a lifecycle operation on the record: it holds the same operation lease as resume, collect
+      // and discard. A borrower's spawn or resume takes its owner's lease first, so none can start meanwhile,
+      // and another instance's update() refuses while the lease is held.
+      try { if (!await this.beginOperation(candidate.id, 'prune')) continue } catch { continue }
+      try {
+        const record = this.read(candidate.id)
+        const at = record && expiredAt(record, borrowers(this.list()))
+        if (!record || at === undefined) continue
+        // Delete under the guard update() uses, after checking the lease is still this call's and the record
+        // unchanged: an in-process update serialized before this point advanced seq.
+        const gone = await guarded(this.opFile(record.id), () => {
+          const op = readJson<{ op?: string; holder?: InstanceToken }>(this.opFile(record.id))
+          if (op?.op !== 'prune' || op.holder?.nonce !== this.identity.nonce) return false
+          const current = this.read(record.id)
+          if (current?.seq !== record.seq || current.phase !== record.phase) return false
+          fs.rmSync(this.workerFile(record.id), { force: true })
+          return true
+        })
+        if (!gone) continue
+        // The record is gone before its reservation: an interrupted prune leaves a reservation naming no record
+        // (recovered once its holder is dead), never a surviving record without its reservation.
+        await guarded(this.tagFile(record.tag), () => {
+          if (readJson<{ id?: string }>(this.tagFile(record.tag))?.id === record.id) fs.rmSync(this.tagFile(record.tag), { force: true })
+        }).catch(error => process.stderr.write(`[room] worker record ${record.id} removed; its tag reservation stays: ${error}\n`))
+        fs.rmSync(path.join(this.root, 'runs', record.id), { recursive: true, force: true })
+        fs.rmSync(this.adoptionFile(record.id), { force: true })
+        process.stderr.write(`[room] removed ${record.phase} worker record ${record.tag} (${record.id}) from ${new Date(at).toISOString()}: older than the room's ${Math.round(maxAgeMs / 86_400_000)}-day expiry\n`)
+        removed.push(record)
+      } finally { await this.finishOperation(candidate.id) }
+    }
+    if (removed.length) this.changed()
+    return removed
   }
 
   /** Retirement step 4: a room's projector finished its cleanup; the last room makes the record `retired`. */

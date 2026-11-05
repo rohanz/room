@@ -127,6 +127,9 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 - Deliberate scale and responsiveness tests are opt-in: `TEST_SCALE=1 npm test`. The default run skips these large synthetic repositories and soak cases; CI sets `TEST_SCALE=1` so they remain required coverage.
 - Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
   (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin and tag `v<version>`.
+  The bump also appends the new tag to `scripts/compat-pins.json`; right after `git tag v<version>` run `node scripts/compat-pins.mjs <version> --pin-commit`
+  so the pin records the commit, and commit that before publishing. The matrix refuses every unfrozen existing tag, including the manifest version; only its single pre-tag candidate may remain pending. `npx tsx scripts/compat-matrix.mts` runs the pinned old/new server and relay pairs locally (CI's `compat` job does the same);
+  pins are never dropped automatically (`--retire <tag>` refuses a tag inside the three-minor window).
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
   (the bundle, `plugins/room/web` and tree-sitter grammars are committed; the build copies the
   grammars into `plugins/room/server/grammars`). Installed plugins copy the bundle: reinstall

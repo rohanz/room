@@ -5,6 +5,7 @@
 // The server bundle copies the Claude manifest at build time: rebuild after bumping.
 // packages/room-mcp/test/release-version.test.ts checks the sites agree.
 import fs from 'node:fs'
+import { updatePins } from './compat-pins.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -23,6 +24,9 @@ const json = (rel, edit) => {
   console.log(`${rel}: ${version}`)
 }
 
+const pinsFile = path.join(root, 'scripts/compat-pins.json')
+const pins = updatePins(JSON.parse(fs.readFileSync(pinsFile, 'utf8')), version)
+
 json('plugins/room/.claude-plugin/plugin.json', d => { d.version = version })
 json('plugins/room/.codex-plugin/plugin.json', d => { d.version = version })
 json('.claude-plugin/marketplace.json', d => { d.plugins.find(p => p.name === 'room').version = version })
@@ -33,4 +37,7 @@ const next = text.replace(/export const HOOKS_VERSION = '[^']+'/, `export const 
 if (next === text) throw new Error('HOOKS_VERSION not found in plugins/room/hooks/common.mjs')
 fs.writeFileSync(hooks, next)
 console.log(`plugins/room/hooks/common.mjs: ${version}`)
+fs.writeFileSync(pinsFile, JSON.stringify(pins, null, 2) + '\n')
+console.log('scripts/compat-pins.json: appended release tag (retirement is manual)')
 console.log('now: npm run build:plugin, and add the CHANGELOG heading')
+console.log(`after git tag v${version}: node scripts/compat-pins.mjs ${version} --pin-commit; commit the frozen pin before publishing (the matrix refuses an unfrozen tag)`)

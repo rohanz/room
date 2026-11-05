@@ -3,8 +3,11 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import type http from 'node:http'
 
-import { HttpFailure } from '@room/hub-core'
+import { HttpFailure, CURRENT_COMPAT, parseAdvertisement } from '@room/hub-core'
 export { HttpFailure, safeUrl } from '@room/hub-core'
+
+/** Validate at startup, including the serialized 1 KiB ceiling; never truncate discovery. */
+export const SERVER_COMPAT = parseAdvertisement(CURRENT_COMPAT)
 
 /** Attach before admission or storage awaits so an early disconnect cannot be missed. */
 export function requestCancellation(req: http.IncomingMessage, res: http.ServerResponse) {

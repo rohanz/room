@@ -15,6 +15,7 @@ import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
 import { LISTS_PER_MINUTE } from '../src/limits.js'
 import { devServers } from './dev-server.js'
+import { CURRENT_COMPAT } from '@room/hub-core'
 
 const servers = devServers()
 let proc: ChildProcess, port = 0, base = ''
@@ -191,7 +192,7 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await join(room, { session, schema: '2' })).toBe(404)
   })
   it('advertises device mode with the fake flag', async () => {
-    expect(await (await fetch(`${base}/auth/config`)).json()).toMatchObject({ github: 'device', providers: ['github'], fake: true })
+    expect(await (await fetch(`${base}/auth/config`)).json()).toMatchObject({ github: 'device', providers: ['github'], fake: true, compat: CURRENT_COMPAT })
   })
 
   it('fake login -> open a github.com repo -> join its repository room', async () => {
@@ -278,7 +279,7 @@ describe('room server with the fake GitHub issuer', () => {
     // A path that escapes to a sibling directory sharing the static root's prefix is not served (S3).
     expect((await raw('GET /x/..//etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'))).not.toMatch(/root:/)
     const health = await (await fetch(`${base}/health`)).json()
-    expect(health).toMatchObject({ ok: true, schema: 2, hub: 1 })
+    expect(health).toMatchObject({ ok: true, schema: 2, hub: 1, compat: CURRENT_COMPAT })
     expect(health).not.toHaveProperty('storage')
   })
 

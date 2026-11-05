@@ -20,7 +20,8 @@
     "diff": "^8.0.2",
     "ws": "^8.21.0",
     "y-websocket": "^3.0.0",
-    "yjs": "^13.6.32"
+    "yjs": "^13.6.32",
+    "@room/hub-core": "*"
   },
   "devDependencies": {
     "@room/room-mcp": "*",

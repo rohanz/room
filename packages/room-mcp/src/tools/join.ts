@@ -200,7 +200,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (choice.server !== LOCAL) {
         const admit = (ctx as typeof ctx & { admit?: typeof checkTeamAdmission }).admit ?? checkTeamAdmission
-        try { await timed('preflight', () => admit(choice.server, targetRoom, { token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true, log })) }
+        try { await timed('preflight', () => admit(choice.server, targetRoom, { dir, token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true, log })) }
         catch (e) { return refused(e) }
       }
       if (toolCallAborted()) return 'error: tool call cancelled'

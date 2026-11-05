@@ -12,12 +12,12 @@ vi.mock('node:child_process', async importOriginal => {
 })
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
-async function binding(log?: (line: string) => void) {
+async function binding() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-thread-binding-'))
   dirs.push(dir)
   execFileSync('git', ['init', '-q', dir])
   const { createSessionBinding } = await import('../src/binding.js')
-  return createSessionBinding(dir, { ROOM_HOST: 'codex' }, () => 0, { log })
+  return createSessionBinding(dir, { ROOM_HOST: 'codex' }, () => 0)
 }
 
 it('admits a daemon thread immediately in every binding, even after an unbound result was cached', async () => {
@@ -34,32 +34,18 @@ it('admits a daemon thread immediately in every binding, even after an unbound r
   expect(b.dir()).toBe(sessionDirectory(b.commonDir()!, b.id()))
 })
 
-it('rejects invalid ids and pins the first valid id, logging each distinct conflict once', async () => {
+it('ignores invalid ids and refuses every conflicting thread without replacing the first', async () => {
   vi.resetModules()
-  const log = vi.fn()
-  const b = await binding(log)
+  const b = await binding()
   for (const id of ['', '../foreign', 'a_b', 'a'.repeat(129), 'thread\n']) b.admitCodexThread(id)
   expect(b.bound()).toBeUndefined()
   b.admitCodexThread('first-thread')
   b.admitCodexThread('first-thread')
-  expect(log).not.toHaveBeenCalled()
-  b.admitCodexThread('second-thread')
-  b.admitCodexThread('third-thread')
-  b.admitCodexThread('second-thread')
-  b.admitCodexThread('third-thread')
-  expect(b.bound()).toEqual({ id: 'first-thread', host: 'codex' })
-  expect(log).toHaveBeenCalledTimes(2)
-  expect(log.mock.calls[0][0]).toContain('second-thread')
-  expect(log.mock.calls[1][0]).toContain('third-thread')
-})
-
-it('bounds the distinct conflict log to 32 ids', async () => {
-  vi.resetModules()
-  const log = vi.fn()
-  const b = await binding(log)
-  b.admitCodexThread('first-thread')
-  for (let i = 0; i < 40; i++) b.admitCodexThread(`conflict-${i}`)
-  expect(log).toHaveBeenCalledTimes(32)
+  for (let i = 0; i < 40; i++) {
+    expect(() => b.admitCodexThread(`conflict-${i}`)).toThrow(/mcp_connection_sharing.*mcp_2026_07_28/)
+  }
+  expect(() => b.admitCodexThread('conflict-0')).toThrow(/disable.*mcp_connection_sharing.*Room release/)
+  expect(() => b.admitCodexThread('first-thread')).not.toThrow()
   expect(b.bound()).toEqual({ id: 'first-thread', host: 'codex' })
 })
 

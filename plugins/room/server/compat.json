@@ -1,0 +1,36 @@
+{
+  "v": 1,
+  "release": "0.17.33",
+  "compat": {
+    "bootstrap": 1,
+    "hub": {
+      "min": 1,
+      "max": 1
+    },
+    "schemas": {
+      "read": [
+        2
+      ],
+      "write": [
+        2
+      ]
+    },
+    "capabilities": {
+      "room.generation": [
+        1
+      ],
+      "room.manifest": [
+        1
+      ],
+      "room.ledger": [
+        1
+      ]
+    },
+    "legacy": {
+      "schema": 2,
+      "hub": 1
+    }
+  },
+  "workerRecordSchema": 1,
+  "bundleSha256": "803ddfd805f396ae385303f6e137293e1e26ce987020dbff5ae227c129aa9a21"
+}

@@ -81,7 +81,7 @@ child.on('exit', code => process.exit(code ?? 0))
 describe('MCP entry doctor route', () => {
   it('answers the first call without starting arbitration or fetching admission config', async () => {
     const { reply, stderr } = await callDoctor()
-    expect(reply.result.content[0].text).toContain('team server: schema 2, hub 1; storage healthy')
+    expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; legacy adapter; storage healthy')
     expect(stderr).not.toContain('PROBE_LISTEN')
     expect(stderr.match(/PROBE_FETCH [^\n]+/g)).toEqual(['PROBE_FETCH https://fixture.invalid/health'])
   })
@@ -101,7 +101,7 @@ describe('MCP entry doctor route', () => {
   it('still answers after runtime initialization fails at the arbitration listener', async () => {
     const { reply, stderr } = await callDoctor(undefined, true)
     expect(stderr).toContain('PROBE_LISTEN')
-    expect(reply.result.content[0].text).toContain('team server: schema 2, hub 1; storage healthy')
+    expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; legacy adapter; storage healthy')
     expect(stderr.match(/PROBE_FETCH [^\n]+/g)).toEqual(['PROBE_FETCH https://fixture.invalid/health'])
   })
 })

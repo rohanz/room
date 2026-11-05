@@ -17,7 +17,7 @@ import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
 import { LOCAL, browserViewLine, type Session } from '../session.js'
-import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
+import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomCompatibilityMismatch, installedCodexRoomContract, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
 import { localWorkerView } from '../worker-projector.js'
@@ -177,7 +177,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.host !== undefined && a.host !== 'codex' && a.host !== 'claude') return 'error: host must be codex or claude'
       const host: WorkerHost = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === 'codex' ? 'codex' : 'claude'
       if (host === 'codex' && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
-        const mismatch = codexRoomVersionMismatch()
+        const mismatch = codexRoomCompatibilityMismatch(undefined, installedCodexRoomContract(), state.log)
         if (mismatch) return `error: ${mismatch}`
       }
       const runtime = workerRuntime(host, typeof a.model === 'string' ? a.model : undefined, requestedEffort)

@@ -1,0 +1,12 @@
+{
+  "release": "0.17.32",
+  "commit": "77bf1c448d6ce883b844443204c7c9c7306d0c4c",
+  "sources": {
+    "packages/shared/src/compact.ts": "sha256:0e8c353d1fb38dce4efbde859f3e87e5a332002600026c1b88034ea4dba09c6e",
+    "packages/room-mcp/src/hub-client.ts": "sha256:7ce24d5918b351b914d0eb77cc2cff438fc2417d6bff8595fdf9bf5f98ba3462"
+  },
+  "query": "schema=2&gen=fresh",
+  "syncStep1": "00000100",
+  "awareness": "010701b96000027b7d",
+  "hello": "07527b2276223a312c226964223a2268222c226f70223a2268656c6c6f222c2270726f746f223a312c22736368656d61223a322c22636c69656e74223a2274657374222c2273657373696f6e4964223a2273227d"
+}

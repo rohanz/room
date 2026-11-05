@@ -1,8 +1,12 @@
-# Upgrade from Room 0.16 to 0.17
+# Upgrading Room
+
+**From 0.17.33 on, upgrades are rolling.** Servers, relays and sessions advertise and select a shared contract before syncing (see docs/reference.md, "negotiate a contract"); the supported window is the current release plus three minor releases back, never below 0.17.0. Deploy the server first, then let people restart sessions when convenient; a session outside the window is refused with the exact side that must change. The local daemon cutover planned in docs/superpowers/specs/2026-11-05-local-daemon.md will be the one later upgrade that is not rolling, and it will say so in its release notes.
+
+## Upgrade from Room 0.16 to 0.17
 
 Room 0.17 is a **hard cutover**. It uses schema version 2 and hub protocol 1, and has one room per repository across branches. A 0.16 client cannot share a 0.17 room. Schedule the update with everyone using the repository.
 
-## Team repositories
+### Team repositories
 
 0. **Take a consistent pre-upgrade snapshot before deploying.** Stop the server first so LevelDB is not mid-write. Snapshot the entire `YPERSISTENCE` volume or directory. If `DATABASE_URL` is set, take a `pg_dump` of the registry database at the same stopped-server point. Keep both copies together. On Fly, follow [the hosted deployment steps](#hosted-fly-deployment) below. For Docker, stop the container and copy the named volume; for a bare host, stop the server and copy the `YPERSISTENCE` directory. Do not restart until the volume copy and matching database dump finish.
 
@@ -150,7 +154,7 @@ flyctl deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
 fly volumes destroy <old volume id> -a room-rohanz  # only after verifying the rollback
 ```
 
-## Local rooms and workers
+### Local rooms and workers
 
 End running 0.16 local sessions before joining with 0.17. The new local relay has a separate discovery file and generation. A 0.16 local session never finds the 0.17 relay: it can sit alone **without a warning**. The 0.17 relay can copy retained local messages, claims and scopes while the old relay is still present, then finish migration when that relay exits. Verify room state after closing the old session.
 
@@ -160,6 +164,6 @@ Update a lead and all its workers together. A mixed-version lead and worker may 
 
 For any setup problem, ask **“is Room set up right?”** or run `room-doctor` from the installed plugin's `bin/` folder (paths in [the quickstart](../README.md#start-in-five-minutes)). See [the reference](reference.md#updating-plugins) for cache locations, sharing and diagnostics.
 
-## 0.17.7 team destinations
+### 0.17.7 team destinations
 
 Room no longer supplies a default public server. Existing explicit server URLs remain remembered. Old `team`/`hosted` choices with no actual URL start locally; say “join the room at wss://your-server.example” to select a server. An explicit team join without a configured URL asks for one and makes no network request. See [self-hosting](../deploy/self-hosting.md). Operators can restrict repository registration with `ROOM_MANAGED_REPOS=true` and `ROOM_ADMINS`; existing rooms remain approved and collaborators keep their usual admission rules. Restart after changing it.

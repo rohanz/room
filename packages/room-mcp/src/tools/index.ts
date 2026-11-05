@@ -143,6 +143,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (toolCallAborted()) return 'error: tool call cancelled'
       const current = ctx.getSession()
       current?.daemon.touch()
+      if (current?.compatibilityRefusal && !['room_state', 'room_leave'].includes(name)) return `error: ${current.compatibilityRefusal}`
       const closed = current?.closed
       const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect'
       if (closed && name !== 'room_leave' && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith('logged out') ? 'run room_login, then room_leave and room_join' : closed.reason.includes('revoked') ? 'ask for access, then room_leave and room_join' : 'room_leave, then room_create to reopen'}`

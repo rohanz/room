@@ -13,7 +13,7 @@ import { resolveConfig } from '../src/config.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
 import { claudeWakeUnavailable } from '../src/prompt.js'
 import type { Session } from '../src/session.js'
-import { workerBudget, workerCommand, workerEnv, workerPriority } from '../src/worker-config.js'
+import { workerBudget, workerCommand, workerEnv, workerPriority, installedCodexRoomContract } from '../src/worker-config.js'
 import { cleanupPreparedWorktree, prepareWorkerLinks, prepareWorktree } from '../src/worker-git.js'
 import { defaultSpawner, pidAlive, probeProcess, workerLogTail, type SpawnSpec } from '../src/worker-process.js'
 import { projectWorkers } from '../src/worker-projector.js'
@@ -69,6 +69,17 @@ describe('room_spawn / room_done / room_collect discard', () => {
       expect(t.specs[0].args.join(' ')).toContain('one-line summary')
       await t.leadTools.shutdown()
     } finally { vi.unstubAllEnvs() }
+  })
+
+  it('refuses an unverified Codex executable before launching a child', async () => {
+    vi.stubEnv('ROOM_HOST', 'codex')
+    vi.mocked(installedCodexRoomContract).mockReturnValueOnce(undefined)
+    const t = setup()
+    try {
+      expect(await t.leadTools.call('room_spawn', { tag: 'unverified', task: 'x' })).toContain('executable contract is unverified')
+      expect(t.specs).toHaveLength(0)
+      expect(workerByTag(dir, 'unverified')).toBeUndefined()
+    } finally { await t.leadTools.shutdown(); vi.unstubAllEnvs() }
   })
 
   it('assigns distinct dev-server ports to running workers and includes each in its brief', async () => {

@@ -1,4 +1,7 @@
 import { trackConnection } from './connection.js'
+import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
+import { compatibilityFromHealth, compatibilityFloor, type ClientCompatibility } from './client-compat.js'
+import { CURRENT_COMPAT, LEGACY_COMPAT, selectContract, type ContractSelection, type BootstrapSelection } from '@room/hub-core'
 /**
  * A session is one joined room: the embedded daemon (which owns the Y.Doc and the
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
@@ -15,7 +18,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { normalizeExplicitRoomName } from './room-name.js'
 export { normalizeExplicitRoomName } from './room-name.js'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type WatcherHandoff, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, FinalSaveError, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
+import { ensureLocalRelay, relayHealth, LocalRelayCompatibilityError, FinalSaveError, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -34,7 +37,7 @@ import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
 import { roomWorkerPathMatchesBranch } from './worker-state.js'
-import { HubClient, hubTransport } from './hub-client.js'
+import { HubClient, HubError, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 import { attachPublisher, publisherLease } from './publisher-lease.js'
 import { chooseName, NameRefused, ParticipantLease, processToken, type ChosenName } from './names.js'
@@ -47,6 +50,7 @@ const timed = <T>(name: string, work: () => Promise<T> | T): Promise<T> => curre
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { LOCAL, resolveServer }
+const CLIENT_COMPAT = { ...CURRENT_COMPAT, release: pluginManifest.version }
 const DEFAULT_WEB = 'http://localhost:5173'
 const VIEWER_MISSING = 'not built; run npm run build -w @room/web'
 
@@ -66,6 +70,9 @@ export function localBrowserLink(roomUrl: string, name: string, view: string, vi
 }
 
 export interface Session {
+  /** Latest authenticated publisher contract, absent while disconnected or in fixture providers. */
+  readonly contract?: ContractSelection & { legacy: boolean }
+  readonly compatibilityRefusal?: string
   room: RoomDoc
   provider: WebsocketProvider
   awareness: Awareness
@@ -243,13 +250,11 @@ function codexArguments(parent: ProcessIdentity | undefined, commandLine: string
 
 // Each daemon thread owns its MCP process; every binding in that process shares this identity.
 let codexThreadId: string | undefined
-const codexThreadConflictsLogged = new Set<string>()
-export function admitCodexThread(id: string, log?: (line: string) => void): void {
+export function admitCodexThread(id: string): void {
   if (!/^[A-Za-z0-9-]{1,128}$/.test(id)) return
   if (!codexThreadId) codexThreadId = id
-  else if (id !== codexThreadId && !codexThreadConflictsLogged.has(id) && codexThreadConflictsLogged.size < 32) {
-    codexThreadConflictsLogged.add(id)
-    log?.(`ignoring Codex thread ${id}; this MCP is bound to ${codexThreadId}`)
+  else if (id !== codexThreadId) {
+    throw new Error('Room cannot share one MCP process across Codex chats (mcp_connection_sharing + mcp_2026_07_28); disable mcp_connection_sharing for Room, or wait for a Room release that supports pooling.')
   }
 }
 export function admittedCodexThread(): string | undefined { return codexThreadId }
@@ -566,7 +571,7 @@ export function encodeRoom(roomName: string): string { return encodeURIComponent
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
 /** What a join resolved: the daemon under a leased name, its store, and the lease and hub that keep the name. */
-export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; refreshRuntime: () => void; onHookActivity: (listener: () => void) => void; onRebind: (listener: (sessionId: string) => void) => void; startupCapClose: () => CapClose | undefined }
+export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; refreshRuntime: () => void; onHookActivity: (listener: () => void) => void; onRebind: (listener: (sessionId: string) => void) => void; startupCapClose: () => CapClose | undefined; contract: () => (ContractSelection & { legacy: boolean }) | undefined; compatibilityRefusal: () => string | undefined }
 
 /** Keep a live daemon in sync when a sharing grant changes or settles. */
 export function applySessionPolicy(daemon: Roomd, policy: PolicyStore['policy']): void {
@@ -574,31 +579,81 @@ export function applySessionPolicy(daemon: Roomd, policy: PolicyStore['policy'])
   daemon.applyInputs({ ...daemon.inputs, policy })
 }
 
+interface DiscoveredCompatibility extends ClientCompatibility { remember(): void }
+const negotiatingOrigins = new Set<string>()
+const contractBody = (server: string) => negotiatingOrigins.has(server) ? { compat: CLIENT_COMPAT } : {}
+
+/** Health is a hint; the encrypted/authenticated socket selects again before any document exchange. */
+async function discoverCompatibility(server: string, dir: string, localKey?: string, log?: ServerLog): Promise<DiscoveredCompatibility> {
+  const url = new URL(server)
+  const common = await realGitCommonDir(dir)
+  const identity = localKey ? `local:${common}` : url.origin
+  const floor = compatibilityFloor(common, identity, localKey ? createHash('sha256').update(localKey).digest('hex') : undefined)
+  let health: unknown
+  if (localKey) health = await relayHealth(Number(url.port), localKey)
+  else try {
+    const response = await serverFetch(`${httpOf(server)}/health`, { timeoutMs: 20000, retry: false, redirect: 'manual' }, log)
+    if (!response.ok) throw new RoomdError(`Room server compatibility discovery failed (HTTP ${response.status}); check the configured origin and retry`, 2)
+    // Bound discovery independently from the parser's 1 KiB compat manifest cap.
+    const reader = response.body?.getReader()
+    if (!reader) throw new RoomdError('Room server compatibility discovery returned no body', 2)
+    const chunks: Uint8Array[] = []; let bytes = 0
+    try {
+      for (;;) { const next = await reader.read(); if (next.done) break; bytes += next.value.byteLength; if (bytes > 16 * 1024) throw new Error('Room server health response exceeds 16 KiB'); chunks.push(next.value) }
+      try { health = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new RoomdError('Room server compatibility discovery returned malformed JSON; update the server', 2) }
+    } finally { await reader.cancel().catch(() => {}) }
+  } catch {
+    // Older hubs may have no health endpoint. Their existing socket/admission path
+    // remains authoritative; a learned floor below still prevents downgrading.
+    health = undefined
+  }
+  let profile: ClientCompatibility
+  try { profile = compatibilityFromHealth(health, floor.learned()) } catch (error) { throw new RoomdError(error instanceof Error ? error.message : String(error), 2) }
+  if (!profile.legacy) negotiatingOrigins.add(server)
+  else negotiatingOrigins.delete(server)
+  return { ...profile, remember: () => { if (!profile.legacy) floor.remember() } }
+}
+
 /**
  * Resolve identity before roomd can publish anything under it (registry §15): a probe connection syncs the
  * room and reaches its hub; the name is the first candidate whose O_EXCL lease in this clone and whose hub
  * lease this session gets. The hub client then moves to the daemon's connection and keeps renewing.
  */
-export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel; takeover?: boolean }, explicitTag?: string): Promise<NamedRoomd> {
+export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel; takeover?: boolean; compatibility?: DiscoveredCompatibility }, explicitTag?: string): Promise<NamedRoomd> {
   assertValidParticipantName(options.name)
   if (options.owner) assertValidParticipantName(options.owner)
   if (options.label) assertValidParticipantName(options.label)
   if (explicitTag) assertValidParticipantName(explicitTag)
   // The bare name the candidates build on; a caller passing only a tagged name gets it back for that tag.
   const owner = options.owner ?? (explicitTag && options.name.endsWith(`+${explicitTag}`) ? options.name.slice(0, -explicitTag.length - 1) : options.name)
-  const doc = new Y.Doc()
+  const binding = createSessionBinding(options.dir)
+  const sessionId = options.sessionId ?? binding.id()
   const url = new URL(options.room)
   const encodedRoom = url.pathname.split('/').pop()!
   url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/'))
+  const server = url.toString().replace(/\/$/, '')
+  const compatibility = options.providerFactory ? undefined : options.compatibility ?? await discoverCompatibility(server, options.dir, options.localKey, options.log)
+  let selected: (ContractSelection & { legacy: boolean }) | undefined
+  let compatibilityRefusal: string | undefined
+  let currentProvider: WebsocketProvider | undefined
+  const negotiation = compatibility && !compatibility.legacy ? {
+    offer: CLIENT_COMPAT, sessionId,
+    onSelection: (_reply: BootstrapSelection) => { compatibility.remember(); compatibilityRefusal = undefined },
+    onRefusal: (text: string) => { compatibilityRefusal = text; if (currentProvider) currentProvider.shouldConnect = false },
+  } : undefined
+  if (compatibility?.legacy) {
+    const baseline = selectContract(CURRENT_COMPAT, LEGACY_COMPAT, { activeSchema: 2 })
+    if (baseline.ok) selected = { ...baseline.selection, legacy: true }
+  }
+  const doc = new Y.Doc()
   const probe = await timed('connect', () => options.providerFactory
-    ? options.providerFactory(url.toString().replace(/\/$/, ''), encodedRoom, doc)
-    : new WebsocketProvider(url.toString().replace(/\/$/, ''), encodedRoom, doc, {
-        WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
+    ? options.providerFactory(server, encodedRoom, doc)
+    : new WebsocketProvider(server, encodedRoom, doc, {
+        WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, negotiation }) as any,
         ...roomConnection(doc),
       }))
+  currentProvider = probe
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
-  const binding = createSessionBinding(options.dir)
-  const sessionId = options.sessionId ?? binding.id()
   const boundAtJoin = binding.bound()?.id
   const hostCurrent = () => !boundAtJoin || binding.bound()?.id === sessionId
   const token = processToken(sessionId)
@@ -609,16 +664,20 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const hub = new HubClient({ transport: hubTransport(probe), client: 'room-mcp', sessionId, local: !!options.localKey })
   let chosen: ChosenName
   try {
+    if (compatibilityRefusal) throw new RoomdError(compatibilityRefusal, 2)
     if (!probe.synced) await timed('sync', () => inPhase('sync', () => new Promise<void>((resolve, reject) => {
-      const onSync = (synced: boolean) => { if (synced) { clearTimeout(timer); probe.off('sync', onSync); resolve() } }
+      const cleanup = () => { clearTimeout(timer); probe.off('sync', onSync); probe.off('connection-close', onClose) }
+      const onClose = () => { if (compatibilityRefusal) { cleanup(); reject(new RoomdError(compatibilityRefusal, 2)) } }
+      const onSync = (synced: boolean) => { if (synced) { cleanup(); resolve() } }
       const timer = setTimeout(() => {
-        probe.off('sync', onSync)
+        cleanup()
         reject(new RoomdError(`could not sync with ${options.room} within ${options.connectTimeoutMs ?? 15000}ms`, 1))
       }, options.connectTimeoutMs ?? 15000)
       probe.on('sync', onSync)
+      probe.on('connection-close', onClose)
     })))
     // An unreachable or older hub leaves the session paused under its local lease (hub §7, §10).
-    const reachable = await hub.hello().then(() => true, () => false)
+    const reachable = await hub.hello().then(() => true, error => { if (error instanceof HubError && error.reason === 'version') throw new RoomdError(error.message, 2); return false })
     const epoch = Number(process.env.ROOM_NAME_EPOCH)
     const commonDir = await gitCommonDir(options.dir)
     chosen = await timed('name', () => inPhase('name', () => chooseName({
@@ -656,7 +715,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     },
   })
   let daemon: Roomd | undefined
-  const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, ...daemonOptions } = options
+  const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, compatibility: _compatibility, ...daemonOptions } = options
   // The daemon's automatic posts go through this connection's hub, under the name lease (hub §2.3).
   let post: Post | undefined
   let started: Roomd
@@ -675,9 +734,9 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     })
     if (lease.fence()) publishing = await attachPublication()
     else policyStore.setPublisher(false)
-    started = daemon = await timed('daemon start', () => startRoomd({ ...daemonOptions, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
+    started = daemon = await timed('daemon start', () => startRoomd({ ...daemonOptions, negotiation: negotiation ? { ...negotiation, onSelection: reply => { negotiation.onSelection(reply); selected = { ...reply.selection, legacy: false } } } : undefined, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
       // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
-      onProvider: provider => { startupCapClose = captureCapClose(provider) },
+      onProvider: provider => { currentProvider = provider; startupCapClose = captureCapClose(provider) },
       post: (from, body, opts) => {
         if (post) return post(from, body, opts)
         options.log?.(`not posted before the hub connection: ${body.type}`)
@@ -705,7 +764,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const records = watchSessionRecords({ daemon: started, binding, sessionId, boundAtJoin, hostCurrent, lease })
   const stop = started.stop.bind(started)
   started.stop = async (reason?: string) => { records.stop(); await stop(reason) }
-  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose() }
+  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose(), contract: () => started.provider.wsconnected ? selected : undefined, compatibilityRefusal: () => compatibilityRefusal }
 }
 
 /** What watchSessionRecords installs; `stop` ends the poll before the daemon stops. */
@@ -862,6 +921,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const name = label ? `${owner}+${label}` : owner
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
+  const compatibility = await discoverCompatibility(server, dir, undefined, opts.log)
   let pre = await timed('preflight', () => preflight(config.credentialsPath, server, roomName!, creds))
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
@@ -883,7 +943,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested, fetchServer))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds, opts.log))
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
   const session: Session = {
@@ -905,6 +965,8 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     serverLog: opts.log,
     ...(token ? { token } : {}),
     hub, post,
+    get contract() { return contract() },
+    get compatibilityRefusal() { return compatibilityRefusal() },
   }
   indexWhileLeading(session, opts.reuse?.graph, opts.log)
   const untrackShare = ceilingFor(server, shareMax).subscribe(policyStore)
@@ -956,13 +1018,13 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   // is not a lead: like a dispatched worker, it never starts or takes over a relay, and waits for the lead's.
   const lead = !opts.joinOnly && !await inRoomWorkerWorktree(dir)
   const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: !!opts.joinOnly, lead, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }).catch(e => {
-    throw e instanceof NoLocalRelay ? new RoomdError(`waiting for the lead's session to start the local relay: your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e
+    throw e instanceof NoLocalRelay ? new RoomdError(`waiting for the lead's session to start the local relay: your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e instanceof LocalRelayCompatibilityError ? new RoomdError(e.message, 2) : e
   }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined
+  let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined, contract: NamedRoomd['contract'], compatibilityRefusal: NamedRoomd['compatibilityRefusal']
   try {
-    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   replica = daemon.roomDoc.doc
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
@@ -983,6 +1045,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     shareRequested: policyStore.requested,
     local,
     hub, post,
+    get contract() { return contract() },
+    get compatibilityRefusal() { return compatibilityRefusal() },
   }
   indexWhileLeading(session, undefined, opts.log)
   trackConnection(session)
@@ -1007,7 +1071,7 @@ export function captureCapClose(provider: unknown): () => CapClose | undefined {
   let seen: CapClose | undefined
   const onClose = (e: unknown) => {
     const close = e && typeof e === 'object' ? e as { code?: number; reason?: string } : undefined
-    if (close?.code === ROOM_SIZE_CAP_CODE || close?.code === STALE_REPLICA_CODE) seen = { code: close.code, reason: close.reason }
+    if (close?.code === ROOM_SIZE_CAP_CODE || close?.code === STALE_REPLICA_CODE || close?.code === 4406) seen = { code: close.code, reason: close.reason }
   }
   p.on?.('connection-close', onClose)
   return () => { p.off?.('connection-close', onClose); const taken = seen; seen = undefined; return taken }
@@ -1048,13 +1112,14 @@ export function watchClosed(s: Session, log?: (line: string) => void, startupClo
       log?.(`${s.roomName}: ${s.rejected.reason}; your last edits are not in the room; retrying in 60 seconds`)
       return
     }
-    if (close?.code !== ROOM_CLOSED_CODE && close?.code !== 4401 && close?.code !== 4403) return
+    if (close?.code !== ROOM_CLOSED_CODE && close?.code !== 4401 && close?.code !== 4403 && close?.code !== 4406 && !s.compatibilityRefusal) return
     if (retry) clearTimeout(retry)
     if (verify) clearTimeout(verify)
     const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
-    const reason = close.code === 4401 ? `logged out of ${server}: run room_login`
-      : close.code === 4403 ? `access to ${s.roomName} was revoked`
-      : close.reason || 'room closed'
+    const reason = (s.compatibilityRefusal || close?.code === 4406) ? s.compatibilityRefusal || close?.reason || 'Room contract refused; update the affected client or server and reconnect Room (/mcp)'
+      : close?.code === 4401 ? `logged out of ${server}: run room_login`
+      : close?.code === 4403 ? `access to ${s.roomName} was revoked`
+      : close?.reason || 'room closed'
     s.closed = { reason }
     try { p.disconnect?.() } catch { /* already gone */ }
     log?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`)
@@ -1087,11 +1152,12 @@ const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^w
 function removeStaleCredential(credentialsPath: string, server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(credentialsPath, server) }
 
 /** Check team admission before a move leaves its current room. A room_create may open a missing room after confirmation. */
-export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean; log?: ServerLog } = {}): Promise<void> {
+export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { dir?: string; token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean; log?: ServerLog } = {}): Promise<void> {
   roomName = normalizeExplicitRoomName(roomName)
   const credentialsPath = opts.credentialsPath ?? defaultCredentialsPath()
   const parsed = parseServer(rawServer)
   const { login: _login, ...creds } = await resolveAuth(credentialsPath, parsed.server, roomName, opts.token ?? parsed.token, opts.log)
+  if (opts.dir) await discoverCompatibility(parsed.server, opts.dir, undefined, opts.log)
   const pre = await preflight(credentialsPath, parsed.server, roomName, creds, opts.log)
   if (!pre || pre.canonical) return
   if (pre.missing) {
@@ -1107,11 +1173,15 @@ export async function checkTeamAdmission(rawServer: string, roomName: string, op
  *  `missing`: access is fine but nobody has opened this repo yet. */
 async function preflight(credentialsPath: string, server: string, roomName: string, auth: Creds, log?: ServerLog): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string; status?: number } | undefined> {
   try {
-    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 20000 }, log)
     if (res.ok) {
       const body = await res.json() as { room?: string; hub?: number }
       if (body.hub !== 1) return { reason: 'this Room server has no 0.17 hub; ask its operator to deploy Room 0.17' }
       return body.room && body.room !== roomName ? { reason: '', canonical: body.room } : undefined
+    }
+    if (res.status === 426) {
+      const body = await res.json() as { error?: { text?: string }; text?: string }
+      return { reason: body.error?.text ?? body.text ?? 'Room server refused this contract; update the affected client or server', status: 426 }
     }
     if (res.status === 401) {
       const reason = (await res.text()).trim() || 'unauthorized'
@@ -1131,7 +1201,7 @@ async function preflight(credentialsPath: string, server: string, roomName: stri
 /** Open this repository room on the server. Idempotent. Returns the refusal, if any. */
 export async function createRoom(server: string, roomName: string, auth: Creds & { by?: string }, log?: ServerLog): Promise<string | undefined> {
   try {
-    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
+    const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 20000 }, log)
     if (res.ok) return undefined
     return (await res.text()).trim() || `HTTP ${res.status}`
   } catch (e) {
@@ -1141,7 +1211,7 @@ export async function createRoom(server: string, roomName: string, auth: Creds &
 
 /** Close this repository room on the server, with its overlays and connections. */
 export async function closeRoom(server: string, roomName: string, auth: Creds, log?: ServerLog): Promise<string[]> {
-  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
+  const res = await serverFetch(`${httpOf(server)}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 20000 }, log)
   if (!res.ok) throw new RoomdError(`${server} would not close ${roomName}: ${(await res.text()).trim() || `HTTP ${res.status}`}`, 2)
   const body = (await res.json().catch(() => ({}))) as { closed?: string[] }
   return body.closed ?? []
@@ -1160,7 +1230,7 @@ export async function authFor(s: Session): Promise<Creds & { server: string }> {
 async function viewToken(server: string, roomName: string, auth: Creds, log?: ServerLog): Promise<string | undefined> {
   if (!auth.token && !auth.session) return undefined
   try {
-    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 }, log)
+    const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...contractBody(server), ...auth }), timeoutMs: 20000 }, log)
     if (!res.ok) return undefined
     return ((await res.json()) as { view?: string }).view
   } catch { return undefined }

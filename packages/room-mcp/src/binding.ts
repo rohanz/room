@@ -29,8 +29,7 @@ export function isCodexExecWorker(env: NodeJS.ProcessEnv = process.env): boolean
 /** How long a Codex worker's first automatic join waits for its thread id (SessionStart hook or first tool call). */
 export const CODEX_WORKER_BIND_WAIT_MS = 5_000
 
-export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now,
-  options: { log?: (line: string) => void } = {}): SessionBinding & { admitCodexThread(id: string): void } {
+export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding & { admitCodexThread(id: string): void } {
   let commonDir: string | null | undefined
   let commonCheckedAt = -Infinity
   let parent: ReturnType<typeof identity> | null | undefined
@@ -65,7 +64,7 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
     return value
   }
   return {
-    admitCodexThread: id => admitCodexThread(id, options.log),
+    admitCodexThread,
     bound,
     id: () => bound()?.id ?? syntheticSessionId(self ?? { pid: process.pid, startTime: '', executable: '' }),
     dir: () => {

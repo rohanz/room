@@ -75,7 +75,7 @@ if (!stateFresh && !fs.existsSync(path.join(dir, 'mcp.json'))) process.exit(0)
 
 const inbox = []
 let confirm
-const mcp = await openMcp(dir, 700)
+const mcp = await openMcp(dir, 700, undefined, ev.session_id)
 const selected = mcp && !subagent ? selectReply(await mcp.request({ op: 'select', sessionId: ev.session_id })) : undefined
 const live = selected?.ok === true || (!!mcp && subagent && (await mcp.request({ op: 'ping', sessionId: ev.session_id }))?.ok === true)
 const current = stateAt !== undefined && (stateFresh || live)

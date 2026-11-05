@@ -12,6 +12,11 @@ import type { Auth, Provider } from './auth.js'
 import { githubRepoOf, roomNameOf } from './names.js'
 
 export interface Creds { gh?: string; token?: string; session?: string }
+/** An unknown or repeated bootstrap switch must never fall through to automatic legacy sync. */
+export function bootstrapMode(params: URLSearchParams): 'legacy' | 'negotiate' | 'unsupported' {
+  const values = params.getAll('negotiate')
+  return !values.length ? 'legacy' : values.length === 1 && values[0] === '1' ? 'negotiate' : 'unsupported'
+}
 /** `login` is the display name; `id` the namespaced identity (`oidc:<issuer-host>:<sub>`) when the provider has one. */
 export type Verdict = { ok: true; login?: string; id?: string; provider?: Provider } | { ok: false; status: 401 | 403 | 503; why: string }
 

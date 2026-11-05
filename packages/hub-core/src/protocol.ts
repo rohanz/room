@@ -5,6 +5,8 @@
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import type { MsgType } from '@room/shared'
+import type { BootstrapFrame } from './negotiation.js'
+export * from './negotiation.js'
 
 /** The y-websocket message type of a hub frame (0–3 are y-websocket's own). */
 export const MSG_HUB = 7
@@ -50,7 +52,7 @@ export type Push = { v: 1; push: 'lease-lost'; name: string; epoch: number; reas
  *  identity (`github:<login>`, `oidc:<issuer-host>:<sub>`) that ownership and quotas are judged by when present. */
 export type Principal = { local: true } | { login?: string; id?: string; readOnly: boolean }
 
-export type Frame = Req | Reply | Push
+export type Frame = Req | Reply | Push | BootstrapFrame
 
 export function encodeFrame(frame: Frame): Uint8Array {
   const enc = encoding.createEncoder()

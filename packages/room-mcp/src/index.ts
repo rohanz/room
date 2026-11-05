@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import fs from 'node:fs'
 import path from 'node:path'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { RoomMcpServer } from './mcp-server.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
@@ -88,7 +88,7 @@ async function main() {
   const watchdog = startEventLoopWatchdog(timing, { log, onTick: () => { void cpu.sample() } })
   setLatestCpuProfile(() => cpu.latest)
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
-  const mcp = new Server(
+  const mcp = new RoomMcpServer(
     { name: 'room', version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
@@ -258,7 +258,7 @@ async function main() {
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const threadId = codexThreadFromMeta(req.params)
-    if (threadId) admitCodexThread(threadId, log)
+    if (threadId) admitCodexThread(threadId)
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {
       if (req.params.name === 'room_state' && req.params.arguments?.check === true) {

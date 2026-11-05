@@ -1,0 +1,43 @@
+{
+  "release": "0.17.32",
+  "commit": "77bf1c448d6ce883b844443204c7c9c7306d0c4c",
+  "sources": {
+    "packages/relay/src/index.ts": "035b7c5e14249dfaf2f99c3410c96493c18566eeaf89352368ebf88cd2536b48",
+    "packages/relay/src/secure.ts": "aa442a21d950d438a3f08719129115684da4f44f9f5c0a3fae8171873e7e69c9",
+    "packages/hub-core/src/protocol.ts": "1920b12d492eeaa97db47d25b1d94f910427dd0e87da88cae0cc33eac1dbad60"
+  },
+  "key": "fixture-key",
+  "room": "local/baseline",
+  "commonDir": "/tmp/room-01732-baseline",
+  "discovery": {
+    "schema": 2,
+    "port": 4402,
+    "pid": 321,
+    "room": "local/baseline",
+    "startedAt": 1793880000000,
+    "key": "fixture-key",
+    "lead": true
+  },
+  "health": {
+    "ok": true,
+    "local": true,
+    "schema": 2,
+    "hub": 1,
+    "clone": "04aa460c37aa40dd12b682844fad10b4713689b4f08e11ec81f0d9ba8e60b899"
+  },
+  "relayNonce": "02020202020202020202020202020202",
+  "clientHello": "726f6f6d2d7365637572652d763101010101010101010101010101010101",
+  "relayHello": "726f6f6d2d7365637572652d763102020202020202020202020202020202dd15fcf81781fe6281f95d35b9795e5bfa7ddeabf83caa77264dad51b1506781",
+  "clientSync": "4b37610fa7009dfbbffab1ed3c99c8700cf07a",
+  "clientHubHello": "650599f53b1bc7383acd7d4ae3687154339f8784a85da3f4060458917bfd64da84344eceb746fa9a3190a73851692d81864f3caa132b491effe9c89284d9046207ec24f9af138434caf65dc81bfffa29da9cf29be2995fea3dbfa9a27777d17f0e0b84f43a2823ed4b5424e20c8c5ca46647e2bd2eda58777f5f54",
+  "relaySync": "95912e56d42abc056b3769cbec2d0540927354",
+  "hello": {
+    "v": 1,
+    "id": "legacy-h",
+    "op": "hello",
+    "proto": 1,
+    "schema": 2,
+    "client": "fixture",
+    "sessionId": "legacy-session"
+  }
+}

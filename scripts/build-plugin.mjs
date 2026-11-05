@@ -40,3 +40,22 @@ if (!process.argv.includes('--skip-web')) {
   fs.cpSync('packages/web/dist', 'plugins/room/web', { recursive: true })
   console.log('copied packages/web/dist -> plugins/room/web')
 }
+
+// The active installed bundle carries its own immutable contract, independent of
+// directory names/cache order. Worker preflight verifies this digest before use.
+const { createHash } = await import('node:crypto')
+const descriptorModule = await build({
+  stdin: {
+    contents: "export { CURRENT_COMPAT } from '@room/hub-core'; export { WORKER_RECORD_SCHEMA } from '@room/shared'",
+    resolveDir: process.cwd(), sourcefile: 'compat-descriptor.mjs', loader: 'js',
+  },
+  tsconfig: 'tsconfig.base.json', bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false,
+})
+const { CURRENT_COMPAT, WORKER_RECORD_SCHEMA } = await import(`data:text/javascript;base64,${Buffer.from(descriptorModule.outputFiles[0].text).toString('base64')}`)
+const release = JSON.parse(fs.readFileSync('plugins/room/.claude-plugin/plugin.json', 'utf8')).version
+const descriptor = {
+  v: 1, release, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA,
+  bundleSha256: createHash('sha256').update(fs.readFileSync('plugins/room/server/room-mcp.mjs')).digest('hex'),
+}
+fs.writeFileSync('plugins/room/server/compat.json', JSON.stringify(descriptor, null, 2) + '\n')
+console.log('stamped plugins/room/server/compat.json')

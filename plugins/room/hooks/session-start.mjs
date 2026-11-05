@@ -38,7 +38,7 @@ writeJsonAtomic(path.join(dir, 'session.json'), {
 
 const lines = []
 let confirm
-const mcp = await openMcp(dir, 300)
+const mcp = await openMcp(dir, 300, undefined, id)
 const selected = mcp ? selectReply(await mcp.request({ op: 'select', sessionId: id, startup: true })) : undefined
 if (selected?.ok) {
   lines.push(...selected.notices)

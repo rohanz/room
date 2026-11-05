@@ -1,8 +1,9 @@
 import path from 'node:path'
+import { createSessionBinding } from '../binding.js'
 import { gitCommonDir } from '@room/roomd'
 import { openRoomBrowser } from '../browser-open.js'
 import { sharingDescription, sharingHumanChoices } from '../config.js'
-import { runDoctor, formatDeliveryHealth, formatDeliveryDegradation } from '../doctor.js'
+import { runDoctor, hookCompatibilityWarning, formatDeliveryHealth, formatDeliveryDegradation } from '../doctor.js'
 import { formatProcessHealth } from '../cpu-watchdog.js'
 import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
@@ -154,6 +155,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)
       }
+      const hookWarning = hookCompatibilityWarning(createSessionBinding(s.dir).dir())
+      if (hookWarning) out.push(`WARN: ${hookWarning}`)
+      if (s.compatibilityRefusal) out.push(`WARN: ${s.compatibilityRefusal}`)
       if (s.closed) out.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}`)
       if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(await browserViewLine(s)); return out.join('\n') }
       const wsRoom = rooms.workers()

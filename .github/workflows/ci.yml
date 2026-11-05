@@ -77,18 +77,39 @@ jobs:
       - name: Check repository hygiene
         run: npx knip
 
-  # Keep the existing required "test" status as the gate for both independent jobs.
+  compat:
+    name: Compatibility (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Pinned old/new process wire fixtures (no model calls)
+        run: npx tsx scripts/compat-matrix.mts
+
+  # Keep the existing required "test" status as the gate for independent jobs.
   # A hygiene failure cannot suppress test/build evidence or silently become optional.
   test:
     if: ${{ always() }}
-    needs: [checks, hygiene]
+    needs: [checks, hygiene, compat]
     runs-on: ubuntu-latest
     steps:
-      - name: Require tests, builds and hygiene
+      - name: Require tests, builds, hygiene and compatibility
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
           HYGIENE_RESULT: ${{ needs.hygiene.result }}
-        run: test "$CHECKS_RESULT" = success && test "$HYGIENE_RESULT" = success
+          COMPAT_RESULT: ${{ needs.compat.result }}
+        run: test "$CHECKS_RESULT" = success && test "$HYGIENE_RESULT" = success && test "$COMPAT_RESULT" = success
 
   checks:
     runs-on: ubuntu-latest
