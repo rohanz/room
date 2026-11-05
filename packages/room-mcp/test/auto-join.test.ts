@@ -15,7 +15,7 @@ import { readRelayInfo, relayProof } from '@room/relay'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
 import { LOCAL, NoRoom, createLocalReplica, joinSession, leaveSession, writeSessionRecord, type Session } from '../src/session.js'
-import { explicitLocalReplica } from '../src/tools/join.js'
+import { adoptLocalReplica, explicitLocalReplica } from '../src/tools/join.js'
 import { gitCommonDir } from '@room/roomd'
 import { RoomDoc } from '@room/shared'
 import { memorySession } from './fixtures/session.js'
@@ -277,7 +277,31 @@ describe('explicit local destination selection', () => {
     expect(await explicitLocalReplica({ dir, room: 'original' }, replica)).toBe(replica)
   })
 
-  it.each([false, true])('room_join selects a new replica and preserves the old replica for rollback; failed=%s', async failed => {
+  it('clears the startup replica on team adoption and creates a fresh one when returning local', async () => {
+    const dir = repo(), original = createLocalReplica()
+    original.common = await gitCommonDir(dir); original.room = 'local/original'
+    original.doc.getMap('old').set('only-copy', 'old local room')
+    expect(adoptLocalReplica(original, original)).toBe(original)
+    expect(original.doc.isDestroyed).toBe(false)
+    const retained = adoptLocalReplica(original, undefined)
+    expect(retained).toBeUndefined()
+    expect(original.doc.isDestroyed).toBe(true)
+    const fresh = await explicitLocalReplica({ dir, room: 'local/original' }, retained)
+    try {
+      expect(fresh).not.toBe(original)
+      expect(fresh.doc.getMap('old').size).toBe(0)
+    } finally { fresh.doc.destroy() }
+  })
+  it.each([
+    { failed: false, team: false }, { failed: true, team: false },
+    { failed: false, team: true }, { failed: true, team: true },
+  ])('room_join retains rollback ownership only until adoption; failed=$failed team=$team', async ({ failed, team }) => {
+    if (team) {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+        ? Response.json({}) : Response.json({ view: 'v', hub: 1 })))
+      cleanups.push(() => vi.unstubAllGlobals())
+    }
+    const destination = team ? 'picked' : 'local/picked'
     const dir = repo(), common = await gitCommonDir(dir)
     const original = createLocalReplica()
     original.common = common; original.room = 'local/original'
@@ -293,6 +317,13 @@ describe('explicit local destination selection', () => {
     const tools = createTools({ cwd: dir, getSession: () => current, setSession: s => { current = s },
       // The MCP keeps a startup replica after rooms.remove; honor the tool's rollback selection.
       join: async opts => {
+        if (opts.server !== LOCAL) {
+          attempts.push(undefined)
+          if (failed) throw new Error('destination unavailable')
+          const teamReplica = createLocalReplica()
+          replicas.push(teamReplica)
+          return memorySession({ name: 'Ada', kind: 'agent' }, dir, new RoomDoc(teamReplica.doc), opts.room!)
+        }
         cached = await explicitLocalReplica(opts, cached)
         attempts.push(cached); replicas.push(cached)
         cached.common = common; cached.room = opts.room
@@ -304,16 +335,17 @@ describe('explicit local destination selection', () => {
       await tools.shutdown()
       for (const replica of new Set(replicas)) replica.doc.destroy()
     })
-    const result = await tools.call('room_join', { where: 'local', room: 'picked' })
+    const result = await tools.call('room_join', { where: team ? 'wss://switch.example' : 'local', room: 'picked' })
     expect(attempts[0]).not.toBe(original)
-    expect(original.doc.isDestroyed).toBe(false)
-    expect(original.doc.getMap('unsaved').get('only-copy')).toBe('old room only')
     if (failed) {
+      expect(original.doc.isDestroyed).toBe(false)
+      expect(original.doc.getMap('unsaved').get('only-copy')).toBe('old room only')
       expect(result).toContain('back in local/original')
       expect(attempts[1]).toBe(original)
       expect(current!.localReplica).toBe(original)
     } else {
-      expect(result).toContain('joined local/picked as Ada')
+      expect(original.doc.isDestroyed).toBe(true)
+      expect(result).toContain(`joined ${destination} as Ada`)
       expect(current!.room.doc.getMap('unsaved').size).toBe(0)
     }
   })

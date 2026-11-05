@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, expect, it, vi } from 'vitest'
 import { CURRENT_COMPAT } from '@room/hub-core'
 import { cloneId } from '../src/index.js'
-import { ensureLocalDaemon } from '../src/daemon.js'
+import { daemonChildEnvironment, ensureLocalDaemon } from '../src/daemon.js'
 import { privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
 import * as proof from '../src/proof.js'
 
@@ -21,6 +21,19 @@ vi.mock('../src/private-state.js', async importOriginal => {
 })
 
 const dirs: string[] = []
+
+it.each(['win32', 'linux'] as const)('passes Windows OS basics only on win32 and excludes session identity and credentials on %s', platform => {
+  const windows = ['SystemDrive', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'ComSpec', 'PATHEXT', 'APPDATA', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME']
+  const excluded = ['ROOM_TAG', 'ROOM_OWNER', 'ROOM_SERVER', 'ROOM_WORKER_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_HOME', 'NODE_OPTIONS', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'PSModulePath']
+  const source = Object.fromEntries([...windows, ...excluded, 'PATH', 'SystemRoot', 'TEMP', 'HOME'].map(name => [name, `fixture-${name}`]))
+  const env = daemonChildEnvironment(source, platform)
+  for (const name of windows) expect(env[name]).toBe(platform === 'win32' ? source[name] : undefined)
+  for (const name of excluded) expect(env[name]).toBeUndefined()
+  for (const name of ['PATH', 'SystemRoot', 'TEMP', 'HOME']) expect(env[name]).toBe(source[name])
+  // Windows variable names are case-insensitive; preserve the supplied spelling as Node does.
+  expect(daemonChildEnvironment({ SYSTEMDRIVE: 'C:', comspec: 'cmd.exe', node_options: 'excluded' }, 'win32'))
+    .toEqual({ SYSTEMDRIVE: 'C:', comspec: 'cmd.exe' })
+})
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.mocked(childProcess.spawn).mockReset(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
 function fixture() {

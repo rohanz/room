@@ -1,5 +1,6 @@
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
+import { initializePrivateDirectory, privateDirectoryPath } from './private-core.mjs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -219,40 +220,12 @@ export function sessionDir(root, sessionId) {
   return path.join(gitCommonDir(root), 'room', 'sessions', createHash('sha256').update(sessionId).digest('hex').slice(0, 16))
 }
 
-/** Plain JS counterpart of relay/private-state.ts; hooks cannot load its TypeScript helper. */
+/** Uses the same traversal and POSIX owner/mode repair as the relay. Windows hooks create plainly;
+ * the MCP/daemon root check protects room/ and normalizes pre-existing descendants before trusting inheritance. */
 function privateHookDirectory(dir) {
-  dir = path.resolve(dir)
-  const directories = [dir]
-  let root = dir
-  while (path.basename(root) !== 'room' && path.dirname(root) !== root) {
-    root = path.dirname(root)
-    directories.unshift(root)
-    if (directories.length > 64) throw new Error('Room state directory path is too deep')
-  }
-  if (path.basename(root) !== 'room') throw new Error('Room hook state must be under the Room root')
-  const windows = process.platform === 'win32'
-  // Top-down repairs make every parent below room/ private before its child is handled. No check on the git common directory above room/: anyone who can write it can already install git hooks that run as this user, so a Room check there adds no protection, and default umask 002 makes it group-writable on Debian and Ubuntu.
-  // Windows: hooks cannot set an ACL cheaply, so they create plain directories. Until the MCP or daemon first
-  // protects the room/ root (one PowerShell check per process, which also propagates to what hooks wrote), these
-  // inherit the repository's .git ACL: the same boundary that already guards the repository's own git hooks.
-  for (const directory of directories) {
-    let created = false
-    try { fs.mkdirSync(directory, { mode: 0o700 }); created = true }
-    catch (error) { if (error.code !== 'EEXIST') throw error }
-    const stat = fs.lstatSync(directory)
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink: ${directory}`)
-    if (windows) continue
-    if (!process.getuid || stat.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${directory}`)
-    if (created || (stat.mode & 0o777) !== 0o700) {
-      const fd = fs.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY)
-      try {
-        const opened = fs.fstatSync(fd)
-        if (opened.dev !== stat.dev || opened.ino !== stat.ino || opened.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${directory}`)
-        fs.fchmodSync(fd, 0o700)
-      } finally { fs.closeSync(fd) }
-      if (!created) console.error(`Room repaired private state directory: ${directory}`)
-    }
-  }
+  const { directories, inState } = privateDirectoryPath(dir)
+  if (!inState) throw new Error('Room hook state must be under the Room root')
+  for (const directory of directories) initializePrivateDirectory(directory, true)
 }
 
 /** Temp-and-rename, so a reader never sees half a file (ledger R5). */

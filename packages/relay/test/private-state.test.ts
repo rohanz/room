@@ -13,6 +13,63 @@ function fixture() {
   return { root, room: path.join(root, 'room') }
 }
 
+function inspectWindows(target: string): { user: string; protected: boolean; grants: string[]; inherited: boolean[]; explicit: number } {
+  return JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:ROOM_TEST_PATH; $r=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])); @{user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;protected=$a.AreAccessRulesProtected;grants=@($r | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value});inherited=@($r | ForEach-Object {$_.IsInherited});explicit=@($r | Where-Object {!$_.IsInherited}).Count} | ConvertTo-Json -Compress"],
+  { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), ROOM_TEST_PATH: target }, encoding: 'utf8', timeout: 20_000 }).trim())
+}
+
+it.runIf(process.platform === 'win32').each(['protected directory', 'explicit file grant'])('Windows priming repairs an existing descendant with %s', async kind => {
+  const { root, room } = fixture(), child = path.join(room, 'sessions', 'legacy'), file = path.join(child, 'session.json')
+  fs.mkdirSync(child, { recursive: true }); fs.writeFileSync(file, '{}')
+  const target = kind === 'protected directory' ? child : file
+  if (kind === 'protected directory') execFileSync('icacls', [child, '/inheritance:d'], { stdio: 'pipe' })
+  execFileSync('icacls', [target, '/grant', kind === 'protected directory' ? '*S-1-1-0:(OI)(CI)R' : '*S-1-1-0:R'], { stdio: 'pipe' })
+  const before = inspectWindows(target)
+  expect(before.grants).toContain('S-1-1-0')
+  expect(before.explicit).toBeGreaterThan(0)
+  expect(before.protected).toBe(kind === 'protected directory')
+  await primePrivateState(root) // the async root inspection must repair even unrequested descendants
+  for (const descendant of [child, file]) {
+    const after = inspectWindows(descendant)
+    expect(after.protected).toBe(false)
+    expect(after.explicit).toBe(0)
+    expect(after.inherited.length).toBeGreaterThan(0)
+    expect(after.inherited.every(Boolean)).toBe(true)
+    expect(after.grants.length).toBeGreaterThan(0)
+    expect(after.grants.filter(sid => ![after.user, 'S-1-5-18', 'S-1-5-32-544'].includes(sid))).toEqual([])
+  }
+  expect(fs.readFileSync(file, 'utf8')).toBe('{}')
+  privateStateDirectory(child)
+  verifyPrivatePath(file)
+}, 90_000)
+
+it.runIf(process.platform === 'win32')('refuses a Windows Room subtree above the 20000 entry inspection limit', async () => {
+  const { root, room } = fixture()
+  fs.mkdirSync(room)
+  for (let index = 0; index <= 20000; index++) fs.writeFileSync(path.join(room, String(index)), '')
+  await expect(primePrivateState(root)).rejects.toThrow('20000 entry inspection limit')
+  // Failure cannot warm the cache: even a synchronous caller must refuse this subtree.
+  expect(() => privateStateDirectory(room)).toThrow('20000 entry inspection limit')
+}, 90_000)
+
+it.runIf(process.platform === 'win32')('repairs a protected Windows root without inheritable grants before creating children', async () => {
+  const { root, room } = fixture()
+  fs.mkdirSync(room)
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference='Stop'; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User; $a=New-Object Security.AccessControl.DirectorySecurity; $a.SetOwner($u); $a.SetAccessRuleProtection($true,$false); $a.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($u,'FullControl','Allow'))); Set-Acl -LiteralPath $env:ROOM_TEST_PATH -AclObject $a"],
+  { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), ROOM_TEST_PATH: room }, timeout: 20_000, stdio: 'pipe' })
+  await primePrivateState(root)
+  const child = path.join(room, 'sessions', 'new'), file = path.join(child, 'session.json')
+  privateStateDirectory(child)
+  fs.writeFileSync(file, '{}')
+  const after = inspectWindows(file)
+  expect(after.explicit).toBe(0)
+  expect(after.inherited.length).toBeGreaterThan(0)
+  expect(after.grants).toContain(after.user)
+  expect(after.grants.filter(sid => ![after.user, 'S-1-5-18', 'S-1-5-32-544'].includes(sid))).toEqual([])
+}, 90_000)
+
 it.skipIf(process.platform === 'win32')('accepts a group-writable git parent (umask 002) and leaves its mode alone', () => {
   const { root } = fixture(), common = path.join(root, '.git')
   fs.mkdirSync(common)

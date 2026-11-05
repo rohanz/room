@@ -11,6 +11,72 @@ const dirs: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 const setup = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-durable-')); dirs.push(dir); return dir }
 
+it.each(['EPERM', 'EACCES', 'EBUSY'])('retries a Windows atomic replacement after injected %s failures on every platform', code => {
+  const dir = setup(), file = path.join(dir, 'record.json'), rename = fs.renameSync.bind(fs)
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  fs.writeFileSync(file, '{}')
+  const wait = vi.spyOn(Atomics, 'wait').mockImplementation((_array, _index, _value, delay) => {
+    expect(delay).toBeGreaterThan(0)
+    expect(delay).toBeLessThanOrEqual(110)
+    expect(fs.readFileSync(file, 'utf8')).toBe('{}')
+    expect(fs.readdirSync(dir).filter(name => name.endsWith('.tmp'))).toHaveLength(1)
+    return 'timed-out'
+  })
+  let attempts = 0
+  vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    Object.defineProperty(process, 'platform', { value: 'win32' }) // only the rename runs as Windows
+    if (++attempts <= 2) throw Object.assign(new Error('destination temporarily busy'), { code })
+    rename(from, to)
+  })
+  try {
+    writeAtomic(file, { complete: true })
+    expect(attempts).toBe(3)
+    expect(wait).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ complete: true })
+    expect(fs.readdirSync(dir)).toEqual(['record.json'])
+  } finally { Object.defineProperty(process, 'platform', platform) }
+}, 30_000)
+
+it.each([{ platform: 'win32', code: 'ENOENT' }, { platform: 'linux', code: 'EPERM' }])('does not retry $code on $platform', ({ platform, code }) => {
+  const dir = setup(), file = path.join(dir, 'record.json'), descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
+  const failure = Object.assign(new Error('permanent rename failure'), { code })
+  const wait = vi.spyOn(Atomics, 'wait')
+  const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+    Object.defineProperty(process, 'platform', { value: platform })
+    throw failure
+  })
+  try {
+    expect(() => writeAtomic(file, {})).toThrow(failure)
+    expect(rename).toHaveBeenCalledTimes(1)
+    expect(wait).not.toHaveBeenCalled()
+    expect(fs.readdirSync(dir)).toEqual([])
+  } finally { Object.defineProperty(process, 'platform', descriptor) }
+}, 30_000)
+
+it('bounds Windows rename retries to two seconds and removes the failed temp', () => {
+  const dir = setup(), file = path.join(dir, 'record.json'), platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  // Preserve an existing record through an exhausted replacement.
+  fs.writeFileSync(file, '{"original":true}')
+  vi.spyOn(Atomics, 'wait').mockReturnValue('timed-out')
+  const clock = vi.spyOn(performance, 'now')
+  const failure = Object.assign(new Error('destination stays busy'), { code: 'EBUSY' })
+  let elapsed = 0
+  const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    clock.mockImplementation(() => elapsed += 1000)
+    throw failure
+  })
+  // The first clock read belongs to renameAtomic; set later reads from the injected rename.
+  clock.mockReturnValue(0)
+  try {
+    expect(() => writeAtomic(file, {})).toThrow(failure)
+    expect(rename).toHaveBeenCalledTimes(2)
+    expect(Atomics.wait).toHaveBeenCalledTimes(1)
+    expect(fs.readFileSync(file, 'utf8')).toBe('{"original":true}')
+    expect(fs.readdirSync(dir)).toEqual(['record.json'])
+  } finally { Object.defineProperty(process, 'platform', platform) }
+}, 30_000)
+
 it('writes below an existing root that rejects mkdir with Windows EPERM', () => {
   const dir = setup(), root = path.parse(dir).root
   const mkdir = fs.mkdirSync.bind(fs)

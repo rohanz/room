@@ -110,6 +110,42 @@ describe('drained daemon cutover', () => {
     expect(state.blocked).toBe(false)
     expect(state.owner).toMatchObject({ runtime: 'daemon', release: 'D' })
   })
+  it('allows restart after save-first idle exit when the discovery PID is reused', async () => {
+    const { common } = fixture()
+    owner(common, 100, 'daemon')
+    const file = path.join(common, 'room/relay.json')
+    write(file, { ...JSON.parse(fs.readFileSync(file, 'utf8')), lead: identity(100) })
+    // Idle shutdown saves the hub and releases authority, retaining discovery for restart.
+    fs.rmSync(path.join(common, 'room/hub/authority.lock'))
+    const authenticate = vi.fn(noHealth)
+    const options = { probe: () => ({ ...identity(100), startTime: 'unrelated-process' }), authenticate }
+    const state = await inspectDaemonCutover(common, options)
+    expect(state.owner).toMatchObject({ liveness: 'dead', identity: identity(100) })
+    expect(state.blocked).toBe(false)
+    expect(authenticate).not.toHaveBeenCalled()
+    await expect(requireDaemonRuntime(common, options)).resolves.toBeUndefined()
+  })
+  it.each([
+    { pid: 200, startTime: 'start-200', executable: 'node' },
+    { pid: 100, startTime: '', executable: 'node' },
+    { pid: 100, startTime: 'start-100' },
+  ])('refuses invalid discovery lead identity %j without deleting evidence', async lead => {
+    const { common } = fixture(); owner(common, 100, 'daemon')
+    const file = path.join(common, 'room/relay.json')
+    write(file, { ...JSON.parse(fs.readFileSync(file, 'utf8')), lead })
+    const before = fs.readFileSync(file, 'utf8')
+    expect((await inspectDaemonCutover(common, inspectOptions)).issues.join(' ')).toMatch(/discovery.*identity/)
+    await expect(requireDaemonRuntime(common, inspectOptions)).rejects.toThrow(/discovery/)
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+  it('compares discovery birth identity with authority even when the PID matches', async () => {
+    const { common } = fixture(); owner(common, 100, 'daemon')
+    const file = path.join(common, 'room/relay.json')
+    write(file, { ...JSON.parse(fs.readFileSync(file, 'utf8')), lead: { ...identity(100), startTime: 'previous-process' } })
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.blocked).toBe(true)
+    expect(state.issues.join(' ')).toMatch(/disagrees with authority/)
+  })
   it('does not let a dead daemon-client marker exempt a live legacy host', async () => {
     const { common } = fixture()
     write(path.join(common, 'room/sessions/old/mcp.json'), { ...identity(300), runtime: 'daemon-client' })

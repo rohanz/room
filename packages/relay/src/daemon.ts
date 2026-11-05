@@ -202,6 +202,23 @@ function startupFailure(commonDir: string, pid: number | undefined, reason: stri
 }
 
 const flights = new Map<string, Promise<LocalDaemon>>()
+/** Keep only OS/runtime basics. No ROOM_*, host-session identities, NODE_OPTIONS or credentials. */
+export function daemonChildEnvironment(source: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ']) if (source[name] !== undefined) env[name] = source[name]
+  // Windows PowerShell and its standard modules need OS locations and machine/account names for native setup:
+  // SystemDrive: OS drive; ProgramData: shared application data; ProgramFiles/ProgramFiles(x86)/ProgramW6432:
+  // native, x86 and 64-bit program locations; CommonProgramFiles: shared components; ComSpec: command processor;
+  // PATHEXT: executable suffixes; APPDATA: roaming application data; PROCESSOR_ARCHITECTURE: native architecture;
+  // NUMBER_OF_PROCESSORS: processor count; OS: OS family; USERNAME/USERDOMAIN: Windows account lookup;
+  // COMPUTERNAME: local machine lookup. These are OS basics, without host-session identities or tokens.
+  if (platform === 'win32') {
+    const basics = new Set(['systemdrive', 'programdata', 'programfiles', 'programfiles(x86)', 'programw6432', 'commonprogramfiles', 'comspec', 'pathext', 'appdata', 'processor_architecture', 'number_of_processors', 'os', 'username', 'userdomain', 'computername'])
+    for (const [name, value] of Object.entries(source)) if (basics.has(name.toLowerCase()) && value !== undefined) env[name] = value
+  }
+  return env
+}
+
 /** Caller must already be repository-bound and validate worker clone ownership. No in-process fallback. */
 export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDaemonOptions = {}): Promise<LocalDaemon> {
   const canonical = fs.realpathSync.native(commonDir)
@@ -241,9 +258,7 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
   if (info?.lead && info.lead !== true && liveness(info.lead) !== 'dead') throw new Error(`local daemon pid ${info.pid} is live or has unknown identity; retry without taking over`)
   const entry = opts.entryPath ?? fileURLToPath(new URL('./room-daemon.mjs', import.meta.url))
   if (!path.isAbsolute(entry) || !fs.statSync(entry).isFile()) throw new Error('local daemon entry must be an absolute installed bundle path')
-  // Keep only OS/runtime basics. No ROOM_*, host identities, NODE_OPTIONS or credentials.
-  const env: NodeJS.ProcessEnv = {}
-  for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ']) if (process.env[name] !== undefined) env[name] = process.env[name]
+  const env = daemonChildEnvironment()
   // The child reports a fatal startup error here when it cannot reach daemon.log; a directory only this user can
   // read, removed once startup resolves either way. The child never holds it open.
   const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-daemon-start-'))

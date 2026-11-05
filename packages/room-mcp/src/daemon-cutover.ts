@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { cloneId, privateStateDirectory, relayIdentity } from '@room/relay'
 import { liveness, writeAtomic, type Liveness, type ProcessIdentity } from '@room/relay/leases'
-import type { ProcessProbe } from '@room/relay/process'
+import { sameStartTime, type ProcessProbe } from '@room/relay/process'
 
 const exec = promisify(execFile)
 const MAX_RECORD_BYTES = 2 * 1024 * 1024
@@ -97,11 +97,15 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
   if (typeof discovery?.key === 'string') state.keyFingerprint = createHash('sha256').update(discovery.key).digest('hex')
   const lock = read(path.join(room, 'hub', 'authority.lock'))
   const lockIdentity = identityOf(lock)
+  const discoveryIdentity = discovery?.lead !== undefined && discovery.lead !== true ? identityOf(discovery.lead) : identityOf(discovery)
+  const invalidDiscoveryIdentity = discovery?.lead !== undefined && discovery.lead !== true &&
+    (!discoveryIdentity?.startTime || !discoveryIdentity.executable || discoveryIdentity.pid !== discovery.pid)
+  if (invalidDiscoveryIdentity) state.issues.push('Invalid local relay discovery process identity; preserve it and repair ownership evidence before cutover')
   if (lock && !lockIdentity) state.issues.push('Authority lock has no valid process identity; preserve it and repair ownership evidence before cutover')
   if (discovery && (!pidOf(discovery.pid) || !Number.isSafeInteger(discovery.port) || discovery.port < 1 || discovery.port > 65535 || typeof discovery.key !== 'string' || !discovery.key || discovery.schema !== 2)) {
     state.issues.push('Invalid local relay discovery; preserve it and repair ownership evidence before cutover')
   } else if (discovery || lockIdentity) {
-    const identity = lockIdentity ?? identityOf(discovery)
+    const identity = lockIdentity ?? (invalidDiscoveryIdentity ? undefined : discoveryIdentity)
     if (identity) {
       let health: Record<string, unknown> | undefined
       const status = alive(identity)
@@ -114,7 +118,10 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
         liveness: health ? 'alive' : status, identity }
       // Discovery is a hint: it cannot exempt an owner from the legacy gate without key/clone proof.
       if (state.owner.runtime === 'daemon' && status !== 'dead' && !health) state.issues.push(`Cannot authenticate daemon owner pid ${identity.pid}; unknown runtime blocks cutover`)
-      if (discovery && lockIdentity && discovery.pid !== lockIdentity.pid && (status !== 'dead' || alive(identityOf(discovery)) !== 'dead')) state.issues.push(`Discovery pid ${discovery.pid} disagrees with authority owner pid ${lockIdentity.pid}; rediscover before cutover`)
+      const disagrees = discoveryIdentity && lockIdentity && (discoveryIdentity.pid !== lockIdentity.pid
+        || !!discoveryIdentity.startTime && !!lockIdentity.startTime && !sameStartTime(discoveryIdentity.startTime, lockIdentity.startTime)
+        || !!discoveryIdentity.executable && !!lockIdentity.executable && discoveryIdentity.executable !== lockIdentity.executable)
+      if (disagrees && !invalidDiscoveryIdentity && (status !== 'dead' || alive(discoveryIdentity) !== 'dead')) state.issues.push(`Discovery process pid ${discoveryIdentity.pid} disagrees with authority owner pid ${lockIdentity!.pid}; rediscover before cutover`)
     }
   }
 

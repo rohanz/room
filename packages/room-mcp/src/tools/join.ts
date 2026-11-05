@@ -6,7 +6,7 @@ import { primePrivateDirectory } from '@room/relay'
 import { gitCommonDir, realGitCommonDir } from '@room/roomd'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
-import { NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, createLocalReplica, deriveRoomName, normalizeExplicitRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type LocalReplica, type Session } from '../session.js'
+import { NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, createLocalReplica, disposeLocalReplica, deriveRoomName, normalizeExplicitRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type LocalReplica, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
@@ -112,6 +112,12 @@ export async function explicitLocalReplica(opts: JoinOptions, retained?: LocalRe
   // Keep the previous document intact for rollback. Automatic rejoin never calls this helper:
   // joinLocal still refuses to attach a surviving replica to a different clone or room.
   return createLocalReplica()
+}
+
+/** Adoption ends rollback ownership; a team destination also clears the retained local reference. */
+export function adoptLocalReplica(retained: LocalReplica | undefined, adopted: LocalReplica | undefined): LocalReplica | undefined {
+  if (retained !== adopted) disposeLocalReplica(retained)
+  return adopted
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -273,7 +279,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return cur ? rollBack(message(e)) : refused(e)
       }
       if (toolCallAborted() && cur) {
-        try { await doLeave(s) } catch (e) { rooms.add(s, 'primary'); return `cancelled, but couldn't leave ${s.roomName} (${message(e)}); you're in ${s.roomName}.` }
+        try { await doLeave(s) } catch (e) { rooms.add(s, 'primary'); adoptLocalReplica(cur.localReplica, s.localReplica); return `cancelled, but couldn't leave ${s.roomName} (${message(e)}); you're in ${s.roomName}.` }
         return rollBack('the request was cancelled')
       }
       let notRemembered = ''
@@ -284,6 +290,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       rooms.add(s, 'primary')
+      adoptLocalReplica(cur?.localReplica, s.localReplica)
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
       await loadAreas(s)

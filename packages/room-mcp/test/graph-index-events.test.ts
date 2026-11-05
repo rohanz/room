@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { RoomDoc, digestPath, manifestKey } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
 import { GraphIndex } from '../src/graph-index.js'
+import { parseInWorker } from '../src/parse/client.js'
 import { gitShow } from '@room/roomd/git'
 import * as Y from 'yjs'
 
@@ -119,17 +120,39 @@ describe('GraphIndex overlay events', () => {
         const head = room.manifestHead.get('B')!
         room.manifestHead.set('B', { ...head, level, textPrefixes: ['api.py'], rev: head.rev + 1 })
       }
-      const gi = new GraphIndex(room, 'B', repo, undefined, { random: () => 0, minPublishMs: 0 })
+      let blockDeletion = false, entered!: () => void, release!: () => void
+      const inside = new Promise<void>(resolve => { entered = resolve })
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const gi = new GraphIndex(room, 'B', repo, undefined, { random: () => 0, minPublishMs: 0,
+        parser: { stop() {}, async parse(path, texts) {
+          if (blockDeletion && path === 'api.py') { blockDeletion = false; entered(); await gate }
+          return parseInWorker(path, texts)
+        } },
+      })
       try {
         gi.start(); await gi.whenIdle()
         await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')!.paths.includes('api.py'))
+        // Leave a publication queued from an earlier refresh, then hold deletion parsing.
+        // That publication may stamp the new provenance before the observation is ready.
+        await gi.refresh('consumer.py'); await gi.whenIdle()
+        blockDeletion = true
         deleteFixture(room, 'B', 'api.py', { base: commit })
         if (level === 'declared') {
           const head = room.manifestHead.get('B')!
           room.manifestHead.set('B', { ...head, level, textPrefixes: ['api.py'], rev: head.rev + 1 })
         }
-        await gi.whenIdle()
+        await inside
         await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.sourceRev === room.manifestHead.get('B')?.rev)
+        expect(room.graphs.get('B')?.observed).toEqual([])
+        release()
+        await gi.whenIdle()
+        // whenIdle drains indexing, not publication. Ready + sourceRev can already
+        // describe a partial snapshot from the earlier timer, so await its content.
+        await eventually(() => {
+          const graph = room.graphs.get('B')
+          return graph?.status === 'ready' && graph.sourceRev === room.manifestHead.get('B')?.rev &&
+            !!graph.observed?.some(change => change.path === 'api.py' && change.symbol === 'call' && change.kind === 'delete')
+        })
         const fresh = new RoomDoc()
         try {
           Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
@@ -137,7 +160,7 @@ describe('GraphIndex overlay events', () => {
           expect(graph.paths).not.toContain('api.py')
           expect(graph.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call', kind: 'delete' }))
         } finally { fresh.doc.destroy() }
-      } finally { gi.stop() }
+      } finally { release(); gi.stop() }
     } finally { room.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
   })
 

@@ -5,7 +5,7 @@ import path from 'node:path'
 import * as childProcess from 'node:child_process'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { writeAtomic } from '../src/leases.js'
-import { primePrivateDirectory, primePrivateState, privateStateDirectory } from '../src/private-state.js'
+import { primePrivateDirectory, primePrivateState, privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
 
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(), execFile: vi.fn(), execFileSync: vi.fn(),
@@ -71,6 +71,20 @@ it('checks a replaced directory again instead of trusting the old path', async (
   finish(null, report, ''); await second
   privateStateDirectory(room)
   expect(childProcess.execFileSync).not.toHaveBeenCalled()
+})
+
+it('does not trust a root-only ACL check as verification of its descendants', async () => {
+  const { common, room } = fixture(), child = path.join(room, 'record.json')
+  fs.writeFileSync(child, '{}')
+  verifyPrivatePath(room)
+  verifyPrivatePath(child)
+  expect(childProcess.execFileSync).toHaveBeenCalledTimes(2) // no subtree has been inspected yet
+  const prime = primePrivateState(common)
+  expect(childProcess.execFile).toHaveBeenCalledTimes(1) // a cached root-only check must not skip the walk
+  finish(null, report, ''); await prime
+  privateStateDirectory(room)
+  verifyPrivatePath(child)
+  expect(childProcess.execFileSync).toHaveBeenCalledTimes(2)
 })
 
 it('does not cache failed inspections and permits a later prime or synchronous fallback', async () => {

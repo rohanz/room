@@ -107,8 +107,25 @@ export function createExclusive(file: string, content: object): boolean {
 /** Durable replacement for single-writer records or files held under a guard. */
 export function writeAtomic(file: string, content: object): void {
   const temp = writeTemp(file, content)
-  try { fs.renameSync(temp, file); syncDirectory(path.dirname(file)) }
+  try { renameAtomic(temp, file); syncDirectory(path.dirname(file)) }
   finally { fs.rmSync(temp, { force: true }); syncDirectory(path.dirname(file)) }
+}
+
+/** Windows can temporarily deny replacement while another writer or scanner holds the destination.
+ * Keep the fully synced temp and retry only those sharing/permission errors, bounded to two seconds. */
+function renameAtomic(temp: string, file: string): void {
+  const until = performance.now() + 2000
+  let sleeper: Int32Array | undefined
+  let attempts = 0
+  for (;;) {
+    try { fs.renameSync(temp, file); return }
+    catch (error) {
+      const remaining = until - performance.now()
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '') || remaining <= 0) throw error
+      const delay = Math.min(remaining, Math.min(100, ++attempts * 10) + Math.random() * 10)
+      Atomics.wait(sleeper ??= new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay)
+    }
+  }
 }
 
 function read(file: string): Record<string, unknown> | undefined {

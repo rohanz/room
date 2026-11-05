@@ -2,8 +2,9 @@
 // and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
 //
 // Run:        npm run build:plugin   (from the repository root; paths are cwd-relative). Needs `npm ci`.
-// Overwrites: plugins/room/server/{room-mcp,parse-worker}.mjs, replaces plugins/room/server/grammars/ and (via the
-//             web build, packages/web/dist) plugins/room/web/. All committed; CI checks they are current.
+// Overwrites: plugins/room/server/{room-mcp,room-daemon,parse-worker}.mjs and hooks/private-core.mjs;
+// replaces plugins/room/server/grammars/ and (via packages/web/dist) plugins/room/web/.
+// All generated plugin assets are committed; CI checks they are current.
 // --skip-web  rebuilds only the server bundle (for sandboxes that cannot build the web view): partial output, never commit it.
 // Installed plugins copy the bundle: reinstall room@room on each host after a rebuild.
 import { build } from 'esbuild'
@@ -25,6 +26,10 @@ const bundleOptions = {
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/index.ts'], outfile: 'plugins/room/server/room-mcp.mjs' })
 await build({ ...bundleOptions, entryPoints: ['packages/relay/src/daemon-bin.ts'], outfile: 'plugins/room/server/room-daemon.mjs', define: { __ROOM_DAEMON_RELEASE__: JSON.stringify(release) } })
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worker.ts'], outfile: 'plugins/room/server/parse-worker.mjs' })
+
+// One builtins-only privacy policy for hooks and the relay; committed and checked with the other plugin assets.
+await build({ entryPoints: ['packages/relay/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
+  bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
 
 const grammarDir = 'plugins/room/server/grammars'
 fs.rmSync(grammarDir, { recursive: true, force: true })

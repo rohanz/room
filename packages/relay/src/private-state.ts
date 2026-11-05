@@ -2,6 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
+import { initializePrivateDirectory, privateDirectoryPath, verifyPosixPath } from './private-core.js'
 
 interface AclReport { owner: string; user: string; protected: boolean; grants: string[]; directory?: boolean; repaired?: boolean }
 export function checkWindowsAcl(report: AclReport, file: string): void {
@@ -16,7 +17,7 @@ export function checkWindowsAcl(report: AclReport, file: string): void {
 }
 /** Paths this process has already verified on Windows, keyed to their file identity: one PowerShell run per path
  * per process, not per write. A replaced path has a new identity and is inspected again. */
-const verifiedWindows = new Map<string, string>()
+const verifiedWindows = new Map<string, { identity: string; subtree: boolean }>()
 const windowsKey = (file: string) => path.resolve(file).toLowerCase()
 function windowsIdentity(file: string): string | undefined {
   try { const stat = fs.lstatSync(file, { bigint: true }); return `${stat.dev}:${stat.ino}` } catch { return undefined }
@@ -52,10 +53,50 @@ function windowsAclScript(protectNew: boolean, createDirectory: boolean, repair:
     $elevated=(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
     $owned=($o -eq $u.Value) -or ($o -eq 'S-1-5-32-544' -and $elevated);
     $broad=@($g | Where-Object {$_ -notin @($u.Value,'S-1-5-18','S-1-5-32-544')});
-    ${protectNew || repair ? `if ($owned -and (${protectNew ? '$true' : '!$a.AreAccessRulesProtected -or $broad.Count -gt 0'})) {
+    ${repair ? `$inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';
+    $inheritable=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {
+      $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -eq $u.Value -and
+      ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
+      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
+    }).Count -gt 0;` : ''}
+    ${repair ? `# Count and reject reparse points before Set-Acl can propagate through an oversized subtree.
+    $pending=New-Object 'System.Collections.Generic.Stack[string]'; $pending.Push($p);
+    $children=New-Object 'System.Collections.Generic.List[string]';
+    while ($pending.Count -gt 0) {
+      foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
+        if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
+        $attributes=[IO.File]::GetAttributes($child);
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+        $children.Add($child);
+        if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
+      }
+    };` : ''}
+    ${protectNew || repair ? `if ($owned -and (${protectNew ? '$true' : '!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable'})) {
       Set-Acl -LiteralPath $p -AclObject (PrivateAcl $item.PSIsContainer); $repaired=!$created;
+      ${repair ? '$inheritable=$true;' : ''}
       $a=Get-Acl -LiteralPath $p;
       $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
+    };` : ''}
+    ${repair ? `# Establish inheritance for the whole existing subtree before caching this root. Never follow reparse points.
+    if (!$inheritable -or !$a.AreAccessRulesProtected -or @($g | Where-Object {$_ -notin @($u.Value,'S-1-5-18','S-1-5-32-544')}).Count -gt 0 -or
+        $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
+    foreach ($child in $children) {
+        $childItem=Get-Item -Force -LiteralPath $child;
+        if ($childItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+        $childAcl=Get-Acl -LiteralPath $child;
+        $rules=@($childAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));
+        $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @($u.Value,'S-1-5-18','S-1-5-32-544')});
+        if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
+          $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+          if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Cannot repair Room state owned by $childOwner : $child" };
+          $childAcl.SetAccessRuleProtection($false,$false);
+          foreach ($rule in $rules) { if (!$rule.IsInherited) { $childAcl.RemoveAccessRuleSpecific($rule) } };
+          Set-Acl -LiteralPath $child -AclObject $childAcl;
+          $childAcl=Get-Acl -LiteralPath $child;
+          $rules=@($childAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));
+        };
+        if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
+            @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin @($u.Value,'S-1-5-18','S-1-5-32-544')}).Count -gt 0) { throw "Room state descendant is not private: $child" };
     };` : ''}
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`
 }
@@ -71,14 +112,14 @@ function rememberWindowsAcl(file: string, output: string, repair: boolean): void
   checkWindowsAcl(report, file)
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`)
   const identity = windowsIdentity(file)
-  if (identity) verifiedWindows.set(windowsKey(file), identity)
+  if (identity) verifiedWindows.set(windowsKey(file), { identity, subtree: repair })
 }
-function windowsVerified(file: string): boolean {
+function windowsVerified(file: string, subtree = false): boolean {
   const known = verifiedWindows.get(windowsKey(file))
-  return !!known && known === windowsIdentity(file)
+  return !!known && (!subtree || known.subtree) && known.identity === windowsIdentity(file)
 }
 function windowsAcl(file: string, protectNew = false, createDirectory = false, repair = false): void {
-  if (!protectNew && windowsVerified(file)) return
+  if (!protectNew && windowsVerified(file, repair)) return
   // A synchronous caller cannot await a prime already in flight. Its own idempotent check is the fallback;
   // repair only changes an owned, unprotected/broad DACL, so both checks converge on the same private ACL.
   let output: string
@@ -97,7 +138,7 @@ function primeWindowsDirectory(dir: string, repair: boolean): Promise<void> {
   const key = windowsKey(dir)
   const running = primingWindows.get(key)
   if (running) return running
-  if (windowsVerified(dir)) return Promise.resolve()
+  if (windowsVerified(dir, repair)) return Promise.resolve()
   const work = (async () => {
     // Like privateStateDirectory, never let recursive native creation create checkout ancestors.
     if (!fs.statSync(path.dirname(dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`)
@@ -132,71 +173,36 @@ export function verifyPrivatePath(file: string, created = false): void {
   const stat = fs.lstatSync(file)
   if (stat.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file}`)
   if (process.platform === 'win32') {
-    // Below a Room root this process verified, everything inherits the root's protected owner-only ACL.
+    // The root inspection normalized existing descendants; new children inherit its private ACL.
     if (underVerifiedRoomRoot(file)) return
     windowsAcl(file, created); return
   }
-  if (stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error(`Room state must be owned by the current user and private: ${file}`)
+  verifyPosixPath(file, stat)
 }
 /** Windows trusts one boundary per process: the room/ root, created or repaired with a protected, inheritable
- * owner-only ACL and verified once. Everything below it inherits that ACL (Set-Acl on the root also propagates to
- * existing inheriting children), so descendants need no PowerShell inspection of their own. */
+ * owner-only ACL. That same inspection walks and normalizes all existing descendants before caching the root;
+ * subsequent plain creations inherit it, so writers need no PowerShell inspection of their own. */
 function underVerifiedRoomRoot(file: string): boolean {
   let dir = path.resolve(file)
   while (path.basename(dir).toLowerCase() !== 'room' && path.dirname(dir) !== dir) dir = path.dirname(dir)
   if (path.basename(dir).toLowerCase() !== 'room' || path.resolve(file) === dir) return false
   const known = verifiedWindows.get(windowsKey(dir))
-  return !!known && known === windowsIdentity(dir)
+  return !!known?.subtree && known.identity === windowsIdentity(dir)
 }
-/** Repair only the requested path from room/ down; never scan children or alter checkout ancestors. */
+/** POSIX repairs the requested path from room/ down; Windows verifies the root and its existing subtree once. */
 export function privateStateDirectory(dir: string): void {
   dir = path.resolve(dir)
-  const directories = [dir]
-  let root = dir
-  while (path.basename(root) !== 'room' && path.dirname(root) !== root) {
-    root = path.dirname(root)
-    directories.unshift(root)
-    if (directories.length > 64) throw new Error(`Room state directory path is too deep: ${dir}`)
-  }
-  const inState = path.basename(root) === 'room'
-  // Top-down repairs make every parent below room/ private before its child is handled. No check on the git common directory above room/: anyone who can write it can already install git hooks that run as this user, so a Room check there adds no protection, and default umask 002 makes it group-writable on Debian and Ubuntu.
+  const { directories, root, inState } = privateDirectoryPath(dir)
+  // Never inspect or repair checkout ancestors: the Git directory already permits installing executable hooks.
   // Directory.CreateDirectory on Windows is recursive; never let it create checkout ancestors.
   if (!fs.statSync(path.dirname(inState ? root : dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`)
-  // Other private output directories retain strict verification and must have an existing parent.
   for (const directory of inState ? directories : [dir]) {
-    if (process.platform === 'win32' && inState && directory !== root) { inheritingDirectory(directory); continue }
-    initializeDirectory(directory, inState)
+    if (process.platform === 'win32' && (!inState || directory === root)) {
+      if (fs.existsSync(directory)) {
+        const stat = fs.lstatSync(directory)
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${directory}`)
+      }
+      windowsAcl(directory, false, true, inState)
+    } else initializePrivateDirectory(directory, inState)
   }
-}
-
-/** Windows, below the verified Room root: a plain directory that inherits the root's ACL; only refuse links. */
-function inheritingDirectory(dir: string): void {
-  try { fs.mkdirSync(dir) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
-  const stat = fs.lstatSync(dir)
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`)
-}
-
-function initializeDirectory(dir: string, repair: boolean): void {
-  let created = false
-  if (process.platform !== 'win32') {
-    try { fs.mkdirSync(dir, { mode: 0o700 }); created = true }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
-  }
-  let stat: fs.Stats | undefined
-  try { stat = fs.lstatSync(dir) }
-  catch (error) { if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`Room state path must be a directory, not a symlink: ${dir}`)
-  if (process.platform === 'win32') { windowsAcl(dir, false, true, repair); return }
-  if (!process.getuid || stat!.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${dir}`)
-  // Use a no-follow directory descriptor so chmod cannot follow a replaced final component.
-  if (created || repair && (stat!.mode & 0o777) !== 0o700) {
-    const fd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY)
-    try {
-      const opened = fs.fstatSync(fd)
-      if (opened.dev !== stat!.dev || opened.ino !== stat!.ino || opened.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${dir}`)
-      fs.fchmodSync(fd, 0o700)
-    } finally { fs.closeSync(fd) }
-    if (!created) console.error(`Room repaired private state directory: ${dir}`)
-  }
-  verifyPrivatePath(dir)
 }

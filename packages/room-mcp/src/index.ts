@@ -15,7 +15,7 @@ import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
 import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
-import { explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
+import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
 import { admitCodexThread } from './session.js'
@@ -211,7 +211,7 @@ async function main() {
       }
 
       const joined = (s: Session) => {
-        if (s.localReplica) startupReplica = s.localReplica
+        startupReplica = adoptLocalReplica(startupReplica, s.localReplica)
         autoJoin.remember(s)
         s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) })
         rejoinWhenStale(s, () => session, autoJoin)
