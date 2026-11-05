@@ -70,3 +70,7 @@ all acquire refusals are `starting` with the advertised cadence and at most
 own request timeout plus settle budget (10 seconds locally); the fixture adds no
 retry loop or startup sleep. Reports include acquire attempts, refusals, budgets
 and elapsed milliseconds, with the existing 30-second pair deadline as the outer bound.
+
+A pin may carry `"unsupported": { "<platform>": "<reason>" }` for a release whose server and relay
+cannot start on that platform (0.17.0 on Windows). Its old-authority pairs are reported as `SKIP` there with
+the reason; its old-client pairs still run, so the current authority is always exercised against it.

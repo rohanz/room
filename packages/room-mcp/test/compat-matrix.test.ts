@@ -89,6 +89,19 @@ describe('compatibility process harness without sockets', () => {
       { tag: 'v0.17.0', transport: 'relay', authority: 'new', client: 'old' },
     ])
   })
+  it('skips only the old-authority pairs of a release that cannot start on this platform, with the reason', () => {
+    const pins = [{ tag: 'v0.17.0', commit: 'a'.repeat(40), unsupported: { win32: 'no Windows server before 0.17.16' } }, { tag: 'v0.17.32', commit: 'b'.repeat(40) }]
+    const win = pairPlan(pins, 'win32')
+    expect(win.filter(pair => pair.skip)).toEqual([
+      { tag: 'v0.17.0', transport: 'server', authority: 'old', client: 'new', skip: 'no Windows server before 0.17.16' },
+      { tag: 'v0.17.0', transport: 'relay', authority: 'old', client: 'new', skip: 'no Windows server before 0.17.16' },
+    ])
+    expect(win.filter(pair => pair.tag === 'v0.17.0' && pair.authority === 'new').every(pair => !pair.skip)).toBe(true)
+    expect(pairPlan(pins, 'linux').some(pair => pair.skip)).toBe(false)
+    expect(selectPairs(pins, 'v0.17.0:server', 'win32').map(pair => !!pair.skip)).toEqual([true, false])
+    expect(() => validatePins([{ tag: 'v0.17.0', unsupported: { beos: 'x' } }])).toThrow('invalid unsupported entry')
+    expect(() => validatePins([{ tag: 'v0.17.0', unsupported: { win32: '' } }])).toThrow('invalid unsupported entry')
+  })
   it('filters a single tag or transport while retaining both old/new directions', () => {
     expect(selectPairs(initial, 'v0.17.32:relay')).toEqual(pairPlan(initial).filter(pair => pair.tag === 'v0.17.32' && pair.transport === 'relay'))
     expect(selectPairs(initial, 'candidate:server')).toEqual([{ tag: 'candidate', transport: 'server', authority: 'new', client: 'new' }])

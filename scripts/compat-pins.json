@@ -1,7 +1,10 @@
 [
   {
     "tag": "v0.17.0",
-    "commit": "ec13dcd83f67895c622410e3d9e8f53b5c5cb7a2"
+    "commit": "ec13dcd83f67895c622410e3d9e8f53b5c5cb7a2",
+    "unsupported": {
+      "win32": "the 0.17.0 server and relay cannot start on Windows (durable-directory creation recursed to the drive root; fixed in 0.17.16, commit ef0b1f79)"
+    }
   },
   {
     "tag": "v0.17.32",

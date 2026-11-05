@@ -9,20 +9,25 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { validatePins, validatePinCommit } from './compat-pins.mjs'
 import { run, capture } from './compat-process.mts'
 
-type Pin = { tag: string; commit?: string }
+type Pin = { tag: string; commit?: string; unsupported?: Partial<Record<NodeJS.Platform, string>> }
+export type Pair = { tag: string; transport: 'server' | 'relay'; authority: 'old' | 'new'; client: 'old' | 'new'; skip?: string }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-export function pairPlan(pins: Pin[]) {
+/** The pairs for every pin; an old authority that cannot start on this platform is planned as a skip with its reason. */
+export function pairPlan(pins: Pin[], platform: NodeJS.Platform = process.platform): Pair[] {
   validatePins(pins)
-  return pins.flatMap(pin => (['server', 'relay'] as const).flatMap(transport => [
-    { tag: pin.tag, transport, authority: 'old', client: 'new' },
-    { tag: pin.tag, transport, authority: 'new', client: 'old' },
-  ]))
+  return pins.flatMap(pin => (['server', 'relay'] as const).flatMap(transport => {
+    const unsupported = pin.unsupported?.[platform]
+    return [
+      { tag: pin.tag, transport, authority: 'old' as const, client: 'new' as const, ...(unsupported ? { skip: unsupported } : {}) },
+      { tag: pin.tag, transport, authority: 'new' as const, client: 'old' as const },
+    ]
+  }))
 }
 export function pendingCandidate(pin: Pin, version: string, error: unknown): boolean {
   return !pin.commit && pin.tag === `v${version}` && /couldn't find remote ref|not our ref/.test(String(error))
 }
-export function selectPairs(pins: Pin[], only?: string) {
-  const pairs = [...pairPlan(pins), ...(['server', 'relay'] as const).map(transport => ({ tag: 'candidate', transport, authority: 'new', client: 'new' }))]
+export function selectPairs(pins: Pin[], only?: string, platform: NodeJS.Platform = process.platform): Pair[] {
+  const pairs: Pair[] = [...pairPlan(pins, platform), ...(['server', 'relay'] as const).map(transport => ({ tag: 'candidate', transport, authority: 'new' as const, client: 'new' as const }))]
   if (!only) return pairs
   const [tag, transport, extra] = only.split(':')
   if (extra !== undefined || !pairs.some(pair => pair.tag === tag) || (transport !== undefined && !['server', 'relay'].includes(transport))) {
@@ -153,6 +158,7 @@ async function main() {
       await run('git', ['--git-dir', repo, 'worktree', 'add', '--detach', old, commit], scratch)
       console.log(pin.tag, JSON.stringify({ commit, ...await build(old, pin) }))
       for (const pair of plan.filter(row => row.tag === pin.tag)) {
+        if (pair.skip) { console.log(`SKIP ${pair.tag} ${pair.transport} old authority on ${process.platform}: ${pair.skip}`); rows.push({ ...pair, status: 'SKIP' }); continue }
         const started = Date.now()
         try {
           const output = await run(process.execPath, ['--import', 'tsx', path.join(root, 'scripts/compat-pair.mts'), pair.transport,

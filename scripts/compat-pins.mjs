@@ -16,6 +16,14 @@ export function validatePins(pins) {
     if (seen.has(pin.tag)) throw new Error(`duplicate compatibility tag: ${pin.tag}`)
     seen.add(pin.tag)
     if (pin.commit !== undefined && !/^[0-9a-f]{40}$/.test(pin.commit)) throw new Error(`invalid commit for ${pin.tag}`)
+    // A release whose server and relay cannot start on a platform (0.17.0 on Windows): its "old authority"
+    // pairs are skipped there with the reason shown; its "old client" pairs still run.
+    if (pin.unsupported !== undefined) {
+      if (typeof pin.unsupported !== 'object' || pin.unsupported === null) throw new Error(`invalid unsupported map for ${pin.tag}`)
+      for (const [platform, reason] of Object.entries(pin.unsupported)) {
+        if (!['win32', 'darwin', 'linux'].includes(platform) || typeof reason !== 'string' || !reason.trim()) throw new Error(`invalid unsupported entry for ${pin.tag}: ${platform}`)
+      }
+    }
   }
   return pins
 }
