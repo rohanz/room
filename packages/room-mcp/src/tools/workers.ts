@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../worker-store.js'
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
@@ -227,7 +228,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
-      const sharedOwner = suppliedDir && !outside ? (await registry.list()).find(record => !record.sharedWith && !['retiring', 'retired', 'abandoned'].includes(record.phase)
+      const sharedOwner = suppliedDir && !outside ? (requireWorkerInventory(await registry.list())).find(record => !record.sharedWith && !['retiring', 'retired', 'abandoned'].includes(record.phase)
         && record.lead.participant === s.me.name && path.resolve(record.dir) === path.resolve(dir)) : undefined
       if (suppliedDir && !outside && !await isOwnedWorkerWorktree(s.dir,
         sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch }
@@ -235,7 +236,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
       const hostSessionId = workerAdapter(host).freshSessionId()
-      const usedPorts = workerPortsInUse((await registry.list()))
+      const usedPorts = workerPortsInUse((requireWorkerInventory(await registry.list())))
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
@@ -374,7 +375,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 export async function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): Promise<{ s: Session; w: LocalWorker }[]> {
   const registry = await openWorkerReader(s.dir)
-  return (await Promise.all((await registry.list()).map(async record => {
+  return (await Promise.all((requireWorkerInventory(await registry.list())).map(async record => {
     const status = (await registry.status(record.id))
     if (!status || record.lead.participant !== s.me.name) return []
     const room = rooms.all().find(candidate => candidate.roomName === record.room) ?? s

@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -77,7 +78,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
     }])
   }
   /** The worker's registry record under a tag (spawned or seeded), for run facts the lifecycle view does not carry. */
-  const record = async (tag: string) => (await (await registryForDir(dir)).list()).find(r => r.tag === tag)
+  const record = async (tag: string) => (requireWorkerInventory(await (await registryForDir(dir)).list())).find(r => r.tag === tag)
   return { dir, room, session, tools, record, specs, spawned, exits, errors, kills, logs, seed, portFile: (port: number) => join(dir, 'room', 'ports', String(port)) }
 }
 
@@ -445,7 +446,7 @@ describe('resumed worker boundaries', () => {
     const t = setup()
     const before = hubAppend(t.room, t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
     expect(await t.tools.call('room_spawn', { tag: 'briefed', task: 'review', host: 'claude' })).toContain('spawned briefed')
-    const record = (await (await registryForDir(t.dir)).list()).find(r => r.tag === 'briefed')!
+    const record = (requireWorkerInventory(await (await registryForDir(t.dir)).list())).find(r => r.tag === 'briefed')!
     expect(record.runs[0].busFrontier).toBe(before.seq)
   })
 
@@ -455,7 +456,7 @@ describe('resumed worker boundaries', () => {
     const between = hubAppend(t.room, t.session.me, { type: 'note', text: 'before resume', priority: 'notify' })
     const resumed = t.room.messages().at(-1)!
     expect(await t.tools.call('room_send', { type: 'note', to: 'briefed', text: 'continue' })).toContain('resumed briefed')
-    const record = (await (await registryForDir(t.dir)).list()).find(r => r.tag === 'briefed')!
+    const record = (requireWorkerInventory(await (await registryForDir(t.dir)).list())).find(r => r.tag === 'briefed')!
     expect(record.runs.at(-1)).toMatchObject({ n: 2, busFrontier: expect.any(Number) })
     expect(record.runs.at(-1)!.busFrontier).toBeGreaterThanOrEqual(resumed.seq!)
     const after = hubAppend(t.room, t.session.me, { type: 'note', text: 'after resume', priority: 'notify' })

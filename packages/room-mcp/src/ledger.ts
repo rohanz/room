@@ -289,6 +289,7 @@ export class Ledger {
     const stored = this.readCursors()[s.roomName]
     const kept = stored?.participant === s.me.name && Number.isSafeInteger(stored.frontier)
     const facts = this.workerSnapshots.get(s)
+    if (!this.workerEvidenceReady(s)) return cursor ?? { participant: s.me.name, frontier: kept ? stored.frontier : highestSeq(s.room), routed: new Set(kept ? stored.routed : []) }
     const spawn = ownSpawnFrontier(s, facts)
     cursor = kept
       ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) }

@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../packages/room-mcp/src/worker-store.js'
 /**
  * Socket-free file-registry baseline. Run: node --import tsx scripts/measure-lifecycle.mts [50 500] [--samples=5]
  * Each sample uses a fresh process and a fresh private fixture; never opens a live Room registry.
@@ -73,7 +74,7 @@ async function child(common: string, count: number) {
     try {
       meter.reset()
       const statusStart = performance.now()
-      const workers = await registry.list()
+      const workers = requireWorkerInventory(await registry.list())
       for (const worker of workers) await registry.status(worker.id)
       if (workers.length !== count) throw new Error(`fixture mismatch: expected ${count}, got ${workers.length}`)
       const status = { ms: performance.now() - statusStart, fs: meter.result() }

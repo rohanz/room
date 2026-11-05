@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -28,7 +29,7 @@ describe('async lifecycle boundaries', () => {
     const facts = deferred<WorkerSnapshot>(), entered = deferred<void>()
     const command = vi.fn<WorkerStore['command']>().mockRejectedValue(new Error('not authorized'))
     const registry = WorkerRegistry.fromStore({ snapshot: () => { entered.resolve(); return facts.promise }, command })
-    const hasWorkers = joinedPresenceWorkers(sessions, async () => (await registry.list()).length > 0)
+    const hasWorkers = joinedPresenceWorkers(sessions, async () => (requireWorkerInventory(await registry.list())).length > 0)
     await entered.promise
     let resolved = false
     void hasWorkers.then(() => { resolved = true })
@@ -39,7 +40,7 @@ describe('async lifecycle boundaries', () => {
     await expect(registry.list()).rejects.toThrow('snapshot unavailable')
     expect(command).not.toHaveBeenCalled()
     const emptyRegistry = WorkerRegistry.fromStore({ snapshot: async () => empty, command })
-    expect(await joinedPresenceWorkers(sessions, async () => (await emptyRegistry.list()).length > 0)).toBe(false)
+    expect(await joinedPresenceWorkers(sessions, async () => (requireWorkerInventory(await emptyRegistry.list())).length > 0)).toBe(false)
   })
 
   it('does not expire an idle lead on an asynchronous unavailable snapshot', async () => {

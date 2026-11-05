@@ -979,7 +979,7 @@ export class GraphIndex {
       }
       if (facts?.available && registry) {
         const latest = await registry.snapshot(this.workerQuery)
-        if (!latest.available || latest.revision !== facts.revision) {
+        if (!latest.available || latest.blockers.length || latest.revision !== facts.revision) {
           this.baselinePass = undefined
           return false
         }
@@ -1091,8 +1091,10 @@ export class GraphIndex {
     this.publication = this.publication.then(async () => {
       if (this.carriedSnapshot) {
         const previous = this.carriedSnapshot
-        this.carriedSnapshot = await (await openWorkerReader(this.dir)).snapshot(this.workerQuery)
-        if (!this.carriedSnapshot.available || !previous.available || this.carriedSnapshot.revision !== previous.revision) {
+        const latest = await (await openWorkerReader(this.dir)).snapshot(this.workerQuery)
+        if (!latest.available || latest.blockers.length) return
+        this.carriedSnapshot = latest
+        if (!previous.available || latest.revision !== previous.revision) {
           this.observedByPath.clear()
           this.observedRevision++
           for (const file of this.grantPaths()) if (isSourcePath(file)) void this.refresh(file)

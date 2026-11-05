@@ -1,3 +1,4 @@
+import { snapshotRead, snapshotReserved, workerEvidence, requireWorkerEvidence } from '../src/worker-store.js'
 /** Storage parity contract: observable results, not file-store implementation details. Socket-free. */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -39,7 +40,7 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
   it('reserves a tag until every retirement cleanup finishes, then reuses it without replacing history', async () => {
     const registry = await open(), first = intent(registry.commonDir)
     await registry.writeIntent(first)
-    expect((await registry.reserved(first.tag))?.id).toBe(first.id)
+    expect((snapshotReserved(await registry.snapshot(), first.tag))?.id).toBe(first.id)
     await expect(registry.writeIntent({ ...first, id: 'w_competitor' })).rejects.toThrow('tag in use')
     await registry.beginRetirement(first.id, (await registry.archiveOf(first, { summary: 'collected', disposition: 'collected' })))
     if (registry instanceof WorkerRegistry) expect(await registry.projectable('lead', room)).toMatchObject({ write: [], retire: [{ id: first.id }] })
@@ -49,8 +50,8 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     await registry.finishCleanup(first.id, room)
     await registry.finishOperation(first.id)
     await registry.writeIntent({ ...first, id: 'w_successor' })
-    expect((await registry.reserved(first.tag))?.id).toBe('w_successor')
-    expect((await registry.read(first.id))).toMatchObject({ phase: 'retired', archive: { summary: 'collected' } })
+    expect((snapshotReserved(await registry.snapshot(), first.tag))?.id).toBe('w_successor')
+    expect((snapshotRead(await registry.snapshot(), first.id))).toMatchObject({ phase: 'retired', archive: { summary: 'collected' } })
   })
 
   it('keeps a retired checkout reserved and permits an abandoned tag to be reused', async () => {
@@ -64,31 +65,32 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     await registry.abandonPreparation(abandoned.id)
     await registry.finishOperation(abandoned.id)
     await registry.writeIntent({ ...abandoned, id: 'w_reused' })
-    expect((await registry.reserved('abandoned'))?.id).toBe('w_reused')
+    expect((snapshotReserved(await registry.snapshot(), 'abandoned'))?.id).toBe('w_reused')
   })
 
   it('refuses stale sequence and run mutations without changing durable state', async () => {
     const registry = await open(), first = intent(registry.commonDir)
     await registry.writeIntent(first)
     await registry.beginCollect(first.id)
-    const before = (await registry.read(first.id))!
+    const before = (snapshotRead(await registry.snapshot(), first.id))!
     await expect(registry.command(first.id, { type: 'activate' }, first.seq)).rejects.toThrow(/seq|sequence/)
     await expect(registry.command(first.id, { type: 'launch', run: 99, launch: { outcome: 'launched', pid: 42 } }, before.seq)).rejects.toThrow('run changed')
-    expect((await registry.read(first.id))).toEqual(before)
+    expect((snapshotRead(await registry.snapshot(), first.id))).toEqual(before)
   })
 
   it('refuses the last occupied capacity slot without reserving the refused tag', async () => {
     const registry = await open(), first = intent(registry.commonDir)
     await registry.writeIntent(first, 1)
     await expect(registry.writeIntent(intent(registry.commonDir, 'overflow'), 1)).rejects.toThrow('capacity')
-    expect((await registry.occupancy())).toBe(1)
-    expect((await registry.reserved('overflow'))).toBeUndefined()
-    expect((await registry.list()).map(record => record.id)).toEqual([first.id])
+    expect((await WorkerRegistry.fromStore(registry).occupancy())).toBe(1)
+    expect((snapshotReserved(await registry.snapshot(), 'overflow'))).toBeUndefined()
+    expect((requireWorkerEvidence(workerEvidence(await registry.snapshot())).workers.map(fact => fact.record)).map(record => record.id)).toEqual([first.id])
   })
 
   it.each([
     { evidence: 'undecodable', action: 'spawn' }, { evidence: 'quarantined', action: 'spawn' },
     { evidence: 'undecodable', action: 'resume' }, { evidence: 'quarantined', action: 'resume' },
+    { evidence: 'missing', action: 'spawn' }, { evidence: 'missing', action: 'resume' },
   ] as const)('refuses $action when occupancy has $evidence worker evidence', async ({ evidence, action }) => {
     const registry = await open(), first = intent(registry.commonDir)
     await registry.writeIntent(first, 1)
@@ -104,11 +106,27 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
       fs.mkdirSync(quarantine, { recursive: true })
       fs.renameSync(file, path.join(quarantine, `${first.id}.json.bad-test`))
     }
+    if (evidence === 'missing') fs.rmSync(file)
     const admission = action === 'spawn' ? registry.writeIntent(intent(registry.commonDir, 'overflow'), 1)
       : registry.resume(resumable.id, 1, { nonce: 'next', busFrontier: 0, logStart: 0 })
-    await expect(admission).rejects.toThrow(new RegExp(`blocked.*${first.id}`))
+    await expect(admission).rejects.toMatchObject({ reason: 'blocked', blockers: expect.arrayContaining([
+      expect.stringContaining(evidence === 'missing' ? `tags/${first.tag}.json: unavailable reserved record` : first.id),
+    ]) })
     expect(fs.existsSync(path.join(registry.root, 'tags', 'overflow.json'))).toBe(false)
     expect(JSON.parse(fs.readFileSync(path.join(workersDir, `${resumable.id}.json`), 'utf8')).runs).toHaveLength(1)
+  })
+
+  it.each(['report', 'exit'] as const)('refuses admission when a launched worker has undecodable %s evidence', async kind => {
+    const registry = await open(), first = intent(registry.commonDir)
+    await registry.writeIntent(first)
+    await registry.command(first.id, { type: 'launch', run: 1, phase: 'active', launch: { outcome: 'launched', pid: token.pid } })
+    const runs = path.join(registry.root, 'runs', first.id)
+    fs.mkdirSync(runs, { recursive: true })
+    const file = path.join(runs, `1.${kind}.json`)
+    fs.writeFileSync(file, '{malformed')
+    await expect(registry.writeIntent(intent(registry.commonDir, 'overflow'), 2)).rejects.toThrow(/blocked/)
+    expect(fs.readFileSync(file, 'utf8')).toBe('{malformed')
+    expect(fs.existsSync(path.join(registry.root, 'tags', 'overflow.json'))).toBe(false)
   })
 
   it('permits nested discard to stop in its own lane but refuses another call and a stale owner release', async () => {
@@ -123,9 +141,9 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
       identity: { ...token, nonce: 'stranger' }, liveness: () => 'alive' })
     opened.push(stranger)
     expect(await stranger.finishOperation(first.id)).toBe(false)
-    expect((await registry.operationInProgress(first.id))).toBe(true)
+    expect((await WorkerRegistry.fromStore(registry).operationInProgress(first.id))).toBe(true)
     expect(await registry.finishOperation(first.id)).toBe(true)
-    expect((await registry.read(first.id))?.stop?.reason).toBe('discarded')
+    expect((snapshotRead(await registry.snapshot(), first.id))?.stop?.reason).toBe('discarded')
   })
 
   it.each(['claude', 'codex'] as const)('preserves %s admission identity, report completion IDs and witnessed exit evidence after reopen', async host => {
@@ -145,9 +163,9 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     await registry.writeExit(first.id, { run: 1, code: 7, at: 4, witnessed: true })
     await registry.writeExit(first.id, { run: 1, code: null, at: 5, witnessed: false })
     const restarted = await open(registry.commonDir)
-    expect((await restarted.reports(first.id))).toMatchObject([{ chain: input.chain, hostSessionId: input.hostSessionId,
+    expect(requireWorkerEvidence(workerEvidence(await restarted.snapshot())).workers.find(fact => fact.record.id === first.id)!.reports).toMatchObject([{ chain: input.chain, hostSessionId: input.hostSessionId,
       done: { summary: 'finished', changed: ['output.ts'] }, posted: `wk:${first.id}:1` }])
-    expect((await restarted.exits(first.id))).toEqual([{ run: 1, code: 7, at: 4, witnessed: true }])
+    expect(requireWorkerEvidence(workerEvidence(await restarted.snapshot())).workers.find(fact => fact.record.id === first.id)!.exits).toEqual([{ run: 1, code: 7, at: 4, witnessed: true }])
   })
 
   it('quarantines malformed records while retaining their tag and healthy neighbours', async () => {
@@ -159,8 +177,8 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     const restarted = await open(registry.commonDir)
     const snapshot = await restarted.snapshot()
     expect(snapshot.available && snapshot.workers.map(fact => fact.record.id)).toEqual([good.id])
-    expect(snapshot.available && snapshot.blockers).toEqual([expect.stringContaining(bad.id)])
-    expect((await restarted.read(good.id))?.id).toBe(good.id)
+    expect(snapshot.available && snapshot.blockers).toEqual(expect.arrayContaining([expect.stringContaining(bad.id)]))
+    expect(snapshot.available && snapshot.workers.find(fact => fact.record.id === good.id)?.record.id).toBe(good.id)
     await expect(restarted.writeIntent({ ...bad, id: 'w_replacement' })).rejects.toThrow(new RegExp(`blocked.*${bad.id}`))
     const quarantined = fs.readdirSync(path.join(registry.root, 'quarantine'))
     expect(quarantined).toHaveLength(1)

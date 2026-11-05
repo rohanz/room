@@ -191,6 +191,42 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(t.team.b.scope(lead.name)?.paths).toEqual(['api/auth.py'])
   })
 
+  it('retains team coordination and bridge facts when a worker record becomes blocked (P2)', async () => {
+    const t = await setup({ start: false })
+    t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'api', summary: 'work', paths: ['app.py'] })
+    await t.bridge.sync()
+    const coordination = t.team.b.coordination.get(lead.name)
+    expect(coordination?.workers).toContain(worker.name)
+    const known = t.bridge.workers()
+    writeFileSync(join(t.registry.root, 'workers', `${t.record.id}.json`), '{malformed')
+    const project = vi.spyOn(t.bridge, 'project')
+    await t.bridge.sync()
+    expect(t.team.b.coordination.get(lead.name)).toEqual(coordination)
+    expect(t.bridge.workers()).toEqual(known)
+    expect(project).not.toHaveBeenCalled()
+  })
+
+  it.each(['acquisition', 'revalidation'] as const)('preserves projections on blocked later %s', async point => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: 'h', size: 2 } })
+    await t.bridge.sync()
+    const head = t.team.b.manifestHead.get(worker.name)
+    const facts = await t.registry.snapshot()
+    if (!facts.available) throw new Error('fixture snapshot unavailable')
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: 'h2', size: 3 } }, { rev: 2, semRev: 2 })
+    const original = t.registry.snapshot.bind(t.registry)
+    const spy = vi.spyOn(t.registry, 'snapshot')
+    let reads = 0
+    spy.mockImplementation(async query => {
+      if (query) return original(query)
+      reads++
+      return point === 'acquisition' || reads > 1 ? { ...facts, blockers: ['workers/damaged.json'] } : facts
+    })
+    await (t.bridge as unknown as { projectWorker(record: WorkerRecord): Promise<void> }).projectWorker(t.record)
+    expect(t.team.b.manifestHead.get(worker.name)).toEqual(head)
+    spy.mockRestore()
+  })
+
   it('worker coordination never calls the lead daemon applyInputs (B1)', async () => {
     const t = await setup({ start: false })
     const applyInputs = vi.fn()

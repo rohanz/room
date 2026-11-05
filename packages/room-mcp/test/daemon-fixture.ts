@@ -36,8 +36,17 @@ export async function stopTestDaemon(common: string): Promise<boolean> {
   const exited = () => !pidAlive(record.pid) || !!record.lead && record.lead !== true && liveness(record.lead) === 'dead'
   if (exited()) { started.delete(canonical(common)); return true }
   if (!nonce || record.nonce !== nonce || record.pid === process.pid) return false
-  try { if (await stopLocalDaemon(common, undefined, nonce) === 'different daemon instance') return false }
-  catch (error) { if (!exited()) throw error } // Another fixture cleanup may have just stopped it.
+  // A test closes its MCP clients just before cleanup; the daemon sees those sockets close a moment later and
+  // rightly refuses to stop while writers remain. Wait (bounded) for the test's own disconnects to land.
+  const until = Date.now() + 10_000
+  for (;;) {
+    try { if (await stopLocalDaemon(common, undefined, nonce) === 'different daemon instance') return false; break }
+    catch (error) {
+      if (exited()) break // Another fixture cleanup may have just stopped it.
+      if (!/active writers/.test(String(error)) || Date.now() >= until) throw error
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+  }
   started.delete(canonical(common))
   return true
 }

@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -53,7 +54,7 @@ describe('retired worker record retention', () => {
 
       const removed = await registry.pruneRetired(ROOM_STALE_MS)
       expect(removed.map(r => r.tag).sort()).toEqual(['abandoned', 'expired', 'kept-gone'])
-      const remaining = (await registry.list()).map(r => r.tag).sort()
+      const remaining = (requireWorkerInventory(await registry.list())).map(r => r.tag).sort()
       expect(remaining).toEqual(['borrower', 'kept', 'live', 'owner', 'recent', 'retiring'].sort())
       for (const gone of [expired, keptGone, abandoned]) {
         expect(fs.existsSync(file(gone.id))).toBe(false)

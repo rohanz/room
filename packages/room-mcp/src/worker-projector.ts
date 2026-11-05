@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from './worker-store.js'
 /**
  * The lead-side writer of its workers' room facts (registry §13): in each room a lead session is in, the
  * views of the workers that joined that room, the coordination of a worker whose host stopped without
@@ -32,7 +33,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   if (!fence || !current()) return undefined
   // Read this lead's resumed runs' logs in yielding chunks first, so the facts read inside the transaction
   // come from the cache. The projectable lists are taken after these awaits: a worker may have started retiring.
-  const records = await registry.list()
+  const records = requireWorkerInventory(await registry.list())
   if (!current()) return undefined
   await warmRunLogs(s, records.filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
   if (!current()) return undefined

@@ -193,8 +193,9 @@ export class Bridge {
       this.registry = registry
       const facts = await registry.snapshot()
       if (this.stopped) return
+      this.unobserve.push(registry.onChange(() => { this.storageEpoch++; this.schedule() }))
+      if (!facts.available || facts.blockers.length) return
       this.facts = facts
-      this.unobserve.push(registry.onChange(() => { this.storageEpoch++; this.facts = undefined; this.schedule() }))
       for (const c of l.openClaims()) this.mirrorClaim(c.id)
       this.schedule()
     }
@@ -235,7 +236,7 @@ export class Bridge {
     if (this.registry) {
       try {
         const facts = await this.registry.snapshot()
-        if (this.stopped || !facts.available) return
+        if (this.stopped || !facts.available || facts.blockers.length) return
         this.facts = facts
       } catch (error) { this.o.log?.(`bridge: worker facts unavailable: ${String(error)}`); return }
     }
@@ -249,7 +250,7 @@ export class Bridge {
    * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
    */
   syncCoordination(): void {
-    if (!this.facts?.available) return
+    if (!this.facts?.available || this.facts.blockers.length) return
     if (this.stopped || !this.registry || !this.team.daemon.fence) return
     const lead = this.team.me.name
     const paths = this.workerPaths()
@@ -321,12 +322,12 @@ export class Bridge {
   private async projectWorker(record: WorkerRecord, retry = 0): Promise<void> {
     if (this.stopped || !this.registry) return
     const facts = await this.registry.snapshot()
-    if (this.stopped || !facts.available) return
+    if (this.stopped || !facts.available || facts.blockers.length) return
     this.facts = facts
     const epoch = this.storageEpoch
     const fresh = async () => {
       const latest = await this.registry!.snapshot()
-      if (this.stopped || !latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false
+      if (this.stopped || !latest.available || latest.blockers.length || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false
       this.facts = latest
       return true
     }

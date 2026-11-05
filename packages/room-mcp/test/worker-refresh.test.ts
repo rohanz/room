@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { collectionRefs, commit, expectKeptRefreshRefused, git, head, put, read, repo, snapshot, status, world } from './worker-refresh-fixture.js'
 import { execFileSync } from 'node:child_process'
@@ -280,7 +281,7 @@ describe('room_send refresh=true', () => {
     await t.finish('kept')
     await t.call('room_collect', { tag: 'kept', keep: true })
     const before = (await snapshot(w.dir, 'kept'))
-    const record = (await (await registryForDir(repo)).list()).find(record => record.tag === 'kept')!
+    const record = (requireWorkerInventory(await (await registryForDir(repo)).list())).find(record => record.tag === 'kept')!
     const ref = 'refs/room/collect-head/kept/' + record.id
     const refBefore = git(repo, 'rev-parse', ref), leadBefore = status(repo)
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
@@ -330,7 +331,7 @@ describe('room_send refresh=true', () => {
     await t.finish('kept')
     await t.call('room_collect', { tag: 'kept', keep: true })
     const registry = await registryForDir(repo)
-    const record = (await registry.list()).find(record => record.tag === 'kept')!
+    const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'kept')!
     const ref = `refs/room/collect-head/kept/${record.id}`
     const before = git(repo, 'rev-parse', ref)
     const target = commit(repo, 'commit collected output')
@@ -355,7 +356,7 @@ describe('room_send refresh=true', () => {
     expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('rebased kept onto your HEAD')
     await t.finish('kept')
     const registry = await registryForDir(repo)
-    const record = (await registry.list()).find(record => record.tag === 'kept')!
+    const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'kept')!
     await mutateWorkerFixture(registry, record.id, old => ({ ...old, hostSessionId: undefined, seq: old.seq + 1 }))
     expect((await workerByTag(repo, 'kept'))?.hostSessionId).toBeUndefined()
     expect(git(repo, 'rev-parse', `refs/room/collect-head/kept/${record.id}`)).toBe(target)

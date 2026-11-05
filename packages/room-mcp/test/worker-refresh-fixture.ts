@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 // room_send refresh=true: a stopped worker's branch is rebased onto the lead's HEAD before it resumes,
 // so a commit the lead made after spawn reaches the worker. Real git repositories and the real
 // prepareWorktree; only the host process is stubbed (as in carry-wip.test.ts).
@@ -125,7 +126,7 @@ function world() {
     }
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
-    const record = (await registry.list()).find(record => record.tag === tag)!
+    const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === tag)!
     const run = record.runs.at(-1)!
     if (!(await registry.reports(record.id)).some(report => report.run === run.n)) await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     process.env.ROOM_WORKER_ID = record.id
@@ -153,7 +154,7 @@ const snapshot = async (dir: string, tag: string, extraPaths: string[] = []) => 
 })
 
 const collectionRefs = async (tag: string) => {
-  const record = (await (await registryForDir(repo)).list()).find(r => r.tag === tag)!
+  const record = (requireWorkerInventory(await (await registryForDir(repo)).list())).find(r => r.tag === tag)!
   return Object.fromEntries(['collect-head', 'collect-base'].map(kind => [kind,
     git(repo, 'rev-parse', `refs/room/${kind}/${tag}/${record.id}`)]))
 }

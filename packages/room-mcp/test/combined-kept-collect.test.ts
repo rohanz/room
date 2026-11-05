@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { fixture, git, gitOracle, names, put, rooms, roots, sharedText, source } from './combined-kept-preview-fixture.js'
 import { manifestHeadOf, RoomDoc } from '@room/shared'
@@ -60,7 +61,7 @@ it('requires a new post-application acknowledgement after publisher replacement'
   let result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   expect(result.complete).toBe(false)
   expect(result.gaps.some(gap => gap.why.includes('acknowledged post-baseline'))).toBe(true)
-  const records = (await t.registry.list())
+  const records = (requireWorkerInventory(await t.registry.list()))
   for (const record of records) {
     const proof = await acknowledgeKeptPublication(lead, record.keptPublication, [])
     expect(proof.pending).toBe(false)

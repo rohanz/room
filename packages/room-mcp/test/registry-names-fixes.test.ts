@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
@@ -55,7 +56,7 @@ async function finishedWorker() {
   const registry = await registerWorkers(session, [{ tag: 'retry', name: 'lead+retry', lead: 'lead',
     host: 'claude', hostSessionId: '550e8400-e29b-41d4-a716-446655440000', task: 'test',
     dir: workerDir, branch: 'room/retry', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }])
-  const record = (await registry.list()).find(value => value.tag === 'retry')!
+  const record = (requireWorkerInventory(await registry.list())).find(value => value.tag === 'retry')!
   const rooms = new Rooms({ primary: () => session, setPrimary: () => {}, attach: () => ({ stop() {} }) })
   return { dir, room, session, registry, record, rooms }
 }

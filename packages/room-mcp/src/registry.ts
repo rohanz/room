@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from './worker-store.js'
 /**
  * The rooms one MCP process is in, and everything hung off each of them.
  *
@@ -194,13 +195,13 @@ export class Rooms {
     if (!others.length || name === from.me.name) return from
     // A projected head in the team room is evidence for peers, not a local join.
     // The lead's registry determines the source room of its own local worker.
-    try {
-      const owned = (await (await openWorkerReader(from.dir)).list()).find(record => record.name === name
+    {
+      const owned = requireWorkerInventory(await (await openWorkerReader(from.dir)).list()).find(record => record.name === name
         && record.lead.participant === from.me.name && record.mode === 'local'
         && !['retiring', 'retired', 'abandoned'].includes(record.phase))
       const source = owned && others.find(s => s.roomName === owned.room)
       if (source) return source
-    } catch { /* Without a local registry, ordinary room evidence decides. */ }
+    }
     if (Rooms.activeIn(from, name)) return from
     for (const s of others) if (Rooms.activeIn(s, name)) return s
     if (Rooms.joinedBy(from, name)) return from

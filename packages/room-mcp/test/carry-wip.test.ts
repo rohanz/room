@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
@@ -150,7 +151,7 @@ function world() {
     let ws: Session | null = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
-    const record = (await registry.list()).find(record => record.tag === tag)!
+    const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === tag)!
     const run = record.runs.at(-1)!
     await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     process.env.ROOM_WORKER_ID = record.id

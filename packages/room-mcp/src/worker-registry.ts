@@ -10,7 +10,7 @@ import { statusOf, realStateInput, type LocalWorker, type WorkerRecord, type Wor
 import type { InstanceToken } from './leases.js'
 import type { RetiredWorker } from '@room/shared'
 import { safeId, safeTag } from './worker-codecs.js'
-import { requireWorkerEvidence, workerEvidence, type BlockedWorkerEvidence, recordStatus, snapshotRead, snapshotReserved, snapshotFreshness, type WorkerQuery, type WorkerStore, type WorkerSnapshot, type AvailableWorkerSnapshot, type WorkerFacts, type WorkerCommand, type WorkerFreshness } from './worker-store.js'
+import { requireWorkerInventory, type WorkerInventory, requireWorkerEvidence, workerEvidence, type BlockedWorkerEvidence, recordStatus, snapshotRead, snapshotReserved, snapshotFreshness, type WorkerQuery, type WorkerStore, type WorkerSnapshot, type AvailableWorkerSnapshot, type WorkerFacts, type WorkerCommand, type WorkerFreshness } from './worker-store.js'
 import { IdleClaimsJournal } from './idle-claims.js'
 export type { RegistryOptions, LegacySource } from './worker-file-store.js'
 export type { IdleClaimsAction } from './idle-claims.js'
@@ -97,8 +97,7 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
 export async function localWorkerBaseline(dir: string, participant: string): Promise<(BaselineSource & { lead: string }) | undefined> {
   const plus = participant.lastIndexOf('+')
   if (plus < 1) return undefined
-  let record: WorkerRecord | undefined
-  try { record = await (await openWorkerReader(dir)).reserved(participant.slice(plus + 1)) } catch { return undefined }
+  let record = await (await openWorkerReader(dir)).reserved(participant.slice(plus + 1))
   if (record && (record.name !== participant || ['retired', 'abandoned'].includes(record.phase))) record = undefined
   return record && { name: record.name, dir: record.dir, base: record.base, carriedBase: record.carriedBase,
     carriedUntracked: record.carriedUntracked, link: record.link, lead: record.lead.participant }
@@ -106,16 +105,14 @@ export async function localWorkerBaseline(dir: string, participant: string): Pro
 
 /** A lead's workers that are not retiring, by name: the wake path's own-worker set (registry §14). No process probes. */
 export async function ownWorkerNames(dir: string, lead: string): Promise<Set<string>> {
-  try {
-    return new Set((await (await openWorkerReader(dir)).list())
-      .filter(r => r.lead.participant === lead && !['retiring', 'retired', 'abandoned'].includes(r.phase)).map(r => r.name))
-  } catch { return new Set() }
+  return new Set(requireWorkerInventory(await (await openWorkerReader(dir)).list())
+    .filter(r => r.lead.participant === lead && !['retiring', 'retired', 'abandoned'].includes(r.phase)).map(r => r.name))
 }
 
 /** This clone's workers that are not retiring, as the lifecycle helpers' input (registry §1: local facts only). */
 export async function localWorkers(dir: string, keep: (record: WorkerRecord) => boolean = () => true): Promise<LocalWorker[]> {
   const registry = await openWorkerReader(dir)
-  const records = await registry.list()
+  const records = requireWorkerInventory(await registry.list())
   const workers: LocalWorker[] = []
   for (const record of records) {
     if (['retiring', 'retired', 'abandoned'].includes(record.phase) || !keep(record)) continue
@@ -145,7 +142,7 @@ export async function carriedSourceToken(dir: string, participant: string): Prom
 export async function workerCarried(dir: string, env: NodeJS.ProcessEnv = process.env): Promise<WorkerRecord | undefined> {
   const id = env.ROOM_WORKER_ID
   if (!id || !safeId(id)) return undefined
-  try { return await (await openWorkerReader(dir)).read(id) } catch { return undefined }
+  return (await openWorkerReader(dir)).read(id)
 }
 
 export class WorkerRegistry {
@@ -190,7 +187,11 @@ export class WorkerRegistry {
     if (!safeId(id)) throw new Error('invalid worker id')
     return snapshotRead(await this.facts({ workerId: id, recordOnly: true }), id)
   }
-  async list(): Promise<WorkerRecord[]> { return (await this.facts({ recordOnly: true })).workers.map(fact => fact.record) }
+  async list(): Promise<WorkerInventory<WorkerRecord>> {
+    const snapshot = await this.snapshot({ recordOnly: true })
+    if (!snapshot.available) throw new Error(`worker snapshot unavailable: ${snapshot.detail}`)
+    return { records: snapshot.workers.map(fact => fact.record), blockers: snapshot.blockers }
+  }
   async reserved(tag: string): Promise<WorkerRecord | undefined> { return safeTag(tag) ? snapshotReserved(await this.facts({ tag, recordOnly: true }), tag) : undefined }
   async sourceToken(tag: string): Promise<string> { return safeTag(tag) ? (await this.facts({ tag, recordOnly: true })).revision : '' }
   async reservedByTagOrName(tagOrName: string): Promise<WorkerRecord | undefined> {

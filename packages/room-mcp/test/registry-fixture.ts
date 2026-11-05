@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -110,7 +111,7 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
 /** A fixture worker's run ends: its exit, a done report for `done`, a stop for `dismissed`. */
 export async function finishWorker(session: Session, tag: string, facts: Partial<Pick<FixtureWorker, 'status' | 'exitCode' | 'summary' | 'finishedAt' | 'stopReason'>> = {}): Promise<void> {
   const registry = await migrated(session.dir)
-  const record = (await registry.list()).find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
+  const record = (requireWorkerInventory(await registry.list())).find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
   if (!record) throw new Error(`no fixture worker ${tag}`)
   const status = facts.status ?? 'done', run = record.runs.at(-1)!
   if (run.launch?.outcome === 'launched') finishFixtureProcess(run.launch.pid)
@@ -127,7 +128,7 @@ export async function finishWorker(session: Session, tag: string, facts: Partial
 
 /** Every lead's views in `session`'s room, written as its projector would. */
 async function projectAll(session: Session, registry: WorkerRegistry): Promise<void> {
-  const leads = new Set((await registry.list()).filter(r => r.room === session.roomName).map(r => r.lead.participant))
+  const leads = new Set((requireWorkerInventory(await registry.list())).filter(r => r.room === session.roomName).map(r => r.lead.participant))
   for (const lead of leads) await projectWorkers(session, registry, lead, 'joined')
 }
 

@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { base, createTools, dir, fakeSession, ignore, lead, pair, realRepo, reportDone, setFixtureRepo, setupLead, workerId } from './workers-fixture.js'
 import type { Identity, Msg } from '@room/shared'
@@ -199,7 +200,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
     const registry = await registryForDir(dir)
-    const busy = (await registry.list()).find(record => record.tag === 'busy')!
+    const busy = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'busy')!
     expect((await registry.exits(busy.id))).toEqual([])
     // Registry §6 row 8: a live process wins even while its stop is pending.
     expect((await workerByTag(dir, 'busy'))).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
@@ -868,7 +869,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
     expect(await tools.call('room_leave', {})).toContain('left local/x')
     expect(pidAlive(child.pid!)).toBe(true)
-    expect((await (await registryForDir(dir)).list()).find(r => r.tag === 'money')).toBeDefined()
+    expect((requireWorkerInventory(await (await registryForDir(dir)).list())).find(r => r.tag === 'money')).toBeDefined()
     expect((await workerByTag(dir, 'money'))?.status).toBe('done')
     process.kill(-child.pid!, 'SIGTERM')
     await exited
@@ -1023,7 +1024,7 @@ describe('worker compute budgets', () => {
         const reply = await t.leadTools.call('room_spawn', { tag: 'supplied', task: 'work', dir: supplied })
         expect(reply).toMatch(/error:.*(?:Room worktree|worker directory|outside this repo|another repository)/)
         expect(t.specs).toHaveLength(0)
-        expect((await (await registryForDir(dir)).list())).toHaveLength(0)
+        expect((requireWorkerInventory(await (await registryForDir(dir)).list()))).toHaveLength(0)
       }
     } finally {
       rmSync(nested, { recursive: true, force: true })
@@ -1095,7 +1096,7 @@ describe('retirement integration', () => {
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     await new Promise(resolve => setTimeout(resolve, 1))
     expect(t.a.retiredWorkers()).toEqual([])
-    await vi.waitFor(async () => expect((await (await registryForDir(dir)).list()).find(record => record.tag === 'money')?.stop?.reason).toBe('discarded'), { timeout: 10_000 })
+    await vi.waitFor(async () => expect((requireWorkerInventory(await (await registryForDir(dir)).list())).find(record => record.tag === 'money')?.stop?.reason).toBe('discarded'), { timeout: 10_000 })
     expect(await t.leadTools.call('room_state', {})).toContain('money (claude, discard pending (collecting)')
     t.exits[0](0)
     expect(await discarding).toContain('discarded money')
@@ -1345,7 +1346,7 @@ describe('worker follow-up sessions', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'first', host: 'codex', model: 'gpt-6-sol', effort: 'high', threads: 2 })
     expect(t.specs[0].args).toContain('--json')
-    const registry = await registryForDir(dir), record = (await registry.list()).find(record => record.tag === 'money')!, run = record.runs[0]
+    const registry = await registryForDir(dir), record = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'money')!, run = record.runs[0]
     await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir,
       chain: [], hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
     expect((await registry.read(record.id))?.hostSessionId).toBe('550e8400-e29b-41d4-a716-446655440000')

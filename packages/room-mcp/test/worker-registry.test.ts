@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -203,14 +204,18 @@ describe('WorkerRegistry durable store', () => {
     await expect(second.writeIntent({ ...intent(), id: 'w_02', tag: 'more', name: 'lead+more' }, 1)).rejects.toThrow(/capacity/)
   })
 
-  it('recovers a dead orphan tag reservation without authorizing a missing record', async () => {
+  it('keeps a dead orphan tag reservation blocked while its payload is missing', async () => {
     const dir = common(), registry = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
     const tag = path.join(dir, 'room', 'registry', 'tags', 'tests.json')
     fs.mkdirSync(path.dirname(tag), { recursive: true })
     fs.writeFileSync(tag, JSON.stringify({ id: 'w_lost', holder: token, at: 1 }))
-    await registry.writeIntent(intent())
-    expect((await registry.read('w_01'))).toBeDefined()
-    expect(JSON.parse(fs.readFileSync(tag, 'utf8')).id).toBe('w_01')
+    const before = fs.readFileSync(tag)
+    await expect(registry.writeIntent(intent())).rejects.toMatchObject({ reason: 'blocked' })
+    expect(await registry.read('w_01')).toBeUndefined()
+    expect(fs.readFileSync(tag)).toEqual(before)
+    const reopened = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
+    await expect(reopened.writeIntent(intent())).rejects.toMatchObject({ reason: 'blocked' })
+    expect(fs.readFileSync(tag)).toEqual(before)
   })
 
   it('resumes a partially written migration map with the same worker id', async () => {
@@ -222,7 +227,7 @@ describe('WorkerRegistry durable store', () => {
     const store = await openRegistry(dir, { liveness: () => 'dead', sources: () => [source] })
     expect((await store.read('w_mapped'))?.runs[0].launch).toEqual({ outcome: 'imported' })
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).sources[source.key]).toEqual({ id: 'w_mapped', state: 'imported' })
-    expect((await (await openRegistry(dir, { liveness: () => 'dead', sources: () => [source] })).list())).toHaveLength(1)
+    expect((requireWorkerInventory(await (await openRegistry(dir, { liveness: () => 'dead', sources: () => [source] })).list()))).toHaveLength(1)
   })
 
   it('lets a second process open after the first completes the migration barrier', async () => {
@@ -248,7 +253,7 @@ describe('WorkerRegistry durable store', () => {
     expect(firstCode, firstError).toBe(0)
     expect(secondCode, secondError).toBe(0)
     expect(secondOutput).toContain('done')
-    expect((await (await openRegistry(dir)).list())).toEqual([])
+    expect((requireWorkerInventory(await (await openRegistry(dir)).list()))).toEqual([])
   }, 15_000)
 
   it('waits for a live migration guard before recovering a dead migration lock', async () => {
@@ -257,7 +262,7 @@ describe('WorkerRegistry durable store', () => {
     fs.writeFileSync(lock, JSON.stringify({ ...token, pid: -1 }))
     const child = await holdGuard(lock)
     const store = await openRegistry(dir, { sources: () => [] })
-    expect((await store.list())).toEqual([])
+    expect((requireWorkerInventory(await store.list()))).toEqual([])
     expect(await childExit(child)).toBe(0)
   }, 15_000)
 
@@ -337,7 +342,7 @@ describe('WorkerRegistry durable store', () => {
     git('worktree', 'add', '-qb', 'room/tests', workerDir)
     const commonDir = git('rev-parse', '--git-common-dir')
     const store = await openRegistry(path.resolve(dir, commonDir))
-    const imported = (await store.list())[0]
+    const imported = (requireWorkerInventory(await store.list()))[0]
     expect(imported).toMatchObject({ tag: 'tests', branch: 'room/tests', phase: 'active',
       capabilities: { signal: false, resume: false, collect: 'copy' } })
     expect((await store.status(imported.id))?.status).toBe('imported')
@@ -361,7 +366,7 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(child), { recursive: true })
     git('worktree', 'add', '-qb', 'room/child', child)
     const store = await openRegistry(path.resolve(dir, git('rev-parse', '--git-common-dir')))
-    expect((await store.list()).map(record => record.tag).sort()).toEqual(['child', 'parent'])
+    expect((requireWorkerInventory(await store.list())).map(record => record.tag).sort()).toEqual(['child', 'parent'])
     const adopted = await store.trusted({ participant: 'real-parent', room: 'local/repo', dir: parent }, 'child')
     expect(adopted?.record).toMatchObject({ name: 'real-parent+child', lead: { participant: 'real-parent' } })
   })
@@ -390,9 +395,9 @@ describe('WorkerRegistry durable store', () => {
     const workerGitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: workerDir, encoding: 'utf8' }).trim()
     fs.writeFileSync(path.join(workerGitDir, 'room-session.json'), JSON.stringify({ worker_id: oldId, host: 'claude', session_id: 'session-1' }))
     const store = await openRegistry(commonDir)
-    expect((await store.list())[0]).toMatchObject({ host: 'claude', task: 'old task', legacy: { said: 'old summary' },
+    expect((requireWorkerInventory(await store.list()))[0]).toMatchObject({ host: 'claude', task: 'old task', legacy: { said: 'old summary' },
       hostSessionId: 'session-1', capabilities: { resume: true, signal: false, collect: 'delta' } })
-    expect((await store.list())[0].lead.participant).toBe('')
+    expect((requireWorkerInventory(await store.list()))[0].lead.participant).toBe('')
     expect(fs.existsSync(carry)).toBe(false)
     expect(fs.existsSync(`${carry}.migrated`)).toBe(true)
   })
@@ -419,7 +424,7 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(legacyMemoryFile(commonDir, room)), { recursive: true })
     fs.copyFileSync(memoryFile(commonDir, room), legacyMemoryFile(commonDir, room))
     const store = await openRegistry(commonDir)
-    expect((await store.list())[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
+    expect((requireWorkerInventory(await store.list()))[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
     expect(await store.trusted({ participant: 'rohanz', room: 'local/explicit', dir }, 'tests')).toBeUndefined()
     doc.doc.destroy()
   })
@@ -438,13 +443,13 @@ describe('WorkerRegistry durable store', () => {
       fs.mkdirSync(path.dirname(file), { recursive: true })
       if (corrupt) fs.writeFileSync(file, new Uint8Array([255, 255, 255]))
       else { fs.writeFileSync(file, new Uint8Array([0])); fs.truncateSync(file, ROOM_DOC_MAX_BYTES + 1) }
-      expect((await (await openRegistry(commonDir)).list())).toEqual([])
+      expect((requireWorkerInventory(await (await openRegistry(commonDir)).list()))).toEqual([])
       const repaired = new RoomDoc()
       repaired.doc.getArray('retiredWorkers').push([{ name: 'lead+tests', tag: 'tests', lead: 'lead', host: 'codex',
         task: 'old task', summary: 'kept', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3,
         outcome: 'dismissed', keptWorktree: workerDir }])
       fs.writeFileSync(file, Y.encodeStateAsUpdate(repaired.doc))
-      expect((await (await openRegistry(commonDir)).list())[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
+      expect((requireWorkerInventory(await (await openRegistry(commonDir)).list()))[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
       repaired.doc.destroy()
     }
   })
@@ -484,7 +489,7 @@ describe('WorkerRegistry durable store', () => {
     const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
     fs.writeFileSync(file, '{not-json')
     const reopened = await openRegistry(dir, { migrate: false })
-    await expect(reopened.list()).rejects.toMatchObject({ reason: 'blocked' })
+    expect((await reopened.list()).blockers.length).toBeGreaterThan(0)
     expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
     expect(fs.existsSync(path.join(dir, 'room', 'registry', 'tags', 'tests.json'))).toBe(true)
     await expect(reopened.writeIntent({ ...intent(), id: 'w_02' })).rejects.toThrow(/blocked.*w_01/)

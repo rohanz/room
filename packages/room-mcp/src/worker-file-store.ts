@@ -19,7 +19,7 @@ import { realStateInput } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
-import { WorkerEvidenceBlocked, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
+import { WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
 import { sameStartTime } from '@room/relay/process'
 
 export interface LegacySource {
@@ -328,6 +328,7 @@ export class FileWorkerStore {
   get instance(): InstanceToken { return this.identity }
   newId(): string { return id() }
   private quarantine(file: string, why: unknown): void {
+    if (this.readOnly) throw new Error('read-only worker store cannot quarantine evidence')
     const dir = path.join(this.root, 'quarantine')
     privateStateDirectory(dir)
     const dest = path.join(dir, `${path.basename(file)}.bad-${Date.now()}-${randomBytes(4).toString('hex')}`)
@@ -339,68 +340,101 @@ export class FileWorkerStore {
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e }
   }
   private decodeBlockers?: Set<string>
-  private invalid(file: string, why: unknown): void {
-    this.decodeBlockers?.add(`${path.relative(this.root, file)}: ${String(why)}`)
-    if (!this.readOnly) this.quarantine(file, why)
+  private quarantineCandidates?: Map<string, { key?: string; text?: string; why: unknown }>
+  private invalid(file: string, why: unknown, malformed = false): void {
+    if (malformed && this.quarantineCandidates) {
+      const observed = snapshotReads?.get(file) ?? readCache.get(file)
+      this.quarantineCandidates.set(file, { key: observed?.key ?? statKey(file)?.key,
+        text: typeof observed?.value === 'string' ? observed.value : undefined, why })
+    }
+    const blocker = `${path.relative(this.root, file)}: ${String(why)}`
+    if (this.decodeBlockers) this.decodeBlockers.add(blocker)
+    else throw new WorkerEvidenceBlocked([blocker])
   }
   private readFact<T>(file: string, valid: (value: unknown) => value is T, why = 'invalid registry fact'): T | undefined {
     const decoded = decodeFact(file, valid, why)
     if (decoded.ok) return decoded.value
-    this.invalid(file, decoded.error)
+    this.invalid(file, decoded.error, true)
     return undefined
   }
   /** `id` names the one worker that changed; none means any may have (another instance's writes). */
   private changed(id?: string): void { for (const listener of this.listeners) listener(id) }
   onChange(listener: (id?: string) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
-  read(id: string): WorkerRecord | undefined {
-    return this.readFact(this.workerFile(id), (record): record is WorkerRecord => {
+  private read(id: string): WorkerRecord | undefined {
+    const record = this.readFact(this.workerFile(id), (record): record is WorkerRecord => {
       // Optional diagnostic corruption cannot hide an otherwise valid worker or
       // certify freshness. Unknown required paths stay pending until refresh.
       if (object(record) && record.keptPublication !== undefined && !keptPublicationShape(record.keptPublication))
         record.keptPublication = { paths: [], pending: true, overflow: true }
       return recordShape(record, id)
     }, 'invalid worker record')
+    if (!record && this.hasQuarantinedRecord(id)) this.invalid(this.workerFile(id), 'quarantined worker record')
+    return record
   }
-  list(): WorkerRecord[] { return cachedFiles(path.join(this.root, 'workers'), '.json').flatMap(file => {
-    const id = path.basename(file, '.json')
-    if (!safeId(id)) { this.invalid(file, 'invalid worker filename'); return [] }
-    const record = this.read(id)
-    return record ? [record] : []
-  }) }
+  /** Decoding never renames files. Only reconcile(), the writer, owns quarantine. */
+  private inventory<T>(scan: () => T[]): WorkerInventory<T> {
+    const previous = this.decodeBlockers
+    this.decodeBlockers = new Set()
+    try {
+      const records = scan()
+      for (const file of files(path.join(this.root, 'quarantine'), '')) this.decodeBlockers.add(path.basename(file))
+      return { records, blockers: [...this.decodeBlockers] }
+    } finally {
+      for (const blocker of this.decodeBlockers) previous?.add(blocker)
+      this.decodeBlockers = previous
+    }
+  }
+  private list(recordOnly = false): WorkerInventory<WorkerRecord> {
+    return this.inventory(() => {
+      const records = cachedFiles(path.join(this.root, 'workers'), '.json').flatMap(file => {
+        const id = path.basename(file, '.json')
+        if (!safeId(id)) { this.invalid(file, 'invalid worker filename', true); return [] }
+        const blocked = this.decodeBlockers!.size
+        const record = this.read(id)
+        if (!record && this.decodeBlockers!.size === blocked) this.invalid(file, 'missing listed worker record')
+        return record ? [record] : []
+      })
+      // A reservation with no payload remains evidence, including before the writer quarantines it.
+      // Record-only projections explicitly omit reservation authority (WorkerQuery.recordOnly).
+      if (!recordOnly) {
+        const known = new Set(records.map(record => record.id))
+        for (const record of records) if (record.sharedWith && !known.has(record.sharedWith))
+          this.invalid(this.workerFile(record.sharedWith), 'unavailable shared owner record')
+      }
+      if (!recordOnly) for (const file of files(path.join(this.root, 'tags'), '.json')) {
+        const tag = path.basename(file, '.json')
+        if (!safeTag(tag)) this.invalid(file, 'invalid reservation filename', true)
+        else this.reserved(tag)
+      }
+      return records
+    })
+  }
   /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
-  reserved(tag: string): WorkerRecord | undefined {
+  private reserved(tag: string): WorkerRecord | undefined {
     if (!safeTag(tag)) return undefined
-    const reservation = readCachedJson<{ id?: string }>(this.tagFile(tag))
-    const record = reservation?.id ? this.read(reservation.id) : undefined
-    return record?.tag === tag ? record : undefined
+    const reservation = this.readFact(this.tagFile(tag), (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id))
+    const record = reservation ? this.read(reservation.id) : undefined
+    if (reservation && (!record || record.tag !== tag)) this.invalid(this.tagFile(tag), 'unavailable reserved record')
+    return record
   }
-  reservedByTagOrName(tagOrName: string): WorkerRecord | undefined {
+  private reservedByTagOrName(tagOrName: string): WorkerRecord | undefined {
     const direct = this.reserved(tagOrName)
     if (direct) return direct
-    return this.list().find(record => record.name === tagOrName && this.reserved(record.tag)?.id === record.id)
+    return requireWorkerInventory(this.list()).find(record => record.name === tagOrName && this.reserved(record.tag)?.id === record.id)
   }
   /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
-  worktreeOwner(record: WorkerRecord): WorkerRecord | undefined {
+  private worktreeOwner(record: WorkerRecord): WorkerRecord | undefined {
     if (record.sharedWith) return this.read(record.sharedWith)
     if (path.basename(record.dir) === record.tag && record.branch === `room/${record.tag}`) return undefined
-    return this.list().find(peer => peer.id !== record.id && !peer.sharedWith
+    return requireWorkerInventory(this.list()).find(peer => peer.id !== record.id && !peer.sharedWith
       && path.resolve(peer.dir) === path.resolve(record.dir)
       && path.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`)
   }
-  /** Other unretired workers using an owner's checkout, including legacy dir= records. */
-  checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): { record: WorkerRecord; status: WorkerStatusResult }[] {
-    return this.list().flatMap(record => {
-      if (record.id === owner.id || ['retiring', 'retired', 'abandoned'].includes(record.phase)
-        || path.resolve(record.dir) !== path.resolve(owner.dir)) return []
-      const status = this.status(record.id)
-      return status ? [{ record, status }] : []
-    })
-  }
-  status(id: string): WorkerStatusResult | undefined {
+  private status(id: string): WorkerStatusResult | undefined {
     const record = this.read(id)
     if (!record) return undefined
-    const reports = this.reports(id), exits = this.exits(id)
+    const reports = requireWorkerInventory(this.reports(id)), exits = requireWorkerInventory(this.exits(id))
     const status = failedByHost(record, hostEnded(record, unreportedExit(record, statusOf(record, record.runs, reports, exits, this.alive, this.now()))))
     const run = status.run
     if (status.noReport) return status
@@ -422,7 +456,7 @@ export class FileWorkerStore {
     if (reservation?.id !== candidate.id) return undefined
     const status = this.status(candidate.id)
     if (!status) return undefined
-    const workers = this.list().flatMap(record => {
+    const workers = requireWorkerInventory(this.list()).flatMap(record => {
       const state = this.status(record.id)
       if (!state) return []
       const worker = realStateInput(record, state)
@@ -445,7 +479,7 @@ export class FileWorkerStore {
     return { record: candidate, status }
   }
   /** Any operation lease, including an unreadable one, blocks automatic claim release. */
-  operationInProgress(id: string): boolean {
+  private operationInProgress(id: string): boolean {
     try { fs.lstatSync(this.opFile(id)); return true }
     catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
   }
@@ -475,31 +509,32 @@ export class FileWorkerStore {
       return next
     })
   }
-  occupancy(): number {
-    const previousBlockers = this.decodeBlockers
-    this.decodeBlockers = new Set()
-    try {
-      const count = this.list().filter(r => ['starting', 'running', 'unknown', 'ambiguous'].includes(this.status(r.id)?.status ?? '')).length
-      // list/status may quarantine an undecodable record. Both that decode failure and durable
-      // quarantine evidence make occupancy unknown, including on the next admission or restart.
-      const blockers = [...this.decodeBlockers, ...files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file))]
-      if (blockers.length) throw new WorkerEvidenceBlocked(blockers)
-      return count
-    } finally {
-      for (const blocker of this.decodeBlockers) previousBlockers?.add(blocker)
-      this.decodeBlockers = previousBlockers
-    }
+  private occupancy(): number {
+    // Capacity and tag authority need a complete record/reservation inventory and quarantine
+    // evidence. Only launched runs need reports/exits to decide occupancy; prepared, terminal
+    // and ambiguous records have a complete answer already. Share the status reducer's rule.
+    const inventory = this.inventory(() => requireWorkerInventory(this.list()).flatMap(record => {
+      const status = recordStatus({ record, reports: [], exits: [], busy: true,
+        liveness: this.statusLiveness(record, true) }) ?? this.status(record.id)
+      if (!status) { this.invalid(this.workerFile(record.id), 'missing occupancy worker record'); return [] }
+      return [status]
+    }))
+    return requireWorkerInventory(inventory).filter(status => ['starting', 'running', 'unknown', 'ambiguous'].includes(status.status)).length
   }
-  reports(id: string): RunReport[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.report.json').flatMap(f => {
+  private reports(id: string): WorkerInventory<RunReport> { if (!safeId(id)) throw new Error('invalid worker id'); return this.inventory(() => files(path.join(this.root, 'runs', id), '.report.json').flatMap(f => {
+    const blocked = this.decodeBlockers!.size
     const report = this.readFact(f, reportShape)
-    if (report && path.basename(f) !== `${report.run}.report.json`) { this.invalid(f, 'run report filename mismatch'); return [] }
+    if (!report && this.decodeBlockers!.size === blocked) this.invalid(f, 'missing listed run report')
+    if (report && path.basename(f) !== `${report.run}.report.json`) { this.invalid(f, 'run report filename mismatch', true); return [] }
     return report ? [report] : []
-  }) }
-  exits(id: string): ExitObservation[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.exit.json').flatMap(f => {
+  })) }
+  private exits(id: string): WorkerInventory<ExitObservation> { if (!safeId(id)) throw new Error('invalid worker id'); return this.inventory(() => files(path.join(this.root, 'runs', id), '.exit.json').flatMap(f => {
+    const blocked = this.decodeBlockers!.size
     const observation = this.readFact(f, exitShape)
-    if (observation && path.basename(f) !== `${observation.run}.exit.json`) { this.invalid(f, 'exit filename mismatch'); return [] }
+    if (!observation && this.decodeBlockers!.size === blocked) this.invalid(f, 'missing listed exit observation')
+    if (observation && path.basename(f) !== `${observation.run}.exit.json`) { this.invalid(f, 'exit filename mismatch', true); return [] }
     return observation ? [observation] : []
-  }) }
+  })) }
 
   /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
   async writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY): Promise<void> {
@@ -532,7 +567,7 @@ export class FileWorkerStore {
               const reusable = bound && (bound.phase === 'abandoned' || (bound.phase === 'retired' && !bound.keptWorktree
                 && !!bound.cleanup && Object.values(bound.cleanup).every(state => state === 'done')))
               if (reusable) compareAndRelease(tagFile, reservation.holder!)
-              else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, current => current.id === reservation.id)
+              else if (!bound) throw new WorkerEvidenceBlocked([`tags/${record.tag}.json: unavailable reserved record`])
             }
             if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record.tag}`)
           }
@@ -573,25 +608,26 @@ export class FileWorkerStore {
         snapshotReads = new Map()
         this.decodeBlockers = new Set()
         const before = this.factRevision(query)
-        const reservation = query?.tag ? readCachedJson<unknown>(this.tagFile(query.tag)) : undefined
+        const reservation = query?.tag ? this.readFact(this.tagFile(query.tag), (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id), 'invalid reservation') : undefined
         const reservationId = object(reservation) && typeof reservation.id === 'string' && safeId(reservation.id) ? reservation.id : undefined
         if (reservation !== undefined && !reservationId) this.decodeBlockers.add(`tags/${query!.tag}.json: invalid reservation`)
         const selectedId = query?.workerId ?? reservationId
         const selected = query?.workerId || query?.tag
-        const records = selected ? selectedId && safeId(selectedId) ? [this.read(selectedId)].filter((record): record is WorkerRecord => !!record) : [] : this.list()
+        const records = selected ? selectedId && safeId(selectedId) ? [this.read(selectedId)].filter((record): record is WorkerRecord => !!record) : [] : this.list(!!query?.recordOnly).records
         if (query?.tag && records.some(record => record.tag !== query.tag)) this.decodeBlockers.add(`tags/${query.tag}.json: record tag mismatch`)
-        const workers = records.map(record => ({ record, reports: query?.recordOnly ? [] : this.reports(record.id), exits: query?.recordOnly ? [] : this.exits(record.id), busy: query?.recordOnly ? true : this.operationInProgress(record.id),
+        const workers = records.map(record => ({ record, reports: query?.recordOnly ? [] : this.reports(record.id).records, exits: query?.recordOnly ? [] : this.exits(record.id).records, busy: query?.recordOnly ? true : this.operationInProgress(record.id),
           ...(query?.captureLiveness ? { liveness: this.statusLiveness(record, query.recordOnly) } : {}) }))
         const reservations: Record<string, string> = Object.create(null)
         const selectedTag = query?.tag
         const tagFiles = query ? selectedTag ? [this.tagFile(selectedTag)] : [] : files(path.join(this.root, 'tags'), '.json')
         for (const file of tagFiles) {
           const tag = path.basename(file, '.json')
-          if (!safeTag(tag)) continue
-          try {
-            const reservation = readCachedJson<{ id?: string }>(file)
-            if (typeof reservation?.id === 'string') reservations[tag] = reservation.id
-          } catch { /* An unreadable reservation grants no capability; preserve its bytes. */ }
+          if (!safeTag(tag)) { this.invalid(file, 'invalid reservation filename', true); continue }
+          const reservation = this.readFact(file, (value): value is { id: string } => object(value)
+            && typeof value.id === 'string' && safeId(value.id), 'invalid reservation')
+          if (!reservation) continue
+          reservations[tag] = reservation.id
+          if (!records.some(record => record.id === reservation.id && record.tag === tag)) this.invalid(file, 'unavailable reserved record')
         }
         const operations = query?.recordOnly ? [] : query ? selectedId && safeId(selectedId) && this.operationInProgress(selectedId) ? [selectedId] : []
           : files(path.join(this.root, 'workers'), '.op').map(file => path.basename(file, '.op')).filter(safeId)
@@ -601,14 +637,14 @@ export class FileWorkerStore {
         else if (query) { if (selectedId && safeId(selectedId)) runOwners = [selectedId] }
         else try { runOwners = fs.readdirSync(path.join(this.root, 'runs')) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
         const known = new Set(workers.map(fact => fact.record.id))
-        for (const id of runOwners) if (safeId(id) && !known.has(id)) orphanRuns[id] = { reports: this.reports(id), exits: this.exits(id) }
+        for (const id of runOwners) if (safeId(id) && !known.has(id)) orphanRuns[id] = { reports: this.reports(id).records, exits: this.exits(id).records }
         if (reservationId && !records.length) this.decodeBlockers.add(`workers/${reservationId}.json: unavailable reserved record`)
         // Record projections omit run evidence, but cannot turn a quarantined worker into an
         // empty inventory. A genuinely absent unreserved ID is still distinct from blocked state.
         const quarantine = !query?.recordOnly || !selected || !records.length
           ? files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file)) : []
-        const blockers = [...this.decodeBlockers, ...quarantine.filter(name => !query?.recordOnly || !selected
-          || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))]
+        const blockers = [...new Set([...this.decodeBlockers, ...quarantine.filter(name => !query?.recordOnly || !selected
+          || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))])]
         const after = this.factRevision(query)
         if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns }
       }
@@ -645,7 +681,8 @@ export class FileWorkerStore {
       if (query.tag) {
         const file = this.tagFile(query.tag)
         addFile(file)
-        workerId = readCachedJson<{ id?: string }>(file)?.id
+        const reservation = decodeFact(file, (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id), 'invalid reservation')
+        workerId = reservation.ok ? reservation.value?.id : undefined
       }
       if (workerId && safeId(workerId)) {
         addFile(this.workerFile(workerId))
@@ -787,14 +824,14 @@ export class FileWorkerStore {
     catch { throw new Error('worker run not admitted: checkout missing') }
     if (!run || run.n !== input.run || run.nonce !== input.nonce || actual !== expected
       || !['prepared', 'active'].includes(record!.phase)) throw new Error('worker run not admitted')
-    const existingSession = record!.hostSessionId ?? this.reports(input.id).find(value => value.run === run.n)?.hostSessionId
+    const existingSession = record!.hostSessionId ?? requireWorkerInventory(this.reports(input.id)).find(value => value.run === run.n)?.hostSessionId
     if (input.hostSessionId && (input.hostSessionId.startsWith('mcp:')
       || existingSession && existingSession !== input.hostSessionId)) throw new Error('worker host session mismatch')
     const report: RunReport = { run: run.n, nonce: run.nonce, chain: input.chain,
       ...(input.hostProcess !== undefined ? { hostProcess: input.hostProcess } : {}),
       joinedAt: this.now(), ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}) }
     await this.writeReport(input.id, report)
-    const persisted = this.reports(input.id).find(value => value.run === run.n)!
+    const persisted = requireWorkerInventory(this.reports(input.id)).find(value => value.run === run.n)!
     if (persisted.hostSessionId && !record!.hostSessionId && !fs.existsSync(this.opFile(input.id))) await this.update(input.id, old => {
       const latest = old.runs.at(-1)
       if (latest?.n !== input.run || latest.nonce !== input.nonce || !['prepared', 'active'].includes(old.phase)) throw new Error('worker run not admitted')
@@ -805,19 +842,19 @@ export class FileWorkerStore {
 
   async reportDone(id: string, n: number, summary: string, changed: string[]): Promise<RunReport> {
     const record = this.read(id), run = record?.runs.at(-1)
-    const prior = this.reports(id).find(report => report.run === n)
+    const prior = requireWorkerInventory(this.reports(id)).find(report => report.run === n)
     if (!run || run.n !== n || !prior) throw new Error('worker run not admitted')
     // A report after a posted one is the run's next; one whose post failed is replaced (room_done's retry).
     const k = !prior.done ? 1 : (prior.done.k ?? 1) + (prior.posted === completionId(id, n, prior.done.k) ? 1 : 0)
     await this.writeReport(id, { ...prior, done: { at: this.now(), summary, changed, ...k > 1 ? { k } : {} } })
-    return this.reports(id).find(report => report.run === n)!
+    return requireWorkerInventory(this.reports(id)).find(report => report.run === n)!
   }
 
   /** The post callback must use the deterministic id with RoomDoc.post. */
   /** `post` resolves once the hub took the message (a refusal throws), so `posted` is recorded only for a message that exists. */
   async postCompletion(id: string, n: number, post: (id: string, record: WorkerRecord, report: RunReport) => Promise<void>): Promise<boolean> {
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
-    const report = this.reports(id).find(value => value.run === n)
+    const report = requireWorkerInventory(this.reports(id)).find(value => value.run === n)
     if (!record || !run || !report?.done) throw new Error('worker completion not reported')
     // A clean exit may have produced a no-report notice. The late real report has its
     // own deterministic ID and supersedes that fallback in the registry projection.
@@ -835,11 +872,11 @@ export class FileWorkerStore {
     const scanned = this.read(id), scannedRun = scanned?.runs.find(value => value.n === n)
     if (scanned && scannedRun?.mode === 'resume') await scanRunLog(workerLogFile(scanned), scannedRun.logStart)
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
-    const exit = this.exits(id).find(value => value.run === n)
-    const report = this.reports(id).find(value => value.run === n)
+    const exit = requireWorkerInventory(this.exits(id)).find(value => value.run === n)
+    const report = requireWorkerInventory(this.reports(id)).find(value => value.run === n)
     const current = this.status(id)
     const status = record?.phase === 'retiring' && !record.stop
-      ? hostEnded(record, unreportedExit(record, statusOf({ ...record, phase: 'active' }, record.runs, this.reports(id), this.exits(id), this.alive, this.now())))
+      ? hostEnded(record, unreportedExit(record, statusOf({ ...record, phase: 'active' }, record.runs, requireWorkerInventory(this.reports(id)), requireWorkerInventory(this.exits(id)), this.alive, this.now())))
       : current
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
       || (status.status !== 'failed' && !status.noReport && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
@@ -890,6 +927,7 @@ export class FileWorkerStore {
 
   /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
   archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): RetiredWorker {
+    requireWorkerInventory(this.list())
     const status = this.status(record.id), at = this.now()
     return { id: record.id, name: record.name, tag: record.tag, lead: record.lead.participant, host: record.host,
       ...(record.model ? { model: record.model } : {}), task: record.task, files: [], fileCount: 0,
@@ -916,7 +954,7 @@ export class FileWorkerStore {
       return this.now() - at >= maxAgeMs ? at : undefined
     }
     // This first reading only selects candidates; nothing is removed on its strength.
-    const records = this.list(), removed: WorkerRecord[] = []
+    const records = requireWorkerInventory(this.list()), removed: WorkerRecord[] = []
     const snapshotBorrowed = borrowers(records)
     for (const candidate of records) {
       if (expiredAt(candidate, snapshotBorrowed) === undefined || this.operationInProgress(candidate.id)) continue
@@ -926,7 +964,7 @@ export class FileWorkerStore {
       try { if (!await this.beginOperation(candidate.id, 'prune')) continue } catch { continue }
       try {
         const record = this.read(candidate.id)
-        const at = record && expiredAt(record, borrowers(this.list()))
+        const at = record && expiredAt(record, borrowers(requireWorkerInventory(this.list())))
         if (!record || at === undefined) continue
         // Delete under the guard update() uses, after checking the lease is still this call's and the record
         // unchanged: an in-process update serialized before this point advanced seq.
@@ -1011,6 +1049,7 @@ export class FileWorkerStore {
 
   /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
   async replayDiscard(id: string, publishPatch: (workerId: string, bytes: Buffer) => Promise<string> = (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)): Promise<void> {
+    requireWorkerInventory(this.list())
     let record = this.read(id)
     if (record?.phase !== 'discarding' || !record.discard) return
     let acquired = false
@@ -1032,12 +1071,12 @@ export class FileWorkerStore {
     const status = this.status(id)
     if (!status) return
     const own = realStateInput(record, status)
-    const workers = this.list().flatMap(value => {
+    const workers = requireWorkerInventory(this.list()).flatMap(value => {
       const current = this.status(value.id)
       return current ? [realStateInput(value, current)] : []
     })
     const borrowed = !!record.sharedWith || !!this.worktreeOwner(record)
-    const shared = !borrowed && fs.existsSync(record.dir) ? this.list().filter(value => value.id !== id && !['retiring', 'retired', 'abandoned'].includes(value.phase)
+    const shared = !borrowed && fs.existsSync(record.dir) ? requireWorkerInventory(this.list()).filter(value => value.id !== id && !['retiring', 'retired', 'abandoned'].includes(value.phase)
       && path.resolve(value.dir) === path.resolve(record!.dir)) : []
     for (const user of shared) {
       const userStatus = this.status(user.id)
@@ -1063,7 +1102,7 @@ export class FileWorkerStore {
     // second; selecting its first live entry can stop only the MCP and lose edits.
     const run = record.runs.at(-1)!
     const launch = run.launch
-    const report = this.reports(id).find(value => value.run === run.n && value.nonce === run.nonce)
+    const report = requireWorkerInventory(this.reports(id)).find(value => value.run === run.n && value.nonce === run.nonce)
     const chain = report?.chain ?? []
     const reportedHost = launch?.outcome === 'launched' ? chain.find(value => value.pid === launch.pid) : undefined
     if (launch?.outcome === 'launched' && launch.process && reportedHost
@@ -1074,7 +1113,7 @@ export class FileWorkerStore {
     if (!record.discard!.steps.stop) await this.beginStop(id, 'discarded')
     // A PID-only launch without a matching admitted host has no verified signal
     // authority. Keep the directory even if another chain member has exited.
-    if (launch?.outcome === 'launched' && !host && !this.exits(id).some(value => value.run === run.n)
+    if (launch?.outcome === 'launched' && !host && !requireWorkerInventory(this.exits(id)).some(value => value.run === run.n)
       && pidAlive(launch.pid)) return
     for (const identity of identities) {
       const alive = this.alive(identity)
@@ -1216,7 +1255,27 @@ export class FileWorkerStore {
   }
 
   async reconcile(): Promise<void> {
-    for (const record of this.list()) {
+    // Only this writer-owned pass may rename invalid facts, after its read-only inventory.
+    const candidates = new Map<string, { key?: string; text?: string; why: unknown }>()
+    this.quarantineCandidates = candidates
+    let inventory: WorkerInventory<WorkerRecord>
+    try {
+      inventory = this.inventory(() => {
+        const records = this.list().records
+        for (const record of records) { this.reports(record.id); this.exits(record.id) }
+        return records
+      })
+    } finally { this.quarantineCandidates = undefined }
+    if (inventory.blockers.length) {
+      for (const [file, fact] of candidates) {
+        if (!fact.key || statKey(file)?.key !== fact.key) continue
+        // Compare captured bytes too: an in-place repair can share a coarse timestamp tick.
+        if (fact.text !== undefined && fs.readFileSync(file, 'utf8') !== fact.text) continue
+        this.quarantine(file, fact.why)
+      }
+      return
+    }
+    for (const record of inventory.records) {
       const run = record.runs.at(-1)
       if (!run) continue
       // The operation lease itself is deliberately not treated as launch evidence.
@@ -1224,7 +1283,7 @@ export class FileWorkerStore {
       const op = this.readFact(this.opFile(record.id), (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
       if (hadOp && !op) continue
       if (op && this.alive(op.holder) === 'dead') await leaseRetry(() => recover(this.opFile(record.id), () => true))
-      const report = this.reports(record.id).find(value => value.run === run.n && value.nonce === run.nonce)
+      const report = requireWorkerInventory(this.reports(record.id)).find(value => value.run === run.n && value.nonce === run.nonce)
       if (report?.hostSessionId && !record.hostSessionId && !fs.existsSync(this.opFile(record.id))) {
         await this.update(record.id, old => ({ ...old, hostSessionId: old.hostSessionId ?? report.hostSessionId, seq: old.seq + 1 }))
       }
@@ -1246,7 +1305,7 @@ export class FileWorkerStore {
         continue
       }
       if (!run.launch) {
-        const report = this.reports(record.id).find(r => r.run === run.n && r.nonce === run.nonce)
+        const report = requireWorkerInventory(this.reports(record.id)).find(r => r.run === run.n && r.nonce === run.nonce)
         const writer = this.readFact(this.writerFile(record.id, run.n), tokenShape)
         if (writer && report) await this.update(record.id, old => {
           const latest = old.runs.at(-1)!
@@ -1260,7 +1319,7 @@ export class FileWorkerStore {
         continue
       }
       if (run.launch.outcome === 'ambiguous') {
-        const report = this.reports(record.id).find(r => r.run === run.n && r.nonce === run.nonce)
+        const report = requireWorkerInventory(this.reports(record.id)).find(r => r.run === run.n && r.nonce === run.nonce)
         const writer = this.readFact(this.writerFile(record.id, run.n), tokenShape)
         if (writer && report) await this.update(record.id, old => {
           const process = admittedHost(report)
@@ -1268,7 +1327,7 @@ export class FileWorkerStore {
           return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: process.pid, process } }], seq: old.seq + 1 }
         })
       }
-      if (run.launch.outcome === 'launched' && !this.exits(record.id).some(e => e.run === run.n)
+      if (run.launch.outcome === 'launched' && !requireWorkerInventory(this.exits(record.id)).some(e => e.run === run.n)
         && this.alive(run.launcher) === 'dead' && run.launch.process && this.alive(run.launch.process) === 'dead') {
         await this.writeExit(record.id, { run: run.n, code: null, at: this.now(), witnessed: false })
       }
@@ -1280,7 +1339,7 @@ export class FileWorkerStore {
       if (this.now() - fs.statSync(file).mtimeMs >= 7 * 24 * 60 * 60 * 1000) fs.rmSync(file, { force: true })
     }
     const next = new Map<string, string>()
-    for (const record of this.list()) next.set(record.id, JSON.stringify([record, this.reports(record.id), this.exits(record.id)]))
+    for (const record of requireWorkerInventory(this.list())) next.set(record.id, JSON.stringify([record, requireWorkerInventory(this.reports(record.id)), requireWorkerInventory(this.exits(record.id))]))
     const externalChange = next.size !== this.observed.size || [...next].some(([key, value]) => this.observed.get(key) !== value)
     this.observed = next
     if (externalChange) this.changed()

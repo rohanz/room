@@ -32377,6 +32377,10 @@ function workerEvidence(snapshot2) {
   if (!snapshot2.available) throw new Error(`worker snapshot unavailable: ${snapshot2.detail}`);
   return snapshot2.blockers.length ? { reason: "blocked", blockers: snapshot2.blockers } : snapshot2;
 }
+function requireWorkerInventory(inventory) {
+  if (inventory.blockers.length) throw new WorkerEvidenceBlocked(inventory.blockers);
+  return inventory.records;
+}
 function applyWorkerCommand(old, command3) {
   const next = { ...old, seq: old.seq + 1 };
   switch (command3.type) {
@@ -32458,11 +32462,12 @@ function recordStatus(fact) {
   return statusOf(record2, record2.runs, [], [], (identity3) => fact.liveness?.find((probe) => probe.identity.pid === identity3.pid && probe.identity.startTime === identity3.startTime && probe.identity.executable === identity3.executable)?.state ?? "unknown");
 }
 function snapshotReserved(snapshot2, tag) {
-  const record2 = snapshot2.available ? snapshotRead(snapshot2, snapshot2.reservations[tag]) : void 0;
+  const facts = requireWorkerEvidence(workerEvidence(snapshot2));
+  const record2 = snapshotRead(facts, facts.reservations[tag]);
   return record2?.tag === tag ? record2 : void 0;
 }
 function snapshotFreshness(snapshot2, id3) {
-  const fact = snapshot2.available ? snapshot2.workers.find((fact2) => fact2.record.id === id3) : void 0;
+  const fact = requireWorkerEvidence(workerEvidence(snapshot2)).workers.find((fact2) => fact2.record.id === id3);
   if (!fact || !snapshot2.available) return void 0;
   const { record: record2, reports, exits, busy: busy2 } = fact, run2 = record2.runs.at(-1);
   const reported = run2 && reports.some((report) => report.run === run2.n && report.nonce === run2.nonce && !!report.done) ? "done" : run2 && exits.some((exit) => exit.run === run2.n) ? "exited" : "none";
@@ -32479,7 +32484,7 @@ function snapshotFreshness(snapshot2, id3) {
   };
 }
 function snapshotStatus(snapshot2, id3, alive = () => "unknown", nowMs) {
-  const fact = snapshot2.available ? snapshot2.workers.find((fact2) => fact2.record.id === id3) : void 0;
+  const fact = requireWorkerEvidence(workerEvidence(snapshot2)).workers.find((fact2) => fact2.record.id === id3);
   return fact && statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, alive, nowMs);
 }
 var WorkerEvidenceBlocked, snapshotRead;
@@ -32495,7 +32500,7 @@ var init_worker_store = __esm({
       blockers;
       reason = "blocked";
     };
-    snapshotRead = (snapshot2, id3) => snapshot2.available ? snapshot2.workers.find((fact) => fact.record.id === id3)?.record : void 0;
+    snapshotRead = (snapshot2, id3) => requireWorkerEvidence(workerEvidence(snapshot2)).workers.find((fact) => fact.record.id === id3)?.record;
   }
 });
 
@@ -35556,7 +35561,7 @@ var init_graph_index = __esm({
           }
           if (facts?.available && registry2) {
             const latest = await registry2.snapshot(this.workerQuery);
-            if (!latest.available || latest.revision !== facts.revision) {
+            if (!latest.available || latest.blockers.length || latest.revision !== facts.revision) {
               this.baselinePass = void 0;
               return false;
             }
@@ -35676,8 +35681,10 @@ var init_graph_index = __esm({
         this.publication = this.publication.then(async () => {
           if (this.carriedSnapshot) {
             const previous = this.carriedSnapshot;
-            this.carriedSnapshot = await (await openWorkerReader(this.dir)).snapshot(this.workerQuery);
-            if (!this.carriedSnapshot.available || !previous.available || this.carriedSnapshot.revision !== previous.revision) {
+            const latest = await (await openWorkerReader(this.dir)).snapshot(this.workerQuery);
+            if (!latest.available || latest.blockers.length) return;
+            this.carriedSnapshot = latest;
+            if (!previous.available || latest.revision !== previous.revision) {
               this.observedByPath.clear();
               this.observedRevision++;
               for (const file of this.grantPaths()) if (isSourcePath(file)) void this.refresh(file);
@@ -37880,7 +37887,7 @@ async function projectWorkers(s, registry2, lead, role, origin, active = () => t
   const roomKey2 = s.roomName, fence = s.daemon.fence;
   const current2 = () => active() && s.daemon.fence === fence;
   if (!fence || !current2()) return void 0;
-  const records = await registry2.list();
+  const records = requireWorkerInventory(await registry2.list());
   if (!current2()) return void 0;
   await warmRunLogs(s, records.filter((record2) => record2.lead.participant === lead && !["retired", "abandoned"].includes(record2.phase)));
   if (!current2()) return void 0;
@@ -38000,6 +38007,7 @@ var inRole, WorkerProjector;
 var init_worker_projector = __esm({
   "packages/room-mcp/src/worker-projector.ts"() {
     "use strict";
+    init_worker_store();
     init_src();
     init_worker_registry();
     init_worker_store();
@@ -38292,12 +38300,12 @@ var init_bridge = __esm({
           this.registry = registry2;
           const facts = await registry2.snapshot();
           if (this.stopped) return;
-          this.facts = facts;
           this.unobserve.push(registry2.onChange(() => {
             this.storageEpoch++;
-            this.facts = void 0;
             this.schedule();
           }));
+          if (!facts.available || facts.blockers.length) return;
+          this.facts = facts;
           for (const c of l.openClaims()) this.mirrorClaim(c.id);
           this.schedule();
         };
@@ -38342,7 +38350,7 @@ var init_bridge = __esm({
         if (this.registry) {
           try {
             const facts = await this.registry.snapshot();
-            if (this.stopped || !facts.available) return;
+            if (this.stopped || !facts.available || facts.blockers.length) return;
             this.facts = facts;
           } catch (error2) {
             this.o.log?.(`bridge: worker facts unavailable: ${String(error2)}`);
@@ -38362,7 +38370,7 @@ var init_bridge = __esm({
        * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
        */
       syncCoordination() {
-        if (!this.facts?.available) return;
+        if (!this.facts?.available || this.facts.blockers.length) return;
         if (this.stopped || !this.registry || !this.team.daemon.fence) return;
         const lead = this.team.me.name;
         const paths = this.workerPaths();
@@ -38439,12 +38447,12 @@ var init_bridge = __esm({
       async projectWorker(record2, retry = 0) {
         if (this.stopped || !this.registry) return;
         const facts = await this.registry.snapshot();
-        if (this.stopped || !facts.available) return;
+        if (this.stopped || !facts.available || facts.blockers.length) return;
         this.facts = facts;
         const epoch = this.storageEpoch;
         const fresh = async () => {
           const latest = await this.registry.snapshot();
-          if (this.stopped || !latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false;
+          if (this.stopped || !latest.available || latest.blockers.length || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false;
           this.facts = latest;
           return true;
         };
@@ -40463,7 +40471,7 @@ async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
   const users = evidence;
   if (users.length && !o.retireUser) return { removed: false, reason: `its worktree is shared with ${users.map((user) => user.record.tag).join(", ")}` };
   for (const { record: user } of users) await o.retireUser(user);
-  const nested = (await registry2.list()).filter((other) => other.lead.participant === w.name && !["retiring", "retired", "abandoned"].includes(other.phase));
+  const nested = requireWorkerInventory(await registry2.list()).filter((other) => other.lead.participant === w.name && !["retiring", "retired", "abandoned"].includes(other.phase));
   if (nested.length) return { removed: false, reason: "nested workers remain: " + nested.map((other) => other.tag).join(", ") };
   const ignored = await ignoredWorkerArtifacts(w, s.dir);
   if (ignored.length) return { removed: false, reason: "uncopied ignored artifacts", lines: [...ignored.map((p) => `kept ${p} at ${path40.join(w.dir, p)}`), `retained worktree: ${w.dir}`] };
@@ -40476,7 +40484,7 @@ async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
     const changed = await uncollectedWorkerPaths(s.dir, w, captured);
     if (changed.length) return { removed: false, reason: `changed since collection: ${changed.join(", ")}; copy it (mode="copy") or discard=true` };
   }
-  const workers = (await Promise.all((await registry2.list()).map(async (other) => {
+  const workers = (await Promise.all(requireWorkerInventory(await registry2.list()).map(async (other) => {
     const st = await registry2.status(other.id);
     return st ? [realStateInput(other, st)] : [];
   }))).flat();
@@ -40582,7 +40590,7 @@ async function autoRetire(s, rooms) {
     process.stderr.write(`[room] retired record retention: ${error2}
 `);
   });
-  for (const record2 of await registry2.list()) {
+  for (const record2 of requireWorkerInventory(await registry2.list())) {
     if (record2.lead.participant !== s.me.name || record2.room !== s.roomName) continue;
     const processes = { probe, list: rooms.listCwdProcesses, alive: async (w2) => rooms.hasHandle(s, w2) || !processExited(await workerRealState(s.dir, w2, { process: true, probe })) };
     if (record2.phase === "retired" && record2.keptWorktree && record2.archive?.keptReason === LEGACY_UNCONFIRMED) {
@@ -40636,7 +40644,7 @@ async function autoRetire(s, rooms) {
       }));
       continue;
     }
-    const workers = (await Promise.all((await registry2.list()).map(async (other) => {
+    const workers = (await Promise.all(requireWorkerInventory(await registry2.list()).map(async (other) => {
       const st = await registry2.status(other.id);
       return st ? [realStateInput(other, st)] : [];
     }))).flat();
@@ -40700,6 +40708,7 @@ var init_retire = __esm({
   "packages/room-mcp/src/retire.ts"() {
     "use strict";
     init_worker_store();
+    init_worker_store();
     init_src();
     init_policy_store();
     init_worker_registry();
@@ -40732,6 +40741,7 @@ var toolSignal, currentToolSignal, Rooms;
 var init_registry = __esm({
   "packages/room-mcp/src/registry.ts"() {
     "use strict";
+    init_worker_store();
     init_src();
     init_session();
     init_worker_process();
@@ -40887,11 +40897,10 @@ var init_registry = __esm({
       async holding(name, from2 = this.primary() ?? this.mustHave()) {
         const others = this.all().filter((s) => s !== from2);
         if (!others.length || name === from2.me.name) return from2;
-        try {
-          const owned = (await (await openWorkerReader(from2.dir)).list()).find((record2) => record2.name === name && record2.lead.participant === from2.me.name && record2.mode === "local" && !["retiring", "retired", "abandoned"].includes(record2.phase));
+        {
+          const owned = requireWorkerInventory(await (await openWorkerReader(from2.dir)).list()).find((record2) => record2.name === name && record2.lead.participant === from2.me.name && record2.mode === "local" && !["retiring", "retired", "abandoned"].includes(record2.phase));
           const source = owned && others.find((s) => s.roomName === owned.room);
           if (source) return source;
-        } catch {
         }
         if (_Rooms.activeIn(from2, name)) return from2;
         for (const s of others) if (_Rooms.activeIn(s, name)) return s;
@@ -45064,7 +45073,7 @@ async function cleanupWorker(leadDir, w, options = {}) {
     const { registryForDir: registryForDir2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
     const registry2 = await registryForDir2(leadDir);
     const record2 = await registry2.read(w.id);
-    if (!record2) return w.branch === `room/${w.tag}` && (await registry2.list()).every((peer) => path48.resolve(peer.dir) !== path48.resolve(w.dir) || peer.tag === w.tag);
+    if (!record2) return w.branch === `room/${w.tag}` && requireWorkerInventory(await registry2.list()).every((peer) => path48.resolve(peer.dir) !== path48.resolve(w.dir) || peer.tag === w.tag);
     return !record2.sharedWith && !await registry2.worktreeOwner(record2) && requireWorkerEvidence(await registry2.checkoutUsers(record2)).length === 0;
   };
   if (!await available()) return false;
@@ -45307,6 +45316,7 @@ var WORKERS_DIR, lstatOrUndefined, collectHeadRef, collectBaseRef, privateWorker
 var init_worker_git = __esm({
   "packages/room-mcp/src/worker-git.ts"() {
     "use strict";
+    init_worker_store();
     init_worker_store();
     init_src();
     init_src4();
@@ -45783,6 +45793,7 @@ var init_worker_file_store = __esm({
         return id2();
       }
       quarantine(file, why) {
+        if (this.readOnly) throw new Error("read-only worker store cannot quarantine evidence");
         const dir = path49.join(this.root, "quarantine");
         privateStateDirectory(dir);
         const dest = path49.join(dir, `${path49.basename(file)}.bad-${Date.now()}-${randomBytes4(4).toString("hex")}`);
@@ -45803,14 +45814,24 @@ var init_worker_file_store = __esm({
         }
       }
       decodeBlockers;
-      invalid(file, why) {
-        this.decodeBlockers?.add(`${path49.relative(this.root, file)}: ${String(why)}`);
-        if (!this.readOnly) this.quarantine(file, why);
+      quarantineCandidates;
+      invalid(file, why, malformed = false) {
+        if (malformed && this.quarantineCandidates) {
+          const observed = snapshotReads?.get(file) ?? readCache.get(file);
+          this.quarantineCandidates.set(file, {
+            key: observed?.key ?? statKey(file)?.key,
+            text: typeof observed?.value === "string" ? observed.value : void 0,
+            why
+          });
+        }
+        const blocker = `${path49.relative(this.root, file)}: ${String(why)}`;
+        if (this.decodeBlockers) this.decodeBlockers.add(blocker);
+        else throw new WorkerEvidenceBlocked([blocker]);
       }
       readFact(file, valid, why = "invalid registry fact") {
         const decoded = decodeFact(file, valid, why);
         if (decoded.ok) return decoded.value;
-        this.invalid(file, decoded.error);
+        this.invalid(file, decoded.error, true);
         return void 0;
       }
       /** `id` names the one worker that changed; none means any may have (another instance's writes). */
@@ -45822,53 +45843,76 @@ var init_worker_file_store = __esm({
         return () => this.listeners.delete(listener);
       }
       read(id3) {
-        return this.readFact(this.workerFile(id3), (record2) => {
-          if (object5(record2) && record2.keptPublication !== void 0 && !keptPublicationShape(record2.keptPublication))
-            record2.keptPublication = { paths: [], pending: true, overflow: true };
-          return recordShape(record2, id3);
+        const record2 = this.readFact(this.workerFile(id3), (record3) => {
+          if (object5(record3) && record3.keptPublication !== void 0 && !keptPublicationShape(record3.keptPublication))
+            record3.keptPublication = { paths: [], pending: true, overflow: true };
+          return recordShape(record3, id3);
         }, "invalid worker record");
+        if (!record2 && this.hasQuarantinedRecord(id3)) this.invalid(this.workerFile(id3), "quarantined worker record");
+        return record2;
       }
-      list() {
-        return cachedFiles(path49.join(this.root, "workers"), ".json").flatMap((file) => {
-          const id3 = path49.basename(file, ".json");
-          if (!safeId(id3)) {
-            this.invalid(file, "invalid worker filename");
-            return [];
+      /** Decoding never renames files. Only reconcile(), the writer, owns quarantine. */
+      inventory(scan) {
+        const previous = this.decodeBlockers;
+        this.decodeBlockers = /* @__PURE__ */ new Set();
+        try {
+          const records = scan();
+          for (const file of files(path49.join(this.root, "quarantine"), "")) this.decodeBlockers.add(path49.basename(file));
+          return { records, blockers: [...this.decodeBlockers] };
+        } finally {
+          for (const blocker of this.decodeBlockers) previous?.add(blocker);
+          this.decodeBlockers = previous;
+        }
+      }
+      list(recordOnly = false) {
+        return this.inventory(() => {
+          const records = cachedFiles(path49.join(this.root, "workers"), ".json").flatMap((file) => {
+            const id3 = path49.basename(file, ".json");
+            if (!safeId(id3)) {
+              this.invalid(file, "invalid worker filename", true);
+              return [];
+            }
+            const blocked = this.decodeBlockers.size;
+            const record2 = this.read(id3);
+            if (!record2 && this.decodeBlockers.size === blocked) this.invalid(file, "missing listed worker record");
+            return record2 ? [record2] : [];
+          });
+          if (!recordOnly) {
+            const known = new Set(records.map((record2) => record2.id));
+            for (const record2 of records) if (record2.sharedWith && !known.has(record2.sharedWith))
+              this.invalid(this.workerFile(record2.sharedWith), "unavailable shared owner record");
           }
-          const record2 = this.read(id3);
-          return record2 ? [record2] : [];
+          if (!recordOnly) for (const file of files(path49.join(this.root, "tags"), ".json")) {
+            const tag = path49.basename(file, ".json");
+            if (!safeTag(tag)) this.invalid(file, "invalid reservation filename", true);
+            else this.reserved(tag);
+          }
+          return records;
         });
       }
       /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
       reserved(tag) {
         if (!safeTag(tag)) return void 0;
-        const reservation = readCachedJson(this.tagFile(tag));
-        const record2 = reservation?.id ? this.read(reservation.id) : void 0;
-        return record2?.tag === tag ? record2 : void 0;
+        const reservation = this.readFact(this.tagFile(tag), (value5) => object5(value5) && typeof value5.id === "string" && safeId(value5.id));
+        const record2 = reservation ? this.read(reservation.id) : void 0;
+        if (reservation && (!record2 || record2.tag !== tag)) this.invalid(this.tagFile(tag), "unavailable reserved record");
+        return record2;
       }
       reservedByTagOrName(tagOrName) {
         const direct = this.reserved(tagOrName);
         if (direct) return direct;
-        return this.list().find((record2) => record2.name === tagOrName && this.reserved(record2.tag)?.id === record2.id);
+        return requireWorkerInventory(this.list()).find((record2) => record2.name === tagOrName && this.reserved(record2.tag)?.id === record2.id);
       }
       /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
       worktreeOwner(record2) {
         if (record2.sharedWith) return this.read(record2.sharedWith);
         if (path49.basename(record2.dir) === record2.tag && record2.branch === `room/${record2.tag}`) return void 0;
-        return this.list().find((peer) => peer.id !== record2.id && !peer.sharedWith && path49.resolve(peer.dir) === path49.resolve(record2.dir) && path49.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`);
-      }
-      /** Other unretired workers using an owner's checkout, including legacy dir= records. */
-      checkoutUsers(owner) {
-        return this.list().flatMap((record2) => {
-          if (record2.id === owner.id || ["retiring", "retired", "abandoned"].includes(record2.phase) || path49.resolve(record2.dir) !== path49.resolve(owner.dir)) return [];
-          const status = this.status(record2.id);
-          return status ? [{ record: record2, status }] : [];
-        });
+        return requireWorkerInventory(this.list()).find((peer) => peer.id !== record2.id && !peer.sharedWith && path49.resolve(peer.dir) === path49.resolve(record2.dir) && path49.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`);
       }
       status(id3) {
         const record2 = this.read(id3);
         if (!record2) return void 0;
-        const reports = this.reports(id3), exits = this.exits(id3);
+        const reports = requireWorkerInventory(this.reports(id3)), exits = requireWorkerInventory(this.exits(id3));
         const status = failedByHost(record2, hostEnded(record2, unreportedExit(record2, statusOf(record2, record2.runs, reports, exits, this.alive, this.now()))));
         const run2 = status.run;
         if (status.noReport) return status;
@@ -45890,7 +45934,7 @@ var init_worker_file_store = __esm({
         if (reservation?.id !== candidate.id) return void 0;
         const status = this.status(candidate.id);
         if (!status) return void 0;
-        const workers = this.list().flatMap((record2) => {
+        const workers = requireWorkerInventory(this.list()).flatMap((record2) => {
           const state = this.status(record2.id);
           if (!state) return [];
           const worker = realStateInput(record2, state);
@@ -45966,39 +46010,47 @@ var init_worker_file_store = __esm({
         });
       }
       occupancy() {
-        const previousBlockers = this.decodeBlockers;
-        this.decodeBlockers = /* @__PURE__ */ new Set();
-        try {
-          const count = this.list().filter((r) => ["starting", "running", "unknown", "ambiguous"].includes(this.status(r.id)?.status ?? "")).length;
-          const blockers = [...this.decodeBlockers, ...files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file))];
-          if (blockers.length) throw new WorkerEvidenceBlocked(blockers);
-          return count;
-        } finally {
-          for (const blocker of this.decodeBlockers) previousBlockers?.add(blocker);
-          this.decodeBlockers = previousBlockers;
-        }
+        const inventory = this.inventory(() => requireWorkerInventory(this.list()).flatMap((record2) => {
+          const status = recordStatus({
+            record: record2,
+            reports: [],
+            exits: [],
+            busy: true,
+            liveness: this.statusLiveness(record2, true)
+          }) ?? this.status(record2.id);
+          if (!status) {
+            this.invalid(this.workerFile(record2.id), "missing occupancy worker record");
+            return [];
+          }
+          return [status];
+        }));
+        return requireWorkerInventory(inventory).filter((status) => ["starting", "running", "unknown", "ambiguous"].includes(status.status)).length;
       }
       reports(id3) {
         if (!safeId(id3)) throw new Error("invalid worker id");
-        return files(path49.join(this.root, "runs", id3), ".report.json").flatMap((f) => {
+        return this.inventory(() => files(path49.join(this.root, "runs", id3), ".report.json").flatMap((f) => {
+          const blocked = this.decodeBlockers.size;
           const report = this.readFact(f, reportShape);
+          if (!report && this.decodeBlockers.size === blocked) this.invalid(f, "missing listed run report");
           if (report && path49.basename(f) !== `${report.run}.report.json`) {
-            this.invalid(f, "run report filename mismatch");
+            this.invalid(f, "run report filename mismatch", true);
             return [];
           }
           return report ? [report] : [];
-        });
+        }));
       }
       exits(id3) {
         if (!safeId(id3)) throw new Error("invalid worker id");
-        return files(path49.join(this.root, "runs", id3), ".exit.json").flatMap((f) => {
+        return this.inventory(() => files(path49.join(this.root, "runs", id3), ".exit.json").flatMap((f) => {
+          const blocked = this.decodeBlockers.size;
           const observation = this.readFact(f, exitShape);
+          if (!observation && this.decodeBlockers.size === blocked) this.invalid(f, "missing listed exit observation");
           if (observation && path49.basename(f) !== `${observation.run}.exit.json`) {
-            this.invalid(f, "exit filename mismatch");
+            this.invalid(f, "exit filename mismatch", true);
             return [];
           }
           return observation ? [observation] : [];
-        });
+        }));
       }
       /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
       async writeIntent(record2, capacity2 = Number.POSITIVE_INFINITY) {
@@ -46030,7 +46082,7 @@ var init_worker_file_store = __esm({
                     const bound = this.read(reservation.id);
                     const reusable = bound && (bound.phase === "abandoned" || bound.phase === "retired" && !bound.keptWorktree && !!bound.cleanup && Object.values(bound.cleanup).every((state) => state === "done"));
                     if (reusable) compareAndRelease(tagFile, reservation.holder);
-                    else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, (current2) => current2.id === reservation.id);
+                    else if (!bound) throw new WorkerEvidenceBlocked([`tags/${record2.tag}.json: unavailable reserved record`]);
                   }
                   if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record2.tag}`);
                 }
@@ -46077,17 +46129,17 @@ var init_worker_file_store = __esm({
             snapshotReads = /* @__PURE__ */ new Map();
             this.decodeBlockers = /* @__PURE__ */ new Set();
             const before = this.factRevision(query2);
-            const reservation = query2?.tag ? readCachedJson(this.tagFile(query2.tag)) : void 0;
+            const reservation = query2?.tag ? this.readFact(this.tagFile(query2.tag), (value5) => object5(value5) && typeof value5.id === "string" && safeId(value5.id), "invalid reservation") : void 0;
             const reservationId = object5(reservation) && typeof reservation.id === "string" && safeId(reservation.id) ? reservation.id : void 0;
             if (reservation !== void 0 && !reservationId) this.decodeBlockers.add(`tags/${query2.tag}.json: invalid reservation`);
             const selectedId = query2?.workerId ?? reservationId;
             const selected = query2?.workerId || query2?.tag;
-            const records = selected ? selectedId && safeId(selectedId) ? [this.read(selectedId)].filter((record2) => !!record2) : [] : this.list();
+            const records = selected ? selectedId && safeId(selectedId) ? [this.read(selectedId)].filter((record2) => !!record2) : [] : this.list(!!query2?.recordOnly).records;
             if (query2?.tag && records.some((record2) => record2.tag !== query2.tag)) this.decodeBlockers.add(`tags/${query2.tag}.json: record tag mismatch`);
             const workers = records.map((record2) => ({
               record: record2,
-              reports: query2?.recordOnly ? [] : this.reports(record2.id),
-              exits: query2?.recordOnly ? [] : this.exits(record2.id),
+              reports: query2?.recordOnly ? [] : this.reports(record2.id).records,
+              exits: query2?.recordOnly ? [] : this.exits(record2.id).records,
               busy: query2?.recordOnly ? true : this.operationInProgress(record2.id),
               ...query2?.captureLiveness ? { liveness: this.statusLiveness(record2, query2.recordOnly) } : {}
             }));
@@ -46096,12 +46148,14 @@ var init_worker_file_store = __esm({
             const tagFiles = query2 ? selectedTag ? [this.tagFile(selectedTag)] : [] : files(path49.join(this.root, "tags"), ".json");
             for (const file of tagFiles) {
               const tag = path49.basename(file, ".json");
-              if (!safeTag(tag)) continue;
-              try {
-                const reservation2 = readCachedJson(file);
-                if (typeof reservation2?.id === "string") reservations[tag] = reservation2.id;
-              } catch {
+              if (!safeTag(tag)) {
+                this.invalid(file, "invalid reservation filename", true);
+                continue;
               }
+              const reservation2 = this.readFact(file, (value5) => object5(value5) && typeof value5.id === "string" && safeId(value5.id), "invalid reservation");
+              if (!reservation2) continue;
+              reservations[tag] = reservation2.id;
+              if (!records.some((record2) => record2.id === reservation2.id && record2.tag === tag)) this.invalid(file, "unavailable reserved record");
             }
             const operations = query2?.recordOnly ? [] : query2 ? selectedId && safeId(selectedId) && this.operationInProgress(selectedId) ? [selectedId] : [] : files(path49.join(this.root, "workers"), ".op").map((file) => path49.basename(file, ".op")).filter(safeId);
             const orphanRuns = /* @__PURE__ */ Object.create(null);
@@ -46115,10 +46169,10 @@ var init_worker_file_store = __esm({
               if (error2.code !== "ENOENT") throw error2;
             }
             const known = new Set(workers.map((fact) => fact.record.id));
-            for (const id3 of runOwners) if (safeId(id3) && !known.has(id3)) orphanRuns[id3] = { reports: this.reports(id3), exits: this.exits(id3) };
+            for (const id3 of runOwners) if (safeId(id3) && !known.has(id3)) orphanRuns[id3] = { reports: this.reports(id3).records, exits: this.exits(id3).records };
             if (reservationId && !records.length) this.decodeBlockers.add(`workers/${reservationId}.json: unavailable reserved record`);
             const quarantine = !query2?.recordOnly || !selected || !records.length ? files(path49.join(this.root, "quarantine"), "").map((file) => path49.basename(file)) : [];
-            const blockers = [...this.decodeBlockers, ...quarantine.filter((name) => !query2?.recordOnly || !selected || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))];
+            const blockers = [.../* @__PURE__ */ new Set([...this.decodeBlockers, ...quarantine.filter((name) => !query2?.recordOnly || !selected || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))])];
             const after = this.factRevision(query2);
             if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns };
           }
@@ -46166,7 +46220,8 @@ var init_worker_file_store = __esm({
           if (query2.tag) {
             const file = this.tagFile(query2.tag);
             addFile(file);
-            workerId = readCachedJson(file)?.id;
+            const reservation = decodeFact(file, (value5) => object5(value5) && typeof value5.id === "string" && safeId(value5.id), "invalid reservation");
+            workerId = reservation.ok ? reservation.value?.id : void 0;
           }
           if (workerId && safeId(workerId)) {
             addFile(this.workerFile(workerId));
@@ -46328,7 +46383,7 @@ var init_worker_file_store = __esm({
           throw new Error("worker run not admitted: checkout missing");
         }
         if (!run2 || run2.n !== input.run || run2.nonce !== input.nonce || actual !== expected || !["prepared", "active"].includes(record2.phase)) throw new Error("worker run not admitted");
-        const existingSession = record2.hostSessionId ?? this.reports(input.id).find((value5) => value5.run === run2.n)?.hostSessionId;
+        const existingSession = record2.hostSessionId ?? requireWorkerInventory(this.reports(input.id)).find((value5) => value5.run === run2.n)?.hostSessionId;
         if (input.hostSessionId && (input.hostSessionId.startsWith("mcp:") || existingSession && existingSession !== input.hostSessionId)) throw new Error("worker host session mismatch");
         const report = {
           run: run2.n,
@@ -46339,7 +46394,7 @@ var init_worker_file_store = __esm({
           ...input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}
         };
         await this.writeReport(input.id, report);
-        const persisted = this.reports(input.id).find((value5) => value5.run === run2.n);
+        const persisted = requireWorkerInventory(this.reports(input.id)).find((value5) => value5.run === run2.n);
         if (persisted.hostSessionId && !record2.hostSessionId && !fs53.existsSync(this.opFile(input.id))) await this.update(input.id, (old) => {
           const latest = old.runs.at(-1);
           if (latest?.n !== input.run || latest.nonce !== input.nonce || !["prepared", "active"].includes(old.phase)) throw new Error("worker run not admitted");
@@ -46349,17 +46404,17 @@ var init_worker_file_store = __esm({
       }
       async reportDone(id3, n, summary, changed) {
         const record2 = this.read(id3), run2 = record2?.runs.at(-1);
-        const prior = this.reports(id3).find((report) => report.run === n);
+        const prior = requireWorkerInventory(this.reports(id3)).find((report) => report.run === n);
         if (!run2 || run2.n !== n || !prior) throw new Error("worker run not admitted");
         const k = !prior.done ? 1 : (prior.done.k ?? 1) + (prior.posted === completionId(id3, n, prior.done.k) ? 1 : 0);
         await this.writeReport(id3, { ...prior, done: { at: this.now(), summary, changed, ...k > 1 ? { k } : {} } });
-        return this.reports(id3).find((report) => report.run === n);
+        return requireWorkerInventory(this.reports(id3)).find((report) => report.run === n);
       }
       /** The post callback must use the deterministic id with RoomDoc.post. */
       /** `post` resolves once the hub took the message (a refusal throws), so `posted` is recorded only for a message that exists. */
       async postCompletion(id3, n, post) {
         const record2 = this.read(id3), run2 = record2?.runs.find((value5) => value5.n === n);
-        const report = this.reports(id3).find((value5) => value5.run === n);
+        const report = requireWorkerInventory(this.reports(id3)).find((value5) => value5.run === n);
         if (!record2 || !run2 || !report?.done) throw new Error("worker completion not reported");
         const messageId = completionId(id3, n, report.done.k);
         if (report.posted === messageId || run2.posted && !run2.posted.endsWith(":no-report")) return false;
@@ -46372,10 +46427,10 @@ var init_worker_file_store = __esm({
         const scanned = this.read(id3), scannedRun = scanned?.runs.find((value5) => value5.n === n);
         if (scanned && scannedRun?.mode === "resume") await scanRunLog(workerLogFile(scanned), scannedRun.logStart);
         const record2 = this.read(id3), run2 = record2?.runs.find((value5) => value5.n === n);
-        const exit = this.exits(id3).find((value5) => value5.run === n);
-        const report = this.reports(id3).find((value5) => value5.run === n);
+        const exit = requireWorkerInventory(this.exits(id3)).find((value5) => value5.run === n);
+        const report = requireWorkerInventory(this.reports(id3)).find((value5) => value5.run === n);
         const current2 = this.status(id3);
-        const status = record2?.phase === "retiring" && !record2.stop ? hostEnded(record2, unreportedExit(record2, statusOf({ ...record2, phase: "active" }, record2.runs, this.reports(id3), this.exits(id3), this.alive, this.now()))) : current2;
+        const status = record2?.phase === "retiring" && !record2.stop ? hostEnded(record2, unreportedExit(record2, statusOf({ ...record2, phase: "active" }, record2.runs, requireWorkerInventory(this.reports(id3)), requireWorkerInventory(this.exits(id3)), this.alive, this.now()))) : current2;
         if (!record2 || !run2 || !status || !exit?.witnessed || run2.posted || report?.posted || status.status !== "failed" && !status.noReport && !(record2.phase === "retiring" && !record2.stop) && !report?.done) return false;
         const logFile = workerLogFile(record2);
         const missing2 = retainedSessionMissing(record2, run2, logFile);
@@ -46420,6 +46475,7 @@ var init_worker_file_store = __esm({
       }
       /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
       archiveOf(record2, facts) {
+        requireWorkerInventory(this.list());
         const status = this.status(record2.id), at = this.now();
         return {
           id: record2.id,
@@ -46459,7 +46515,7 @@ var init_worker_file_store = __esm({
           }
           return this.now() - at >= maxAgeMs ? at : void 0;
         };
-        const records = this.list(), removed = [];
+        const records = requireWorkerInventory(this.list()), removed = [];
         const snapshotBorrowed = borrowers(records);
         for (const candidate of records) {
           if (expiredAt(candidate, snapshotBorrowed) === void 0 || this.operationInProgress(candidate.id)) continue;
@@ -46470,7 +46526,7 @@ var init_worker_file_store = __esm({
           }
           try {
             const record2 = this.read(candidate.id);
-            const at = record2 && expiredAt(record2, borrowers(this.list()));
+            const at = record2 && expiredAt(record2, borrowers(requireWorkerInventory(this.list())));
             if (!record2 || at === void 0) continue;
             const gone = await guarded3(this.opFile(record2.id), () => {
               const op = readJson(this.opFile(record2.id));
@@ -46577,6 +46633,7 @@ var init_worker_file_store = __esm({
       }
       /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
       async replayDiscard(id3, publishPatch = (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)) {
+        requireWorkerInventory(this.list());
         let record2 = this.read(id3);
         if (record2?.phase !== "discarding" || !record2.discard) return;
         let acquired = false;
@@ -46600,12 +46657,12 @@ var init_worker_file_store = __esm({
           const status = this.status(id3);
           if (!status) return;
           const own2 = realStateInput(record2, status);
-          const workers = this.list().flatMap((value5) => {
+          const workers = requireWorkerInventory(this.list()).flatMap((value5) => {
             const current2 = this.status(value5.id);
             return current2 ? [realStateInput(value5, current2)] : [];
           });
           const borrowed = !!record2.sharedWith || !!this.worktreeOwner(record2);
-          const shared = !borrowed && fs53.existsSync(record2.dir) ? this.list().filter((value5) => value5.id !== id3 && !["retiring", "retired", "abandoned"].includes(value5.phase) && path49.resolve(value5.dir) === path49.resolve(record2.dir)) : [];
+          const shared = !borrowed && fs53.existsSync(record2.dir) ? requireWorkerInventory(this.list()).filter((value5) => value5.id !== id3 && !["retiring", "retired", "abandoned"].includes(value5.phase) && path49.resolve(value5.dir) === path49.resolve(record2.dir)) : [];
           for (const user of shared) {
             const userStatus = this.status(user.id);
             if (!userStatus || user.phase !== "discarding" && !["done", "failed", "stopped"].includes(userStatus.status)) return;
@@ -46628,14 +46685,14 @@ var init_worker_file_store = __esm({
           }
           const run2 = record2.runs.at(-1);
           const launch = run2.launch;
-          const report = this.reports(id3).find((value5) => value5.run === run2.n && value5.nonce === run2.nonce);
+          const report = requireWorkerInventory(this.reports(id3)).find((value5) => value5.run === run2.n && value5.nonce === run2.nonce);
           const chain = report?.chain ?? [];
           const reportedHost = launch?.outcome === "launched" ? chain.find((value5) => value5.pid === launch.pid) : void 0;
           if (launch?.outcome === "launched" && launch.process && reportedHost && (!sameStartTime(launch.process.startTime, reportedHost.startTime) || launch.process.executable !== reportedHost.executable)) return;
           const host2 = launch?.outcome === "launched" ? launch.process ?? reportedHost : void 0;
           const identities = [host2, ...chain.filter((value5) => value5.pid !== host2?.pid)].filter((value5) => !!value5);
           if (!record2.discard.steps.stop) await this.beginStop(id3, "discarded");
-          if (launch?.outcome === "launched" && !host2 && !this.exits(id3).some((value5) => value5.run === run2.n) && pidAlive(launch.pid)) return;
+          if (launch?.outcome === "launched" && !host2 && !requireWorkerInventory(this.exits(id3)).some((value5) => value5.run === run2.n) && pidAlive(launch.pid)) return;
           for (const identity3 of identities) {
             const alive = this.alive(identity3);
             if (alive === "unknown") return;
@@ -46791,14 +46848,37 @@ var init_worker_file_store = __esm({
         await this.update(id3, (old) => ({ ...old, phase: "abandoned", seq: old.seq + 1 }));
       }
       async reconcile() {
-        for (const record2 of this.list()) {
+        const candidates = /* @__PURE__ */ new Map();
+        this.quarantineCandidates = candidates;
+        let inventory;
+        try {
+          inventory = this.inventory(() => {
+            const records = this.list().records;
+            for (const record2 of records) {
+              this.reports(record2.id);
+              this.exits(record2.id);
+            }
+            return records;
+          });
+        } finally {
+          this.quarantineCandidates = void 0;
+        }
+        if (inventory.blockers.length) {
+          for (const [file, fact] of candidates) {
+            if (!fact.key || statKey(file)?.key !== fact.key) continue;
+            if (fact.text !== void 0 && fs53.readFileSync(file, "utf8") !== fact.text) continue;
+            this.quarantine(file, fact.why);
+          }
+          return;
+        }
+        for (const record2 of inventory.records) {
           const run2 = record2.runs.at(-1);
           if (!run2) continue;
           const hadOp = fs53.existsSync(this.opFile(record2.id));
           const op = this.readFact(this.opFile(record2.id), (value5) => object5(value5) && tokenShape(value5.holder));
           if (hadOp && !op) continue;
           if (op && this.alive(op.holder) === "dead") await leaseRetry(() => recover(this.opFile(record2.id), () => true));
-          const report = this.reports(record2.id).find((value5) => value5.run === run2.n && value5.nonce === run2.nonce);
+          const report = requireWorkerInventory(this.reports(record2.id)).find((value5) => value5.run === run2.n && value5.nonce === run2.nonce);
           if (report?.hostSessionId && !record2.hostSessionId && !fs53.existsSync(this.opFile(record2.id))) {
             await this.update(record2.id, (old) => ({ ...old, hostSessionId: old.hostSessionId ?? report.hostSessionId, seq: old.seq + 1 }));
           }
@@ -46830,7 +46910,7 @@ var init_worker_file_store = __esm({
             continue;
           }
           if (!run2.launch) {
-            const report2 = this.reports(record2.id).find((r) => r.run === run2.n && r.nonce === run2.nonce);
+            const report2 = requireWorkerInventory(this.reports(record2.id)).find((r) => r.run === run2.n && r.nonce === run2.nonce);
             const writer = this.readFact(this.writerFile(record2.id, run2.n), tokenShape);
             if (writer && report2) await this.update(record2.id, (old) => {
               const latest = old.runs.at(-1);
@@ -46849,7 +46929,7 @@ var init_worker_file_store = __esm({
             continue;
           }
           if (run2.launch.outcome === "ambiguous") {
-            const report2 = this.reports(record2.id).find((r) => r.run === run2.n && r.nonce === run2.nonce);
+            const report2 = requireWorkerInventory(this.reports(record2.id)).find((r) => r.run === run2.n && r.nonce === run2.nonce);
             const writer = this.readFact(this.writerFile(record2.id, run2.n), tokenShape);
             if (writer && report2) await this.update(record2.id, (old) => {
               const process5 = admittedHost(report2);
@@ -46857,7 +46937,7 @@ var init_worker_file_store = __esm({
               return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "launched", pid: process5.pid, process: process5 } }], seq: old.seq + 1 };
             });
           }
-          if (run2.launch.outcome === "launched" && !this.exits(record2.id).some((e) => e.run === run2.n) && this.alive(run2.launcher) === "dead" && run2.launch.process && this.alive(run2.launch.process) === "dead") {
+          if (run2.launch.outcome === "launched" && !requireWorkerInventory(this.exits(record2.id)).some((e) => e.run === run2.n) && this.alive(run2.launcher) === "dead" && run2.launch.process && this.alive(run2.launch.process) === "dead") {
             await this.writeExit(record2.id, { run: run2.n, code: null, at: this.now(), witnessed: false });
           }
         }
@@ -46868,7 +46948,7 @@ var init_worker_file_store = __esm({
           if (this.now() - fs53.statSync(file).mtimeMs >= 7 * 24 * 60 * 60 * 1e3) fs53.rmSync(file, { force: true });
         }
         const next = /* @__PURE__ */ new Map();
-        for (const record2 of this.list()) next.set(record2.id, JSON.stringify([record2, this.reports(record2.id), this.exits(record2.id)]));
+        for (const record2 of requireWorkerInventory(this.list())) next.set(record2.id, JSON.stringify([record2, requireWorkerInventory(this.reports(record2.id)), requireWorkerInventory(this.exits(record2.id))]));
         const externalChange = next.size !== this.observed.size || [...next].some(([key2, value5]) => this.observed.get(key2) !== value5);
         this.observed = next;
         if (externalChange) this.changed();
@@ -47232,12 +47312,7 @@ async function admitWorkerEnvironment(dir, env = process.env, bound) {
 async function localWorkerBaseline(dir, participant) {
   const plus = participant.lastIndexOf("+");
   if (plus < 1) return void 0;
-  let record2;
-  try {
-    record2 = await (await openWorkerReader(dir)).reserved(participant.slice(plus + 1));
-  } catch {
-    return void 0;
-  }
+  let record2 = await (await openWorkerReader(dir)).reserved(participant.slice(plus + 1));
   if (record2 && (record2.name !== participant || ["retired", "abandoned"].includes(record2.phase))) record2 = void 0;
   return record2 && {
     name: record2.name,
@@ -47250,15 +47325,11 @@ async function localWorkerBaseline(dir, participant) {
   };
 }
 async function ownWorkerNames(dir, lead) {
-  try {
-    return new Set((await (await openWorkerReader(dir)).list()).filter((r) => r.lead.participant === lead && !["retiring", "retired", "abandoned"].includes(r.phase)).map((r) => r.name));
-  } catch {
-    return /* @__PURE__ */ new Set();
-  }
+  return new Set(requireWorkerInventory(await (await openWorkerReader(dir)).list()).filter((r) => r.lead.participant === lead && !["retiring", "retired", "abandoned"].includes(r.phase)).map((r) => r.name));
 }
 async function localWorkers(dir, keep = () => true) {
   const registry2 = await openWorkerReader(dir);
-  const records = await registry2.list();
+  const records = requireWorkerInventory(await registry2.list());
   const workers = [];
   for (const record2 of records) {
     if (["retiring", "retired", "abandoned"].includes(record2.phase) || !keep(record2)) continue;
@@ -47284,11 +47355,7 @@ async function carriedSourceToken(dir, participant) {
 async function workerCarried(dir, env = process.env) {
   const id3 = env.ROOM_WORKER_ID;
   if (!id3 || !safeId(id3)) return void 0;
-  try {
-    return await (await openWorkerReader(dir)).read(id3);
-  } catch {
-    return void 0;
-  }
+  return (await openWorkerReader(dir)).read(id3);
 }
 var registries, MAX_PROCESS_REGISTRIES, WorkerRegistry;
 var init_worker_registry = __esm({
@@ -47381,7 +47448,9 @@ var init_worker_registry = __esm({
         return snapshotRead(await this.facts({ workerId: id3, recordOnly: true }), id3);
       }
       async list() {
-        return (await this.facts({ recordOnly: true })).workers.map((fact) => fact.record);
+        const snapshot2 = await this.snapshot({ recordOnly: true });
+        if (!snapshot2.available) throw new Error(`worker snapshot unavailable: ${snapshot2.detail}`);
+        return { records: snapshot2.workers.map((fact) => fact.record), blockers: snapshot2.blockers };
       }
       async reserved(tag) {
         return safeTag(tag) ? snapshotReserved(await this.facts({ tag, recordOnly: true }), tag) : void 0;
@@ -57022,6 +57091,9 @@ init_worker_registry();
 init_worker_store();
 init_checkout_publication();
 
+// packages/room-mcp/src/tools/workers.ts
+init_worker_store();
+
 // packages/room-mcp/src/prompt.ts
 init_config();
 
@@ -59328,7 +59400,7 @@ function handlers4(state) {
         }
       }
       const branch = suppliedDir ? (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "?")).trim() : `room/${tag}`;
-      const sharedOwner = suppliedDir && !outside ? (await registry2.list()).find((record3) => !record3.sharedWith && !["retiring", "retired", "abandoned"].includes(record3.phase) && record3.lead.participant === s.me.name && path54.resolve(record3.dir) === path54.resolve(dir)) : void 0;
+      const sharedOwner = suppliedDir && !outside ? requireWorkerInventory(await registry2.list()).find((record3) => !record3.sharedWith && !["retiring", "retired", "abandoned"].includes(record3.phase) && record3.lead.participant === s.me.name && path54.resolve(record3.dir) === path54.resolve(dir)) : void 0;
       if (suppliedDir && !outside && !await isOwnedWorkerWorktree(
         s.dir,
         sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch } : { name, tag, lead: s.me.name, dir, branch },
@@ -59337,7 +59409,7 @@ function handlers4(state) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`;
       }
       const hostSessionId = workerAdapter(host2).freshSessionId();
-      const usedPorts = workerPortsInUse(await registry2.list());
+      const usedPorts = workerPortsInUse(requireWorkerInventory(await registry2.list()));
       const prep = { step: "plan", worktreeExisted: fs59.existsSync(dir), created: !suppliedDir && !fs59.existsSync(dir) };
       const record2 = {
         v: 1,
@@ -59551,7 +59623,7 @@ function handlers4(state) {
 }
 async function registryRunningWorkers(s, rooms) {
   const registry2 = await openWorkerReader(s.dir);
-  return (await Promise.all((await registry2.list()).map(async (record2) => {
+  return (await Promise.all(requireWorkerInventory(await registry2.list()).map(async (record2) => {
     const status = await registry2.status(record2.id);
     if (!status || record2.lead.participant !== s.me.name) return [];
     const room = rooms.all().find((candidate) => candidate.roomName === record2.room) ?? s;
@@ -63537,6 +63609,7 @@ var Ledger = class {
     const stored = this.readCursors()[s.roomName];
     const kept = stored?.participant === s.me.name && Number.isSafeInteger(stored.frontier);
     const facts = this.workerSnapshots.get(s);
+    if (!this.workerEvidenceReady(s)) return cursor ?? { participant: s.me.name, frontier: kept ? stored.frontier : highestSeq(s.room), routed: new Set(kept ? stored.routed : []) };
     const spawn7 = ownSpawnFrontier(s, facts);
     cursor = kept ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) } : { participant: s.me.name, frontier: ownLaunchFrontier(s, facts) ?? highestSeq(s.room), routed: /* @__PURE__ */ new Set() };
     if (spawn7 !== void 0) cursor.addressedFrom = spawn7;
@@ -63846,7 +63919,7 @@ function createHandlerState(ctx) {
     }
     if (factRequests.get(s) !== request) return;
     ledger2.supplyWorkers(s, snapshot2);
-    if (snapshot2.available) factsBySession.set(s, snapshot2);
+    if (snapshot2.available && !snapshot2.blockers.length) factsBySession.set(s, snapshot2);
   };
   const ownWorkers = (s) => {
     const snapshot2 = factsBySession.get(s);
@@ -64013,6 +64086,7 @@ init_session();
 init_context();
 
 // packages/room-mcp/src/tools/collect.ts
+init_worker_store();
 init_worker_store();
 init_async_filter();
 init_src();
@@ -64322,7 +64396,7 @@ function handlers9(state) {
   const orphanDiscardAllowed = async (s, w) => {
     const human = s.me.owner ?? s.me.name;
     const registry2 = await openWorkerReader(s.dir);
-    const records = await registry2.list();
+    const records = requireWorkerInventory(await registry2.list());
     const live = await localWorkers(s.dir);
     const visited = /* @__PURE__ */ new Set();
     let record2 = await registry2.read(w.id);
@@ -64366,7 +64440,7 @@ function handlers9(state) {
     const kept = rooms.all().flatMap((s2) => s2.room.retiredWorkers().filter((r2) => r2.tag === a.tag && r2.keptWorktree).map((r2) => ({ s: s2, r: r2 }))).find(async ({ s: s2, r: r2 }) => (await ownership(s2, r2, discarding)).owned);
     if (!kept || (await localWorkers(kept.s.dir)).some((live) => live.tag === a.tag)) return void 0;
     const { s, r } = kept;
-    const active = (await registry2.list()).find((record2) => record2.tag === r.tag && record2.keptWorktree === r.keptWorktree);
+    const active = requireWorkerInventory(await registry2.list()).find((record2) => record2.tag === r.tag && record2.keptWorktree === r.keptWorktree);
     const activeStatus = active && await registry2.status(active.id);
     if (!active || !activeStatus) return "error: kept worker has no local registry record";
     const borrowedOwner = await registry2.worktreeOwner(active);

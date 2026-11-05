@@ -167,7 +167,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     catch (error) { snapshot = { available: false, reason: 'unavailable', detail: String(error) } }
     if (factRequests.get(s) !== request) return
     ledger.supplyWorkers(s, snapshot)
-    if (snapshot.available) factsBySession.set(s, snapshot)
+    if (snapshot.available && !snapshot.blockers.length) factsBySession.set(s, snapshot)
   }
   const ownWorkers = (s: Session): Set<string> => {
     const snapshot = factsBySession.get(s)

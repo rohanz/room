@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../worker-store.js'
 import { requireWorkerEvidence } from '../worker-store.js'
 import { asyncFilter } from '../async-filter.js'
 import fs from 'node:fs'
@@ -267,7 +268,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const orphanDiscardAllowed = async (s: Session, w: LocalWorker): Promise<boolean> => {
     const human = s.me.owner ?? s.me.name
     const registry = await openWorkerReader(s.dir)
-    const records = (await registry.list())
+    const records = (requireWorkerInventory(await registry.list()))
     const live = (await localWorkers(s.dir))
     const visited = new Set<string>()
     let record = (await registry.read(w.id))
@@ -312,7 +313,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       .map(r => ({ s, r }))).find(async ({ s, r }) => (await ownership(s, r, discarding)).owned)
     if (!kept || (await localWorkers(kept.s.dir)).some(live => live.tag === a.tag)) return undefined
     const { s, r } = kept
-    const active = (await registry.list()).find(record => record.tag === r.tag && record.keptWorktree === r.keptWorktree)
+    const active = (requireWorkerInventory(await registry.list())).find(record => record.tag === r.tag && record.keptWorktree === r.keptWorktree)
     const activeStatus = active && (await registry.status(active.id))
     if (!active || !activeStatus) return 'error: kept worker has no local registry record'
     const borrowedOwner = (await registry.worktreeOwner(active))

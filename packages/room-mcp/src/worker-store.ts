@@ -33,6 +33,13 @@ export function workerEvidence(snapshot: WorkerSnapshot): AvailableWorkerSnapsho
   if (!snapshot.available) throw new Error(`worker snapshot unavailable: ${snapshot.detail}`)
   return snapshot.blockers.length ? { reason: 'blocked', blockers: snapshot.blockers } : snapshot
 }
+/** Inventory completeness travels with the records, including valid records beside damaged evidence. */
+export interface WorkerInventory<T> { records: T[]; blockers: string[] }
+/** Consequential consumers must explicitly reject incomplete inventories. */
+export function requireWorkerInventory<T>(inventory: WorkerInventory<T>): T[] {
+  if (inventory.blockers.length) throw new WorkerEvidenceBlocked(inventory.blockers)
+  return inventory.records
+}
 export interface WorkerFreshness {
   id: string; name: string; lead: string; dir: string; reported: 'done' | 'exited' | 'none'
   run: string; seq: number; busy: boolean; revision: string
@@ -115,13 +122,14 @@ export function recordStatus(fact: WorkerFacts): WorkerStatusResult | undefined 
 }
 
 export const snapshotRead = (snapshot: WorkerSnapshot, id: string): WorkerRecord | undefined =>
-  snapshot.available ? snapshot.workers.find(fact => fact.record.id === id)?.record : undefined
+  requireWorkerEvidence(workerEvidence(snapshot)).workers.find(fact => fact.record.id === id)?.record
 export function snapshotReserved(snapshot: WorkerSnapshot, tag: string): WorkerRecord | undefined {
-  const record = snapshot.available ? snapshotRead(snapshot, snapshot.reservations[tag]) : undefined
+  const facts = requireWorkerEvidence(workerEvidence(snapshot))
+  const record = snapshotRead(facts, facts.reservations[tag])
   return record?.tag === tag ? record : undefined
 }
 export function snapshotFreshness(snapshot: WorkerSnapshot, id: string): WorkerFreshness | undefined {
-  const fact = snapshot.available ? snapshot.workers.find(fact => fact.record.id === id) : undefined
+  const fact = requireWorkerEvidence(workerEvidence(snapshot)).workers.find(fact => fact.record.id === id)
   if (!fact || !snapshot.available) return undefined
   const { record, reports, exits, busy } = fact, run = record.runs.at(-1)
   const reported = run && reports.some(report => report.run === run.n && report.nonce === run.nonce && !!report.done)
@@ -130,6 +138,6 @@ export function snapshotFreshness(snapshot: WorkerSnapshot, id: string): WorkerF
     run: run ? `${run.n}:${run.nonce}` : '', seq: record.seq, busy, revision: snapshot.revision }
 }
 export function snapshotStatus(snapshot: WorkerSnapshot, id: string, alive: LivenessProbe = () => 'unknown', nowMs?: number): WorkerStatusResult | undefined {
-  const fact = snapshot.available ? snapshot.workers.find(fact => fact.record.id === id) : undefined
+  const fact = requireWorkerEvidence(workerEvidence(snapshot)).workers.find(fact => fact.record.id === id)
   return fact && statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, alive, nowMs)
 }

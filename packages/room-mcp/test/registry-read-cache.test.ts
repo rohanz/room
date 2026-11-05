@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -111,7 +112,7 @@ it('memoizes a supplied carried callback separately from production baseline acq
 })
 
 describe('worker registry read cache', () => {
-  it('keeps list plus status close to the pre-facade filesystem budget at 50 and 500 workers', () => {
+  it('keeps status and admission close to the pre-facade filesystem budgets at 50 and 500 workers', () => {
     // Reuse the baseline's fresh-process fixtures and fs/fs-promises instrumentation, including failed
     // calls. Freshly written files exercise the racy-cache path; no artificial aging or warmed cache.
     const measured = spawnSync(process.execPath, ['--import', 'tsx',
@@ -120,14 +121,15 @@ describe('worker registry read cache', () => {
     expect(measured.error).toBeUndefined()
     expect(measured.status, measured.stderr).toBe(0)
     const summaries = measured.stdout.trim().split('\n').map(line => JSON.parse(line))
-      .filter(row => row.kind === 'summary' && row.phase === 'status')
-    expect(summaries).toHaveLength(2)
+      .filter(row => row.kind === 'summary' && ['status', 'admission'].includes(row.phase))
+    expect(summaries).toHaveLength(4)
     for (const row of summaries) {
       expect(row.successfulSamples).toBe(1)
       expect(row.failedSamples).toBe(0)
-      // Baseline: 6N + 2. Allow only constant snapshot boundary overhead, not extra per-worker scans.
+      // Status baseline: 6N + 2; admission: 6N + 290. Allow constant boundary overhead,
+      // but no per-worker run/report/exit inventory when the record decides occupancy.
       expect(row.fsCalls).toHaveLength(1)
-      expect(row.fsCalls[0]).toBeLessThanOrEqual(6 * row.workers + 10)
+      expect(row.fsCalls[0]).toBeLessThanOrEqual(6 * row.workers + (row.phase === 'status' ? 10 : 300))
     }
   })
 
@@ -138,9 +140,75 @@ describe('worker registry read cache', () => {
       const { record: borrower } = await seedRegistryWorker(dir, 'borrower', { dir: owner.dir, sharedWith: owner.id })
       const reader = await openWorkerReader(dir)
       writeFileSync(join(reader.root, 'workers', `${borrower.id}.json`), '{malformed')
-      expect(await reader.checkoutUsers(owner)).toMatchObject({ reason: 'blocked', blockers: [expect.stringContaining(borrower.id)] })
+      expect(await reader.checkoutUsers(owner)).toMatchObject({ reason: 'blocked', blockers: expect.arrayContaining([expect.stringContaining(borrower.id)]) })
       expect(await reader.projectable(owner.lead.participant, owner.room)).toMatchObject({ reason: 'blocked' })
       await expect(reader.occupancy()).rejects.toThrow(borrower.id)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('writer reads retain healthy records and blockers without quarantining until reconciliation', async () => {
+    const { dir } = repo()
+    try {
+      const { registry, record: healthy } = await seedRegistryWorker(dir, 'healthy')
+      const { record: damaged } = await seedRegistryWorker(dir, 'damaged')
+      const file = join(registry.root, 'workers', `${damaged.id}.json`)
+      writeFileSync(file, '{malformed')
+      const rename = vi.spyOn(fs, 'renameSync')
+      const inventory = await registry.list()
+      expect(inventory.records.map(record => record.id)).toEqual([healthy.id])
+      expect(inventory.blockers).toEqual([expect.stringContaining(damaged.id)])
+      expect(() => requireWorkerInventory(inventory)).toThrow(damaged.id)
+      await expect(registry.read(damaged.id)).rejects.toMatchObject({ reason: 'blocked' })
+      await expect(registry.reserved(damaged.tag)).rejects.toMatchObject({ reason: 'blocked' })
+      expect((await registry.snapshot()).available).toBe(true)
+      expect(rename).not.toHaveBeenCalled()
+      expect(fs.readFileSync(file, 'utf8')).toBe('{malformed')
+      rename.mockRestore()
+      await registry.reconcile()
+      expect(fs.existsSync(file)).toBe(false)
+      expect(fs.existsSync(join(registry.root, 'tags', `${damaged.tag}.json`))).toBe(true)
+      expect((await registry.list()).blockers.length).toBeGreaterThan(0)
+    } finally { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('does not quarantine a repair that replaces a record while reconciliation decodes old bytes', async () => {
+    const { dir } = repo()
+    try {
+      const { registry, record } = await seedRegistryWorker(dir, 'repaired')
+      const file = join(registry.root, 'workers', `${record.id}.json`), healthy = fs.readFileSync(file)
+      writeFileSync(file, '{malformed')
+      const read = fs.readFileSync.bind(fs)
+      let repaired = false
+      const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((input: fs.PathOrFileDescriptor, options?: unknown) => {
+        const bytes = read(input, options as never)
+        if (input === file && !repaired) {
+          repaired = true
+          writeFileSync(`${file}.repair`, healthy)
+          fs.renameSync(`${file}.repair`, file)
+        }
+        return bytes
+      }) as typeof fs.readFileSync)
+      await registry.reconcile()
+      spy.mockRestore()
+      expect(repaired).toBe(true)
+      expect(fs.readFileSync(file)).toEqual(healthy)
+      expect((await registry.read(record.id))?.id).toBe(record.id)
+    } finally { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('keeps a reservation whose payload is missing blocked rather than treating it as absence', async () => {
+    const { dir } = repo()
+    try {
+      const { registry, record } = await seedRegistryWorker(dir, 'missing')
+      fs.rmSync(join(registry.root, 'workers', `${record.id}.json`))
+      const before = fs.readFileSync(join(registry.root, 'tags', `${record.tag}.json`))
+      const reader = await openWorkerReader(dir), facts = await reader.snapshot()
+      expect(facts.available && facts.blockers.some(value => value.includes('unavailable reserved record'))).toBe(true)
+      await expect(registry.archiveOf(record, { summary: 'retire' })).rejects.toMatchObject({ reason: 'blocked' })
+      await expect(reader.occupancy()).rejects.toMatchObject({ reason: 'blocked' })
+      await expect(reader.reserved(record.tag)).rejects.toMatchObject({ reason: 'blocked' })
+      await registry.reconcile()
+      expect(fs.readFileSync(join(registry.root, 'tags', `${record.tag}.json`))).toEqual(before)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -158,7 +226,7 @@ describe('worker registry read cache', () => {
       const before = tree(reader.root)
       if (kind === 'record') {
         await expect(reader.read(record.id)).rejects.toMatchObject({ reason: 'blocked' })
-        await expect(reader.list()).rejects.toMatchObject({ reason: 'blocked' })
+        expect((await reader.list()).blockers.length).toBeGreaterThan(0)
       } else if (kind === 'report') await expect(reader.reports(record.id)).rejects.toMatchObject({ reason: 'blocked' })
       else await expect(reader.exits(record.id)).rejects.toMatchObject({ reason: 'blocked' })
       const facts = await reader.snapshot()
@@ -204,7 +272,7 @@ describe('worker registry read cache', () => {
       const registry = (await openWorkerReader(dir))
       const file = path.join(registry.root, 'workers', `${record.id}.json`)
       expect((await registry.read(record.id))?.task).toBe('test')
-      expect((await registry.list())).toHaveLength(1)
+      expect((requireWorkerInventory(await registry.list()))).toHaveLength(1)
       // Atomic replacement (a new inode), as writeAtomic does.
       const tmp = `${file}.tmp`
       writeFileSync(tmp, JSON.stringify({ ...record, task: 'tast' }))
@@ -219,10 +287,10 @@ describe('worker registry read cache', () => {
       expect((await (await openWorkerReader(dir)).read(record.id))?.task).toBe('tost')
       const id = 'w_added'
       writeFileSync(path.join(registry.root, 'workers', `${id}.json`), JSON.stringify({ ...record, id, tag: 'other', name: 'lead+other', phase: 'retired' }))
-      expect((await (await openWorkerReader(dir)).list()).map(r => r.id).sort()).toEqual([record.id, id].sort())
+      expect((requireWorkerInventory(await (await openWorkerReader(dir)).list())).map(r => r.id).sort()).toEqual([record.id, id].sort())
       fs.rmSync(file)
       expect((await (await openWorkerReader(dir)).read(record.id))).toBeUndefined()
-      expect((await (await openWorkerReader(dir)).list()).map(r => r.id)).toEqual([id])
+      expect((requireWorkerInventory(await (await openWorkerReader(dir)).list())).map(r => r.id)).toEqual([id])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -361,14 +429,14 @@ describe('worker registry read cache', () => {
       const stat = frozenStat([workers], tick)
       try {
         at(tick + 100n * MS)
-        expect((await registry.list()).map(r => r.id)).toEqual([record.id])
+        expect((requireWorkerInventory(await registry.list())).map(r => r.id)).toEqual([record.id])
         const id = 'w_added'
         const added = path.join(workers, `${id}.json`)
         writeFileSync(added, JSON.stringify({ ...record, id, tag: 'other', name: 'lead+other', phase: 'retired' }))
-        expect((await registry.list()).map(r => r.id).sort()).toEqual([record.id, id].sort())
+        expect((requireWorkerInventory(await registry.list())).map(r => r.id).sort()).toEqual([record.id, id].sort())
         fs.rmSync(added)
         at(tick + 10_000n * MS)
-        expect((await registry.list()).map(r => r.id)).toEqual([record.id])
+        expect((requireWorkerInventory(await registry.list())).map(r => r.id)).toEqual([record.id])
       } finally { stat.restore() }
     } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
   })

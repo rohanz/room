@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Worker worktrees, carry snapshots, links, and cleanup. */
 import fs from 'node:fs'
@@ -470,7 +471,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     const { registryForDir } = await import('./worker-registry.js')
     const registry = await registryForDir(leadDir)
     const record = (await registry.read(w.id))
-    if (!record) return w.branch === `room/${w.tag}` && (await registry.list()).every(peer =>
+    if (!record) return w.branch === `room/${w.tag}` && (requireWorkerInventory(await registry.list())).every(peer =>
       path.resolve(peer.dir) !== path.resolve(w.dir) || peer.tag === w.tag)
     return !record.sharedWith && !(await registry.worktreeOwner(record))
       && requireWorkerEvidence(await registry.checkoutUsers(record)).length === 0

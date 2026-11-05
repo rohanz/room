@@ -9,14 +9,15 @@ import { WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import type { Session } from '../src/session.js'
 
-const signal = vi.hoisted(() => ({ handler: undefined as undefined | ((pid: number, worker: unknown) => boolean) }))
+const signal = vi.hoisted(() => ({ handler: undefined as undefined | ((pid: number, worker: unknown) => boolean),
+  quiesce: undefined as undefined | (() => Promise<boolean>) }))
 vi.mock('../src/port-reservations.js', () => ({
   reserveWorkerPort: () => ({ port: 4409, release: () => {} }),
   bindWorkerPortReservation: () => {},
 }))
 vi.mock('../src/worker-process.js', async importOriginal => {
   const original = await importOriginal<typeof import('../src/worker-process.js')>()
-  return { ...original, signalWorker: (pid: number, _signal: string, _dir: string, _list: unknown, worker: unknown) => signal.handler?.(pid, worker) ?? false }
+  return { ...original, quiesceWorktreeProcesses: (...args: Parameters<typeof original.quiesceWorktreeProcesses>) => signal.quiesce ? signal.quiesce() : original.quiesceWorktreeProcesses(...args), signalWorker: (pid: number, _signal: string, _dir: string, _list: unknown, worker: unknown) => signal.handler?.(pid, worker) ?? false }
 })
 
 const roots: string[] = []
@@ -103,6 +104,39 @@ describe('reviewed worker write failures', () => {
     expect(await store.postObservedFailure('w_04', 1, async message => { ids.push(message.id) })).toBe(true)
     expect(ids).toEqual(['wk:w_04:1'])
     expect((await store.read('w_04'))?.runs[0].posted).toBe('wk:w_04:1')
+  })
+
+  it('keeps restart discard pending without signaling a checkout with a malformed live borrower (P1)', async () => {
+    const { root, dir, git, record } = fixture()
+    git('worktree', 'add', '-qb', 'room/tests', dir)
+    const store = await open(path.join(root, '.git'))
+    await store.writeIntent(record('w_owner'))
+    await mutateWorkerFixture(store, 'w_owner', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+      runs: [{ ...old.runs[0], launch: { outcome: 'never', error: 'no host' } }], seq: old.seq + 1 }))
+    await store.finishOperation('w_owner')
+    const borrower = { ...record('w_borrower'), tag: 'borrower', name: 'lead+borrower', sharedWith: 'w_owner' }
+    await store.writeIntent(borrower)
+    await store.finishOperation(borrower.id)
+    await store.beginDiscard('w_owner', true, [])
+    const ownerFile = path.join(store.root, 'workers/w_owner.json')
+    const pending = fs.readFileSync(ownerFile, 'utf8')
+    fs.writeFileSync(path.join(store.root, 'workers/w_borrower.json'), '{malformed')
+    const quiesce = vi.fn().mockResolvedValue(false), hostSignal = vi.fn().mockReturnValue(false)
+    signal.quiesce = quiesce
+    signal.handler = hostSignal
+    try {
+      store.close()
+      const reopened = await open(path.join(root, '.git'))
+      expect(quiesce).not.toHaveBeenCalled()
+      expect(hostSignal).not.toHaveBeenCalled()
+      await expect(reopened.replayDiscard('w_owner')).rejects.toMatchObject({ reason: 'blocked' })
+      expect(quiesce).not.toHaveBeenCalled()
+      expect(hostSignal).not.toHaveBeenCalled()
+      expect(fs.readFileSync(ownerFile, 'utf8')).toBe(pending)
+      expect(fs.existsSync(dir)).toBe(true)
+      expect((await reopened.list()).blockers.some(value => value.includes(borrower.id))).toBe(true)
+      reopened.close()
+    } finally { signal.quiesce = undefined; signal.handler = undefined }
   })
 
   it('signals a live worker while replaying its durable discard plan (M9)', async () => {

@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -71,12 +72,12 @@ async function harness(patch: Partial<FixtureWorker> = {}, dir = lead, name = 'l
     hostSessionId: 'retained-test-session', pid: 0, ...patch }
   const registry = await registerWorkers(s, [fixture])
   const project = async () => {
-    for (const owner of new Set((await registry.list()).map(record => record.lead.participant))) await projectWorkers(s, registry, owner, 'joined')
+    for (const owner of new Set((requireWorkerInventory(await registry.list())).map(record => record.lead.participant))) await projectWorkers(s, registry, owner, 'joined')
   }
   const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s,
     reserve: () => true, unreserve() {}, autoRetire: async () => {}, project, hasHandle: () => false, tracking: () => true },
     workerAlive: () => false, now: Date.now, ctx: { probe: fixtureProbe, listCwdProcesses: () => [] } } as unknown as HandlerState
-  const record = async (tag = fixture.tag) => (await registry.list()).find(record => record.tag === tag)!
+  const record = async (tag = fixture.tag) => (requireWorkerInventory(await registry.list())).find(record => record.tag === tag)!
   return { s, registry, state, record, call: handlers(state).room_collect }
 }
 type Harness = Awaited<ReturnType<typeof harness>>
@@ -314,7 +315,7 @@ describe('adversarial kept collection lifecycle', () => {
     expect(await top.call({ tag: 'parent' })).toContain('Changes from parent: file.txt.')
     await expectRetired(top, parentKept, 'collected')
     expect(read(lead, 'file.txt')).toBe('child follow-up\n'); expect(read(lead, 'stable.txt')).toBe('human revision\n')
-    expect((await localWorkers(lead))).toEqual([]); expect((await top.registry.list()).every(record => record.phase === 'retired')).toBe(true)
+    expect((await localWorkers(lead))).toEqual([]); expect((requireWorkerInventory(await top.registry.list())).every(record => record.phase === 'retired')).toBe(true)
   })
 
   it('keeps scratch outside the apply tree and snapshot, refreshing the saved copy on the second keep', async () => {

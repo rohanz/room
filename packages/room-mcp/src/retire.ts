@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Retirement keyed by worker ID (registry §12): the registry records it, each room's projector cleans up. */
 import fs from 'node:fs'
@@ -51,7 +52,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
   const users = evidence
   if (users.length && !o.retireUser) return { removed: false, reason: `its worktree is shared with ${users.map(user => user.record.tag).join(', ')}` }
   for (const { record: user } of users) await o.retireUser!(user)
-  const nested = (await registry.list()).filter(other => other.lead.participant === w.name && !['retiring', 'retired', 'abandoned'].includes(other.phase))
+  const nested = (requireWorkerInventory(await registry.list())).filter(other => other.lead.participant === w.name && !['retiring', 'retired', 'abandoned'].includes(other.phase))
   if (nested.length) return { removed: false, reason: 'nested workers remain: ' + nested.map(other => other.tag).join(', ') }
   const ignored = await ignoredWorkerArtifacts(w, s.dir)
   if (ignored.length) return { removed: false, reason: 'uncopied ignored artifacts', lines: [...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`), `retained worktree: ${w.dir}`] }
@@ -61,7 +62,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
     const changed = await uncollectedWorkerPaths(s.dir, w, captured)
     if (changed.length) return { removed: false, reason: `changed since collection: ${changed.join(', ')}; copy it (mode="copy") or discard=true` }
   }
-  const workers = (await Promise.all((await registry.list()).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()
+  const workers = (await Promise.all((requireWorkerInventory(await registry.list())).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()
   const terminated: string[] = []
   const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
   // retireWorker ends sharing only while the checkout exists; end it before the checkout goes.
@@ -164,7 +165,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   const probe = rooms.probe.bind(rooms)
   // Retired records otherwise accumulate for the clone's lifetime; the room's archive entry outlives them.
   await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
-  for (const record of (await registry.list())) {
+  for (const record of (requireWorkerInventory(await registry.list()))) {
     if (record.lead.participant !== s.me.name || record.room !== s.roomName) continue
     const processes: CollectedProcesses = { probe, list: rooms.listCwdProcesses, alive: async w =>
       rooms.hasHandle(s, w) || !processExited(await workerRealState(s.dir, w, { process: true, probe })) }
@@ -211,7 +212,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
         retiredAt, disposition: 'discarded' })))
       continue
     }
-    const workers = (await Promise.all((await registry.list()).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()
+    const workers = (await Promise.all((requireWorkerInventory(await registry.list())).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()
     const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process }
     const outcome = decideRetire(facts)
     if (!outcome || !await current()) continue

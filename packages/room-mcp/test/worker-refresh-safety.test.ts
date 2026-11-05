@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { collectionRefs, commit, git, put, read, repo, snapshot, status, world } from './worker-refresh-fixture.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -19,7 +20,7 @@ describe('room_send refresh=true', () => {
     put(repo, 'specs/later.md', 'new spec\n')
     commit(repo, 'lead revises kept output and adds spec')
     const before = (await snapshot(w.dir, 'kept'))
-    const record = (await (await registryForDir(repo)).list()).find(record => record.tag === 'kept')!
+    const record = (requireWorkerInventory(await (await registryForDir(repo)).list())).find(record => record.tag === 'kept')!
     const ref = 'refs/room/collect-head/kept/' + record.id
     const refBefore = git(repo, 'rev-parse', ref)
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'implement follow-up', refresh: true })

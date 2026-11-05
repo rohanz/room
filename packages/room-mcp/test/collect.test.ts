@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { LINES, base, carry, collectRefHook, commitLines, expectRetired, git, gitPathCalls, lead, ownershipEvidence, put, release, reportedRunning, root, second, seedPresence, setup, startWorktreeProcess, useLegacyWorker, worker } from './collect-fixture.js'
 import { git as roomGit } from '@room/roomd/git'
@@ -1165,7 +1166,7 @@ describe('room_collect', () => {
       const t = setup('running'); t.set('test', { ...t.w, status: 'running', pid: 4_190_002 })
       await t.sync()
       const registry = await registryForDir(lead)
-      const record = (await registry.list()).find(r => r.tag === 'test')!
+      const record = (requireWorkerInventory(await registry.list())).find(r => r.tag === 'test')!
       await registry.writeReport(record.id, { run: 1, nonce: record.runs[0].nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'finished', changed: [] } })
       finishFixtureProcess(4_190_002)
       await registry.writeExit(record.id, { run: 1, code: null, at: Date.now(), witnessed: false })
@@ -1274,7 +1275,7 @@ it('enforces a durable review hold before apply, copy, discard or force and pres
     expect(await t.call(args)).toContain('held for review')
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
     expect(fs.existsSync(worker)).toBe(true)
-    expect((await (await registryForDir(lead)).read((await (await registryForDir(lead)).list())[0].id))?.phase).not.toBe('retired')
+    expect((await (await registryForDir(lead)).read((requireWorkerInventory(await (await registryForDir(lead)).list()))[0].id))?.phase).not.toBe('retired')
   }
   expect(await t.call({ checkpoint: 'release' })).toContain('no matching review hold')
   expect(await t.call({ checkpoint: 'status' })).toContain('independent review')

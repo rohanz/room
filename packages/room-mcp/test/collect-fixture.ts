@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { realGitCommonDir } from '@room/roomd'
 import { manifestPaths, RoomDoc, splitParticipants } from '@room/shared'
@@ -63,7 +64,7 @@ afterEach(async () => { collectRefHook.call = undefined; await disposePreviewFix
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {
   const registry = await registryForDir(s.dir)
-  for (const lead of new Set((await registry.list()).filter(r => r.room === s.roomName).map(r => r.lead.participant))) await projectWorkers(s, registry, lead, 'joined')
+  for (const lead of new Set((requireWorkerInventory(await registry.list())).filter(r => r.room === s.roomName).map(r => r.lead.participant))) await projectWorkers(s, registry, lead, 'joined')
 }
 
 function setup(status: FixtureWorker['status'] = 'done') {
@@ -172,7 +173,7 @@ async function reportedRunning() {
     const t = setup('running'); t.set('test', { ...t.w, status: 'running', pid: 4_190_001 })
     await t.sync()
     const registry = await registryForDir(lead)
-    const record = (await registry.list()).find(r => r.tag === 'test')!, run = record.runs[0]
+    const record = (requireWorkerInventory(await registry.list())).find(r => r.tag === 'test')!, run = record.runs[0]
     await registry.writeReport(record.id, { run: 1, nonce: run.nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'finished', changed: [] } })
     expect((await registry.status(record.id))).toMatchObject({ status: 'running', summary: 'finished' })
     let at = 0

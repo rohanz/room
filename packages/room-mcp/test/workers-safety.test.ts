@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { execFileSync } from 'node:child_process'
@@ -100,7 +101,7 @@ describe('worker safety', () => {
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
     expect((await workerByTag(dir, 'unknown'))?.status).toBe('running')
-    expect((await (await registryForDir(dir)).list()).find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
+    expect((requireWorkerInventory(await (await registryForDir(dir)).list())).find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
     expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify unknown's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
   })
 
@@ -150,7 +151,7 @@ describe('worker safety', () => {
     t2.exits[0](null)
     await vi.waitFor(async () => {
       const registry = await registryForDir(dir)
-      const record = (await registry.list()).find(record => record.tag === 'b')!
+      const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'b')!
       expect((await registry.exits(record.id))).toMatchObject([{ code: null, witnessed: true }])
     }, { timeout: 15_000 })
     expect(t2.a.messages().some(m => m.type === 'note' && m.text.includes('died'))).toBe(false)
