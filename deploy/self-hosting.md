@@ -24,7 +24,7 @@ curl https://room.example.com/health           # {"ok":true,"schema":2,"hub":1}
 curl https://room.example.com/auth/config      # {"github":"device","providers":["github","oidc"],...}
 ```
 
-Pin a release with `ROOM_IMAGE_TAG=0.17.18` in `.env`. To build the image from source instead, clone the repository and add the build override:
+Pin a release with `ROOM_IMAGE_TAG=0.17.32` in `.env`. To build the image from source instead, clone the repository and add the build override:
 
 ```sh
 git clone https://github.com/rohanz/room.git && cd room
@@ -217,6 +217,9 @@ Resource limits with defaults that suit a small team. Change them only for a rea
 | `ROOM_DOC_MAX_MB` | Live room document cap: once a room is over it, writers are closed with 4413 and reads continue. | `64` |
 | `ROOM_MAX_MESSAGE_MB` | Largest websocket message accepted. | `16` |
 | `ROOM_LOAD_MAX_MB` | Stored-byte ceiling per document when loading it cold during the 0.16 migration. Other cold loads and joins use the larger of this and twice `ROOM_DOC_MAX_MB`. | `32` |
+| `ROOM_AUDIT_SCAN_MB` | Newest audit bytes a `GET /audit` query scans (10 s deadline); past it the response is marked incomplete. | 64 |
+| `ROOM_AUDIT_ROTATE_MB` | Size at which `audit.log` rotates into a numbered segment. | 64 |
+| `ROOM_AUDIT_KEEP_FILES` | Rotated segments kept; older ones are deleted and recorded in `audit.log.pruned`. Unset keeps all. | all |
 | `ROOM_COMPACT_MIN_DELETED` | Deleted Yjs structs a stored room needs before its first load after a server start rebuilds it from its values (a new document generation; clients rejoin with a fresh copy). `0` or `off` disables. | `10000` |
 | `ROOM_MAX_QUEUED_MB`, `ROOM_MAX_TOTAL_QUEUED_MB` | Bytes that may wait unsent for one websocket (default: the document cap plus 4) and for all of them. A consumer already behind is disconnected with 1013 and reconnects. The total is checked before every send: the largest queues are dropped first, and when nothing more can be dropped the new message's socket is asked to retry (1013). | `68`, `256` |
 | `ROOM_AWARENESS_MESSAGES_PER_MINUTE`, `ROOM_AWARENESS_IDS_PER_ROOM` | Presence messages per connection a minute and IDs per room. The fixed limits are 64 KiB per message, 16 KiB per state and 16 IDs per connection. | `6000`, `4096` |
