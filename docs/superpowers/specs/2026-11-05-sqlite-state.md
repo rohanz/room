@@ -152,6 +152,17 @@ The explicit owner performs these steps while retaining migration ownership:
 
 Downgrade needs stopped-world validated export of converted domains. Deleting DB/marker cannot be a rollback: stale files can resurrect retired workers/holds. Restoring old metadata cannot undo applied files, removed worktrees or published text. Keep recovery patches/Git evidence with backups. First-release backup/importer retention is at least 30 days and through acceptance; removal/export is explicit, not a timer-based downgrade promise.
 
+## Addendum 2026-11-05: network filesystems
+
+Codex 0.166.0 forces DELETE journaling for its own SQLite databases on NFS and ships `codex migrate-nfs-db`
+(see [host-survey-2026-11-05-codex.md](../../archive/reports/host-survey-2026-11-05-codex.md)). WAL relies on
+shared memory that network filesystems do not provide. Room's preflight therefore detects the filesystem type
+under the git common dir (statfs on macOS and Linux; Windows UNC and mapped drives) and opens the database with
+`journal_mode=DELETE` and `busy_timeout` there, reporting the choice in `room_state(check=true)`; it never
+opens WAL on a path it cannot prove local. A clone that moves between a local and a network path is handled by
+re-detecting on every open, since journal mode is persistent in the file and a WAL database on NFS must be
+converted before use.
+
 ## Failure handling and security
 
 Busy, cancellation and unknown commit outcomes resolve by operation ID with bounded retries; no external effect precedes committed intent. Full disk, permissions or I/O failures preserve DB and pending cleanup and refuse new consequential work. Corrupt/newer/missing-after-activation DB refuses writes and publication requiring local authority; preserve DB/WAL/SHM and stop all writers before integrity checking or salvage. Never rename a live DB, silently recreate it or use a JSON fallback. Unknown process identity cannot free a lease, signal a PID or clear preview quarantine. Runtime failure refuses before maintenance. Hook endpoint failure retains bounded startup/activity evidence and owes undelivered messages.

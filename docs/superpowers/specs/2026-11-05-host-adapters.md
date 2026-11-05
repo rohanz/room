@@ -345,6 +345,21 @@ These are behavior changes, excluded from every extraction step. Each needs its 
 
 Other protocol replacements, envelope-cap changes, broader hook id aliases, changes to suffix evidence or user-facing background unknown, and elimination of the Codex idle race likewise require separate behavior work. None is bundled into extraction.
 
+## Addendum 2026-11-05: Codex MCP connection sharing
+
+Codex 0.166.0 can share one local stdio MCP process across chats (`mcp_connection_sharing`, gated with
+`mcp_2026_07_28`; both `Stage::UnderDevelopment`, default off; see
+[host-survey-2026-11-05-codex.md](../../archive/reports/host-survey-2026-11-05-codex.md)). A pooled server
+receives no per-chat identifier in tool calls and there is no per-server opt-out key. Decision: the Codex
+adapter's first slice makes the existing assumption enforceable rather than silent:
+
+- Room's MCP server negotiates only the protocol version its SDK offers today; it does not advertise
+  `2026-07-28` until Codex passes a per-chat identity the adapter can bind to.
+- `admitCodexThread` (session.ts:247) currently logs and ignores a second thread id. The adapter refuses the
+  tool call with an error naming both flags and the remedy (disable `mcp_connection_sharing` for Room, or
+  wait for a Room release that supports it), so a pooled process can never act for the wrong conversation.
+- A test drives two thread ids through one process and asserts the refusal.
+
 ## Open questions
 
 - **Host identity versus session identity:** can all supported Codex surfaces continue guaranteeing one MCP process per conversation? Current code explicitly depends on that (`packages/room-mcp/src/session.ts:244`). If a future broker multiplexes threads, adapter lookup must be keyed by authenticated call context, admission fences and caches must become per-thread, and no ambient process-global binding can select another thread's receipts. Unknown ownership must remain unbound.

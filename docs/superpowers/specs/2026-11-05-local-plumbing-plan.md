@@ -81,7 +81,20 @@ cursors stay in files until an invariant demands otherwise.
 - **Adapters:** suite green per slice, the fake-host Windows smoke, and one real Claude and one real Codex
   worker spawned, messaged and collected after each slice that touches launch or wake.
 
-## Questions for the maintainer
+## Maintainer decisions (2026-11-05, Rohan: "I think these are good")
+
+1. Daemon lifetime: five-minute idle stop with no writer; any bound client of the clone may start it; viewers never keep it alive.
+2. Acknowledged posts: a post may be lost only if every replica is lost inside the delayed-snapshot window; no write per post.
+3. Support window: three minor releases back; the release step pins the newest tag into the CI matrix automatically; older pins retired by hand.
+4. SQLite runtime floor: official Node.js 22.22.3 with SQLite 3.51.3, enforced by the MCP's startup preflight with a restart remedy.
+   Addendum from the Codex snapshot: Codex itself forces DELETE journaling for its SQLite databases on NFS (0.166.0); Room's preflight must detect a network filesystem under the git common dir and use DELETE journaling there or refuse, and the spec's WAL section must say so.
+5. SQLite scope: worker lifecycle and collection admission only in the first release.
+6. Codex conversation ownership: keep the one-MCP-per-conversation assumption with a check that fails loudly; no per-call selection yet. Made concrete by the [2026-11-05 Codex snapshot](../../archive/reports/host-survey-2026-11-05-codex.md): Codex 0.166.0 can pool one stdio MCP process across chats behind `mcp_connection_sharing` + `mcp_2026_07_28` (both under development, default off, no per-server opt-out, no per-chat id passed to the server). Room's server keeps negotiating the MCP protocol version its SDK offers today, and a tool call from a second Codex thread id is refused with the flag names, not logged. This is the first adapter slice.
+7. Order: negotiation, then the drained daemon cutover; adapter slices throughout; SQLite's migration window paired with the daemon cutover.
+
+Before each batch that touches a host, re-read that host's current docs and changelog (CLAUDE.md "Host features change weekly").
+
+## Questions for the maintainer (answered above; kept for the record)
 
 1. **Daemon lifetime and authority.** Idle stop after five minutes with no writer, started by any bound
    client, viewers never keep it alive: confirm, or name a different policy.
