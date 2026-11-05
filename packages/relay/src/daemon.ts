@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url'
 import { CURRENT_COMPAT, parseAdvertisement, selectContract } from '@room/hub-core'
 import { AuthorityLock } from './hub.js'
 import { liveness, writeAtomic, type ProcessIdentity } from './leases.js'
-import { probeOwnProcess } from './process.js'
+import { pidAlive, probeOwnProcess } from './process.js'
 import { localProofHeader, relayHealth, relayIdentity } from './proof.js'
 import { cloneId, deterministicPort, relayFile, startRelay, type LocalRelay, type LocalRelayInfo, type StartedRelay } from './index.js'
-import { verifyPrivatePath, privateStateDirectory } from './private-state.js'
+import { primePrivateState, verifyPrivatePath, privateStateDirectory } from './private-state.js'
 
 declare const __ROOM_DAEMON_RELEASE__: string
 const release = typeof __ROOM_DAEMON_RELEASE__ === 'string' ? __ROOM_DAEMON_RELEASE__ : 'development'
@@ -21,6 +21,7 @@ export interface LocalDaemonOptions {
   /** Source-tree fixture only; installed self-contained bundles require no Node flags. */
   execArgv?: string[]
   log?: (line: string) => void
+  /** Absolute startup cap; by default fresh phase progress can extend the wait up to 60 s. */
   startupTimeoutMs?: number
   probeTimeoutMs?: number
 }
@@ -73,9 +74,15 @@ export async function startLocalDaemon(opts: {
 }): Promise<StartedLocalDaemon | undefined> {
   const commonDir = fs.realpathSync.native(opts.commonDir)
   const log = opts.log ?? (() => {})
+  const phase = (name: string) => log(`startup pid ${process.pid}: ${name}`)
+  phase('state check')
+  await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
+  phase('state verified')
+  phase('lease acquisition')
   const lock = AuthorityLock.take(commonDir)
-  if (!lock) return undefined
+  if (!lock) { phase('authority held by another contender'); return undefined }
+  phase('authority acquired')
   let relay: StartedRelay | undefined
   try {
     const previous = discovery(commonDir)
@@ -118,6 +125,7 @@ export async function startLocalDaemon(opts: {
         await close(false, saved)
       } } })
     const port = previous?.port ?? deterministicPort(commonDir)
+    phase('listen')
     try { relay = await open(port) }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error
@@ -125,13 +133,18 @@ export async function startLocalDaemon(opts: {
       if (occupant?.health.local === true && occupant.health.clone === cloneId(commonDir)) throw new Error(`local Room owner still answers on port ${port}; drain it before starting the daemon`)
       relay = await open(0)
     }
+    phase('listening')
     relay.setDraining(true) // unpublished listeners cannot attach clients
+    phase('lease recovery')
     await relay.initialize(opts.room)
+    phase('leases recovered')
     const info: LocalRelayInfo = { schema: 2, discovery: 1, runtime: 'daemon', nonce, compat: { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }, port: relay.port, pid: process.pid, room: opts.room, key, startedAt: Date.now(), lead: identity }
+    phase('discovery publication')
     writeAtomic(relayFile(commonDir), info)
     verifyPrivatePath(relayFile(commonDir), true)
     ready = true
     relay.setDraining(false)
+    phase('ready')
     timer = setInterval(() => {
       if (!draining && (stopRequested || clock.expired()) && Date.now() >= nextRetry) void close(false).catch(() => {})
     }, opts.idleCheckMs ?? 1000)
@@ -145,6 +158,44 @@ export async function startLocalDaemon(opts: {
   }
 }
 
+// A native ACL check can use its full 20 s subprocess bound; allow dispatch overhead before declaring a
+// phase stalled. Only newly observed phase lines extend this window; no process can extend the hard cap.
+const STARTUP_PHASE_WAIT_MS = 25_000
+const STARTUP_HARD_CAP_MS = 60_000
+const STARTUP_LOG_BYTES = 1024
+function startupLog(commonDir: string): string {
+  const file = path.join(commonDir, 'room', 'daemon.log')
+  let fd: number | undefined
+  try {
+    verifyPrivatePath(file)
+    const before = fs.lstatSync(file)
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino) return ''
+    const start = Math.max(0, stat.size - STARTUP_LOG_BYTES)
+    const buffer = Buffer.alloc(Math.min(stat.size, STARTUP_LOG_BYTES))
+    const bytes = fs.readSync(fd, buffer, 0, buffer.length, start)
+    let tail = buffer.subarray(0, bytes).toString('utf8')
+    if (start > 0) tail = tail.slice(tail.indexOf('\n') + 1)
+    return tail.split(/\r?\n/).filter(Boolean).slice(-5).join('\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+  } catch { return '' } // Never expose bytes when privacy verification or the bounded read fails.
+  finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+/** A live PID is enough to delay a failure; it never authorizes taking over or changing the holder's files. */
+function startupContender(commonDir: string): number | undefined {
+  const file = path.join(commonDir, 'room', 'hub', 'authority.lock')
+  try {
+    if (fs.statSync(file).size > 8192) return undefined
+    verifyPrivatePath(file)
+    const holder = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<ProcessIdentity>
+    return Number.isSafeInteger(holder.pid) && holder.pid! > 0 && pidAlive(holder.pid!) ? holder.pid : undefined
+  } catch { return undefined }
+}
+function startupFailure(commonDir: string, pid: number | undefined, reason: string): Error {
+  const tail = startupLog(commonDir)
+  return new Error(`local daemon startup unavailable${pid ? ` (child pid ${pid})` : ''}: ${reason}; ${tail ? `daemon.log (last ${STARTUP_LOG_BYTES} bytes, up to 5 lines):\n${tail}` : 'no readable private daemon.log tail; inspect room/daemon.log and authority owner; retry after repair'}`)
+}
+
 const flights = new Map<string, Promise<LocalDaemon>>()
 /** Caller must already be repository-bound and validate worker clone ownership. No in-process fallback. */
 export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDaemonOptions = {}): Promise<LocalDaemon> {
@@ -156,6 +207,7 @@ export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDa
   return work
 }
 async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions): Promise<LocalDaemon> {
+  await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
   const ready = async (): Promise<LocalDaemon | undefined> => {
     const info = discovery(commonDir)
@@ -188,20 +240,31 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
   const env: NodeJS.ProcessEnv = {}
   for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ']) if (process.env[name] !== undefined) env[name] = process.env[name]
   const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry, '--common-dir', commonDir, '--room', room], { cwd: commonDir, env, shell: false, detached: true, windowsHide: true, stdio: 'ignore' })
-  let launchError: Error | undefined, exited = false
+  let launchError: Error | undefined, exited = false, exitStatus = ''
   child.once('error', error => { launchError = error })
-  child.once('exit', () => { exited = true })
+  child.once('exit', (code, signal) => { exited = true; exitStatus = signal ? `signal ${signal}` : `code ${code}` })
   child.unref()
-  const until = Date.now() + (opts.startupTimeoutMs ?? 10_000)
+  const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS)
+  let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
+  let previousLog = startupLog(commonDir)
   do {
     const winner = await ready()
     if (winner) return { ...winner, launched: winner.pid === child.pid }
-    if (launchError) throw new Error(`local daemon launch unavailable: ${launchError.message}`)
-    // A losing contender can exit before the lock winner publishes; wait for winner readiness.
-    if (exited && Date.now() + 250 >= until) break
+    if (launchError) throw startupFailure(commonDir, child.pid, `launch failed: ${launchError.message}`)
+    // A losing contender can exit before the lock winner publishes. Preserve that wait while the authority
+    // is live; a dead child without another authority fails immediately instead of burning the startup cap.
+    const contender = exited ? startupContender(commonDir) : child.pid
+    if (exited && !contender) throw startupFailure(commonDir, child.pid, `child exited (${exitStatus}); no live authority contender`)
+    const tail = startupLog(commonDir)
+    if (tail !== previousLog) {
+      const phases = tail.split('\n').filter(line => line.includes(`startup pid ${contender}: `))
+      if (phases.some(line => !previousLog.includes(line))) progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
+      previousLog = tail
+    }
+    if (Date.now() >= progressUntil || Date.now() >= hardUntil) break
     await new Promise(resolve => setTimeout(resolve, 100))
-  } while (Date.now() < until)
-  throw new Error(`local daemon startup unavailable${child.pid ? ` (child pid ${child.pid})` : ''}; inspect the private room/daemon.log and authority owner; retry after repair`)
+  } while (Date.now() < hardUntil)
+  throw startupFailure(commonDir, child.pid, Date.now() >= hardUntil ? 'startup hard cap reached' : 'startup phase stalled')
 }
 
 /** Drained maintenance only: authenticate the exact discovery instance, save, then verify its exit. */

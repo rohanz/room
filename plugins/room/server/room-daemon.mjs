@@ -15170,7 +15170,7 @@ import { createHash, randomUUID } from "node:crypto";
 // packages/relay/src/private-state.ts
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 function checkWindowsAcl(report, file) {
   const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
   if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || report.directory !== false && !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
@@ -15193,10 +15193,8 @@ function windowsPowerShellEnv(file) {
   env.ROOM_PRIVATE_PATH = file;
   return env;
 }
-function windowsAcl(file, protectNew = false, createDirectory = false, repair = false) {
-  const key = windowsKey(file), known = verifiedWindows.get(key);
-  if (known && !protectNew && known === windowsIdentity(file)) return;
-  const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+function windowsAclScript(protectNew, createDirectory, repair) {
+  return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     function PrivateAcl($directory) {
       if ($directory) { $acl=New-Object Security.AccessControl.DirectorySecurity; $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
       else { $acl=New-Object Security.AccessControl.FileSecurity; $inherit=[Security.AccessControl.InheritanceFlags]::None };
@@ -15223,19 +15221,66 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
       $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
     };` : ""}
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
+}
+function windowsAclError(file, error) {
+  const e = error;
+  const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
+  return new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
+}
+function rememberWindowsAcl(file, output, repair) {
   let report;
   try {
-    report = JSON.parse(execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    report = JSON.parse(output);
   } catch (error) {
-    const e = error;
-    const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
-    throw new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
+    throw windowsAclError(file, error);
   }
   if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file}`);
   checkWindowsAcl(report, file);
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`);
   const identity = windowsIdentity(file);
-  if (identity) verifiedWindows.set(key, identity);
+  if (identity) verifiedWindows.set(windowsKey(file), identity);
+}
+function windowsVerified(file) {
+  const known = verifiedWindows.get(windowsKey(file));
+  return !!known && known === windowsIdentity(file);
+}
+function windowsAcl(file, protectNew = false, createDirectory = false, repair = false) {
+  if (!protectNew && windowsVerified(file)) return;
+  let output;
+  try {
+    output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(protectNew, createDirectory, repair)], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    throw windowsAclError(file, error);
+  }
+  rememberWindowsAcl(file, output, repair);
+}
+var primingWindows = /* @__PURE__ */ new Map();
+function primeWindowsDirectory(dir, repair) {
+  if (process.platform !== "win32") return Promise.resolve();
+  dir = path.resolve(dir);
+  const key = windowsKey(dir);
+  const running = primingWindows.get(key);
+  if (running) return running;
+  if (windowsVerified(dir)) return Promise.resolve();
+  const work = (async () => {
+    if (!fs.statSync(path.dirname(dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
+    const output = await new Promise((resolve, reject) => {
+      execFile(
+        "powershell.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(false, true, repair)],
+        { env: windowsPowerShellEnv(dir), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8" },
+        (error, stdout, stderr2) => error ? reject(windowsAclError(dir, Object.assign(error, { stderr: stderr2 }))) : resolve(stdout)
+      );
+    });
+    rememberWindowsAcl(dir, output, repair);
+  })().finally(() => {
+    if (primingWindows.get(key) === work) primingWindows.delete(key);
+  });
+  primingWindows.set(key, work);
+  return work;
+}
+function primePrivateState(commonDir) {
+  return primeWindowsDirectory(path.join(commonDir, "room"), true);
 }
 function verifyPrivatePath(file, created = false) {
   const stat = fs.lstatSync(file);
@@ -15319,7 +15364,7 @@ function initializeDirectory(dir, repair) {
 }
 
 // packages/relay/src/process.ts
-import { execFile, execFileSync as execFileSync2 } from "node:child_process";
+import { execFile as execFile2, execFileSync as execFileSync2 } from "node:child_process";
 import fs2 from "node:fs";
 import path2 from "node:path";
 function pidAlive(pid) {
@@ -15343,7 +15388,7 @@ var systemProcessReaders = {
     ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
   }),
   execAsync: (file, args3, options, done) => {
-    execFile(file, args3, { encoding: "utf8", windowsHide: true, ...options }, (error, stdout) => done(error, stdout));
+    execFile2(file, args3, { encoding: "utf8", windowsHide: true, ...options }, (error, stdout) => done(error, stdout));
   }
 };
 function windowsProcessName(name) {
@@ -15586,15 +15631,16 @@ function syncDirectory(dir) {
     if (fd !== void 0) fs3.closeSync(fd);
   }
 }
-function ensureDurableDirectory(dir) {
+function ensureDurableDirectory(dir, holdsFile = true) {
   const parent = path3.dirname(dir);
   if (parent === dir) {
     if (!fs3.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
   }
-  ensureDurableDirectory(parent);
+  ensureDurableDirectory(parent, false);
   try {
-    if (!fs3.existsSync(dir)) privateStateDirectory(dir);
+    if (process.platform === "win32" && !holdsFile) fs3.mkdirSync(dir);
+    else if (!fs3.existsSync(dir)) privateStateDirectory(dir);
     else fs3.mkdirSync(dir, { mode: 448 });
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
@@ -18037,9 +18083,18 @@ async function startLocalDaemon(opts) {
   const commonDir = fs8.realpathSync.native(opts.commonDir);
   const log2 = opts.log ?? (() => {
   });
+  const phase = (name) => log2(`startup pid ${process.pid}: ${name}`);
+  phase("state check");
+  await primePrivateState(commonDir);
   privateStateDirectory(path8.join(commonDir, "room"));
+  phase("state verified");
+  phase("lease acquisition");
   const lock = AuthorityLock.take(commonDir);
-  if (!lock) return void 0;
+  if (!lock) {
+    phase("authority held by another contender");
+    return void 0;
+  }
+  phase("authority acquired");
   let relay;
   try {
     const previous = discovery(commonDir);
@@ -18096,6 +18151,7 @@ async function startLocalDaemon(opts) {
       } }
     });
     const port = previous?.port ?? deterministicPort(commonDir);
+    phase("listen");
     try {
       relay = await open(port);
     } catch (error) {
@@ -18104,13 +18160,18 @@ async function startLocalDaemon(opts) {
       if (occupant?.health.local === true && occupant.health.clone === cloneId(commonDir)) throw new Error(`local Room owner still answers on port ${port}; drain it before starting the daemon`);
       relay = await open(0);
     }
+    phase("listening");
     relay.setDraining(true);
+    phase("lease recovery");
     await relay.initialize(opts.room);
+    phase("leases recovered");
     const info = { schema: 2, discovery: 1, runtime: "daemon", nonce, compat: { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, "room.daemon": [1] } }, port: relay.port, pid: process.pid, room: opts.room, key, startedAt: Date.now(), lead: identity };
+    phase("discovery publication");
     writeAtomic(relayFile(commonDir), info);
     verifyPrivatePath(relayFile(commonDir), true);
     ready = true;
     relay.setDraining(false);
+    phase("ready");
     timer = setInterval(() => {
       if (!draining && (stopRequested || clock.expired()) && Date.now() >= nextRetry) void close(false).catch(() => {
       });
@@ -18167,6 +18228,7 @@ try {
     process.stdout.write("Daemon saved and process exit verified.\n");
   } else {
     if (args2[0] && !args2[0].startsWith("--") && args2[0] !== "start") throw new Error("usage: room-daemon.mjs [start|stop] --common-dir <absolute git common directory> [--room <room>]");
+    await primePrivateState(commonDir);
     privateStateDirectory(path9.join(commonDir, "room"));
     const file = path9.join(commonDir, "room", "daemon.log");
     let created = false;
@@ -18197,6 +18259,7 @@ try {
       } catch {
       }
     };
+    log(`startup pid ${process.pid}: state verified`);
     const daemon = await startLocalDaemon({ commonDir, room: value("--room"), log });
     if (daemon) await daemon.closed;
   }

@@ -19,7 +19,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { normalizeExplicitRoomName } from './room-name.js'
 export { normalizeExplicitRoomName } from './room-name.js'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type WatcherHandoff, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalDaemon, relayHealth, LocalRelayCompatibilityError, localViewKey, type LocalRelay } from '@room/relay'
+import { primePrivateState, primePrivateDirectory, ensureLocalDaemon, relayHealth, LocalRelayCompatibilityError, localViewKey, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -441,7 +441,7 @@ export async function pollLogin(credentialsPath: string, server: string, p: Logi
     }
     if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` }
     const b = await res.json() as { pending?: boolean; error?: string; session?: string; login?: string }
-    if (b.session && b.login) { setCredential(credentialsPath, server, { session: b.session, login: b.login, at: Date.now() }); configCache.delete(server); return { login: b.login } }
+    if (b.session && b.login) { await primePrivateDirectory(dirname(credentialsPath)); setCredential(credentialsPath, server, { session: b.session, login: b.login, at: Date.now() }); configCache.delete(server); return { login: b.login } }
     if (b.error) return { error: b.error }
     if (Date.now() >= deadline) return { pending: true }
     await sleep(Math.max(1, p.interval) * 1000)
@@ -461,6 +461,7 @@ export async function logout(credentialsPath: string, server: string): Promise<{
       }
     } catch (e) { unconfirmed = e instanceof Error ? e.message : String(e) }
   }
+  if (c) await primePrivateDirectory(dirname(credentialsPath))
   return { login: c?.login, removed: removeCredential(credentialsPath, server), ...(unconfirmed ? { unconfirmed } : {}) }
 }
 
@@ -633,7 +634,7 @@ async function discoverCompatibility(server: string, dir: string, localKey?: str
     profile = compatibilityFromHealth(health, floor.learned(), localKey ? LOCAL_CLIENT_COMPAT : CLIENT_COMPAT)
     if (localKey && profile.legacy) throw new Error('local room requires the standalone daemon runtime; drain old Room sessions and restart updated clients')
   } catch (error) { throw new RoomdError(error instanceof Error ? error.message : String(error), 2) }
-  if (!profile.legacy) negotiatingOrigins.add(server)
+  if (!profile.legacy) { await primePrivateState(common); negotiatingOrigins.add(server) }
   else negotiatingOrigins.delete(server)
   return { ...profile, remember: () => { if (!profile.legacy) floor.remember() } }
 }
@@ -1268,7 +1269,7 @@ export function watchClosed(s: Session, log?: (line: string) => void, startupClo
 
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 /** A session the server no longer knows is useless locally too. */
-function removeStaleCredential(credentialsPath: string, server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(credentialsPath, server) }
+async function removeStaleCredential(credentialsPath: string, server: string, reason: string): Promise<void> { if (/expired or unknown/.test(reason)) { await primePrivateDirectory(dirname(credentialsPath)); removeCredential(credentialsPath, server) } }
 
 /** Check team admission before a move leaves its current room. A room_create may open a missing room after confirmation. */
 export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { dir?: string; token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean; log?: ServerLog } = {}): Promise<void> {
@@ -1305,7 +1306,7 @@ async function preflight(credentialsPath: string, server: string, roomName: stri
     if (res.status === 401) {
       const reason = (await res.text()).trim() || 'unauthorized'
       // The server points at room_login for a missing or stale session; a ROOM_TOKEN on a github.com room gets the same pointer.
-      if (/room_login/.test(reason)) { removeStaleCredential(credentialsPath, server, reason); return { reason, loginNeeded: true } }
+      if (/room_login/.test(reason)) { await removeStaleCredential(credentialsPath, server, reason); return { reason, loginNeeded: true } }
       return { reason }
     }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }

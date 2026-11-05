@@ -38,7 +38,7 @@ function syncDirectory(dir: string): void {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
-function ensureDurableDirectory(dir: string): void {
+function ensureDurableDirectory(dir: string, holdsFile = true): void {
   const parent = path.dirname(dir)
   // A drive/share root already exists; Windows rejects mkdir on it with EPERM.
   // Stop only here: existing descendants still need their parent synced below.
@@ -46,10 +46,11 @@ function ensureDurableDirectory(dir: string): void {
     if (!fs.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
     return
   }
-  ensureDurableDirectory(parent)
+  ensureDurableDirectory(parent, false)
   try {
     // Every atomic writer uses the same creation/Windows ACL policy as daemon startup.
-    if (!fs.existsSync(dir)) privateStateDirectory(dir)
+    if (process.platform === 'win32' && !holdsFile) fs.mkdirSync(dir) // ancestors hold no private files
+    else if (!fs.existsSync(dir)) privateStateDirectory(dir)
     else fs.mkdirSync(dir, { mode: 0o700 }) // EEXIST below; existing OS ancestors may be canonical aliases
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
   // EEXIST may mean another writer created this directory but has not fsynced its parent yet.

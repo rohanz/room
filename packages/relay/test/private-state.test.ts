@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
+import { primePrivateState, privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
 import { stopLocalDaemon } from '../src/daemon.js'
 
 const roots: string[] = []
@@ -100,3 +100,20 @@ it.runIf(process.platform === 'win32')('protecting the Windows Room root makes e
   expect(grants(room)).not.toContain('S-1-1-0')
   void root
 })
+
+it.runIf(process.platform === 'win32')('async Windows priming creates the protected Room root before inheriting descendant writes', async () => {
+  const { root, room } = fixture()
+  const first = primePrivateState(root)
+  expect(primePrivateState(root)).toBe(first)
+  await first
+  const session = path.join(room, 'sessions', 'primed'), file = path.join(session, 'session.json')
+  privateStateDirectory(session)
+  fs.writeFileSync(file, '{}')
+  verifyPrivatePath(file, true)
+  const report = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference='Stop'; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $root=Get-Acl -LiteralPath $env:ROOM_TEST_ROOT; $a=Get-Acl -LiteralPath $env:ROOM_TEST_FILE; @{user=$u;protected=$root.AreAccessRulesProtected;grants=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})} | ConvertTo-Json -Compress"],
+  { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), ROOM_TEST_ROOT: room, ROOM_TEST_FILE: file }, encoding: 'utf8', timeout: 20_000 }).trim()) as { user: string; protected: boolean; grants: string[] }
+  expect(report.protected).toBe(true)
+  expect(report.grants.length).toBeGreaterThan(0)
+  expect(report.grants.filter(sid => ![report.user, 'S-1-5-18', 'S-1-5-32-544'].includes(sid))).toEqual([])
+}, 45_000) // async native initialization and an independent native ACL assertion each have a 20 s bound

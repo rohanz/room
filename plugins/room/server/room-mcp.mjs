@@ -2999,7 +2999,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve5.call(this, root, ref);
+      let _sch = resolve6.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3026,7 +3026,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve5(root, ref) {
+    function resolve6(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3856,7 +3856,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve5(baseURI, relativeURI, options) {
+    function resolve6(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -4224,7 +4224,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve5,
+      resolve: resolve6,
       resolveComponent,
       equal,
       serialize,
@@ -8969,17 +8969,17 @@ var init_yjs = __esm({
         this.isLoaded = false;
         this.isSynced = false;
         this.isDestroyed = false;
-        this.whenLoaded = create4((resolve5) => {
+        this.whenLoaded = create4((resolve6) => {
           this.on("load", () => {
             this.isLoaded = true;
-            resolve5(this);
+            resolve6(this);
           });
         });
-        const provideSyncedPromise = () => create4((resolve5) => {
+        const provideSyncedPromise = () => create4((resolve6) => {
           const eventHandler = (isSynced) => {
             if (isSynced === void 0 || isSynced === true) {
               this.off("sync", eventHandler);
-              resolve5();
+              resolve6();
             }
           };
           this.on("sync", eventHandler);
@@ -18692,7 +18692,7 @@ function wholeTreeTimeoutMs(pathCount = UNKNOWN_WHOLE_TREE_PATHS, configured) {
 function git(dir, args2, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
   const done = observeGit(args2);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     execFile("git", args2, { cwd: dir, maxBuffer: GIT_OUTPUT_MAX_BYTES, timeout }, (err, stdout, stderr) => {
       done();
       if (err) {
@@ -18708,14 +18708,14 @@ function git(dir, args2, configuredTimeoutMs) {
         }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : stderrDetail(String(stderr || err.message)).trim();
         reject(new Error(`git ${args2.join(" ")} failed: ${detail}`));
-      } else resolve5(stdout);
+      } else resolve6(stdout);
     });
   });
 }
 function gitStream(dir, args2, input, opts) {
   const { timeoutMs: timeout, maxBytes, okCodes = [0] } = opts;
   const done = observeGit(args2);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     const child = spawn("git", args2, { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
     const chunks = [];
     let length2 = 0;
@@ -18730,7 +18730,7 @@ function gitStream(dir, args2, input, opts) {
       clearTimeout(grace);
       done();
       if (error2) reject(error2);
-      else resolve5(value5);
+      else resolve6(value5);
     };
     const stop = (error2) => {
       if (failure) return;
@@ -18954,22 +18954,22 @@ async function gitTracked(dir) {
 async function gitCommitMissing(dir, sha, configuredTimeoutMs) {
   const args2 = ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`];
   const done = observeGit(args2);
-  return new Promise((resolve5) => {
+  return new Promise((resolve6) => {
     execFile("git", args2, { cwd: dir, encoding: "utf8", timeout: timeoutMs(configuredTimeoutMs) }, (err, stdout, stderr) => {
       done();
-      resolve5(Number(err?.code) === 1 && !stdout && !stderr);
+      resolve6(Number(err?.code) === 1 && !stdout && !stderr);
     });
   });
 }
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
   const done = observeGit(["check-ignore", "-q", "--", rel]);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     execFile("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err) => {
       done();
       const stopped = err;
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`));
-      else resolve5(!err || Number(stopped?.code) !== 1);
+      else resolve6(!err || Number(stopped?.code) !== 1);
     });
   });
 }
@@ -19064,7 +19064,7 @@ async function pairBaseline(me, other, ancestor, descends) {
 function boundedGit(dir, args2, wholeTreePaths, env, maxBuffer = 64 * 1024 * 1024) {
   const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
   const done = observeGit(args2);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     execFile2("git", args2, { cwd: dir, env, encoding: "buffer", maxBuffer, timeout }, (error2, stdout, stderr) => {
       done();
       if (error2) {
@@ -19076,7 +19076,7 @@ function boundedGit(dir, args2, wholeTreePaths, env, maxBuffer = 64 * 1024 * 102
         }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr).trim() || error2.message;
         reject(Object.assign(new Error(`git ${args2.join(" ")} failed: ${detail}`), { stderr: String(stderr), code: stopped.code }));
-      } else resolve5(stdout);
+      } else resolve6(stdout);
     });
   });
 }
@@ -24332,7 +24332,7 @@ var init_wrapper = __esm({
 // packages/relay/src/private-state.ts
 import fs8 from "node:fs";
 import path5 from "node:path";
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFile as execFile3, execFileSync as execFileSync2 } from "node:child_process";
 function checkWindowsAcl(report, file) {
   const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
   if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || report.directory !== false && !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
@@ -24353,10 +24353,8 @@ function windowsPowerShellEnv(file) {
   env.ROOM_PRIVATE_PATH = file;
   return env;
 }
-function windowsAcl(file, protectNew = false, createDirectory = false, repair = false) {
-  const key2 = windowsKey(file), known = verifiedWindows.get(key2);
-  if (known && !protectNew && known === windowsIdentity(file)) return;
-  const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+function windowsAclScript(protectNew, createDirectory, repair) {
+  return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     function PrivateAcl($directory) {
       if ($directory) { $acl=New-Object Security.AccessControl.DirectorySecurity; $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
       else { $acl=New-Object Security.AccessControl.FileSecurity; $inherit=[Security.AccessControl.InheritanceFlags]::None };
@@ -24383,19 +24381,78 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
       $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
     };` : ""}
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
+}
+function windowsAclError(file, error2) {
+  const e = error2;
+  const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
+  return new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
+}
+function rememberWindowsAcl(file, output, repair) {
   let report;
   try {
-    report = JSON.parse(execFileSync2("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    report = JSON.parse(output);
   } catch (error2) {
-    const e = error2;
-    const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
-    throw new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
+    throw windowsAclError(file, error2);
   }
   if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file}`);
   checkWindowsAcl(report, file);
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`);
   const identity3 = windowsIdentity(file);
-  if (identity3) verifiedWindows.set(key2, identity3);
+  if (identity3) verifiedWindows.set(windowsKey(file), identity3);
+}
+function windowsVerified(file) {
+  const known = verifiedWindows.get(windowsKey(file));
+  return !!known && known === windowsIdentity(file);
+}
+function windowsAcl(file, protectNew = false, createDirectory = false, repair = false) {
+  if (!protectNew && windowsVerified(file)) return;
+  let output;
+  try {
+    output = execFileSync2("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(protectNew, createDirectory, repair)], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error2) {
+    throw windowsAclError(file, error2);
+  }
+  rememberWindowsAcl(file, output, repair);
+}
+function primeWindowsDirectory(dir, repair) {
+  if (process.platform !== "win32") return Promise.resolve();
+  dir = path5.resolve(dir);
+  const key2 = windowsKey(dir);
+  const running = primingWindows.get(key2);
+  if (running) return running;
+  if (windowsVerified(dir)) return Promise.resolve();
+  const work = (async () => {
+    if (!fs8.statSync(path5.dirname(dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
+    const output = await new Promise((resolve6, reject) => {
+      execFile3(
+        "powershell.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(false, true, repair)],
+        { env: windowsPowerShellEnv(dir), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8" },
+        (error2, stdout, stderr) => error2 ? reject(windowsAclError(dir, Object.assign(error2, { stderr }))) : resolve6(stdout)
+      );
+    });
+    rememberWindowsAcl(dir, output, repair);
+  })().finally(() => {
+    if (primingWindows.get(key2) === work) primingWindows.delete(key2);
+  });
+  primingWindows.set(key2, work);
+  return work;
+}
+function primePrivateDirectory(dir) {
+  if (process.platform !== "win32") return Promise.resolve();
+  dir = path5.resolve(dir);
+  const running = primingWindows.get(windowsKey(dir));
+  if (running) return running;
+  if (fs8.existsSync(dir)) return Promise.resolve();
+  try {
+    fs8.mkdirSync(path5.dirname(dir), { recursive: true });
+  } catch (error2) {
+    return Promise.reject(error2);
+  }
+  return primeWindowsDirectory(dir, false);
+}
+function primePrivateState(commonDir2) {
+  return primeWindowsDirectory(path5.join(commonDir2, "room"), true);
 }
 function verifyPrivatePath(file, created = false) {
   const stat4 = fs8.lstatSync(file);
@@ -24477,12 +24534,13 @@ function initializeDirectory(dir, repair) {
   }
   verifyPrivatePath(dir);
 }
-var verifiedWindows, windowsKey;
+var verifiedWindows, windowsKey, primingWindows;
 var init_private_state = __esm({
   "packages/relay/src/private-state.ts"() {
     "use strict";
     verifiedWindows = /* @__PURE__ */ new Map();
     windowsKey = (file) => path5.resolve(file).toLowerCase();
+    primingWindows = /* @__PURE__ */ new Map();
   }
 });
 
@@ -24525,7 +24583,7 @@ var init_memory2 = __esm({
 });
 
 // packages/relay/src/process.ts
-import { execFile as execFile3, execFileSync as execFileSync3 } from "node:child_process";
+import { execFile as execFile4, execFileSync as execFileSync3 } from "node:child_process";
 import fs9 from "node:fs";
 import path6 from "node:path";
 function pidAlive(pid) {
@@ -24680,7 +24738,7 @@ function createProcessProbe(readers, options = {}) {
     if (!args2 || !readers.execAsync || inFlight.size >= WINDOWS_MAX_IN_FLIGHT) return Promise.resolve({});
     const started = ++reads, execAsync = readers.execAsync;
     let settled = false;
-    const read3 = new Promise((resolve5) => {
+    const read3 = new Promise((resolve6) => {
       const done = (error2, stdout) => {
         if (settled) return;
         settled = true;
@@ -24688,7 +24746,7 @@ function createProcessProbe(readers, options = {}) {
         const row = error2 ? void 0 : parseWindowsProcessTable(stdout).get(pid);
         const info = row ? { startTime: row.startTime, executable: row.executable } : alive(pid) ? {} : void 0;
         const current2 = cache2.get(pid);
-        resolve5(current2 && current2.read > started ? current2.info : store(pid, info, started));
+        resolve6(current2 && current2.read > started ? current2.info : store(pid, info, started));
       };
       try {
         execAsync("powershell.exe", args2, { timeout: WINDOWS_ASYNC_READ_MS, maxBuffer: WINDOWS_MAX_BUFFER }, done);
@@ -24760,7 +24818,7 @@ var init_process = __esm({
         ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
       }),
       execAsync: (file, args2, options, done) => {
-        execFile3(file, args2, { encoding: "utf8", windowsHide: true, ...options }, (error2, stdout) => done(error2, stdout));
+        execFile4(file, args2, { encoding: "utf8", windowsHide: true, ...options }, (error2, stdout) => done(error2, stdout));
       }
     };
     WINDOWS_SYNC_READ_MS = 1e4;
@@ -25192,15 +25250,16 @@ function syncDirectory(dir) {
     if (fd !== void 0) fs11.closeSync(fd);
   }
 }
-function ensureDurableDirectory(dir) {
+function ensureDurableDirectory(dir, holdsFile = true) {
   const parent = path8.dirname(dir);
   if (parent === dir) {
     if (!fs11.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
   }
-  ensureDurableDirectory(parent);
+  ensureDurableDirectory(parent, false);
   try {
-    if (!fs11.existsSync(dir)) privateStateDirectory(dir);
+    if (process.platform === "win32" && !holdsFile) fs11.mkdirSync(dir);
+    else if (!fs11.existsSync(dir)) privateStateDirectory(dir);
     else fs11.mkdirSync(dir, { mode: 448 });
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
@@ -25485,6 +25544,43 @@ function discovery(commonDir2) {
   if (v.lead !== void 0 && v.lead !== true && (!v.lead || typeof v.lead !== "object" || !Number.isInteger(v.lead.pid) || v.lead.pid < 1 || typeof v.lead.startTime !== "string" || !v.lead.startTime || typeof v.lead.executable !== "string" || !v.lead.executable)) throw new Error("invalid discovery process identity; preserve and repair the record");
   return v;
 }
+function startupLog(commonDir2) {
+  const file = path9.join(commonDir2, "room", "daemon.log");
+  let fd;
+  try {
+    verifyPrivatePath(file);
+    const before = fs12.lstatSync(file);
+    fd = fs12.openSync(file, fs12.constants.O_RDONLY | (fs12.constants.O_NOFOLLOW ?? 0));
+    const stat4 = fs12.fstatSync(fd);
+    if (!stat4.isFile() || stat4.dev !== before.dev || stat4.ino !== before.ino) return "";
+    const start = Math.max(0, stat4.size - STARTUP_LOG_BYTES);
+    const buffer = Buffer.alloc(Math.min(stat4.size, STARTUP_LOG_BYTES));
+    const bytes = fs12.readSync(fd, buffer, 0, buffer.length, start);
+    let tail = buffer.subarray(0, bytes).toString("utf8");
+    if (start > 0) tail = tail.slice(tail.indexOf("\n") + 1);
+    return tail.split(/\r?\n/).filter(Boolean).slice(-5).join("\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== void 0) fs12.closeSync(fd);
+  }
+}
+function startupContender(commonDir2) {
+  const file = path9.join(commonDir2, "room", "hub", "authority.lock");
+  try {
+    if (fs12.statSync(file).size > 8192) return void 0;
+    verifyPrivatePath(file);
+    const holder = JSON.parse(fs12.readFileSync(file, "utf8"));
+    return Number.isSafeInteger(holder.pid) && holder.pid > 0 && pidAlive(holder.pid) ? holder.pid : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function startupFailure(commonDir2, pid, reason) {
+  const tail = startupLog(commonDir2);
+  return new Error(`local daemon startup unavailable${pid ? ` (child pid ${pid})` : ""}: ${reason}; ${tail ? `daemon.log (last ${STARTUP_LOG_BYTES} bytes, up to 5 lines):
+${tail}` : "no readable private daemon.log tail; inspect room/daemon.log and authority owner; retry after repair"}`);
+}
 function ensureLocalDaemon(commonDir2, room, opts = {}) {
   const canonical = fs12.realpathSync.native(commonDir2);
   const running = flights.get(canonical);
@@ -25496,6 +25592,7 @@ function ensureLocalDaemon(commonDir2, room, opts = {}) {
   return work;
 }
 async function ensure(commonDir2, room, opts) {
+  await primePrivateState(commonDir2);
   privateStateDirectory(path9.join(commonDir2, "room"));
   const ready = async () => {
     const info2 = discovery(commonDir2);
@@ -25536,25 +25633,36 @@ async function ensure(commonDir2, room, opts) {
   const env = {};
   for (const name of ["PATH", "Path", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LOCALAPPDATA", "LANG", "LC_ALL", "TZ"]) if (process.env[name] !== void 0) env[name] = process.env[name];
   const child = spawn2(process.execPath, [...opts.execArgv ?? [], entry, "--common-dir", commonDir2, "--room", room], { cwd: commonDir2, env, shell: false, detached: true, windowsHide: true, stdio: "ignore" });
-  let launchError, exited = false;
+  let launchError, exited = false, exitStatus = "";
   child.once("error", (error2) => {
     launchError = error2;
   });
-  child.once("exit", () => {
+  child.once("exit", (code, signal) => {
     exited = true;
+    exitStatus = signal ? `signal ${signal}` : `code ${code}`;
   });
   child.unref();
-  const until = Date.now() + (opts.startupTimeoutMs ?? 1e4);
+  const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS);
+  let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS);
+  let previousLog = startupLog(commonDir2);
   do {
     const winner = await ready();
     if (winner) return { ...winner, launched: winner.pid === child.pid };
-    if (launchError) throw new Error(`local daemon launch unavailable: ${launchError.message}`);
-    if (exited && Date.now() + 250 >= until) break;
-    await new Promise((resolve5) => setTimeout(resolve5, 100));
-  } while (Date.now() < until);
-  throw new Error(`local daemon startup unavailable${child.pid ? ` (child pid ${child.pid})` : ""}; inspect the private room/daemon.log and authority owner; retry after repair`);
+    if (launchError) throw startupFailure(commonDir2, child.pid, `launch failed: ${launchError.message}`);
+    const contender = exited ? startupContender(commonDir2) : child.pid;
+    if (exited && !contender) throw startupFailure(commonDir2, child.pid, `child exited (${exitStatus}); no live authority contender`);
+    const tail = startupLog(commonDir2);
+    if (tail !== previousLog) {
+      const phases = tail.split("\n").filter((line) => line.includes(`startup pid ${contender}: `));
+      if (phases.some((line) => !previousLog.includes(line))) progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS);
+      previousLog = tail;
+    }
+    if (Date.now() >= progressUntil || Date.now() >= hardUntil) break;
+    await new Promise((resolve6) => setTimeout(resolve6, 100));
+  } while (Date.now() < hardUntil);
+  throw startupFailure(commonDir2, child.pid, Date.now() >= hardUntil ? "startup hard cap reached" : "startup phase stalled");
 }
-var LOCAL_DAEMON_IDLE_MS, flights;
+var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights;
 var init_daemon = __esm({
   "packages/relay/src/daemon.ts"() {
     "use strict";
@@ -25566,6 +25674,9 @@ var init_daemon = __esm({
     init_src3();
     init_private_state();
     LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
+    STARTUP_PHASE_WAIT_MS = 25e3;
+    STARTUP_HARD_CAP_MS = 6e4;
+    STARTUP_LOG_BYTES = 1024;
     flights = /* @__PURE__ */ new Map();
   }
 });
@@ -27571,9 +27682,9 @@ var init_handler = __esm({
         if (this.fsw.closed) {
           return;
         }
-        const dirname5 = sysPath.dirname(file);
+        const dirname6 = sysPath.dirname(file);
         const basename5 = sysPath.basename(file);
-        const parent = this.fsw._getWatchedDir(dirname5);
+        const parent = this.fsw._getWatchedDir(dirname6);
         let prevStats = stats;
         if (parent.has(basename5))
           return;
@@ -27600,7 +27711,7 @@ var init_handler = __esm({
                 prevStats = newStats2;
               }
             } catch (error2) {
-              this.fsw._remove(dirname5, basename5);
+              this.fsw._remove(dirname6, basename5);
             }
           } else if (parent.has(basename5)) {
             const at = newStats.atimeMs;
@@ -27696,7 +27807,7 @@ var init_handler = __esm({
             this._addToNodeFs(path66, initialAdd, wh, depth + 1);
           }
         }).on(EV.ERROR, this._boundHandleError);
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve6, reject) => {
           if (!stream)
             return reject();
           stream.once(STR_END, () => {
@@ -27705,7 +27816,7 @@ var init_handler = __esm({
               return;
             }
             const wasThrottled = throttler ? throttler.clear() : false;
-            resolve5(void 0);
+            resolve6(void 0);
             previous.getChildren().filter((item) => {
               return item !== directory && !current2.has(item);
             }).forEach((item) => {
@@ -28585,7 +28696,7 @@ var init_checkout_watch = __esm({
         this.watcher.on("error", (error2) => {
           if (!this.suspended) this.handlers.error(error2);
         });
-        this.ready = new Promise((resolve5, reject) => {
+        this.ready = new Promise((resolve6, reject) => {
           const cleanup = () => {
             this.watcher.off("ready", ready);
             this.watcher.off("error", fatal);
@@ -28600,7 +28711,7 @@ var init_checkout_watch = __esm({
           };
           const ready = () => {
             cleanup();
-            resolve5();
+            resolve6();
           };
           this.cancelReady = () => {
             cleanup();
@@ -28674,7 +28785,7 @@ var init_checkout_watch = __esm({
 });
 
 // packages/roomd/src/base.ts
-import { execFile as execFile4 } from "node:child_process";
+import { execFile as execFile5 } from "node:child_process";
 async function isAncestor(dir, ancestor, descendant) {
   try {
     await git(dir, ["merge-base", "--is-ancestor", ancestor, descendant]);
@@ -28830,9 +28941,9 @@ async function pushedRange(dir, prev, next) {
 }
 async function pushHistory(dir, remote, oldSha, newSha) {
   if (!await ensureCommit(dir, remote, oldSha) || !await ensureCommit(dir, remote, newSha)) return "unknown";
-  return new Promise((resolve5) => {
-    execFile4("git", ["merge-base", "--is-ancestor", oldSha, newSha], { cwd: dir, timeout: 3e4 }, (error2) => {
-      resolve5(!error2 ? "forward" : error2.code === 1 ? "yes" : "unknown");
+  return new Promise((resolve6) => {
+    execFile5("git", ["merge-base", "--is-ancestor", oldSha, newSha], { cwd: dir, timeout: 3e4 }, (error2) => {
+      resolve6(!error2 ? "forward" : error2.code === 1 ? "yes" : "unknown");
     });
   });
 }
@@ -28845,12 +28956,12 @@ async function ensureCommit(dir, remote, sha) {
   if (!remote || process.env.ROOM_AUTO_FETCH === "0" || !/^[0-9a-f]{40,64}$/.test(sha)) return false;
   const key2 = `${dir}\0${sha}`;
   if (fetchAttempts.hit(key2)) return false;
-  await new Promise((resolve5) => {
-    execFile4(
+  await new Promise((resolve6) => {
+    execFile5(
       "git",
       ["-c", "credential.interactive=never", "fetch", "--no-tags", "--no-write-fetch-head", remote, sha],
       { cwd: dir, timeout: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
-      () => resolve5()
+      () => resolve6()
     );
   });
   return hasCommit(dir, sha);
@@ -29462,7 +29573,7 @@ var init_src4 = __esm({
         const socket = this.provider.ws;
         if (socket) {
           const deadline = Date.now() + 1e3;
-          while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise((resolve5) => setTimeout(resolve5, 5));
+          while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise((resolve6) => setTimeout(resolve6, 5));
         }
         this.provider.destroy();
         this.provider.awareness.destroy?.();
@@ -29508,11 +29619,11 @@ var init_src4 = __esm({
           this.reconcileDirty = true;
           if (this.reconcilePass === 2) {
             if (!this.nextReconcile) {
-              let resolve5;
+              let resolve6;
               const promise = new Promise((done) => {
-                resolve5 = done;
+                resolve6 = done;
               });
-              this.nextReconcile = { promise, resolve: resolve5 };
+              this.nextReconcile = { promise, resolve: resolve6 };
             }
             return this.nextReconcile.promise;
           }
@@ -29558,7 +29669,7 @@ var init_src4 = __esm({
         const compatibilityError = this.compatibilityError();
         if (compatibilityError) return Promise.reject(new RoomdError(compatibilityError, 2));
         if (this.provider.synced) return Promise.resolve();
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve6, reject) => {
           const timer = setTimeout(() => {
             cleanup();
             reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1));
@@ -29578,7 +29689,7 @@ var init_src4 = __esm({
           const onSync = (synced) => {
             if (synced) {
               cleanup();
-              resolve5();
+              resolve6();
             }
           };
           this.provider.on("sync", onSync);
@@ -29681,9 +29792,9 @@ var init_src4 = __esm({
         while (Date.now() < deadline) {
           if (!busy2()) {
             const before = fingerprint();
-            await new Promise((resolve5) => setTimeout(resolve5, 75));
+            await new Promise((resolve6) => setTimeout(resolve6, 75));
             if (!busy2() && before === fingerprint() && await gitHead(this.dir) === head) return;
-          } else await new Promise((resolve5) => setTimeout(resolve5, 75));
+          } else await new Promise((resolve6) => setTimeout(resolve6, 75));
         }
         if (busy2()) throw new Error("Git operation or worktree is still changing; retry HEAD reconciliation");
         if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during Git operation");
@@ -29908,13 +30019,13 @@ var init_src4 = __esm({
         const oldTexts = /* @__PURE__ */ new Map();
         const oldInfo = oldPaths.length ? await gitBlobInfoMany(this.dir, prev, oldPaths) : /* @__PURE__ */ new Map();
         for (const rel of oldPaths) {
-          await new Promise((resolve5) => setImmediate(resolve5));
+          await new Promise((resolve6) => setImmediate(resolve6));
           const info = oldInfo.get(rel);
           if (info && info.size <= this.sizeCap) oldTexts.set(rel, (await gitShowMany(this.dir, prev, [rel])).get(rel));
         }
         const snapshots = [];
         for (const c of owned) {
-          await new Promise((resolve5) => setImmediate(resolve5));
+          await new Promise((resolve6) => setImmediate(resolve6));
           const overlay = this.roomDoc.text(c.path, incarnation);
           const oldText = oldTexts.get(c.path);
           const range2 = overlay !== void 0 && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to };
@@ -29943,7 +30054,7 @@ var init_src4 = __esm({
         const unreadable2 = /* @__PURE__ */ new Set();
         const inputs = this.inputs;
         for (const rel of paths) {
-          await new Promise((resolve5) => setImmediate(resolve5));
+          await new Promise((resolve6) => setImmediate(resolve6));
           fileState.set(rel, this.claimFileIdentity(rel));
           if (!this.isSafeRoomPath(rel, false)) {
             currentTexts.set(rel, void 0);
@@ -30263,7 +30374,7 @@ var init_src4 = __esm({
       /** Does not synthesize events: callers must first observe the change they are waiting for. */
       async settle() {
         while (this.batch.size || this.diskWork.size) {
-          await Promise.all([...this.diskWork, new Promise((resolve5) => setTimeout(resolve5, this.debounceMs))]);
+          await Promise.all([...this.diskWork, new Promise((resolve6) => setTimeout(resolve6, this.debounceMs))]);
         }
       }
       scheduleDisk(relpath, isNew) {
@@ -30490,7 +30601,7 @@ var init_codex_binding = __esm({
 });
 
 // packages/room-mcp/src/worker-shell-env.ts
-import { execFile as execFile5 } from "node:child_process";
+import { execFile as execFile6 } from "node:child_process";
 import fs17 from "node:fs";
 import path14 from "node:path";
 function workerShellEnvScript(inherited) {
@@ -30528,11 +30639,11 @@ function codexShellFilterWarning(version3) {
   return void 0;
 }
 function installedCodexVersion() {
-  codexVersion ??= new Promise((resolve5) => execFile5(
+  codexVersion ??= new Promise((resolve6) => execFile6(
     "codex",
     ["--version"],
     { encoding: "utf8", timeout: 5e3 },
-    (error2, stdout) => resolve5(error2 ? void 0 : stdout.trim())
+    (error2, stdout) => resolve6(error2 ? void 0 : stdout.trim())
   ));
   return codexVersion;
 }
@@ -30886,7 +30997,7 @@ var init_config = __esm({
 import fs22 from "node:fs";
 import path20 from "node:path";
 import { createHash as createHash7 } from "node:crypto";
-import { execFile as execFile6 } from "node:child_process";
+import { execFile as execFile7 } from "node:child_process";
 import { promisify } from "node:util";
 async function inspectDaemonCutover(commonDir2, options = {}) {
   commonDir2 = fs22.realpathSync(commonDir2);
@@ -31049,7 +31160,7 @@ var init_daemon_cutover = __esm({
     "use strict";
     init_src3();
     init_leases();
-    exec = promisify(execFile6);
+    exec = promisify(execFile7);
     MAX_RECORD_BYTES = 2 * 1024 * 1024;
     MAX_RECORDS = 4096;
     object4 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -31199,11 +31310,11 @@ function acquireParseWorker() {
   return {
     parse(path66, texts) {
       if (stopped) return Promise.reject(new Error("parser worker is closed"));
-      return new Promise((resolve5, reject) => {
+      return new Promise((resolve6, reject) => {
         pending.add(reject);
         void parseInWorker(path66, texts).then((parsed) => {
           pending.delete(reject);
-          resolve5(parsed);
+          resolve6(parsed);
         }, (error2) => {
           pending.delete(reject);
           reject(error2);
@@ -31333,9 +31444,9 @@ var init_client = __esm({
         if (this.failure) return Promise.reject(this.failure);
         if (Date.now() < this.retryAt) return Promise.reject(new TransientParserError(`parser worker cooling down: ${this.lastCrash?.message}`, this.retryAt));
         this.cancelIdle();
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve6, reject) => {
           const worker = this.start(), id3 = ++this.nextId;
-          this.pending.set(id3, { resolve: resolve5, reject });
+          this.pending.set(id3, { resolve: resolve6, reject });
           worker.ref();
           try {
             worker.postMessage({ id: id3, path: path66, texts });
@@ -32322,7 +32433,7 @@ async function scanRunLog(file, start) {
     const stat4 = fs23.fstatSync(fd);
     const entry = current(file, start, stat4, fd);
     const chunk = Buffer.alloc(CHUNK);
-    while (step(entry, fd, stat4, chunk)) await new Promise((resolve5) => setImmediate(resolve5));
+    while (step(entry, fd, stat4, chunk)) await new Promise((resolve6) => setImmediate(resolve6));
     return entry.facts;
   } catch {
     return emptyFacts();
@@ -32377,7 +32488,7 @@ var init_run_log_facts = __esm({
 
 // packages/room-mcp/src/hosts/install-io.ts
 import fs24 from "node:fs";
-import { execFile as execFile7 } from "node:child_process";
+import { execFile as execFile8 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 async function installCommand(file, args2) {
   try {
@@ -32407,7 +32518,7 @@ var exec2, defaultInstallIO;
 var init_install_io = __esm({
   "packages/room-mcp/src/hosts/install-io.ts"() {
     "use strict";
-    exec2 = promisify2(execFile7);
+    exec2 = promisify2(execFile8);
     defaultInstallIO = {
       command: installCommand,
       readFile: (file) => fs24.readFileSync(file, "utf8")
@@ -32949,7 +33060,7 @@ function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProces
 }
 async function stopWorkerWithEscalation(options) {
   if (!await options.terminate()) return false;
-  const sleep = options.sleep ?? ((ms2) => new Promise((resolve5) => setTimeout(resolve5, ms2)));
+  const sleep = options.sleep ?? ((ms2) => new Promise((resolve6) => setTimeout(resolve6, ms2)));
   const now = options.now ?? Date.now;
   const wait = async () => {
     const deadline = now() + 5e3;
@@ -33033,7 +33144,7 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   const root = fs27.existsSync(dir) ? fs27.realpathSync(dir) : path24.resolve(dir);
   const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
-  const sleep = options.sleep ?? ((ms2) => new Promise((resolve5) => setTimeout(resolve5, ms2)));
+  const sleep = options.sleep ?? ((ms2) => new Promise((resolve6) => setTimeout(resolve6, ms2)));
   const resolved = (cwd) => {
     try {
       return fs27.realpathSync(cwd);
@@ -33093,7 +33204,7 @@ async function quiesceWorktreeProcesses(dir, platform = process.platform) {
       if (inside2()) quietSince = void 0;
       else if (quietSince === void 0) quietSince = Date.now();
       else if (Date.now() - quietSince >= 100) return true;
-      await new Promise((resolve5) => setTimeout(resolve5, 50));
+      await new Promise((resolve6) => setTimeout(resolve6, 50));
     }
     return false;
   } catch {
@@ -33132,12 +33243,12 @@ var init_worker_process = __esm({
       };
       child.once("close", closeLog);
       child.once("error", closeLog);
-      const started = new Promise((resolve5, reject) => {
+      const started = new Promise((resolve6, reject) => {
         const done = (error2) => {
           child.off("spawn", onSpawn);
           child.off("error", onError);
           if (error2) reject(error2);
-          else resolve5();
+          else resolve6();
         };
         const onSpawn = () => done();
         const onError = (error2) => done(error2);
@@ -33609,7 +33720,7 @@ async function linkWorkspaceDeps(leadDir, workerDir, options = {}) {
     if (cheap && ++ticks % 64) return;
     if (now() > deadline) throw new TimedOut();
     if (!cheap && ++ticks % 64) return;
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
   };
   let python = [];
   try {
@@ -34325,12 +34436,12 @@ var init_hub_client = __esm({
         if (this.closed) return Promise.reject(new Error("hub client closed"));
         if (!this.transport.connected()) return Promise.reject(new TransportUnavailable());
         const id3 = `r${++this.nextId}`;
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve6, reject) => {
           const timer = setTimeout(() => {
             this.pending.delete(id3);
             reject(new Error("the hub did not answer"));
           }, timeoutMs2);
-          this.pending.set(id3, { resolve: resolve5, reject, timer });
+          this.pending.set(id3, { resolve: resolve6, reject, timer });
           try {
             this.assertOpen();
             onSend?.();
@@ -34348,13 +34459,13 @@ var init_hub_client = __esm({
       }
       retryDelay(ms2, renewal) {
         this.assertOpen();
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve6, reject) => {
           const wait = { timer: void 0, reject };
           const done = () => {
             clearTimeout(wait.timer);
             this.retryWaits.delete(wait);
             if (renewal) renewal.wake = void 0;
-            resolve5();
+            resolve6();
           };
           wait.timer = setTimeout(done, ms2);
           this.retryWaits.add(wait);
@@ -34467,6 +34578,7 @@ async function readChoice(dir) {
 async function writeChoice(dir, where, by, room) {
   where = where.replace(/\?.*$/, "");
   const file = await choiceFile(dir);
+  await primePrivateDirectory(path27.dirname(file));
   return withGuard(`${file}.lock`, () => {
     let prev;
     try {
@@ -34493,6 +34605,7 @@ async function writeChoice(dir, where, by, room) {
 }
 async function migrateLegacyLocalChoice(dir) {
   const file = await choiceFile(dir);
+  await primePrivateDirectory(path27.dirname(file));
   const base = path27.basename(await mainWorktree(dir));
   return withGuard(`${file}.lock`, () => {
     let prev;
@@ -34518,7 +34631,7 @@ async function rememberTag(dir, tag) {
     release = acquireOwnedFile(lock, { pid: process.pid });
     if (release) break;
     if (Date.now() >= deadline) throw new Error("timed out waiting to remember Room name");
-    await new Promise((resolve5) => setTimeout(resolve5, 10));
+    await new Promise((resolve6) => setTimeout(resolve6, 10));
   }
   try {
     const prev = await readChoice(dir);
@@ -34554,6 +34667,7 @@ var CHOICE_FILE, SCHEMA;
 var init_choice = __esm({
   "packages/room-mcp/src/choice.ts"() {
     "use strict";
+    init_src3();
     init_git();
     init_src4();
     init_local();
@@ -34588,7 +34702,7 @@ async function guarded(fn) {
       return fn();
     } catch (e) {
       if (!busy(e) || performance.now() > deadline) throw e;
-      await new Promise((resolve5) => setTimeout(resolve5, 20));
+      await new Promise((resolve6) => setTimeout(resolve6, 20));
     }
   }
 }
@@ -36091,7 +36205,7 @@ var init_registry = __esm({
           if (state.process === "not-ours") return "exited";
           if (state.process === "unknown") return "unknown";
           const key2 = w.id;
-          await new Promise((resolve5) => {
+          await new Promise((resolve6) => {
             let settled = false;
             const done = () => {
               if (settled) return;
@@ -36101,7 +36215,7 @@ var init_registry = __esm({
               const waiters = this.exitWaiters.get(key2);
               waiters?.delete(done);
               if (!waiters?.size) this.exitWaiters.delete(key2);
-              resolve5();
+              resolve6();
             };
             const waiting = this.exitWaiters.get(key2) ?? /* @__PURE__ */ new Set();
             waiting.add(done);
@@ -36564,7 +36678,7 @@ var init_diff3 = __esm({
 });
 
 // packages/room-mcp/src/merge.ts
-import { execFile as execFile8 } from "node:child_process";
+import { execFile as execFile9 } from "node:child_process";
 import fs37 from "node:fs";
 import os10 from "node:os";
 import path35 from "node:path";
@@ -36592,14 +36706,14 @@ async function gitMergeFile(base, ours, theirs, labels) {
     fs37.writeFileSync(oursPath, ours);
     fs37.writeFileSync(basePath, base);
     fs37.writeFileSync(theirsPath, theirs);
-    const result2 = await new Promise((resolve5) => {
-      execFile8(
+    const result2 = await new Promise((resolve6) => {
+      execFile9(
         "git",
         ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
         { cwd: dir, maxBuffer: 16 * 1024 * 1024, timeout: 1e4 },
         (error2, stdout) => {
           const raw = error2 && error2.code;
-          resolve5({
+          resolve6({
             code: typeof raw === "number" ? raw : error2 ? -1 : 0,
             stdout,
             unavailable: raw === "ENOENT",
@@ -36701,7 +36815,7 @@ var init_merge = __esm({
 // packages/room-mcp/src/tools/disk-text.ts
 import fs38 from "node:fs";
 import path36 from "node:path";
-import { execFile as execFile9 } from "node:child_process";
+import { execFile as execFile10 } from "node:child_process";
 function readBoundedHistoricalText(dir, base, rel) {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(base)) return readHistoricalFromGit(dir, base, rel);
   const key2 = `${dir}\0${base}\0${rel}`;
@@ -36759,28 +36873,28 @@ async function readBoundedHistoricalTexts(dir, base, rels) {
   return out;
 }
 async function readBoundedCheckoutText(dir, object6, rel, encoding = "utf8", filtered = true, knownSize, limit = DISK_TEXT_LIMIT) {
-  const size2 = knownSize ?? await new Promise((resolve5, reject) => {
+  const size2 = knownSize ?? await new Promise((resolve6, reject) => {
     const args2 = ["cat-file", "-s", object6], done = observeGit(args2);
-    execFile9("git", args2, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr) => {
+    execFile10("git", args2, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr) => {
       done();
       if (error2) {
-        if (/does not exist|not a valid object|could not get object info|path .* not in/i.test(String(stderr))) resolve5(void 0);
+        if (/does not exist|not a valid object|could not get object info|path .* not in/i.test(String(stderr))) resolve6(void 0);
         else reject(error2);
         return;
       }
-      resolve5(Number(String(stdout).trim()));
+      resolve6(Number(String(stdout).trim()));
     });
   });
   if (size2 === void 0) return void 0;
   if (!Number.isSafeInteger(size2) || size2 < 0 || size2 > limit) throw new HistoricalTextTooLarge(rel);
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     const args2 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object6] : ["cat-file", "-p", object6];
     const done = observeGit(args2);
-    execFile9("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: limit + 1 }, (error2, stdout, stderr) => {
+    execFile10("git", args2, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: limit + 1 }, (error2, stdout, stderr) => {
       done();
       if (error2) {
         if (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reject(new HistoricalTextTooLarge(rel));
-        else if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(stderr))) resolve5(void 0);
+        else if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(stderr))) resolve6(void 0);
         else reject(error2);
         return;
       }
@@ -36788,7 +36902,7 @@ async function readBoundedCheckoutText(dir, object6, rel, encoding = "utf8", fil
         reject(new HistoricalTextTooLarge(rel));
         return;
       }
-      resolve5(stdout.toString(encoding));
+      resolve6(stdout.toString(encoding));
     });
   });
 }
@@ -37083,8 +37197,8 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
         if (!current2 || current2.fence !== head.fence || current2.rev !== head.rev || holder?.sessionId !== record2.holder.sessionId || s.room.roomSalt !== meta2.roomSalt || !meta2.roomSalt || !/^[a-f0-9]{64}$/i.test(meta2.roomSalt)) return pending;
         return { paths: pending.paths, pending: false, ack: { publisher, sessionId: record2.holder.sessionId, fence: head.fence, rev: head.rev, roomSalt: meta2.roomSalt } };
       })(),
-      new Promise((resolve5) => {
-        timer = setTimeout(() => resolve5(pending), timeoutMs2);
+      new Promise((resolve6) => {
+        timer = setTimeout(() => resolve6(pending), timeoutMs2);
       })
     ]);
   } catch {
@@ -37122,7 +37236,7 @@ import fs41 from "node:fs";
 import path38 from "node:path";
 function previewSettler(state, participants) {
   const now = () => state.now?.() ?? Date.now();
-  const sleep = state.ctx?.sleep ?? ((ms2) => new Promise((resolve5) => setTimeout(resolve5, ms2)));
+  const sleep = state.ctx?.sleep ?? ((ms2) => new Promise((resolve6) => setTimeout(resolve6, ms2)));
   const deadline = now() + PREVIEW_SETTLE_MS;
   const capture = (except) => participants.filter(({ person }) => !except.has(person)).map(({ person, session }) => {
     const meta2 = snapshotMetadata(session.room, person, viewOf(state, session));
@@ -37523,7 +37637,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     return paths2.length > 2e3 ? [] : paths2;
   };
   for (const pair of pairs.values()) if (carriesWork(pair)) for (const p of await carriedPaths(pair)) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     if (leftAlone(pair.worker, p)) continue;
     pathSet.add(p);
     theirPaths.add(p);
@@ -37554,16 +37668,16 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       if (index > 0) theirPaths.add(p);
     };
     if (!options.diskOnly) for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) {
-      await new Promise((resolve5) => setImmediate(resolve5));
+      await new Promise((resolve6) => setImmediate(resolve6));
       if (!ignored.some((i) => p === i || i.endsWith("/") && p.startsWith(i))) add2(p);
     }
     for (const p of [...changed, ...untracked]) {
-      await new Promise((resolve5) => setImmediate(resolve5));
+      await new Promise((resolve6) => setImmediate(resolve6));
       add2(p);
     }
     for (const base of /* @__PURE__ */ new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
       if (base !== ancestor) for (const p of await committedPaths2(item.person, ancestor, base)) {
-        await new Promise((resolve5) => setImmediate(resolve5));
+        await new Promise((resolve6) => setImmediate(resolve6));
         add2(p);
       }
     }
@@ -37581,7 +37695,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   });
   const diskDirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
   for (const p of pathSet) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     let excluded = false;
     const callerOnlyHere = callerOnlyPath(p);
     for (const { person, root, linkedInputs } of callerOnlyHere ? safetySides.slice(0, 1) : safetySides) {
@@ -37620,7 +37734,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     }
   }
   if (!options.diskOnly) for (const p of [...pathSet]) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     if (callerOnlyPath(p)) continue;
     for (const { person, session } of participants) {
       if (previewWorker(session, person)) continue;
@@ -37642,7 +37756,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   }
   let callerOnly = 0;
   if (options.skipCallerOnly) for (const p of pathSet) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     if (callerOnlyPath(p)) {
       pathSet.delete(p);
       callerOnly++;
@@ -37696,7 +37810,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     return baseAt(pairs.get(person), p);
   };
   for (const pair of /* @__PURE__ */ new Set([callerBaseline, ...pairs.values()])) for (const p of pair?.untracked.keys() ?? []) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     if (pathSet.has(p) && !leftAlone(pair?.worker, p)) await baseAt(pair, p).catch((error2) => {
       if (!(error2 instanceof MissingBaseBlob)) throw error2;
       pathSet.delete(p);
@@ -37749,7 +37863,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     ignoredNotes.push(`NOT ${options.diskOnly ? "collected" : "previewed"} (over ${overLabel}): ${p}`);
   }
   for (const p of [...pathSet]) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     try {
       await textAt(ancestor, p);
       await baseAt(callerBaseline, p);
@@ -37776,7 +37890,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const owners = /* @__PURE__ */ new Map();
   const anchorBaseline = anchored ? await pairBaseline(relationFor(caller.dir, anchorName)?.baseline, void 0, ancestor, descends) : callerBaseline;
   for (const p of paths) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     const mine = await previewText(anchor3?.session ?? caller, p, anchorName);
     const text2 = mine === void 0 ? await textAt(ancestor, p) : mine;
     merged.set(p, text2);
@@ -37796,7 +37910,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const clean3 = [], conflicts = [], onlyOne = [], sameChange = [], resolvable = [];
     const pair = pairs.get(person);
     for (const p of paths) {
-      await new Promise((resolve5) => setImmediate(resolve5));
+      await new Promise((resolve6) => setImmediate(resolve6));
       if (leftAlone(person, p) || scratchBy.get(person)?.has(p)) continue;
       const mine = merged.get(p);
       const b = await pairBaseAt(person, p);
@@ -38568,7 +38682,7 @@ var init_timing = __esm({
 });
 
 // packages/room-mcp/src/preview-cache.ts
-import { execFile as execFile10, spawn as spawn4 } from "node:child_process";
+import { execFile as execFile11, spawn as spawn4 } from "node:child_process";
 import fs44 from "node:fs";
 import path41 from "node:path";
 function previewCapBytes() {
@@ -38578,13 +38692,13 @@ function previewCapBytes() {
   return Number.isFinite(gb) && gb >= 0 ? gb * 1024 ** 3 : 4 * 1024 ** 3;
 }
 function readTable(column) {
-  return new Promise((resolve5, reject) => {
-    execFile10("ps", ["-A", "-o", `${column}=,stat=`], { encoding: "utf8", timeout: 3e3, maxBuffer: 8 * 1024 * 1024 }, (error2, stdout) => {
+  return new Promise((resolve6, reject) => {
+    execFile11("ps", ["-A", "-o", `${column}=,stat=`], { encoding: "utf8", timeout: 3e3, maxBuffer: 8 * 1024 * 1024 }, (error2, stdout) => {
       if (error2) {
         reject(error2);
         return;
       }
-      resolve5(stdout.split("\n").flatMap((line) => {
+      resolve6(stdout.split("\n").flatMap((line) => {
         const [key2, stat4] = line.trim().split(/\s+/);
         return key2 && stat4 && /^\d+$/.test(key2) ? [{ key: Number(key2), stat: stat4 }] : [];
       }));
@@ -38615,7 +38729,7 @@ async function tryPreviewLock(entry) {
   await fs44.promises.mkdir(path41.dirname(file), { recursive: true, mode: 448 });
   const helper = `printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { kill -0 "-$1" 2>/dev/null; return; }; printf "%s\\n" "$t" | awk -v g="$1" '$1==g && $2 !~ /^Z/ {f=1} END {exit !f}'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done`;
   const args2 = command3 === "lockf" ? ["-t", "0", file, "sh", "-c", helper] : ["-n", file, "sh", "-c", helper];
-  return new Promise((resolve5) => {
+  return new Promise((resolve6) => {
     const child = spawn4(command3, args2, { stdio: ["pipe", "pipe", "ignore"] });
     let settled = false;
     let timer;
@@ -38624,7 +38738,7 @@ async function tryPreviewLock(entry) {
       settled = true;
       if (timer) clearTimeout(timer);
       if (!release) child.stdin.end();
-      resolve5(release);
+      resolve6(release);
     };
     child.stdout.on("data", (data) => {
       if (String(data).includes("READY")) finish(Object.assign(async () => {
@@ -38658,12 +38772,12 @@ async function processCwds(since) {
   }
   if (process.platform !== "darwin" || typeof process.getuid !== "function") return void 0;
   const uid = String(process.getuid());
-  return new Promise((resolve5) => {
-    execFile10(
+  return new Promise((resolve6) => {
+    execFile11(
       "lsof",
       ["-a", "-d", "cwd", "-u", uid, "-Fn"],
       { encoding: "utf8", timeout: 1e4, maxBuffer: 16 * 1024 * 1024 },
-      (error2, stdout) => resolve5(lsofCwds(error2, stdout))
+      (error2, stdout) => resolve6(lsofCwds(error2, stdout))
     );
   });
 }
@@ -38718,10 +38832,10 @@ async function clearPreviewQuarantine(entry) {
   return true;
 }
 async function measurePreview(entry, cap) {
-  const du = await new Promise((resolve5) => {
-    execFile10("du", ["-sk", entry], { timeout: 1e4, maxBuffer: 1024 * 1024 }, (error2, stdout) => {
+  const du = await new Promise((resolve6) => {
+    execFile11("du", ["-sk", entry], { timeout: 1e4, maxBuffer: 1024 * 1024 }, (error2, stdout) => {
       const kb = Number(/^\s*(\d+)\s/.exec(stdout)?.[1]);
-      resolve5(error2 || !Number.isSafeInteger(kb) ? void 0 : kb * 1024);
+      resolve6(error2 || !Number.isSafeInteger(kb) ? void 0 : kb * 1024);
     });
   });
   if (du !== void 0) return du;
@@ -38899,7 +39013,7 @@ __export(files_exports, {
   testVerdict: () => testVerdict,
   waitForPreviewSweepForTests: () => waitForPreviewSweepForTests
 });
-import { execFile as execFile11, spawn as spawn5 } from "node:child_process";
+import { execFile as execFile12, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
 import { createHash as createHash15, randomUUID as randomUUID6 } from "node:crypto";
 import fs45 from "node:fs";
@@ -39024,7 +39138,7 @@ function handlers2(state) {
             ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
           ].filter(Boolean)) : [...snap?.entries.keys() ?? []].sort();
           for (const p of paths) {
-            await new Promise((resolve5) => setImmediate(resolve5));
+            await new Promise((resolve6) => setImmediate(resolve6));
             const d = await one(p);
             if (d) parts.push(d);
           }
@@ -39254,7 +39368,7 @@ ${text2}--- end ${p} ---`);
               const modes = /* @__PURE__ */ new Map();
               let modeCount = 0;
               for (const p of merged.keys()) {
-                if (modeCount++ % 32 === 0) await new Promise((resolve5) => setImmediate(resolve5));
+                if (modeCount++ % 32 === 0) await new Promise((resolve6) => setImmediate(resolve6));
                 let leadMode = 420;
                 try {
                   const stat4 = fs45.lstatSync(path42.join(caller.dir, p));
@@ -39310,7 +39424,7 @@ ${text2}--- end ${p} ---`);
   return handlers10;
 }
 async function linkSharedDirs(cloneDir, scratchDir) {
-  const yieldTurn2 = () => new Promise((resolve5) => setImmediate(resolve5));
+  const yieldTurn2 = () => new Promise((resolve6) => setImmediate(resolve6));
   await yieldTurn2();
   ensureMergedDirectory(scratchDir, "");
   const venv = path42.join(cloneDir, ".venv");
@@ -39357,7 +39471,7 @@ async function mirrorLinks(cloneDir, scratchDir, src, dst) {
   ensureMergedDirectory(scratchDir, path42.relative(scratchDir, dst));
   let count = 0;
   for (const e of fs45.readdirSync(src, { withFileTypes: true })) {
-    if (count++ % 32 === 0) await new Promise((resolve5) => setImmediate(resolve5));
+    if (count++ % 32 === 0) await new Promise((resolve6) => setImmediate(resolve6));
     ensureMergedDirectory(scratchDir, path42.relative(scratchDir, dst));
     const from2 = path42.join(src, e.name), to2 = path42.join(dst, e.name);
     if (e.isSymbolicLink()) {
@@ -39502,7 +39616,7 @@ function setPreviewCleanupForTests(options = {}) {
 function runTrackedProcess(file, args2, options) {
   const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options;
   const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS;
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     if (signal?.aborted) {
       reject(new PreviewCancelled());
       return;
@@ -39592,7 +39706,7 @@ function runTrackedProcess(file, args2, options) {
           await new Promise((done) => setTimeout(done, 25));
         }
         await Promise.race([closed, ended]);
-        settle(() => failed ? fail() : resolve5({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped }));
+        settle(() => failed ? fail() : resolve6({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped }));
       })().catch((error2) => settle(() => reject(error2)));
     });
     if (child.pid && lock) void lock.trackProcess(child.pid).then(() => child.stdin.end("GO\n"), stop);
@@ -39614,12 +39728,12 @@ async function boundedProbe(operation) {
   }
 }
 async function processCommand(file, args2) {
-  return boundedProbe(new Promise((resolve5, reject) => {
-    execFile11(
+  return boundedProbe(new Promise((resolve6, reject) => {
+    execFile12(
       file,
       args2,
       { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } },
-      (error2, stdout) => error2 ? reject(error2) : resolve5(stdout)
+      (error2, stdout) => error2 ? reject(error2) : resolve6(stdout)
     );
   }));
 }
@@ -39934,7 +40048,7 @@ async function removePreviewCache(cloneDir, repoDir = cloneDir) {
 async function waitForPreviewSweepForTests() {
   for (let n = 0; n < 1e3; n++) {
     if (!previewMigrations.size && !previewEvictions.size) return;
-    await new Promise((resolve5) => setTimeout(resolve5, 10));
+    await new Promise((resolve6) => setTimeout(resolve6, 10));
   }
   throw new Error("preview cache maintenance did not finish");
 }
@@ -40081,7 +40195,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
         await materializeGitTree(s.dir, ancestor, dir);
       }
       for (const [rel, value5] of merged) {
-        await new Promise((resolve5) => setImmediate(resolve5));
+        await new Promise((resolve6) => setImmediate(resolve6));
         materializeMergedFile(dir, rel, value5 === null ? null : Buffer.from(value5, "latin1"), modes.get(rel) ?? 420);
         observe?.mergedWrite?.(rel);
       }
@@ -40098,8 +40212,8 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
     const result2 = await previewCheck(async () => {
       const command3 = bash ?? "sh";
       const args2 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
-      if (process.platform === "win32") return new Promise((resolve5, reject) => {
-        execFile11(command3, args2, { cwd: dir, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env, signal }, (err, stdout, stderr) => {
+      if (process.platform === "win32") return new Promise((resolve6, reject) => {
+        execFile12(command3, args2, { cwd: dir, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env, signal }, (err, stdout, stderr) => {
           if (err && signal?.aborted) {
             const cancelled = new PreviewCancelled();
             cancelled.out = `${stdout}${stderr}`;
@@ -40113,7 +40227,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
             reject(limit);
             return;
           }
-          resolve5({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false });
+          resolve6({ code: typeof raw === "number" ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false });
         });
       });
       const tracked = await runTrackedProcess(command3, args2, { cwd: dir, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, lock: previewProcesses.getStore()?.lock, env, signal });
@@ -40233,11 +40347,11 @@ async function materializeGitTree(cloneDir, ref, destination) {
   const index = path42.join(destination, `.room-preview-index-${randomUUID6()}`);
   const env = { ...process.env, GIT_INDEX_FILE: index };
   const deadline = performance4.now() + SETUP_TIMEOUT_MS;
-  const run2 = (args2) => new Promise((resolve5, reject) => {
+  const run2 = (args2) => new Promise((resolve6, reject) => {
     const remaining = Math.max(1, Math.ceil(deadline - performance4.now()));
-    execFile11("git", ["-C", cloneDir, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", ...args2], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr) => {
+    execFile12("git", ["-C", cloneDir, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", ...args2], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr) => {
       if (error2) reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${args2[0]}: ${String(stderr || error2.message).trim()})`));
-      else resolve5();
+      else resolve6();
     });
   });
   try {
@@ -41475,7 +41589,7 @@ var init_worker_registry = __esm({
       if (!guardBusy(error2)) throw error2;
       const remaining = deadline - performance5.now();
       if (remaining <= 0) throw new Error(`registry guard wait exceeded ${GUARD_WAIT_MS2} ms: ${error2.message}`);
-      await new Promise((resolve5) => setTimeout(resolve5, Math.min(GUARD_POLL_MS, remaining)));
+      await new Promise((resolve6) => setTimeout(resolve6, Math.min(GUARD_POLL_MS, remaining)));
     };
     object5 = (value5) => !!value5 && typeof value5 === "object" && !Array.isArray(value5);
     tokenShape = (value5) => object5(value5) && Number.isSafeInteger(value5.pid) && typeof value5.startTime === "string" && typeof value5.executable === "string" && typeof value5.sessionId === "string" && typeof value5.nonce === "string";
@@ -42054,7 +42168,7 @@ var init_worker_registry = __esm({
           if (createExclusive(file, { holder: this.identity, worktree: canonical, at: this.now() })) break;
           if (await leaseRetry(() => recover(file, () => true), deadline)) continue;
           if (performance5.now() >= deadline) throw new Error("another collection is in progress");
-          await new Promise((resolve5) => setTimeout(resolve5, GUARD_POLL_MS));
+          await new Promise((resolve6) => setTimeout(resolve6, GUARD_POLL_MS));
         }
         try {
           return await work();
@@ -42690,7 +42804,7 @@ var init_worker_registry = __esm({
           }
           if (readJson(file)?.done) return;
           if (await leaseRetry(() => recover(lock, () => true), deadline)) continue;
-          await new Promise((resolve5) => setTimeout(resolve5, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance5.now()))));
+          await new Promise((resolve6) => setTimeout(resolve6, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance5.now()))));
         }
         if (!acquired) throw new Error("registry migration in progress");
         try {
@@ -42865,7 +42979,7 @@ var init_graph_index = __esm({
     MIN_PUBLISH_MS = 2e4;
     YIELD_EVERY = 100;
     YIELD_AFTER_MS = 20;
-    yieldToEventLoop = () => new Promise((resolve5) => setImmediate(resolve5));
+    yieldToEventLoop = () => new Promise((resolve6) => setImmediate(resolve6));
     READ_AHEAD_PATHS = 32;
     GraphIndex = class {
       constructor(room, me, dir, log2 = () => {
@@ -43268,9 +43382,9 @@ var init_graph_index = __esm({
         this.unobserve = [];
       }
       async initialBuild() {
-        await new Promise((resolve5) => {
-          this.endJitter = resolve5;
-          this.jitterTimer = setTimeout(resolve5, Math.floor((this.opts.random ?? Math.random)() * 4001));
+        await new Promise((resolve6) => {
+          this.endJitter = resolve6;
+          this.jitterTimer = setTimeout(resolve6, Math.floor((this.opts.random ?? Math.random)() * 4001));
         });
         this.initialStarted = true;
         if (!this.stopped) await this.rebuild();
@@ -43646,16 +43760,16 @@ var init_graph_index = __esm({
         if (inflight) {
           if (inflight.generation !== this.generation) {
             inflight.resolve();
-            inflight.promise = new Promise((resolve6) => {
-              inflight.resolve = resolve6;
+            inflight.promise = new Promise((resolve7) => {
+              inflight.resolve = resolve7;
             });
             inflight.generation = this.generation;
           }
           return inflight.promise;
         }
-        let resolve5;
+        let resolve6;
         const promise = new Promise((r) => {
-          resolve5 = r;
+          resolve6 = r;
         });
         let resolveIdle;
         const idle = new Promise((r) => {
@@ -43664,7 +43778,7 @@ var init_graph_index = __esm({
             r();
           };
         });
-        this.pending.set(path66, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
+        this.pending.set(path66, { generation: this.generation, promise, resolve: resolve6, idle, resolveIdle });
         this.refreshQueue.push(path66);
         if (!this.drainQueued) {
           this.drainQueued = true;
@@ -44135,7 +44249,7 @@ async function guarded3(fn) {
       return fn();
     } catch (e) {
       if (!(e instanceof Error && /lease guard busy/.test(e.message)) || performance.now() > deadline) throw e;
-      await new Promise((resolve5) => setTimeout(resolve5, 20));
+      await new Promise((resolve6) => setTimeout(resolve6, 20));
     }
   }
 }
@@ -44316,7 +44430,7 @@ var init_publisher_lease = __esm({
 });
 
 // packages/room-mcp/src/repository.ts
-import { execFile as execFile12 } from "node:child_process";
+import { execFile as execFile13 } from "node:child_process";
 import fs51 from "node:fs";
 async function repositoryRoot(dir, git4 = run) {
   const where = await git4(dir, ["rev-parse", "--is-bare-repository", "--is-inside-work-tree"]);
@@ -44367,10 +44481,10 @@ var init_repository = __esm({
     notRepository = (dir) => `Room works inside a git repository, and ${dir} isn't one. Run \`git init\` and make a first commit, or open the project's repository folder, then say 'join the room' again.`;
     noWorkTree = (dir, bare) => `Room works in a repository's working tree (the folder with your files), and ${dir} is ${bare ? "a bare repository" : "inside a repository's .git folder"}, which has none. Open the checkout folder, then say 'join the room' again.`;
     noCommit = (root) => `Room needs a first commit: ${root} is a git repository with no commits yet. Make a first commit (git add -A && git commit -m "first commit"), then say 'join the room' again.`;
-    run = (dir, args2) => new Promise((resolve5) => {
-      execFile12("git", args2, { cwd: dir, timeout: timeoutMs() }, (err, stdout, stderr) => {
+    run = (dir, args2) => new Promise((resolve6) => {
+      execFile13("git", args2, { cwd: dir, timeout: timeoutMs() }, (err, stdout, stderr) => {
         const e = err;
-        resolve5({ status: !e ? 0 : e.killed ? "timeout" : e.code ?? null, stdout: String(stdout), stderr: String(stderr) });
+        resolve6({ status: !e ? 0 : e.killed ? "timeout" : e.code ?? null, stdout: String(stdout), stderr: String(stderr) });
       });
     });
   }
@@ -44379,7 +44493,7 @@ var init_repository = __esm({
 // packages/room-mcp/src/bridge.ts
 async function projectionTurn(index, valid) {
   if (index % PREPARE_BATCH === 0) {
-    await new Promise((resolve5) => setImmediate(resolve5));
+    await new Promise((resolve6) => setImmediate(resolve6));
     if (!valid()) throw new ProjectionMoved("projection inputs moved");
   }
 }
@@ -45270,6 +45384,7 @@ async function pollLogin(credentialsPath2, server, p, opts = {}) {
     if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` };
     const b = await res.json();
     if (b.session && b.login) {
+      await primePrivateDirectory(dirname3(credentialsPath2));
       setCredential(credentialsPath2, server, { session: b.session, login: b.login, at: Date.now() });
       configCache.delete(server);
       return { login: b.login };
@@ -45293,6 +45408,7 @@ async function logout(credentialsPath2, server) {
       unconfirmed = e instanceof Error ? e.message : String(e);
     }
   }
+  if (c) await primePrivateDirectory(dirname3(credentialsPath2));
   return { login: c?.login, removed: removeCredential(credentialsPath2, server), ...unconfirmed ? { unconfirmed } : {} };
 }
 function findRoomFile(start) {
@@ -45451,8 +45567,10 @@ async function discoverCompatibility(server, dir, localKey, log2) {
   } catch (error2) {
     throw new RoomdError(error2 instanceof Error ? error2.message : String(error2), 2);
   }
-  if (!profile.legacy) negotiatingOrigins.add(server);
-  else negotiatingOrigins.delete(server);
+  if (!profile.legacy) {
+    await primePrivateState(common);
+    negotiatingOrigins.add(server);
+  } else negotiatingOrigins.delete(server);
   return { ...profile, remember: () => {
     if (!profile.legacy) floor2.remember();
   } };
@@ -45511,7 +45629,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   let chosen;
   try {
     if (compatibilityRefusal) throw new RoomdError(compatibilityRefusal, 2);
-    if (!probe.synced) await timed("sync", () => inPhase("sync", () => new Promise((resolve5, reject) => {
+    if (!probe.synced) await timed("sync", () => inPhase("sync", () => new Promise((resolve6, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
         probe.off("sync", onSync);
@@ -45526,7 +45644,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       const onSync = (synced) => {
         if (synced) {
           cleanup();
-          resolve5();
+          resolve6();
         }
       };
       const timer = setTimeout(() => {
@@ -46239,8 +46357,11 @@ function watchClosed(s, log2, startupClose) {
     });
   });
 }
-function removeStaleCredential(credentialsPath2, server, reason) {
-  if (/expired or unknown/.test(reason)) removeCredential(credentialsPath2, server);
+async function removeStaleCredential(credentialsPath2, server, reason) {
+  if (/expired or unknown/.test(reason)) {
+    await primePrivateDirectory(dirname3(credentialsPath2));
+    removeCredential(credentialsPath2, server);
+  }
 }
 async function checkTeamAdmission(rawServer, roomName, opts = {}) {
   roomName = normalizeExplicitRoomName(roomName);
@@ -46273,7 +46394,7 @@ async function preflight(credentialsPath2, server, roomName, auth, log2) {
     if (res.status === 401) {
       const reason = (await res.text()).trim() || "unauthorized";
       if (/room_login/.test(reason)) {
-        removeStaleCredential(credentialsPath2, server, reason);
+        await removeStaleCredential(credentialsPath2, server, reason);
         return { reason, loginNeeded: true };
       }
       return { reason };
@@ -54875,7 +54996,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
+        await new Promise((resolve6) => setTimeout(resolve6, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -54892,7 +55013,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -54970,7 +55091,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve5(parseResult.data);
+            resolve6(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -55231,12 +55352,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve5, interval);
+      const timeoutId = setTimeout(resolve6, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -56045,7 +56166,7 @@ init_config();
 
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
-import { execFile as execFile13, execFileSync as execFileSync10 } from "node:child_process";
+import { execFile as execFile14, execFileSync as execFileSync10 } from "node:child_process";
 
 // packages/room-mcp/src/codex-app-server.ts
 init_wrapper();
@@ -56063,7 +56184,7 @@ function readCodexThreadStatus(o) {
   return exchange(o, false);
 }
 function exchange(o, post) {
-  return new Promise((resolve5) => {
+  return new Promise((resolve6) => {
     let socket;
     let settled = false;
     let timer;
@@ -56074,7 +56195,7 @@ function exchange(o, post) {
       settled = true;
       clearTimeout(timer);
       socket?.terminate();
-      resolve5(result2);
+      resolve6(result2);
     };
     const fail = (error2, rejected = false) => finish({ kind: submitted && !rejected ? "uncertain" : "unavailable", reason: error2 instanceof Error ? error2.message : String(error2) });
     try {
@@ -56205,7 +56326,7 @@ function wakePathStatus(o) {
   return { mode: selected, transport: "none", availability: "unavailable" };
 }
 function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIMEOUT_MS) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     const socket = net.createConnection(socketPath);
     let settled = false;
     let flushed = false;
@@ -56214,7 +56335,7 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
       settled = true;
       socket.destroy();
       if (error2) reject(error2);
-      else resolve5();
+      else resolve6();
     };
     socket.setTimeout(timeoutMs2, () => finish(new Error("Claude inbox socket timed out")));
     socket.once("error", finish);
@@ -56230,8 +56351,8 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
   });
 }
 function codexQueue(threadId, text2) {
-  return new Promise((resolve5, reject) => {
-    execFile13("codex", ["queue", "--thread", threadId, "--message", text2], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve5());
+  return new Promise((resolve6, reject) => {
+    execFile14("codex", ["queue", "--thread", threadId, "--message", text2], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve6());
   });
 }
 function createWakeSender(o) {
@@ -56992,7 +57113,7 @@ var ConflictSet = class _ConflictSet {
           this.slots.deferPeerNotices = false;
         }
         if (!this.rerun) return;
-        if (attempt === 0) await new Promise((resolve5) => setImmediate(resolve5));
+        if (attempt === 0) await new Promise((resolve6) => setImmediate(resolve6));
       }
       if (!this.stopped) this.log(`conflicts ${this.owner}: inputs moved twice; coalesced next check`);
     })();
@@ -57023,7 +57144,7 @@ var ConflictSet = class _ConflictSet {
     const projected = snap.name === this.owner && snap.head.projectedFrom && this.notices.room !== this.team.room;
     const projectedEntry = snap.entries.get(path66);
     if (projected && projectedEntry?.state === "held" && projectedEntry.hash) {
-      await new Promise((resolve5) => setImmediate(resolve5));
+      await new Promise((resolve6) => setImmediate(resolve6));
       const source = snapshotPath(this.notices.room, this.owner, participantsView(this.notices.room, this.notices.awareness, Date.now()), path66);
       if (source?.fenceValid && source.record?.holder?.workerId === snap.head.projectedFrom && source.entries.get(path66)?.hash === projectedEntry.hash) {
         const resolved = await versionOf(source, path66, env);
@@ -57666,12 +57787,12 @@ var ConflictSet = class _ConflictSet {
   async budget() {
     const now = Date.now();
     this.starts = this.starts.filter((t) => now - t < 1e4);
-    if (this.starts.length >= 4) await new Promise((resolve5) => setTimeout(resolve5, 1e4 - (now - this.starts[0])));
+    if (this.starts.length >= 4) await new Promise((resolve6) => setTimeout(resolve6, 1e4 - (now - this.starts[0])));
     this.starts.push(Date.now());
   }
   /** Yield before fast as well as slow file branches, so cached/held paths count. */
   async fileTurn() {
-    if (++this.fileWork % 32 === 0) await new Promise((resolve5) => setImmediate(resolve5));
+    if (++this.fileWork % 32 === 0) await new Promise((resolve6) => setImmediate(resolve6));
   }
 };
 var projectedSets = /* @__PURE__ */ new WeakMap();
@@ -57791,7 +57912,7 @@ function handlers3(state) {
       }
       const overlaps = [];
       for (const group of groups.values()) {
-        await new Promise((resolve5) => setImmediate(resolve5));
+        await new Promise((resolve6) => setImmediate(resolve6));
         const first = group[0];
         const map2 = await claimMapInMyText(s, first, t ?? "");
         for (const c of group) {
@@ -58661,8 +58782,10 @@ function createWorkerRuntime(deps) {
 
 // packages/room-mcp/src/tools/join.ts
 init_src();
+init_src3();
 init_src4();
 init_local();
+import { dirname as dirname5 } from "node:path";
 
 // packages/room-mcp/src/tools/scope.ts
 init_daemon_cutover();
@@ -58677,11 +58800,11 @@ import { createHash as createHash20, randomUUID as randomUUID9 } from "node:cryp
 import { rename, rm, writeFile } from "node:fs/promises";
 import path51 from "node:path";
 function launchBrowserHandler(command3, args2) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     const child = spawn6(command3, args2, { detached: true, stdio: "ignore", windowsHide: true });
     const timer = setTimeout(() => {
       child.unref();
-      resolve5();
+      resolve6();
     }, 1e3);
     child.once("error", (error2) => {
       clearTimeout(timer);
@@ -58689,7 +58812,7 @@ function launchBrowserHandler(command3, args2) {
     });
     child.once("exit", (code) => {
       clearTimeout(timer);
-      code === 0 ? resolve5() : reject(new Error("Browser handler failed"));
+      code === 0 ? resolve6() : reject(new Error("Browser handler failed"));
     });
   });
 }
@@ -59064,7 +59187,7 @@ async function captureCpuProfile(ms2) {
     await session.post("Profiler.enable");
     await session.post("Profiler.setSamplingInterval", { interval: CPU_PROFILE_SAMPLE_US });
     await session.post("Profiler.start");
-    await new Promise((resolve5) => setTimeout(resolve5, ms2).unref());
+    await new Promise((resolve6) => setTimeout(resolve6, ms2).unref());
     const { profile } = await session.post("Profiler.stop");
     return profile;
   } finally {
@@ -60026,8 +60149,12 @@ function handlers6(state) {
       const server = serverOf(a, config2.server);
       if (server === LOCAL) return LOCAL_LOGIN;
       const store = config2.credentialsPath;
+      const savePending = async (pending2) => {
+        await primePrivateDirectory(dirname5(store));
+        setPending(store, server, pending2);
+      };
       if (a.action === "logout") {
-        setPending(store, server, void 0);
+        await savePending(void 0);
         const r = await logout(store, server);
         const unconfirmed = r.unconfirmed ? `; the server did not confirm ending the session (${r.unconfirmed}), so it may stay valid there until it expires` : "";
         return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ""}${unconfirmed}${ctx.getSession() ? "; the current session stays connected until room_leave" : ""}` : `no login stored for ${server}`;
@@ -60043,17 +60170,17 @@ function handlers6(state) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === "number" ? a.wait : 90));
         const r = await pollLogin(store, server, pending, { maxMs: wait * 1e3 });
         if ("login" in r) {
-          setPending(store, server, void 0);
+          await savePending(void 0);
           return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? "" : "Next: room_join (or room_create if nobody has opened this repo)."}`.trim();
         }
         if ("error" in r) {
-          setPending(store, server, void 0);
+          await savePending(void 0);
           return `login failed: ${r.error}. Call room_login to start again.`;
         }
         return `still waiting: ${codeLine(pending)}`;
       }
       const p = await startLogin(server, provider, log2);
-      setPending(store, server, { ...p, startedAt: Date.now() });
+      await savePending({ ...p, startedAt: Date.now() });
       return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
     },
     async room_create(a) {
@@ -60564,7 +60691,7 @@ import fs60 from "node:fs";
 import path56 from "node:path";
 import os15 from "node:os";
 import { randomUUID as randomUUID10 } from "node:crypto";
-import { execFile as execFile14 } from "node:child_process";
+import { execFile as execFile15 } from "node:child_process";
 var MAX_LISTED = 10;
 var OPERATIONS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"];
 var internalGit2 = (dir, args2) => git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args2]);
@@ -60590,8 +60717,8 @@ async function containmentDetails(dir, deltaBase, target, delivered) {
   ];
   const done = observeGit(args2);
   try {
-    return await new Promise((resolve5, reject) => {
-      execFile14("git", args2, { cwd: dir, timeout: timeoutMs(), maxBuffer: 64 * 1024 * 1024 }, (error2, stdout) => {
+    return await new Promise((resolve6, reject) => {
+      execFile15("git", args2, { cwd: dir, timeout: timeoutMs(), maxBuffer: 64 * 1024 * 1024 }, (error2, stdout) => {
         if (error2 && error2.code !== 1) {
           reject(error2);
           return;
@@ -60601,7 +60728,7 @@ async function containmentDetails(dir, deltaBase, target, delivered) {
           reject(new Error("no containment tree"));
           return;
         }
-        resolve5({ tree, revised });
+        resolve6({ tree, revised });
       });
     });
   } finally {
@@ -61170,7 +61297,7 @@ ${lines2.join("\n")}` };
       waiting.set(x, fn);
     }
     setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
-    return await new Promise((resolve5) => {
+    return await new Promise((resolve6) => {
       let finished = false;
       let timer;
       const finish = (r) => {
@@ -61184,7 +61311,7 @@ ${lines2.join("\n")}` };
         signal?.removeEventListener("abort", onAbort);
         for (const [x, fn] of waiting) pendingWaits.get(x)?.delete(fn);
         setPresence(s, { status: "idle" });
-        resolve5(r);
+        resolve6(r);
       };
       const onAbort = () => finish("error: tool call cancelled");
       const onRecipient = () => {
@@ -61452,7 +61579,7 @@ var HooksBridge = class {
     const myTexts = /* @__PURE__ */ new Map();
     const claims = [];
     for (const c of openClaims.filter((c2) => !(c2.by === me && isAgentic(c2.byKind)))) {
-      await new Promise((resolve5) => setImmediate(resolve5));
+      await new Promise((resolve6) => setImmediate(resolve6));
       const key2 = `${c.by}\0${c.path}`;
       if (!ownerSnapshots.has(key2)) ownerSnapshots.set(key2, snapshotPath(this.s.room, c.by, views, c.path));
       const owner = ownerSnapshots.get(key2);
@@ -61683,7 +61810,7 @@ var CodexTurnProbe = class {
           if (scan.skipPartial) {
             const lastNewline2 = data.lastIndexOf(10);
             if (lastNewline2 < 0) {
-              await new Promise((resolve5) => setImmediate(resolve5));
+              await new Promise((resolve6) => setImmediate(resolve6));
               continue;
             }
             scan.completeEnd = start + lastNewline2 + 1;
@@ -61704,7 +61831,7 @@ var CodexTurnProbe = class {
             end = previousNewline + 1;
           }
           scan.carry = Buffer.from(data.subarray(0, end));
-          await new Promise((resolve5) => setImmediate(resolve5));
+          await new Promise((resolve6) => setImmediate(resolve6));
         }
         if (scan.position > 0) return null;
         const event = this.parseEvent(scan.carry.subarray(0, Math.max(0, scan.carry.length - 1)));
@@ -62865,8 +62992,8 @@ function createHandlerState(ctx) {
       });
       if (stops.length) {
         let timer;
-        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise((resolve5) => {
-          timer = setTimeout(() => resolve5(false), 1800);
+        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise((resolve6) => {
+          timer = setTimeout(() => resolve6(false), 1800);
           timer.unref();
         })]);
         if (timer) clearTimeout(timer);
@@ -62899,13 +63026,13 @@ init_company();
 
 // packages/room-mcp/src/completion-reconnect.ts
 function waitForCompletionReconnect(current2, signal, timeoutMs2 = 3e4) {
-  return new Promise((resolve5) => {
+  return new Promise((resolve6) => {
     let timer;
     const deadline = Date.now() + timeoutMs2;
     const finish = (result2) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      resolve5(result2);
+      resolve6(result2);
     };
     const abort = () => finish("cancelled");
     const check = () => {
@@ -63756,7 +63883,7 @@ repeat with force=true to delete them`;
       endPhase = timing?.begin(name);
     };
     const now = state.now ?? Date.now;
-    const sleep = state.ctx?.sleep ?? ((ms2) => new Promise((resolve5) => setTimeout(resolve5, ms2)));
+    const sleep = state.ctx?.sleep ?? ((ms2) => new Promise((resolve6) => setTimeout(resolve6, ms2)));
     const run2 = { a, lead, leadRoot, registry: registry2, out, workerLocks, now, sleep, nextPhase };
     try {
       for (const item of candidates) {
@@ -63992,9 +64119,9 @@ function createTools(ctx) {
   const workerOps = /* @__PURE__ */ new Set();
   const untilAborted = (signal) => {
     let onAbort;
-    const aborted2 = new Promise((resolve5) => {
-      onAbort = () => resolve5(true);
-      if (signal?.aborted) resolve5(true);
+    const aborted2 = new Promise((resolve6) => {
+      onAbort = () => resolve6(true);
+      if (signal?.aborted) resolve6(true);
       else signal?.addEventListener("abort", onAbort, { once: true });
     });
     return { aborted: aborted2, done: () => {
@@ -64140,10 +64267,10 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++;
         const previous = moves;
-        const mine = new Promise((resolve5) => {
+        const mine = new Promise((resolve6) => {
           release = () => {
             pendingMoves--;
-            resolve5();
+            resolve6();
           };
         });
         moves = previous.then(() => mine);
@@ -64165,8 +64292,8 @@ not done: ${name} writes under your name, and coordination is paused; retry once
           }
         }
         wait.done();
-        const done = new Promise((resolve5) => {
-          release = resolve5;
+        const done = new Promise((resolve6) => {
+          release = resolve6;
         });
         workerOps.add(done);
         void done.then(() => workerOps.delete(done));
@@ -64423,7 +64550,7 @@ var AutoJoin = class {
   }
   /** The attempt, unless the deadline or a cancel comes first; a session that arrives later is left. */
   bounded(attempt, deadline) {
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       let open3 = true;
       const timer = setTimeout(() => finish(() => reject(new RoomdError(`did not finish within the ${Math.round(this.deadlineMs / 1e3)}s join deadline`, 1))), Math.max(0, deadline - this.now()));
       const finish = (f) => {
@@ -64433,10 +64560,10 @@ var AutoJoin = class {
         this.wake = null;
         f();
       };
-      this.wake = () => finish(() => resolve5("gave-up"));
+      this.wake = () => finish(() => resolve6("gave-up"));
       attempt.then(
         (s) => {
-          if (open3) finish(() => resolve5(this.cancelled && s ? (void this.o.discard(s, this.cancelled && this.explicitLeave ? "leave" : "attempt"), "gave-up") : s));
+          if (open3) finish(() => resolve6(this.cancelled && s ? (void this.o.discard(s, this.cancelled && this.explicitLeave ? "leave" : "attempt"), "gave-up") : s));
           else if (s) void this.o.discard(s, this.cancelled && this.explicitLeave ? "leave" : "attempt");
         },
         (e) => finish(() => reject(e))
@@ -64444,15 +64571,15 @@ var AutoJoin = class {
     });
   }
   sleep(ms2) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve6) => {
       const timer = setTimeout(() => {
         this.wake = null;
-        resolve5();
+        resolve6();
       }, ms2);
       this.wake = () => {
         clearTimeout(timer);
         this.wake = null;
-        resolve5();
+        resolve6();
       };
     });
   }
@@ -64460,6 +64587,7 @@ var AutoJoin = class {
 
 // packages/room-mcp/src/index.ts
 init_src4();
+init_src3();
 init_config();
 
 // packages/room-mcp/src/transport.ts
@@ -64561,12 +64689,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message2) {
-    return new Promise((resolve5) => {
+    return new Promise((resolve6) => {
       const json = serializeMessage(message2);
       if (this._stdout.write(json)) {
-        resolve5();
+        resolve6();
       } else {
-        this._stdout.once("drain", resolve5);
+        this._stdout.once("drain", resolve6);
       }
     });
   }
@@ -64597,7 +64725,7 @@ var FlushedStdioTransport = class extends StdioServerTransport {
       settle.release();
       settle = void 0;
     }
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve6, reject) => {
       try {
         this.out.write(serializeMessage(message2), (error2) => {
           if (error2) {
@@ -64605,7 +64733,7 @@ var FlushedStdioTransport = class extends StdioServerTransport {
             reject(error2);
           } else {
             settle?.commit();
-            resolve5();
+            resolve6();
           }
         });
       } catch (error2) {
@@ -64721,11 +64849,11 @@ async function startArbitration(o) {
     socket.on("error", () => {
     });
   });
-  await new Promise((resolve5, reject) => {
+  await new Promise((resolve6, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       server.off("error", reject);
-      resolve5();
+      resolve6();
     });
   });
   const port = server.address().port;
@@ -64756,7 +64884,7 @@ async function startArbitration(o) {
     async close() {
       clearInterval(timer);
       if (written) removeOwn(written, key2);
-      await new Promise((resolve5) => server.close(() => resolve5()));
+      await new Promise((resolve6) => server.close(() => resolve6()));
     }
   };
 }
@@ -64920,7 +65048,7 @@ async function nextIdleEpisode(commonDir2) {
       });
     } catch (error2) {
       if (!(error2 instanceof Error) || !error2.message.startsWith("lease guard busy:") || performance.now() >= deadline) throw error2;
-      await new Promise((resolve5) => setTimeout(resolve5, 10));
+      await new Promise((resolve6) => setTimeout(resolve6, 10));
     }
   }
 }
@@ -65212,7 +65340,8 @@ async function main() {
     logFailure: (error2) => log(`workspace initialization failed: ${error2 instanceof Error ? error2.message : String(error2)}`),
     initialize: async (dir, signal) => {
       let session = null;
-      const startup = await resolveConfig({ dir, env: process.env });
+      const privacy = gitCommonDir(dir).catch(() => void 0).then((common) => common ? primePrivateState(common) : void 0);
+      const [startup] = await Promise.all([resolveConfig({ dir, env: process.env }), privacy]);
       if (signal.aborted) throw new Error("Room is shutting down");
       LOG_FILE = startup.logFile;
       const sessionBinding = createSessionBinding(dir);
@@ -65461,8 +65590,8 @@ async function finishSignalShutdown(reason, leave, report, exit, limitMs = 4e3) 
   report(`stopping: ${reason}`);
   let timer;
   try {
-    const completed = await Promise.race([leave().then(() => true), new Promise((resolve5) => {
-      timer = setTimeout(() => resolve5(false), limitMs);
+    const completed = await Promise.race([leave().then(() => true), new Promise((resolve6) => {
+      timer = setTimeout(() => resolve6(false), limitMs);
     })]);
     if (!completed) report(`shutdown timed out after ${limitMs}ms: ${reason}`);
   } catch (error2) {

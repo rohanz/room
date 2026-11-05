@@ -1,7 +1,7 @@
 /** Private checkout boundary. Windows ACL inspection is required; chmod is not an ACL check. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 
 interface AclReport { owner: string; user: string; protected: boolean; grants: string[]; directory?: boolean; repaired?: boolean }
 export function checkWindowsAcl(report: AclReport, file: string): void {
@@ -29,11 +29,9 @@ function windowsPowerShellEnv(file: string): NodeJS.ProcessEnv {
   env.ROOM_PRIVATE_PATH = file
   return env
 }
-function windowsAcl(file: string, protectNew = false, createDirectory = false, repair = false): void {
-  const key = windowsKey(file), known = verifiedWindows.get(key)
-  if (known && !protectNew && known === windowsIdentity(file)) return
+function windowsAclScript(protectNew: boolean, createDirectory: boolean, repair: boolean): string {
   // The path travels through the environment, never interpolated into PowerShell source.
-  const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+  return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     function PrivateAcl($directory) {
       if ($directory) { $acl=New-Object Security.AccessControl.DirectorySecurity; $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
       else { $acl=New-Object Security.AccessControl.FileSecurity; $inherit=[Security.AccessControl.InheritanceFlags]::None };
@@ -60,19 +58,74 @@ function windowsAcl(file: string, protectNew = false, createDirectory = false, r
       $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
     };` : ''}
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`
+}
+function windowsAclError(file: string, error: unknown): Error {
+  const e = error as NodeJS.ErrnoException & { stderr?: string; signal?: string }
+  const cause = e.code === 'ETIMEDOUT' || e.signal ? 'PowerShell timed out' : (String(e.stderr ?? '').trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300)
+  return new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`)
+}
+function rememberWindowsAcl(file: string, output: string, repair: boolean): void {
   let report: AclReport
-  try {
-    report = JSON.parse(execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { env: windowsPowerShellEnv(file), timeout: 20_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) as AclReport
-  } catch (error) {
-    const e = error as NodeJS.ErrnoException & { stderr?: string; signal?: string }
-    const cause = e.code === 'ETIMEDOUT' || e.signal ? 'PowerShell timed out' : (String(e.stderr ?? '').trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300)
-    throw new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`)
-  }
+  try { report = JSON.parse(output) as AclReport } catch (error) { throw windowsAclError(file, error) }
   if (!report || !Array.isArray(report.grants) || typeof report.user !== 'string') throw new Error(`Invalid Windows ACL inspection for ${file}`)
   checkWindowsAcl(report, file)
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`)
   const identity = windowsIdentity(file)
-  if (identity) verifiedWindows.set(key, identity)
+  if (identity) verifiedWindows.set(windowsKey(file), identity)
+}
+function windowsVerified(file: string): boolean {
+  const known = verifiedWindows.get(windowsKey(file))
+  return !!known && known === windowsIdentity(file)
+}
+function windowsAcl(file: string, protectNew = false, createDirectory = false, repair = false): void {
+  if (!protectNew && windowsVerified(file)) return
+  // A synchronous caller cannot await a prime already in flight. Its own idempotent check is the fallback;
+  // repair only changes an owned, unprotected/broad DACL, so both checks converge on the same private ACL.
+  let output: string
+  try {
+    output = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', windowsAclScript(protectNew, createDirectory, repair)], { env: windowsPowerShellEnv(file), timeout: 20_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    throw windowsAclError(file, error)
+  }
+  rememberWindowsAcl(file, output, repair)
+}
+const primingWindows = new Map<string, Promise<void>>()
+/** Start one non-blocking inspection per path; synchronous writers share its identity cache. */
+function primeWindowsDirectory(dir: string, repair: boolean): Promise<void> {
+  if (process.platform !== 'win32') return Promise.resolve()
+  dir = path.resolve(dir)
+  const key = windowsKey(dir)
+  const running = primingWindows.get(key)
+  if (running) return running
+  if (windowsVerified(dir)) return Promise.resolve()
+  const work = (async () => {
+    // Like privateStateDirectory, never let recursive native creation create checkout ancestors.
+    if (!fs.statSync(path.dirname(dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`)
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', windowsAclScript(false, true, repair)],
+        { env: windowsPowerShellEnv(dir), timeout: 20_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8' },
+        (error, stdout, stderr) => error ? reject(windowsAclError(dir, Object.assign(error, { stderr }))) : resolve(stdout))
+    })
+    rememberWindowsAcl(dir, output, repair)
+  })().finally(() => { if (primingWindows.get(key) === work) primingWindows.delete(key) })
+  primingWindows.set(key, work)
+  return work
+}
+/** Config writers protect only a newly created leaf; existing ancestors keep their ACLs.
+ * The later atomic write still fsyncs each parent, including those created plainly here. */
+export function primePrivateDirectory(dir: string): Promise<void> {
+  if (process.platform !== 'win32') return Promise.resolve()
+  dir = path.resolve(dir)
+  const running = primingWindows.get(windowsKey(dir))
+  if (running) return running
+  if (fs.existsSync(dir)) return Promise.resolve()
+  try { fs.mkdirSync(path.dirname(dir), { recursive: true }) }
+  catch (error) { return Promise.reject(error) }
+  return primeWindowsDirectory(dir, false)
+}
+/** Prime the single Windows privacy boundary as soon as startup knows the Git common directory. */
+export function primePrivateState(commonDir: string): Promise<void> {
+  return primeWindowsDirectory(path.join(commonDir, 'room'), true)
 }
 /** Protect only newly created Room files; never rewrite checkout ACLs. */
 export function verifyPrivatePath(file: string, created = false): void {

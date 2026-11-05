@@ -14,7 +14,7 @@ import * as proof from '../src/proof.js'
 vi.mock('node:child_process', async importOriginal => ({ ...await importOriginal<typeof import('node:child_process')>(), spawn: vi.fn() }))
 
 const dirs: string[] = []
-afterEach(() => { vi.restoreAllMocks(); vi.mocked(childProcess.spawn).mockReset(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.mocked(childProcess.spawn).mockReset(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-launch-ownership-')); dirs.push(dir)
@@ -52,4 +52,102 @@ it.each([true, false])('reports launched=%s only when its own child wins authori
   expect(daemon).toMatchObject({ pid: winner, launched: wins })
   expect(spawn).toHaveBeenCalledTimes(1)
   expect(child.unref).toHaveBeenCalledOnce()
+})
+
+function launchFixture(onSpawn: (child: EventEmitter, dir: string, publish: (pid: number) => void) => void) {
+  const { dir, publish } = fixture(), ownPid = 2147483000
+  const child = Object.assign(new EventEmitter(), { pid: ownPid, unref: vi.fn() })
+  vi.mocked(childProcess.spawn).mockImplementation(() => {
+    onSpawn(child, dir, publish)
+    return child as childProcess.ChildProcess
+  })
+  return { dir, ownPid, child, launch: (startupTimeoutMs?: number) => ensureLocalDaemon(dir, 'local/test', { entryPath: path.resolve(import.meta.filename), startupTimeoutMs }) }
+}
+function phase(dir: string, pid: number, name: string) {
+  fs.appendFileSync(path.join(dir, 'room', 'daemon.log'), `startup pid ${pid}: ${name}\n`, { mode: 0o600 })
+}
+function authority(dir: string) {
+  const hub = path.join(dir, 'room', 'hub')
+  fs.mkdirSync(hub)
+  fs.writeFileSync(path.join(hub, 'authority.lock'), JSON.stringify({ pid: process.pid }), { mode: 0o600 })
+}
+
+it('waits for a live slow child beyond ten seconds while fresh startup phases advance', async () => {
+  const f = launchFixture((_child, dir, publish) => {
+    setTimeout(() => phase(dir, 2147483000, 'state verified'), 12_000)
+    setTimeout(() => phase(dir, 2147483000, 'listening'), 30_000)
+    setTimeout(() => publish(2147483000), 40_000)
+  })
+  vi.useFakeTimers()
+  const launch = f.launch()
+  await vi.advanceTimersByTimeAsync(40_100)
+  await expect(launch).resolves.toMatchObject({ pid: f.ownPid, launched: true })
+})
+
+it('keeps waiting after its losing child exits while a live authority makes progress and publishes', async () => {
+  const f = launchFixture((child, dir, publish) => {
+    authority(dir)
+    setTimeout(() => child.emit('exit', 0, null), 1)
+    setTimeout(() => phase(dir, process.pid, 'authority acquired'), 12_000)
+    setTimeout(() => phase(dir, process.pid, 'listening'), 30_000)
+    setTimeout(() => publish(process.pid), 40_000)
+  })
+  vi.useFakeTimers()
+  const launch = f.launch()
+  await vi.advanceTimersByTimeAsync(40_100)
+  await expect(launch).resolves.toMatchObject({ pid: process.pid, launched: false })
+})
+
+it('fails fast with a bounded private log tail when its child exits and no winner holds authority', async () => {
+  const f = launchFixture((child, dir) => {
+    fs.writeFileSync(path.join(dir, 'room', 'daemon.log'), 'excluded old line\n' + 'x'.repeat(2000) + '\nstartup failed: EACCES fixture\n', { mode: 0o600 })
+    setTimeout(() => child.emit('exit', 1, null), 1)
+  })
+  vi.useFakeTimers()
+  const start = Date.now(), failure = f.launch().catch(error => error as Error)
+  await vi.advanceTimersByTimeAsync(200)
+  const error = await failure as Error
+  expect(Date.now() - start).toBeLessThan(1000)
+  expect(error.message).toContain(`local daemon startup unavailable (child pid ${f.ownPid}): child exited (code 1); no live authority contender`)
+  expect(error.message).toContain('daemon.log (last 1024 bytes, up to 5 lines):\nstartup failed: EACCES fixture')
+  expect(error.message).not.toContain('excluded old line')
+  expect(error.message.length).toBeLessThan(1500)
+})
+
+it.skipIf(process.platform === 'win32')('never exposes a symlinked log in startup diagnostics', async () => {
+  const f = launchFixture((child, dir) => {
+    const outside = path.join(dir, 'outside.log')
+    fs.writeFileSync(outside, 'must not leak')
+    fs.symlinkSync(outside, path.join(dir, 'room', 'daemon.log'))
+    setTimeout(() => child.emit('exit', 1, null), 1)
+  })
+  vi.useFakeTimers()
+  const failure = f.launch().catch(error => error as Error)
+  await vi.advanceTimersByTimeAsync(200)
+  const error = await failure as Error
+  expect(error.message).toContain('no readable private daemon.log tail')
+  expect(error.message).not.toContain('must not leak')
+})
+
+it('stops waiting for an alive child with no new phases, and caps even continuous phase progress', async () => {
+  const f = launchFixture((_child, dir) => {
+    for (let second = 10; second <= 60; second += 10) setTimeout(() => phase(dir, 2147483000, `progress ${second}`), second * 1000)
+  })
+  vi.useFakeTimers()
+  const progressing = f.launch().catch(error => error as Error)
+  await vi.advanceTimersByTimeAsync(60_100)
+  expect((await progressing as Error).message).toContain('startup hard cap reached')
+  vi.clearAllTimers()
+  vi.mocked(childProcess.spawn).mockImplementation(() => Object.assign(new EventEmitter(), { pid: f.ownPid, unref: vi.fn() }) as childProcess.ChildProcess)
+  const stalled = f.launch().catch(error => error as Error)
+  await vi.advanceTimersByTimeAsync(25_100)
+  expect((await stalled as Error).message).toContain('startup phase stalled')
+})
+
+it('honors an explicitly shorter startup hard cap', async () => {
+  const f = launchFixture(() => {})
+  vi.useFakeTimers()
+  const failure = f.launch(500).catch(error => error as Error)
+  await vi.advanceTimersByTimeAsync(600)
+  expect((await failure as Error).message).toContain('startup hard cap reached')
 })

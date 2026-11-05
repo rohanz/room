@@ -1,7 +1,8 @@
 import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
 import { manifestPaths, participantRecord, scopeLine, type Claim, type NoteMsg } from '@room/shared'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { primePrivateDirectory } from '@room/relay'
 import { gitCommonDir, realGitCommonDir } from '@room/roomd'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
@@ -9,7 +10,7 @@ import { NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, createLocalReplica,
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
-import { getCredential, getPending, setPending } from '../credentials.js'
+import { getCredential, getPending, setPending, type PendingLogin } from '../credentials.js'
 import { LOCAL, browserViewLine, logout as doLogout, pollLogin, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Ledger } from '../ledger.js'
@@ -127,8 +128,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (server === LOCAL) return LOCAL_LOGIN
       // The store is captured here and used throughout, even if another login selects a different one meanwhile.
       const store = config.credentialsPath
+      const savePending = async (pending: PendingLogin | undefined) => {
+        await primePrivateDirectory(dirname(store))
+        setPending(store, server, pending)
+      }
       if (a.action === 'logout') {
-        setPending(store, server, undefined)
+        await savePending(undefined)
         const r = await doLogout(store, server)
         const unconfirmed = r.unconfirmed ? `; the server did not confirm ending the session (${r.unconfirmed}), so it may stay valid there until it expires` : ''
         return r.removed ? `logged out of ${server}${r.login ? ` (was ${r.login})` : ''}${unconfirmed}${ctx.getSession() ? '; the current session stays connected until room_leave' : ''}` : `no login stored for ${server}`
@@ -143,12 +148,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (pending && (!provider || provider === pending.provider)) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === 'number' ? a.wait : 90))
         const r = await pollLogin(store, server, pending, { maxMs: wait * 1000 })
-        if ('login' in r) { setPending(store, server, undefined); return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
-        if ('error' in r) { setPending(store, server, undefined); return `login failed: ${r.error}. Call room_login to start again.` }
+        if ('login' in r) { await savePending(undefined); return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? '' : 'Next: room_join (or room_create if nobody has opened this repo).'}`.trim() }
+        if ('error' in r) { await savePending(undefined); return `login failed: ${r.error}. Call room_login to start again.` }
         return `still waiting: ${codeLine(pending)}`
       }
       const p = await startLogin(server, provider, log)
-      setPending(store, server, { ...p, startedAt: Date.now() })
+      await savePending({ ...p, startedAt: Date.now() })
       return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },

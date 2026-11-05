@@ -24,8 +24,8 @@ function files(dir: string): string[] { return fs.readdirSync(dir, { withFileTyp
 function directoryWriters(relative: string, source: string): string[] {
   const failures: string[] = []
   const allowances = new Map(Object.entries(nonState[relative] ?? {}).map(([args, count]) => [normalized(args), count]))
-  if (relative === 'relay/src/private-state.ts') { allowances.set('private initializer', 1); allowances.set('windows inheriting directory', 1) }
-  if (relative === 'relay/src/leases.ts') allowances.set('durable directory', 1)
+  if (relative === 'relay/src/private-state.ts') { allowances.set('private initializer', 1); allowances.set('windows inheriting directory', 1); allowances.set('windows config ancestors', 1) }
+  if (relative === 'relay/src/leases.ts') { allowances.set('durable directory', 1); allowances.set('windows durable ancestor', 1) }
   if (relative === '../plugins/room/hooks/common.mjs') allowances.set('hook initializer', 1)
   const tree = ts.createSourceFile(relative, source, ts.ScriptTarget.Latest, true)
   const visit = (node: ts.Node): void => {
@@ -39,6 +39,12 @@ function directoryWriters(relative: string, source: string): string[] {
         && ts.isExpressionStatement(statement) && ts.isIfStatement(branch) && branch.elseStatement === statement
         && normalized(branch.expression.getText(tree)) === '!fs.existsSync(dir)'
         && normalized(branch.thenStatement.getText(tree)) === 'privateStateDirectory(dir)'
+      const durableAncestor = relative === 'relay/src/leases.ts' && args === 'dir'
+        && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'ensureDurableDirectory'
+        && ts.isExpressionStatement(statement) && ts.isIfStatement(branch) && branch.thenStatement === statement
+        && normalized(branch.expression.getText(tree)) === "process.platform === 'win32' && !holdsFile"
+      const configAncestors = relative === 'relay/src/private-state.ts' && args === 'path.dirname(dir), { recursive: true }'
+        && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'primePrivateDirectory'
       const hookInitializer = relative === '../plugins/room/hooks/common.mjs' && args === 'directory, { mode: 0o700 }'
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'privateHookDirectory'
       const privateInitializer = relative === 'relay/src/private-state.ts' && args === 'dir, { mode: 0o700 }'
@@ -46,7 +52,7 @@ function directoryWriters(relative: string, source: string): string[] {
       // Windows below the verified Room root: a plain directory inheriting the root's protected ACL.
       const inheriting = relative === 'relay/src/private-state.ts' && args === 'dir'
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'inheritingDirectory'
-      const key = privateInitializer ? 'private initializer' : inheriting ? 'windows inheriting directory' : durableExisting ? 'durable directory' : hookInitializer ? 'hook initializer' : args
+      const key = privateInitializer ? 'private initializer' : inheriting ? 'windows inheriting directory' : durableExisting ? 'durable directory' : durableAncestor ? 'windows durable ancestor' : configAncestors ? 'windows config ancestors' : hookInitializer ? 'hook initializer' : args
       const remaining = allowances.get(key) ?? 0
       if (remaining > 0) allowances.set(key, remaining - 1)
       else failures.push(`${relative}:${tree.getLineAndCharacterOfPosition(node.getStart()).line + 1} ${args}`)
@@ -83,4 +89,12 @@ it('counts every non-state exemption, rejecting duplicate matching calls and sta
     }
     expect(directoryWriters(relative, '')).toHaveLength(Object.keys(calls).length)
   }
+})
+
+it('limits the plain durable ancestor allowance to Windows directories that hold no file', () => {
+  const source = fs.readFileSync(path.join(packages, 'relay/src/leases.ts'), 'utf8')
+  const call = "if (process.platform === 'win32' && !holdsFile) fs.mkdirSync(dir)"
+  expect(source).toContain(call)
+  expect(directoryWriters('relay/src/leases.ts', source.replace(call, `${call};\n${call}`))).toHaveLength(1)
+  expect(directoryWriters('relay/src/leases.ts', source.replace(' && !holdsFile', ''))).toHaveLength(2)
 })

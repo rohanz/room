@@ -8,7 +8,7 @@ export type { LocalDaemon, LocalDaemonOptions, StartedLocalDaemon } from './daem
 import { AuthorityLock, holderDeadCheck, incarnationFile, relayLeaseFile } from './hub.js'
 export { RoomMemory, memoryFile, loadMemory, saveMemory, FinalSaveError } from './memory.js'
 export { AuthorityLock } from './hub.js'
-export { privateStateDirectory } from './private-state.js'
+export { privateStateDirectory, primePrivateState, primePrivateDirectory } from './private-state.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'

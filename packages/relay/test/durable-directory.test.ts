@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync, spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeAtomic } from '../src/leases.js'
 
@@ -19,10 +21,9 @@ it('writes below an existing root that rejects mkdir with Windows EPERM', () => 
   writeAtomic(file, { value: 1 })
   writeAtomic(file, { value: 2 })
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ value: 2 })
-}, process.platform === 'win32' ? 90_000 : undefined) // each new private directory runs one PowerShell ACL inspection, slow to start on CI
+}, process.platform === 'win32' ? 30_000 : undefined) // one leaf ACL check plus process identity inspection on slow Windows runners
 
-// On Windows, writeAtomic creates directories through PowerShell's CreateDirectory with the private ACL (no window
-// with an inherited ACL), so fs.mkdirSync is never called there and these interception tests do not apply.
+// The private leaf uses native Windows creation; real Windows races and denials are tested below.
 it.skipIf(process.platform === 'win32')('still syncs an existing ancestor when another writer wins mkdir', () => {
   const dir = setup(), raced = path.join(dir, 'raced')
   const mkdir = fs.mkdirSync.bind(fs)
@@ -59,3 +60,68 @@ it('refuses a file in the directory path', () => {
   expect(() => writeAtomic(path.join(file, 'record.json'), {})).toThrow()
   expect(fs.readFileSync(file, 'utf8')).toBe('keep')
 })
+
+const psEnv = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'))
+function windowsAcl(target: string): { user: string; grants: string[] } {
+  return JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference='Stop'; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $a=Get-Acl -LiteralPath $env:ROOM_TEST_PATH; @{user=$u;grants=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})} | ConvertTo-Json -Compress"],
+  { env: { ...psEnv(), ROOM_TEST_PATH: target }, encoding: 'utf8', timeout: 20_000 }).trim())
+}
+
+it.runIf(process.platform === 'win32').each(['room', 'config'])('racing Windows writers create a private nested %s directory', async kind => {
+  const dir = setup(), barrier = path.join(dir, 'go')
+  const file = path.join(dir, kind, 'new', 'nested', 'record.json')
+  const leases = new URL('../src/leases.ts', import.meta.url).href
+  const script = `import fs from 'node:fs';
+    import { writeAtomic } from ${JSON.stringify(leases)};
+    process.send({ready: true});
+    const until = Date.now() + 15000;
+    while (!fs.existsSync(process.env.ROOM_TEST_BARRIER)) {
+      if (Date.now() > until) throw Error('barrier timed out');
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    writeAtomic(process.env.ROOM_TEST_FILE, {writer: process.env.ROOM_TEST_WRITER});`
+  const children = ['one', 'two'].map(writer => {
+    const child = spawn(process.execPath, ['--import', createRequire(import.meta.url).resolve('tsx'), '--input-type=module', '-e', script], {
+      env: { ...process.env, ROOM_TEST_BARRIER: barrier, ROOM_TEST_FILE: file, ROOM_TEST_WRITER: writer },
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'], timeout: 40_000,
+    })
+    let stderr = ''
+    child.stderr!.on('data', chunk => { stderr += chunk })
+    const ready = new Promise<void>((resolve, reject) => {
+      child.once('message', () => resolve())
+      child.once('error', reject)
+      child.once('exit', code => reject(new Error(`writer exited before barrier (${code}): ${stderr}`)))
+    })
+    const done = new Promise<{ code: number | null; signal: string | null; stderr: string }>(resolve => {
+      child.once('close', (code, signal) => resolve({ code, signal, stderr }))
+    })
+    return { child, ready, done }
+  })
+  try {
+    await Promise.all(children.map(child => child.ready))
+    fs.writeFileSync(barrier, '')
+    for (const result of await Promise.all(children.map(child => child.done))) expect(result, result.stderr).toMatchObject({ code: 0, signal: null })
+    expect(['one', 'two']).toContain(JSON.parse(fs.readFileSync(file, 'utf8')).writer)
+    for (const target of [path.dirname(file), file]) {
+      const acl = windowsAcl(target)
+      expect(acl.grants.length).toBeGreaterThan(0)
+      expect(acl.grants.filter(sid => ![acl.user, 'S-1-5-18', 'S-1-5-32-544'].includes(sid))).toEqual([])
+    }
+  } finally {
+    for (const { child } of children) if (child.exitCode === null && child.signalCode === null) child.kill()
+    await Promise.all(children.map(child => child.done))
+  }
+}, 90_000) // two bounded ACL inspections after children finish, in addition to cold native writer startup
+
+it.runIf(process.platform === 'win32')('surfaces Windows create denial below an existing root', () => {
+  const dir = setup(), parent = path.join(dir, 'denied')
+  fs.mkdirSync(parent)
+  const { user } = windowsAcl(parent)
+  // WD creates files; AD creates subdirectories. Deny only this parent so cleanup can remove the ACE.
+  execFileSync('icacls', [parent, '/deny', `*${user}:(WD,AD)`], { stdio: 'pipe' })
+  try {
+    expect(() => writeAtomic(path.join(parent, 'new', 'nested', 'record.json'), {})).toThrow()
+    expect(fs.existsSync(path.join(parent, 'new'))).toBe(false)
+  } finally { execFileSync('icacls', [parent, '/remove:d', `*${user}`], { stdio: 'pipe' }) }
+}, 30_000)

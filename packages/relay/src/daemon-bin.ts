@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { startLocalDaemon, stopLocalDaemon } from './daemon.js'
-import { privateStateDirectory, verifyPrivatePath } from './private-state.js'
+import { primePrivateState, privateStateDirectory, verifyPrivatePath } from './private-state.js'
 
 const args = process.argv.slice(2)
 const value = (flag: string): string => {
@@ -20,6 +20,7 @@ try {
     process.stdout.write('Daemon saved and process exit verified.\n')
   } else {
   if (args[0] && !args[0].startsWith('--') && args[0] !== 'start') throw new Error('usage: room-daemon.mjs [start|stop] --common-dir <absolute git common directory> [--room <room>]')
+  await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
   const file = path.join(commonDir, 'room', 'daemon.log')
   // Validate every retained log before publishing discovery. Do not append through a symlink
@@ -45,6 +46,7 @@ try {
       verifyPrivatePath(file, created)
     } catch { /* no recursive logging on full disk */ }
   }
+  log(`startup pid ${process.pid}: state verified`)
   const daemon = await startLocalDaemon({ commonDir, room: value('--room'), log })
   if (daemon) await daemon.closed
   }

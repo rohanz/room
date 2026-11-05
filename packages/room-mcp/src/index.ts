@@ -11,6 +11,7 @@ import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
+import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
 import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
@@ -102,7 +103,9 @@ async function main() {
     initialize: async (dir: string, signal: AbortSignal) => {
       let session: Session | null = null
       // The startup choice only: environment is fixed for the process, and room_join/room_close/joinSession re-resolve it.
-      const startup = await resolveConfig({ dir, env: process.env })
+      // Resolve and prime while config reads are already awaiting Git; a deferred workspace stays unbound until a call.
+      const privacy = gitCommonDir(dir).catch(() => undefined).then(common => common ? primePrivateState(common) : undefined)
+      const [startup] = await Promise.all([resolveConfig({ dir, env: process.env }), privacy])
       if (signal.aborted) throw new Error('Room is shutting down')
       LOG_FILE = startup.logFile
       const sessionBinding = createSessionBinding(dir)

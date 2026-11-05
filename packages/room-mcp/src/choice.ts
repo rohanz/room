@@ -11,6 +11,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { primePrivateDirectory } from '@room/relay'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd'
 import { mainWorktree } from '@room/roomd/local'
@@ -54,6 +55,7 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
 export async function writeChoice(dir: string, where: string, by?: string, room?: string): Promise<RoomChoice> {
   where = where.replace(/\?.*$/, '') // never remember a token; it comes from ROOM_SERVER/ROOM_TOKEN at join time
   const file = await choiceFile(dir)
+  await primePrivateDirectory(path.dirname(file))
   return withGuard(`${file}.lock`, () => {
     let prev: RoomChoice & { tag?: string } | undefined
     try { prev = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string } }
@@ -74,6 +76,7 @@ export async function writeChoice(dir: string, where: string, by?: string, room?
  */
 export async function migrateLegacyLocalChoice(dir: string): Promise<string | undefined> {
   const file = await choiceFile(dir)
+  await primePrivateDirectory(path.dirname(file))
   const base = path.basename(await mainWorktree(dir))
   return withGuard(`${file}.lock`, () => {
     let prev: Record<string, unknown>
