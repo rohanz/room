@@ -10,7 +10,9 @@ import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { acquireParseWorker, parseInWorker, TransientParserError, type ParseWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import type { BaselineRead } from '@room/roomd/baseline'
-import { carriedFrom } from './worker-registry.js'
+import { openWorkerReader } from './worker-registry.js'
+import { snapshotBaseline } from './worker-snapshot-view.js'
+import type { WorkerSnapshot } from './worker-store.js'
 import { snapshotStillCurrent } from '@room/shared'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedHistoricalText, readBoundedHistoricalTexts } from './tools/disk-text.js'
 
@@ -173,6 +175,13 @@ export class GraphIndex {
   private base = ''
   private ownPublicationKey: string | undefined = ''
   private stopped = false
+  private carriedSnapshot?: WorkerSnapshot
+  private get workerQuery(): { tag: string; recordOnly: true } | undefined {
+    const plus = this.me.lastIndexOf('+')
+    return plus > 0 ? { tag: this.me.slice(plus + 1), recordOnly: true } : undefined
+  }
+  /** One baseline acquisition for the queued indexing pass, independent of file count. */
+  private baselinePass?: Promise<WorkerSnapshot>
   private initialStarted = false
   private discovering = false
   private jitterTimer?: ReturnType<typeof setTimeout>
@@ -632,7 +641,8 @@ export class GraphIndex {
 
   /** The baseline read for a deletion may include a worker's carried, untracked blob. */
   private deletionBaseline(path: string): string {
-    const baseline = carriedFrom(this.dir, this.me)?.baseline
+    if (this.workerQuery && !this.carriedSnapshot?.available) return 'unavailable'
+    const baseline = snapshotBaseline(this.carriedSnapshot, this.me)?.baseline
     return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path)?.sha, baseline?.carriedCommit ?? false])
   }
 
@@ -879,6 +889,7 @@ export class GraphIndex {
           // path ever refreshed would be remembered for the session's lifetime.
           this.revisions.delete(path)
         }
+        if (!this.pending.size) this.baselinePass = undefined
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing)
           this.publishing = setTimeout(() => { void this.publish(this.phase) }, 100)
@@ -935,8 +946,13 @@ export class GraphIndex {
       const mineDeleted = myEntry?.change === 'D'
       const ownFileUnavailable = myEntry?.state === 'shared' && !mineDeleted && mine === undefined
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
-      // Only an own manifest entry uses it: the registry read is synchronous, so base files skip it.
-      const own = myEntry ? carriedFrom(this.dir, this.me)?.baseline : undefined
+      // An own manifest entry uses facts acquired before Git/parser awaits. Base files need none.
+      const query = this.workerQuery
+      const registry = myEntry && query ? await openWorkerReader(this.dir) : undefined
+      const facts = registry ? await (this.baselinePass ??= registry.snapshot(query)) : undefined
+      if (facts && (!facts.available || facts.blockers.length)) throw new Error('worker baseline unavailable or blocked')
+      if (facts) this.carriedSnapshot = facts
+      const own = myEntry ? snapshotBaseline(facts, this.me)?.baseline : undefined
       const read = (sha: string, file: string) => this.historicalText(sha, file)
       const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
         ? await (own?.untracked.has(path)
@@ -960,6 +976,13 @@ export class GraphIndex {
       if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) {
         await this.yieldAfterIndex()
         return false
+      }
+      if (facts?.available && registry) {
+        const latest = await registry.snapshot(this.workerQuery)
+        if (!latest.available || latest.blockers.length || latest.revision !== facts.revision) {
+          this.baselinePass = undefined
+          return false
+        }
       }
       if (this.stopped) return true
       if (generation !== this.generation) return false
@@ -1066,6 +1089,18 @@ export class GraphIndex {
   private publish(status: 'ready' | 'indexing' | 'error'): Promise<void> {
     const generation = this.generation
     this.publication = this.publication.then(async () => {
+      if (this.carriedSnapshot) {
+        const previous = this.carriedSnapshot
+        const latest = await (await openWorkerReader(this.dir)).snapshot(this.workerQuery)
+        if (!latest.available || latest.blockers.length) return
+        this.carriedSnapshot = latest
+        if (!previous.available || latest.revision !== previous.revision) {
+          this.observedByPath.clear()
+          this.observedRevision++
+          for (const file of this.grantPaths()) if (isSourcePath(file)) void this.refresh(file)
+        }
+        this.withdrawRestricted()
+      }
       const withdrawal = this.withdrawalPending
       await this.publishSnapshot(status, generation, withdrawal)
       const current = this.room.graphs.get(this.me), head = this.room.manifestHead.get(this.me)

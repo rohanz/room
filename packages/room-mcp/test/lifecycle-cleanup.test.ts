@@ -125,7 +125,7 @@ describe('worker lifecycle cleanup', () => {
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
       const state = { ctx: { listCwdProcesses: () => [{ pid: child.pid!, cwd: dir, command: 'node' }] }, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
       const { dismissWorker } = createWorkerRuntime(state)
-      const reply = await dismissWorker(s, workerByTag(root, 'a')!, 'stop')
+      const reply = await dismissWorker(s, (await workerByTag(root, 'a'))!, 'stop')
       expect(reply).toMatch(new RegExp(`stopped processes: [^\\n]+ \\(pid ${child.pid}\\)`))
       expect(kill).toHaveBeenCalledOnce()
       room.doc.destroy()
@@ -176,7 +176,7 @@ describe('worker lifecycle cleanup', () => {
     const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: root, me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main', daemon: {} } as Session
     await registerWorkers(s, [{ id: 'stalled-id', tag: 'stalled', name: 'lead+stalled', lead: 'lead', host: 'codex',
       task: 'x', dir: join(root, '.room', 'workers', 'stalled'), branch: 'room/stalled', pid: process.pid, processStartTime: 'test:start', startedAt: 1, status: 'running' }])
-    const worker = workerByTag(root, 'stalled')!
+    const worker = (await workerByTag(root, 'stalled'))!
     const before = { ...worker }
     const log = vi.fn()
     const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: root, leave: async () => {},
@@ -196,7 +196,7 @@ describe('worker lifecycle cleanup', () => {
       release()
       await stalled
       await new Promise(resolve => setTimeout(resolve, 10))
-      expect(workerByTag(root, 'stalled')).toEqual(before)
+      expect((await workerByTag(root, 'stalled'))).toEqual(before)
       expect(log).toHaveBeenCalledWith('shutdown dismissal timed out for stalled; worker record kept for restart')
     } finally { release(); room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
   })
@@ -214,7 +214,7 @@ describe('worker lifecycle cleanup', () => {
     await registerWorkers(s, [{ id: 'running-id', tag: 'running', name: 'lead+running', lead: 'lead', host: 'codex',
       task: 'x', dir: join(root, '.room', 'workers', 'running'), branch: 'room/running', pid: process.pid,
       processStartTime: 'test:start', startedAt: 1, status: 'running' }])
-    const worker = workerByTag(root, 'running')!
+    const worker = (await workerByTag(root, 'running'))!
     const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: root,
       leave: async () => { events.push('session left') },
       probe: () => ({ startTime: 'test:start', executable: 'codex' }), log: () => {} })
@@ -229,7 +229,7 @@ describe('worker lifecycle cleanup', () => {
     try {
       await finishSignalShutdown(reason, () => state.shutdown(), line => events.push(line), () => events.push('exit'))
       expect(events).toEqual([`stopping: ${reason}`, 'lease ended', 'presence ended', 'workers lease ended', 'workers presence ended', 'worker dismissed', 'workers room closed', 'session left', `stopped: ${reason}`, 'exit'])
-      expect(workerByTag(root, 'running')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+      expect((await workerByTag(root, 'running'))).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
     } finally { room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
   })
 })

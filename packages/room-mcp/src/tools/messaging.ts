@@ -1,7 +1,9 @@
+import { requireWorkerEvidence } from '../worker-store.js'
 import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import fs from 'node:fs'
 import type { Batch } from '../ledger.js'
+import type { LocalWorker } from '../worker-status.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
 import type { PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
@@ -12,6 +14,11 @@ import { refreshRefusal, refreshWorkerBase, refreshedCommits, type RefreshOutcom
 import { collectHeadRef } from '../worker-git.js'
 import { git } from '@room/roomd/git'
 import { acknowledgeKeptPublication, keptPublicationMatches } from '../kept-publication.js'
+import { resumeHostOptions } from '../hosts/lifecycle.js'
+
+/** Preserve synchronous selection for supplied facts; only actual storage reads introduce an await. */
+const mapReady = <T, R>(value: T | Promise<T>, map: (value: T) => R): R | Promise<R> =>
+  value instanceof Promise ? value.then(map) : map(value)
 
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 100_000
@@ -53,10 +60,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const alias = (s: Session, name: string): string => s.room.doc.getMap<string>('aliases').get(name) ?? name
   const names = { all: () => rooms.all(), presences, myWorkers }
   const known = (s: Session) => knownNames(s, presences)
-  const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
+  type RecipientNotice = { text: string; terminal: boolean } | undefined
+  const describeRecipient = (s: Session, name: string, workers: LocalWorker[]): RecipientNotice => {
     const present = presences(s).some(p => p.user.name === name)
-    // My own worker from my registry; anyone else's from its lead's view (registry §14).
-    const own = myWorkers(s).find(w => w.name === name)
+    const own = workers.find(w => w.name === name)
     const rawView = own ? undefined : s.room.workerViewOf(name)
     const view = own ? undefined : s.room.acceptedWorkerViewOf(name)
     if (rawView && !view) return { text: `${name}'s worker view is stale; its current status is updating`, terminal: false }
@@ -85,17 +92,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (offline(s)) return undefined // A disconnected room cannot establish that a name is unknown.
     return { text: `nobody called ${name} is or was in this room; participants: ${[...roomNames].sort().join(', ')}`, terminal: true }
   }
-  const unavailableQuestion = (s: Session, questionId: string): string | undefined => {
+  const recipientNotice = (s: Session, name: string): RecipientNotice | Promise<RecipientNotice> => {
+    const unavailable = () => ({ text: `${name}'s worker status is unavailable; it may still answer`, terminal: false })
+    try {
+      const workers = myWorkers(s)
+      return workers instanceof Promise ? workers.then(value => describeRecipient(s, name, value), unavailable) : describeRecipient(s, name, workers)
+    } catch { return unavailable() }
+  }
+  const unavailableQuestion = (s: Session, questionId: string): string | undefined | Promise<string | undefined> => {
     const cached = unavailableQuestions.get(questionId)
     if (cached) return cached
     const question = s.room.message(questionId)
-    if (question?.type !== 'question') return undefined
-    if (!question.to) return undefined
-    const notice = recipientNotice(s, question.to)
-    if (!notice?.terminal) return undefined
-    unavailableQuestions.set(questionId, notice.text)
-    if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value!)
-    return notice.text
+    if (question?.type !== 'question' || !question.to) return undefined
+    return mapReady(recipientNotice(s, question.to), notice => {
+      if (!notice?.terminal) return undefined
+      unavailableQuestions.set(questionId, notice.text)
+      if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value!)
+      return notice.text
+    })
   }
   const handlers: Record<string, Handler> = {
     async room_send(a) {
@@ -107,13 +121,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
       const requestedToRaw = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
-      const resolvedDisplay = requestedToRaw ? resolveDisplayedName(requestedToRaw, names, lead) : undefined
+      const resolvedDisplay = requestedToRaw ? (await resolveDisplayedName(requestedToRaw, names, lead)) : undefined
       if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(', ')}`
       const requestedTo = resolvedDisplay?.name ?? requestedToRaw
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
-      const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
-        .filter(w => w.tag === requestedTo || w.name === requestedTo).map(worker => ({ room, worker }))) : []
+      const workerMatches = requestedTo ? (await Promise.all(rooms.all().map(async room => (await myWorkers(room))
+        .filter(w => w.tag === requestedTo || w.name === requestedTo).map(worker => ({ room, worker }))))).flat() : []
       const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap(room => room.room.retiredWorkers()
         .filter(w => (w.tag === requestedTo || w.name === requestedTo) && w.lead === room.me.name).map(worker => ({ room, worker }))) : []
       const matches = workerMatches.length ? workerMatches : retiredMatches
@@ -157,7 +171,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           inferredQuestionId = question.id
         }
       }
-      const exactWorkerRoom = to && wsr && wsr !== lead && (myWorkers(wsr).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
+      const exactWorkerRoom = to && wsr && wsr !== lead && ((await myWorkers(wsr)).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
       const text = typeof a.text === 'string' && a.text ? a.text : typeof a.message === 'string' ? a.message : ''
       if (!text) return 'error: text is required'
@@ -168,7 +182,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
       if (repliedNote && a.to && to !== alias(s, repliedNote.from)) return `error: note reply must go to ${repliedNote.from}`
-      if (to && !s.room.workerViewOf(to) && !myWorkers(s).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed; use room_collect with keep: true to collect and stay resumable`
+      if (to && !s.room.workerViewOf(to) && !(await myWorkers(s)).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed; use room_collect with keep: true to collect and stay resumable`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       if (a.type === 'changed' && (!Array.isArray(a.paths) || !a.paths.some((x: unknown) => typeof x === 'string'))) return 'error: changed requires paths'
@@ -177,7 +191,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
       const notes: string[] = []
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
-      const addressedWorker = to ? myWorkers(s).find(w => w.name === to) : undefined
+      const addressedWorker = to ? (await myWorkers(s)).find(w => w.name === to) : undefined
       const resume = !!addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running'
       if (a.refresh !== undefined && typeof a.refresh !== 'boolean') return 'error: refresh must be a boolean'
       const refresh = a.refresh === true
@@ -186,8 +200,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // A rebase under a working agent can overwrite the edit it is making; its daemon also pins its base at start.
         if (!resume) return `error: ${addressedWorker.tag} is running, so nothing was rebased and nothing sent. Room rebases only a stopped worker: ask it to call room_done (priority=interrupt), wait for its done, then send again with refresh=true; or respawn it to start from your HEAD.`
         const registry = await registryForDir(s.dir)
-        const record = registry.read(addressedWorker.id)
-        const refused = record ? refreshRefusal(s.dir, record, registry.checkoutUsers(record).map(user => user.record.tag)) : 'it has no local worker record'
+        const record = (await registry.read(addressedWorker.id))
+        const refused = record ? refreshRefusal(s.dir, record, requireWorkerEvidence(await registry.checkoutUsers(record)).map(user => user.record.tag)) : 'it has no local worker record'
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
       }
       const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
@@ -209,7 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const retryPublication = async (acceptedRefresh = false) => {
         if ((refresh && !acceptedRefresh) || !addressedWorker || addressedWorker.lead !== s.me.name) return
         try {
-          const registry = await registryForDir(s.dir), record = registry.read(addressedWorker.id)
+          const registry = await registryForDir(s.dir), record = (await registry.read(addressedWorker.id))
           if (!record?.base || keptPublicationMatches(s, record.keptPublication, undefined, record.base)) return
           const kept = record.collectedKeep && (await git(s.dir, ['rev-parse', '--verify', collectHeadRef(record.tag, record.id)]).catch(() => '')).trim() === record.base
             && (await git(s.dir, ['log', '-1', '--format=%s', record.base])).trim() === 'room: kept collection baseline'
@@ -220,22 +234,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const paths = [...(await git(s.dir, ['diff', '--name-only', '--no-renames', '-z', common, record.base])).split('\0').filter(Boolean),
             ...(record.carriedUntracked?.map(file => file.path) ?? [])]
           const publication = await acknowledgeKeptPublication(s, record.keptPublication, paths, [], 5000, acceptedRefresh)
-          await registry.update(record.id, old => old.base === record.base
-            ? { ...old, keptPublication: { ...publication, base: record.base }, seq: old.seq + 1 } : old)
+          await registry.command(record.id, { type: 'kept-publication', expectedBase: record.base, publication: { ...publication, base: record.base } })
           if (publication.pending) notes.push('worker preview freshness pending: publication could not be verified; previews including the lead report a gap')
         } catch { notes.push('worker preview freshness pending: publication retry failed; message delivery continues') }
       }
       let resumed = false
       if (resume) {
-        const result = await rooms.resumeWorker(s, addressedWorker!, text, { spawner: state.ctx?.spawner, claudeChannel: state.ctx?.config?.claudeChannel, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async () => {
+        const result = await rooms.resumeWorker(s, addressedWorker!, text, { spawner: state.ctx?.spawner, ...resumeHostOptions(state.ctx?.config), maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async incarnation => {
           // The previous run has exited and this call holds the worker's operation lease.
           if (refresh) {
             const tag = addressedWorker!.tag
             const registry = await registryForDir(s.dir)
-            const record = registry.read(addressedWorker!.id)
+            const record = await registry.read(addressedWorker!.id)
             if (!record) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`
             // Checked again under the lease: a dir= worker may have started in this checkout since the first check.
-            const refusedNow = refreshRefusal(s.dir, record, registry.checkoutUsers(record).map(user => user.record.tag))
+            const refusedNow = refreshRefusal(s.dir, record, requireWorkerEvidence(await registry.checkoutUsers(record)).map(user => user.record.tag))
             if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
             let outcome: RefreshOutcome
             try { outcome = await refreshWorkerBase(s.dir, record) }
@@ -248,8 +261,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             }
             else {
               const moved = outcome
-              try { await registry.update(record.id, old => ({ ...old, base: moved.base, collectedKeep: old.collectedKeep || moved.kept || undefined,
-                carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked, keptPublication: undefined, seq: old.seq + 1 })) }
+              try { await registry.command(record.id, { type: 'rebase', expectedBase: record.base, base: moved.base, collectedKeep: moved.kept || undefined,
+                carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked, keptPublication: undefined }) }
               catch (error) { return `error: rebased ${tag} onto your HEAD but could not record its new base (${error instanceof Error ? error.message : String(error)}); nothing sent. A preview or collect may count your commits as its changes.` }
               // The registry base is durable before changing the legacy keep anchor.
               if (moved.kept) {
@@ -264,7 +277,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           await retryPublication(refresh)
           const refused = await post()
           if (refused) return refused
-          const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set(), addressedFrom: state.ledger.spawnFrontier(s, addressedWorker!.id, to!) }, {})
+          const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set(), addressedFrom: state.ledger.spawnFrontier(s, incarnation, to!) }, {})
             .filter(m => m.to === to)
           // Only reserve IDs whose complete message is in this one resume turn. The new
           // follow-up always leads; oversized backlog stays owed for ordinary delivery.
@@ -290,8 +303,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const msg = posted!.msg
       if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
-      const notice = msg.to && !resumed ? recipientNotice(s, msg.to) : undefined
-      if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
+      const notice = msg.to && !resumed ? (await recipientNotice(s, msg.to)) : undefined
+      if (notice) notes.push(msg.type === 'question' && notice.terminal ? (await unavailableQuestion(s, msg.id)) ?? notice.text : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()
       return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
@@ -322,31 +335,39 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const an = [...x.room.messages(), ...x.room.mail.values()].find(m => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }))
         if (an) { ledger.select(x, batch, m => m.id === an.id, 'wait'); return `answered: ${formatMsg(an)}` }
       }
-      if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
+      if (questionId) {
+        const pending = unavailableQuestion(qRoom, questionId)
+        const notice = pending instanceof Promise ? await pending : pending
+        if (notice) return notice
+      }
       const ends = (x: Session) => (m: Msg) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom: x !== s }) || (m.priority === 'interrupt' && forMe(x, m))
-      const render = (x: Session, m: Msg): string => {
+      const render = (x: Session, m: Msg): string | Promise<string> => {
         const workersRoom = x !== s
         if (!messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
         if (m.type === 'answer') return `answered: ${formatMsg(m)}`
-        if (m.type === 'done') {
-          const worker = myWorkers(x).find(w => w.tag === m.tag)
+        if (m.type === 'done') return mapReady(myWorkers(x), workers => {
+          const worker = workers.find(w => w.tag === m.tag)
           const ready = !worker || !workerAlive(x, worker)
           return `${ready ? 'worker done, ready to collect' : 'worker reported done; its process is still exiting (room_collect waits up to 15 s for it)'}: ${formatMsg(m)}`
-        }
+        })
         if (m.type === 'merge-conflict') return formatMsg(m)
         if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then continue independent work or wait on the blocking dependency): ${formatMsg(m)}`
         return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
       }
       const rank = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2
       /** The first owed message that ends this wait, reserved into the batch; the rest stay for the inbox. */
-      const take = (): string | undefined => {
+      let selected = false
+      const take = (): string | undefined | Promise<string> => {
+        if (selected) return undefined
         const found = all().flatMap(x => ledger.available(x, batch, ends(x)).map(m => ({ x, m })))
           .sort((p, q) => rank(p.m) - rank(q.m) || p.m.at - q.m.at)[0]
         if (!found) return undefined
+        selected = true
         ledger.select(found.x, batch, m => m.id === found.m.id, 'wait')
         return render(found.x, found.m)
       }
-      const now0 = take()
+      const first = take()
+      const now0 = first instanceof Promise ? await first : first
       if (now0) return now0
       if (offline(s)) return 'offline: room_wait cannot observe new messages until reconnected'
       const ws = rooms.all().find(x => x !== s) ?? null
@@ -377,12 +398,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const onAbort = () => finish('error: tool call cancelled')
         const onRecipient = () => {
-          if (!questionId) return
-          const notice = unavailableQuestion(qRoom, questionId)
-          if (notice) finish(notice)
+          if (!questionId || finished) return
+          const pending = unavailableQuestion(qRoom, questionId)
+          if (pending instanceof Promise) void pending.then(notice => { if (notice) finish(notice) })
+            .catch(error => state.log(`wait recipient status unavailable: ${String(error)}`))
+          else if (pending) finish(pending)
         }
-        timer = setTimeout(() => {
-          const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
+        timer = setTimeout(async () => {
+          try {
+          const running = [...new Map((await Promise.all(rooms.all().map(async room => (await myWorkers(room))))).flat().filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
           // Standalone handler callers may not have installed inbox delivery.
           const unread = state.inbox?.(s, batch) ?? ''
           const health = state.deliveryHealth?.()
@@ -398,10 +422,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             ? 'Continue independent work or wait for the needed result.'
             : 'Continue independent work or wait on the blocking dependency.')
           finish(`${capNotice}${unread}${facts} ${advice} A timeout is not an answer or approval.`)
+          } catch (error) {
+            finish(`${capNotice}timeout after ${timeoutMs}ms: worker status unavailable (${String(error)}). A timeout is not an answer or approval.`)
+          }
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         // Live observers run the same selection as the first look.
-        const onBus = () => { const ended = take(); if (ended) finish(ended) }
+        const onBus = () => {
+          if (finished) return
+          const pending = take()
+          if (pending instanceof Promise) void pending.then(ended => { if (ended) finish(ended) })
+            .catch(error => state.log(`wait message status unavailable: ${String(error)}`))
+          else if (pending) finish(pending)
+        }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onBus)
         if (questionId) qRoom.room.doc.on('update', onRecipient)
         signal?.addEventListener('abort', onAbort, { once: true })

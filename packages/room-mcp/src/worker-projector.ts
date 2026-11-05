@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from './worker-store.js'
 /**
  * The lead-side writer of its workers' room facts (registry §13): in each room a lead session is in, the
  * views of the workers that joined that room, the coordination of a worker whose host stopped without
@@ -7,7 +8,8 @@
 import type { Session } from './session.js'
 import path from 'node:path'
 import { completionMessage, type WorkerView } from '@room/shared'
-import { backgroundAtExit, registrySnapshotForDir, type WorkerRegistry } from './worker-registry.js'
+import { backgroundAtExit, openWorkerReader, type WorkerRegistry } from './worker-registry.js'
+import { requireWorkerEvidence, workerEvidence, snapshotRead } from './worker-store.js'
 import { statusOf, workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
 import { postWorkerMessage } from './post.js'
@@ -25,18 +27,29 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
  * cleanup done, and deletes this lead's views whose worker is in neither list. Retiring records are never
  * written, so projection cannot undo retirement (N2). Returns the written records for the caller's own facts.
  */
-export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown): Promise<WorkerRecord[] | undefined> {
+export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown, active: () => boolean = () => true): Promise<WorkerRecord[] | undefined> {
   const roomKey = s.roomName, fence = s.daemon.fence
-  if (!fence) return undefined
+  const current = () => active() && s.daemon.fence === fence
+  if (!fence || !current()) return undefined
   // Read this lead's resumed runs' logs in yielding chunks first, so the facts read inside the transaction
   // come from the cache. The projectable lists are taken after these awaits: a worker may have started retiring.
-  await warmRunLogs(s, registry.list().filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
-  if (s.daemon.fence !== fence) return undefined
-  const { write: all, retire: retiring } = registry.projectable(lead, roomKey)
+  const records = requireWorkerInventory(await registry.list())
+  if (!current()) return undefined
+  await warmRunLogs(s, records.filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
+  if (!current()) return undefined
+  const before = await registry.snapshot()
+  if (!current() || !before.available) return undefined
+  requireWorkerEvidence(workerEvidence(before))
+  const { write: all, retire: retiring } = requireWorkerEvidence(await registry.projectable(lead, roomKey))
+  if (!current()) return undefined
   const write = all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
   const post = releasePoster(s.post)
   const listed = new Set([...write.map(({ record }) => record.id), ...retire.map(record => record.id)])
+  const facts = await registry.snapshot()
+  if (!facts.available || !current()) return undefined
+  requireWorkerEvidence(workerEvidence(facts))
+  if (facts.revision !== before.revision) return undefined
   s.room.doc.transact(() => {
     for (const { record, status } of write) {
       const run = status.run
@@ -66,7 +79,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
     }
     for (const [id, view] of s.room.workerViews) {
       if (view.lead !== lead || listed.has(id)) continue
-      const known = registry.read(id)
+      const known = snapshotRead(facts, id)
       // A view without a local record is a dead incarnation's; the joined writer removes it.
       if (known ? inRole(known, roomKey, role) : role === 'joined') s.room.workerViews.delete(id)
     }
@@ -75,42 +88,51 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   // deterministic ID from durable report/exit evidence after outages and lead restarts.
   const undelivered = new Set<string>()
   if (role === 'joined') for (const { record, status } of [
-    ...write, ...retire.flatMap(record => { const status = registry.status(record.id); return status ? [{ record, status }] : [] }),
+    ...write, ...(await Promise.all(retire.map(async record => { const status = (await registry.status(record.id)); return status ? [{ record, status }] : [] }))).flat(),
   ]) {
     const run = status.run ?? record.runs.at(-1)
     if (!run) continue
+    if (!current()) return undefined
     const logFile = path.join(s.dir, '.room', 'workers', `${record.tag}.log`)
-    const report = registry.reports(record.id).find(value => value.run === run.n)
-    const exit = registry.exits(record.id).find(value => value.run === run.n)
+    const report = (await registry.reports(record.id)).find(value => value.run === run.n)
+    const exit = (await registry.exits(record.id)).find(value => value.run === run.n)
     const terminal = record.phase === 'retiring'
-      ? statusOf({ ...record, phase: 'active' }, record.runs, registry.reports(record.id), registry.exits(record.id), () => 'dead')
+      ? statusOf({ ...record, phase: 'active' }, record.runs, (await registry.reports(record.id)), (await registry.exits(record.id)), () => 'dead')
       : status
+    if (!current()) return undefined
     try {
-      if (report?.done && exit) await registry.postCompletion(record.id, run.n, async (_id, current, done) => {
-        const message = completionMessage(current, run, status, done)
-        if (message) await postWorkerMessage(s.post, current, message)
+      if (report?.done && exit) await registry.postCompletion(record.id, run.n, async (_id, fresh, done) => {
+        if (!current()) throw new Error('worker projector stopped')
+        const message = completionMessage(fresh, run, status, done)
+        if (message) await postWorkerMessage(s.post, fresh, message)
       })
       else if (terminal.status === 'done' && run.mode === 'resume' && exit?.witnessed && exit.code === 0
-        && registry.reports(record.id).some(value => value.run < run.n && value.done) && !run.posted) {
+        && (await registry.reports(record.id)).some(value => value.run < run.n && value.done) && !run.posted) {
         const answer = followUpAnswer(logFile, record.host, run.logStart)
         const background = backgroundAtExit(record, run)
         const summary = answer || terminal.summary
         const message = completionMessage(record, run, { ...terminal,
           summary: background ? `follow-up ended without room_done${background}${summary ? `; ${summary}` : ''}` : summary })
         if (message) {
+          if (!current()) return undefined
           await postWorkerMessage(s.post, record, message)
-          await registry.update(record.id, old => ({ ...old, runs: old.runs.map(value => value.n === run.n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
+          await registry.command(record.id, { type: 'run-posted', run: run.n, messageId: message.id })
         }
       }
       else if (terminal.status === 'failed' || terminal.noReport || record.phase === 'retiring' && !record.stop && !report?.done) {
-        const posted = await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
+        const posted = await registry.postObservedFailure(record.id, run.n, message => {
+          if (!current()) throw new Error('worker projector stopped')
+          return postWorkerMessage(s.post, record, message)
+        })
         if (record.phase === 'retiring' && !record.stop && exit?.witnessed && !posted && !run.posted) undelivered.add(record.id)
       } else if (record.phase === 'retiring' && report?.done && !exit) undelivered.add(record.id)
     } catch { undelivered.add(record.id) }
   }
   for (const record of retire) {
-    if (s.daemon.fence !== fence) return undefined
-    s.room.retireWorker(record.id, { ...(record.archive ?? registry.archiveOf(record, { summary: '' })), id: record.id }, post)
+    if (!current()) return undefined
+    const archive = record.archive ?? await registry.archiveOf(record, { summary: '' })
+    if (!current()) return undefined
+    s.room.retireWorker(record.id, { ...archive, id: record.id }, post)
     if (!undelivered.has(record.id)) await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
   }
   return write.map(({ record }) => record)
@@ -126,11 +148,14 @@ async function warmRunLogs(s: Session, records: WorkerRecord[]): Promise<void> {
 }
 
 /** The lead's own view of one of its workers, straight from its registry (room_state's worker lines). */
-export function localWorkerView(s: Session, id: string): WorkerView | undefined {
+export async function localWorkerView(s: Session, id: string): Promise<WorkerView | undefined> {
   if (!s.daemon.fence) return undefined
-  const registry = registrySnapshotForDir(s.dir)
-  const record = registry.read(id), status = registry.status(id)
-  return record && status ? workerView(record, status, s.daemon.fence) : undefined
+  const registry = await openWorkerReader(s.dir)
+  const before = await registry.freshness(id)
+  const record = await registry.read(id), status = await registry.status(id)
+  const latest = await registry.freshness(id)
+  return before?.revision === latest?.revision && record && status && s.daemon.fence
+    ? workerView(record, status, s.daemon.fence) : undefined
 }
 
 /** Keeps a lead session's worker facts in one room current: on start, on every registry change, and on demand. */
@@ -181,7 +206,7 @@ export class WorkerProjector {
         this.dirty = false
         // projectWorkers reads the current registry and checks the current fence on each pass.
         // Changes arriving during an awaited pass request just one follow-up pass.
-        try { await projectWorkers(this.s, this.registry, this.s.me.name, 'joined', this) }
+        try { await projectWorkers(this.s, this.registry, this.s.me.name, 'joined', this, () => !this.stopped) }
         catch (e) { this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`) }
       }
     } finally {

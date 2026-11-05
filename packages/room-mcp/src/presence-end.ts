@@ -11,7 +11,8 @@ import { liveness, withGuard, writeAtomic, type ProcessIdentity } from './leases
 import { pidAlive } from './worker-process.js'
 import { probeProcess, probeProcessAsync, type ProcessProbe } from '@room/relay/process'
 import { boundSession, readSessionRecord, type Session } from './session.js'
-import { WorkerRegistry, registrySnapshotForDir } from './worker-registry.js'
+import { openWorkerReader } from './worker-registry.js'
+import { IdleClaimsJournal } from './idle-claims.js'
 import type { NoteMsg } from '@room/shared'
 import { parentCommand, type ParentCommandReader } from './workspace.js'
 import { presenceKind } from './hosts/selection.js'
@@ -52,12 +53,19 @@ export function joinedPresenceHolds(sessions: readonly Session[]): boolean {
 }
 
 /** Registry records, rather than replicated display views, decide whether a worker keeps presence alive. */
-export function joinedPresenceWorkers(sessions: readonly Session[], hasWrite: (dir: string, room: string, lead: string) => boolean =
-  (dir, room, lead) => registrySnapshotForDir(dir).projectable(lead, room).write.length > 0): boolean {
-  return sessions.some(s => {
-    try { return hasWrite(s.dir, s.roomName, s.me.name) }
-    catch { return true } // An unreadable registry must not expire a lead with unknown work.
-  })
+export async function joinedPresenceWorkers(sessions: readonly Session[], hasWrite: (dir: string, room: string, lead: string) => boolean | Promise<boolean> =
+  async (dir, room, lead) => {
+    const reader = await openWorkerReader(dir)
+    const facts = await reader.snapshot()
+    if (!facts.available || facts.blockers.length) return true
+    const projectable = await reader.projectable(lead, room)
+    return 'reason' in projectable || projectable.write.length > 0
+  }): Promise<boolean> {
+  for (const s of sessions) {
+    try { if (await hasWrite(s.dir, s.roomName, s.me.name)) return true }
+    catch { return true } // Unknown storage must keep a lead with possibly live work present.
+  }
+  return false
 }
 
 /** A Codex MCP under a shared `codex app-server` cannot see its thread end (registry §18); every other host is a stdio child. */
@@ -69,27 +77,25 @@ export function hostKind(env: NodeJS.ProcessEnv = process.env, readParent: Paren
 export async function releaseIdleHeld(s: Session, idleEpoch: string, idleMs: number, monotonicMs: () => number, pendingOnly = false): Promise<boolean> {
   const lease = s.lease
   if (!lease) return false
-  const registry = await WorkerRegistry.open(await gitCommonDir(s.dir), { migrate: false, watch: false })
-  try {
-    if (pendingOnly && !registry.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) return false
-    const fence = lease.fence()
-    if (!fence) {
-      if (registry.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error('idle claim notice pending while the name lease is paused')
-      return false
-    }
-    const released = await registry.reconcileIdleClaims({
-      roomKey: s.roomName, sessionId: lease.sessionId, participant: s.me.name, idleEpoch, epoch: fence,
-      host: 'shared-app-server', lastActivityMs: monotonicMs() - idleMs, monotonicMs, doc: s.room,
-      ownsParticipant: () => lease.fence() === fence,
-      postNotice: async (id, text) => {
-        const posted = await s.post<NoteMsg>(s.me, { type: 'note', text, priority: 'notify' }, { id, auto: true })
-        if (!posted.ok) throw new Error(posted.text)
-        return posted
-      },
-    })
-    if (!released && registry.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error('idle claim notice pending until this name lease is current')
-    return released
-  } finally { registry.close() }
+  const journal = await IdleClaimsJournal.open(await gitCommonDir(s.dir))
+  if (pendingOnly && !journal.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) return false
+  const fence = lease.fence()
+  if (!fence) {
+    if (journal.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error('idle claim notice pending while the name lease is paused')
+    return false
+  }
+  const released = await journal.reconcileIdleClaims({
+    roomKey: s.roomName, sessionId: lease.sessionId, participant: s.me.name, idleEpoch, epoch: fence,
+    host: 'shared-app-server', lastActivityMs: monotonicMs() - idleMs, monotonicMs, doc: s.room,
+    ownsParticipant: () => lease.fence() === fence,
+    postNotice: async (id, text) => {
+      const posted = await s.post<NoteMsg>(s.me, { type: 'note', text, priority: 'notify' }, { id, auto: true })
+      if (!posted.ok) throw new Error(posted.text)
+      return posted
+    },
+  })
+  if (!released && journal.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error('idle claim notice pending until this name lease is current')
+  return released
 }
 
 /** The verdict on a bound host: `stale` explains an `undefined` verdict for a gone host pid that was not decisive. */
@@ -178,7 +184,7 @@ export interface PresenceEndOptions {
   /** This session holds scope or claims in any of its rooms. */
   holds(): boolean
   /** It leads a non-terminal worker (`projectable(me).write` is not empty). */
-  leadsWorkers(): boolean
+  leadsWorkers(): boolean | Promise<boolean>
   /** A `room_wait` is in progress. */
   waiting(): boolean
   /** The host session ended: end presence everywhere and exit. */
@@ -207,6 +213,7 @@ export class PresenceEnd {
   private readonly episodeId: string
   private published?: number
   private left = false
+  private stopped = false
   private lastStale?: string
   private ticking?: Promise<void>
   private readonly timer?: ReturnType<typeof setInterval>
@@ -222,7 +229,7 @@ export class PresenceEnd {
     }
   }
 
-  stop(): void { clearInterval(this.timer) }
+  stop(): void { this.stopped = true; clearInterval(this.timer) }
 
   /** A Room tool call handled for this session, or a hook contact for its bound session. Returns the idle time it ended. */
   activity(): number {
@@ -253,21 +260,29 @@ export class PresenceEnd {
   }
 
   private async run(): Promise<void> {
+    if (this.stopped) return
     this.publish()
     const host = await this.options.hostAlive()
+    if (this.stopped) return
     const verdict: HostLiveness = typeof host === 'object' ? host : { alive: host }
     if (verdict.stale !== this.lastStale) { this.lastStale = verdict.stale; if (verdict.stale) this.options.log?.(`host liveness: ${verdict.stale}`) }
     if (verdict.alive === false) { this.options.hostEnded('host session ended'); return }
     if (this.options.hostKind !== 'shared-app-server' || this.left) return
     try { await this.options.replayPending?.() }
     catch (error) { this.options.log?.(`idle claim notice replay pending: ${error instanceof Error ? error.message : String(error)}`); return }
+    if (this.stopped) return
     const idle = this.idleMs()
     if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       // Retry a pending journal even after its first pass removed every held claim and scope.
       try { await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`) }
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
-    if (idle >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !this.options.leadsWorkers() && !this.options.waiting()) {
+    if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return
+    const epoch = this.epoch
+    let leadsWorkers = true
+    try { leadsWorkers = await this.options.leadsWorkers() }
+    catch (error) { this.options.log?.(`worker state unavailable: ${String(error)}`) }
+    if (!this.stopped && epoch === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
       this.left = true
       this.options.log?.(`idle ${Math.floor(idle / MINUTE)} min with nothing held: leaving presence (idle lease)`)
       try { await this.options.leave(idle) }

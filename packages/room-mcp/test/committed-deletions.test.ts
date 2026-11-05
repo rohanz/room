@@ -62,7 +62,7 @@ async function fixture(change: Change, remote = false) {
     status: 'done', exitCode: 0, base, host: 'codex', task: 'rename', pid: 0, startedAt: 1 }])
   const state = { S: () => session, rooms: { all: () => [session], holding: () => session, holdingWorker: () => session,
     reserve: () => true, unreserve() {}, autoRetire: async () => {}, project: async () => {}, hasHandle: () => false, tracking: () => true },
-    myWorkers: () => localWorkers(root), workerAlive: () => false, others: () => [person], presences: () => [],
+    myWorkers: async () => (await localWorkers(root)), workerAlive: () => false, others: () => [person], presences: () => [],
     withheld: () => undefined, shareOf: () => 'full', now: Date.now,
     baseFor: (_s: Session, name: string) => name === 'lead' ? git(root, 'rev-parse', 'HEAD') : workerHead,
     ctx: { probe: () => undefined, listCwdProcesses: () => [] },

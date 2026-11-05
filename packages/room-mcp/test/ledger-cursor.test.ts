@@ -1,6 +1,7 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SETTLE_MS, serializedStore, startHub, type Hub } from '@room/hub-core'
@@ -8,7 +9,7 @@ import { highestSeq, RoomDoc, type Msg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
-import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { closeRegistryForDir, openWorkerReader, registryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 
 // Ledger "Cursor: a seq frontier (hub)": the frontier is the highest hub seq a session had observed at its
@@ -74,18 +75,47 @@ describe('the seq frontier', () => {
     expect(fresh.candidates(s)).toEqual([])
   })
 
+  it('defers delivery and cursor persistence until malformed launch evidence is repaired', async () => {
+    const room = new RoomDoc(), lead = { name: 'lead', kind: 'agent' as const }
+    hubAppend(room, lead, { type: 'note', priority: 'notify', text: 'old chatter' })
+    const atIntent = highestSeq(room)
+    const { record, registry } = await seedRegistryWorker(dir, 'blocked-cursor', { name: 'lead+blocked-cursor', room: 'r' })
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
+    const briefing = hubAppend(room, lead, { type: 'note', priority: 'notify', text: 'between launch and bind' })
+    const file = join(registry.root, 'workers', `${record.id}.json`), bytes = readFileSync(file)
+    const reader = await openWorkerReader(dir)
+    writeFileSync(file, '{malformed')
+    vi.stubEnv('ROOM_WORKER_ID', record.id)
+    vi.stubEnv('ROOM_WORKER_RUN', '1')
+    const s = session(room, record.name), sessionDir = join(dir, 'blocked-cursor'), l = ledger(sessionDir)
+    l.supplyWorkers(s, await reader.snapshot())
+    l.bind(s)
+    expect(l.candidates(s)).toEqual([])
+    expect(l.select(s, l.open('reply'))).toEqual([])
+    expect(existsSync(join(sessionDir, 'cursor.json'))).toBe(false)
+    writeFileSync(file, bytes)
+    l.supplyWorkers(s, await reader.snapshot())
+    expect(l.frontier(s)).toBe(atIntent)
+    expect(ids(l.candidates(s))).toEqual([briefing.id])
+    const restarted = ledger(sessionDir)
+    restarted.supplyWorkers(s, await reader.snapshot())
+    restarted.bind(s)
+    expect(ids(restarted.candidates(s))).toEqual([briefing.id])
+  })
+
   it("a spawned worker seeds from its own run record's busFrontier: the lead's later briefing is owed, earlier chatter is not", async () => {
     const room = new RoomDoc()
     const lead = { name: 'lead', kind: 'agent' as const }
     hubAppend(room, lead, { type: 'note', priority: 'notify', text: 'old chatter' })
     const atIntent = highestSeq(room)
     const { record } = await seedRegistryWorker(dir, 'money', { name: 'lead+money' })
-    await (await registryForDir(dir)).update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
+    await mutateWorkerFixture((await registryForDir(dir)), record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
     const briefing = hubAppend(room, lead, { type: 'note', priority: 'notify', text: 'also mind the rounding' })
     hubAppend(room, { name: 'quinn', kind: 'agent' }, { type: 'note', priority: 'notify', text: 'after the worker bound' })
     vi.stubEnv('ROOM_WORKER_ID', record.id)
     vi.stubEnv('ROOM_WORKER_RUN', '1')
     const s = session(room, 'lead+money'), l = ledger()
+    l.supplyWorkers(s, await (await registryForDir(dir)).snapshot())
     l.bind(s)
     expect(l.frontier(s)).toBe(atIntent)
     expect(ids(l.candidates(s))).toContain(briefing.id)
@@ -108,7 +138,7 @@ describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
     const atIntent = highestSeq(room)
     const { record } = await seedRegistryWorker(dir, tag, { name: 'lead+docs', room: 'r' })
     const registry = await registryForDir(dir)
-    await registry.update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
     const briefing = hubAppend(room, lead, { type: 'note', to: 'lead+docs', text: 'new briefing' })
     return { record, registry, briefing }
   }
@@ -119,6 +149,7 @@ describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
     vi.stubEnv('ROOM_WORKER_ID', record.id)
     vi.stubEnv('ROOM_WORKER_RUN', '1')
     const s = session(room, 'lead+docs'), l = ledger()
+    l.supplyWorkers(s, await (await registryForDir(dir)).snapshot())
     l.bind(s)
     expect(text(l.candidates(s))).toEqual(['new briefing'])
   })
@@ -130,11 +161,12 @@ describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
     expect(highestSeq(room)).toBe(0)
     const { record } = await seedRegistryWorker(dir, 'docs-zero', { name: 'lead+docs', room: 'r' })
     const registry = await registryForDir(dir)
-    await registry.update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: 0 }], seq: old.seq + 1 }))
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: 0 }], seq: old.seq + 1 }))
     hubAppend(room, lead, { type: 'note', to: 'lead+docs', text: 'new briefing' })
     vi.stubEnv('ROOM_WORKER_ID', record.id)
     vi.stubEnv('ROOM_WORKER_RUN', '1')
     const s = session(room, 'lead+docs'), l = ledger()
+    l.supplyWorkers(s, await (await registryForDir(dir)).snapshot())
     l.bind(s)
     expect(text(l.candidates(s))).toEqual(['new briefing'])
   })
@@ -144,10 +176,11 @@ describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
     const { record, registry } = await reusedName(room, 'docs-resumed')
     const whileStopped = hubAppend(room, lead, { type: 'question', to: 'lead+docs', text: 'did the rename land?' })
     const run2 = highestSeq(room)
-    await registry.update(record.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', busFrontier: run2 }], seq: old.seq + 1 }))
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', busFrontier: run2 }], seq: old.seq + 1 }))
     vi.stubEnv('ROOM_WORKER_ID', record.id)
     vi.stubEnv('ROOM_WORKER_RUN', '2')
     const s = session(room, 'lead+docs'), l = ledger()
+    l.supplyWorkers(s, await (await registryForDir(dir)).snapshot())
     l.bind(s)
     expect(ids(l.candidates(s))).toContain(whileStopped.id)
     expect(text(l.candidates(s))).not.toContain('old answer: update doctor-entry.test.ts')

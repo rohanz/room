@@ -15,7 +15,7 @@ import { handlers as fileHandlers } from '../src/tools/files.js'
 import { createInbox } from '../src/tools/messaging.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
-import { closeRegistryForDir } from '../src/worker-registry.js'
+import { closeRegistryForDir, WorkerRegistry } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 
 let dir: string, base: string
@@ -38,6 +38,42 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it.each(['lead', 'lead+bounded'])('bounds lifecycle fs calls for an indexing pass by %s with N own files', async name => {
+    const workDir = mkdtempSync(join(tmpdir(), 'room-graph-bounded-'))
+    execFileSync('git', ['clone', '-q', dir, workDir])
+    const N = 24
+    const { record } = await seedRegistryWorker(workDir, 'bounded', { name: 'lead+bounded', base })
+    const root = join(workDir, '.git', 'room', 'registry')
+    fs.mkdirSync(join(root, 'quarantine'), { recursive: true })
+    for (let n = 0; n < 80; n++) writeFileSync(join(root, 'quarantine', `unrelated-${n}.bad`), 'evidence')
+    const room = new RoomDoc(); setParticipantBase(room, name, base); setFixtureLocalRoot(room, name, workDir)
+    const paths = Array.from({ length: N }, (_, n) => `bounded-${n}.js`)
+    for (const file of paths) publishFixture(room, name, file, 'function added(x) { return x }', { base })
+    const gi = new GraphIndex(room, name, workDir, undefined, { minPublishMs: 0, random: () => 0 })
+    const spies = [vi.spyOn(fs, 'statSync'), vi.spyOn(fs, 'readFileSync'), vi.spyOn(fs, 'readdirSync')]
+    const snapshots = vi.spyOn(WorkerRegistry.prototype, 'snapshot')
+    const calls = () => spies.flatMap(spy => spy.mock.calls).filter(([file]) => String(file).startsWith(root)).length
+    try {
+      gi.start(); await gi.whenIdle()
+      // Only a reservation/record lookup, shared by the pass, and bounded freshness checks.
+      console.log(JSON.stringify({ indexing: name, files: N, lifecycleFsCalls: calls(), snapshots: snapshots.mock.calls.length }))
+      expect(calls()).toBeLessThanOrEqual(name === 'lead' ? 0 : 12 * N + 40)
+      expect(snapshots.mock.calls.length).toBeLessThanOrEqual(name === 'lead' ? 0 : N + 6)
+      for (const [query] of snapshots.mock.calls) expect(query).toEqual({ tag: 'bounded', recordOnly: true })
+      await eventually(() => room.graphs.get(name)?.status === 'ready')
+      expect(gi.isReady).toBe(true)
+      expect(record.name).toBe('lead+bounded')
+    } finally {
+      snapshots.mockRestore()
+      for (const spy of spies) spy.mockRestore()
+      gi.stop(); room.doc.destroy()
+      for (const file of paths) rmSync(join(workDir, file), { force: true })
+      rmSync(join(root, 'quarantine'), { recursive: true, force: true })
+      await closeRegistryForDir(workDir)
+      rmSync(workDir, { recursive: true, force: true })
+    }
+  })
+
   it('reports a declined supported parser as uncovered and recovers when parsing succeeds', async () => {
     const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     const log = vi.fn()

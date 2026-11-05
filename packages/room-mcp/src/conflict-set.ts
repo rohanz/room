@@ -7,13 +7,13 @@ import { git, gitBlobInfoMany } from '@room/roomd/git'
 import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { diffLines } from 'diff'
-import { carriedPaths, carriesWork, pairBaseline, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
+import { carriedPaths, carriesWork, workerBaseline, pairBaseline, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
 import { parseInWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
-import { carriedSourceToken, registryForDir, registrySnapshotForDir } from './worker-registry.js'
+import { openWorkerReader, registryForDir } from './worker-registry.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
@@ -362,7 +362,7 @@ const asText = (v: Version): string | undefined => v.kind === 'text' ? v.text : 
 type Carried = { baseline: Baseline; lead: string }
 type CarriedLookup = (participant: string) => Carried | undefined
 /** A pass's memoized lookup; `current()` says whether every registry source it read is unchanged. */
-type CarriedPass = CarriedLookup & { current(): boolean }
+type CarriedPass = CarriedLookup & { current(): boolean; refresh(): Promise<boolean> }
 
 async function boundedBaseline(dir: string, baseline: Baseline, path: string): Promise<BaselineRead> {
   try {
@@ -424,6 +424,8 @@ export class ConflictSet {
   private starts: number[] = []
   private readonly contractCache = new ContractAnalysisCache()
   private guard: (() => boolean) | undefined
+  private carriedValues = new Map<string, Carried | undefined>()
+  private freshStorage?: () => Promise<boolean>
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: CarriedLookup,
@@ -435,8 +437,8 @@ export class ConflictSet {
       return { id: trusted.record.id, status: trusted.status.status, dir: fs.realpathSync(trusted.record.dir),
         run: run ? `${run.n}:${run.nonce}` : '', seq: trusted.record.seq }
     },
-    private readonly workerState: (id: string) => LandedWorkerState | undefined = id => {
-      const registry = registrySnapshotForDir(team.dir)
+    private readonly workerState: (id: string) => LandedWorkerState | undefined | Promise<LandedWorkerState | undefined> = async id => {
+      const registry = await openWorkerReader(team.dir)
       return registry.freshness(id)
     },
     private readonly claimText: typeof workerText = workerText) {
@@ -486,21 +488,45 @@ export class ConflictSet {
 
   /**
    * One check pass's carried-baseline lookup: each participant's registry facts are read at most once per
-   * pass. Pair inputs built from these values cannot notice a registry change, so each lookup also records
-   * its sources' freshness token (taken before the read), and the stale-inputs guard requires `current()`:
+   * pass. The immutable facts carry a revision, revalidated asynchronously before settlement.
+   * Synchronous publication guards use that supplied snapshot and observed invalidation only:
    * a carried baseline replaced during an awaited comparison makes the pass stale, never published.
    */
-  private carriedPass(): CarriedPass {
-    const memo = new Map<string, Carried | undefined>(), tokens = new Map<string, string>()
+  private async carriedPass(): Promise<CarriedPass> {
+    const reader = await openWorkerReader(this.team.dir)
+    const names = new Set([this.owner, ...neighbours(participantsView(this.team.room, this.team.awareness, Date.now()), this.owner).names()])
+    const tokens = new Map<string, string>(), records = new Map<string, Awaited<ReturnType<typeof reader.reserved>>>()
+    const tagOf = (participant: string) => {
+      const plus = participant.lastIndexOf('+')
+      return plus > 0 ? participant.slice(plus + 1) : undefined
+    }
+    for (const name of names) {
+      const tag = tagOf(name)
+      if (!tag || tokens.has(tag)) continue
+      // Capture the revision before any lookup can schedule work or yield to Git.
+      tokens.set(tag, await reader.sourceToken(tag))
+      if (!this.carriedFrom) records.set(tag, await reader.reserved(tag))
+    }
+    const memo = new Map<string, Carried | undefined>()
+    this.carriedValues = memo
+    let valid = true
     const lookup = (participant: string) => {
-      if (!this.carriedFrom) return undefined
       if (!memo.has(participant)) {
-        tokens.set(participant, carriedSourceToken(this.team.dir, participant))
-        memo.set(participant, this.carriedFrom(participant))
+        const tag = tagOf(participant), record = tag ? records.get(tag) : undefined
+        const baseline = record?.name === participant && !['retired', 'abandoned'].includes(record.phase) ? workerBaseline(record) : undefined
+        memo.set(participant, this.carriedFrom ? this.carriedFrom(participant)
+          : baseline && record ? { baseline, lead: record.lead.participant } : undefined)
       }
       return memo.get(participant)
     }
-    return Object.assign(lookup, { current: () => [...tokens].every(([participant, token]) => carriedSourceToken(this.team.dir, participant) === token) })
+    return Object.assign(lookup, { current: () => valid, refresh: async () => {
+      if (!valid) return false
+      for (const participant of memo.keys()) {
+        const tag = tagOf(participant)
+        if (tag && (!tokens.has(tag) || await reader.sourceToken(tag) !== tokens.get(tag))) { valid = false; break }
+      }
+      return valid
+    } })
   }
 
   /** Pair facts, excluding publication clocks, unrelated edits, and display-only graph edges. */
@@ -543,7 +569,7 @@ export class ConflictSet {
   }
 
   private inputsKey(): string {
-    const carriedOf = this.carriedPass()
+    const carriedOf: CarriedLookup = participant => this.carriedValues.get(participant)
     const room = this.team.room, views = participantsView(room, this.team.awareness, Date.now())
     const names = neighbours(views, this.owner).names().filter(name => this.owner === this.team.me.name || name !== this.team.me.name)
     return JSON.stringify([this.team.lease?.fence(), names.map(name => [name, this.pairInputs(name, views, carriedOf)]),
@@ -625,7 +651,7 @@ export class ConflictSet {
         this.slots.deferPeerNotices = true
         try { await this.run(reason) }
         catch (e) { if (!(e instanceof StaleConflictInputs)) throw e; this.rerun = true }
-        finally { this.guard = undefined; this.slots.deferPeerNotices = false }
+        finally { this.freshStorage = undefined; this.guard = undefined; this.slots.deferPeerNotices = false }
         if (!this.rerun) return
         if (attempt === 0) await new Promise<void>(resolve => setImmediate(resolve))
       }
@@ -636,11 +662,13 @@ export class ConflictSet {
   }
 
   private async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
+    if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs()
     if (this.guard && !this.guard()) throw new StaleConflictInputs()
     return this.slots.settle(key, result)
   }
 
-  private drop(key: string): void {
+  private async drop(key: string): Promise<void> {
+    if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs()
     if (this.guard && !this.guard()) throw new StaleConflictInputs()
     this.slots.drop(key)
   }
@@ -699,7 +727,8 @@ export class ConflictSet {
   }
 
   private async run(reason: string): Promise<void> {
-    const carriedOf = this.carriedPass()
+    const carriedOf = await this.carriedPass()
+    this.freshStorage = carriedOf.refresh
     this.fileWork = 0
     const room = this.team.room
     const leaseFence = this.team.lease?.fence()
@@ -720,13 +749,13 @@ export class ConflictSet {
       JSON.stringify(room.openClaims().filter(c => c.by === this.owner)) === claimInputs
     const nb = neighbours(views, this.owner)
     const names = new Set(nb.names())
-    for (const [key, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) this.drop(key)
+    for (const [key, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) await this.drop(key)
     names.delete(this.owner)
     if (this.owner !== this.team.me.name) names.delete(this.team.me.name) // lead/own worker pair belongs to the workers room
     const capturedPairs = new Map([...names].map(name => [name, this.pairInputs(name, views, carriedOf)]))
     for (const other of [...names].sort()) {
       const pairInputs = capturedPairs.get(other)!
-      if (!carriedOf.current() || this.pairInputs(other, participantsView(room, this.team.awareness, Date.now()), carriedOf) !== pairInputs) throw new StaleConflictInputs()
+      if (!await carriedOf.refresh() || this.pairInputs(other, participantsView(room, this.team.awareness, Date.now()), carriedOf) !== pairInputs) throw new StaleConflictInputs()
       let replayable = true
       try {
         const theirs = snapshot(room, other, views)
@@ -736,7 +765,7 @@ export class ConflictSet {
           participantsView(room, this.team.awareness, Date.now()), carriedOf) === pairInputs
         const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other)
         if (!theirs && !participantRecord(room, other)) {
-          for (const [key] of existing) this.drop(key)
+          for (const [key] of existing) await this.drop(key)
           continue
         }
         if (ownNonPublisher) {
@@ -781,7 +810,7 @@ export class ConflictSet {
           continue
         }
         await this.contracts(other, new Set([...mine.entries.keys(), ...room.openClaims().filter(c => c.by === this.owner).map(c => c.path)]), mine, theirs, carriedOf)
-        this.drop(slotKey(this.owner, 'merge', other, '*'))
+        await this.drop(slotKey(this.owner, 'merge', other, '*'))
         // Delivered/carried edits belong to the lead only in that worker's own lead pair.
         // Other pairs may share inherited blobs, but only with ancestry proved on both sides.
         const ours = carriedOf(this.owner), theirsCarried = carriedOf(other)
@@ -924,6 +953,7 @@ export class ConflictSet {
         if (replayable) {
           // Replay immediately under this evaluation's complete guard. Never keep
           // snapshots or reuse completed merge evidence across reconciliations.
+          if (!await carriedOf.refresh()) throw new StaleConflictInputs()
           await this.slots.replay(this.owner, slot => {
             if (slot.other !== other) return false
             if (!this.guard?.()) { this.rerun = true; return false }
@@ -952,7 +982,7 @@ export class ConflictSet {
       if (!holder) continue
       const worker = await this.localWorker(name)
       if (worker?.status !== 'done' || !worker.run || !claims.length) continue
-      const initial = this.workerState(worker.id)
+      const initial = await this.workerState(worker.id)
       if (!initial || initial.id !== worker.id || initial.name && initial.name !== name ||
           initial.lead && initial.lead !== this.owner || initial.dir && !samePath(initial.dir, worker.dir) ||
           initial.run !== worker.run || initial.seq !== worker.seq || initial.busy ||
@@ -977,7 +1007,7 @@ export class ConflictSet {
         } catch { landed = false; break }
       }
       if (!landed) continue
-      const latest = this.workerState(worker.id)
+      const latest = await this.workerState(worker.id)
       if (this.team.lease?.fence() !== leaseFence || !latest || latest.busy ||
           JSON.stringify(latest) !== JSON.stringify(initial) ||
           JSON.stringify(participantRecord(room, name)?.holder) !== holder ||
@@ -1031,7 +1061,7 @@ export class ConflictSet {
           const key = slotKey(this.owner, 'contract', other, path, '*')
           await unknownPath(path, before.error.message, hash(JSON.stringify([carried.baseline.sha, path, 'unavailable'])))
           const id = `cf:${hash(`${key}\0${carried.baseline.sha}`)}:degraded`
-          if (this.guard && !this.guard()) throw new StaleConflictInputs()
+          if (this.freshStorage && !await this.freshStorage() || this.guard && !this.guard()) throw new StaleConflictInputs()
           const notice = await this.notices.post<NoteMsg>(ROOM, { type: 'note', to: this.owner, priority: 'notify',
             text: `contract coverage degraded for ${path}: carried baseline unavailable; changes in this file cannot be checked` }, { id, auto: true })
           if (!notice.ok) this.log(`contract coverage notice ${id}: ${notice.text}`)
@@ -1092,7 +1122,7 @@ export class ConflictSet {
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== 'contract' || slot.other !== other || live.has(key)) continue
       if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.every(path => this.contractPathAuthorized(mine, path))) {
-        this.drop(key)
+        await this.drop(key)
         continue
       }
       if (!await this.priorConsumersReadable(key, mine)) {
@@ -1115,7 +1145,7 @@ export class ConflictSet {
     const ownFinishedWorker = this.owner === this.team.me.name && (await this.localWorker(other))?.status === 'done'
     const theirClaims = ownFinishedWorker ? [] : all.filter(c => c.by === other)
     if (ownFinishedWorker) for (const [key, slot] of this.slots.owned(this.owner)) {
-      if (slot.other === other && (slot.kind === 'edit-in-claim' || slot.kind === 'claims')) this.drop(key)
+      if (slot.other === other && (slot.kind === 'edit-in-claim' || slot.kind === 'claims')) await this.drop(key)
     }
     const seen = new Set<string>()
     const paths = new Set([

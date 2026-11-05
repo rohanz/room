@@ -210,13 +210,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const why = message(e)
         return `error: ${why}${/[.!?]$/.test(why) ? '' : '.'}${stay}`
       }
-      const withWorkers = (): string | undefined => {
+      const withWorkers = async (): Promise<string | undefined> => {
         if (!cur) return undefined
-        const mine = localWorkers(cur.dir, record => record.lead.participant === cur.me.name)
+        const mine = (await localWorkers(cur.dir, record => record.lead.participant === cur.me.name))
         if (!mine.length) return undefined
         return `You have ${mine.length} worker(s) (${mine.map(w => w.tag).join(', ')}). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${stay}`
       }
-      const blocked = withWorkers()
+      const blocked = await withWorkers()
       if (blocked) return blocked
       if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server
@@ -230,7 +230,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         catch (e) { return refused(e) }
       }
       if (toolCallAborted()) return 'error: tool call cancelled'
-      const late = withWorkers()
+      const late = (await withWorkers())
       if (late) return late
       const rollBack = async (reason: string): Promise<string> => {
         try {
@@ -336,7 +336,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_leave(a) {
       const s = S()
-      const running = (await Promise.all(runningWorkers(s).map(async r => ({ ...r, action: decideLeave(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx?.probe })) })))).filter(r => r.action === 'stop')
+      const running = (await Promise.all((await runningWorkers(s)).map(async r => ({ ...r, action: decideLeave(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx?.probe })) })))).filter(r => r.action === 'stop')
       if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_collect(discard=true) them, or room_leave force=true to dismiss them all and leave.`
       const stopped = await Promise.all(running.map(r => dismissWorker(r.s, r.w, 'the lead left the room')))
       await closeWorkersRoom()
@@ -372,7 +372,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (s.local) {
         if (a.confirm !== true) return 'error: this is a local room (no server): room_close forgets its saved history (timeline, finished-worker records) on this machine; call with confirm=true only on the user\'s explicit request'
-        if (runningWorkers(s).length) return 'error: dismiss running workers before closing the local room'
+        if ((await runningWorkers(s)).length) return 'error: dismiss running workers before closing the local room'
         const ledger = exportRoomLedger(s, { now: now() })
         if (!s.local.forget) throw new Error('local relay does not support forgetting memory; restart the session')
         await s.local.forget()

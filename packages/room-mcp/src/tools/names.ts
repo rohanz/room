@@ -5,7 +5,7 @@ import { isPrName } from '../prs.js'
 export interface NameContext {
   all: () => Session[]
   presences: (session: Session) => { user: Identity }[]
-  myWorkers: (session: Session) => { name: string; tag: string; lead: string }[]
+  myWorkers: (session: Session) => { name: string; tag: string; lead: string }[] | Promise<{ name: string; tag: string; lead: string }[]>
 }
 
 export function knownNames(session: Session, presences: NameContext['presences']): Set<string> {
@@ -22,7 +22,7 @@ export function knownNames(session: Session, presences: NameContext['presences']
 const addressKey = (name: string) => name.replace(/\u2019/g, "'").toLocaleLowerCase()
 
 /** Resolve a spoken participant name, including a lead's worker tag. Exact raw names win. */
-export function resolveDisplayedName(requested: string, context: NameContext, caller: Session): { name?: string; ambiguous?: string[] } {
+export async function resolveDisplayedName(requested: string, context: NameContext, caller: Session): Promise<{ name?: string; ambiguous?: string[] }> {
   const sessions = context.all()
   const known = new Set(sessions.flatMap(s => [...knownNames(s, context.presences)]))
   if (known.has(requested)) return { name: requested }
@@ -39,7 +39,7 @@ export function resolveDisplayedName(requested: string, context: NameContext, ca
     for (const claim of room.room.openClaims()) {
       if (addressKey(displayName({ name: claim.by, kind: claim.byKind })) === key) candidates.add(claim.by)
     }
-    for (const worker of context.myWorkers(room)) if (worker.lead === caller.me.name && (addressKey(worker.tag) === key || addressKey(worker.name) === key)) candidates.add(worker.name)
+    for (const worker of await context.myWorkers(room)) if (worker.lead === caller.me.name && (addressKey(worker.tag) === key || addressKey(worker.name) === key)) candidates.add(worker.name)
     for (const worker of room.room.retiredWorkers()) if (worker.lead === caller.me.name && addressKey(worker.tag) === key) candidates.add(worker.name)
   }
   const names = [...candidates].sort()

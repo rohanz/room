@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -122,6 +123,41 @@ async function setup(options: { policy?: ReturnType<typeof testPolicyStore>; sta
 }
 
 describe('Bridge: a lead in a team room with a local workers room', () => {
+  it('does not attach observers or recreate mirrors when stopped during the initial snapshot', async () => {
+    const t = await setup({ start: false })
+    t.local.a.addClaim({ by: worker.name, byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'edit' })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const snapshot = t.registry.snapshot.bind(t.registry)
+    const delayed = vi.spyOn(t.registry, 'snapshot').mockImplementationOnce(async query => { await gate; return snapshot(query) })
+    const observing = vi.spyOn(t.registry, 'onChange')
+    try {
+      t.bridge.start()
+      t.bridge.stop()
+      release()
+      await settle()
+      expect(observing).not.toHaveBeenCalled()
+      expect(t.team.a.openClaims()).toEqual([])
+    } finally { release(); delayed.mockRestore(); observing.mockRestore() }
+  })
+
+  it('does not reconcile conflicts after shutdown during an awaited worker projection', async () => {
+    const t = await setup({ start: false })
+    let release!: () => void, entered!: () => void
+    const entering = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const internals = t.bridge as unknown as { projectWorker(): Promise<void>; o: { reconcileConflicts?: () => Promise<void> } }
+    const reconcile = vi.fn(async () => {})
+    internals.o.reconcileConflicts = reconcile
+    const projection = vi.spyOn(internals, 'projectWorker').mockImplementation(async () => { entered(); await gate })
+    try {
+      const pending = t.bridge.project()
+      await entering
+      t.bridge.stop(); release(); await pending
+      expect(reconcile).not.toHaveBeenCalled()
+    } finally { release(); projection.mockRestore() }
+  })
+
   it('keeps an addressed team interrupt relayed between spawn and worker join', async () => {
     const t = await setup()
     const old = hubAppend<NoteMsg>(t.local.a, lead, { type: 'note', text: 'before spawn', priority: 'notify' })
@@ -153,6 +189,42 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     await settle()
     expect(t.team.b.coordination.has(lead.name)).toBe(false)
     expect(t.team.b.scope(lead.name)?.paths).toEqual(['api/auth.py'])
+  })
+
+  it('retains team coordination and bridge facts when a worker record becomes blocked (P2)', async () => {
+    const t = await setup({ start: false })
+    t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'api', summary: 'work', paths: ['app.py'] })
+    await t.bridge.sync()
+    const coordination = t.team.b.coordination.get(lead.name)
+    expect(coordination?.workers).toContain(worker.name)
+    const known = t.bridge.workers()
+    writeFileSync(join(t.registry.root, 'workers', `${t.record.id}.json`), '{malformed')
+    const project = vi.spyOn(t.bridge, 'project')
+    await t.bridge.sync()
+    expect(t.team.b.coordination.get(lead.name)).toEqual(coordination)
+    expect(t.bridge.workers()).toEqual(known)
+    expect(project).not.toHaveBeenCalled()
+  })
+
+  it.each(['acquisition', 'revalidation'] as const)('preserves projections on blocked later %s', async point => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: 'h', size: 2 } })
+    await t.bridge.sync()
+    const head = t.team.b.manifestHead.get(worker.name)
+    const facts = await t.registry.snapshot()
+    if (!facts.available) throw new Error('fixture snapshot unavailable')
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: 'h2', size: 3 } }, { rev: 2, semRev: 2 })
+    const original = t.registry.snapshot.bind(t.registry)
+    const spy = vi.spyOn(t.registry, 'snapshot')
+    let reads = 0
+    spy.mockImplementation(async query => {
+      if (query) return original(query)
+      reads++
+      return point === 'acquisition' || reads > 1 ? { ...facts, blockers: ['workers/damaged.json'] } : facts
+    })
+    await (t.bridge as unknown as { projectWorker(record: WorkerRecord): Promise<void> }).projectWorker(t.record)
+    expect(t.team.b.manifestHead.get(worker.name)).toEqual(head)
+    spy.mockRestore()
   })
 
   it('worker coordination never calls the lead daemon applyInputs (B1)', async () => {
@@ -368,7 +440,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     // ran. A connected provider's clock would have ticked; emit that heartbeat here before syncing.
     const heartbeat = () => t.workerPresence.setLocalState(t.workerPresence.getLocalState())
     heartbeat()
-    await t.registry.update(t.record.id, old => ({ ...old, base: C, carriedBase: C, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, t.record.id, old => ({ ...old, base: C, carriedBase: C, seq: old.seq + 1 }))
     publishSource(t.local.b, {}, { base: C })
     await t.bridge.sync() // create the previous Y map so its reads can be observed
 
@@ -451,7 +523,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     expect(t.team.b.manifestHead.has(worker.name)).toBe(true)
     expect(t.team.b.participants.has(`${worker.name}\u0000proj`)).toBe(true)
     ;(t.teamLead.daemon as { fence?: string }).fence = LEAD_FENCE
-    await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'done' }))
+    await t.registry.beginRetirement(t.record.id, (await t.registry.archiveOf(t.record, { summary: 'done' })))
     await t.bridge.sync()
     expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
   })
@@ -461,7 +533,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     publishSource(t.local.b, {})
     const target = t.bridge as unknown as { composeFacts: (...args: unknown[]) => Promise<unknown> }
     vi.spyOn(target, 'composeFacts').mockImplementation(async () => {
-      await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'done' }))
+      await t.registry.beginRetirement(t.record.id, (await t.registry.archiveOf(t.record, { summary: 'done' })))
       throw new Error('git unavailable')
     })
     await t.bridge.sync()
@@ -474,7 +546,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     symlinkSync('private-target', join(dir, 'link.py'))
     git('add', 'link.py'); git('commit', '-qm', 'carried symlink')
     C = git('rev-parse', 'HEAD').trim()
-    await t.registry.update(t.record.id, old => ({ ...old, base: C, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, t.record.id, old => ({ ...old, base: C, seq: old.seq + 1 }))
     publishSource(t.local.b, {})
     await t.bridge.sync()
     const head = t.team.b.manifestHead.get(worker.name)!
@@ -620,7 +692,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     git('add', '.'); git('commit', '-qm', 'more carried')
     const C2 = git('rev-parse', 'HEAD').trim()
     git('checkout', '-q', B)
-    await t.registry.update(t.record.id, old => ({ ...old, base: C2, carriedBase: C2, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, t.record.id, old => ({ ...old, base: C2, carriedBase: C2, seq: old.seq + 1 }))
     publishSource(t.local.b, {}, { base: C2 })
     t.bridge.start()
     await t.bridge.sync()
@@ -654,13 +726,13 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     await t.bridge.sync()
     expect(t.team.b.manifest.has(manifestKey(worker.name, LEAD_FENCE))).toBe(false)
     expect(t.team.b.manifestHead.get(worker.name)?.fence).toBe('2')
-    await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'collected', disposition: 'collected' }))
+    await t.registry.beginRetirement(t.record.id, (await t.registry.archiveOf(t.record, { summary: 'collected', disposition: 'collected' })))
     await t.bridge.sync()
     expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
     expect(participantRecord(t.team.b, worker.name)).toBeUndefined()
     expect(t.team.b.workerViews.has(t.record.id)).toBe(false)
     expect(t.team.b.retiredWorkers().map(r => r.id)).toEqual([t.record.id])
-    expect(t.registry.read(t.record.id)?.cleanup).toEqual({ [LOCAL]: 'pending', [TEAM]: 'done' })
+    expect((await t.registry.read(t.record.id))?.cleanup).toEqual({ [LOCAL]: 'pending', [TEAM]: 'done' })
     expect(t.team.b.coordination.has(lead.name)).toBe(false)
   })
 

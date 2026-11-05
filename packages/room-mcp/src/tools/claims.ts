@@ -5,7 +5,6 @@ import type { Session } from '../session.js'
 import { parseInWorker } from '../parse/client.js'
 import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshotPath, snapshotStillCurrent, versionOf, prepareClaimLineMap, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
-import { carriedFrom } from '../worker-registry.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
 export const defs: ToolDef[] = [
@@ -225,7 +224,7 @@ export function createClaims(deps: Pick<HandlerState, 'log' | 'ctx'>): Pick<Hand
   const { log, ctx } = deps
   const planChanged = postPlanChange
   const startConflictSet = (s: Session): ConflictSet => {
-    const set = new ConflictSet(s, s.me.name, s, log, ctx.conflictDebounceMs, person => carriedFrom(s.dir, person))
+    const set = new ConflictSet(s, s.me.name, s, log, ctx.conflictDebounceMs)
     set.start()
     return set
   }

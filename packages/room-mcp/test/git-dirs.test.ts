@@ -43,8 +43,8 @@ it('worker stop state lives in the common gitdir across worktrees and is keyed b
   const { root, worker } = repo()
   const { registry, record } = await seedRegistryWorker(root, 'one')
   await registry.beginStop(record.id, 'lead-session-ended')
-  expect((await registryForDir(worker)).read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
-  expect((await registryForDir(worker)).read('w_absent')).toBeUndefined()
+  expect((await (await registryForDir(worker)).read(record.id))?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
+  expect((await (await registryForDir(worker)).read('w_absent'))).toBeUndefined()
 })
 
 it('a prepared worker worktree cannot be silently reused by a later launch', async () => {

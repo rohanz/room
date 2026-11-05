@@ -234,7 +234,7 @@ it('uses the captured commit for a symbolic HEAD base fallback', async () => {
 it.each(['content', 'paths', 'base', 'authority', 'sharing', 'text availability'])('still detects real %s movement and names the changed input', async kind => {
   const { room, session, state, publish } = fixture()
   const result = await buildCombinedTree(state, session, ['ben', 'chris'].map(person => ({ person, session })))
-  expect(result.isCurrent()).toBe(true)
+  expect((await result.isCurrent())).toBe(true)
   let detail: string
   if (kind === 'content') { publish('ben', 2, 'changed\n'); detail = 'path "ben.txt"' }
   else if (kind === 'paths') {
@@ -253,8 +253,8 @@ it.each(['content', 'paths', 'base', 'authority', 'sharing', 'text availability'
     room.overlays.get(manifestKey('ben', '1'))!.delete('ben.txt')
     detail = 'path "ben.txt"'
   }
-  expect(result.moved()).toEqual(['ben'])
-  expect(result.movementDetails().join('\n')).toContain(`ben: ${detail}`)
+  expect((await result.moved())).toEqual(['ben'])
+  expect((await result.movementDetails()).join('\n')).toContain(`ben: ${detail}`)
 })
 
 it('keeps construction retries bounded and never runs a command on an unsettled build', async () => {

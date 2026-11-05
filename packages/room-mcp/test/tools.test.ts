@@ -1,7 +1,8 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { rm } from 'node:fs/promises'
 import { clearFixture, publishFixture as publishFixtureRaw, setFixtureLocalRoot } from './fixtures/manifest.js'
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -264,6 +265,8 @@ beforeAll(() => {
   git('remote', 'add', 'origin', 'https://github.com/o/r.git')
   base = git('rev-parse', 'HEAD').trim()
 })
+// Every setup has its own hub but shares this repository. Stop its writers before the next test.
+afterEach(async () => { for (const dispose of fixtureDisposals.splice(0).reverse()) await dispose() })
 afterAll(async () => {
   const stop = async () => { for (const dispose of fixtureDisposals.splice(0).reverse()) await dispose() }
   if (startsPreviewMaintenance) await disposePreviewFixture(dir, { stop, registries: [dir] })
@@ -1528,7 +1531,7 @@ it("a worker seeds its frontier from its run record: addressed briefings and lat
   hubAppend<NoteMsg>(t.other, lead, { type: 'note', to: me.name, text: 'addressed briefing', priority: 'notify' })
   const { record } = await seedRegistryWorker(dir, 'review', { name: me.name })
   const atIntent = highestSeq(t.other)
-  await (await registryForDir(dir)).update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
+  await mutateWorkerFixture((await registryForDir(dir)), record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
   const fresh = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
   vi.stubEnv('ROOM_WORKER_ID', record.id)
   vi.stubEnv('ROOM_WORKER_RUN', '1')

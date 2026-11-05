@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,14 +9,15 @@ import { WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import type { Session } from '../src/session.js'
 
-const signal = vi.hoisted(() => ({ handler: undefined as undefined | ((pid: number, worker: unknown) => boolean) }))
+const signal = vi.hoisted(() => ({ handler: undefined as undefined | ((pid: number, worker: unknown) => boolean),
+  quiesce: undefined as undefined | (() => Promise<boolean>) }))
 vi.mock('../src/port-reservations.js', () => ({
   reserveWorkerPort: () => ({ port: 4409, release: () => {} }),
   bindWorkerPortReservation: () => {},
 }))
 vi.mock('../src/worker-process.js', async importOriginal => {
   const original = await importOriginal<typeof import('../src/worker-process.js')>()
-  return { ...original, signalWorker: (pid: number, _signal: string, _dir: string, _list: unknown, worker: unknown) => signal.handler?.(pid, worker) ?? false }
+  return { ...original, quiesceWorktreeProcesses: (...args: Parameters<typeof original.quiesceWorktreeProcesses>) => signal.quiesce ? signal.quiesce() : original.quiesceWorktreeProcesses(...args), signalWorker: (pid: number, _signal: string, _dir: string, _list: unknown, worker: unknown) => signal.handler?.(pid, worker) ?? false }
 })
 
 const roots: string[] = []
@@ -73,7 +75,7 @@ describe('reviewed worker write failures', () => {
     await store.abandonPreparation('w_01')
     await store.writeIntent(record('w_02'))
     git('worktree', 'add', '-qb', 'room/tests', dir)
-    await store.update('w_02', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true }, seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, 'w_02', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true }, seq: old.seq + 1 }))
     expect((await store.trusted({ participant: 'lead', room: 'local/repo', dir: root }, 'tests'))?.record.id).toBe('w_02')
   })
 
@@ -85,23 +87,56 @@ describe('reviewed worker write failures', () => {
     await store.writeIntent({ ...record('w_03'), dir: outside, outside: true,
       prep: { step: 'prepared', worktreeExisted: true, created: false }, phase: 'prepared' })
     await store.abandonPreparation('w_03')
-    expect(store.read('w_03')?.phase).toBe('abandoned')
+    expect((await store.read('w_03'))?.phase).toBe('abandoned')
     expect(fs.existsSync(outside)).toBe(true)
-    expect(store.occupancy()).toBe(0)
+    expect((await store.occupancy())).toBe(0)
   })
 
   it('announces a saved done report on exit after its first post failed (F-S3)', async () => {
     const { root, record } = fixture()
     const store = await open(root)
     await store.writeIntent(record('w_04'))
-    await store.update('w_04', old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 4242 } }], seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, 'w_04', old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 4242 } }], seq: old.seq + 1 }))
     await store.writeReport('w_04', { run: 1, nonce: 'nonce', chain: [], joinedAt: 2,
       done: { at: 3, summary: 'finished', changed: [] } })
     await store.writeExit('w_04', { run: 1, code: 0, at: 4, witnessed: true })
     const ids: string[] = []
     expect(await store.postObservedFailure('w_04', 1, async message => { ids.push(message.id) })).toBe(true)
     expect(ids).toEqual(['wk:w_04:1'])
-    expect(store.read('w_04')?.runs[0].posted).toBe('wk:w_04:1')
+    expect((await store.read('w_04'))?.runs[0].posted).toBe('wk:w_04:1')
+  })
+
+  it('keeps restart discard pending without signaling a checkout with a malformed live borrower (P1)', async () => {
+    const { root, dir, git, record } = fixture()
+    git('worktree', 'add', '-qb', 'room/tests', dir)
+    const store = await open(path.join(root, '.git'))
+    await store.writeIntent(record('w_owner'))
+    await mutateWorkerFixture(store, 'w_owner', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+      runs: [{ ...old.runs[0], launch: { outcome: 'never', error: 'no host' } }], seq: old.seq + 1 }))
+    await store.finishOperation('w_owner')
+    const borrower = { ...record('w_borrower'), tag: 'borrower', name: 'lead+borrower', sharedWith: 'w_owner' }
+    await store.writeIntent(borrower)
+    await store.finishOperation(borrower.id)
+    await store.beginDiscard('w_owner', true, [])
+    const ownerFile = path.join(store.root, 'workers/w_owner.json')
+    const pending = fs.readFileSync(ownerFile, 'utf8')
+    fs.writeFileSync(path.join(store.root, 'workers/w_borrower.json'), '{malformed')
+    const quiesce = vi.fn().mockResolvedValue(false), hostSignal = vi.fn().mockReturnValue(false)
+    signal.quiesce = quiesce
+    signal.handler = hostSignal
+    try {
+      store.close()
+      const reopened = await open(path.join(root, '.git'))
+      expect(quiesce).not.toHaveBeenCalled()
+      expect(hostSignal).not.toHaveBeenCalled()
+      await expect(reopened.replayDiscard('w_owner')).rejects.toMatchObject({ reason: 'blocked' })
+      expect(quiesce).not.toHaveBeenCalled()
+      expect(hostSignal).not.toHaveBeenCalled()
+      expect(fs.readFileSync(ownerFile, 'utf8')).toBe(pending)
+      expect(fs.existsSync(dir)).toBe(true)
+      expect((await reopened.list()).blockers.some(value => value.includes(borrower.id))).toBe(true)
+      reopened.close()
+    } finally { signal.quiesce = undefined; signal.handler = undefined }
   })
 
   it('signals a live worker while replaying its durable discard plan (M9)', async () => {
@@ -119,13 +154,13 @@ describe('reviewed worker write failures', () => {
       return true
     }
     await store.writeIntent(record('w_05'))
-    await store.update('w_05', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+    await mutateWorkerFixture(store, 'w_05', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: child.pid!, process: {
         pid: child.pid!, startTime: 'child-born', executable: process.execPath } } }], seq: old.seq + 1 }))
     await store.beginDiscard('w_05', true, [])
     await store.replayDiscard('w_05')
     expect(live).toBe(false)
-    expect(store.read('w_05')?.discard?.steps.stop).toBe(true)
+    expect((await store.read('w_05'))?.discard?.steps.stop).toBe(true)
   })
 
   it('stops the admitted host and MCP before publishing a discard patch (N2)', async () => {
@@ -148,7 +183,7 @@ describe('reviewed worker write failures', () => {
     const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
       liveness: p => alive.has(p.pid) ? 'alive' : 'dead' })
     await store.writeIntent(record('w_chain'))
-    await store.update('w_chain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+    await mutateWorkerFixture(store, 'w_chain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: host.pid! } }], seq: old.seq + 1 }))
     await store.writeReport('w_chain', { run: 1, nonce: 'nonce', chain, joinedAt: 2 })
     await store.beginDiscard('w_chain', true, [])
@@ -162,7 +197,7 @@ describe('reviewed worker write failures', () => {
     expect(signals[0]).toBe(host.pid)
     expect(signals).toContain(mcp.pid)
     expect(aliveAtPatch).toBe(false)
-    expect(store.read('w_chain')?.discard?.steps.stop).toBe(true)
+    expect((await store.read('w_chain'))?.discard?.steps.stop).toBe(true)
   })
 
   it('keeps the worktree and stop step pending when the admitted host cannot be verified (N2)', async () => {
@@ -171,7 +206,7 @@ describe('reviewed worker write failures', () => {
     const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
       liveness: p => p.pid === 4243 ? 'unknown' : 'dead' })
     await store.writeIntent(record('w_uncertain'))
-    await store.update('w_uncertain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+    await mutateWorkerFixture(store, 'w_uncertain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 4243 } }], seq: old.seq + 1 }))
     await store.writeReport('w_uncertain', { run: 1, nonce: 'nonce', chain: [
       { pid: 4242, startTime: 'mcp', executable: process.execPath },
@@ -179,7 +214,7 @@ describe('reviewed worker write failures', () => {
     ], joinedAt: 2 })
     await store.beginDiscard('w_uncertain', true, [])
     await store.replayDiscard('w_uncertain')
-    expect(store.read('w_uncertain')?.discard?.steps.stop).not.toBe(true)
+    expect((await store.read('w_uncertain'))?.discard?.steps.stop).not.toBe(true)
     expect(fs.existsSync(dir)).toBe(true)
   })
 
@@ -188,7 +223,7 @@ describe('reviewed worker write failures', () => {
     git('worktree', 'add', '-qb', 'room/tests', dir)
     const store = await open(root)
     await store.writeIntent(record('w_06'))
-    await store.update('w_06', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
+    await mutateWorkerFixture(store, 'w_06', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'never', error: 'host missing' } }], seq: old.seq + 1 }))
     await store.beginDiscard('w_06', true, [])
     const scratch = path.join(root, 'room/registry/patches/w_06.0123456789abcdef.tmp')

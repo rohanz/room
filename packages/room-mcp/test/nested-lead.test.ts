@@ -158,7 +158,7 @@ describe('nested lead: a worker that leads workers', () => {
     expect(room.retiredWorkers().map(r => r.name)).toEqual([LEAD])
     const out = await call({ tag: 'cat', discard: true, force: true })
     expect(out).toContain('cat belongs to rohanz+lead')
-    expect(workerByTag(top, 'cat')).toBeDefined()
+    expect((await workerByTag(top, 'cat'))).toBeDefined()
   })
 
   it('6: grand-workers share the lead-worker\'s compute budget instead of each inheriting all of it', async () => {

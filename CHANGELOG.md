@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Worker lifecycle storage sits behind one asynchronous interface** (slice 1 of docs/superpowers/plans/2026-11-06-sqlite-state.md). Every reader and writer of worker records, runs, reports, exits and collection state now goes through a typed async facade with named lifecycle commands instead of synchronous file reads and edit callbacks; the files on disk and their rules are unchanged, and costs stay at baseline (docs/archive/reports/2026-11-06-lifecycle-baseline.md). This prepares the move to SQLite.
+- **A damaged worker record is never treated as missing.** Inventories now report malformed or quarantined records as blockers alongside the valid ones, and reading never moves a file. While a record is blocked Room keeps the checkout, the projected view, presence and team coordination, refuses spawn and resume when capacity can't be counted, does not replay a discard or stop processes in a shared checkout, and does not advance a session's message cursor.
+- **A stopped session can no longer post a worker's completion into a room it has left,** and a resumed worker no longer receives an earlier same-name worker's mail.
+
 ## 0.17.35
 
 - **Combined previews no longer refuse idle peers as "moved".** A preview treated publication heartbeats, manifest and Git revision bumps, worker sequence numbers and ref timestamps as movement, so previews refused even when nobody was editing. Movement now means a change to what the preview applies (content, paths, base, sharing, authority, acknowledgement or ref values), and a refusal names what moved and which baseline or HEAD it could not verify.

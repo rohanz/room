@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFil
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, manifestPaths } from '@room/shared'
-import { closeRegistryForDir, localWorkers } from '../src/worker-registry.js'
+import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
 import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
@@ -58,7 +58,7 @@ function registry(dir: string) {
   rooms.track(s)
   const autoRetire = rooms.autoRetire.bind(rooms)
   rooms.autoRetire = async () => { maintenanceDirs.add(dir); await autoRetire() }
-  const has = (tag: string) => !!workerByTag(dir, tag)
+  const has = async (tag: string) => !!(await workerByTag(dir, tag))
   return { room, s, rooms, has, close: () => { rooms.remove(s); room.doc.destroy() } }
 }
 
@@ -95,6 +95,22 @@ it('does not inspect a separate checkout that Room does not own even if its bran
 })
 
 describe('git facts and lead evaluation', () => {
+  it('retains checkout and coordination when a borrower record blocks auto-retirement', async () => {
+    const { dir } = repo(), r = registry(dir)
+    try {
+      const prepared = await prepareWorktree(dir, 'w', 'lead'), owner = { ...worker(prepared.dir), base: prepared.base }
+      const borrower = { ...owner, id: 'w_borrower', tag: 'borrower', name: 'lead+borrower', sharedWith: fixtureId(owner), status: 'running' as const }
+      await registerWorkers(r.s, [owner, borrower])
+      r.room.addClaim({ by: owner.name, byKind: 'agent', path: 'a', from: 1, to: 1, intent: 'work' })
+      const store = await registryForDir(dir)
+      writeFileSync(join(store.root, 'workers', `${fixtureId(borrower)}.json`), '{malformed')
+      await expect(r.rooms.autoRetire()).rejects.toThrow(fixtureId(borrower))
+      expect(existsSync(owner.dir)).toBe(true)
+      expect((await store.read(fixtureId(owner)))?.phase).toBe('active')
+      expect(r.room.openClaims().some(c => c.by === owner.name)).toBe(true)
+    } finally { r.close() }
+  })
+
   it('auto-retires a worker whose worktree vanished and keeps unmerged commits', async () => {
     const { dir, git } = repo(), r = registry(dir)
     const prepared = await prepareWorktree(dir, 'w', 'lead')
@@ -107,7 +123,7 @@ describe('git facts and lead evaluation', () => {
     r.room.addClaim({ by: w.name, byKind: 'agent', path: 'worker.txt', from: 1, to: 1, intent: 'work' })
     rmSync(w.dir, { recursive: true, force: true })
     await r.rooms.autoRetire()
-    expect(r.has(w.tag)).toBe(false)
+    expect((await r.has(w.tag))).toBe(false)
     expect(r.room.manifestHead.has(w.name)).toBe(false)
     expect(r.room.openClaims().filter(c => c.by === w.name)).toEqual([])
     expect(git('branch', '--list', 'room/w')).toContain('room/w')
@@ -121,7 +137,7 @@ describe('git facts and lead evaluation', () => {
     await registerWorkers(r.s, [w])
     rmSync(w.dir, { recursive: true, force: true })
     await r.rooms.autoRetire()
-    expect(r.has('w')).toBe(true)
+    expect((await r.has('w'))).toBe(true)
     expect(git('branch', '--list', 'room/w')).toContain('room/w')
     r.close()
   })
@@ -134,11 +150,11 @@ describe('git facts and lead evaluation', () => {
     await registerWorkers(r.s, [w])
     await r.rooms.autoRetire()
     expect(existsSync(join(w.dir, 'artifact.bin'))).toBe(true)
-    expect(r.has('w')).toBe(true)
+    expect((await r.has('w'))).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
     await finishWorker(r.s, 'w', { status: 'dismissed' })
     await r.rooms.autoRetire()
-    expect(r.has('w')).toBe(true)
+    expect((await r.has('w'))).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
     r.close()
   })
@@ -156,18 +172,18 @@ describe('git facts and lead evaluation', () => {
     writeFileSync(join(w.dir, 'artifact.bin'), 'ignored output')
     await workers.deferCollectCleanup(id, 'exit not witnessed')
     await r.rooms.autoRetire()
-    expect(workers.read(id)).toMatchObject({ phase: 'active', collectPending: { reason: 'uncopied ignored artifacts' } })
+    expect((await workers.read(id))).toMatchObject({ phase: 'active', collectPending: { reason: 'uncopied ignored artifacts' } })
     expect(existsSync(join(w.dir, 'artifact.bin'))).toBe(true)
     rmSync(join(w.dir, 'artifact.bin'))
     // Written after collection: the lead does not hold it, so the worktree stays with a live record.
     writeFileSync(join(w.dir, 'late.txt'), 'late')
     await r.rooms.autoRetire()
-    expect(workers.read(id)?.phase).toBe('active')
+    expect((await workers.read(id))?.phase).toBe('active')
     expect(r.room.retiredWorkers()).toEqual([])
     rmSync(join(w.dir, 'late.txt'))
     await r.rooms.autoRetire()
-    expect(workers.read(id)?.phase).toBe('retired')
-    expect(workers.read(id)?.keptWorktree).toBeUndefined()
+    expect((await workers.read(id))?.phase).toBe('retired')
+    expect((await workers.read(id))?.keptWorktree).toBeUndefined()
     expect(existsSync(prepared.dir)).toBe(false)
     expect(git('branch', '--list', 'room/w')).toBe('')
     expect(r.room.retiredWorkers()).toMatchObject([{ tag: 'w', disposition: 'collected' }])
@@ -184,11 +200,11 @@ describe('git facts and lead evaluation', () => {
     const id = fixtureId(w)
     await workers.deferCollectCleanup(id, 'nested workers remain: c')
     await r.rooms.autoRetire()
-    expect(workers.read(id)).toMatchObject({ phase: 'active', collectPending: { reason: 'nested workers remain: c' } })
+    expect((await workers.read(id))).toMatchObject({ phase: 'active', collectPending: { reason: 'nested workers remain: c' } })
     expect(existsSync(prepared.dir)).toBe(true)
-    await workers.beginRetirement(fixtureId(child), workers.archiveOf(workers.read(fixtureId(child))!, { summary: 'gone' }))
+    await workers.beginRetirement(fixtureId(child), (await workers.archiveOf((await workers.read(fixtureId(child)))!, { summary: 'gone' })))
     await r.rooms.autoRetire()
-    expect(workers.read(id)?.phase).toBe('retired')
+    expect((await workers.read(id))?.phase).toBe('retired')
     expect(existsSync(prepared.dir)).toBe(false)
     r.close()
   })
@@ -198,14 +214,14 @@ describe('git facts and lead evaluation', () => {
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), base: prepared.base, status: 'running' as const }
     const workers = await registerWorkers(r.s, [w])
-    const id = fixtureId(w), record = workers.read(id)!
+    const id = fixtureId(w), record = (await workers.read(id))!
     // Report and exit land, and retirement begins, before any projection posts the completion.
     await workers.writeReport(id, { run: 1, nonce: record.runs[0].nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'done', changed: [] } })
     await workers.writeExit(id, { run: 1, code: 0, at: Date.now(), witnessed: true })
-    await workers.beginRetirement(id, workers.archiveOf(record, { summary: 'done' }))
+    await workers.beginRetirement(id, (await workers.archiveOf(record, { summary: 'done' })))
     await r.rooms.project()
-    expect(workers.read(id)?.phase).toBe('retired')
-    expect(workers.read(id)?.runs[0].posted).toBeDefined()
+    expect((await workers.read(id))?.phase).toBe('retired')
+    expect((await workers.read(id))?.runs[0].posted).toBeDefined()
     expect(r.room.retiredWorkers().map(entry => entry.tag)).toEqual(['w'])
     r.close()
   })
@@ -218,22 +234,22 @@ describe('git facts and lead evaluation', () => {
     const id = fixtureId(w)
     writeFileSync(join(w.dir, 'a'), 'worker edit'); writeFileSync(join(dir, 'a'), 'worker edit')
     writeFileSync(join(w.dir, 'late.txt'), 'written after collection')
-    const archive = { ...workers.archiveOf(workers.read(id)!, { summary: 'done', disposition: 'collected' }), keptWorktree: w.dir, keptReason: 'clean exit not confirmed' }
+    const archive = { ...(await workers.archiveOf((await workers.read(id))!, { summary: 'done', disposition: 'collected' })), keptWorktree: w.dir, keptReason: 'clean exit not confirmed' }
     await workers.beginRetirement(id, archive, { keptWorktree: w.dir })
     await r.rooms.project()
-    expect(workers.read(id)?.phase).toBe('retired')
+    expect((await workers.read(id))?.phase).toBe('retired')
     expect(r.room.retiredWorkers()[0].keptWorktree).toBe(w.dir)
     // Something the lead does not hold stays for the lead to recover; nothing is deleted.
     await r.rooms.autoRetire()
     expect(existsSync(join(w.dir, 'late.txt'))).toBe(true)
-    expect(workers.read(id)?.keptWorktree).toBe(w.dir)
+    expect((await workers.read(id))?.keptWorktree).toBe(w.dir)
     rmSync(join(w.dir, 'late.txt'))
     await r.rooms.autoRetire()
     expect(existsSync(prepared.dir)).toBe(false)
     expect(git('branch', '--list', 'room/w')).toBe('')
-    expect(workers.read(id)?.phase).toBe('retired')
-    expect(workers.read(id)?.keptWorktree).toBeUndefined()
-    expect(workers.read(id)?.archive?.keptReason).toBeUndefined()
+    expect((await workers.read(id))?.phase).toBe('retired')
+    expect((await workers.read(id))?.keptWorktree).toBeUndefined()
+    expect((await workers.read(id))?.archive?.keptReason).toBeUndefined()
     expect(r.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
     r.close()
   })
@@ -243,7 +259,7 @@ describe('git facts and lead evaluation', () => {
     const w = { ...worker(dir), branch: 'main' }
     await registerWorkers(r.s, [w])
     await r.rooms.autoRetire()
-    expect(r.has('w')).toBe(true)
+    expect((await r.has('w'))).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
     r.close()
   })
@@ -328,7 +344,7 @@ describe('git facts and lead evaluation', () => {
     await registerWorkers(r.s, [w])
     publishFixture(r.room, w.name, 'a', 'worker output')
     await r.rooms.autoRetire()
-    expect(r.has(w.tag)).toBe(false)
+    expect((await r.has(w.tag))).toBe(false)
     expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'merged' }])
     expect(manifestPaths(r.room, w.name)).toEqual([])
     r.close()
@@ -355,16 +371,16 @@ describe('git facts and lead evaluation', () => {
     publishFixture(r.room, w.name, 'a', 'published')
     const proc = { pid: 1, onExit() {}, kill: () => true }
     r.rooms.setHandle(r.s, fixtureId(w), proc)
-    await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
+    await r.rooms.autoRetire(); expect((await r.has(w.tag))).toBe(true)
     r.rooms.dropHandle(r.s, fixtureId(w), proc)
     await r.rooms.autoRetire()
     expect(r.room.retiredWorkers()).toMatchObject([{ id: fixtureId(w), outcome: 'clean', files: ['a'], summary: 'done' }])
     await registerWorkers(r.s, [{ ...w, id: 'w_second', startedAt: 2, status: 'failed', exitCode: 1 }])
-    await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
+    await r.rooms.autoRetire(); expect((await r.has(w.tag))).toBe(true)
     await finishWorker(r.s, w.tag, { status: 'dismissed' })
     await r.rooms.autoRetire(); expect(r.room.retiredWorkers().at(-1)).toMatchObject({ id: 'w_second', outcome: 'dismissed' })
     await registerWorkers(r.s, [{ ...w, id: 'w_third', lead: 'someone else' }])
-    await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
+    await r.rooms.autoRetire(); expect((await r.has(w.tag))).toBe(true)
     r.close()
   })
 
@@ -378,7 +394,7 @@ describe('git facts and lead evaluation', () => {
     r.rooms.remove(r.s)
     await registerWorkers(r.s, [{ ...worker(missing), id: 'w_later', startedAt: 2, status: 'dismissed' }])
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(localWorkers(dir)).toHaveLength(1)
+    expect((await localWorkers(dir))).toHaveLength(1)
     r.room.doc.destroy()
   })
 })
@@ -392,17 +408,17 @@ it('keeps uncommitted work visible until the lead commits and merges it; merged 
   writeFileSync(join(w.dir, 'new\nfile'), 'untracked')
   publishFixture(r.room, w.name, 'a', 'worker edit')
   await r.rooms.autoRetire()
-  expect(r.has(w.tag)).toBe(true)
+  expect((await r.has(w.tag))).toBe(true)
   expect(manifestPaths(r.room, w.name)).toEqual(['a'])
   expect(await workerGitFacts(dir, w)).toMatchObject({ ahead: 0, clean: false, uncommitted: 2 })
   execFileSync('git', ['-C', w.dir, 'add', '.'])
   execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'lead commits worker work'])
   await r.rooms.autoRetire()
-  expect(r.has(w.tag)).toBe(true)
+  expect((await r.has(w.tag))).toBe(true)
   git('merge', '--ff-only', w.branch)
   writeFileSync(join(w.dir, 'a'), 'dirty after merge')
   await r.rooms.autoRetire()
-  expect(r.has(w.tag)).toBe(true)
+  expect((await r.has(w.tag))).toBe(true)
   execFileSync('git', ['-C', w.dir, 'restore', 'a'])
   await r.rooms.autoRetire()
   expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'merged' }])
@@ -478,7 +494,7 @@ it('retains workers when the worktree, branch, fork commit or lead git state is 
     const w = { ...worker(prepared.dir), base: prepared.base }
     await registerWorkers(r.s, [{ ...w, ...patch }])
     await r.rooms.autoRetire()
-    expect(r.has(w.tag)).toBe(true)
+    expect((await r.has(w.tag))).toBe(true)
     expect(r.room.retiredWorkers()).toEqual([])
     expect((await workerGitFacts('/missing', w)).ahead).toBeUndefined()
     r.close()

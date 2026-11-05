@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 // rc12 review round 5: a resume recorded the new host's identity through the registry's wrapper around the shared,
 // cached probe, so a pid still cached from an exited process could be recorded with that predecessor's identity.
 import { afterEach, expect, it, vi } from 'vitest'
@@ -79,7 +80,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
     }])
   }
   /** The worker's registry record under a tag (spawned or seeded), for run facts the lifecycle view does not carry. */
-  const record = async (tag: string) => (await registryForDir(dir)).list().find(r => r.tag === tag)
+  const record = async (tag: string) => (requireWorkerInventory(await (await registryForDir(dir)).list())).find(r => r.tag === tag)
   return { dir, room, session, tools, record, specs, spawned, exits, errors, kills, logs, seed, portFile: (port: number) => join(dir, 'room', 'ports', String(port)) }
 }
 

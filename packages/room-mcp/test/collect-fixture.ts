@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { realGitCommonDir } from '@room/roomd'
 import { manifestPaths, RoomDoc, splitParticipants } from '@room/shared'
@@ -63,7 +64,7 @@ afterEach(async () => { collectRefHook.call = undefined; await disposePreviewFix
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {
   const registry = await registryForDir(s.dir)
-  for (const lead of new Set(registry.list().filter(r => r.room === s.roomName).map(r => r.lead.participant))) await projectWorkers(s, registry, lead, 'joined')
+  for (const lead of new Set((requireWorkerInventory(await registry.list())).filter(r => r.room === s.roomName).map(r => r.lead.participant))) await projectWorkers(s, registry, lead, 'joined')
 }
 
 function setup(status: FixtureWorker['status'] = 'done') {
@@ -74,7 +75,7 @@ function setup(status: FixtureWorker['status'] = 'done') {
   const pending = new Map<string, FixtureWorker>([['test', w]])
   const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() }, daemon: { fence: 'test' } } as unknown as Session
   const autoRetire = vi.fn(async () => {})
-  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire, project: () => projectAll(s), hasHandle: () => false, tracking: () => true }, myWorkers: () => localWorkers(lead), workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
+  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire, project: () => projectAll(s), hasHandle: () => false, tracking: () => true }, myWorkers: async () => (await localWorkers(lead)), workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
   const sync = async () => { if (pending.size) { await registerWorkers(s, [...pending.values()]); pending.clear() } }
   const set = (tag: string, value: FixtureWorker) => { pending.set(tag, value) }
   const get = (tag: string): FixtureWorker => { const found = pending.get(tag); if (!found) throw new Error(`worker ${tag} is already registered`); return found }
@@ -112,7 +113,7 @@ async function startWorktreeProcess() {
 async function ownershipEvidence(t: ReturnType<typeof setup>): Promise<string | undefined> {
     if (process.platform !== 'win32') return undefined
     const registry = await registryForDir(lead)
-    const record = registry.reserved('test')
+    const record = (await registry.reserved('test'))
     return JSON.stringify({
       lead, worker, leadRoot: fs.realpathSync(lead), workerRoot: fs.realpathSync(worker),
       pathMatches: roomWorkerPathMatchesBranch(lead, worker, 'room/test'),
@@ -120,7 +121,7 @@ async function ownershipEvidence(t: ReturnType<typeof setup>): Promise<string | 
       branch: git(worker, 'branch', '--show-current'),
       owned: await isOwnedWorkerWorktree(lead, t.w, 'lead'),
       record: record && { id: record.id, phase: record.phase, lead: record.lead.participant, room: record.lead.room, dir: record.dir },
-      status: record && registry.status(record.id),
+      status: record && (await registry.status(record.id)),
       trusted: !!await registry.trusted({ participant: 'lead', room: t.s.roomName, dir: lead }, 'test'),
     })
   }
@@ -130,13 +131,13 @@ function seedPresence(t: ReturnType<typeof setup>) {
     t.s.room.setScope({ by: name, byKind: 'agent', area: 'test', summary: 'editing', paths: ['new.txt'] })
     t.s.room.addClaim({ by: name, byKind: 'agent', path: 'new.txt', from: 1, to: 1, intent: 'editing' })
   }
-function expectRetired(t: ReturnType<typeof setup>) {
+async function expectRetired(t: ReturnType<typeof setup>) {
     const room = t.s.room, name = t.w.name
     expect(manifestPaths(room, name)).toEqual([])
     expect(room.overlays.has(name)).toBe(false)
     expect(room.scopes.has(name)).toBe(false)
     expect(room.openClaims().filter(c => c.by === name)).toEqual([])
-    expect(workerByTag(lead, t.w.tag)).toBeUndefined()
+    expect((await workerByTag(lead, t.w.tag))).toBeUndefined()
     expect(room.workerViewOf(name)).toBeUndefined()
     const groups = splitParticipants({ presences: [], workers: [...room.workerViews.values()], retiredWorkers: room.retiredWorkers(), scopes: [...room.scopes.entries()], overlayPeople: [...room.overlays.keys()], changesByPerson: new Map(), claims: room.openClaims(), now: Date.now() })
     expect([...groups.active, ...groups.offlineTeammates].map(p => p.name)).not.toContain(name)
@@ -172,9 +173,9 @@ async function reportedRunning() {
     const t = setup('running'); t.set('test', { ...t.w, status: 'running', pid: 4_190_001 })
     await t.sync()
     const registry = await registryForDir(lead)
-    const record = registry.list().find(r => r.tag === 'test')!, run = record.runs[0]
+    const record = (requireWorkerInventory(await registry.list())).find(r => r.tag === 'test')!, run = record.runs[0]
     await registry.writeReport(record.id, { run: 1, nonce: run.nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'finished', changed: [] } })
-    expect(registry.status(record.id)).toMatchObject({ status: 'running', summary: 'finished' })
+    expect((await registry.status(record.id))).toMatchObject({ status: 'running', summary: 'finished' })
     let at = 0
     t.state.now = () => at
     return { t, tick: (ms: number) => { at += ms }, elapsed: () => at }

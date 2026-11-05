@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 // room_send refresh=true: a stopped worker's branch is rebased onto the lead's HEAD before it resumes,
 // so a commit the lead made after spawn reaches the worker. Real git repositories and the real
 // prepareWorktree; only the host process is stubbed (as in carry-wip.test.ts).
@@ -104,7 +105,7 @@ function world() {
   const call = (tool: string, args: Record<string, unknown>) => leadTools.call(tool, args) as Promise<string>
   async function spawn(tag: string, extra: Record<string, unknown> = {}) {
     const reply = await call('room_spawn', { tag, task: `task ${tag}`, ...extra })
-    const w = workerByTag(repo, tag)
+    const w = (await workerByTag(repo, tag))
     expect(w, reply).toBeTruthy()
     return w!
   }
@@ -113,7 +114,7 @@ function world() {
    * `slowFirstPost` ms); unless `exit` is false, its host then exits.
    */
   async function finish(tag: string, summary: string | string[] = `${tag} finished`, exit = true, slowFirstPost = 0) {
-    const w = workerByTag(repo, tag)!
+    const w = (await workerByTag(repo, tag))!
     let ws: Session | null = fakeSession(rb, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     if (slowFirstPost) {
       const post = ws.post
@@ -125,9 +126,9 @@ function world() {
     }
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
-    const record = registry.list().find(record => record.tag === tag)!
+    const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === tag)!
     const run = record.runs.at(-1)!
-    if (!registry.reports(record.id).some(report => report.run === run.n)) await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
+    if (!(await registry.reports(record.id)).some(report => report.run === run.n)) await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     process.env.ROOM_WORKER_ID = record.id
     try {
       for (const reply of await Promise.all([summary].flat().map(text => tools.call('room_done', { summary: text })))) expect(reply).toContain('marked done')
@@ -138,37 +139,37 @@ function world() {
     expect(b.isDestroyed, 'retiring a worker transport must retain the replica used by its next report').toBe(false)
     if (!exit) return
     exits.get(tag)!(0)
-    await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
+    await vi.waitFor(async () => expect((await workerByTag(repo, tag))).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
   return { call, spawn, finish, launches, leadSession: () => ls!, messages: () => ra.messages(),
     retire: () => autoRetire(ls!, { probe: () => undefined, hasHandle: () => false, tracking: () => true, project: async () => {} } as never) }
 }
 
 /** Everything about a worker that a refused refresh must leave as it was. */
-const snapshot = (dir: string, tag: string, extraPaths: string[] = []) => ({
+const snapshot = async (dir: string, tag: string, extraPaths: string[] = []) => ({
   head: git(dir, 'rev-parse', 'HEAD'), status: status(dir), index: git(dir, 'write-tree'),
   files: Object.fromEntries(['shared.txt', 'keep.txt', 'follow-up.txt', ...extraPaths].map(p => [p, fs.existsSync(path.join(dir, p)) ? read(dir, p) : null])),
-  base: workerByTag(repo, tag)!.base, carriedBase: workerByTag(repo, tag)!.carriedBase,
+  base: (await workerByTag(repo, tag))!.base, carriedBase: (await workerByTag(repo, tag))!.carriedBase,
   rebasing: fs.existsSync(path.join(git(dir, 'rev-parse', '--absolute-git-dir'), 'rebase-merge')),
 })
 
 const collectionRefs = async (tag: string) => {
-  const record = (await registryForDir(repo)).list().find(r => r.tag === tag)!
+  const record = (requireWorkerInventory(await (await registryForDir(repo)).list())).find(r => r.tag === tag)!
   return Object.fromEntries(['collect-head', 'collect-base'].map(kind => [kind,
     git(repo, 'rev-parse', `refs/room/${kind}/${tag}/${record.id}`)]))
 }
 
 async function expectKeptRefreshRefused(t: ReturnType<typeof world>, dir: string, reason: string, paths: string[] = []) {
-  const before = snapshot(dir, 'kept', paths), refsBefore = await collectionRefs('kept')
-  const leadBefore = snapshot(repo, 'kept', paths), launchesBefore = t.launches.get('kept')!.length
+  const before = (await snapshot(dir, 'kept', paths)), refsBefore = await collectionRefs('kept')
+  const leadBefore = (await snapshot(repo, 'kept', paths)), launchesBefore = t.launches.get('kept')!.length
   const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
   expect(reply).toContain('did not refresh kept')
   expect(reply).toContain(reason)
-  expect(snapshot(dir, 'kept', paths)).toEqual(before)
+  expect((await snapshot(dir, 'kept', paths))).toEqual(before)
   expect(await collectionRefs('kept')).toEqual(refsBefore)
-  expect(snapshot(repo, 'kept', paths)).toEqual(leadBefore)
+  expect((await snapshot(repo, 'kept', paths))).toEqual(leadBefore)
   expect(t.launches.get('kept')).toHaveLength(launchesBefore)
-  expect(workerByTag(repo, 'kept')?.status).toBe('done')
+  expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
 }
 
 export { collectionRefs, commit, expectKeptRefreshRefused, git, head, put, read, repo, snapshot, status, world }

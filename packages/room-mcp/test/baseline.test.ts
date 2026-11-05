@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { hubSeam } from './fixtures/hub.js'
 import { patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
@@ -66,8 +67,8 @@ async function spawn(files: Record<string, string>, wip: Record<string, string>,
     Object.assign(sessions[LEAD].daemon, { fence: '1', settle: async () => {}, reconcileGitChanges: async () => publish(LEAD, carried) })
     const proof = await acknowledgeKeptPublication(sessions[LEAD], undefined, carried)
     expect(proof.pending).toBe(false)
-    const saved = registry.reservedByTagOrName(WORKER)!
-    await registry.update(saved.id, old => ({ ...old, keptPublication: { ...proof, base }, seq: old.seq + 1 }))
+    const saved = (await registry.reservedByTagOrName(WORKER))!
+    await mutateWorkerFixture(registry, saved.id, old => ({ ...old, keptPublication: { ...proof, base }, seq: old.seq + 1 }))
   }
   const state = {
     rooms: { holding: (name: string) => sessions[name as keyof typeof sessions] },
@@ -127,7 +128,7 @@ describe('a carried worker\'s own changes', () => {
       expect(result.owners.get('mine.txt')).toContain(WORKER)
       expect(result.merged.get('both.txt')).toBe(text({ 2: 'LEAD', 9: 'WORKER' }))
     }
-    const own = workerBaseline(workerByTag(lead, 'w'))!
+    const own = workerBaseline((await workerByTag(lead, 'w')))!
     expect(carriedUnchanged(own, 'notes.txt')).toBe(true)
     expect(carriedUnchanged(own, 'mine.txt')).toBe(false)
     expect(carriedUnchanged(own, 'keep.txt')).toBe(false)
@@ -136,7 +137,7 @@ describe('a carried worker\'s own changes', () => {
   it('counts a carried untracked file\'s mode change as the worker\'s in collect, preview and discard alike', async () => {
     const t = await spawn({ 'keep.txt': 'keep\n' }, {}, { 'run.sh': 'echo hi\n', 'notes.txt': 'draft\n' })
     fs.chmodSync(path.join(wdir, 'run.sh'), 0o755)
-    const w = workerByTag(lead, 'w')!
+    const w = (await workerByTag(lead, 'w'))!
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     expect([...unchanged]).toEqual(['notes.txt'])
     const participant = { dir: wdir, baseModes: addCarriedUntrackedModes(new Map(), w), unchangedCarried: unchanged, carriedPaths: new Set(['run.sh', 'notes.txt']) }

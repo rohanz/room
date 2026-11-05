@@ -4,7 +4,6 @@ import { hookHealthNote } from '../hooks-bridge.js'
 import type { Batch, Ledger, Notice } from '../ledger.js'
 import { INBOX_BUDGET, selectWithin, type Chosen } from '../inbox-budget.js'
 import { greeted } from '../post.js'
-import { hasCompany } from '../company.js'
 import { waitForCompletionReconnect } from '../completion-reconnect.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
@@ -150,6 +149,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (closed && name !== 'room_leave' && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith('logged out') ? 'run room_login, then room_leave and room_join' : closed.reason.includes('revoked') ? 'ask for access, then room_leave and room_join' : 'room_leave, then room_create to reopen'}`
       if (toolCallAborted()) return 'error: tool call cancelled'
       const s = ctx.getSession()
+      if (process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts()
       if (s) ledger.acceptPrompt(s)
       s?.refreshRuntime?.()
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
@@ -166,13 +166,14 @@ export function createTools(ctx: ToolCtx): Tools {
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
         if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
+        if (WORKER_OPS.has(name) || process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts()
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2, batch) : ''
         if (s2) await offerTeamSharingDisclosure(s2, ledger)
         withdrawStartup()
         const notices = ledger.notices(batch).map(n => n.text + '\n\n').join('')
         if (s2) await greeted(s2.hub)
         const paused = s2?.lease?.paused() ?? s2?.hub.paused()
-        const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
+        const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || state.hasCompany(s2).company, state.now(), name, !s2.local) : ''
         const autoTag = s2?.autoTagNote, upgrade = s2?.upgradeNote
         if (s2) { delete s2.autoTagNote; delete s2.upgradeNote }
         return notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (upgrade ? upgrade + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)

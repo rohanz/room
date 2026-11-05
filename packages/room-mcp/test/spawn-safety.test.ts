@@ -75,7 +75,7 @@ it('validates untracked link inputs before carrying and leaves them as links', a
   const t = tool()
   const reply = await t.call({})
   expect(reply).toContain('spawned w:')
-  const worker = workerByTag(repo, 'w')!
+  const worker = (await workerByTag(repo, 'w'))!
   expect(fs.lstatSync(path.join(worker.dir, 'data')).isSymbolicLink()).toBe(true)
   expect(worker.link).toEqual(['data'])
 })
@@ -94,7 +94,7 @@ it('removes a newly carried worktree and branch when the process cannot start', 
   expect(await t.call({})).toContain('simulated start failure')
   expect(fs.existsSync(path.join(repo, '.room', 'workers', 'w'))).toBe(false)
   expect(git('branch', '--list', 'room/w')).toBe('')
-  expect(workerByTag(repo, 'w')).toBeUndefined()
+  expect((await workerByTag(repo, 'w'))).toBeUndefined()
   expect(t.room.workerViews.size).toBe(0)
 })
 
@@ -132,7 +132,7 @@ it('keeps the tag reserved while an ignored output worktree is retained', async 
   fs.writeFileSync(path.join(repo, 'untracked.txt'), 'untracked WIP\n')
   const t = tool('local/a/main')
   expect(await t.call({})).toContain('spawned w:')
-  const first = workerByTag(repo, 'w')!
+  const first = (await workerByTag(repo, 'w'))!
   expect(first.carriedUntracked?.map(f => f.path)).toContain('untracked.txt')
   fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), 'ignored-output.txt\n')
   fs.writeFileSync(path.join(first.dir, 'ignored-output.txt'), 'retained worker output')
@@ -144,10 +144,10 @@ it('keeps the tag reserved while an ignored output worktree is retained', async 
     finishedAt: Date.now(), retiredAt: Date.now(), outcome: 'dismissed', keptWorktree: first.dir,
   }, { keptWorktree: first.dir })
   await projectWorkers(t.session(), registry, first.lead, 'joined')
-  expect(workerByTag(repo, 'w')).toBeUndefined()
+  expect((await workerByTag(repo, 'w'))).toBeUndefined()
   expect(t.room.workerViewOf(first.name)).toBeUndefined()
   expect(await t.call({})).toContain('tag in use: w')
-  expect(workerByTag(repo, 'w')).toBeUndefined()
+  expect((await workerByTag(repo, 'w'))).toBeUndefined()
   expect(t.room.workerViewOf(first.name)).toBeUndefined()
   expect(fs.readFileSync(path.join(first.dir, 'ignored-output.txt'), 'utf8')).toBe('retained worker output')
   const otherRoom = tool('local/b/main')

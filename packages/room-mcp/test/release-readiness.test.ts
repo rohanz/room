@@ -20,29 +20,29 @@ function names(people: Identity[], requested: string, known: string[] = [], work
   return resolveDisplayedName(requested, context, room)
 }
 
-it('resolves a single tagged active agent from owner phrasing or bare owner', () => {
+it('resolves a single tagged active agent from owner phrasing or bare owner', async () => {
   const cy: Identity = { name: 'cy+codex', owner: 'cy', kind: 'agent' }
-  expect(names([cy], "CY’S AGENT")).toEqual({ name: cy.name })
-  expect(names([cy], 'Cy')).toEqual({ name: cy.name })
+  expect((await names([cy], "CY’S AGENT"))).toEqual({ name: cy.name })
+  expect((await names([cy], 'Cy'))).toEqual({ name: cy.name })
 })
 
-it('reports multiple active owner agents, while exact names still win', () => {
+it('reports multiple active owner agents, while exact names still win', async () => {
   const people: Identity[] = [{ name: 'cy+codex', owner: 'cy', kind: 'agent' }, { name: 'cy+claude', owner: 'cy', kind: 'agent' }]
-  expect(names(people, "cy's agent")).toEqual({ ambiguous: ['cy+claude', 'cy+codex'] })
-  expect(names(people, 'cy+codex')).toEqual({ name: 'cy+codex' })
-  expect(names(people, 'cy', ['cy'])).toEqual({ name: 'cy' })
+  expect((await names(people, "cy's agent"))).toEqual({ ambiguous: ['cy+claude', 'cy+codex'] })
+  expect((await names(people, 'cy+codex'))).toEqual({ name: 'cy+codex' })
+  expect((await names(people, 'cy', ['cy']))).toEqual({ name: 'cy' })
 })
 
-it('ignores old offline names when an active owner agent exists', () => {
-  expect(names([{ name: 'cy+codex', owner: 'cy', kind: 'agent' }], "cy's agent", ['cy+old']))
+it('ignores old offline names when an active owner agent exists', async () => {
+  expect((await names([{ name: 'cy+codex', owner: 'cy', kind: 'agent' }], "cy's agent", ['cy+old'])))
     .toEqual({ name: 'cy+codex' })
 })
 
-it('includes a running worker in owner ambiguity but ignores a done worker', () => {
+it('includes a running worker in owner ambiguity but ignores a done worker', async () => {
   const cy: Identity = { name: 'cy+codex', owner: 'cy', kind: 'agent' }
-  expect(names([cy], "cy's agent", [], [{ name: 'cy+helper', status: 'running' }]))
+  expect((await names([cy], "cy's agent", [], [{ name: 'cy+helper', status: 'running' }])))
     .toEqual({ ambiguous: ['cy+codex', 'cy+helper'] })
-  expect(names([cy], "cy's agent", [], [{ name: 'cy+helper', status: 'done' }]))
+  expect((await names([cy], "cy's agent", [], [{ name: 'cy+helper', status: 'done' }])))
     .toEqual({ name: 'cy+codex' })
 })
 

@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { recordTestDaemon, stopTestDaemon } from './daemon-fixture.js'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -124,7 +125,7 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(await first.call('room_share')).toContain('full text of files you change')
     expect(await first.call('room_share', { level: 'intent' })).toContain('only your plans')
     await first.close()
-    await registry.update(record.id, old => ({ ...old, phase: 'active', seq: old.seq + 1,
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, phase: 'active', seq: old.seq + 1,
       runs: [...old.runs, { ...run, n: 2, mode: 'resume', nonce: 'privacy-run-2', launch: { outcome: 'launched', pid: 0 } }] }))
     const retained = await startMcp(workerDir, { ...env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: 'privacy-run-2' })
     await retained.waitFor(/^room-mcp: ready$/, 30_000)

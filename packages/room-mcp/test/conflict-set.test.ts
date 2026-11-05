@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import type { Baseline } from '@room/roomd/baseline'
 import { describe, expect, it, vi } from 'vitest'
 import { RoomDoc, formatMsg, memorySnapshot, participantRecord, snapshot, supersededConflictNotices } from '@room/shared'
@@ -14,7 +15,7 @@ import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, notic
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
-import { carriedFrom, registrySnapshotForDir } from '../src/worker-registry.js'
+import { carriedFrom, openWorkerReader } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import * as roomd from '@room/roomd'
 import * as gitModule from '@room/roomd/git'
@@ -949,7 +950,7 @@ describe('derived pair slots', () => {
       writeFileSync(join(f.dir, 'x'), 'worker\n')
       f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
       const claim = f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
-      const registry = registrySnapshotForDir(f.dir)
+      const registry = (await openWorkerReader(f.dir))
       const workers = join(f.dir, '.git', 'room', 'registry', 'workers')
       const runs = join(f.dir, '.git', 'room', 'registry', 'runs', 'w_123')
       mkdirSync(workers, { recursive: true }); mkdirSync(runs, { recursive: true })
@@ -974,12 +975,45 @@ describe('derived pair slots', () => {
             done: { at: 3, summary: 'reported while host still running', changed: ['x'] } }))
           return { id: 'w_123', status: 'done', dir: workerDir, run: '1:first', seq: 2 }
         })
-      expect(registry.freshness('w_123')).toBeUndefined()
+      expect((await registry.freshness('w_123'))).toBeUndefined()
       await (set as any).releaseLandedWorkerClaims('1')
-      expect(registry.freshness('w_123')).toMatchObject({ reported: 'done', run: '2:second', seq: 3 })
+      expect((await registry.freshness('w_123'))).toMatchObject({ reported: 'done', run: '2:second', seq: 3 })
       expect(f.room.claims.has(claim.id)).toBe(true)
       expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(0)
     } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
+  })
+
+  it('keeps claims when the run changes during Git after a delayed freshness snapshot', async () => {
+    const f = fixture()
+    let unblock!: () => void, entered!: () => void
+    const blocked = new Promise<void>(resolve => { unblock = resolve })
+    const reading = new Promise<void>(resolve => { entered = resolve })
+    const actualGit = gitModule.git
+    let armed = true
+    const git = vi.spyOn(gitModule, 'git').mockImplementation(async (...args) => {
+      if (armed && args[1][0] === 'ls-files') { entered(); await blocked }
+      return actualGit(...args)
+    })
+    const state = { id: 'w_delayed', name: 'L+w', lead: 'L', dir: f.dir, reported: 'done' as const,
+      status: 'done', run: '1:first', seq: 2, busy: false, revision: 'before' }
+    const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+      async name => name === 'L+w' ? { ...state } : undefined,
+      async () => { await Promise.resolve(); return { ...state } })
+    try {
+      f.holder('L'); f.holder('L+w', 'L')
+      f.entry('L', undefined); f.entry('L+w', undefined, false, 'L')
+      const claim = f.room.addClaim({ by: 'L+w', byKind: 'agent', path: './', from: 1, to: 1, intent: 'worker tree' })
+      const pass = set.reconcile('delayed snapshot then Git')
+      await reading
+      state.run = '2:second'; state.seq++; state.revision = 'after'
+      armed = false; unblock()
+      await pass
+      expect(f.room.claims.has(claim.id)).toBe(true)
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(0)
+      await set.reconcile('new run at rest')
+      expect(f.room.claims.has(claim.id)).toBe(false)
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
+    } finally { armed = false; unblock(); set.stop(); git.mockRestore(); f.cleanup() }
   })
 
   it('keeps claims when the holder changes during the trusted lookup', async () => {
@@ -1056,19 +1090,19 @@ describe('derived pair slots', () => {
       } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
     })
 
-  it('treats an existing or unreadable worker operation lease as in progress', () => {
+  it('treats an existing or unreadable worker operation lease as in progress', async () => {
     const f = fixture()
     try {
-      const registry = registrySnapshotForDir(f.dir)
+      const registry = (await openWorkerReader(f.dir))
       const operations = join(f.dir, '.git', 'room', 'registry', 'workers')
       mkdirSync(operations, { recursive: true })
-      expect(registry.operationInProgress('w_123')).toBe(false)
+      expect((await registry.operationInProgress('w_123'))).toBe(false)
       writeFileSync(join(operations, 'w_123.op'), '{invalid json')
-      expect(registry.operationInProgress('w_123')).toBe(true)
-      expect(registry.operationInProgress('../invalid')).toBe(true)
+      expect((await registry.operationInProgress('w_123'))).toBe(true)
+      expect((await registry.operationInProgress('../invalid'))).toBe(true)
       rmSync(join(operations, 'w_123.op'))
       symlinkSync('missing', join(operations, 'w_123.op'))
-      expect(registry.operationInProgress('w_123')).toBe(true)
+      expect((await registry.operationInProgress('w_123'))).toBe(true)
     } finally { f.cleanup() }
   })
 
@@ -2101,6 +2135,7 @@ describe('derived pair slots', () => {
   it('publishes nothing computed from a carried baseline the registry replaced during an awaited comparison', async () => {
     const f = fixture()
     const log = vi.fn()
+    const pendingWrites: Promise<unknown>[] = []
     try {
       // The registry fixture names a worker `lead+<tag>` under lead `lead`.
       const W = 'lead+w', B = 'lead'
@@ -2119,11 +2154,14 @@ describe('derived pair slots', () => {
       // The first lookup of each pass schedules a registry write for the pass's first await (its Git work).
       // The rewrite keeps the carried values, so only freshness, not a changed result, can stop publication.
       let rewrites = 0, armed = true
+      const baselines = new Map(await Promise.all([W, B].map(async person => [person, await carriedFrom(f.dir, person)] as const)))
       const lookup = (person: string) => {
-        const value = carriedFrom(f.dir, person)
+        const value = baselines.get(person)
         if (armed && person === W && rewrites < 2) {
           rewrites++
-          setImmediate(() => { void registry.update(record.id, prior => ({ ...prior, seq: prior.seq + 1 })) })
+          pendingWrites.push(new Promise<void>((resolve, reject) => setImmediate(() => {
+            mutateWorkerFixture(registry, record.id, prior => ({ ...prior, seq: prior.seq + 1 })).then(() => resolve(), reject)
+          })))
         }
         return value
       }
@@ -2141,7 +2179,7 @@ describe('derived pair slots', () => {
         expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
         expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === W)).toBe(true)
       } finally { set.stop() }
-    } finally { f.cleanup() }
+    } finally { try { await Promise.all(pendingWrites) } finally { f.cleanup() } }
   })
 
   it.each(['notes.md', 'declined.ts'])('skips unsupported carried paths and marks declined supported paths unknown: %s', async path => {

@@ -12,7 +12,8 @@ import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
 import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
 import type { HandlerState } from './context.js'
-import { registryForDir, registrySnapshotForDir } from '../worker-registry.js'
+import { openWorkerReader, registryForDir, type WorkerReader } from '../worker-registry.js'
+import { requireWorkerEvidence, snapshotRead, snapshotReserved, workerEvidence, type AvailableWorkerSnapshot } from '../worker-store.js'
 import { keptPublicationMatches } from '../kept-publication.js'
 import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
@@ -102,7 +103,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     try {
       const result = await buildCombinedTreeOnce(state, caller, participants, options)
       if (result.current) return result
-      if (!await settler.settle(result.settledWorkers())) throw new PreviewMoved(result.moved(), result.movementDetails())
+      if (!await settler.settle(await result.settledWorkers())) throw new PreviewMoved(await result.moved(), await result.movementDetails())
     } catch (error) {
       if (!(error instanceof PreviewMoved) || !await settler.settle()) throw error
     }
@@ -199,7 +200,6 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
  * registry/publication/base/ref/HEAD inputs; authorization re-reads validate the
  * captured record and never replace it. Freshness compares against these values. */
 class AssemblyInputs {
-  private readonly registry: ReturnType<typeof registrySnapshotForDir>
   readonly records = new Map<string, WorkerRecord>()
   readonly workerStates = new Map<string, LocalWorker>()
   private readonly publications = new Map<Session, Map<string, ParticipantSnapshot | undefined>>()
@@ -216,8 +216,8 @@ class AssemblyInputs {
   private readonly settledRuns = new Map<string, { id: string; run: string }>()
   readonly publicationProofs: { person: string; id: string; publisher: string; session: Session; base: string; valid: boolean }[] = []
 
-  private constructor(state: HandlerState, caller: Session, participants: readonly Participant[], diskOnly: boolean) {
-    this.registry = registrySnapshotForDir(caller.dir)
+  private constructor(private readonly registry: WorkerReader, facts: AvailableWorkerSnapshot, statuses: ReadonlyMap<string, LocalWorker>,
+    state: HandlerState, caller: Session, participants: readonly Participant[], diskOnly: boolean) {
     const { snapshots, publicationLinks, stale, acceptedRecords } = this
     if (!diskOnly) for (const { person, session } of participants) {
       const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []
@@ -238,7 +238,7 @@ class AssemblyInputs {
       if (record !== 'updating') acceptedRecords.set(person, { ...record })
     }
 
-    const registryRecords = this.registry.list()
+    const registryRecords = facts.workers.map(fact => fact.record)
     for (const { person, session } of [{ person: caller.me.name, session: caller }, ...participants]) {
       if (!this.bases.has(session)) this.bases.set(session, new Map())
       const bases = this.bases.get(session)!
@@ -252,20 +252,22 @@ class AssemblyInputs {
       // does not move a local worker's registry record into the caller's room.
       const candidates = registryRecords.filter(record => record.name === person && record.room === session.roomName
         && !['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)
-        && this.registry.reserved(record.tag)?.id === record.id)
+        && snapshotReserved(facts, record.tag)?.id === record.id)
       const record = candidates.find(record => record.lead.participant === session.me.name) ?? candidates[0]
       if (!record) continue
       this.records.set(person, record)
       if (record.lead.participant === caller.me.name && !fs.existsSync(record.dir))
         this.missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)
-      const status = this.registry.status(record.id)
-      if (status) this.workerStates.set(person, realStateInput(record, status))
+      const worker = statuses.get(record.id)
+      if (worker) this.workerStates.set(person, worker)
       for (const ref of [collectHeadRef(record.tag, record.id), carryRef(record.tag)]) this.captureRef(ref)
     }
   }
 
   static async capture(state: HandlerState, caller: Session, participants: readonly Participant[], diskOnly: boolean) {
-    const inputs = new AssemblyInputs(state, caller, participants, diskOnly)
+    const registry = await openWorkerReader(caller.dir)
+    const { facts, workers } = await AssemblyInputs.workerSnapshot(registry)
+    const inputs = new AssemblyInputs(registry, facts, workers, state, caller, participants, diskOnly)
     for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
       const record = inputs.records.get(person)
       if (!record || record.lead.participant !== session.me.name) continue
@@ -350,15 +352,28 @@ class AssemblyInputs {
     if (!this.heads.has(dir)) throw new Error('uncaptured preview HEAD: ' + dir)
     return this.heads.get(dir)!.captured.value
   }
-  settledWorkers() {
+  /** Enrich status from these exact records/reports/exits, without another registry read. */
+  private static async workerSnapshot(registry: WorkerReader) {
+    const facts = requireWorkerEvidence(workerEvidence(await registry.snapshot()))
+    const workers = new Map<string, LocalWorker>()
+    for (const { record } of facts.workers) {
+      const status = await registry.statusFromSnapshot(facts, record.id)
+      if (status) workers.set(record.id, realStateInput(record, status))
+    }
+    return { facts, workers }
+  }
+  private settledFrom(workers: ReadonlyMap<string, LocalWorker>) {
     return new Set([...this.settledRuns].filter(([, captured]) => {
-      const record = this.registry.read(captured.id), status = record && this.registry.status(record.id)
-      const worker = record && status && realStateInput(record, status)
+      const worker = workers.get(captured.id)
       return !!worker && worker.status !== 'running' && runOf(worker) === captured.run
     }).map(([person]) => person))
   }
-  movement(state: HandlerState) {
-    const settled = this.settledWorkers()
+  async settledWorkers() {
+    return this.settledFrom((await AssemblyInputs.workerSnapshot(this.registry)).workers)
+  }
+  async movement(state: HandlerState) {
+    const { facts, workers } = await AssemblyInputs.workerSnapshot(this.registry)
+    const settled = this.settledFrom(workers)
     const changes = [...this.settledRuns.keys()].filter(person => !settled.has(person))
       .map(person => ({ person, detail: `${person}: worker resumed or restarted` }))
     const currentRefs = new Map<string, string | undefined>()
@@ -372,9 +387,9 @@ class AssemblyInputs {
     }
     const currentRecords = new Map<string, WorkerRecord | undefined>()
     for (const [person, record] of this.records) {
-      const current = this.registry.read(record.id)
+      const current = snapshotRead(facts, record.id)
       currentRecords.set(record.id, current)
-      const status = current && this.registry.status(current.id)
+      const status = current && workers.get(current.id)
       if (!current || workerInputs(current) !== workerInputs(record)) changes.push({ person, detail: `${person}: worker baseline, paths or lifecycle` })
       if ([status?.finishedAt ?? 0, current?.tag].join(':') !== [this.workerStates.get(person)?.finishedAt ?? 0, record.tag].join(':'))
         changes.push({ person, detail: `${person}: merge order` })
@@ -994,9 +1009,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   if (anchor) out.unshift(`preview anchor: ${anchorName} (${anchored ? 'published snapshot' : 'local working tree'}); contributors use canonical collection order`)
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
   const movement = () => inputs.movement(state)
-  const moved = () => [...new Set(movement().map(change => change.person))]
-  const movementDetails = () => [...new Set(movement().map(change => change.detail))]
-  const isCurrent = () => moved().length === 0
+  const moved = async () => [...new Set((await movement()).map(change => change.person))]
+  const movementDetails = async () => [...new Set((await movement()).map(change => change.detail))]
+  const isCurrent = async () => (await moved()).length === 0
   // Keep provenance from this build, never from a later publication during a command.
   // Disk inputs are authoritative local bytes, so an overlay revision would mislabel them.
   const snapshotInputs = bases.map(({ person, base }) => {
@@ -1006,7 +1021,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         : snap ? `rev ${snap.head.rev}` : 'no manifest record'
     return `${person} (${source}, base ${base.slice(0, 10)})`
   })
-  return { inputs, ancestor, deltaBases, includedParticipants, snapshotInputs, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, movementDetails, settledWorkers }
+  return { inputs, ancestor, deltaBases, includedParticipants, snapshotInputs, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: await isCurrent(), isCurrent, moved, movementDetails, settledWorkers }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

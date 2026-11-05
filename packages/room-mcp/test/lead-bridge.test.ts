@@ -103,7 +103,7 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     ;(t.lead().daemon as unknown as { fence: string }).fence = '1'
     t.team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence: '1' })
     await vi.waitFor(() => expect(t.team.a.manifestHead.has(workerId.name)).toBe(true))
-    const record = (await registryForDir(dir)).reserved('money')!
+    const record = (await (await registryForDir(dir)).reserved('money'))!
     expect(record.room).toBe('local/x')
     expect(record.room).not.toBe(t.lead().roomName)
     writeFileSync(join(dir, '.room', 'workers', 'money', 'app.py'), 'x = 3\n')
@@ -130,8 +130,8 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     expect(left[0]).toMatchObject({ mirrorOf: 'money', intent: '[money] bump' })
     expect(left.some(c => c.id === own.id)).toBe(false)
     // once the worker is done its mirror is fair game for the lead's next room_done
-    const worker = workerByTag(dir, 'money')!
-    const registry = await registryForDir(dir), record = registry.read(worker.id)!, run = record.runs.at(-1)!
+    const worker = (await workerByTag(dir, 'money'))!
+    const registry = await registryForDir(dir), record = (await registry.read(worker.id))!, run = record.runs.at(-1)!
     await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     const workerDone = await asWorker(worker.id, () => t.workerTools.call('room_done', { summary: 'cents done' }))
     expect(workerDone).toContain('marked done')
@@ -152,7 +152,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     await vi.waitFor(() => expect(woken).toHaveLength(1))
     expect(woken[0]).toContain('rohanz+money')
     expect(woken[0]).not.toContain('exited without room_done')
-    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'done', exitCode: 0 })
+    expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'done', exitCode: 0 })
     await t.leadTools.call('room_leave', { force: true })
   })
 })

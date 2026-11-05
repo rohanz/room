@@ -1,3 +1,4 @@
+import { asyncFilter } from '../async-filter.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
 import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
@@ -21,7 +22,6 @@ import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../worker-git.js'
-import { decidePreview, workerRealState } from '../worker-state.js'
 import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
@@ -79,7 +79,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const readDiff: Handler = async a => {
       const caller = S()
       const person = typeof a.person === 'string' && a.person ? a.person : caller.me.name
-      const s = rooms.holding(person, caller)
+      const s = (await rooms.holding(person, caller))
       const ownDisk = person === s.me.name
       const request = JSON.stringify([caller.me.name, s.me.name, s.roomName, s.dir, person, typeof a.path === 'string' && a.path ? a.path : null])
       const cached = a.cursor === undefined ? undefined : readDiffCache.get(caller, request, a.cursor)
@@ -172,7 +172,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const known = new Set(rooms.all().flatMap(s => [...knownNames(s, presences)]))
         // A disconnected local worker can still be read through its trusted registry.
         // Do not interpret bare worker tags as identities or report unknown people as clean.
-        if (!known.has(a.person) && !await trustedWorker(rooms.holding(a.person, caller), a.person))
+        if (!known.has(a.person) && !await trustedWorker((await rooms.holding(a.person, caller)), a.person))
           return `error: nobody called ${a.person} is or was in this room; use an exact participant name. Known names: ${[...known].sort().slice(0, 30).join(', ')}${known.size > 30 ? '; room_state(all=true) for more' : ''}`
       }
       if (a.diff === true) return readDiff(a)
@@ -180,7 +180,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required for file text; use room_state(all=true) to discover changed paths, or room_read(person=..., diff=true) for all diffs'
       const p = a.path
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
-      const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
+      const s = (await rooms.holding(person, S())) // a local worker's overlay lives in the workers room, not the team room
       const worker = await trustedWorker(s, person)
       const note = worker ? ` ${WORKTREE_NOTE}` : ''
       const ownDisk = person === s.me.name
@@ -247,7 +247,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.includeOffline !== undefined && typeof a.includeOffline !== 'boolean') return 'error: includeOffline must be a boolean'
       const explicit = Array.isArray(a.people) || !!alias
       const allSessions = rooms.all()
-      const nameContext = { all: () => allSessions, presences, myWorkers: (s: Session) => [...myWorkers(s), ...localWorkers(s.dir)] }
+      const nameContext = { all: () => allSessions, presences, myWorkers: async (s: Session) => [...(await myWorkers(s)), ...(await localWorkers(s.dir))] }
       const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
       const present = Array.from(new Set(allSessions.flatMap(s => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter(name => presences(s).some(p => p.user.name === name)))))
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
@@ -255,7 +255,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const unavailable: string[] = []
       const uncertainOverlap = new Set<string>()
       const overlaps = async (person: string) => {
-        const session = rooms.holding(person, caller)
+        const session = (await rooms.holding(person, caller))
         const worker = session.room.acceptedWorkerViewOf(person)
         if (worker?.lead === caller.me.name && worker.status === 'running') return true
         const theirs = manifestPaths(session.room, checkoutPublisherName(session.room, person) ?? person)
@@ -281,13 +281,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return false
         }
       }
-      const runningWorkers = allSessions.flatMap(s => myWorkers(s).filter(w => w.lead === caller.me.name && w.status === 'running').map(w => w.name))
+      const runningWorkers = (await Promise.all(allSessions.map(async s => (await myWorkers(s)).filter(w => w.lead === caller.me.name && w.status === 'running').map(w => w.name)))).flat()
       const overlapping = explicit || a.includeOffline === true ? [] : (await Promise.all(available.filter(p => present.includes(p)).map(async p => ({ person: p, yes: await overlaps(p) })))).filter(p => p.yes).map(p => p.person)
       const dropped: string[] = []
       const requested = explicit ? Array.isArray(a.people) ? (a.people as string[]).map(p => p.trim()) : [alias] : []
       const resolved: string[] = []
       for (const name of requested) {
-        const result = resolveDisplayedName(name, nameContext, caller)
+        const result = (await resolveDisplayedName(name, nameContext, caller))
         if (result.ambiguous) return `error: ${name} is ambiguous; use a full name: ${result.ambiguous.join(', ')}`
         if (!result.name) {
           const known = [...new Set(allSessions.flatMap(s => [...knownNames(s, presences)]))].sort()
@@ -297,7 +297,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else resolved.push(result.name)
       }
       const people = Array.from(new Set(explicit ? resolved : [...(a.includeOffline === true ? available : overlapping), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
-      const offlineWithFacts = available.filter(person => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0)
+      const offlineWithFacts = (await asyncFilter(available, async person => !present.includes(person) && manifestPaths((await rooms.holding(person, caller)).room, person).length > 0))
       const skipped = !explicit ? offlineWithFacts.filter(person => !people.includes(person)) : []
       const offlineNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
@@ -326,7 +326,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           : available.length ? 'no other participants are present in the room' : 'nobody else is in the room'
         return [...dropped, emptyNote, skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
       }
-      const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
+      const participants = (await Promise.all(people.map(async person => ({ person, session: presentSession(person) ?? (await rooms.holding(person, caller)) }))))
       const anchorsFor = async (result: Awaited<ReturnType<typeof buildCombinedTree>>) => (await Promise.all(result.includedParticipants.map(async ({ person, base, gitRecord, liveShared }) => {
         // Only name a commit already published by this participant's accepted git record.
         if (base === result.callerBase || !gitRecord || gitRecord.base !== base) return []
@@ -391,9 +391,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             }
             // Metadata/mode reads can outlast this build's currency. Settle before paying
             // for a command; movements after it starts still produce a snapshot result.
-            if (!result.isCurrent()) {
-              if (await settler.settle(result.settledWorkers())) continue
-              return movedReply(result.moved(), result.movementDetails())
+            if (!await result.isCurrent()) {
+              if (await settler.settle(await result.settledWorkers())) continue
+              return movedReply(await result.moved(), await result.movementDetails())
             }
             const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
             ranOk = verdict.passed
@@ -405,17 +405,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             if (!complete) out.push('Tests ran on a partial tree; this does not verify the combined work')
           }
         }
-        if (!result.isCurrent()) {
+        if (!await result.isCurrent()) {
           if (verdictIndex !== undefined) {
             recordPreview({ clean: false, complete: false, testsPassed: false, testsCommand: run })
             out[verdictIndex] = out[verdictIndex].replace(/^tests:/gm, 'snapshot tests:')
             out.unshift(`SNAPSHOT result for "${run}" (not the current combined code):`)
-            out.push(`${result.moved().join(', ')} moved since this snapshot was built. A pass is interim evidence for the recorded revisions. Re-run room_preview_merge with run="${run}" when your files change, a moved peer can affect this command, a failure needs confirmation, or for the final current preview before room_done. The latest combined code was NOT checked`)
-            out.push(`Changed inputs: ${result.movementDetails().join('; ')}`)
+            out.push(`${(await result.moved()).join(', ')} moved since this snapshot was built. A pass is interim evidence for the recorded revisions. Re-run room_preview_merge with run="${run}" when your files change, a moved peer can affect this command, a failure needs confirmation, or for the final current preview before room_done. The latest combined code was NOT checked`)
+            out.push(`Changed inputs: ${(await result.movementDetails()).join('; ')}`)
             return previewPhase('collect', () => out.join('\n'))
           }
-          if (await settler.settle(result.settledWorkers())) continue
-          return movedReply(result.moved(), result.movementDetails())
+          if (await settler.settle(await result.settledWorkers())) continue
+          return movedReply(await result.moved(), await result.movementDetails())
         }
         recordPreview({ clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
           ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) })

@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { publishFixture } from './fixtures/manifest.js'
 /**
  * The session registry: which of a process's rooms holds a participant, a question or a worker;
@@ -120,20 +121,20 @@ describe('Rooms: who lives where', () => {
     return { ...r, team, local, t, l }
   }
 
-  it('holding: presence or work wins over a worker record, and the caller\'s own name stays put', () => {
+  it('holding: presence or work wins over a worker record, and the caller\'s own name stays put', async () => {
     const x = twoRooms()
     // a worker present only in the local room
     published(x.local.b, 'rohanz+money')
-    expect(x.rooms.holding('rohanz+money', x.t)).toBe(x.l)
-    expect(x.rooms.holding('rohanz', x.t)).toBe(x.t)
+    expect((await x.rooms.holding('rohanz+money', x.t))).toBe(x.l)
+    expect((await x.rooms.holding('rohanz', x.t))).toBe(x.t)
     // the same tag recorded in both rooms but active in the team room: the team room wins
     const view = (fence: string): WorkerView => ({ id: 'w_tiers', tag: 'tiers', name: 'rohanz+tiers', lead: 'rohanz', mode: 'here', host: 'claude', task: 't', branch: 'room/tiers', status: 'running', run: 1, startedAt: 1, fence })
     x.team.a.workerViews.set('w_tiers', view('t'))
     x.local.a.workerViews.set('w_tiers', view('l'))
-    expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.t) // a view in the caller's room, nobody active anywhere
+    expect((await x.rooms.holding('rohanz+tiers', x.t))).toBe(x.t) // a view in the caller's room, nobody active anywhere
     published(x.local.b, 'rohanz+tiers')
-    expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.l) // now active in the local room
-    expect(x.rooms.holding('nobody', x.t)).toBe(x.t)
+    expect((await x.rooms.holding('rohanz+tiers', x.t))).toBe(x.l) // now active in the local room
+    expect((await x.rooms.holding('nobody', x.t))).toBe(x.t)
   })
 
   it('holdingQuestion finds the room whose bus carries the id', () => {
@@ -180,12 +181,12 @@ describe('worker identity and durable exits', () => {
       identity: token, liveness: () => 'alive' })
     const first = record(root, 'w_first'), next = record(root, 'w_next')
     await store.writeIntent({ ...first, phase: 'intent', runs: [{ ...first.runs[0], launch: undefined }] })
-    await store.update(first.id, old => ({ ...old, phase: 'retired', cleanup: { [old.room]: 'done' }, seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, first.id, old => ({ ...old, phase: 'retired', cleanup: { [old.room]: 'done' }, seq: old.seq + 1 }))
     await store.writeIntent({ ...next, phase: 'intent', runs: [{ ...next.runs[0], launch: undefined }] })
-    await store.update(next.id, old => ({ ...old, phase: 'active', runs: next.runs, seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, next.id, old => ({ ...old, phase: 'active', runs: next.runs, seq: old.seq + 1 }))
     await store.writeExit(first.id, { run: 1, code: 1, at: 10, witnessed: true })
-    expect(store.read(next.id)?.id).toBe('w_next')
-    expect(store.status(next.id)?.status).toBe('running')
+    expect((await store.read(next.id))?.id).toBe('w_next')
+    expect((await store.status(next.id))?.status).toBe('running')
     store.close()
   })
 
@@ -194,9 +195,9 @@ describe('worker identity and durable exits', () => {
       identity: token, liveness: () => 'dead' })
     const w = record(root, 'w_dead')
     await store.writeIntent({ ...w, phase: 'intent', runs: [{ ...w.runs[0], launch: undefined }] })
-    await store.update(w.id, old => ({ ...old, phase: 'active', runs: w.runs, seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, w.id, old => ({ ...old, phase: 'active', runs: w.runs, seq: old.seq + 1 }))
     await store.writeExit(w.id, { run: 1, code: null, at: 10, witnessed: false })
-    expect(store.status(w.id)).toMatchObject({ status: 'failed', note: 'stopped while no session of yours was running' })
+    expect((await store.status(w.id))).toMatchObject({ status: 'failed', note: 'stopped while no session of yours was running' })
     expect(await store.postObservedFailure(w.id, 1, () => { throw new Error('false alarm') })).toBe(false)
     store.close()
   })

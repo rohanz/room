@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
@@ -140,17 +141,17 @@ function world() {
   }
   async function spawn(tag: string) {
     const reply = await call('room_spawn', { tag, task: `task ${tag}` })
-    const w = workerByTag(repo, tag)
+    const w = (await workerByTag(repo, tag))
     expect(w, reply).toBeTruthy()
     return { reply, w: w!, dir: w!.dir }
   }
   /** The worker reports with room_done through its own session, then its process exits cleanly. */
   async function finish(tag: string) {
-    const w = workerByTag(repo, tag)!
+    const w = (await workerByTag(repo, tag))!
     let ws: Session | null = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
-    const record = registry.list().find(record => record.tag === tag)!
+    const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === tag)!
     const run = record.runs.at(-1)!
     await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     process.env.ROOM_WORKER_ID = record.id
@@ -158,10 +159,10 @@ function world() {
     finally { delete process.env.ROOM_WORKER_ID }
     await tools.shutdown(); ws?.graph?.stop()
     exits.get(tag)!(0)
-    await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
+    await vi.waitFor(async () => expect((await workerByTag(repo, tag))).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
   async function workerPreview(tag: string, run?: string, leadShare?: 'intent' | 'declared') {
-    const w = workerByTag(repo, tag)!
+    const w = (await workerByTag(repo, tag))!
     const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     if (leadShare) {
       const peer = new Awareness(new Y.Doc())
@@ -176,7 +177,7 @@ function world() {
   }
   /** One worker previews a sibling, which it sees only through the sibling's published snapshot. */
   async function siblingPreview(tag: string, person: string, run?: string) {
-    const w = workerByTag(repo, tag)!
+    const w = (await workerByTag(repo, tag))!
     const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
     if (run) startsPreviewMaintenance = true
@@ -232,7 +233,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(repo, 'specs/draft.md', 'untracked spec\n')
     const t = world()
     const reply = await t.call('room_spawn', { tag: 'fresh', task: 'Read specs/draft.md', carry: false })
-    const w = workerByTag(repo, 'fresh')!
+    const w = (await workerByTag(repo, 'fresh'))!
     expect(w.base).toBe(head)
     expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(head)
     expect(read(w.dir, 'shared.txt')).toBe(lines())
@@ -245,7 +246,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(repo, 'build/og-grid-spec.md', 'ignored spec\n')
     const t = world()
     const reply = await t.call('room_spawn', { tag: 'grid', task: 'Follow build/og-grid-spec.md' })
-    expect(exists(workerByTag(repo, 'grid')!.dir, 'build/og-grid-spec.md')).toBe(false)
+    expect(exists((await workerByTag(repo, 'grid'))!.dir, 'build/og-grid-spec.md')).toBe(false)
     expect(reply).toContain('build/og-grid-spec.md')
     expect(reply).toContain('not in this worktree')
   })
@@ -464,7 +465,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false), { timeout: 15_000 })
     expect(git(repo, 'branch', '--list', 'room/idle')).toBe('')
     // Retirement follows the worktree cleanup: the registry record retires and the projector drops the view.
-    await vi.waitFor(() => expect(workerByTag(repo, 'idle')).toBeUndefined(), { timeout: 15_000 })
+    await vi.waitFor(async () => expect((await workerByTag(repo, 'idle'))).toBeUndefined(), { timeout: 15_000 })
     await vi.waitFor(() => expect(t.a.workerViewOf('rohanz+idle')).toBeUndefined(), { timeout: 15_000 })
     expect(t.a.retiredWorkers().find(r => r.tag === 'idle')).toMatchObject({ files: [], fileCount: 0 })
   }, 30_000)

@@ -45,7 +45,7 @@ async function setup() {
   const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() }, daemon: {} }
   await registerWorkers(s as unknown as Session, [{ tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status: 'done', exitCode: 0, summary: 'finished', base, host: 'codex', task: 'task', pid: 0, startedAt: 1 }])
   const state = {
-    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: vi.fn(async () => {}), project: vi.fn(async () => {}) }, myWorkers: () => localWorkers(lead), workerAlive: () => false,
+    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: vi.fn(async () => {}), project: vi.fn(async () => {}) }, myWorkers: async () => (await localWorkers(lead)), workerAlive: () => false,
     others: () => ['lead+test'], presences: () => [], withheld: () => undefined, baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
   } as unknown as HandlerState
   return { state }

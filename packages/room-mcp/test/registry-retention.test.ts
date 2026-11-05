@@ -1,3 +1,5 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -5,6 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { ROOM_STALE_MS } from '@room/shared'
+import { FileWorkerStore } from '../src/worker-file-store.js'
 import { registryForDir, WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { seedRegistryWorker } from './registry-fixture.js'
@@ -30,8 +33,8 @@ describe('retired worker record retention', () => {
       const end = async (tag: string, phase: 'retired' | 'abandoned' | 'retiring', retiredAt: number, patch: Partial<WorkerRecord> = {},
         seeded?: WorkerRecord) => {
         const record = seeded ?? (await seedRegistryWorker(dir, tag)).record
-        await registry.update(record.id, prior => ({ ...prior, ...patch, phase, seq: prior.seq + 1,
-          ...(phase === 'abandoned' ? {} : { archive: registry.archiveOf(prior, { summary: '', retiredAt }), cleanup: { [prior.room]: phase === 'retiring' ? 'pending' : 'done' } }) }))
+        await mutateWorkerFixture(registry, record.id, async prior => ({ ...prior, ...patch, phase, seq: prior.seq + 1,
+          ...(phase === 'abandoned' ? {} : { archive: (await registry.archiveOf(prior, { summary: '', retiredAt })), cleanup: { [prior.room]: phase === 'retiring' ? 'pending' : 'done' } }) }))
         fs.mkdirSync(path.join(root, 'runs', record.id), { recursive: true })
         return record
       }
@@ -51,21 +54,21 @@ describe('retired worker record retention', () => {
 
       const removed = await registry.pruneRetired(ROOM_STALE_MS)
       expect(removed.map(r => r.tag).sort()).toEqual(['abandoned', 'expired', 'kept-gone'])
-      const remaining = registry.list().map(r => r.tag).sort()
+      const remaining = (requireWorkerInventory(await registry.list())).map(r => r.tag).sort()
       expect(remaining).toEqual(['borrower', 'kept', 'live', 'owner', 'recent', 'retiring'].sort())
       for (const gone of [expired, keptGone, abandoned]) {
         expect(fs.existsSync(file(gone.id))).toBe(false)
         expect(fs.existsSync(path.join(root, 'runs', gone.id))).toBe(false)
         expect(fs.existsSync(path.join(root, 'tags', `${gone.tag}.json`))).toBe(false)
       }
-      expect(registry.reserved('kept')?.id).toBe(kept.id)
-      expect(registry.reserved('recent')?.id).toBe(recent.id)
-      expect(registry.reserved('retiring')?.id).toBe(retiring.id)
+      expect((await registry.reserved('kept'))?.id).toBe(kept.id)
+      expect((await registry.reserved('recent'))?.id).toBe(recent.id)
+      expect((await registry.reserved('retiring'))?.id).toBe(retiring.id)
       expect([borrower.id, live.id].every(id => fs.existsSync(file(id)))).toBe(true)
       expect(stderr.mock.calls.filter(([line]) => String(line).includes('removed') && String(line).includes('worker record'))).toHaveLength(3)
       // A freed tag can be spawned again.
       const { record: again } = await seedRegistryWorker(dir, 'expired')
-      expect(registry.reserved('expired')?.id).toBe(again.id)
+      expect((await registry.reserved('expired'))?.id).toBe(again.id)
       // Idempotent.
       expect(await registry.pruneRetired(ROOM_STALE_MS)).toEqual([])
       rmSync(keptDir, { recursive: true, force: true })
@@ -76,11 +79,11 @@ describe('retired worker record retention', () => {
     const dir = repo()
     try {
       const { registry, record } = await seedRegistryWorker(dir, 'old')
-      await registry.update(record.id, prior => ({ ...prior, phase: 'abandoned', seq: prior.seq + 1 }))
+      await mutateWorkerFixture(registry, record.id, prior => ({ ...prior, phase: 'abandoned', seq: prior.seq + 1 }))
       fs.utimesSync(path.join(registry.root, 'workers', `${record.id}.json`), new Date(0), new Date(0))
       fs.writeFileSync(path.join(registry.root, 'migration.json'), JSON.stringify({ v: 1, sources: {}, done: false }))
       expect(await registry.pruneRetired(ROOM_STALE_MS)).toEqual([])
-      expect(registry.read(record.id)?.phase).toBe('abandoned')
+      expect((await registry.read(record.id))?.phase).toBe('abandoned')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -91,16 +94,16 @@ describe('retired worker record retention', () => {
   async function expiredOwner(dir: string, tag: string) {
     const { registry, record } = await seedRegistryWorker(dir, tag)
     const old = Date.now() - ROOM_STALE_MS - DAY
-    await registry.update(record.id, prior => ({ ...prior, phase: 'retired', seq: prior.seq + 1,
-      archive: registry.archiveOf(prior, { summary: '', retiredAt: old }), cleanup: { [prior.room]: 'done' } }))
-    return { registry, record: registry.read(record.id)! }
+    await mutateWorkerFixture(registry, record.id, async prior => ({ ...prior, phase: 'retired', seq: prior.seq + 1,
+      archive: (await registry.archiveOf(prior, { summary: '', retiredAt: old })), cleanup: { [prior.room]: 'done' } }))
+    return { registry, record: (await registry.read(record.id))! }
   }
   function beforePruneLease(registry: WorkerRegistry, id: string, hook: () => Promise<void>, after?: () => Promise<void>) {
-    const begin = registry.beginOperation.bind(registry)
-    return vi.spyOn(registry, 'beginOperation').mockImplementation(async (target, op) => {
-      if (op !== 'prune' || target !== id) return begin(target, op)
+    const begin = FileWorkerStore.prototype.beginOperation
+    return vi.spyOn(FileWorkerStore.prototype, 'beginOperation').mockImplementation(async function (this: FileWorkerStore, target, op) {
+      if (this.commonDir !== registry.commonDir || op !== 'prune' || target !== id) return begin.call(this, target, op)
       await hook()
-      const held = await begin(target, op)
+      const held = await begin.call(this, target, op)
       await after?.()
       return held
     })
@@ -119,10 +122,10 @@ describe('retired worker record retention', () => {
       try {
         expect(await registry.pruneRetired(ROOM_STALE_MS)).toEqual([])
       } finally { spy.mockRestore() }
-      expect(registry.read(record.id)?.seq).toBe(record.seq)
-      expect(registry.reserved('owner')?.id).toBe(record.id)
+      expect((await registry.read(record.id))?.seq).toBe(record.seq)
+      expect((await registry.reserved('owner'))?.id).toBe(record.id)
       // The other instance's operation still holds its lease; prune released nothing of it.
-      expect(registry.operationInProgress(record.id)).toBe(true)
+      expect((await registry.operationInProgress(record.id))).toBe(true)
       expect(await other.finishOperation(record.id)).toBe(true)
       other.close()
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
@@ -136,15 +139,15 @@ describe('retired worker record retention', () => {
       const { registry, record } = await expiredOwner(dir, 'kept')
       // Collection keeps the worktree after prune selected the record as expired with none kept.
       const spy = beforePruneLease(registry, record.id, async () => {
-        await registry.update(record.id, prior => ({ ...prior, keptWorktree: keptDir, seq: prior.seq + 1 }))
+        await mutateWorkerFixture(registry, record.id, prior => ({ ...prior, keptWorktree: keptDir, seq: prior.seq + 1 }))
       })
       try {
         expect(await registry.pruneRetired(ROOM_STALE_MS)).toEqual([])
       } finally { spy.mockRestore() }
-      expect(registry.read(record.id)?.keptWorktree).toBe(keptDir)
+      expect((await registry.read(record.id))?.keptWorktree).toBe(keptDir)
       // The earlier order released the tag before noticing the change: a surviving record without its reservation.
-      expect(registry.reserved('kept')?.id).toBe(record.id)
-      expect(registry.operationInProgress(record.id)).toBe(false)
+      expect((await registry.reserved('kept'))?.id).toBe(record.id)
+      expect((await registry.operationInProgress(record.id))).toBe(false)
     } finally { stderr.mockRestore(); rmSync(keptDir, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -158,8 +161,8 @@ describe('retired worker record retention', () => {
       try {
         expect(await registry.pruneRetired(ROOM_STALE_MS)).toEqual([])
       } finally { spy.mockRestore() }
-      expect(registry.read(record.id)?.phase).toBe('retired')
-      expect(registry.reserved('owner')?.id).toBe(record.id)
+      expect((await registry.read(record.id))?.phase).toBe('retired')
+      expect((await registry.reserved('owner'))?.id).toBe(record.id)
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -170,16 +173,16 @@ describe('retired worker record retention', () => {
       const { registry, record } = await expiredOwner(dir, 'owner')
       const other = await otherInstance(registry)
       const spy = beforePruneLease(registry, record.id, async () => {}, async () => {
-        await expect(other.update(record.id, prior => ({ ...prior, seq: prior.seq + 1 }))).rejects.toThrow(/lease held by another instance/)
+        await expect(other.command(record.id, { type: 'activate' })).rejects.toThrow(/lease held by another instance/)
         await expect(seedRegistryWorker(dir, 'borrower', { dir: record.dir, sharedWith: record.id })).rejects.toThrow(/lease held/)
       })
       try {
         expect((await registry.pruneRetired(ROOM_STALE_MS)).map(r => r.id)).toEqual([record.id])
       } finally { spy.mockRestore() }
-      expect(registry.read(record.id)).toBeUndefined()
-      expect(registry.reserved('owner')).toBeUndefined()
+      expect((await registry.read(record.id))).toBeUndefined()
+      expect((await registry.reserved('owner'))).toBeUndefined()
       expect(fs.existsSync(path.join(registry.root, 'tags', 'owner.json'))).toBe(false)
-      expect(registry.operationInProgress(record.id)).toBe(false)
+      expect((await registry.operationInProgress(record.id))).toBe(false)
       other.close()
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
   })

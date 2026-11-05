@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 // Repository rooms keep worker authority in the durable local registry, not in RoomDoc.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -71,7 +72,7 @@ const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve))
 it('refuses to move while a finished local worker is uncollected, then moves after retirement', async () => {
   const t = setup()
   const { registry, record } = await seedRegistryWorker(dir, 'money')
-  await registry.update(record.id, old => ({ ...old, lead: { ...old.lead, participant: 'rohanz', room: t.old.roomName }, seq: old.seq + 1 }))
+  await mutateWorkerFixture(registry, record.id, old => ({ ...old, lead: { ...old.lead, participant: 'rohanz', room: t.old.roomName }, seq: old.seq + 1 }))
   await registry.writeExit(record.id, { run: 1, code: 0, at: Date.now(), witnessed: true })
 
   const blocked = await t.tools.call('room_join', { where: 'local' })
@@ -79,7 +80,7 @@ it('refuses to move while a finished local worker is uncollected, then moves aft
   expect(t.current()).toBe(t.old)
   expect(t.left).toEqual([])
 
-  await registry.update(record.id, old => ({ ...old, phase: 'retired', seq: old.seq + 1 }))
+  await mutateWorkerFixture(registry, record.id, old => ({ ...old, phase: 'retired', seq: old.seq + 1 }))
   expect(await t.tools.call('room_join', { where: 'local' })).toContain(`moved from ${t.old.roomName}`)
   expect(t.left).toEqual([t.old])
 })
@@ -115,7 +116,7 @@ it('keeps the workers room when its shutdown fails and reuses it for the next sp
   expect(await t.tools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })).toContain('spawned money')
   t.exits[0](0)
   const registry = await registryForDir(dir)
-  await vi.waitFor(() => expect(registry.exits(registry.reserved('money')!.id)).toHaveLength(1))
+  await vi.waitFor(async () => expect((await registry.exits((await registry.reserved('money'))!.id))).toHaveLength(1))
   expect(await t.tools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
   expect(await t.tools.call('room_join', { where: 'local' })).toContain('closing the workers room failed (stop failed)')
   expect(t.current()).toBe(t.old)
@@ -138,11 +139,11 @@ it('a spawn requested during a move starts in the destination room', async () =>
   void spawning.then(() => { spawned = true })
   await nextTurn()
   expect(spawned).toBe(false)
-  expect((await registryForDir(dir)).reserved('late')).toBeUndefined()
+  expect((await (await registryForDir(dir)).reserved('late'))).toBeUndefined()
   release()
   expect(await moving).toContain('moved from')
   expect(await spawning).toContain('spawned late')
-  expect((await registryForDir(dir)).reserved('late')?.room).toBe(target.roomName)
+  expect((await (await registryForDir(dir)).reserved('late'))?.room).toBe(target.roomName)
   expect(t.current()).toBe(target)
   t.exits[0](0)
 })
@@ -173,7 +174,7 @@ it('a move requested during discard waits for retirement and then moves', async 
   expect(await t.tools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })).toContain('spawned money')
   const registry = await registryForDir(dir)
   const discarding = t.tools.call('room_collect', { tag: 'money', discard: true })
-  await vi.waitFor(() => expect(registry.reserved('money')?.phase).toBe('discarding'))
+  await vi.waitFor(async () => expect((await registry.reserved('money'))?.phase).toBe('discarding'))
   const moving = t.tools.call('room_join', { where: 'local' })
   let moved = false
   void moving.then(() => { moved = true })

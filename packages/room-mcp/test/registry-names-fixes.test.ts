@@ -1,3 +1,5 @@
+import { requireWorkerInventory } from '../src/worker-store.js'
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -54,7 +56,7 @@ async function finishedWorker() {
   const registry = await registerWorkers(session, [{ tag: 'retry', name: 'lead+retry', lead: 'lead',
     host: 'claude', hostSessionId: '550e8400-e29b-41d4-a716-446655440000', task: 'test',
     dir: workerDir, branch: 'room/retry', pid: -1, startedAt: 1, status: 'done', exitCode: 0 }])
-  const record = registry.list().find(value => value.tag === 'retry')!
+  const record = (requireWorkerInventory(await registry.list())).find(value => value.tag === 'retry')!
   const rooms = new Rooms({ primary: () => session, setPrimary: () => {}, attach: () => ({ stop() {} }) })
   return { dir, room, session, registry, record, rooms }
 }
@@ -66,7 +68,7 @@ describe('whole redesign registry and names regressions', () => {
     const neverSpawn = vi.fn(() => { throw new Error('must not spawn') })
     expect(await t.rooms.resumeWorker(t.session, worker, 'again', { spawner: neverSpawn, maxWorkers: 1,
       log: () => {}, at: Date.now, exitWaitMs: 30_000, beforeLaunch: async () => 'error: hub full' })).toBe('error: hub full')
-    expect(t.registry.read(worker.id)?.runs.at(-1)?.launch).toEqual({ outcome: 'never', error: 'error: hub full' })
+    expect((await t.registry.read(worker.id))?.runs.at(-1)?.launch).toEqual({ outcome: 'never', error: 'error: hub full' })
     expect(fs.existsSync(path.join(t.registry.root, 'workers', `${worker.id}.op`))).toBe(false)
     await expect(t.rooms.resumeWorker(t.session, worker, 'again', { spawner: neverSpawn, maxWorkers: 1,
       log: () => {}, at: Date.now, exitWaitMs: 30_000, beforeLaunch: async () => { throw new Error('post unavailable') } })).rejects.toThrow('post unavailable')
@@ -97,19 +99,19 @@ describe('whole redesign registry and names regressions', () => {
     fs.mkdirSync(record.dir)
     await registry.writeIntent(record)
     await registry.finishOperation(record.id)
-    if (prior === 'ambiguous') await registry.update(record.id, old => ({ ...old,
+    if (prior === 'ambiguous') await mutateWorkerFixture(registry, record.id, old => ({ ...old,
       runs: [{ ...old.runs[0], launch: { outcome: 'ambiguous', at: 2 } }], seq: old.seq + 1 }))
     await registry.admit({ id: record.id, run: 1, nonce: 'run', dir: record.dir,
       chain: [mcp, host], hostProcess: host, hostSessionId: 'host-session' })
     await registry.reconcile()
-    expect(registry.read(record.id)?.runs[0].launch).toMatchObject({ outcome: 'launched', pid: host.pid, process: host })
+    expect((await registry.read(record.id))?.runs[0].launch).toMatchObject({ outcome: 'launched', pid: host.pid, process: host })
     alive.delete(mcp.pid)
     await registry.writeReport(record.id, { run: 1, nonce: 'run', chain: [{ ...mcp, pid: 201 }, host],
       hostProcess: null, joinedAt: 4, hostSessionId: 'host-session' })
-    expect(registry.reports(record.id)[0].hostProcess).toEqual(host)
+    expect((await registry.reports(record.id))[0].hostProcess).toEqual(host)
     await registry.reconcile()
-    expect(registry.exits(record.id)).toEqual([])
-    expect(registry.status(record.id)?.status).toBe('running')
+    expect((await registry.exits(record.id))).toEqual([])
+    expect((await registry.status(record.id))?.status).toBe('running')
     registry.close()
   })
 

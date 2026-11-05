@@ -1,3 +1,4 @@
+import { requireWorkerInventory } from './worker-store.js'
 /**
  * The rooms one MCP process is in, and everything hung off each of them.
  *
@@ -18,9 +19,9 @@ import { defaultSpawner, pidPresent, probeProcess, type CwdProcessLister, type P
 import { decideResume, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, WorkerLaunchError } from './worker-launch.js'
-import { registryForDir, registrySnapshotForDir } from './worker-registry.js'
+import { openWorkerReader, registryForDir } from './worker-registry.js'
 import { postWorkerMessage } from './post.js'
-import { realStateInput, type LocalWorker } from './worker-status.js'
+import { realStateInput, type LocalWorker, type WorkerRecord } from './worker-status.js'
 import { autoRetire } from './retire.js'
 import { WorkerProjector } from './worker-projector.js'
 import { readDiffCache } from './read-diff-cache.js'
@@ -35,8 +36,8 @@ export interface ResumeWorkerOptions {
   at?: () => number
   /** How long to wait for the previous run's exit (default 30 s). */
   exitWaitMs?: number
-  /** See resumeWorker: runs just before the host starts; an error string ends the run unlaunched. */
-  beforeLaunch?: () => Promise<string | { ids: string[]; prompt: string } | undefined>
+  /** See resumeWorker: receives the reserved incarnation before the host starts; an error ends the run unlaunched. */
+  beforeLaunch?: (record: Pick<WorkerRecord, 'id' | 'name' | 'room' | 'runs'>) => Promise<string | { ids: string[]; prompt: string } | undefined>
 }
 
 /** The MCP request's cancellation follows awaits into worker preparation and registry locks. */
@@ -189,18 +190,18 @@ export class Rooms {
    * record alone (the same tag can be spawned in both rooms) decides only when neither room shows them.
    * `from` is the caller's session and the fallback.
    */
-  holding(name: string, from: Session = this.primary() ?? this.mustHave()): Session {
+  async holding(name: string, from: Session = this.primary() ?? this.mustHave()): Promise<Session> {
     const others = this.all().filter(s => s !== from)
     if (!others.length || name === from.me.name) return from
     // A projected head in the team room is evidence for peers, not a local join.
     // The lead's registry determines the source room of its own local worker.
-    try {
-      const owned = registrySnapshotForDir(from.dir).list().find(record => record.name === name
+    {
+      const owned = requireWorkerInventory(await (await openWorkerReader(from.dir)).list()).find(record => record.name === name
         && record.lead.participant === from.me.name && record.mode === 'local'
         && !['retiring', 'retired', 'abandoned'].includes(record.phase))
       const source = owned && others.find(s => s.roomName === owned.room)
       if (source) return source
-    } catch { /* Without a local registry, ordinary room evidence decides. */ }
+    }
     if (Rooms.activeIn(from, name)) return from
     for (const s of others) if (Rooms.activeIn(s, name)) return s
     if (Rooms.joinedBy(from, name)) return from
@@ -266,12 +267,12 @@ export class Rooms {
       exitWaitMs = 30_000, beforeLaunch } = options
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
-    const known = registry.reserved(w.tag)
+    const known = (await registry.reserved(w.tag))
     if (known && ['retiring', 'retired'].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume; use room_collect with keep: true to collect and stay resumable`
     if (known && !fs.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`
     const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`
-    const record = trusted.record
+    let record = trusted.record
     const local = realStateInput(record, trusted.status)
     const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.o.probe })
     const initial = decideResume(processState)
@@ -291,29 +292,26 @@ export class Rooms {
     try {
       const next = await registry.resume(record.id, config.maxWorkers, { nonce: randomUUID(), logStart, logFile,
         busFrontier: highestSeq(s.room) })
+      record = next
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
     let posting: string | { ids: string[]; prompt: string } | undefined
     try {
     try {
-      posting = await beforeLaunch?.()
+      posting = await beforeLaunch?.(record)
       const refused = typeof posting === 'string' ? posting : undefined
       if (refused) {
-        await registry.update(record.id, old => ({ ...old, phase: 'active',
-          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: refused } }], seq: old.seq + 1 }))
+        await registry.command(record.id, { type: 'launch', run: run.n, nonce: run.nonce, phase: 'active', launch: { outcome: 'never', error: refused } })
         return refused
       }
       if (posting && typeof posting !== 'string' && posting.ids.length) {
         const ids = [...new Set(posting.ids)]
-        const updated = await registry.update(record.id, old => ({ ...old,
-          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, promptMsgIds: ids }],
-          seq: old.seq + 1 }))
+        const updated = await registry.command(record.id, { type: 'run-prompts', run: run.n, promptMsgIds: ids })
         run = updated.runs.at(-1)!
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      await registry.update(record.id, old => ({ ...old, phase: 'active',
-        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: reason } }], seq: old.seq + 1 }))
+      await registry.command(record.id, { type: 'launch', run: run.n, nonce: run.nonce, phase: 'active', launch: { outcome: 'never', error: reason } })
       throw error
     }
     try {
@@ -326,13 +324,11 @@ export class Rooms {
       { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt : followUp, oldPort: record.port },
       { setHandle: (id, proc) => this.setHandle(s, id, proc),
         watch: (_id, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
-      { onLaunched: async pid => { await registry.update(record.id, old => ({ ...old,
-        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
+      { onLaunched: async pid => { await registry.command(record.id, { type: 'launch', run: run.n, nonce: run.nonce, launch: { outcome: 'launched', pid } }) },
       onSpawn: async result => {
-        await registry.update(record.id, old => ({ ...old, phase: 'active', port: result.port,
-          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
-            ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
-              executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+        await registry.command(record.id, { type: 'launch', run: run.n, nonce: run.nonce, phase: 'active', port: result.port,
+          launch: { outcome: 'launched', pid: result.proc.pid, ...(result.processStartTime ? { process: { pid: result.proc.pid,
+            startTime: result.processStartTime, executable: result.processExecutable ?? '' } } : {}) } })
       }, onExit: async (code, signal) => {
         await registry.writeExit(record.id, { run: run.n, code, ...(signal ? { signal } : {}), witnessed: true, at: at() })
         this.dropHandle(s, record.id)
@@ -341,12 +337,9 @@ export class Rooms {
       return [`resumed ${record.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}`, ...launched.warnings].join('\n')
     } catch (error) {
       const launchError = error instanceof WorkerLaunchError ? error : new WorkerLaunchError('start', String(error))
-      if (!launchError.delivered) await registry.update(record.id, old => ({ ...old, phase: 'active',
-        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: launchError.message } }], seq: old.seq + 1 }))
+      if (!launchError.delivered) await registry.command(record.id, { type: 'launch', run: run.n, nonce: run.nonce, phase: 'active', launch: { outcome: 'never', error: launchError.message } })
       else {
-        if (!registry.read(record.id)?.runs.at(-1)?.launch) await registry.update(record.id, old => ({ ...old,
-          phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'ambiguous', at: at() } }],
-          seq: old.seq + 1 })).catch(writeError => log(`worker resume outcome: ${writeError}`))
+        if (!(await registry.read(record.id))?.runs.at(-1)?.launch) await registry.command(record.id, { type: 'launch', run: run.n, nonce: run.nonce, phase: 'active', launch: { outcome: 'ambiguous', at: at() } }).catch(writeError => log(`worker resume outcome: ${writeError}`))
         await registry.beginStop(record.id, launchError.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed')
           .catch(writeError => log(`worker resume stop record: ${writeError}`))
       }

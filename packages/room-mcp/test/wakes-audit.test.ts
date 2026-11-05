@@ -177,7 +177,9 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
   let launchedIds: string[] = []
   const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt, { beforeLaunch } = {}) => {
     expect(prompt).toBe('price_cents')
-    launchedIds = (await beforeLaunch?.())?.ids ?? []
+    const posting = await beforeLaunch?.({ id: worker.id, name: worker.name, room: main.roomName, runs: [] })
+    expect(typeof posting).not.toBe('string')
+    launchedIds = posting && typeof posting !== 'string' ? posting.ids : []
     if (change === 'answered') hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
     else hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
     return 'resumed money'
