@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { cloneId, ensureLocalRelay, probeRelay, readRelayInfo, relayFile } from '../src/index.js'
+import { cloneId, probeRelay, readRelayInfo, relayFile } from '../src/index.js'
 
 const probe = vi.hoisted(() => vi.fn())
 vi.mock('../src/proof.js', async original => ({ ...await original<typeof import('../src/proof.js')>(), relayIdentityProbe: probe }))
@@ -30,31 +30,6 @@ describe('local relay contract discovery', () => {
     expect(await probeRelay(4402, dir, 'wrong')).toBe('foreign')
     probe.mockResolvedValue({ timedOut: true })
     expect(await probeRelay(4402, dir, 'key')).toBe('slow')
-  })
-
-  it.each([true, false])('refuses a live incompatible recorded owner without taking authority or rewriting discovery (joinOnly=%s)', async joinOnly => {
-    const dir = commonDir(), file = relayFile(dir)
-    fs.mkdirSync(path.dirname(file))
-    const bytes = JSON.stringify({ schema: 2, port: 4402, pid: 321, room: 'local/test', startedAt: 1, key: 'key', lead: true })
-    fs.writeFileSync(file, bytes)
-    probe.mockResolvedValue({ timedOut: false, identity: { proven: true, health: health(dir, { hub: 9 }) } })
-    await expect(ensureLocalRelay(dir, 'local/test', { joinOnly })).rejects.toThrow(/pid 321.*4402.*drain.*save.*restart/i)
-    expect(fs.readFileSync(file, 'utf8')).toBe(bytes)
-    expect(fs.existsSync(path.join(dir, 'room/hub/authority.lock'))).toBe(false)
-  })
-
-  it('marks a joined relay incompatible without attempting takeover when its contract changes', async () => {
-    const dir = commonDir(), file = relayFile(dir)
-    fs.mkdirSync(path.dirname(file))
-    fs.writeFileSync(file, JSON.stringify({ schema: 2, port: 4402, pid: 321, room: 'local/test', startedAt: 1, key: 'key', lead: true }))
-    probe.mockResolvedValue({ timedOut: false, identity: { proven: true, health: health(dir) } })
-    const relay = await ensureLocalRelay(dir, 'local/test', { watchMs: 10, log: () => {} })
-    try {
-      probe.mockResolvedValue({ timedOut: false, identity: { proven: true, health: health(dir, { hub: 9 }) } })
-      await vi.waitFor(() => expect(relay.lost).toContain('is incompatible'))
-      expect(relay.owned).toBe(false)
-      expect(fs.existsSync(path.join(dir, 'room/hub/authority.lock'))).toBe(false)
-    } finally { await relay.stop() }
   })
 
   it('retains the independent discovery format and compatibility hint without rejecting future extra fields', () => {

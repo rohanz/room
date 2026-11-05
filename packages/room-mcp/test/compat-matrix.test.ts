@@ -81,12 +81,13 @@ describe('compatibility process harness without sockets', () => {
   })
   it('plans every old/new transport direction per pin', () => {
     const plan = pairPlan(initial)
-    expect(plan).toHaveLength(8)
+    expect(plan).toHaveLength(10)
     expect(plan.filter(pair => pair.tag === 'v0.17.0')).toEqual([
       { tag: 'v0.17.0', transport: 'server', authority: 'old', client: 'new' },
       { tag: 'v0.17.0', transport: 'server', authority: 'new', client: 'old' },
       { tag: 'v0.17.0', transport: 'relay', authority: 'old', client: 'new' },
       { tag: 'v0.17.0', transport: 'relay', authority: 'new', client: 'old' },
+      { tag: 'v0.17.0', transport: 'daemon', authority: 'new', client: 'old' },
     ])
   })
   it('skips only the old-authority pairs of a release that cannot start on this platform, with the reason', () => {
@@ -105,7 +106,9 @@ describe('compatibility process harness without sockets', () => {
   it('filters a single tag or transport while retaining both old/new directions', () => {
     expect(selectPairs(initial, 'v0.17.32:relay')).toEqual(pairPlan(initial).filter(pair => pair.tag === 'v0.17.32' && pair.transport === 'relay'))
     expect(selectPairs(initial, 'candidate:server')).toEqual([{ tag: 'candidate', transport: 'server', authority: 'new', client: 'new' }])
-    expect(selectPairs(initial, 'candidate')).toHaveLength(2)
+    expect(selectPairs(initial, 'candidate')).toHaveLength(3)
+    expect(selectPairs(initial, 'candidate:daemon')).toEqual([{ tag: 'candidate', transport: 'daemon', authority: 'new', client: 'new' }])
+    expect(selectPairs(initial, 'v0.17.0:daemon')).toEqual([{ tag: 'v0.17.0', transport: 'daemon', authority: 'new', client: 'old' }])
     for (const invalid of ['v0.18.0', 'candidate:udp', 'candidate:server:extra', 'candidate:']) expect(() => selectPairs(initial, invalid)).toThrow('invalid --only')
   })
   it('uses a process identity the local relay accepts as a live holder', () => {

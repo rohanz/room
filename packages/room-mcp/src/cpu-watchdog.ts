@@ -1,3 +1,4 @@
+import { privateStateDirectory } from '@room/relay'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -64,9 +65,9 @@ export function topSelfFrames(profile: CpuProfile, n = 5): { frame: string; ms: 
   return [...byFrame].map(([frame, micros]) => ({ frame, ms: micros / 1000 })).sort((a, b) => b.ms - a.ms).slice(0, n)
 }
 
-/** Write the profile with mode 0600 and keep the newest `keep` profiles; asynchronous throughout. */
+/** Write the profile with mode 0600 and keep the newest `keep` profiles after private directory initialization. */
 export async function writeCpuProfile(dir: string, profile: CpuProfile, at: Date, keep = CPU_PROFILE_KEEP): Promise<string> {
-  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 })
+  privateStateDirectory(dir)
   const file = path.join(dir, `${at.toISOString().replace(/[:.]/g, '-')}.cpuprofile`)
   await fs.promises.writeFile(file, JSON.stringify(profile), { mode: 0o600, flag: 'wx' })
   const names = (await fs.promises.readdir(dir)).filter(name => name.endsWith('.cpuprofile')).sort()

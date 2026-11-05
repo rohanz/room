@@ -159,6 +159,8 @@ export interface RoomdOptions {
   onFullScan?: (policy: SharingPolicy, entries: ReadonlyMap<string, PlannedEntry>, unsettled: readonly string[]) => Promise<void>
   /** Each publisher socket independently selects its contract before syncing or publishing. */
   negotiation?: SocketNegotiation
+  /** Caller-owned local replica; involuntary replacement must reuse this exact document. */
+  replica?: Y.Doc
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
   /** Called with the daemon's provider as soon as it exists, before startup connects and publishes. */
@@ -271,7 +273,7 @@ class Daemon implements Roomd {
   rememberClaimDigest(id: string, digest: string): void { this.claimDigests.set(id, digest) }
   private publicationRejected = false
   setPublicationRejected(rejected: boolean): void { this.publicationRejected = rejected }
-  readonly roomDoc = new RoomDoc()
+  readonly roomDoc: RoomDoc
   readonly provider: WebsocketProvider
   branch = ''
   base = ''
@@ -377,7 +379,7 @@ class Daemon implements Roomd {
   phase = 'git'
   onSeedProgress?: () => void
 
-  constructor(options: RoomdOptions) {
+  constructor(private readonly options: RoomdOptions) {
     assertValidParticipantName(options.name)
     if (options.owner) assertValidParticipantName(options.owner)
     if (options.label) assertValidParticipantName(options.label)
@@ -387,6 +389,7 @@ class Daemon implements Roomd {
     this.kind = options.kind ?? 'human'
     this.owner = options.owner ?? options.name
     this.label = options.label
+    this.roomDoc = new RoomDoc(options.replica)
     this.carriedFrom = options.carried
     this.roomUrl = options.room
     this.localRoom = !!options.localKey
@@ -709,7 +712,8 @@ class Daemon implements Roomd {
       while (socket.bufferedAmount > 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
     }
     this.provider.destroy()
-    this.roomDoc.doc.destroy()
+    this.provider.awareness.destroy?.()
+    if (!this.options.replica) this.roomDoc.doc.destroy()
   }
 
   private setStatus(status: string, runtime: Pick<Presence, 'host' | 'model' | 'effort'> = {}): void {

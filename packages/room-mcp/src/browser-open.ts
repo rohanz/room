@@ -1,6 +1,7 @@
+import { privateStateDirectory } from '@room/relay'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 type Options = { platform?: NodeJS.Platform; launch?: (command: string, args: string[]) => Promise<void> }
@@ -29,7 +30,7 @@ export async function openRoomBrowser(url: string, directory: string, options: O
   const html = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${digest}'; base-uri 'none'"><title>Opening Room</title><p>Opening your room. <a href="${escaped}">Continue to Room</a></p><script>${script}</script>`
   // Keep the capability out of the source tree, shell arguments and output. Reuse one file
   // per destination; leave it available for browsers that read it after the OS opener exits.
-  await mkdir(directory, { recursive: true, mode: 0o700 })
+  privateStateDirectory(directory)
   const destination = new URLSearchParams(parsed.hash.slice(1)).get('room') ?? parsed.href.split('#')[0]
   const name = createHash('sha256').update(destination).digest('hex').slice(0, 24)
   const entry = path.join(directory, `${name}.html`), temporary = path.join(directory, `${randomUUID()}.tmp`)

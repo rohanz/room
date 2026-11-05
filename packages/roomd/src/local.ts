@@ -1,10 +1,9 @@
 /**
  * Local rooms from the clone's side: which room a worktree belongs to and where the relay's
  * discovery file lives. The relay itself (y-websocket relay, key, browser view, health) is
- * @room/relay; `ensureLocalRelay` here is the thin call into it.
+ * @room/relay, owned by its standalone daemon.
  */
 import path from 'node:path'
-import { ensureLocalRelay as relayEnsure, type LocalRelay } from '@room/relay'
 import { gitCommonDir } from './git-dirs.js'
 
 export type { LocalRelay, LocalRelayInfo } from '@room/relay'
@@ -19,9 +18,4 @@ export async function mainWorktree(dir: string): Promise<string> {
 export async function localRoomName(dir: string): Promise<string> {
   const main = await mainWorktree(dir)
   return `local/${path.basename(main)}`
-}
-
-/** Find the clone's local relay or become it (see @room/relay). */
-export function ensureLocalRelay(commonDir: string, room: string, opts: Parameters<typeof relayEnsure>[2] = {}): Promise<LocalRelay> {
-  return relayEnsure(commonDir, room, opts)
 }

@@ -10,28 +10,28 @@ import { validatePins, validatePinCommit } from './compat-pins.mjs'
 import { run, capture } from './compat-process.mts'
 
 type Pin = { tag: string; commit?: string; unsupported?: Partial<Record<NodeJS.Platform, string>> }
-export type Pair = { tag: string; transport: 'server' | 'relay'; authority: 'old' | 'new'; client: 'old' | 'new'; skip?: string }
+export type Pair = { tag: string; transport: 'server' | 'relay' | 'daemon'; authority: 'old' | 'new'; client: 'old' | 'new'; skip?: string }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 /** The pairs for every pin; an old authority that cannot start on this platform is planned as a skip with its reason. */
 export function pairPlan(pins: Pin[], platform: NodeJS.Platform = process.platform): Pair[] {
   validatePins(pins)
-  return pins.flatMap(pin => (['server', 'relay'] as const).flatMap(transport => {
+  return pins.flatMap(pin => [...(['server', 'relay'] as const).flatMap(transport => {
     const unsupported = pin.unsupported?.[platform]
     return [
       { tag: pin.tag, transport, authority: 'old' as const, client: 'new' as const, ...(unsupported ? { skip: unsupported } : {}) },
       { tag: pin.tag, transport, authority: 'new' as const, client: 'old' as const },
     ]
-  }))
+  }), { tag: pin.tag, transport: 'daemon' as const, authority: 'new' as const, client: 'old' as const }])
 }
 export function pendingCandidate(pin: Pin, version: string, error: unknown): boolean {
   return !pin.commit && pin.tag === `v${version}` && /couldn't find remote ref|not our ref/.test(String(error))
 }
 export function selectPairs(pins: Pin[], only?: string, platform: NodeJS.Platform = process.platform): Pair[] {
-  const pairs: Pair[] = [...pairPlan(pins, platform), ...(['server', 'relay'] as const).map(transport => ({ tag: 'candidate', transport, authority: 'new' as const, client: 'new' as const }))]
+  const pairs: Pair[] = [...pairPlan(pins, platform), ...(['server', 'relay', 'daemon'] as const).map(transport => ({ tag: 'candidate', transport, authority: 'new' as const, client: 'new' as const }))]
   if (!only) return pairs
   const [tag, transport, extra] = only.split(':')
-  if (extra !== undefined || !pairs.some(pair => pair.tag === tag) || (transport !== undefined && !['server', 'relay'].includes(transport))) {
-    throw new Error(`invalid --only ${only}; expected <pinned-tag|candidate>[:server|relay]`)
+  if (extra !== undefined || !pairs.some(pair => pair.tag === tag) || (transport !== undefined && !['server', 'relay', 'daemon'].includes(transport))) {
+    throw new Error(`invalid --only ${only}; expected <pinned-tag|candidate>[:server|relay|daemon]`)
   }
   return pairs.filter(pair => pair.tag === tag && (!transport || pair.transport === transport))
 }
@@ -69,7 +69,12 @@ async function build(dir: string, pin?: Pin) {
   await run(process.execPath, ['scripts/build-plugin.mjs', '--skip-web'], dir)
   // Export the genuine released APIs for process fixtures, without editing old source.
   const entry = path.join(dir, '.compat-exports.mjs')
+  const daemonSource = path.join(dir, 'packages/relay/src/daemon.ts')
+  const hasDaemon = await fs.access(daemonSource).then(() => true, () => false)
+  const hasClientCompat = await fs.access(path.join(dir, 'packages/room-mcp/src/client-compat.ts')).then(() => true, () => false)
   await fs.writeFile(entry, [
+    ...(hasClientCompat ? ["export * as clientCompat from './packages/room-mcp/src/client-compat.ts'"] : []),
+    ...(hasDaemon ? ["export * as daemon from './packages/relay/src/daemon.ts'"] : []),
     "export * as contracts from './packages/hub-core/src/protocol.ts'",
     "export * as workerRecords from './packages/shared/src/index.ts'",
     "export * as processes from './packages/relay/src/process.ts'",
@@ -101,7 +106,7 @@ async function main() {
     const flag = args.shift()
     if (flag === '--list') list = true
     else if (flag === '--only' && args.length && !only) only = args.shift()
-    else throw new Error('usage: npx tsx scripts/compat-matrix.mts [--list] [--only <tag|candidate>[:server|relay]]')
+    else throw new Error('usage: npx tsx scripts/compat-matrix.mts [--list] [--only <tag|candidate>[:server|relay|daemon]]')
   }
   const pins: Pin[] = validatePins(JSON.parse(await fs.readFile(path.join(root, 'scripts/compat-pins.json'), 'utf8')))
   const plan = selectPairs(pins, only)

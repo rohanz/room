@@ -25,7 +25,7 @@ export type CompatAdvertisement = {
   legacy?: { schema: 2; hub: 1 }
   release?: string
 }
-export type CapabilityName = 'room.generation' | 'room.manifest' | 'room.ledger' | 'room.worker-handover'
+export type CapabilityName = 'room.generation' | 'room.manifest' | 'room.ledger' | 'room.worker-handover' | 'room.daemon'
 export type CapabilityContract = {
   scope: 'connection' | 'participant' | 'room'
   wire: string
@@ -44,6 +44,7 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CapabilityName, CapabilityCont
   'room.generation': { scope: 'connection', wire: 'schema/gen query and 4403/4409 fencing', documentEffects: 'meta.generation identifies a replica epoch', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   'room.manifest': { scope: 'room', wire: 'schema-2 manifest records', documentEffects: 'baseline per-participant manifests and sharing revisions', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   'room.ledger': { scope: 'room', wire: 'proto-1 ordered post and baseline event vocabulary', documentEffects: 'schema-2 bus, mail, archive, outcomes and receipts; no stronger durability', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
+  'room.daemon': { scope: 'connection', wire: 'negotiated standalone local transport; no in-session takeover', documentEffects: 'client retains its replica across involuntary transport rebinding; delayed snapshot durability unchanged', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   'room.worker-handover': { scope: 'participant', wire: 'reserved; not implemented', documentEffects: 'reserved; grants no worker lifecycle guarantee', versions: {} },
 })
 

@@ -9,7 +9,7 @@ import { incarnationFile as createIncarnationFile, type HolderIn, type Incarnati
 import { compareAndRelease, createExclusive, liveness, recover, writeAtomic, type InstanceToken } from './leases.js'
 import { pidAlive, probeOwnProcess } from './process.js'
 
-export const hubDir = (commonDir: string): string => path.join(commonDir, 'room', 'hub')
+const hubDir = (commonDir: string): string => path.join(commonDir, 'room', 'hub')
 
 function readJson(file: string): Record<string, unknown> | undefined {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> }

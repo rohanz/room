@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
+const release = JSON.parse(fs.readFileSync('plugins/room/.claude-plugin/plugin.json', 'utf8')).version
 const grammars = ['rust', 'go', 'c', 'cpp', 'java', 'kotlin', 'c_sharp', 'swift', 'scala', 'python', 'javascript', 'typescript', 'tsx', 'ruby', 'php']
 
 const bundleOptions = {
@@ -22,6 +23,7 @@ const bundleOptions = {
   logLevel: 'info',
 }
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/index.ts'], outfile: 'plugins/room/server/room-mcp.mjs' })
+await build({ ...bundleOptions, entryPoints: ['packages/relay/src/daemon-bin.ts'], outfile: 'plugins/room/server/room-daemon.mjs', define: { __ROOM_DAEMON_RELEASE__: JSON.stringify(release) } })
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worker.ts'], outfile: 'plugins/room/server/parse-worker.mjs' })
 
 const grammarDir = 'plugins/room/server/grammars'
@@ -52,7 +54,6 @@ const descriptorModule = await build({
   tsconfig: 'tsconfig.base.json', bundle: true, platform: 'node', format: 'esm', target: 'node22', write: false,
 })
 const { CURRENT_COMPAT, WORKER_RECORD_SCHEMA } = await import(`data:text/javascript;base64,${Buffer.from(descriptorModule.outputFiles[0].text).toString('base64')}`)
-const release = JSON.parse(fs.readFileSync('plugins/room/.claude-plugin/plugin.json', 'utf8')).version
 const descriptor = {
   v: 1, release, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA,
   bundleSha256: createHash('sha256').update(fs.readFileSync('plugins/room/server/room-mcp.mjs')).digest('hex'),

@@ -2,10 +2,10 @@ import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
 import { manifestPaths, participantRecord, scopeLine, type Claim, type NoteMsg } from '@room/shared'
 import { resolve } from 'node:path'
-import { realGitCommonDir } from '@room/roomd'
+import { gitCommonDir, realGitCommonDir } from '@room/roomd'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
-import { NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, deriveRoomName, normalizeExplicitRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, createLocalReplica, deriveRoomName, normalizeExplicitRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type LocalReplica, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
@@ -100,6 +100,19 @@ export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions
   return { dir: s.dir, credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.policyStore.requested, token: s.token }
 }
 
+/** Only tool-directed joins may detach a retained replica from a different destination. */
+export async function explicitLocalReplica(opts: JoinOptions, retained?: LocalReplica): Promise<LocalReplica> {
+  const replica = opts.localReplica ?? retained
+  if (replica && !replica.disposed) {
+    const common = await gitCommonDir(opts.dir)
+    const room = opts.room !== undefined ? normalizeLocalRoomName(opts.room) : await localRoomName(opts.dir)
+    if (!replica.common || replica.common === common && replica.room === room) return replica
+  }
+  // Keep the previous document intact for rollback. Automatic rejoin never calls this helper:
+  // joinLocal still refuses to attach a surviving replica to a different clone or room.
+  return createLocalReplica()
+}
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
@@ -145,6 +158,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       cur?.lease?.check()
       const terminalNameLoss = cur?.lease?.state === 'taken' || cur?.lease?.state === 'superseded'
       const currentReply = async () => {
+        await cur?.recoverLocal?.()
         const sharing = a.share !== undefined ? await timed('share', () => shareHandlers(state).room_share({ level: a.share })) : ''
         if (cur) await timed('disclosure', () => offerTeamSharingDisclosure(cur, ledger))
         return [sharing, await timed('state', () => scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false }))].filter(Boolean).join('\n')
@@ -173,7 +187,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const [a, b] = await Promise.allSettled([realGitCommonDir(dir), realGitCommonDir(x.dir)])
         return a.status === 'fulfilled' && b.status === 'fulfilled' && a.value === b.value
       }
-      if (cur && await inTarget(cur) && sameFolder(dir, cur.dir) && !terminalNameLoss && a.takeover !== true && a.create !== true) return currentReply()
+      const sameDestination = cur ? await inTarget(cur) : false
+      if (cur && sameDestination && sameFolder(dir, cur.dir) && !terminalNameLoss && a.takeover !== true && a.create !== true) return currentReply()
       const message = (e: unknown) => e instanceof Error ? e.message : String(e)
       const refused = (e: unknown): string => {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.${stay}`
@@ -208,7 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (late) return late
       const rollBack = async (reason: string): Promise<string> => {
         try {
-          const back = await doJoin({ ...rejoinOptions(cur!, resolved.credentialsPath), tag: cur!.me.label ?? '', log })
+          const back = await doJoin({ ...rejoinOptions(cur!, resolved.credentialsPath), localReplica: cur!.localReplica, tag: cur!.me.label ?? '', log })
           rooms.add(back, 'primary')
           return `couldn't join ${targetRoom} (${reason}); back in ${back.roomName}.`
         } catch (e) {
@@ -242,6 +257,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         name: resolved.name,
         room: targetRoom,
         server: choice.server,
+        localReplica: sameDestination ? cur?.localReplica : undefined,
         create: a.create === true,
         confirm: a.confirm === true,
         share: resolved.share,
@@ -274,9 +290,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (notRemembered) out.push(notRemembered)
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone and its worktrees)' : choice.rule === 'env' ? resolved.whereEnv : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
       await offerTeamSharingDisclosure(s, ledger)
-      if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER to your server URL and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
+      if (s.local) out.push(`local room (no server): relay on ${s.local.url}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER to your server URL and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
       if (s.local?.canonicalWarning) out.push(`WARN: ${s.local.canonicalWarning}`)
-      if (s.local?.ownerWarning) out.push(`WARN: ${s.local.ownerWarning}`)
       if (presences(s).some(p => sameCheckoutSession(s, p.user.name))) out.push('another session in this checkout')
       const sameCheckoutNames = new Set(presences(s).filter(p => sameCheckoutSession(s, p.user.name)).map(p => p.user.name))
       for (const scope of s.room.allScopes()) if (sameCheckoutNames.has(scope.by)) out.push(`  scope: ${displayName({ name: scope.by, kind: scope.byKind })} is on ${scopeLine(scope)}`)
@@ -315,7 +330,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')
       rooms.remove(s)
-      const unsaved = await doLeave(s)
+      const unsaved = await doLeave(s, { preserveReplica: false })
       let forgot = ''
       if (a.forget === true) {
         try { forgot = await clearChoice(s.dir) ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
@@ -352,8 +367,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         await closeWorkersRoom()
         cleanupMine(s, 'closing the local room')
         rooms.remove(s)
-        // The relay can hold other rooms (a workers room) whose save is still owed.
-        const unsaved = await doLeave(s)
+        // Forget propagates its authorized deletions; explicit leave owns replica disposal.
+        const unsaved = await doLeave(s, { preserveReplica: true })
         return `local room (no server): forgot the saved history of ${s.roomName} on this machine; exported its ledger to ${ledger.path} (${ledger.lines} lines) first; left the room${unsaved ? `\nWARN: ${unsaved}` : ''}`
       }
       if (a.confirm !== true) return 'error: room_close removes this repository room and all shared uncommitted work for everyone on every branch; call with confirm=true only on the user\'s explicit request'

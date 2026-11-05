@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { LOCAL, credentialsPath, joinSession, leaveSession, setCredential, type Session } from '../src/index.js'
 import { createTools } from '../src/tools.js'
 import { readChoice } from '../src/choice.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 let proc: ChildProcess, port = 0, dir = ''
@@ -33,7 +34,7 @@ beforeAll(async () => {
   git('remote', 'add', 'origin', 'https://github.com/rohanz/x.git')
   fs.writeFileSync(path.join(dir, 'app.py'), 'x = 1\n'); git('add', '.'); git('commit', '-qm', 'init')
 }, 60_000)
-afterAll(() => { proc?.kill(); if (dir) fs.rmSync(dir, { recursive: true, force: true }) })
+afterAll(async () => { proc?.kill(); if (dir) await disposePreviewFixture(dir, { registries: [dir] }) })
 
 it('local, then team, then local again: the Git name locally, the GitHub login on the team server', async () => {
   const server = `ws://127.0.0.1:${port}`

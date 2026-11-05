@@ -303,7 +303,6 @@ export class Ledger {
     try {
       const all = this.readCursors()
       all[s.roomName] = { participant: cursor.participant, frontier: cursor.frontier, routed: [...cursor.routed] }
-      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
       writeAtomic(file, all)
     } catch (e) { this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`) }
   }
@@ -319,7 +318,7 @@ export class Ledger {
   private persistNotices(): void {
     const file = this.file('notices.json')
     if (!file) return
-    try { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); writeAtomic(file, this.deliveredNotices()) }
+    try { writeAtomic(file, this.deliveredNotices()) }
     catch (e) { this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`) }
   }
 }

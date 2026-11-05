@@ -12,7 +12,7 @@ import { HooksBridge } from '../hooks-bridge.js'
 import { WakeReconciler } from '../wake-reconciler.js'
 import { ConflictSet } from '../conflict-set.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
-import { authFor, closeRoom, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
+import { authFor, closeRoom, detachCheckout, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
 import { Ledger } from '../ledger.js'
 import { createRelevance } from '../relevance.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
@@ -211,6 +211,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     },
     async drop(s: Session, reason: string) {
       log(`leaving ${s.roomName}: ${reason}`)
+      detachCheckout(s)
       rooms.remove(s)
       await doLeave(s)
     },

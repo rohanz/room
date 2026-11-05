@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
+import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
@@ -14,7 +14,7 @@ import { gitCommonDir } from '@room/roomd'
 import { resolveConfig } from './config.js'
 import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
-import { offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
+import { explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
 import { admitCodexThread } from './session.js'
@@ -114,7 +114,14 @@ async function main() {
       let presence: PresenceEnd | undefined
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION })
       const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION })
-      const tools = createTools({ completionReady: async () => {
+      let startupReplica = startup.server === LOCAL ? createLocalReplica() : undefined
+      const tools = createTools({ join: async opts => {
+        if (!session && opts.server === LOCAL) {
+          startupReplica = await explicitLocalReplica(opts, startupReplica)
+          return joinSession({ ...opts, localReplica: startupReplica })
+        }
+        return joinSession(opts)
+      }, completionReady: async () => {
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
         else if (rebinding) await rebinding
@@ -201,6 +208,7 @@ async function main() {
       }
 
       const joined = (s: Session) => {
+        if (s.localReplica) startupReplica = s.localReplica
         autoJoin.remember(s)
         s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) })
         rejoinWhenStale(s, () => session, autoJoin)
@@ -218,24 +226,29 @@ async function main() {
         ...(isCodexExecWorker() ? { bindWait: { bound: () => !!sessionBinding.bound(), ms: CODEX_WORKER_BIND_WAIT_MS } } : {}),
         async attempt(target) {
           const root = await joinableRoot(dir)
-          // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.
-          if (session?.local?.lost) await tools.drop(session, session.local.lost)
+          if (session?.local) {
+            await session.recoverLocal?.()
+            if (!session.provider.wsconnected || !session.provider.synced) throw new Error('local daemon is reconnecting; keeping this session and its replica')
+            return session
+          }
           if (await replacement.begin(session)) return replacement.join()
           // Reconnect with the latest accepted session, including its current sharing choice.
           if (target) {
-            const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log })
+            const reuse = session ? undefined : detachCheckout(target)
+            const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), localReplica: target.localReplica, reuse, log })
             return s
           }
           // The clone's origin decides the repository room. ROOM_URL (runner) or a
           // prior .room.json only fill in when the clone has no origin.
           const options = await startupJoinOptions(root, chosen, startup.room)
-          if (options) return joinSession({ ...options, log })
+          if (options) return joinSession({ ...options, localReplica: startupReplica, log })
           log(`ready; ${dir} has no git origin — call room_join with a room name`)
           return undefined
         },
-        async adopt(s) { if (replacement.active) await replacement.finish(s, adopt); else await adopt(s); log('ready') },
-        discard: async s => { const unsaved = await leaveSession(s); if (unsaved) log(`WARN: ${unsaved}`) },
-        joined: () => !!session && !session.local?.lost && !session.stale,
+        async adopt(s) { if (s === session) return; if (replacement.active) await replacement.finish(s, adopt); else await adopt(s); log('ready') },
+        onCancel: target => { if (!session) disposeLocalReplica(target?.localReplica ?? startupReplica) },
+        discard: async (s, reason) => { if (s === session && reason !== 'leave') return; const unsaved = await leaveSession(s, { preserveReplica: reason !== 'leave' }); if (unsaved) log(`WARN: ${unsaved}`) },
+        joined: () => !!session && !session.stale && (!session.local || !!session.closed || session.provider.wsconnected && session.provider.synced),
         report(line) {
           tools.startupNotice(line)
           log(line)
@@ -245,7 +258,7 @@ async function main() {
       if (!signal.aborted) void autoJoin.ensure()
 
       const runtime = { call, shutdown: async (signal?: boolean) => {
-        presence.stop(); autoJoin.cancel()
+        presence.stop(); autoJoin.cancel({ explicitLeave: false })
         if (!signal) await autoJoin.settle()
         await tools.shutdown()
         await arbitration.close()

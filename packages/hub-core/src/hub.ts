@@ -88,6 +88,8 @@ export interface HubHost {
   log(line: string): void
   store: IncarnationStore
   leases?: LeaseStore
+  /** Local daemon authority must preserve unreadable ownership evidence and refuse issuance. */
+  requireLeaseLoad?: boolean
   /** Relay: the holder process is gone (`liveness() === 'dead'`), so its lease ends at once. */
   holderDead?(h: HolderIn): boolean
   /** Relay: this process still holds the authority lock. */
@@ -264,7 +266,10 @@ class RoomHub implements Hub {
           loaded.set(row.name, row as unknown as StoredLease)
         }
         this.stored = loaded
-      } catch (e) { this.stored.clear(); this.host.log(`hub: lease store unreadable; no leases adopted: ${e instanceof Error ? e.message : e}`) }
+      } catch (e) {
+        if (this.host.requireLeaseLoad) throw new Error(`hub authority lease recovery failed: ${e instanceof Error ? e.message : e}`, { cause: e })
+        this.stored.clear(); this.host.log(`hub: lease store unreadable; no leases adopted: ${e instanceof Error ? e.message : e}`)
+      }
     }
     this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono())
     this.startedAt = this.maintainedAt = this.host.mono()

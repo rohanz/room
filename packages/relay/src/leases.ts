@@ -3,6 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { privateStateDirectory } from './private-state.js'
 import { pidAlive, probeOwnProcess, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
@@ -47,7 +48,9 @@ function ensureDurableDirectory(dir: string): void {
   }
   ensureDurableDirectory(parent)
   try {
-    fs.mkdirSync(dir, { mode: 0o700 })
+    // Every atomic writer uses the same creation/Windows ACL policy as daemon startup.
+    if (!fs.existsSync(dir)) privateStateDirectory(dir)
+    else fs.mkdirSync(dir, { mode: 0o700 }) // EEXIST below; existing OS ancestors may be canonical aliases
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
   // EEXIST may mean another writer created this directory but has not fsynced its parent yet.
   syncDirectory(parent)

@@ -10,6 +10,7 @@ import { isolateTestEnv } from '../../shared/src/test-env.js'
 import { createTools } from '../src/tools.js'
 import { launchWorkerProcess } from '../src/worker-launch.js'
 import { defaultSpawner, resumeAccepted, stopWorkerWithEscalation, type SpawnedProcess, type SpawnSpec } from '../src/worker-process.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const roots: string[] = []
 const sessions: Session[] = []
@@ -23,7 +24,7 @@ afterEach(async () => {
     await child.exited
   }
   for (const session of sessions.splice(0).reverse()) await leaveSession(session)
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  for (const root of roots.splice(0)) await disposePreviewFixture(root, { registries: [path.join(root, 'checkout with spaces')] })
   vi.unstubAllEnvs()
 })
 
@@ -136,9 +137,10 @@ describe('native OS smoke (fake Claude host)', () => {
     execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'room/message-peer', workerDir], { timeout: 10_000 })
     const lead = await joinSession({ dir, server: 'local', name: 'Smoke', log: () => {} })
     sessions.push(lead)
-    const worker = await joinSession({ dir: workerDir, server: 'local', room: lead.roomName, name: 'Smoke', tag: 'peer', joinOnly: true, log: () => {} })
+    const worker = await joinSession({ dir: workerDir, server: 'local', room: lead.roomName, name: 'Smoke', tag: 'peer', log: () => {} })
     sessions.push(worker)
-    expect(lead.local?.owned).toBe(true)
+    expect((lead.local as typeof lead.local & { pid: number }).pid).not.toBe(process.pid)
+    expect((worker.local as typeof worker.local & { pid: number }).pid).toBe((lead.local as typeof lead.local & { pid: number }).pid)
     expect(worker.local?.owned).toBe(false)
     expect(worker.roomUrl).toBe(lead.roomUrl)
     const tools = (s: Session) => createTools({ cwd: s.dir, getSession: () => s, setSession: () => {}, log: () => {} })

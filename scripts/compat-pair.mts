@@ -1,7 +1,8 @@
 // Cross-root process fixture. All production modules come from the selected release bundle.
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs/promises'
+import { writeSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -50,6 +51,22 @@ async function relay(root: string, dir: string, key: string) {
   process.once('SIGTERM', () => { void server.close().finally(() => process.exit(0)) })
 }
 
+/** Run the genuine standalone runtime, with its own key/discovery and existing authority lock. */
+async function daemon(root: string, dir: string) {
+  const api = (await fixture(root)).daemon
+  assert.equal(typeof api?.startLocalDaemon, 'function', 'authority fixture implements the standalone daemon')
+  execFileSync('git', ['init', '--bare', dir], { stdio: 'ignore' })
+  const runtime = await api.startLocalDaemon({ commonDir: dir, room: 'local/compat', idleMs: 60_000 })
+  assert(runtime, 'fixture owns standalone daemon authority')
+  const info = runtime.info
+  assert.equal(info.runtime, 'daemon')
+  // This test harness passes the private key over an inherited pipe only, never argv or logs.
+  writeSync(3, info.key)
+  console.log(`COMPAT_READY ${info.port}`)
+  process.once('SIGTERM', () => { void runtime.close().then(() => process.exit(0), (error: unknown) => { console.error(error); process.exit(1) }) })
+  await runtime.closed
+}
+
 /** Use the exercised release's kernel process identity, as local holder liveness does. */
 export function fixtureHolder(processes: { probeProcessNow(pid: number): { startTime?: string; executable?: string } | undefined }, sessionId: string) {
   const identity = processes.probeProcessNow(process.pid)
@@ -86,7 +103,7 @@ export function validateAcquireTrace(trace: WireFrame[], settleMs: number, retry
 }
 
 async function client(root: string, endpoint: string, key?: string) {
-  const { HubClient, hubTransport, authorizedWebSocket, RoomDoc, roomConnection, WebsocketProvider, Doc, contracts, SecureSession, WebSocket, processes } = await fixture(root)
+  const { HubClient, hubTransport, authorizedWebSocket, RoomDoc, roomConnection, WebsocketProvider, Doc, contracts, SecureSession, WebSocket, processes, clientCompat } = await fixture(root)
   const health = await (await fetch(endpoint.replace('ws:', 'http:') + '/health')).json()
   assert.equal(health.schema, 2, 'legacy schema remains advertised')
   assert.equal(health.hub, 1, 'legacy hub remains advertised')
@@ -114,10 +131,23 @@ async function client(root: string, endpoint: string, key?: string) {
     WebSocket.prototype.send = function(data: any, ...args: any[]) { record('out', data, this); return send.call(this, data, ...args) }
   }
   const selections: any[] = []
+  const offer = (health.runtime === 'daemon' ? clientCompat?.LOCAL_CLIENT_COMPAT : undefined) ?? contracts.CURRENT_COMPAT
+  const daemonAuthority = health.runtime === 'daemon'
+  const daemonCapable = !!offer?.capabilities?.['room.daemon']?.includes(1)
+  const expectRefusal = daemonAuthority && !daemonCapable
+  const refusals: string[] = []
   const negotiating = !!health.compat && !!contracts.CURRENT_COMPAT
   const Socket = authorizedWebSocket({ ...(key ? { key } : {}), ...(negotiating ? {
-    negotiation: { offer: contracts.CURRENT_COMPAT, sessionId: `compat-${process.pid}`, onSelection: (selection: any) => selections.push(selection) },
+    negotiation: { offer, sessionId: `compat-${process.pid}`, onSelection: (selection: any) => selections.push(selection), onRefusal: (text: string) => refusals.push(text) },
   } : {}) })
+  if (expectRefusal) {
+    const emit = Socket.prototype.emit
+    Socket.prototype.emit = function(event: string, ...args: any[]) {
+      if (event === 'unexpected-response' && args[1]?.statusCode === 426) refusals.push('HTTP 426: unsupported local daemon runtime')
+      if (event === 'close' && args[0] === 4406) refusals.push(`4406: ${String(args[1])}`)
+      return emit.call(this, event, ...args)
+    }
+  }
   if (!key) observeSocketMessages(Socket, (data, source) => record('in', data, source))
   const room = `local/compat-${process.pid}`
   if (!key) {
@@ -128,6 +158,14 @@ async function client(root: string, endpoint: string, key?: string) {
   const providers = docs.map(doc => new WebsocketProvider(endpoint, encodeURIComponent(room), doc, { ...roomConnection(doc), WebSocketPolyfill: Socket }))
   const hubs = providers.map(provider => new HubClient({ transport: hubTransport(provider), client: 'room-mcp', sessionId: `compat-${process.pid}`, local: !!key }))
   try {
+    if (expectRefusal) {
+      await until(() => refusals.length > 0, 'explicit legacy-client daemon refusal')
+      assert(providers.every(provider => !provider.synced), 'legacy providers never sync with daemon')
+      assert(!trace.some(frame => frame.direction === 'in' && [0, 1, 3].includes(frame.type)), 'daemon sends no Yjs/awareness before refusal')
+      assert(docs.every(doc => new RoomDoc(doc).messages().length === 0), 'no false successful room state')
+      console.log(JSON.stringify({ daemonAuthority, assertion: 'legacy runtime refused before sync; drain old clients and restart updated plugin', refusals, trace }))
+      return
+    }
     await until(() => providers.every(provider => provider.synced), 'both providers sync')
     await Promise.all(hubs.map(hub => hub.hello()))
     // Relays conservatively settle for 5 seconds; HubClient retries 'starting'
@@ -168,13 +206,21 @@ async function client(root: string, endpoint: string, key?: string) {
 }
 
 async function pair(transport: string, authority: string, currentClient: string) {
-  assert(['server', 'relay'].includes(transport))
+  assert(['server', 'relay', 'daemon'].includes(transport))
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'room-compat-pair-'))
-  const key = transport === 'relay' ? randomBytes(32).toString('hex') : ''
-  const server = transport === 'relay'
+  let key = transport === 'relay' ? randomBytes(32).toString('hex') : ''
+  const server = transport === 'daemon'
+    ? spawn(process.execPath, ['--import', 'tsx', self, '--daemon', authority, dir], { env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe', 'pipe'] })
+    : transport === 'relay'
     ? spawn(process.execPath, ['--import', 'tsx', self, '--relay', authority, dir, key], { env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     : spawn(process.execPath, ['--import', 'tsx', self, '--server', authority], { cwd: path.dirname(self), env: { ...cleanEnv(), PORT: '0', HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe'] })
   let output = '', port = 0, serverError: Error | undefined
+  if (transport === 'daemon') {
+    server.stdio[3]!.on('data', (data: Buffer) => {
+      key += data.toString()
+      if (key.length > 128 || !/^[a-f0-9]*$/.test(key)) { serverError = new Error('invalid daemon key pipe'); server.kill('SIGKILL') }
+    })
+  }
   server.on('error', error => { serverError = error })
   server.stdout!.on('data', data => {
     output += data.toString()
@@ -185,8 +231,9 @@ async function pair(transport: string, authority: string, currentClient: string)
   server.stderr!.on('data', data => { output = (output + data.toString()).slice(-64_000) })
   let peer: ChildProcess | undefined
   try {
-    await until(() => { if (serverError || server.exitCode !== null) throw serverError ?? new Error(`authority exited: ${output}`); return port > 0 }, 'authority readiness')
-    peer = spawn(process.execPath, ['--import', 'tsx', self, '--client', currentClient, `ws://127.0.0.1:${port}`, key], { env: cleanEnv(), stdio: ['ignore', 'inherit', 'inherit'] })
+    await until(() => { if (serverError || server.exitCode !== null) throw serverError ?? new Error(`authority exited: ${output}`); return port > 0 && (transport !== 'daemon' || key.length === 64) }, 'authority readiness')
+    peer = spawn(process.execPath, ['--import', 'tsx', self, '--client', currentClient, `ws://127.0.0.1:${port}`], { env: cleanEnv(), stdio: ['pipe', 'inherit', 'inherit'] })
+    peer.stdin!.end(key)
     await new Promise<void>((resolve, reject) => {
       peer!.once('error', reject)
       peer!.once('close', code => code === 0 ? resolve() : reject(new Error(`client exited ${code}`)))
@@ -201,7 +248,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === self) {
   try {
     if (mode === '--server') await hosted(authorityRoot)
     else if (mode === '--relay') await relay(authorityRoot, clientRoot, extra)
-    else if (mode === '--client') await client(authorityRoot, clientRoot, extra || undefined)
+    else if (mode === '--daemon') await daemon(authorityRoot, clientRoot)
+    else if (mode === '--client') {
+      let key = ''
+      for await (const chunk of process.stdin) { key += chunk; assert(key.length <= 128, 'local key input budget') }
+      await client(authorityRoot, clientRoot, key || undefined)
+    }
     else await pair(mode, authorityRoot, clientRoot)
   } catch (error) { console.error(error); process.exitCode = 1 }
 }

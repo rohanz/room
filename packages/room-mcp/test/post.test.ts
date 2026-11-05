@@ -7,7 +7,7 @@ import { authorizedWebSocket } from '@room/roomd'
 import { WebsocketProvider } from 'y-websocket'
 import { OWED_PER_RECIPIENT, RoomDoc, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
-import { ensureLocalRelay } from '@room/relay'
+import { startRelay, AuthorityLock } from '@room/relay'
 import { HubClient, HubError, hubTransport, type HubTransport } from '../src/hub-client.js'
 import { createPost, NOT_SENT } from '../src/post.js'
 import { memoryTransport, testLease } from './fixtures/hub.js'
@@ -88,11 +88,12 @@ describe('Session.post through the hub (hub §11)', () => {
   it('posts over a real relay socket; a second replica sees the hub-sequenced message', async () => {
     const common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-post-relay-'))
     cleanups.push(() => fs.rmSync(common, { recursive: true, force: true }))
-    const relay = await ensureLocalRelay(common, 'local/post/main', { watchMs: 100 })
-    cleanups.push(() => relay.stop())
+    const key = 'post-transport-fixture'
+    const relay = await startRelay(0, { commonDir: common, key, hub: { lock: AuthorityLock.take(common)! } })
+    cleanups.push(() => relay.close())
     const open = () => {
       const doc = new Y.Doc()
-      const provider = new WebsocketProvider(relay.url, encodeURIComponent('local/post/main'), doc, { WebSocketPolyfill: authorizedWebSocket({ key: relay.key }) as never, params: { schema: '2' } })
+      const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent('local/post/main'), doc, { WebSocketPolyfill: authorizedWebSocket({ key }) as never, params: { schema: '2' } })
       cleanups.push(() => { provider.destroy(); doc.destroy() })
       return { room: new RoomDoc(doc), provider }
     }

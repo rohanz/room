@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CheckoutLead, leadsCheckout } from '../src/checkout-lead.js'
@@ -8,6 +8,7 @@ import { ConflictSet } from '../src/conflict-set.js'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 describe('CheckoutLead', () => {
   const setup = (publisher: boolean) => {
@@ -104,7 +105,7 @@ describe('a second session in the same checkout (duplicate lead)', () => {
     for (const s of sessions.splice(0).reverse()) await leaveSession(s).catch(() => {})
     vi.restoreAllMocks()
   })
-  afterAll(() => { clearRoomEnv(); Object.assign(process.env, prevRoomEnv); rmSync(dir, { recursive: true, force: true }) })
+  afterAll(async () => { await disposePreviewFixture(dir, { registries: [dir] }); clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
 
   /** A joined session with its primary attachment (hooks bridge, conflict checker), as the MCP server runs it. */
   async function lead(sessionId: string) {

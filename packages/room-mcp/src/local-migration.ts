@@ -30,7 +30,6 @@ export function migrateLocalState(legacyDir: string, sessionDir: string, session
       const value = oldHook[field]
       if (field === 'companyTold' ? typeof value === 'boolean' : value && typeof value === 'object' && !Array.isArray(value)) imported[field] = value
     }
-    fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 })
     writeAtomic(file, { ...imported, ...existing })
   }
   for (const name of fs.readdirSync(legacyDir)) {

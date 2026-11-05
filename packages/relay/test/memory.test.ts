@@ -50,20 +50,20 @@ it('debounces for 2s and saves at least every 10s under constant changes', () =>
   for (let i = 1; i <= 10; i++) { bus.push([i]); vi.advanceTimersByTime(1000) }
   expect(load().getArray('bus').length).toBe(11)
 })
-it('quarantines corrupt files and starts empty, logging once', () => {
+it('refuses corrupt snapshots and preserves the original bytes', () => {
   fs.mkdirSync(path.dirname(memoryFile(dir, room)), { recursive: true })
-  fs.writeFileSync(memoryFile(dir, room), new Uint8Array([255, 255, 255]))
-  expect(load().share.size).toBe(0)
-  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
-  expect(load().share.size).toBe(0)
-  expect(log).toHaveBeenCalledTimes(1)
+  const bytes = new Uint8Array([255, 255, 255])
+  fs.writeFileSync(memoryFile(dir, room), bytes)
+  expect(load).toThrow(/invalid/)
+  expect(fs.readFileSync(memoryFile(dir, room))).toEqual(Buffer.from(bytes))
+  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([path.basename(memoryFile(dir, room))])
 })
-it('treats unreadable snapshots like corruption', () => {
+it('refuses unreadable snapshots without renaming or replacing them', () => {
   const memory = open(); memory.flush()
+  const bytes = fs.readFileSync(memoryFile(dir, room))
   vi.spyOn(fs, 'readFileSync').mockImplementationOnce(() => { throw Object.assign(new Error('denied'), { code: 'EACCES' }) })
-  expect(load().share.size).toBe(0)
-  expect(log).toHaveBeenCalledTimes(1)
-  expect(fs.existsSync(memoryFile(dir, room))).toBe(false)
+  expect(load).toThrow(/unreadable/)
+  expect(fs.readFileSync(memoryFile(dir, room))).toEqual(bytes)
 })
 it('flushes the snapshot with a writable handle, as Windows requires', () => {
   const memory = open(); memory.doc.getArray('bus').push(['durable'])
@@ -142,13 +142,27 @@ it('skips snapshots over the 64MB ceiling and keeps the last good file', () => {
   expect(saveMemory(dir, room, memory.doc, log)).toBe(false)
   expect(fs.readFileSync(memoryFile(dir, room))).toEqual(original)
   expect(log).toHaveBeenCalledWith(expect.stringMatching(/skipping .*: snapshot is 64\.0 MB, over the 64 MB ceiling; keeping the last good file$/))
+  expect(memory.save()).toMatch(/ceiling/)
+  expect(memory.status.capacity).toMatch(/ceiling/)
+  expect(memory.status.io).toBeUndefined()
+  // Protected meta is never automatically dropped. An authorized deletion can repair it.
+  memory.doc.getMap('meta').delete('large')
+  const rename = fs.renameSync
+  vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) })
+  expect(memory.save()).toBe('ENOSPC')
+  expect(memory.status.capacity).toBeDefined()
+  expect(memory.status.io).toBe('ENOSPC')
+  vi.mocked(fs.renameSync).mockImplementation(rename)
+  expect(memory.save()).toBeUndefined()
+  expect(memory.status.capacity).toBeUndefined()
+  expect(memory.status.io).toBeUndefined()
+  expect(memory.status.savedGeneration).toBe(memory.status.dirtyGeneration)
 })
-it('quarantines files over the 64MB ceiling on load', () => {
+it('refuses over-ceiling snapshot load without changing the file', () => {
   const memory = open(); memory.flush()
   fs.truncateSync(memoryFile(dir, room), ROOM_DOC_MAX_BYTES + 1)
-  expect(load().share.size).toBe(0)
-  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
-  expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds 64 MB'))
+  expect(load).toThrow(/capacity/)
+  expect(fs.statSync(memoryFile(dir, room)).size).toBe(ROOM_DOC_MAX_BYTES + 1)
 })
 it('still saves when sibling roots push the snapshot past 5MB, shedding archive and broadcasts but not mail', () => {
   const memory = open()

@@ -2,7 +2,7 @@
 // 0.17 repository room once, with one notice. Custom local names, team choices and 0.17-written choices stay.
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { choiceFile, migrateLegacyLocalChoice, writeChoice } from '../src/choice.js'
@@ -10,6 +10,7 @@ import { resolveConfig } from '../src/config.js'
 import { legacyLocalBranchRoom } from '../src/room-name.js'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const prevRoomEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('ROOM_')))
 const clearRoomEnv = () => { for (const k of Object.keys(process.env)) if (k.startsWith('ROOM_')) delete process.env[k] }
@@ -29,7 +30,7 @@ const remembered = async (dir: string) => JSON.parse(readFileSync(await choiceFi
 
 beforeEach(clearRoomEnv)
 afterEach(async () => { for (const s of sessions.splice(0)) { try { await leaveSession(s) } catch { /* ignore */ } } })
-afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
+afterAll(async () => { for (const d of dirs) await disposePreviewFixture(d, { registries: [d] }); clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
 
 describe('the 0.16 local room naming rule', () => {
   it('recognises local/<main worktree basename>/<branch>, including branches with slashes', () => {

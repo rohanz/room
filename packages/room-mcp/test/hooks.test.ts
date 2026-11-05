@@ -1,5 +1,7 @@
 import { deleteFixture, publishFixture } from './fixtures/manifest.js'
 import fs from 'node:fs'
+import net from 'node:net'
+import { privateStateDirectory } from '@room/relay'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
@@ -54,7 +56,7 @@ beforeEach(() => {
 const sdir = (id = SID) => sessionDirectory(join(dir, '.git'), id)
 const readSession = (name: string, id = SID) => JSON.parse(readFileSync(join(sdir(id), name), 'utf8'))
 function writeSessionFile(name: string, value: object, id = SID) {
-  mkdirSync(sdir(id), { recursive: true })
+  privateStateDirectory(sdir(id))
   writeFileSync(join(sdir(id), name), JSON.stringify(value))
 }
 
@@ -225,6 +227,51 @@ function dies(when: 'before' | 'after') {
     : 'const write = process.stdout.write.bind(process.stdout); process.stdout.write = (chunk) => { write(chunk); process.exit(0) }')
   return ['--import', file]
 }
+
+describe('arbitration endpoint publication without sockets', () => {
+  beforeEach(() => {
+    vi.spyOn(net.Server.prototype, 'listen').mockImplementation(function (this: net.Server, ...args: any[]) {
+      args.at(-1)()
+      return this
+    })
+    vi.spyOn(net.Server.prototype, 'address').mockReturnValue({ port: 12345, family: 'IPv4', address: '127.0.0.1' })
+    vi.spyOn(net.Server.prototype, 'close').mockImplementation(function (this: net.Server, callback?: (error?: Error) => void) {
+      callback?.()
+      return this
+    })
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  const binding: SessionBinding = { bound: () => ({ id: SID, host: 'codex' }), id: () => SID, dir: () => sdir(), commonDir: () => join(dir, '.git') }
+  const options = () => ({ binding, ledger: {} as Ledger, select: vi.fn(), log: vi.fn() })
+
+  it('publishes after content-free pending state was written, without changing that state', async () => {
+    const state = { at: Date.now(), company: true, owedCount: 2, claims: [] }
+    writeSessionFile('state.json', state)
+    writeSessionFile('hook.json', { companyTold: true })
+    const o = options()
+    const arbitration = await startArbitration(o)
+    try {
+      expect(o.log).not.toHaveBeenCalled()
+      expect(readSession('mcp.json')).toMatchObject({ port: 12345, runtime: 'daemon-client', hookCompat: { bootstrap: 1, min: 1, max: 1 } })
+      expect(readSession('state.json')).toEqual(state)
+      expect(o.select).not.toHaveBeenCalled()
+    } finally { await arbitration.close() }
+    expect(existsSync(join(sdir(), 'mcp.json'))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('repairs an owned legacy session directory before publishing its endpoint', async () => {
+    mkdirSync(sdir(), { recursive: true })
+    fs.chmodSync(sdir(), 0o755)
+    const o = options()
+    const arbitration = await startArbitration(o)
+    try {
+      expect(o.log).not.toHaveBeenCalled()
+      expect(readSession('mcp.json')).toMatchObject({ port: 12345, runtime: 'daemon-client' })
+      expect(fs.statSync(sdir()).mode & 0o777).toBe(0o700)
+    } finally { await arbitration.close() }
+  })
+})
 
 describe('hasCompany', () => {
   it('distinguishes alone, another participant, and a browser viewer', () => {
@@ -467,9 +514,8 @@ describe('live arbitration through the MCP endpoint (ledger test 8)', () => {
       const peer = addPresence(mcp.s, 'Quinn')
       hubAppend<NoteMsg>(mcp.s.room, quinn, { type: 'note', to: 'Rohan', text: 'for this session only' })
       await settle()
-      mkdirSync(sdir('other-session'), { recursive: true })
-      writeFileSync(join(sdir('other-session'), 'mcp.json'), readFileSync(join(sdir(), 'mcp.json')))
       writeSessionFile('state.json', { at: Date.now(), company: true, owedCount: 1, claims: [] }, 'other-session')
+      writeFileSync(join(sdir('other-session'), 'mcp.json'), readFileSync(join(sdir(), 'mcp.json')), { mode: 0o600 })
       expect(context(await runHook('before-edit.mjs', { ...edit, session_id: 'other-session' }))).not.toContain('for this session only')
       peer.destroy()
     } finally { await mcp.close() }

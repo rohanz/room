@@ -164,7 +164,6 @@ export class HooksBridge {
     const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]
     const others = company.others.map(name => displayName({ name, kind: (presences.find(p => p.user?.name === name && p.user.kind === 'agent') ?? presences.find(p => p.user?.name === name))?.user?.kind ?? this.s.room.scope(name)?.byKind ?? 'agent' }))
     const paused = this.o.paused?.()
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
     writeAtomic(file, { name: me, room: this.s.roomName, at: this.now(), owedCount: this.o.owedCount(), notices: this.o.noticeCount?.() ?? 0, company: company.company, others, companyLine: describeCompany(this.s, company), claims, ownClaims, near, ...(paused ? { paused } : {}), writer: this.writer })
     this.written = file
   }

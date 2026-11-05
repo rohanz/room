@@ -10,6 +10,7 @@ import net from 'node:net'
 import path from 'node:path'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { randomBytes } from 'node:crypto'
+import { privateStateDirectory } from '@room/relay'
 import { writeAtomic } from './leases.js'
 import { probeOwnProcess } from './worker-process.js'
 import type { SessionBinding } from './binding.js'
@@ -119,9 +120,9 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
     written = undefined
     if (!dir) return
     try {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+      privateStateDirectory(dir)
       const file = path.join(dir, 'mcp.json')
-      writeAtomic(file, { port, key, pid: process.pid, startTime: self?.startTime ?? '', hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: pluginManifest.version })
+      writeAtomic(file, { port, key, pid: process.pid, startTime: self?.startTime ?? '', executable: self?.executable ?? '', runtime: 'daemon-client', hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: pluginManifest.version })
       fs.chmodSync(file, 0o600)
       written = file
     } catch (e) { o.log?.(`arbitration: could not publish its endpoint: ${e instanceof Error ? e.message : String(e)}`) }

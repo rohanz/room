@@ -11,6 +11,10 @@ export function sameProof(a: unknown, b: string): boolean {
   return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'))
 }
 export function relayProof(key: string, nonce: string, port: number): string { return mac(key, `relay\0${nonce}\0${port}`) }
+export function relayMetadataProof(key: string, nonce: string, port: number, health: Record<string, unknown>): string {
+  const { proof: _proof, metadataProof: _metadata, ...metadata } = health
+  return mac(key, `metadata\0${nonce}\0${port}\0${JSON.stringify(metadata)}`)
+}
 export function localViewKey(key: string, room: string): string { return mac(key, `view\0${room}`) }
 export function viewTicketProof(viewKey: string, room: string, ts: number, nonce: string): string { return mac(viewKey, `ticket\0${room}\0${ts}\0${nonce}`) }
 export function localProofHeader(key: string, method: string, path: string, port: number, ts = Date.now(), nonce = crypto.randomBytes(16).toString('hex')): string {
@@ -78,7 +82,7 @@ export async function relayIdentityProbe(port: number, key: string, timeoutMs = 
         try {
           const health = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
           if (res.statusCode !== 200 || !health || typeof health !== 'object') { answer(undefined); return }
-          answer({ health, proven: sameProof(health.proof, relayProof(key, nonce, port)) })
+          answer({ health, proven: sameProof(health.proof, relayProof(key, nonce, port)) && (health.runtime !== 'daemon' || sameProof(health.metadataProof, relayMetadataProof(key, nonce, port, health))) })
         } catch { answer(undefined) }
       })
       // A response cut short emits these instead of end.

@@ -1,11 +1,12 @@
+import { requireDaemonRuntime } from './daemon-cutover.js'
 import { trackConnection } from './connection.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
-import { compatibilityFromHealth, compatibilityFloor, type ClientCompatibility } from './client-compat.js'
+import { LOCAL_CLIENT_COMPAT, compatibilityFromHealth, compatibilityFloor, type ClientCompatibility } from './client-compat.js'
 import { CURRENT_COMPAT, LEGACY_COMPAT, selectContract, type ContractSelection, type BootstrapSelection } from '@room/hub-core'
 /**
- * A session is one joined room: the embedded daemon (which owns the Y.Doc and the
- * websocket provider) plus the identity the tools act as. `room_join` creates it,
- * `room_leave` tears it down.
+ * A session is one joined room's publisher and participant identity. Local sessions own
+ * their replica across transports and join attempts; a standalone process owns local transport.
+ * Explicit `room_leave` disposes the logical session.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -18,7 +19,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { normalizeExplicitRoomName } from './room-name.js'
 export { normalizeExplicitRoomName } from './room-name.js'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type WatcherHandoff, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, relayHealth, LocalRelayCompatibilityError, FinalSaveError, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
+import { ensureLocalDaemon, relayHealth, LocalRelayCompatibilityError, localViewKey, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -36,7 +37,6 @@ import { sameStartTime } from '@room/relay/process'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
-import { roomWorkerPathMatchesBranch } from './worker-state.js'
 import { HubClient, HubError, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 import { attachPublisher, publisherLease } from './publisher-lease.js'
@@ -95,8 +95,11 @@ export interface Session {
   stale?: { reason: string }
   /** The server's ceiling on sharing levels (ROOM_SHARE_MAX); the daemon's level never exceeds it. */
   shareMax: ShareLevel
-  /** Set in local mode (no server): the relay this session found or runs. */
+  /** Set in local mode: non-owning daemon discovery and client monitoring. */
   local?: LocalRelay
+  localReplica?: LocalReplica
+  /** Retry a paused local transport without replacing the session or its replica. */
+  recoverLocal?: () => Promise<void>
   /** Invalid input narrowed to plans only; retained for sharing controls. */
   shareWarning?: string
   /** The requested level before the server ceiling. */
@@ -296,18 +299,36 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
 /** Used by the name lease while a Codex app-server request has no bound thread. */
 export function syntheticSessionId(identity: ProcessIdentity): string { return `mcp:${identity.pid}:${identity.startTime}` }
 
+/** Owned by the logical local session, across transports and host identity changes. */
+export interface LocalReplica { doc: Y.Doc; disposed?: boolean; common?: string; room?: string }
+export function createLocalReplica(): LocalReplica { return { doc: new Y.Doc() } }
+export function disposeLocalReplica(replica: LocalReplica | undefined): void {
+  if (!replica || replica.disposed) return
+  replica.disposed = true
+  replica.doc.destroy()
+}
+const detachedCheckouts = new WeakMap<Session, CheckoutReuse>()
+const stoppedSessions = new WeakSet<Session>()
+
 export interface CheckoutReuse {
+  replica?: LocalReplica
   watcher?: WatcherHandoff
   graph?: GraphSeed
 }
 
-/** Retire room resources normally, but keep this checkout's watch and immutable base facts. */
+/** Detach once for retirement; retain the replica, watch handoff and immutable base facts for retries. */
 export function detachCheckout(s: Session): CheckoutReuse {
-  return { watcher: s.daemon?.takeWatcher?.(), graph: s.graph?.baseSeed?.() }
+  let reuse = detachedCheckouts.get(s)
+  if (!reuse) {
+    reuse = { watcher: s.daemon?.takeWatcher?.(), graph: s.graph?.baseSeed?.(), ...(s.localReplica ? { replica: s.localReplica } : {}) }
+    detachedCheckouts.set(s, reuse)
+  }
+  return reuse
 }
 
 export interface JoinOptions {
   reuse?: CheckoutReuse
+  localReplica?: LocalReplica
   credentialsPath?: string
   dir: string
   name?: string
@@ -333,8 +354,6 @@ export interface JoinOptions {
   log?: (line: string) => void
   /** A local worker's lead clone, bound by the worker launcher. */
   leadClone?: string
-  /** Join an existing local relay only: never start one or take one over. Every dispatched worker joins this way. */
-  joinOnly?: boolean
 }
 
 /** The repo has not been opened on the server; room_create does that. */
@@ -608,7 +627,10 @@ async function discoverCompatibility(server: string, dir: string, localKey?: str
     health = undefined
   }
   let profile: ClientCompatibility
-  try { profile = compatibilityFromHealth(health, floor.learned()) } catch (error) { throw new RoomdError(error instanceof Error ? error.message : String(error), 2) }
+  try {
+    profile = compatibilityFromHealth(health, floor.learned(), localKey ? LOCAL_CLIENT_COMPAT : CLIENT_COMPAT)
+    if (localKey && profile.legacy) throw new Error('local room requires the standalone daemon runtime; drain old Room sessions and restart updated clients')
+  } catch (error) { throw new RoomdError(error instanceof Error ? error.message : String(error), 2) }
   if (!profile.legacy) negotiatingOrigins.add(server)
   else negotiatingOrigins.delete(server)
   return { ...profile, remember: () => { if (!profile.legacy) floor.remember() } }
@@ -637,7 +659,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   let compatibilityRefusal: string | undefined
   let currentProvider: WebsocketProvider | undefined
   const negotiation = compatibility && !compatibility.legacy ? {
-    offer: CLIENT_COMPAT, sessionId,
+    offer: options.localKey ? { ...LOCAL_CLIENT_COMPAT, release: pluginManifest.version } : CLIENT_COMPAT, sessionId,
     onSelection: (_reply: BootstrapSelection) => { compatibility.remember(); compatibilityRefusal = undefined },
     onRefusal: (text: string) => { compatibilityRefusal = text; if (currentProvider) currentProvider.shouldConnect = false },
   } : undefined
@@ -645,7 +667,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     const baseline = selectContract(CURRENT_COMPAT, LEGACY_COMPAT, { activeSchema: 2 })
     if (baseline.ok) selected = { ...baseline.selection, legacy: true }
   }
-  const doc = new Y.Doc()
+  const doc = options.replica ?? new Y.Doc()
   const probe = await timed('connect', () => options.providerFactory
     ? options.providerFactory(server, encodedRoom, doc)
     : new WebsocketProvider(server, encodedRoom, doc, {
@@ -653,7 +675,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
         ...roomConnection(doc),
       }))
   currentProvider = probe
-  const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
+  const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); if (!options.replica) doc.destroy() }
   const boundAtJoin = binding.bound()?.id
   const hostCurrent = () => !boundAtJoin || binding.bound()?.id === sessionId
   const token = processToken(sessionId)
@@ -711,7 +733,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
           publishing = undefined
           await attachment?.detach()
         } else if (!publishing) publishing = await attachPublication!()
-      }).catch(error => { options.log?.(`warn: publisher handoff: ${error instanceof Error ? error.message : String(error)}`) })
+      }).catch((error: unknown) => { options.log?.(`warn: publisher handoff: ${error instanceof Error ? error.message : String(error)}`) })
     },
   })
   let daemon: Roomd | undefined
@@ -888,7 +910,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (chosen === LOCAL) {
     const dispatched = !!config.workerId
     const leadClone = dispatched ? process.env.ROOM_LEAD_CLONE || undefined : opts.leadClone
-    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web, leadClone, joinOnly: !!opts.joinOnly || dispatched })
+    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web, leadClone })
     session.shareWarning = config.shareWarning
     if (config.legacyLocalRoom && session.roomName === config.legacyLocalRoom.to) {
       const note = await migrateLegacyLocalChoice(dir).catch(error => { opts.log?.(`could not update the remembered room choice: ${error instanceof Error ? error.message : String(error)}`); return undefined })
@@ -993,10 +1015,94 @@ export function normalizeLocalRoomName(room: string): string {
   return `local/${name}`
 }
 
-/** `dir` is a Room worker's worktree: `<parent>/.room/workers/<name>` with `room/<name>` checked out. */
-async function inRoomWorkerWorktree(dir: string): Promise<boolean> {
-  if (basename(dirname(dirname(dir))) !== '.room') return false
-  return roomWorkerPathMatchesBranch(dirname(dirname(dirname(dir))), dir, await gitBranch(dir).catch(() => ''))
+/** Resolve this release's current identity without relying on arbitration's publication poll. */
+export async function currentDaemonClient(dir: string): Promise<{ currentSessionId?: string; currentWorkerId?: string }> {
+  const bound = createSessionBinding(dir).bound()
+  // Re-resolve binding and verify the worker on every ensure/rediscovery. Arbitration may not
+  // have published at this binding yet, and an unbound worker has no endpoint file at all.
+  const currentWorkerId = process.env.ROOM_WORKER_ID
+  if (currentWorkerId) await admitWorkerEnvironment(dir, process.env, bound)
+  return { currentSessionId: bound?.id, currentWorkerId }
+}
+
+/** Resolve only installed code; never execute repository startup scripts or use its cwd. */
+async function ensureDaemon(common: string, room: string, dir: string, log?: ServerLog): Promise<LocalRelay> {
+  await requireDaemonRuntime(common, await currentDaemonClient(dir)).catch((error: unknown) => {
+    throw new RoomdError(error instanceof Error ? error.message : String(error), 2)
+  })
+  const here = dirname(fileURLToPath(import.meta.url))
+  const bundled = join(here, 'room-daemon.mjs')
+  const launch = existsSync(bundled) ? { entryPath: bundled } : {
+    entryPath: resolve(here, '../../relay/src/daemon-bin.ts'), execArgv: ['--import', import.meta.resolve('tsx')],
+  }
+  return inPhase('daemon', () => ensureLocalDaemon(common, room, { ...launch, log }).catch((error: unknown) => {
+    throw error instanceof LocalRelayCompatibilityError ? new RoomdError(error.message, 2) : error
+  }))
+}
+
+/**
+ * Recover transport, never the logical session. y-websocket keeps its document, awareness and all
+ * hub listeners when serverUrl changes. Authentication and contract negotiation run on each socket.
+ * Late ensure results own only their monitoring handle; stopping them cannot stop the daemon.
+ */
+export function watchLocalDaemon(s: Session, ensure: () => Promise<LocalRelay>, options: { retryMs?: number; maxAttempts?: number; log?: ServerLog; web?: string } = {}): () => void {
+  const provider = s.provider
+  let stopped = false
+  let inflight = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let lastError: string | undefined
+  let attempts = 0
+  const schedule = () => {
+    if (stopped || timer || s.closed || s.rejected || s.stale || attempts >= (options.maxAttempts ?? 5)) return
+    timer = setTimeout(() => { timer = undefined; void recover() }, options.retryMs ?? 2000)
+    timer.unref?.()
+  }
+  const recover = async () => {
+    if (stopped || inflight || s.closed || s.rejected || s.stale) return
+    inflight = true
+    attempts++
+    try {
+      const next = await ensure()
+      if (stopped) { await next.stop(); return }
+      // A changed clone key is a maintenance operation, never automatic recovery.
+      if (next.key !== s.local?.key) { await next.stop(); throw new Error('local daemon key changed; retain this replica and restart only after the clone maintenance is resolved') }
+      if (provider.wsconnected && provider.serverUrl === next.url) {
+        await s.local?.stop()
+        s.local = next
+        lastError = undefined
+        return
+      }
+      provider.disconnect()
+      if (stopped) { await next.stop(); return }
+      await s.local?.stop()
+      s.local = next
+      provider.serverUrl = next.url
+      s.roomUrl = `${next.url}/${encodeRoom(s.roomName)}`
+      s.browserUrl = localBrowserLink(s.roomUrl, s.me.name, localViewKey(next.key, s.roomName), findLocalViewer(), options.web)
+      provider.connect()
+      lastError = undefined
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!stopped && message !== lastError) options.log?.(`local daemon recovery: ${message}; keeping this session's replica`)
+      lastError = message
+    } finally {
+      inflight = false
+      if (!stopped && !provider.wsconnected) {
+        if (attempts >= (options.maxAttempts ?? 5)) {
+          provider.disconnect()
+          options.log?.('local daemon recovery paused; replica retained; next Room tool call or room_join retries')
+        } else schedule()
+      }
+    }
+  }
+  const onClose = () => { if (provider.synced) attempts = 0; schedule() }
+  const onSync = (synced: boolean) => { if (synced) attempts = 0 }
+  provider.on('connection-close', onClose)
+  provider.on('sync', onSync)
+  if (!provider.wsconnected) schedule()
+  const stop = () => { stopped = true; if (timer) clearTimeout(timer); provider.off('connection-close', onClose); provider.off('sync', onSync) }
+  s.recoverLocal = async () => { if (stopped) return; attempts = 0; await recover() }
+  return stop
 }
 
 /** Local mode: no server, no login. The clone's shared git dir hosts a relay; every worktree of the clone shares the room. */
@@ -1012,21 +1118,20 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const name = label ? `${owner}+${label}` : owner
   const common = await gitCommonDir(dir)
   if (opts.leadClone && await realGitCommonDir(dir) !== opts.leadClone) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${opts.leadClone}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
-  // A takeover starts the successor relay from this session's replica (hub.md §5); roomd supplies it once started.
-  let replica: Y.Doc | undefined
-  // A session in a Room worker's worktree (a host started there by hand, or nested in a worker with ROOM_* scrubbed)
-  // is not a lead: like a dispatched worker, it never starts or takes over a relay, and waits for the lead's.
-  const lead = !opts.joinOnly && !await inRoomWorkerWorktree(dir)
-  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: !!opts.joinOnly, lead, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }).catch(e => {
-    throw e instanceof NoLocalRelay ? new RoomdError(`waiting for the lead's session to start the local relay: your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e instanceof LocalRelayCompatibilityError ? new RoomdError(e.message, 2) : e
-  }))
+  const replica = opts.localReplica ?? opts.reuse?.replica ?? createLocalReplica()
+  if (replica.disposed) throw new RoomdError('local join was cancelled by an explicit leave', 2)
+  if (replica.common && (replica.common !== common || replica.room !== roomName)) {
+    throw new RoomdError('the retained local replica belongs to a different clone or room; explicitly leave it before joining that destination', 2)
+  }
+  replica.common = common; replica.room = roomName
+  const local = await ensureDaemon(common, roomName, dir, opts.log)
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
   let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined, contract: NamedRoomd['contract'], compatibilityRefusal: NamedRoomd['compatibilityRefusal']
   try {
-    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, replica: replica.doc, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
-  replica = daemon.roomDoc.doc
+  if (replica.disposed) { await daemon.stop(); await local.stop(); throw new RoomdError('local join was cancelled by an explicit leave', 2) }
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
   const browserUrl = localBrowserLink(roomUrl, me.name, localViewKey(local.key, roomName), findLocalViewer(), opts.web)
   const session: Session = {
@@ -1043,12 +1148,15 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     browserUrl,
     shareMax: 'full',
     shareRequested: policyStore.requested,
-    local,
+    local, localReplica: replica,
     hub, post,
     get contract() { return contract() },
     get compatibilityRefusal() { return compatibilityRefusal() },
   }
-  indexWhileLeading(session, undefined, opts.log)
+  const stopRecovery = watchLocalDaemon(session, () => ensureDaemon(common, roomName, dir, opts.log), { log: opts.log, web: opts.web })
+  const stop = daemon.stop.bind(daemon)
+  daemon.stop = async reason => { stopRecovery(); await stop(reason) }
+  indexWhileLeading(session, opts.reuse?.graph, opts.log)
   trackConnection(session)
   // The relay closes a writer into a room over its size cap with 4413, as the server does.
   watchClosed(session, opts.log, startupCapClose())
@@ -1099,6 +1207,12 @@ export function watchClosed(s: Session, log?: (line: string) => void, startupClo
       if (s.stale || s.closed) return
       if (retry) clearTimeout(retry)
       if (verify) clearTimeout(verify)
+      if (s.local) {
+        s.closed = { reason: `${close.reason || STALE_REPLICA_REASON}; local replica retained: resolve the daemon generation mismatch before explicitly leaving` }
+        try { p.disconnect?.() } catch { /* already gone */ }
+        log?.(`${s.roomName}: ${s.closed.reason}`)
+        return
+      }
       s.stale = { reason: close.reason || STALE_REPLICA_REASON }
       try { p.disconnect?.() } catch { /* already gone */ }
       log?.(`${s.roomName}: ${s.stale.reason}`)
@@ -1263,15 +1377,21 @@ function indexWhileLeading(s: Session, seed: GraphSeed | undefined, log?: (line:
   })
 }
 
-/** Returns a warning when this session's local relay could not save the room's state on stop: the relay then
- *  keeps serving (and holding the clone's relay authority) until this process exits, rather than losing it. */
-export async function leaveSession(s: Session): Promise<string | undefined> {
-  endCheckoutLead(s)
-  await s.daemon.stop()
-  try { await s.local?.stop() }
-  catch (error) {
-    if (!(error instanceof FinalSaveError)) throw error
-    return `local room state could not be saved: ${error.message}; the relay kept running until exit`
+/** Retiring a client never stops the standalone daemon. Only explicit user leave disposes its local replica. */
+export async function leaveSession(s: Session, options: { preserveReplica?: boolean } = {}): Promise<string | undefined> {
+  if (!stoppedSessions.has(s)) {
+    endCheckoutLead(s)
+    await s.daemon.stop()
+    await s.local?.stop()
+    stoppedSessions.add(s)
+  }
+  if (options.preserveReplica === false) {
+    await detachedCheckouts.get(s)?.watcher?.dispose()
+    detachedCheckouts.delete(s)
+  }
+  if (s.local && options.preserveReplica === false) {
+    if (s.localReplica) disposeLocalReplica(s.localReplica)
+    else if (!s.room.doc.isDestroyed) s.room.doc.destroy()
   }
   return undefined
 }

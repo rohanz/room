@@ -16,10 +16,10 @@ class Socket extends EventEmitter {
 }
 const cleanups: Array<() => void> = []
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.useRealTimers() })
-function connect(query = '&negotiate=1') {
+function connect(query = '&negotiate=1', options: Partial<Parameters<typeof relayConnectionHandler>[1]> = {}) {
   const docs = new Map() as Parameters<typeof relayConnectionHandler>[0]
   const conn = new Socket()
-  relayConnectionHandler(docs, { key: 'key' })(conn as unknown as WebSocket, { url: '/local%2Ftest?schema=2' + query } as http.IncomingMessage)
+  relayConnectionHandler(docs, { key: 'key', ...options })(conn as unknown as WebSocket, { url: '/local%2Ftest?schema=2' + query } as http.IncomingMessage)
   const secure = new SecureSession('key', 'local/test', 'client')
   conn.emit('message', secure.clientHello(), true)
   secure.acceptRelayHello(conn.frames.shift()!)
@@ -143,4 +143,34 @@ describe('encrypted relay bootstrap gate', () => {
     await vi.advanceTimersByTimeAsync(5001)
     expect(c.conn.code).toBe(4406)
   })
+})
+
+it('fences a secure handshake that was already upgraded when draining begins', () => {
+  let accepting = true
+  const c = connect('', { accepting: () => accepting })
+  accepting = false
+  c.send(Uint8Array.of(0, 0, 0))
+  expect(c.conn.code).toBe(1013)
+  expect(c.docs.size).toBe(0)
+})
+it('fences negotiation after an awaited admission and before attaching a writer', async () => {
+  let accepting = true
+  const c = connect('&negotiate=1', { accepting: () => accepting })
+  c.hello()
+  accepting = false // receivePlain is awaiting hubReady, like the idle timer/lease-flush race
+  await Promise.resolve()
+  expect(c.conn.code).toBe(1013)
+  expect(c.docs.values().next().value!.conns.size).toBe(0)
+  expect(c.conn.frames).toHaveLength(0)
+})
+it('fences the selected pending ACK and counts no writer during draining', async () => {
+  let accepting = true
+  const c = connect('&negotiate=1', { accepting: () => accepting })
+  c.hello()
+  await vi.waitFor(() => expect(c.conn.frames).toHaveLength(1))
+  const selected = decodeFrame(c.next()) as { selectionId: string }
+  accepting = false
+  c.send(encodeFrame({ v: 1, id: 'a', op: 'compat-ack', selectionId: selected.selectionId } as never))
+  expect(c.conn.code).toBe(1013)
+  expect(c.docs.values().next().value!.conns.size).toBe(0)
 })

@@ -39,8 +39,8 @@ export interface ToolCtx {
   join?: (o: JoinOptions) => Promise<Session>
   /** Injectable team admission preflight for simulated joins. */
   admit?: typeof import('../session.js').checkTeamAdmission
-  /** Resolves to a warning when the session's state could not be saved on leaving (leaveSession). */
-  leave?: (s: Session) => Promise<string | void>
+  /** Stop a session, retaining its local replica by default; explicit user leave passes preserveReplica: false. */
+  leave?: (s: Session, options?: { preserveReplica?: boolean }) => Promise<string | void>
   /** Injectable for tests (default: DELETE /rooms on the session's server). Returns the rooms closed. */
   close?: (s: Session) => Promise<string[]>
   /** Debounce for the automatic conflict checks; default 2s. */
@@ -87,7 +87,7 @@ export interface HandlerState {
   now: () => number
   log: (line: string) => void
   doJoin: (o: JoinOptions) => Promise<Session>
-  doLeave: (s: Session) => Promise<string | void>
+  doLeave: (s: Session, options?: { preserveReplica?: boolean }) => Promise<string | void>
   doClose: (s: Session) => Promise<string[]>
   /** The session's delivery ledger: the only selector and receipt writer. */
   ledger: Ledger

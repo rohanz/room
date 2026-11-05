@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { privateStateDirectory, verifyPrivatePath } from './private-state.js'
 import * as Y from 'yjs'
 import { MAX_MEMORY_BYTES, ROOM_DOC_MAX_BYTES, memoryTypes, memorySnapshot } from '@room/shared'
 
@@ -54,24 +55,41 @@ function syncDirectory(dir: string): void {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
-/** Failure is isolated to a disposable doc; even a partially applied corrupt update is discarded. */
+type MemoryLoadState = 'unreadable' | 'invalid' | 'capacity'
+export class MemoryLoadError extends Error {
+  constructor(readonly state: MemoryLoadState, readonly file: string, cause: unknown) {
+    super(`local room memory ${state}: ${file}: ${cause instanceof Error ? cause.message : String(cause)}; preserve the snapshot and repair it before retrying`)
+    this.name = 'MemoryLoadError'
+  }
+}
+/** A failed read never authorizes replacing retained history with an empty room. */
 export function loadMemory(commonDir: string, room: string, log = stderr): Y.Doc {
-  const doc = new Y.Doc(), file = memoryFile(commonDir, room)
+  const file = memoryFile(commonDir, room)
+  let bytes: Uint8Array
   try {
-    if (fs.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`)
-    Y.applyUpdate(doc, fs.readFileSync(file))
+    if (fs.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new MemoryLoadError('capacity', file, 'snapshot exceeds load ceiling')
+    if (process.platform === 'win32') verifyPrivatePath(file)
+    bytes = fs.readFileSync(file)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return new Y.Doc()
+    const error = e instanceof MemoryLoadError ? e : new MemoryLoadError('unreadable', file, e)
+    log(error.message); throw error
+  }
+  const doc = new Y.Doc()
+  try {
+    Y.applyUpdate(doc, bytes)
+    const schema = doc.getMap('meta').get('schemaVersion')
+    if (schema !== undefined && schema !== 2) throw new Error('unsupported snapshot schema')
     return doc
   } catch (e) {
     doc.destroy()
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      log(`local room memory: cannot load ${file}: ${e}; starting empty`)
-      try { fs.renameSync(file, `${file}.corrupt-${Date.now()}`) } catch { /* unreadable directory: keep running */ }
-    }
-    return new Y.Doc()
+    const error = new MemoryLoadError('invalid', file, e)
+    log(error.message); throw error
   }
 }
 
-/** Atomic replacement keeps the previous good snapshot on any write/rename failure. Over the 5 MB target
+/** Atomic replacement keeps the previous good snapshot on pre-rename failures. A directory-fsync failure
+ * after rename reports durability uncertainty: the new file may already be installed. Over the 5 MB target
  * after shedding, the smallest achievable snapshot is still saved, so owed mail survives a restart; only
  * one over the 64 MB ceiling (a document the team server would refuse too) is skipped. */
 export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = stderr, warnings = sharedWarnings): boolean {
@@ -79,7 +97,7 @@ export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = st
 }
 
 /** saveMemory, returning why the snapshot was not saved (undefined when it was). */
-function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: string) => void, warnings: WarningLimiter): string | undefined {
+function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: string) => void, warnings: WarningLimiter, failure?: (kind: 'capacity' | 'io', cause: string) => void): string | undefined {
   const file = memoryFile(commonDir, room)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   try {
@@ -87,25 +105,32 @@ function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: st
     if (update.byteLength > ROOM_DOC_MAX_BYTES) {
       const cause = `snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling`
       warnings.warn(`${file}\0over`, () => `local room memory: skipping ${room}: ${cause}; keeping the last good file`, log)
+      failure?.('capacity', cause)
       return cause
     }
     if (update.byteLength > MAX_MEMORY_BYTES) {
       warnings.warn(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log)
     }
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    privateStateDirectory(path.dirname(file))
     fs.chmodSync(path.dirname(file), 0o700)
     const fd = fs.openSync(temp, 'wx', 0o600)
     // Keep the writable handle: Windows cannot flush a read-only file handle.
     try { fs.writeFileSync(fd, update); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    if (process.platform === 'win32') verifyPrivatePath(temp, true)
     fs.renameSync(temp, file)
     syncDirectory(path.dirname(file))
     return undefined
-  } catch (e) { log(`local room memory: cannot save ${file}: ${e}`); return e instanceof Error ? e.message : String(e) }
+  } catch (e) { const cause = e instanceof Error ? e.message : String(e); failure?.('io', cause); warnings.warn(`${file}\0io`, () => `local room memory: cannot save ${file}: ${e}; keeping the replica and retrying`, log); return cause }
   finally { try { fs.unlinkSync(temp) } catch { /* no temp file */ } }
 }
 
 /** One owner per active relay room. Testable without opening a socket. */
+export interface MemoryStatus { dirtyGeneration: number; savedGeneration: number; lastSavedAt?: number; capacity?: string; io?: string }
 export class RoomMemory {
+  private readonly state: MemoryStatus = { dirtyGeneration: 0, savedGeneration: 0 }
+  get status(): Readonly<MemoryStatus> { return { ...this.state } }
+  private retry?: ReturnType<typeof setTimeout>
+  private retryDelay = 1000
   readonly doc: Y.Doc
   private debounce?: ReturnType<typeof setTimeout>
   private deadline?: ReturnType<typeof setTimeout>
@@ -141,6 +166,7 @@ export class RoomMemory {
       })
     } finally { this.reconciling = false }
     if (this.forgotten) return
+    this.state.dirtyGeneration++
     clearTimeout(this.debounce)
     this.debounce = setTimeout(() => this.flush(), 2000)
     this.deadline ??= setTimeout(() => this.flush(), 10000)
@@ -151,14 +177,28 @@ export class RoomMemory {
   save(): string | undefined {
     clearTimeout(this.debounce); clearTimeout(this.deadline)
     this.debounce = this.deadline = undefined
-    return this.forgotten ? undefined : writeMemory(this.commonDir, this.room, this.doc, this.log, this.warnings)
+    if (this.forgotten) return undefined
+    const cause = writeMemory(this.commonDir, this.room, this.doc, this.log, this.warnings, (kind, why) => { this.state[kind] = why })
+    if (cause === undefined) {
+      this.state.savedGeneration = this.state.dirtyGeneration
+      this.state.lastSavedAt = Date.now()
+      delete this.state.capacity; delete this.state.io
+      clearTimeout(this.retry); this.retry = undefined; this.retryDelay = 1000
+    } else if (!this.retry) {
+      this.retry = setTimeout(() => { this.retry = undefined; this.save() }, this.retryDelay)
+      this.retry.unref?.()
+      this.retryDelay = Math.min(60_000, this.retryDelay * 2)
+    }
+    return cause
   }
   /** Stop saving on updates. Call only after a final save() succeeded, or the room's latest state is lost. */
-  detach(): void { this.doc.off('update', this.schedule); this.warnings.clear() }
+  detach(): void { clearTimeout(this.retry); clearTimeout(this.debounce); clearTimeout(this.deadline); this.doc.off('update', this.schedule); this.warnings.clear() }
   forget(): void {
     // Do not let a pending debounce or surviving client restore the forgotten snapshot.
     fs.rmSync(memoryFile(this.commonDir, this.room), { force: true })
     this.forgotten = true
+    clearTimeout(this.retry); this.retry = undefined
+    delete this.state.capacity; delete this.state.io
     clearTimeout(this.debounce); clearTimeout(this.deadline)
     // Propagate deletions to connected replicas too, so a surviving relay owner cannot
     // restore the forgotten story from its old in-memory copy after taking over.

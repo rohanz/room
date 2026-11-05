@@ -95,7 +95,12 @@ function world() {
       return { pid: pid++, started: Promise.resolve(), onExit: cb => { exits.set(spec.env.ROOM_TAG, cb) }, kill: () => true }
     },
   })
-  cleanups.push(() => leadTools.shutdown())
+  const leadSession = ls
+  cleanups.push(async () => {
+    await leadTools.shutdown()
+    leadSession?.graph?.stop(); leadSession?.awareness.destroy()
+    a.destroy(); b.destroy()
+  })
   const call = (tool: string, args: Record<string, unknown>) => leadTools.call(tool, args) as Promise<string>
   async function spawn(tag: string, extra: Record<string, unknown> = {}) {
     const reply = await call('room_spawn', { tag, task: `task ${tag}`, ...extra })
@@ -127,7 +132,10 @@ function world() {
     try {
       for (const reply of await Promise.all([summary].flat().map(text => tools.call('room_done', { summary: text })))) expect(reply).toContain('marked done')
     } finally { delete process.env.ROOM_WORKER_ID }
-    await tools.shutdown(); ws?.graph?.stop()
+    const workerSession = ws!
+    await tools.shutdown()
+    workerSession.graph?.stop(); workerSession.awareness.destroy()
+    expect(b.isDestroyed, 'retiring a worker transport must retain the replica used by its next report').toBe(false)
     if (!exit) return
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })

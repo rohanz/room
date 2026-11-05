@@ -1,16 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
-import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { SETTLE_MS, encodeSeq, startHub, MSG_HUB, encodeFrame, decodeFrame, type Reply, type Push } from '@room/hub-core'
+import { SETTLE_MS, startHub, MSG_HUB, encodeFrame, decodeFrame, type Reply, type Push } from '@room/hub-core'
 import { contractSuite, fakeClock, holder, waitFor, type MakeEnv } from '../../hub-core/test/contract.js'
-import { AuthorityLock, deterministicPort, ensureLocalRelay, localProofHeader, memoryFile, readRelayInfo, startRelay, type StartedRelay } from '../src/index.js'
+import { AuthorityLock, localProofHeader, memoryFile, startRelay, type StartedRelay } from '../src/index.js'
 import { incarnationFile, relayLeaseFile } from '../src/hub.js'
 import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 
@@ -113,30 +111,7 @@ describe('relay hub wiring', () => {
       expect(JSON.parse(fs.readFileSync(file, 'utf8')).max).toBe(hub.incarnation)
       hub.stop()
     } finally { fs.rmSync(common, { recursive: true, force: true }) }
-  })
-  it('two racers with the derived port taken: one lock holder serves the hub; a relay without the lock answers only not-authority', async () => {
-    const common = await makeCommonDir()
-    const squatter = http.createServer((_q, res) => { res.end('not a relay') })
-    await new Promise<void>(r => squatter.listen(deterministicPort(common), '127.0.0.1', r))
-    const [a, b] = await Promise.all([ensureLocalRelay(common, 'local/x', { watchMs: 100 }), ensureLocalRelay(common, 'local/x', { watchMs: 100 })])
-    const stray = await startRelay(0, { key: a.key, commonDir: common })
-    try {
-      expect([a.owned, b.owned].filter(Boolean)).toHaveLength(1)
-      expect(a.port).toBe(b.port)
-      expect(readRelayInfo(common)?.port).toBe(a.port)
-      const client = await authed(roomUrl(a.port, 'local/x'), a.key)
-      await waitFor(async () => (await client.hello()).ok)
-      expect(await client.hello()).toMatchObject({ ok: true, authority: true })
-      const lease = await waitFor(async () => { const r = await client.send({ op: 'acquire', name: 'ada', holder: holder('s1') }) as { ok: boolean; epoch: number }; return r.ok && r }, 10_000)
-      expect(await client.send({ op: 'post', lease: { name: 'ada', epoch: lease.epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'hi' } })).toMatchObject({ ok: true })
-      await client.close()
-
-      const other = await authed(roomUrl(stray.port, 'local/x'), a.key)
-      expect(await other.hello()).toMatchObject({ ok: false, reason: 'not-authority' })
-      expect(await other.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: false, reason: 'not-authority' })
-      await other.close()
-    } finally { await a.stop(); await b.stop(); await stray.close(); squatter.close() }
-  }, 30_000) // the hub settles for SETTLE_MS (5 s, real clock) before its first lease
+  }) // the hub settles for SETTLE_MS (5 s, real clock) before its first lease
 
   it('a relay that loses its lock answers not-authority and tells its holders', async () => {
     const common = await makeCommonDir()
@@ -176,99 +151,5 @@ describe('relay hub wiring', () => {
       expect(relay.hubRoom(ROOM)!.doc.participants.get('ada\u0000holder')).toMatchObject({ sessionId: 's2' })
       await c.close()
     } finally { await relay.close() }
-  })
-
-  it('separate processes: one authority; a stalled owner is not replaced; a killed one is, and the survivor grants', async () => {
-    const common = await makeCommonDir()
-    const barrier = path.join(common, 'go')
-    const here = path.dirname(fileURLToPath(import.meta.url))
-    type Report = { pid: number; owned: boolean; port: number; key: string }
-    const reports = new Map<number, Report>()
-    const contender = (): ChildProcess => {
-      // `--import tsx`, not tsx's CLI, which runs the script in a second process that the signals would miss.
-      const child = spawn(process.execPath, ['--import', 'tsx', path.join(here, 'authority-child.ts'), common, 'local/x', barrier], { cwd: here, stdio: ['ignore', 'pipe', 'ignore'] })
-      let buffered = ''
-      child.stdout!.on('data', chunk => {
-        buffered += chunk
-        const lines = buffered.split('\n'); buffered = lines.pop()!
-        for (const line of lines) { const r = JSON.parse(line) as Report; reports.set(r.pid, r) }
-      })
-      return child
-    }
-    const children = [contender(), contender()]
-    const lockOwner = () => JSON.parse(fs.readFileSync(path.join(common, 'room', 'hub', 'authority.lock'), 'utf8')).pid as number
-    try {
-      // Both are loaded and waiting; they start together.
-      await new Promise(r => setTimeout(r, 1500))
-      fs.writeFileSync(barrier, '')
-      await waitFor(() => children.every(c => reports.has(c.pid!)), 20_000)
-      const owners = children.filter(c => reports.get(c.pid!)!.owned)
-      expect(owners).toHaveLength(1)
-      const [owner] = owners, survivor = children.find(c => c !== owner)!
-      const { port, key } = reports.get(owner.pid!)!
-      expect(reports.get(survivor.pid!)).toMatchObject({ owned: false, port, key })
-      expect(lockOwner()).toBe(owner.pid)
-      const client = await authed(roomUrl(port, 'local/x'), key)
-      const first = await waitFor(async () => { const r = await client.hello(); return r.ok && r }, 5000)
-      const epoch = (await waitFor(async () => { const r = await client.send({ op: 'acquire', name: 'ada', holder: holder('s1') }); return r.ok && r }, 10_000)).epoch as number
-      await client.close()
-
-      // Stalled but alive: its lock is not recoverable, so nobody takes over.
-      owner.kill('SIGSTOP')
-      await new Promise(r => setTimeout(r, 3000))
-      expect(reports.get(survivor.pid!)!.owned).toBe(false)
-      expect(lockOwner()).toBe(owner.pid)
-      owner.kill('SIGCONT')
-      const resumed = await authed(roomUrl(port, 'local/x'), key)
-      expect(await waitFor(async () => { const r = await resumed.hello(); return r.ok && r }, 5000)).toMatchObject({ incarnation: first.incarnation })
-      await resumed.close()
-
-      // Killed without cleanup: the survivor recovers the lock and serves on the same port.
-      owner.kill('SIGKILL')
-      await new Promise(r => owner.once('exit', r))
-      await waitFor(() => reports.get(survivor.pid!)!.owned, 10_000)
-      expect(lockOwner()).toBe(survivor.pid)
-      const next = await waitFor(async () => { try { return await authed(roomUrl(port, 'local/x'), key) } catch { return undefined } }, 5000)
-      const hello = await waitFor(async () => { const r = await next.hello(); return r.ok && r }, 5000)
-      expect(hello.incarnation as number).toBeGreaterThan(first.incarnation as number)
-      // The survivor read the lease the dead owner stored under the clone's git dir: ada's session renews it.
-      expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: true })
-      const bob = await waitFor(async () => { const r = await next.send({ op: 'acquire', name: 'bob', holder: holder('s2') }); return r.ok && r }, 10_000)
-      expect(bob.epoch as number).toBeGreaterThan(epoch)
-      await next.close()
-    } finally {
-      await Promise.all(children.map(c => new Promise<void>(resolve => {
-        if (c.exitCode !== null || c.signalCode !== null) { resolve(); return }
-        c.once('exit', () => resolve())
-        c.kill('SIGCONT')
-        c.kill('SIGKILL')
-      })))
-      fs.rmSync(common, { recursive: true, force: true })
-    }
-  }, 60_000)
-
-  it('a survivor takes the authority from the stopped owner and starts from its own replica', async () => {
-    const common = await makeCommonDir()
-    const replica = new RoomDoc()
-    const inherited = encodeSeq(5, 3)
-    // A holder record as the hub writes it: with the principal and session that acquired it.
-    replica.participants.set('ada\u0000holder', { ...holder('s1'), epoch: inherited, at: 1, principal: 'local', session: 's1' })
-    const owner = await ensureLocalRelay(common, 'local/x', { watchMs: 30_000 })
-    const b = await ensureLocalRelay(common, 'local/x', { watchMs: 100, seed: () => Y.encodeStateAsUpdate(replica.doc) })
-    try {
-      await owner.stop()
-      await waitFor(() => b.owned, 8000)
-      const c = await authed(roomUrl(b.port, 'local/x'), b.key)
-      const hello = await waitFor(async () => { const r = await c.send({ op: 'hello', proto: 1, schema: 2, client: 'contract', sessionId: 's1' }); return r.ok && r })
-      expect(hello.incarnation as number).toBeGreaterThan(5)
-      // A holder record that exists only in a replica is not authority (the hub's own lease store is): the renew is
-      // refused, and the holder acquires afresh with an epoch above everything the replica showed.
-      expect(await c.send({ op: 'renew', name: 'ada', epoch: inherited })).toMatchObject({ ok: false, reason: 'stale' })
-      const again = await waitFor(async () => { const r = await c.send({ op: 'acquire', name: 'ada', holder: holder('s1') }); return r.ok && r }, 10_000)
-      expect(again.epoch as number).toBeGreaterThan(inherited)
-      await c.close()
-    } finally { await owner.stop(); await b.stop() }
-    expect(fs.existsSync(path.join(common, 'room', 'hub', 'authority.lock'))).toBe(false)
-    expect(JSON.parse(fs.readFileSync(path.join(common, 'room', 'hub', 'incarnation.json'), 'utf8')).max).toBeGreaterThan(5)
   })
 })

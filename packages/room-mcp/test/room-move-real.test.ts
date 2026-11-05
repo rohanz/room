@@ -10,6 +10,7 @@ import crypto from 'node:crypto'
 import { relayProof } from '@room/relay'
 import { LOCAL, joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const cleanups: (() => Promise<void> | void)[] = []
 afterEach(async () => { for (const c of cleanups.splice(0).reverse()) await c() })
@@ -17,8 +18,8 @@ afterEach(async () => { for (const c of cleanups.splice(0).reverse()) await c() 
 /** Two clones of one project in folders of the same name, so both host local/shop. */
 function clone(name: string): string {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `room-move-real-${name}-`)))
-  cleanups.push(() => fs.rmSync(parent, { recursive: true, force: true }))
   const dir = path.join(parent, 'shop')
+  cleanups.push(() => disposePreviewFixture(parent, { registries: [dir] }))
   fs.mkdirSync(dir)
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' })
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 'Ada')
@@ -34,8 +35,8 @@ async function inRoom(dir: string) {
   return { tools, session: () => session }
 }
 
-/** A relay owner for the clone whose websockets never open: the target join connects, then times out syncing. */
-async function wedgedRelay(commonDir: string): Promise<{ upgrades: () => number; open: () => number }> {
+/** An unidentifiable listener with legacy health and no birth identity: refuse before websocket sync. */
+async function wedgedRelay(commonDir: string): Promise<{ port: number; upgrades: () => number; open: () => number }> {
   const clone = crypto.createHash('sha256').update(fs.realpathSync(commonDir)).digest('hex')
   const key = crypto.randomBytes(16).toString('hex')
   const sockets = new Set<net.Socket>()
@@ -53,7 +54,7 @@ async function wedgedRelay(commonDir: string): Promise<{ upgrades: () => number;
   fs.mkdirSync(path.join(commonDir, 'room'), { recursive: true })
   fs.writeFileSync(path.join(commonDir, 'room', 'relay.json'), JSON.stringify({ schema: 2, port, pid: process.pid, room: 'x', startedAt: Date.now(), key }) + '\n', { mode: 0o600 })
   cleanups.push(() => { for (const s of sockets) s.destroy(); server.close() })
-  return { upgrades: () => upgrades, open: () => upgraded.size }
+  return { port, upgrades: () => upgrades, open: () => upgraded.size }
 }
 
 it('moves between two clones that both host local/shop, and goes back when the target clone cannot join', async () => {
@@ -76,15 +77,15 @@ it('moves between two clones that both host local/shop, and goes back when the t
   expect(t.session()!.dir).toBe(b)
 }, 60_000)
 
-it('a target that connects but never syncs is cleaned up, and the session goes back to its room', async () => {
+it('an unknown target owner is refused before sync, and the session goes back to its room', async () => {
   const a = clone('a'), b = clone('b')
   const t = await inRoom(a)
   const wedged = await wedgedRelay(path.join(b, '.git'))
   const reply = await t.tools.call('room_join', { where: 'local', dir: b })
-  expect(reply).toMatch(/^couldn't join local\/shop\ \(.*could not sync with ws:\/\/127\.0\.0\.1:\d+\/local%2Fshop within 15000ms\); back in local\/shop\.$/)
-  expect(wedged.upgrades()).toBeGreaterThan(0)
-  await new Promise(r => setTimeout(r, 300))
-  expect(wedged.open()).toBe(0) // the half-joined target closed its websockets
+  expect(reply).toContain(`unknown owner: pid ${process.pid}, port ${wedged.port}`)
+  expect(reply).toMatch(/^couldn't join local\/shop \(FAIL  local daemon cutover: drain required;[\s\S]*\); back in local\/shop\.$/)
+  expect(wedged.upgrades()).toBe(0)
+  expect(wedged.open()).toBe(0)
   expect(t.session()!.dir).toBe(a)
   await vi.waitFor(() => expect(t.session()!.provider.wsconnected).toBe(true))
 }, 60_000)

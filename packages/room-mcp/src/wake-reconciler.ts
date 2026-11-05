@@ -402,7 +402,7 @@ export class WakeReconciler {
       for (const id of Object.keys(entries)) if (!owed.has(id)) delete entries[id]
     }
     if (!record.dir) return
-    try { fs.mkdirSync(record.dir, { recursive: true, mode: 0o700 }); writeAtomic(path.join(record.dir, 'wakes.json'), record.wakes) }
+    try { writeAtomic(path.join(record.dir, 'wakes.json'), record.wakes) }
     catch (e) { this.o.log?.(`wake: could not write wakes.json: ${e instanceof Error ? e.message : String(e)}`) }
   }
 

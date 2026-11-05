@@ -11,6 +11,7 @@ import { AutoJoin } from '../src/auto-join.js'
 import { findRoomFile, startupJoinOptions, type Session } from '../src/session.js'
 import { NotARepository, repositoryProblem, repositoryRoot, type GitRun } from '../src/repository.js'
 import { codexWorkspace, fallbackWorkspace } from '../src/workspace.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const cleanups: (() => Promise<void> | void)[] = []
@@ -18,7 +19,7 @@ afterEach(async () => { for (const c of cleanups.splice(0).reverse()) await c() 
 
 function tempDir(prefix: string): string {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
-  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
+  cleanups.push(() => disposePreviewFixture(dir, { registries: [dir] }))
   return dir
 }
 const git = (dir: string, ...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=a@a', ...a], { stdio: 'pipe' })

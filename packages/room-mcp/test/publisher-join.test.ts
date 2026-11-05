@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { participantRecord, snapshot, versionOf } from '@room/shared'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 let dir: string
 const sessions: Session[] = []
@@ -21,7 +22,7 @@ beforeAll(() => {
   git('add', '.'); git('commit', '-qm', 'init')
 })
 afterEach(async () => { for (const s of sessions.splice(0).reverse()) { try { await leaveSession(s) } catch { /* gone */ } } })
-afterAll(() => { clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
+afterAll(async () => { await disposePreviewFixture(dir, { registries: [dir] }); clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
 
 const publishing = (s: Session) => s.daemon.inputs.policy.publisher
 

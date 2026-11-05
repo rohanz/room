@@ -68,7 +68,7 @@ export interface Tools {
 }
 
 /** What the tools need of the automatic join (auto-join.ts). */
-export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(): void; retarget(s: Session): void; readonly failure?: string }
+export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(options?: { explicitLeave?: boolean }): void; retarget(s: Session): void; readonly failure?: string }
 /** Tools that choose the room themselves: the automatic join pauses while one runs, and stays stopped unless it joined a room. */
 const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
 /** A move must not interleave with spawn, a send that resumes a worker, or collect. */
@@ -135,7 +135,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (autoJoin && CHOOSES_ROOM.has(name)) {
         const joining = autoJoin
         await (currentToolTiming()?.phase('settle', () => joining.settle()) ?? joining.settle())
-        joining.cancel()
+        joining.cancel({ explicitLeave: name === 'room_leave' })
       } else if (autoJoin && name !== 'room_done') {
         const joining = autoJoin
         await (currentToolTiming()?.phase('settle', () => joining.ensure()) ?? joining.ensure())

@@ -1,5 +1,6 @@
 /** Insert-only catch-up from the previous local relay generation. The old relay may
  * still write its snapshots, so copy new IDs on every observed change until it exits. */
+import { privateStateDirectory } from './private-state.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -48,7 +49,7 @@ function readLedger(common: string, room: string): Ledger {
 }
 function writeLedger(common: string, room: string, ledger: Ledger): void {
   const file = ledgerFile(common, room), temp = `${file}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  privateStateDirectory(path.dirname(file))
   try {
     fs.writeFileSync(temp, JSON.stringify(ledger) + '\n', { flag: 'wx', mode: 0o600 })
     fs.renameSync(temp, file)

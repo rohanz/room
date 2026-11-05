@@ -1,3 +1,4 @@
+import { privateStateDirectory } from '../src/private-state.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -144,7 +145,7 @@ it.each(['rename', 'fsync'])('saves imported state before advancing the ledger a
   fs.writeFileSync(path.join(common, 'room-local', `${encodeURIComponent(oldName)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
   const target = new RoomDoc(new Y.Doc()), file = memoryFile(common, room)
   const sync = fs.fsyncSync
-  if (phase === 'rename') fs.mkdirSync(file, { recursive: true })
+  if (phase === 'rename') { privateStateDirectory(path.dirname(file)); fs.mkdirSync(file) }
   else vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
     if (fs.fstatSync(fd).isFile()) throw Object.assign(new Error('EPERM: fsync failed'), { code: 'EPERM' })
     return sync(fd)
@@ -165,7 +166,7 @@ it('replays safely if ledger rename fails after the snapshot is durable', () => 
   source.mail.set('q-ledger', { id: 'q-ledger', type: 'question', from: 'ada', fromKind: 'agent', to: 'ben', text: 'ledger?', at: 1, priority: 'notify' })
   fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/main`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
   const ledger = ledgerFile(room)
-  fs.mkdirSync(ledger, { recursive: true })
+  privateStateDirectory(path.dirname(ledger)); fs.mkdirSync(ledger)
   const target = new RoomDoc(new Y.Doc())
   expect(() => catchUpLocal(common, room, target.doc)).toThrow()
   expect(new RoomDoc(loadMemory(common, room)).mail.has('q-ledger')).toBe(true)
@@ -377,7 +378,7 @@ it('tracks completion and forgetting independently for explicit local rooms', ()
 
 it('uses a prior global ledger only for the room proved by its source names', () => {
   const oldLedger = path.join(common, 'room', 'relay', 'migrated.json')
-  fs.mkdirSync(path.dirname(oldLedger), { recursive: true })
+  privateStateDirectory(path.dirname(oldLedger))
   fs.writeFileSync(oldLedger, JSON.stringify({ messages: ['old'], claims: [], scopes: [], sources: { 'local/one/main': 1 }, messageSources: {}, identities: {}, complete: true }))
   const dir = path.join(common, 'room-local')
   fs.mkdirSync(dir, { recursive: true })

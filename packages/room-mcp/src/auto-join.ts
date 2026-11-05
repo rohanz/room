@@ -16,7 +16,9 @@ export interface AutoJoinOptions {
   /** Make a joined session the current one. */
   adopt(s: Session): Promise<void>
   /** Leave a session that finished after the run gave up or was cancelled. */
-  discard(s: Session): Promise<void>
+  discard(s: Session, reason?: 'leave' | 'attempt'): Promise<void>
+  /** Explicit leave cancels a still-initializing local replica too. */
+  onCancel?: (target?: Session) => void
   /** Is the session this process is meant to hold present and usable? */
   joined(): boolean
   log(line: string): void
@@ -73,6 +75,7 @@ function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
 export class AutoJoin {
   private inflight: Promise<void> | null = null
   private cancelled = false
+  private explicitLeave = true
   private wake: (() => void) | null = null
   private endedAt = 0
   /** Why the last run failed, while no session is present; undefined after a join. */
@@ -118,8 +121,10 @@ export class AutoJoin {
   }
 
   /** Stop joining for good: a late session is left, a pending wait ends now. */
-  cancel(): void {
+  cancel(options: { explicitLeave?: boolean } = {}): void {
     this.cancelled = true
+    this.explicitLeave = options.explicitLeave !== false
+    if (this.explicitLeave) this.o.onCancel?.(this.target)
     this.wake?.()
   }
 
@@ -185,7 +190,7 @@ export class AutoJoin {
       const finish = (f: () => void) => { if (!open) return; open = false; clearTimeout(timer); this.wake = null; f() }
       this.wake = () => finish(() => resolve('gave-up'))
       attempt.then(
-        s => { if (open) finish(() => resolve(this.cancelled && s ? (void this.o.discard(s), 'gave-up') : s)); else if (s) void this.o.discard(s) },
+        s => { if (open) finish(() => resolve(this.cancelled && s ? (void this.o.discard(s, this.cancelled && this.explicitLeave ? 'leave' : 'attempt'), 'gave-up') : s)); else if (s) void this.o.discard(s, this.cancelled && this.explicitLeave ? 'leave' : 'attempt') },
         e => finish(() => reject(e)),
       )
     })

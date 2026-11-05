@@ -8,6 +8,7 @@ import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { IDLE_CLAIMS_MS, releaseIdleHeld } from '../src/presence-end.js'
 import { rememberTag } from '../src/choice.js'
+import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 let dir: string
 const cleanups: (() => Promise<void> | void)[] = []
@@ -24,7 +25,7 @@ beforeAll(() => {
   git('add', '.'); git('commit', '-qm', 'init')
 })
 afterEach(async () => { vi.unstubAllEnvs(); for (const c of cleanups.splice(0).reverse()) { try { await c() } catch { /* ignore */ } } })
-afterAll(() => { clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
+afterAll(async () => { await disposePreviewFixture(dir, { registries: [dir] }); clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
 
 async function join1(sessionId: string, extra: { tag?: string } = {}): Promise<Session> {
   const s = await joinSession({ dir, sessionId, log, ...extra })

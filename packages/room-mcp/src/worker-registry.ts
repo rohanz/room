@@ -1,4 +1,5 @@
 /** The local source of truth for worker operations. No replicated document grants local authority. */
+import { privateStateDirectory } from '@room/relay'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
@@ -465,7 +466,7 @@ export class WorkerRegistry {
   close(): void { clearInterval(this.timer); this.timer = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
   private watch(): void {
     for (const dir of [this.root, path.join(this.root, 'runs')]) {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+      privateStateDirectory(dir)
       try {
         const watcher = fs.watch(dir, { persistent: false }, () => {
           if (this.watchQueued) return
@@ -500,7 +501,7 @@ export class WorkerRegistry {
   newId(): string { return id() }
   private quarantine(file: string, why: unknown): void {
     const dir = path.join(this.root, 'quarantine')
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    privateStateDirectory(dir)
     const dest = path.join(dir, `${path.basename(file)}.bad-${Date.now()}-${randomBytes(4).toString('hex')}`)
     try { fs.renameSync(file, dest); process.stderr.write(`[room] quarantined ${file}: ${why}\n`) }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
@@ -1111,7 +1112,7 @@ export class WorkerRegistry {
     if (record.discard.patch && record.discard.patch.sha256 !== sha256) throw new Error('discard patch changed after identity was recorded')
     if (!record.discard.patch) await this.update(id, old => ({ ...old,
       discard: { ...old.discard!, patch: { path: file, sha256 } }, seq: old.seq + 1 }))
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    privateStateDirectory(path.dirname(file))
     let existing: fs.Stats | undefined
     try { existing = fs.lstatSync(file) }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }

@@ -1,3 +1,4 @@
+import { daemonCutoverRows, inspectDaemonCutover } from '../daemon-cutover.js'
 import path from 'node:path'
 import { createSessionBinding } from '../binding.js'
 import { gitCommonDir } from '@room/roomd'
@@ -17,7 +18,7 @@ import { localWorkerView } from '../worker-projector.js'
 import { liveWorkerActivity } from '../worker-activity.js'
 import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
-import { browserViewLine, parseServer, refreshBrowserUrl, type Session } from '../session.js'
+import { browserViewLine, currentDaemonClient, parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
 import { openMergeConflicts } from '../conflict-set.js'
@@ -132,7 +133,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           inSession: true, selected: destination, sessionWarning: active?.local?.canonicalWarning,
           sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : undefined,
         })
-        return [report, formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
+        const common = active?.local || !server ? await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => undefined) : undefined
+        let identityIssue = ''
+        const current = common ? await currentDaemonClient(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch((error: unknown) => {
+          identityIssue = `FAIL  local daemon client identity: ${error instanceof Error ? error.message : String(error)}`
+          return undefined
+        }) : undefined
+        const cutover = common ? [identityIssue, ...daemonCutoverRows(await inspectDaemonCutover(common, current))].filter(Boolean).join('\n') : ''
+        return [report, cutover, active?.local ? localDaemonLine(active) : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
       }
       const s = S()
       await loadAreas(s)
@@ -148,7 +156,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!s.local) out.push(`sharing level: ${sharingLevel}; ${sharingHumanChoices(sharingLevel)}`)
       if (s.local && publisher) out.push(publisher)
       if (s.local?.canonicalWarning) out.push(`WARN: ${s.local.canonicalWarning}`)
-      if (s.local?.ownerWarning) out.push(`WARN: ${s.local.ownerWarning}`)
       const delivery = formatDeliveryDegradation(state.deliveryDegradation())
       if (delivery) out.push(delivery)
       if (state.hasCompany(s).company) {
@@ -168,6 +175,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state in ${s.roomName}`)
       }
       out.push(`room: ${s.roomName} — ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
+      if (s.local) out.push(localDaemonLine(s))
       // Right after the room line, near the top: a replayed wake reads this and stops.
       if (noUnseen) out.push('nothing new for you since your last read; no action needed')
       const ps = presences(s)
@@ -468,4 +476,10 @@ function compactState(lines: string[], summarizedClaims: number): string {
   }
   if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_state path=... for a path.`)
   return kept.join('\n')
+}
+
+/** Transport belongs to a distinct process, never to one of the listed participants. */
+function localDaemonLine(s: Session): string {
+  const local = s.local as Session['local'] & { pid?: number; idleMs?: number }
+  return `local daemon: pid ${local?.pid ?? '?'} on ${local?.url ?? '?'}; stops after ${Math.round((local?.idleMs ?? 300_000) / 60_000)} minutes without an authenticated writer (viewers do not keep it alive)`
 }

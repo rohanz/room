@@ -1,23 +1,14 @@
-/**
- * @room/relay — the local room relay. No server: the first lead session to join a clone's local
- * room starts a tiny y-websocket relay on 127.0.0.1 (with private memory snapshots) and records it in
- * `<git common dir>/room/relay.json` (mode 0600, with a random key every websocket must
- * present). The relay binds a port derived from the common dir, so two processes starting at
- * the same moment cannot end up in two rooms: one binds, the other gets EADDRINUSE and joins.
- * Later processes find the file, check the relay answers as a room relay, and connect. Only the
- * holder of the clone's authority lock (hub.ts) runs a relay, and each relay room runs the room's
- * hub (@room/hub-core) behind message type 7. Only lead sessions own it (see ensureLocalRelay). When the
- * owner exits, a remaining lead notices within a couple of seconds, recovers the lock from the dead owner
- * and starts a relay on the same port, seeded from its own replica; the others reconnect to it. Every client holds the full
- * document, so a relay restart loses nothing: clients sync their state back into the new one.
- */
+/** Loopback relay transport, selective memory and hub. The standalone daemon owns its lifecycle. */
 import { RoomMemory, finalSave, memoryFile } from './memory.js'
 import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
 export { legacyRelayRunning } from './local-migrate.js'
-import { pidAlive } from './process.js'
-import { AuthorityLock, holderDeadCheck, hubDir, incarnationFile, relayLeaseFile } from './hub.js'
+import type { ProcessIdentity } from './leases.js'
+export { ensureLocalDaemon, startLocalDaemon, stopLocalDaemon, LOCAL_DAEMON_IDLE_MS } from './daemon.js'
+export type { LocalDaemon, LocalDaemonOptions, StartedLocalDaemon } from './daemon.js'
+import { AuthorityLock, holderDeadCheck, incarnationFile, relayLeaseFile } from './hub.js'
 export { RoomMemory, memoryFile, loadMemory, saveMemory, FinalSaveError } from './memory.js'
 export { AuthorityLock } from './hub.js'
+export { privateStateDirectory } from './private-state.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -30,7 +21,7 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { DOC_SIZE_CAP_CODE, DocSizeMeter, HUB_ORIGIN, MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, sizeCapReason, sizeCapRefusal, startHub, type DocSizeMeterOptions, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { docGeneration, generationGate, STALE_REPLICA_CODE, STALE_REPLICA_REASON, COMPACTED_UPDATE_REASON, ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
-import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayIdentityProbe, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
+import { ProofVerifier, localProofHeader, localViewKey, relayIdentity, relayIdentityProbe, relayProof, relayMetadataProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
 import { RelayAdmission, type RelayAdmissionLimits } from './limits.js'
 import { RelayAwarenessBudget, awarenessLimits, type RelayAwarenessLimits } from './awareness.js'
@@ -40,11 +31,6 @@ export { SecureSession } from './secure.js'
 export { localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
 import { HttpFailure, safeUrl, CURRENT_COMPAT, LEGACY_COMPAT, legacyAdvertisement, legacyHello, parseAdvertisement, selectContract, parseBootstrapFrame, BOOTSTRAP_MAX_BYTES, BOOTSTRAP_HELLO_TIMEOUT_MS, BOOTSTRAP_ACK_TIMEOUT_MS, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, LEASE_TTL_MS, LEASE_RENEW_MS, type BootstrapHello, type BootstrapSelection, type CompatibilityRefusal } from '@room/hub-core'
 export { safeUrl } from '@room/hub-core'
-
-/** Convert a takeover failure into a reported, settled operation for the interval owner. */
-export async function observeTakeover(work: () => Promise<void>, report: (error: unknown) => void): Promise<void> {
-  try { await work() } catch (error) { try { report(error) } catch { /* reporting must not reject the interval */ } }
-}
 
 // ---- a minimal y-websocket relay (the wire protocol of y-websocket 3.x; private memory persistence) ----
 const MSG_SYNC = 0, MSG_AWARENESS = 1
@@ -62,7 +48,7 @@ export function stateRequestLimiter(now: () => number = Date.now): (buf: Uint8Ar
     return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued <= RELAY_STATE_QUEUE_BYTES
   }
 }
-interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; presence: RelayAwarenessBudget; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; hubReady?: Promise<void>; closed?: boolean; cap: RoomCap }
+interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; presence: RelayAwarenessBudget; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; hubReady?: Promise<void>; closed?: boolean; hubError?: unknown; cap: RoomCap }
 /** The live size cap of one room (the server's rule, hub-core/src/doc-cap.ts) and when it last logged a refusal. */
 interface RoomCap { maxBytes: number; meter: DocSizeMeter; logged: number }
 /** A room's live document cap; by default ROOM_DOC_MAX_BYTES (also the snapshot ceiling), measured at the server's cadence. */
@@ -70,7 +56,7 @@ export interface RelayDocCap { maxBytes?: number; meter?: DocSizeMeterOptions }
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission }
+interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission; accepting?: () => boolean; attached?: (conn: WebSocket, readOnly: boolean) => void; daemon?: boolean; compat?: typeof CURRENT_COMPAT }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
 /** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
 export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
@@ -172,21 +158,21 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
     for (const c of d!.conns.keys()) send(c, buf)
   })
   docs.set(name, d)
-  // A successor starts from its own replica before anyone connects, so its hub sees every grant it saw.
+  // Bare transport fixtures may supply an initial replica before the hub starts.
   if (opts.seed && name === encodeURIComponent(opts.seed.room)) Y.applyUpdate(doc, opts.seed.update)
-  if (opts.hub) startRoomHub(d, decodeURIComponent(name), opts.hub, opts.commonDir!, opts.log ?? (() => {}))
+  if (opts.hub) startRoomHub(d, decodeURIComponent(name), opts.hub, opts.commonDir!, opts.log ?? (() => {}), !!opts.daemon)
   return d
 }
-function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, commonDir: string, log: (line: string) => void): void {
+function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, commonDir: string, log: (line: string) => void, strict = false): void {
   const roomDoc = d.room = new RoomDoc(d.doc)
-  d.hubReady = startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: line => log(`local room ${room}: ${line}`), store: rt.store, leases: relayLeaseFile(commonDir, room), holderDead: rt.holderDead, authority: () => rt.lock.held(),
-    full: () => d.cap.meter.size() > d.cap.maxBytes })
+  d.hubReady = startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: line => log(`local room ${room}: ${line}`), store: rt.store, leases: relayLeaseFile(commonDir, room), requireLeaseLoad: strict, holderDead: rt.holderDead, authority: () => rt.lock.held(),
+    full: () => !!d.memory?.status.capacity || d.cap.meter.size() > d.cap.maxBytes })
     .then(hub => {
       if (d.closed) { hub.stop(); return }
       hub.onPush((conn, push) => send(conn as WebSocket, encodeFrame(push)))
       d.hub = hub
     })
-    .catch(e => log(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`))
+    .catch(e => { d.hubError = e; log(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`) })
 }
 const hubBudget = new HubRequestBudget()
 /** The raw type-7 frame is checked before decode, even while the hub is unavailable. */
@@ -229,11 +215,13 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
       }
       if (safeUrl(req.url).searchParams.get('negotiate') === '1' && raw.byteLength > BOOTSTRAP_MAX_BYTES + 16) { clearTimeout(timer); conn.close(4406, 'compatibility frame exceeds limit'); return }
       const first = session.decrypt(raw)
+      if (opts.accepting && !opts.accepting()) { conn.close(1013, 'local daemon draining; retry'); return }
       clearTimeout(timer)
       handshakeCleanup.delete(conn)
       conn.off('message', handshake)
       if (safeUrl(req.url).searchParams.get('negotiate') === '1') attachNegotiating(docs, conn, name, req, opts, first)
       else {
+        if (opts.daemon && !opts.readOnly) { conn.close(4406, 'daemon lifecycle negotiation required; update Room'); return }
         // Frozen baseline is selected before either direction of legacy automatic sync.
         const legacy = selectContract(LEGACY_COMPAT, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly })
         if (!legacy.ok) { conn.close(4406, 'legacy contract retired; update this client'); return }
@@ -255,8 +243,9 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
   const cleanup = () => { clearTimeout(timer); conn.off('message', receive); handshakeCleanup.delete(conn) }
   const refuse = (reason: string) => { cleanup(); phase = 'done'; conn.close(4406, reason.slice(0, 120)) }
   const deadline = (ms: number) => { expiresAt = Date.now() + ms; clearTimeout(timer); timer = setTimeout(() => refuse('compatibility handshake timed out; reconnect Room'), ms); timer.unref?.() }
-  const current = () => conn.readyState === conn.OPEN && !!selectedDoc && !selectedDoc.closed && (!opts.hub || opts.hub.lock.held())
+  const current = () => (!opts.accepting || opts.accepting()) && conn.readyState === conn.OPEN && !!selectedDoc && !selectedDoc.closed && (!opts.hub || opts.hub.lock.held())
   const receivePlain = async (plain: Uint8Array) => {
+    if (opts.accepting && !opts.accepting()) { cleanup(); phase = 'done'; conn.close(1013, 'local daemon draining; retry'); return }
     if (Date.now() >= expiresAt) { refuse('compatibility handshake timed out; reconnect Room'); return }
     bytes += plain.byteLength
     if (bytes > BOOTSTRAP_MAX_BYTES || plain[0] !== MSG_HUB) { refuse('compatibility hello/ack required before sync'); return }
@@ -274,7 +263,7 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
       if (!('op' in frame) || frame.op !== 'compat-hello') { refuse('compatibility hello required'); return }
       hello = frame
       phase = 'selecting'
-      const selected = selectContract(frame.offer, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly })
+      const selected = selectContract(frame.offer, opts.compat ?? CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly, ...(!opts.readOnly && opts.daemon ? { requiredCapabilities: { 'room.daemon': [1] } } : {}) })
       if (!selected.ok) {
         send(conn, encodeFrame({ v: 1, re: frame.id, ok: false, error: selected.error }))
         refuse(compatibilityDetail(selected.error))
@@ -283,14 +272,15 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
       selectedDoc = getDoc(docs, name, opts)
       await selectedDoc.hubReady
       if (conn.readyState !== conn.OPEN) return
+      if (opts.accepting && !opts.accepting()) { cleanup(); phase = 'done'; conn.close(1013, 'local daemon draining; retry'); return }
       if (Date.now() >= expiresAt) { refuse('compatibility handshake timed out; reconnect Room'); return }
       if (opts.hub && !selectedDoc.hub) { cleanup(); phase = 'done'; conn.close(1013, 'relay hub unavailable; retry'); return }
       if (phase !== 'selecting' || !current()) { refuse('relay authority changed; reconnect Room'); return }
       if (!relayGeneration(conn, req, selectedDoc)) { cleanup(); phase = 'done'; return }
       selection = {
         v: 1, re: frame.id, ok: true, selectionId: crypto.randomBytes(16).toString('hex'), selection: selected.selection,
-        compat: CURRENT_COMPAT, generation: docGeneration(selectedDoc.doc) ?? '0', policyRevision: 1,
-        incarnation: selectedDoc.hub?.incarnation ?? 0, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, requiredCapabilities: {},
+        compat: opts.compat ?? CURRENT_COMPAT, generation: docGeneration(selectedDoc.doc) ?? '0', policyRevision: 1,
+        incarnation: selectedDoc.hub?.incarnation ?? 0, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, requiredCapabilities: !opts.readOnly && opts.daemon ? { 'room.daemon': [1] } : {},
       }
       const encoded = encodeFrame(selection)
       if (encoded.byteLength > BOOTSTRAP_MAX_BYTES) { refuse('relay compatibility selection exceeds limit'); return }
@@ -343,15 +333,17 @@ function relayGeneration(conn: WebSocket, req: http.IncomingMessage, d: RelayDoc
   return false
 }
 function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string, opts: DocOptions, first: Buffer | undefined, req: http.IncomingMessage, negotiated = false): void {
+  if (opts.accepting && !opts.accepting()) { conn.close(1013, 'local daemon draining; retry'); return }
   const d = getDoc(docs, name, opts)
   if (!relayGeneration(conn, req, d)) return
   d.conns.set(conn, new Set())
+  opts.attached?.(conn, !!opts.readOnly)
   if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes)
   const allowState = stateRequestLimiter()
   const allowPresence = d.presence.connection(reason => conn.close(4429, reason))
   conn.binaryType = 'arraybuffer'
   conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
-    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return
+    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN || (opts.accepting && !opts.accepting())) return
     let buf: Uint8Array
     try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
     catch { conn.close(1008, 'invalid secure frame'); return }
@@ -366,7 +358,7 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
     // unless its write inserts nothing: a newcomer's sync step 2 and deletions still go through, so a local room
     // (with no operator to trim it) stays joinable and can shrink.
     const { cap } = d
-    const over = opts.readOnly ? undefined : sizeCapRefusal(buf, bytes => cap.meter.size(bytes), cap.maxBytes, { allowNonGrowing: true })
+    const over = opts.readOnly ? undefined : sizeCapRefusal(buf, bytes => d.memory?.status.capacity ? cap.maxBytes + 1 : cap.meter.size(bytes), cap.maxBytes, { allowNonGrowing: true })
     if (over !== undefined) {
       const now = Date.now()
       if (cap.logged < now - 60_000) { cap.logged = now; opts.log?.(`local room ${decodeURIComponent(name)}: refusing writes: the document is ${(over / 1048576).toFixed(1)} MB (cap ${(cap.maxBytes / 1048576).toFixed(0)} MB)`) }
@@ -474,8 +466,8 @@ export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOpt
   }
 }
 
-/** `lead`: the owner is a lead session (0.17.31+). Without it the owner is an older Room, which a lead takes over when it exits. */
-export interface LocalRelayInfo { discovery?: number; compat?: unknown; runtime?: string; schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true }
+/** Historical session relays used `lead: true`; daemon discovery records its process birth identity. */
+export interface LocalRelayInfo { discovery?: number; compat?: unknown; runtime?: string; nonce?: string; schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true | ProcessIdentity }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
@@ -485,17 +477,15 @@ export interface LocalRelay {
   port: number
   /** Private discovery secret used only to sign requests; lives in room/relay.json (0600). */
   key: string
-  /** True when this process runs the relay. */
+  /** Compatibility marker; daemon client handles always return false. */
   owned: boolean
   /** A canonical port occupied by a relay of this clone, while this session uses another port. */
   canonicalWarning?: string
-  /** A lead joined a relay run by an older Room that cannot hand it over; the lead takes over when that process exits. */
-  readonly ownerWarning?: string
   /** Set when this clone's relay port is now served by another relay: the session must join afresh. */
   readonly lost?: string
   /** Forget this room's saved memory until the relay next restarts. */
   forget?(): Promise<void>
-  /** Rejects with FinalSaveError when this process owns the relay and could not save its state; the relay keeps running. */
+  /** Dispose this non-owning client handle; daemon lifecycle is independent. */
   stop(): Promise<void>
 }
 
@@ -507,7 +497,7 @@ export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
   try {
     const v = JSON.parse(fs.readFileSync(relayFile(commonDir), 'utf8')) as Partial<LocalRelayInfo>
     return v.schema === 2 && typeof v.port === 'number' && typeof v.pid === 'number' && typeof v.key === 'string' && v.key
-      ? { ...(v.discovery !== undefined ? { discovery: v.discovery } : {}), ...('compat' in v ? { compat: v.compat } : {}), ...(typeof v.runtime === 'string' ? { runtime: v.runtime } : {}), schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key, ...(typeof v.canonicalWarning === 'string' ? { canonicalWarning: v.canonicalWarning } : {}), ...(v.lead === true ? { lead: true as const } : {}) }
+      ? { ...(v.discovery !== undefined ? { discovery: v.discovery } : {}), ...('compat' in v ? { compat: v.compat } : {}), ...(typeof v.runtime === 'string' ? { runtime: v.runtime } : {}), ...(typeof v.nonce === 'string' ? { nonce: v.nonce } : {}), schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key, ...(typeof v.canonicalWarning === 'string' ? { canonicalWarning: v.canonicalWarning } : {}), ...(v.lead === true || (v.lead && typeof v.lead === 'object') ? { lead: v.lead } : {}) }
       : undefined
   } catch { return undefined }
 }
@@ -532,10 +522,6 @@ export function cloneId(commonDir: string): string {
  * room relay for another clone or with another key (a stale or inconsistent discovery file); 'none' is
  * nothing, or something that is not a room relay.
  */
-/** Liveness probes tolerate a busy host: a longer timeout than discovery, and several consecutive misses before loss. */
-export const LIVENESS_PROBE_TIMEOUT_MS = 2500
-export const LIVENESS_MISSES_BEFORE_LOST = 3
-/** 'slow': nothing answered within timeoutMs; 'none': the port refused or answered with something that is not a Room relay. */
 function compatibilityDetail(error: CompatibilityRefusal): string {
   const changes = error.requiredChanges.map(change => `${change.action} ${change.side} ${change.contract}${change.capability ? ` ${change.capability}` : ''}${change.range ? ` to ${change.range.min}-${change.range.max}` : change.versions ? ` to ${change.versions.join(',')}` : ''}`)
   return `${error.text} (${error.side}; ${error.code})${changes.length ? `; ${changes.join('; ')}` : ''}`
@@ -544,7 +530,7 @@ function compatibilityDetail(error: CompatibilityRefusal): string {
 function relayContract(health: Record<string, unknown>): { compatible: boolean; detail?: string } {
   try {
     if (health.discovery !== undefined && health.discovery !== 1) return { compatible: false, detail: 'unsupported relay discovery format; update this client' }
-    if (health.runtime !== undefined && health.runtime !== 'session-relay') return { compatible: false, detail: 'unsupported local runtime; update this client for the running relay' }
+    if (health.runtime !== undefined && health.runtime !== 'session-relay' && health.runtime !== 'daemon') return { compatible: false, detail: 'unsupported local runtime; update this client for the running relay' }
     const offer = 'compat' in health ? parseAdvertisement(health.compat) : legacyAdvertisement(health)
     if (!offer) return { compatible: false, detail: 'the relay does not implement the supported schema-2/proto-1 legacy adapter; update the relay' }
     const selected = selectContract(CURRENT_COMPAT, offer, { activeSchema: 2 })
@@ -599,7 +585,7 @@ export interface RelayOptions {
   /** The clone's authority lock (needs `commonDir`): each room runs its hub, and closing releases the lock.
    *  Without it every hub request is answered `not-authority`. */
   hub?: RelayHubOptions
-  /** Applied to that room's doc before anyone connects: a successor's own replica. */
+  /** Initial state for bare transport integrations/tests, applied before the hub starts. */
   seed?: { room: string; update: Uint8Array }
   /** Bytes that may wait for one socket before a consumer already behind is cut off; default RELAY_SOCKET_QUEUE_BYTES. */
   socketQueueBytes?: number
@@ -611,12 +597,20 @@ export interface RelayOptions {
   awareness?: RelayAwarenessLimits
   /** Waits between final-save attempts on close; default FINAL_SAVE_RETRY_MS (memory.ts). */
   finalSaveRetryMs?: readonly number[]
+  /** Standalone process lifecycle; omitted by bare transport fixtures. */
+  daemon?: { health: (authenticated?: boolean) => Record<string, unknown>; onSignal: () => void; writersChanged: (count: number) => void; stop?: (pid: number, nonce: string, saved: () => void) => Promise<void> }
 }
 export interface StartedRelay {
   port: number
+  readonly connections: { writers: number; viewers: number; pending: number }
+  /** Synchronous fence, including already-upgraded handshakes. Reopen only after a failed drain. */
+  setDraining(value: boolean): void
+  initialize(room: string): Promise<void>
+  /** Startup rollback only: rejects if any authenticated client was attached. */
+  abortUnpublished(): Promise<void>
   /** Saves each room's memory, then stops. If the save still fails after FINAL_SAVE_RETRY_MS, rejects with
    *  FinalSaveError and keeps serving: documents, clients and the authority lock stay until a later close or exit. */
-  close(): Promise<void>
+  close(saved?: () => void): Promise<void>
   /** A room's doc and its hub once started (tests drive hubs on fake clocks through this). */
   hubRoom(room: string): { doc: RoomDoc; hub?: Hub } | undefined
 }
@@ -628,7 +622,17 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
   return new Promise((resolve, reject) => {
     parseAdvertisement(CURRENT_COMPAT) // startup fails rather than truncating an oversized or invalid manifest
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir")
+    let draining = false
+    const writers = new Set<WebSocket>(), viewers = new Set<WebSocket>()
     const docOptions: DocOptions = {
+      daemon: !!opts.daemon, compat: opts.daemon ? { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } } : CURRENT_COMPAT, accepting: () => !draining,
+      attached: (conn, readOnly) => {
+        const group = readOnly ? viewers : writers
+        group.add(conn)
+        if (!readOnly) opts.daemon?.writersChanged(writers.size)
+        const remove = () => { if (group.delete(conn) && !readOnly) opts.daemon?.writersChanged(writers.size) }
+        conn.once('close', remove); conn.once('error', remove)
+      },
       commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes, docCap: opts.docCap, admission: opts.admission, awareness: awarenessLimits(opts.awareness),
       ...(opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir!), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}),
     }
@@ -651,7 +655,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       viewNonces.set(value.nonce, now + PROOF_WINDOW_MS)
       return true
     }
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
       try {
       res.setHeader('Referrer-Policy', 'no-referrer')
       const url = safeUrl(req.url)
@@ -692,7 +696,25 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         // A nonce lets joiners authenticate this listener before sending any authority.
         const nonce = req.headers['x-room-nonce']
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, pid: process.pid, discovery: 1, runtime: 'session-relay', compat: CURRENT_COMPAT, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(opts.key && typeof nonce === 'string' && /^[a-f0-9]{32}$/.test(nonce) ? { proof: relayProof(opts.key, nonce, boundPort()) } : {}) }))
+        const health = { ok: true, local: true, schema: 2, hub: 1, pid: process.pid, discovery: 1, runtime: opts.daemon ? 'daemon' : 'session-relay', ...(opts.daemon?.health() ?? {}), ...(opts.daemon ? { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size, storage: { io: [...docs.values()].some(d => d.memory?.status.io), capacity: [...docs.values()].some(d => d.memory?.status.capacity || d.cap.meter.size() > d.cap.maxBytes) } } : {}), compat: docOptions.compat, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}) }
+        const proof = opts.key && typeof nonce === 'string' && /^[a-f0-9]{32}$/.test(nonce) ? { proof: relayProof(opts.key, nonce, boundPort()), ...(opts.daemon ? { metadataProof: relayMetadataProof(opts.key, nonce, boundPort(), health) } : {}) } : {}
+        res.end(JSON.stringify({ ...health, ...proof }))
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/daemon/stop' && opts.daemon?.stop) {
+        if (!proofOk(req) || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
+        if (writers.size || draining) { res.writeHead(409); res.end(draining ? 'local daemon is already draining; inspect status and retry' : 'local daemon has active writers; quiesce clients before stopping'); return }
+        try {
+          await opts.daemon.stop(Number(url.searchParams.get('pid')), url.searchParams.get('nonce') ?? '', () => {
+            res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ saved: true }))
+          })
+        } catch (error) { if (!res.writableEnded) { res.writeHead(409); res.end(error instanceof Error ? error.message : String(error)) } }
+        return
+      }
+      if (url.pathname === '/daemon/status' && opts.daemon) {
+        if (!proofOk(req) || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ...opts.daemon.health(true), writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size, rooms: [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), storage: { ...d.memory?.status, liveCapacity: d.cap.meter.size() > d.cap.maxBytes } })) }))
         return
       }
       if (req.method === 'DELETE' && url.pathname === '/memory') {
@@ -737,6 +759,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       const refuse = (code: number, why: string) => { socket.write(`HTTP/1.1 ${code} ${why}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n`); socket.destroy() }
       try {
       const url = safeUrl(req.url)
+      if (draining) return refuse(503, 'local daemon draining; retry')
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
       if (obsolete(req, url)) return refuse(400, 'use Authorization: Room-Proof or a browser ticket')
       if (url.searchParams.has('negotiate') && url.searchParams.get('negotiate') !== '1') return refuse(426, 'unsupported bootstrap; update this client')
@@ -759,13 +782,21 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     })
     const signals = ['SIGTERM', 'SIGINT'] as const
     let closing: Promise<void> | undefined
-    const onSignal = () => { close().catch(error => opts.log?.(`local relay: room state could not be saved on stop: ${error instanceof Error ? error.message : String(error)}`)) }
+    const onSignal = () => { if (opts.daemon) { opts.daemon.onSignal(); return }; close().catch(error => opts.log?.(`local relay: room state could not be saved on stop: ${error instanceof Error ? error.message : String(error)}`)) }
     // The relay holds the room's only current replica once the last writer has gone. Nothing is torn down
     // until every room's memory is saved: on a failed save the relay keeps serving and holding the lock.
-    const close = (): Promise<void> => closing ??= (async () => {
+    const close = (saved?: () => void): Promise<void> => closing ??= (async () => {
+      if (opts.daemon) {
+        for (const d of docs.values()) await d.hubReady
+        await Promise.all([...docs.values()].flatMap(d => d.hub ? [d.hub.flushLeases()] : []))
+      }
       // Each pass re-reads the rooms: one opened during a retry is saved too.
       await finalSave(() => [...docs.values()].flatMap(d => d.memory ? [d.memory] : []), opts.finalSaveRetryMs)
-      // Saved: tear down before any socket can deliver another update (no macrotask runs in between).
+      saved?.()
+      // Saved: tear down before any socket can deliver another update.
+      await teardown()
+    })().catch(error => { closing = undefined; throw error })
+    const teardown = async (): Promise<void> => {
       for (const signal of signals) process.off(signal, onSignal)
       clearInterval(ticker)
       for (const d of docs.values()) { d.closed = true; d.hub?.stop(); d.memory?.detach() }
@@ -778,7 +809,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
           done()
         })
       })
-    })().catch(error => { closing = undefined; throw error })
+    }
     server.once('error', e => { clearInterval(ticker); reject(e) })
     server.listen(port, '127.0.0.1', () => {
       const addr = server.address()
@@ -786,6 +817,19 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       for (const signal of signals) process.on(signal, onSignal)
       resolve({
         port: bound,
+        get connections() { return { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size } },
+        setDraining(value) { draining = value },
+        async abortUnpublished() {
+          if (writers.size || viewers.size) throw new Error('cannot discard a published relay replica')
+          draining = true
+          await teardown()
+        },
+        async initialize(room) {
+          const d = getDoc(docs, encodeURIComponent(room), docOptions)
+          await d.hubReady
+          if (d.hubError) throw d.hubError
+          if (opts.hub && !d.hub) throw new Error('local daemon hub could not initialize; repair private authority files')
+        },
         close,
         hubRoom(room) {
           const d = docs.get(encodeURIComponent(room))
@@ -794,219 +838,4 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       })
     })
   })
-}
-
-/**
- * Find the clone's local relay or become it. Then keep watching: if the relay dies and this
- * process is a lead, take over on the same port so connected providers reconnect
- * without a URL change.
- *
- * Roles: only a lead starts or takes over a relay. A non-lead (`joinOnly`, every Room worker, or `lead: false`,
- * a session in a worker's worktree) only joins: with no relay running it throws NoLocalRelay, and when the
- * relay it joined is gone it reports `lost` and waits for a lead. A lead that finds a relay run by an older
- * Room (no `lead` in the discovery file) joins it with a warning and takes over when that process exits.
- *
- * Starting is race-free: only the holder of the clone's authority lock starts a relay, on the
- * port derived from the common dir; the others wait for its discovery file and join. If that
- * port is held by something that is not a room relay, the lock holder uses any free port.
- * `seed` returns this process's replica of the room: a takeover starts the relay from it.
- */
-export class NoLocalRelay extends Error {
-  constructor(room: string) { super(`no running local relay for ${room}`); this.name = 'NoLocalRelay' }
-}
-
-export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array; joinOnly?: boolean; lead?: boolean; probeTimeoutMs?: number; lostAfterMisses?: number } = {}): Promise<LocalRelay> {
-  const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`))
-  const lead = !opts.joinOnly && opts.lead !== false
-  let owned: StartedRelay | null = null
-  let port = 0
-  let key = ''
-  let canonicalWarning: string | undefined
-  let ownerWarning: string | undefined
-  /** Consecutive liveness probes the joined relay missed. */
-  let misses = 0
-  /** Publish the discovery file atomically: readers see the old file or the new one, never a partial one. */
-  const write = () => {
-    const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`
-    try {
-      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-      fs.writeFileSync(tmp, JSON.stringify({ discovery: 1, runtime: 'session-relay', compat: CURRENT_COMPAT, schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key, canonicalWarning, ...(lead ? { lead: true as const } : {}) } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
-      fs.chmodSync(tmp, 0o600)
-      fs.renameSync(tmp, file)
-    } catch (e) {
-      try { fs.rmSync(tmp, { force: true }) } catch { /* nothing to clean */ }
-      log(`local relay: could not write ${file}: ${e instanceof Error ? e.message : e}`)
-    }
-  }
-  /** The relay recorded in the file, if it serves this clone and accepts the recorded key; otherwise the file is stale. */
-  const recorded = async (): Promise<LocalRelayInfo | undefined> => {
-    const info = readRelayInfo(commonDir)
-    if (!info) return undefined
-    const result = await probeRelayContract(info.port, commonDir, info.key, 800)
-    const who = result.status
-    if (who === 'incompatible') throw new LocalRelayCompatibilityError(info.port, info.pid, result.detail ?? 'no supported contract')
-    if (who === 'slow' && !lead) log(`local room ${room}: the relay on 127.0.0.1:${info.port} (pid ${info.pid}) did not answer the join probe in time; treating it as not running`)
-    if (who === 'foreign') log(`local room ${room}: ${relayFile(commonDir)} names a relay on 127.0.0.1:${info.port} that does not serve this clone with its key; treating the file as stale`)
-    return who === 'ours' ? info : undefined
-  }
-  const adopt = (info: LocalRelayInfo, how: string) => {
-    port = info.port; key = info.key
-    log(`local room ${room}: ${how} relay on 127.0.0.1:${port} (pid ${info.pid}${pidAlive(info.pid) ? '' : ', pid gone but relay answers'})`)
-  }
-
-  /** Start this clone's relay under the authority lock; closing the relay releases the lock. */
-  const start = (at: number, lock: AuthorityLock, seed?: Uint8Array): Promise<StartedRelay> =>
-    startRelay(at, { key, staticDir: opts.staticDir, commonDir, log, hub: { lock }, ...(seed ? { seed: { room, update: seed } } : {}) })
-  /** Another process holds the lock and is starting the relay: wait for its discovery file. */
-  const awaitWinner = async (): Promise<LocalRelayInfo | undefined> => {
-    let winner: LocalRelayInfo | undefined
-    for (let i = 0; i < 20 && !winner; i++) { await new Promise(r => setTimeout(r, 100)); winner = await recorded() }
-    return winner
-  }
-
-  const existing = await recorded()
-  if (existing) {
-    if (lead && !existing.lead) {
-      ownerWarning = `a session from an older Room (pid ${existing.pid}) holds this room's relay on 127.0.0.1:${existing.port}; this lead takes it over when that process exits`
-      log(`local room ${room}: ${ownerWarning}`)
-    }
-    adopt(existing, 'joined')
-  }
-  else {
-    if (!lead) throw new NoLocalRelay(room)
-    key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString('hex')
-    const want = deterministicPort(commonDir)
-    const lock = AuthorityLock.take(commonDir)
-    if (!lock) {
-      const winner = await awaitWinner()
-      if (!winner) throw new Error(`local room ${room}: another process holds ${path.join(hubDir(commonDir), 'authority.lock')} but no relay answers; retry, or remove the lock if its process is gone`)
-      adopt(winner, 'another process holds the relay authority; joined')
-    } else {
-      try {
-        try { owned = await start(want, lock) }
-        catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e
-          const identity = await relayIdentity(want, key)
-          if (identity?.proven && identity.health.clone === cloneId(commonDir)) {
-            const contract = relayContract(identity.health)
-            if (!contract.compatible) throw new LocalRelayCompatibilityError(want, typeof identity.health.pid === 'number' ? identity.health.pid : readRelayInfo(commonDir)?.pid, contract.detail ?? 'no supported contract')
-          }
-          const collision = canonicalRelayWarning(want, commonDir, identity, readRelayInfo(commonDir))
-          owned = await start(0, lock)
-          canonicalWarning = collision.warning
-          log(`local room ${room}: ${collision.warning ?? (collision.roomRelay ? `port ${want} is held by another clone's Room relay; using a free port` : `port ${want} is taken by something else; using a free port`)}`)
-        }
-      } catch (e) { lock.release(); throw e }
-      port = owned.port
-      write()
-      log(`local room ${room}: started relay on 127.0.0.1:${port}`)
-    }
-  }
-
-  // Later joiners adopt the fallback relay from discovery, but the canonical conflict remains.
-  const canonicalPort = deterministicPort(commonDir)
-  if (port !== canonicalPort) {
-    const identity = await relayIdentity(canonicalPort, key)
-    const collision = canonicalRelayWarning(canonicalPort, commonDir, identity, readRelayInfo(commonDir))
-    canonicalWarning = collision.warning ? canonicalWarning ?? readRelayInfo(commonDir)?.canonicalWarning ?? collision.warning : undefined
-  }
-
-  let stopped = false
-  let lost: string | undefined
-  let ticking: Promise<void> | null = null
-  // A loaded machine makes a healthy relay miss a short probe (its event loop lagged 2-3 s with six
-  // workers running test suites on 2026-10-18). One timed-out probe means nothing; only consecutive ones mean
-  // the relay is gone, so joiners do not leave and rejoin, abandoning in-flight calls, every time the host is
-  // busy. A refused port is decisive at once: the owner's process is gone and callers are waiting on it.
-  const probeTimeoutMs = opts.probeTimeoutMs ?? LIVENESS_PROBE_TIMEOUT_MS
-  const lostAfterMisses = Math.max(1, opts.lostAfterMisses ?? LIVENESS_MISSES_BEFORE_LOST)
-  const tick = async () => {
-    if (stopped) return
-    if (canonicalWarning) {
-      const identity = await relayIdentity(canonicalPort, key)
-      if (!canonicalRelayWarning(canonicalPort, commonDir, identity, readRelayInfo(commonDir)).warning) canonicalWarning = undefined
-    }
-    if (owned || lost) return
-    const result = await probeRelayContract(port, commonDir, key, probeTimeoutMs)
-    const who = result.status
-    if (stopped) return
-    if (who === 'ours') { misses = 0; return }
-    if (who === 'incompatible') {
-      lost = new LocalRelayCompatibilityError(port, readRelayInfo(commonDir)?.pid, result.detail ?? 'no supported contract').message
-      log(lost)
-      return
-    }
-    if (who === 'foreign') {
-      lost = `127.0.0.1:${port} is now another clone's relay`
-      log(`local room ${room}: ${lost}; the session will join afresh`)
-      return
-    }
-    misses = who === 'slow' ? misses + 1 : lostAfterMisses
-    if (misses < lostAfterMisses) return
-    if (!lead) {
-      lost = `the lead's local relay for ${room} is no longer running`
-      log(`local room ${room}: ${lost}`)
-      return
-    }
-    // Relay gone: take the authority from its dead owner, then its port. A live lock holder (a stalled
-    // owner, or a survivor that won) keeps it; we reconnect to whoever serves.
-    const lock = AuthorityLock.take(commonDir)
-    if (!lock) return
-    let started: StartedRelay
-    try { started = await start(port, lock, opts.seed?.()) } catch { lock.release(); return /* the port is someone else's for now */ }
-    if (stopped) {
-      // Still serving after a failed save: keep it as ours, so it is not an orphan the session cannot see.
-      try { await started.close() } catch (error) { owned = started; throw error }
-      return
-    }
-    owned = started
-    ownerWarning = undefined
-    write()
-    log(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`)
-  }
-  // One takeover attempt at a time; stop() waits for the one in flight.
-  const timer = setInterval(() => {
-    if (ticking) return
-    const work = observeTakeover(tick, error => log(`local room ${room}: relay takeover failed: ${error instanceof Error ? error.message : String(error)}`))
-    ticking = work
-    void work.then(() => { if (ticking === work) ticking = null })
-  }, opts.watchMs ?? 2000)
-  timer.unref?.()
-
-  return {
-    url: `ws://127.0.0.1:${port}`,
-    httpUrl: `http://127.0.0.1:${port}`,
-    port,
-    key,
-    get canonicalWarning() { return canonicalWarning },
-    get ownerWarning() { return ownerWarning },
-    get owned() { return owned !== null },
-    get lost() { return lost },
-    async forget() {
-      if (!await relayHealth(port, key)) throw new Error('local relay identity could not be verified')
-      const resource = '/memory?room=' + encodeURIComponent(room)
-      const response = await fetch('http://127.0.0.1:' + port + resource, {
-        method: 'DELETE', headers: { authorization: localProofHeader(key, 'DELETE', resource, port) }, signal: AbortSignal.timeout(5000),
-      })
-      if (!response.ok) throw new Error('could not forget local room memory: ' + response.status)
-    },
-    async stop() {
-      stopped = true
-      clearInterval(timer)
-      await ticking
-      // The file stays: it records the port and key the survivors will take over with, and new
-      // joiners probe the port before trusting it.
-      // A failed final save leaves the relay serving under this process: the room's latest state stays
-      // recoverable by its clients (and a later save) until exit, instead of a successor loading an older file.
-      if (owned) {
-        try { await owned.close() }
-        catch (error) {
-          const cause = error instanceof Error ? error.message : String(error)
-          log(`local room ${room}: local room state could not be saved: ${cause}; the relay keeps running until this process exits`)
-          throw error
-        }
-        owned = null
-      }
-    },
-  }
 }

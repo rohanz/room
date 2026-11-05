@@ -4,16 +4,19 @@ import { join } from 'node:path'
 import { CURRENT_COMPAT, LEGACY_COMPAT, parseAdvertisement, selectContract, type CompatAdvertisement } from '@room/hub-core'
 import { writeAtomic } from './leases.js'
 
+/** This local client preserves replicas and delegates transport lifetime to a standalone daemon. */
+export const LOCAL_CLIENT_COMPAT: CompatAdvertisement = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] }, requiredCapabilities: { 'room.daemon': [1] } }
+
 export interface ClientCompatibility { offer: CompatAdvertisement; legacy: boolean }
 
 /** Without an advertisement, try only the fixed legacy profile; never retry a rejected advertisement. */
-export function compatibilityFromHealth(health: unknown, learned = false): ClientCompatibility {
+export function compatibilityFromHealth(health: unknown, learned = false, client: CompatAdvertisement = CURRENT_COMPAT): ClientCompatibility {
   if (health && typeof health === 'object' && 'compat' in health) {
     let offer: CompatAdvertisement
     try { offer = parseAdvertisement(health.compat) }
     catch (error) { throw new Error(`Room server advertised an invalid compatibility contract; update the server (${error instanceof Error ? error.message : String(error)})`) }
     // Discovery has no room policy; check only whether any declared writable schema can overlap.
-    const results = offer.schemas.write.map(activeSchema => selectContract(CURRENT_COMPAT, offer, { activeSchema }))
+    const results = offer.schemas.write.map(activeSchema => selectContract(client, offer, { activeSchema }))
     if (!results.some(r => r.ok)) {
       const refusal = results.find(r => !r.ok)
       throw new Error(refusal && !refusal.ok ? refusal.error.text : 'Room server has no supported writable schema; update the server')

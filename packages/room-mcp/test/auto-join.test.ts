@@ -1,3 +1,4 @@
+import { recordTestDaemon, stopTestDaemon } from './daemon-fixture.js'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -10,10 +11,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RoomdError } from '@room/roomd'
-import { ensureLocalRelay, relayProof, startRelay } from '@room/relay'
+import { readRelayInfo, relayProof } from '@room/relay'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
-import { LOCAL, NoRoom, joinSession, leaveSession, writeSessionRecord, type Session } from '../src/session.js'
+import { LOCAL, NoRoom, createLocalReplica, joinSession, leaveSession, writeSessionRecord, type Session } from '../src/session.js'
+import { explicitLocalReplica } from '../src/tools/join.js'
+import { gitCommonDir } from '@room/roomd'
+import { RoomDoc } from '@room/shared'
+import { memorySession } from './fixtures/session.js'
 import { createTools } from '../src/tools.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { workerProcessEnv } from '../src/worker-config.js'
@@ -23,7 +28,7 @@ import { projectWorkers } from '../src/worker-projector.js'
 import { hubAppend } from '@room/shared/testing'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
-const cleanups: (() => Promise<void> | void)[] = []
+const cleanups: (() => Promise<unknown> | void)[] = []
 afterEach(async () => { for (const c of cleanups.splice(0).reverse()) await c() })
 
 function repo(): string {
@@ -32,6 +37,7 @@ function repo(): string {
   git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 'Ada')
   fs.writeFileSync(path.join(dir, 'app.py'), 'x = 1\n')
   git('add', '.'); git('commit', '-qm', 'init')
+  cleanups.push(() => stopTestDaemon(path.join(dir, '.git')))
   return dir
 }
 
@@ -45,10 +51,17 @@ async function startMcp(dir: string, workerEnv: Record<string, string> = {}) {
   const transport = new StdioClientTransport({ command: path.join(ROOT, 'node_modules/.bin/tsx'), args: [path.join(ROOT, 'packages/room-mcp/src/index.ts')], env, cwd: dir, stderr: 'pipe' })
   transport.stderr?.on('data', d => { lines.push(...String(d).split('\n').filter(Boolean)) })
   const client = new Client({ name: 'test-host', version: '1' })
+  // `dir` is a clone this test created in a private temp directory, so only this test's own room-mcp children can
+  // launch a daemon there: a changed discovery nonce is this fixture's launch, never an adopted foreign daemon.
+  const initialCommon = gitCommonDir(dir), initialNonce = readRelayInfo(initialCommon)?.nonce
   await client.connect(transport)
+  if (readRelayInfo(initialCommon)?.nonce !== initialNonce) recordTestDaemon(initialCommon)
   cleanups.push(() => client.close())
-  const call = async (name: string, args: Record<string, unknown> = {}) =>
-    ((await client.callTool({ name, arguments: args }, undefined, { timeout: 120_000 })).content as { text: string }[])[0].text
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const common = gitCommonDir(dir), before = readRelayInfo(common)?.nonce
+    try { return ((await client.callTool({ name, arguments: args }, undefined, { timeout: 120_000 })).content as { text: string }[])[0].text }
+    finally { if (readRelayInfo(common)?.nonce !== before) recordTestDaemon(common) }
+  }
   const waitFor = async (pattern: RegExp, ms: number) => {
     const deadline = Date.now() + ms
     while (!lines.some(l => pattern.test(l))) {
@@ -77,6 +90,16 @@ async function wedgedRelay(commonDir: string, key: string): Promise<{ close(): v
   const close = () => { if (closed) return; closed = true; for (const s of sockets) s.destroy(); server.close() }
   cleanups.push(close)
   return { close }
+}
+
+/** Kill only this test clone's known daemon, then occupy its port with an unrelated listener. */
+async function crashOntoForeignPort(commonDir: string) {
+  const record = JSON.parse(fs.readFileSync(path.join(commonDir, 'room', 'relay.json'), 'utf8')) as { pid: number; port: number }
+  expect(record.pid).not.toBe(process.pid)
+  process.kill(record.pid, 'SIGKILL')
+  const server = http.createServer((_req, res) => res.end('foreign listener'))
+  await vi.waitFor(() => new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(record.port, '127.0.0.1', resolve) }), { timeout: 5000, interval: 20 })
+  cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())))
 }
 
 describe('automatic join (real room-mcp processes)', () => {
@@ -173,47 +196,26 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(await mcp.call('room_state')).toContain('you: Ada+late')
   }, 60_000)
 
-  it('a session whose first join hits a wedged relay owner joins by itself once that owner is gone', async () => {
+  it('a live legacy in-session relay is diagnosed and never replaced by a client', async () => {
     const dir = repo()
     const commonDir = path.join(dir, '.git')
     const wedged = await wedgedRelay(commonDir, crypto.randomBytes(16).toString('hex'))
-    const started = Date.now()
     const mcp = await startMcp(dir)
-    // A tool call made while the join is still failing waits for the ensure step instead of reporting "not in a room".
-    const state = mcp.call('room_state')
-    await mcp.waitFor(/could not sync/, 30_000)
-    wedged.close() // the old owner exits (what a host restart does to the previous process)
-    const closedAt = Date.now()
-    await mcp.waitFor(/^room-mcp: ready$/, 20_000)
-    const joinedAfter = Date.now() - closedAt
-    const reply = await state
-    expect(reply).toContain('you: Ada')
-    expect(reply).not.toMatch(/not in a room|room_create/)
-    expect(joinedAfter).toBeLessThan(10_000)
-    const log = fs.readFileSync(path.join(commonDir, 'room-mcp.log'), 'utf8')
-    expect(log).toMatch(/join attempt 1 failed \(sync\): could not sync/)
-    expect(log).toMatch(/ready/)
-    console.log(`joined ${joinedAfter}ms after the wedged owner left (${Date.now() - started}ms after start)`)
-  }, 90_000)
+    await mcp.waitFor(/drain|mixed.*runtime|legacy|in-session/i, 30_000)
+    expect(await mcp.call('room_state')).toMatch(/drain|mixed.*runtime|legacy|in-session/i)
+    wedged.close()
+    expect(await mcp.call('room_leave')).toMatch(/not in|left/)
+  }, 60_000)
 
   it('after room_join, a session whose relay is lost rejoins the room it chose on the next tool call; room_leave keeps it out', async () => {
     const dir = repo()
     const commonDir = path.join(dir, '.git')
-    // The test runs the clone's relay, so the session is a client of it and can lose it.
-    const owner = await ensureLocalRelay(commonDir, 'local/x', { watchMs: 60_000, log: () => {} })
-    cleanups.push(() => owner.stop())
     const mcp = await startMcp(dir)
     await mcp.waitFor(/^room-mcp: ready$/, 30_000)
     expect(await mcp.call('room_join', { room: 'picked' })).toContain('joined local/picked as Ada')
-    // Another clone's relay takes the port (what a host restart overnight can do).
-    const port = owner.port
-    await owner.stop()
-    const foreign = await startRelay(port, { key: 'other-key', commonDir: fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-other-')) })
-    cleanups.push(() => foreign.close())
-    await mcp.waitFor(/another clone's relay; the session will join afresh/, 20_000)
-    const lostAt = mcp.lines.length
+    await crashOntoForeignPort(commonDir)
     expect(await mcp.call('room_state')).toContain('you: Ada')
-    expect(mcp.lines.slice(lostAt).join('\n')).toMatch(/Ada's agent joined local\/picked \(clone /)
+    expect(mcp.lines.join('\n')).not.toMatch(/session will join afresh/)
     expect(await mcp.call('room_leave')).toMatch(/^left local\/picked/)
     expect(await mcp.call('room_state')).toBe('error: not in the local room; room_join to join it.')
   }, 90_000)
@@ -231,18 +233,14 @@ describe('automatic join (real room-mcp processes)', () => {
   it('automatic reconnect keeps the current sharing policy instead of replaying the startup environment', async () => {
     const dir = repo()
     const commonDir = path.join(dir, '.git')
-    const owner = await ensureLocalRelay(commonDir, 'local/x', { watchMs: 60_000, log: () => {} })
-    cleanups.push(() => owner.stop())
     const mcp = await startMcp(dir, { ROOM_NAME: 'Source', ROOM_TAG: 'privacy', ROOM_SHARE: 'full' })
     await mcp.waitFor(/^room-mcp: ready$/, 30_000)
     fs.writeFileSync(path.join(dir, 'app.py'), 'PRIVATE-RECONNECT-EDIT\n')
     expect(await mcp.call('room_share', { level: 'intent' })).toContain('only your plans')
-    const port = owner.port
-    await owner.stop()
-    const foreign = await startRelay(port, { key: 'other-key', commonDir: fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-other-')) })
-    cleanups.push(() => foreign.close())
-    await mcp.waitFor(/another clone's relay; the session will join afresh/, 20_000)
+    await crashOntoForeignPort(commonDir)
     expect(await mcp.call('room_state')).toContain('you: Source+privacy')
+
+    await vi.waitFor(async () => expect(await mcp.call('room_send', { type: 'note', text: 'recovery complete' })).not.toMatch(/not sent|unreachable|paused/), { timeout: 40_000 })
 
     // A distinct checkout reads the fresh publication, rather than any cached tool result.
     const observerDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-observer-')))
@@ -256,6 +254,69 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(observer.room.manifestHead.get('Source+privacy')?.level).toBe('intent')
     expect(await mcp.call('room_share')).toContain('only your plans')
   }, 90_000)
+})
+
+describe('explicit local destination selection', () => {
+  it('detaches a different room or clone only for an explicit join; automatic rejoin refuses it intact', async () => {
+    const dir = repo(), other = repo()
+    const replica = createLocalReplica()
+    cleanups.push(() => replica.doc.destroy())
+    replica.common = await gitCommonDir(dir)
+    replica.room = 'local/original'
+    replica.doc.getMap('unsaved').set('only-copy', 'keep me')
+    for (const opts of [{ dir, room: 'picked' }, { dir: other, room: 'original' }]) {
+      await expect(joinSession({ ...opts, server: LOCAL, name: 'Ada', localReplica: replica }))
+        .rejects.toThrow('the retained local replica belongs to a different clone or room')
+      const selected = await explicitLocalReplica(opts, replica)
+      expect(selected).not.toBe(replica)
+      expect(selected.doc.getMap('unsaved').size).toBe(0)
+      selected.doc.destroy()
+      expect(replica.doc.isDestroyed).toBe(false)
+      expect(replica.doc.getMap('unsaved').get('only-copy')).toBe('keep me')
+    }
+    expect(await explicitLocalReplica({ dir, room: 'original' }, replica)).toBe(replica)
+  })
+
+  it.each([false, true])('room_join selects a new replica and preserves the old replica for rollback; failed=%s', async failed => {
+    const dir = repo(), common = await gitCommonDir(dir)
+    const original = createLocalReplica()
+    original.common = common; original.room = 'local/original'
+    original.doc.getMap('unsaved').set('only-copy', 'old room only')
+    const makeSession = (replica: typeof original, room: string) => ({
+      ...memorySession({ name: 'Ada', kind: 'agent' }, dir, new RoomDoc(replica.doc), room),
+      local: { url: 'ws://127.0.0.1:9', stop: async () => {} } as Session['local'], localReplica: replica,
+    })
+    let current: Session | null = makeSession(original, 'local/original')
+    let cached = original
+    const replicas = [original]
+    const attempts: Session['localReplica'][] = []
+    const tools = createTools({ cwd: dir, getSession: () => current, setSession: s => { current = s },
+      // The MCP keeps a startup replica after rooms.remove; honor the tool's rollback selection.
+      join: async opts => {
+        cached = await explicitLocalReplica(opts, cached)
+        attempts.push(cached); replicas.push(cached)
+        cached.common = common; cached.room = opts.room
+        if (failed && opts.room === 'local/picked') throw new Error('destination unavailable')
+        return makeSession(cached, opts.room!)
+      },
+    })
+    cleanups.push(async () => {
+      await tools.shutdown()
+      for (const replica of new Set(replicas)) replica.doc.destroy()
+    })
+    const result = await tools.call('room_join', { where: 'local', room: 'picked' })
+    expect(attempts[0]).not.toBe(original)
+    expect(original.doc.isDestroyed).toBe(false)
+    expect(original.doc.getMap('unsaved').get('only-copy')).toBe('old room only')
+    if (failed) {
+      expect(result).toContain('back in local/original')
+      expect(attempts[1]).toBe(original)
+      expect(current!.localReplica).toBe(original)
+    } else {
+      expect(result).toContain('joined local/picked as Ada')
+      expect(current!.room.doc.getMap('unsaved').size).toBe(0)
+    }
+  })
 })
 
 describe('AutoJoin (the ensure step)', () => {
@@ -368,6 +429,22 @@ describe('AutoJoin (the ensure step)', () => {
     expect(t.discarded).toEqual([late])
     await t.a.ensure()
     expect(t.current()).toBeNull()
+  })
+
+  it('deadline exhaustion and internal cancellation dispose late transport without disposing its replica', async () => {
+    for (const internalCancel of [false, true]) {
+      let finish!: (s: Session) => void
+      const discard = vi.fn(async () => {})
+      const onCancel = vi.fn()
+      const t = setup(() => new Promise(resolve => { finish = resolve }), { deadlineMs: 10, delaysMs: [1000], discard, onCancel })
+      const run = t.a.ensure()
+      if (internalCancel) t.a.cancel({ explicitLeave: false })
+      await run
+      finish(fakeSession('retained'))
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(discard).toHaveBeenCalledWith(expect.anything(), 'attempt')
+      expect(onCancel).not.toHaveBeenCalled()
+    }
   })
 
   it('a room a human joined becomes the one meant: a stopped join resumes for it, and its failures are reported afresh', async () => {

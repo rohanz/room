@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -8,8 +8,7 @@ import WebSocket from 'ws'
 import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 const keyedSocket = (key: string) => authorizedWebSocket({ key })
 import { WebsocketProvider } from 'y-websocket'
-import { canonicalRelayWarning, cloneId, deterministicPort, ensureLocalRelay, LOCAL_FILE, localProofHeader, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
-import { portAnswers, relayAnswers } from './probes.js'
+import { canonicalRelayWarning, localProofHeader, startRelay } from '../src/index.js'
 import http from 'node:http'
 
 /** A stand-in for a clone's git common dir: the relay only needs a directory for its discovery file. */
@@ -27,94 +26,6 @@ it('classifies old, mismatched-key, foreign-clone, and non-Room canonical listen
   expect(mismatch.warning).toBe(old.warning)
   expect(canonicalRelayWarning(port, common, { health: { ok: true, local: true, clone: 'another-clone' }, proven: false }, info)).toEqual({ roomRelay: true })
   expect(canonicalRelayWarning(port, common, { health: { ok: true }, proven: false }, info)).toEqual({ roomRelay: false })
-})
-
-it.each(['old', 'different key', 'non-Room'])('reports an occupied canonical port held by %s (socket integration)', async kind => {
-  const common = await makeCommonDir()
-  const port = deterministicPort(common)
-  const server = http.createServer((_req, res) => {
-    res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify(kind === 'non-Room' ? { ok: true } : kind === 'old' ? { ok: true, local: true } : { ok: true, local: true, schema: 2, hub: 1, clone: cloneId(common) }))
-  })
-  await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve))
-  await fsp.mkdir(path.join(common, 'room'), { recursive: true })
-  await fsp.writeFile(path.join(common, LOCAL_FILE), JSON.stringify({ schema: 2, port, pid: 321, room: 'local/x', startedAt: Date.UTC(2026, 8, 28), key: 'stale' }))
-  const logs: string[] = []
-  let relay: Awaited<ReturnType<typeof ensureLocalRelay>> | undefined
-  try {
-    relay = await ensureLocalRelay(common, 'local/x', { log: line => logs.push(line) })
-    expect(relay.port).not.toBe(port)
-    if (kind === 'non-Room') {
-      expect(relay.canonicalWarning).toBeUndefined()
-      expect(logs.join('\n')).toContain('taken by something else')
-    } else {
-      expect(relay.canonicalWarning).toContain("an older Room session (pid 321, started 2026-09-28T00:00:00.000Z) still holds this room's relay")
-      expect(logs.join('\n')).toContain(relay.canonicalWarning)
-      expect(logs.join('\n')).not.toContain('taken by something else')
-      const joiner = await ensureLocalRelay(common, 'local/x', { joinOnly: true })
-      try { expect(joiner.canonicalWarning).toBe(relay.canonicalWarning) } finally { await joiner.stop() }
-    }
-  } finally { await relay?.stop(); await new Promise<void>(resolve => server.close(() => resolve())); await fsp.rm(common, { recursive: true, force: true }) }
-})
-
-describe('local relay', () => {
-  it('joinOnly joins a running relay but never starts one', async () => {
-    const other = await makeCommonDir()
-    await expect(ensureLocalRelay(other, 'local/a/main', { joinOnly: true })).rejects.toBeInstanceOf(NoLocalRelay)
-    expect(fs.existsSync(path.join(other, LOCAL_FILE))).toBe(false)
-    const common = await makeCommonDir()
-    const owner = await ensureLocalRelay(common, 'local/a/main', { watchMs: 30_000 })
-    const joiner = await ensureLocalRelay(common, 'local/a/main', { watchMs: 30_000, joinOnly: true })
-    expect(joiner.owned).toBe(false)
-    expect(joiner.port).toBe(owner.port)
-    await joiner.stop(); await owner.stop()
-  })
-
-  it('a joiner declares the relay lost only after consecutive probe misses', async () => {
-    const common = await makeCommonDir()
-    const owner = await ensureLocalRelay(common, 'local/a/main', { watchMs: 30_000 })
-    // A 1 ms probe timeout misses a healthy relay on every tick, as a loaded host can.
-    const brittle = await ensureLocalRelay(common, 'local/a/main', { watchMs: 40, joinOnly: true, probeTimeoutMs: 1, lostAfterMisses: 1 })
-    const patient = await ensureLocalRelay(common, 'local/a/main', { watchMs: 40, joinOnly: true, probeTimeoutMs: 1, lostAfterMisses: 1000 })
-    try {
-      await vi.waitFor(() => expect(brittle.lost).toContain('no longer running'), { timeout: 5000, interval: 20 })
-      await new Promise(r => setTimeout(r, 400))
-      expect(patient.lost).toBeUndefined()
-      expect(patient.port).toBe(owner.port)
-      // A refused port is the owner gone, not load: decisive on the next tick despite the miss tolerance.
-      await owner.stop()
-      await vi.waitFor(() => expect(patient.lost).toContain('no longer running'), { timeout: 2000, interval: 20 })
-    } finally { await patient.stop(); await brittle.stop() }
-  })
-
-  it('first joiner starts the relay, later joiners reuse it, and a survivor takes over the same port when the owner leaves', async () => {
-    const common = await makeCommonDir()
-    const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
-    expect(a.owned).toBe(true)
-    expect(readRelayInfo(common)).toMatchObject({ port: a.port, discovery: 1, runtime: 'session-relay', compat: { bootstrap: 1 }, lead: true })
-    const b = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
-    expect(b.owned).toBe(false)
-    expect(b.port).toBe(a.port)
-    // Two providers through the relay converge.
-    const d1 = new Y.Doc(), d2 = new Y.Doc()
-    expect(b.key).toBe(a.key)
-    const p1 = new WebsocketProvider(a.url, 'local%2Fx', d1, { WebSocketPolyfill: keyedSocket(a.key) as never, params: { schema: '2' } })
-    const p2 = new WebsocketProvider(b.url, 'local%2Fx', d2, { WebSocketPolyfill: keyedSocket(b.key) as never, params: { schema: '2' } })
-    await until(() => p1.synced && p2.synced)
-    d1.getText('t').insert(0, 'hello')
-    await until(() => d2.getText('t').toString() === 'hello')
-    // Owner leaves: b notices the dead port and takes it over; providers reconnect and still converge.
-    await a.stop()
-    await until(() => b.owned, 8000)
-    expect(readRelayInfo(common)?.port).toBe(a.port)
-    await until(async () => portAnswers(b.port))
-    await until(() => p1.wsconnected && p2.wsconnected, 15000)
-    d2.getText('t').insert(5, ' world')
-    await until(() => d1.getText('t').toString() === 'hello world', 15000)
-    p1.destroy(); p2.destroy()
-    await b.stop()
-    expect(fs.existsSync(path.join(common, 'room', 'relay.json'))).toBe(true)
-  })
 })
 
 describe('local relay browser view', () => {
@@ -154,59 +65,6 @@ describe('local relay browser view', () => {
       const leak = await get(`http://127.0.0.1:${relay.port}/../${path.basename(sibling)}/secret.txt`)
       expect(leak.body).not.toContain('shh')
     } finally { await relay.close() }
-  })
-})
-
-describe('local relay hardening', () => {
-  it('two sessions starting at the same moment end up in one relay on the deterministic port', async () => {
-    const common = await makeCommonDir()
-    const want = deterministicPort(common)
-    expect(want).toBeGreaterThanOrEqual(40000); expect(want).toBeLessThan(60000)
-    expect(deterministicPort(common)).toBe(want)
-    const [a, b] = await Promise.all([ensureLocalRelay(common, 'local/x', { watchMs: 100 }), ensureLocalRelay(common, 'local/x', { watchMs: 100 })])
-    expect(a.port).toBe(b.port)
-    expect([a.owned, b.owned].filter(Boolean)).toHaveLength(1)
-    expect(a.key).toBe(b.key)
-    expect(readRelayInfo(common)?.port).toBe(a.port)
-    await a.stop(); await b.stop()
-  })
-
-  it('a stale file whose port is held by something that is not a relay is ignored', async () => {
-    const common = await makeCommonDir()
-    // an unrelated HTTP server squats on the recorded port
-    const squatter = http.createServer((_q, res) => { res.writeHead(200); res.end('not a relay') })
-    await new Promise<void>(r => squatter.listen(0, '127.0.0.1', r))
-    const squat = (squatter.address() as { port: number }).port
-    await fsp.mkdir(path.join(common, 'room'), { recursive: true })
-    await fsp.writeFile(path.join(common, 'room', 'relay.json'), JSON.stringify({ schema: 2, port: squat, pid: process.pid, room: 'local/x', startedAt: Date.now(), key: 'k' }))
-    expect(await portAnswers(squat)).toBe(true)
-    expect(await relayAnswers(squat)).toBe(false)
-    const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
-    expect(a.owned).toBe(true)
-    expect(a.port).not.toBe(squat)
-    expect(await relayAnswers(a.port)).toBe(true)
-    await a.stop(); squatter.close()
-  })
-
-  it('websockets need the key from room-local.json; /health stays open', async () => {
-    const common = await makeCommonDir()
-    const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
-    const mode = (await fsp.stat(path.join(common, 'room', 'relay.json'))).mode & 0o777
-    expect(mode).toBe(0o600)
-    expect(readRelayInfo(common)?.key).toBe(a.key)
-    expect(await relayAnswers(a.port)).toBe(true)
-    const refused = await new Promise<number>(resolve => {
-      const ws = new WebSocket(`${a.url}/local%2Fx?schema=2`)
-      ws.on('unexpected-response', (_q, res) => { resolve(res.statusCode ?? 0); ws.terminate() })
-      ws.on('open', () => { resolve(101); ws.close() })
-      ws.on('error', () => {})
-    })
-    expect(refused).toBe(403)
-    const doc = new Y.Doc()
-    const ok = new WebsocketProvider(a.url, 'local%2Fx', doc, { WebSocketPolyfill: keyedSocket(a.key) as never, params: { schema: '2' } })
-    await until(() => ok.synced)
-    ok.destroy()
-    await a.stop()
   })
 })
 
@@ -262,85 +120,4 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
     for (const doc of docs) doc.destroy()
     fs.rmSync(commonDir, { recursive: true, force: true })
   }
-})
-
-describe('relay discovery and takeover', () => {
-  it('a discovery file naming another clone\'s live relay is stale: the joiner runs this clone\'s relay instead', async () => {
-    const mine = await makeCommonDir(), other = await makeCommonDir()
-    const foreign = await ensureLocalRelay(other, 'local/other', { watchMs: 100 })
-    // e.g. the recorded port was reused by another clone's relay after this clone's owner exited
-    await fsp.mkdir(path.join(mine, 'room'), { recursive: true })
-    await fsp.writeFile(path.join(mine, 'room', 'relay.json'), JSON.stringify({ schema: 2, port: foreign.port, pid: 999999, room: 'local/x', startedAt: Date.now(), key: 'stale-key' }))
-    const logs: string[] = []
-    const a = await ensureLocalRelay(mine, 'local/x', { watchMs: 100, log: l => logs.push(l) })
-    try {
-      expect(a.owned).toBe(true)
-      expect(a.port).not.toBe(foreign.port)
-      expect(readRelayInfo(mine)?.port).toBe(a.port)
-      expect(logs.join('\n')).toMatch(/does not serve this clone with its key; treating the file as stale/)
-      expect(await probeRelay(a.port, mine, a.key)).toBe('ours')
-      expect(await probeRelay(a.port, mine, 'wrong')).toBe('foreign')
-      expect(await probeRelay(a.port, other, a.key)).toBe('foreign')
-    } finally { await a.stop(); await foreign.stop() }
-  })
-
-  it('a live relay for this clone whose key differs from the discovery file is not adopted', async () => {
-    const common = await makeCommonDir()
-    const relay = await startRelay(0, { key: 'the-relays-key', commonDir: common })
-    await fsp.mkdir(path.join(common, 'room'), { recursive: true })
-    await fsp.writeFile(path.join(common, 'room', 'relay.json'), JSON.stringify({ schema: 2, port: relay.port, pid: process.pid, room: 'local/x', startedAt: Date.now(), key: 'another-key' }))
-    const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
-    try {
-      expect(a.port).not.toBe(relay.port)
-      expect(a.owned).toBe(true)
-    } finally { await a.stop(); await relay.close() }
-  })
-
-  it('publishes the discovery file by rename, leaving no partial or temporary file', async () => {
-    const common = await makeCommonDir()
-    const file = path.join(common, 'room', 'relay.json')
-    await fsp.mkdir(path.dirname(file), { recursive: true })
-    await fsp.writeFile(file, 'partial{')
-    const before = (await fsp.stat(file)).ino
-    const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
-    try {
-      expect((await fsp.stat(file)).ino).not.toBe(before)
-      expect(readRelayInfo(common)?.port).toBe(a.port)
-      expect((await fsp.readdir(common)).filter(f => f.endsWith('.tmp'))).toEqual([])
-    } finally { await a.stop() }
-  })
-
-  it('a session whose relay port is taken over by another clone\'s relay is marked lost, so it joins afresh', async () => {
-    const common = await makeCommonDir(), other = await makeCommonDir()
-    const owner = await ensureLocalRelay(common, 'local/x', { watchMs: 30_000 })
-    const b = await ensureLocalRelay(common, 'local/x', { watchMs: 300 })
-    const port = owner.port
-    await owner.stop()
-    const foreign = await startRelay(port, { key: 'other-key', commonDir: other })
-    try {
-      await until(() => !!b.lost)
-      expect(b.lost).toMatch(/is now another clone's relay/)
-      expect(b.owned).toBe(false)
-    } finally { await b.stop(); await foreign.close() }
-  })
-
-  it('a stopped handle never starts a relay from a takeover attempt that was already in flight', async () => {
-    const common = await makeCommonDir()
-    const owner = await ensureLocalRelay(common, 'local/x', { watchMs: 30_000 })
-    const b = await ensureLocalRelay(common, 'local/x', { watchMs: 40 })
-    const port = owner.port
-    await owner.stop()
-    // The port now holds a dying owner: /health hangs, then the listener goes away without answering.
-    const sockets = new Set<import('node:net').Socket>()
-    const dying = http.createServer(() => { /* never answer */ })
-    dying.on('connection', s => { sockets.add(s) })
-    await new Promise<void>(r => dying.listen(port, '127.0.0.1', r))
-    await until(() => sockets.size > 0) // b's takeover probe is now waiting on the dying owner
-    const stopping = b.stop()
-    dying.close(); for (const s of sockets) s.destroy()
-    await stopping
-    await wait(300)
-    expect(b.owned).toBe(false)
-    expect(await portAnswers(port)).toBe(false)
-  })
 })

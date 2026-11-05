@@ -1,3 +1,4 @@
+import { requireDaemonRuntime } from '../src/daemon-cutover.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -6,8 +7,7 @@ import { basename, join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import { ensureLocalRelay } from '@room/relay'
-import { NoLocalRelay } from '@room/relay'
+import { ensureLocalDaemon } from '@room/relay'
 import { realGitCommonDir } from '@room/roomd'
 import { joinSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
@@ -18,14 +18,15 @@ import { registerWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { chooseName, processToken } from '../src/names.js'
 
-vi.mock('@room/relay', async importOriginal => ({ ...(await importOriginal() as object), ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
+vi.mock('../src/daemon-cutover.js', () => ({ requireDaemonRuntime: vi.fn(async () => {}) }))
+vi.mock('@room/relay', async importOriginal => ({ ...(await importOriginal() as object), ensureLocalDaemon: vi.fn(async () => { throw new Error('relay boundary') }) }))
 // Admission is covered by worker-registry.test.ts; here a dispatched worker is admitted as is.
 vi.mock('../src/worker-registry.js', async importOriginal => ({ ...(await importOriginal() as object), admitWorkerEnvironment: vi.fn(async () => {}) }))
 let dir: string
 const dispose: (() => void)[] = []
 beforeEach(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) vi.stubEnv(key, undefined)
-  vi.mocked(ensureLocalRelay).mockClear()
+  vi.mocked(ensureLocalDaemon).mockClear()
   dir = mkdtempSync(join(tmpdir(), 'local-naming-'))
   execFileSync('git', ['init', '-q', '-b', 'main', dir])
   execFileSync('git', ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'init'])
@@ -34,18 +35,18 @@ afterEach(async () => { dispose.splice(0).forEach(fn => fn()); await closeRegist
 
 it.each(['anything', 'my room!?', undefined])('normalizes the local relay room for %s without an origin', async room => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada', room })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), room === undefined ? `local/${basename(dir)}` : room === 'anything' ? 'local/anything' : 'local/myroom', expect.any(Object))
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), room === undefined ? `local/${basename(dir)}` : room === 'anything' ? 'local/anything' : 'local/myroom', expect.any(Object))
 })
 it('keeps an explicit local repository name on every branch', async () => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada', room: 'local/lead' })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
 })
 it('preserves the local room inherited through worker environment config', async () => {
   vi.stubEnv('ROOM_ROOM', 'local/lead')
   vi.stubEnv('ROOM_LEAD', 'Ada')
   const config = await resolveConfig({ dir, args: { server: 'local' } })
   await expect(joinSession({ dir, server: config.server, room: config.room, name: 'Ada' })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
 })
 
 it('refuses a local worker from another repository before starting any relay', async () => {
@@ -54,31 +55,35 @@ it('refuses a local worker from another repository before starting any relay', a
   execFileSync('git', ['init', '-q', '-b', 'main', other])
   execFileSync('git', ['-C', other, '-c', 'user.name=Ada', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'init'])
   await expect(joinSession({ dir, server: 'local', name: 'Ada', leadClone: await realGitCommonDir(other) })).rejects.toThrow('another repository than its lead')
-  expect(ensureLocalRelay).not.toHaveBeenCalled()
+  expect(ensureLocalDaemon).not.toHaveBeenCalled()
 })
 
-it('a local worker without a named lead clone only joins an existing relay', async () => {
-  vi.mocked(ensureLocalRelay).mockRejectedValueOnce(new NoLocalRelay('local/lead'))
-  await expect(joinSession({ dir, server: 'local', name: 'Ada', joinOnly: true })).rejects.toThrow('cannot start one')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: true }))
+it('a local worker without a named lead clone may ensure the daemon', async () => {
+  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toThrow('relay boundary')
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ entryPath: expect.any(String) }))
 })
 
-it.each(['claude', 'codex'])('a dispatched %s worker never starts or takes over the relay, even with its lead clone named', async host => {
+it.each(['claude', 'codex'])('a dispatched %s worker may ensure the standalone daemon', async host => {
   vi.stubEnv('ROOM_WORKER_ID', 'w_01'); vi.stubEnv('ROOM_WORKER_HOST', host)
   vi.stubEnv('ROOM_LEAD_CLONE', await realGitCommonDir(dir))
-  vi.mocked(ensureLocalRelay).mockRejectedValueOnce(new NoLocalRelay('local/lead'))
-  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toThrow("It joins once the lead's session is back.")
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: true }))
-})
-it('a lead session may start the relay', async () => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: false, lead: true }))
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.not.objectContaining({ joinOnly: true }))
 })
-it("a session in a Room worker's worktree is not a lead, even without worker variables", async () => {
+it('a lead session may ensure the daemon', async () => {
+  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toThrow('relay boundary')
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.any(Object))
+})
+it("a nested host in a Room worker's worktree may ensure the daemon without worker variables", async () => {
   const wt = join(dir, '.room', 'workers', 'w')
   execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'room/w', wt])
   await expect(joinSession({ dir: wt, server: 'local', name: 'Ada', room: `local/${basename(dir)}` })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: false, lead: false }))
+  expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.any(Object))
+})
+
+it('a mixed-runtime cutover refusal stops automatic retries before launch', async () => {
+  vi.mocked(requireDaemonRuntime).mockRejectedValueOnce(new Error('drain the live legacy owner before starting the daemon'))
+  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toMatchObject({ code: 2, message: expect.stringContaining('drain the live legacy owner') })
+  expect(ensureLocalDaemon).not.toHaveBeenCalled()
 })
 
 it('keeps distinct Codex labels for several sessions in one checkout', async () => {
@@ -126,12 +131,12 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
 
 it.each(['', '   ', '!@#$'])('rejects empty sanitized local name %j', async room => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada', room })).rejects.toThrow('local room name must not be empty')
-  expect(ensureLocalRelay).not.toHaveBeenCalled()
+  expect(ensureLocalDaemon).not.toHaveBeenCalled()
 })
 
 it.each([{ name: 'A\u0000B' }, { name: 'A\nB' }, { name: 'Ada', tag: 'bad\u0000tag' }])('rejects control characters in participant identity before relay setup', async identity => {
   await expect(joinSession({ dir, server: 'local', room: 'demo', ...identity })).rejects.toThrow(/control character/i)
-  expect(ensureLocalRelay).not.toHaveBeenCalled()
+  expect(ensureLocalDaemon).not.toHaveBeenCalled()
 })
 
 function transitionTools() {
