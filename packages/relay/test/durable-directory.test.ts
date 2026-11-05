@@ -21,7 +21,9 @@ it('writes below an existing root that rejects mkdir with Windows EPERM', () => 
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ value: 2 })
 })
 
-it('still syncs an existing ancestor when another writer wins mkdir', () => {
+// On Windows, writeAtomic creates directories through PowerShell's CreateDirectory with the private ACL (no window
+// with an inherited ACL), so fs.mkdirSync is never called there and these interception tests do not apply.
+it.skipIf(process.platform === 'win32')('still syncs an existing ancestor when another writer wins mkdir', () => {
   const dir = setup(), raced = path.join(dir, 'raced')
   const mkdir = fs.mkdirSync.bind(fs)
   let racedOnce = false
@@ -42,7 +44,7 @@ it('still syncs an existing ancestor when another writer wins mkdir', () => {
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ value: 1 })
 })
 
-it('does not suppress permission errors below the root', () => {
+it.skipIf(process.platform === 'win32')('does not suppress permission errors below the root', () => {
   const dir = setup(), denied = path.join(dir, 'denied'), mkdir = fs.mkdirSync.bind(fs)
   vi.spyOn(fs, 'mkdirSync').mockImplementation((target, options) => {
     if (String(target) === denied) throw Object.assign(new Error('denied'), { code: 'EPERM' })

@@ -15173,7 +15173,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 function checkWindowsAcl(report, file) {
   const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
-  if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
+  if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || report.directory !== false && !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
     throw new Error(`Room state is not private: ${file}; owner ${report.owner}; offending grants ${report.grants.filter((sid) => !allowed.has(sid)).join(", ") || "none"}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`);
   }
 }
@@ -15218,7 +15218,7 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
       $a=Get-Acl -LiteralPath $p;
       $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
     };` : ""}
-    @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
+    @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
   let report;
   try {
     report = JSON.parse(execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));

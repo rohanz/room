@@ -57,6 +57,9 @@ it('accepts only the private native Windows owner and protected effective DACL',
   expect(() => checkWindowsAcl(privateAcl, 'state')).not.toThrow()
   // An elevated administrator's files are owned by BUILTIN\\Administrators on Windows Server: ownership alone grants no access.
   expect(() => checkWindowsAcl({ ...privateAcl, owner: 'S-1-5-32-544' }, 'state')).not.toThrow()
+  // A file inheriting from its protected Room directory is private when its effective grants are; a directory must be protected.
+  expect(() => checkWindowsAcl({ ...privateAcl, protected: false, directory: false }, 'state')).not.toThrow()
+  expect(() => checkWindowsAcl({ ...privateAcl, protected: false, directory: true }, 'state')).toThrow(/not private/)
   for (const report of [{ ...privateAcl, owner: 'other' }, { ...privateAcl, protected: false }, { ...privateAcl, grants: [...privateAcl.grants, 'S-1-1-0'] }]) expect(() => checkWindowsAcl(report, 'state')).toThrow(/not private/)
 })
 

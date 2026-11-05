@@ -3,12 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-interface AclReport { owner: string; user: string; protected: boolean; grants: string[]; repaired?: boolean }
+interface AclReport { owner: string; user: string; protected: boolean; grants: string[]; directory?: boolean; repaired?: boolean }
 export function checkWindowsAcl(report: AclReport, file: string): void {
   const allowed = new Set([report.user, 'S-1-5-18', 'S-1-5-32-544'])
   // An elevated administrator's new files are owned by BUILTIN\Administrators on Windows Server; ownership alone
   // grants no access, and the grants below are what keep the state private.
-  if ((report.owner !== report.user && report.owner !== 'S-1-5-32-544') || !report.protected || report.grants.some(sid => !allowed.has(sid))) {
+  // Directories must block inheritance so a broad parent cannot widen them later. A file may inherit from its
+  // protected Room directory: the effective grants below are what decide whether it is private.
+  if ((report.owner !== report.user && report.owner !== 'S-1-5-32-544') || (report.directory !== false && !report.protected) || report.grants.some(sid => !allowed.has(sid))) {
     throw new Error(`Room state is not private: ${file}; owner ${report.owner}; offending grants ${report.grants.filter(sid => !allowed.has(sid)).join(', ') || 'none'}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`)
   }
 }
@@ -53,7 +55,7 @@ function windowsAcl(file: string, protectNew = false, createDirectory = false, r
       $a=Get-Acl -LiteralPath $p;
       $g=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value})
     };` : ''}
-    @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`
+    @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;directory=[bool]$item.PSIsContainer;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`
   let report: AclReport
   try {
     report = JSON.parse(execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { env: windowsPowerShellEnv(file), timeout: 20_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) as AclReport
