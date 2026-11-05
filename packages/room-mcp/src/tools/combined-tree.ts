@@ -238,6 +238,7 @@ class AssemblyInputs {
       if (record !== 'updating') acceptedRecords.set(person, { ...record })
     }
 
+    const registryRecords = this.registry.list()
     for (const { person, session } of [{ person: caller.me.name, session: caller }, ...participants]) {
       if (!this.bases.has(session)) this.bases.set(session, new Map())
       const bases = this.bases.get(session)!
@@ -246,9 +247,14 @@ class AssemblyInputs {
         bases.set(person, snapshots.get(person)?.snap?.head.base ?? fallback)
       }
       if (this.records.has(person)) continue
-      const record = this.registry.reservedByTagOrName(person)
-      if (!record || record.name !== person || record.room !== caller.roomName
-        || ['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)) continue
+      // Names can be duplicated by unrelated workers under different tags. Prefer
+      // this session's owned capability, in its source room: a team projection
+      // does not move a local worker's registry record into the caller's room.
+      const candidates = registryRecords.filter(record => record.name === person && record.room === session.roomName
+        && !['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)
+        && this.registry.reserved(record.tag)?.id === record.id)
+      const record = candidates.find(record => record.lead.participant === session.me.name) ?? candidates[0]
+      if (!record) continue
       this.records.set(person, record)
       if (record.lead.participant === caller.me.name && !fs.existsSync(record.dir))
         this.missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)

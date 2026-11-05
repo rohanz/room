@@ -38208,6 +38208,7 @@ var init_combined_tree = __esm({
           const record2 = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view);
           if (record2 !== "updating") acceptedRecords.set(person, { ...record2 });
         }
+        const registryRecords = this.registry.list();
         for (const { person, session } of [{ person: caller.me.name, session: caller }, ...participants]) {
           if (!this.bases.has(session)) this.bases.set(session, /* @__PURE__ */ new Map());
           const bases = this.bases.get(session);
@@ -38216,8 +38217,9 @@ var init_combined_tree = __esm({
             bases.set(person, snapshots.get(person)?.snap?.head.base ?? fallback2);
           }
           if (this.records.has(person)) continue;
-          const record2 = this.registry.reservedByTagOrName(person);
-          if (!record2 || record2.name !== person || record2.room !== caller.roomName || ["retiring", "retired", "abandoned", "discarding"].includes(record2.phase)) continue;
+          const candidates = registryRecords.filter((record3) => record3.name === person && record3.room === session.roomName && !["retiring", "retired", "abandoned", "discarding"].includes(record3.phase) && this.registry.reserved(record3.tag)?.id === record3.id);
+          const record2 = candidates.find((record3) => record3.lead.participant === session.me.name) ?? candidates[0];
+          if (!record2) continue;
           this.records.set(person, record2);
           if (record2.lead.participant === caller.me.name && !fs42.existsSync(record2.dir))
             this.missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`);

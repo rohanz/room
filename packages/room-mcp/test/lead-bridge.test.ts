@@ -103,11 +103,16 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     ;(t.lead().daemon as unknown as { fence: string }).fence = '1'
     t.team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence: '1' })
     await vi.waitFor(() => expect(t.team.a.manifestHead.has(workerId.name)).toBe(true))
+    const record = (await registryForDir(dir)).reserved('money')!
+    expect(record.room).toBe('local/x')
+    expect(record.room).not.toBe(t.lead().roomName)
     writeFileSync(join(dir, '.room', 'workers', 'money', 'app.py'), 'x = 3\n')
     const read = await t.leadTools.call('room_read', { person: workerId.name, path: 'app.py' })
     expect(read).toContain('x = 3')
-    const preview = await t.leadTools.call('room_preview_merge', { person: workerId.name })
+    const preview = await t.leadTools.call('room_preview_merge', { person: workerId.name,
+      run: `node -e "require('node:assert/strict').equal(require('node:fs').readFileSync('app.py', 'utf8'), 'x = 3\\n'); console.log('1 passed')"` })
     expect(preview).toContain('trusted local worktree')
+    expect(preview).toContain('tests: PASSED (exit 0)')
     await t.leadTools.call('room_leave', { force: true })
   })
   it('keeps mirrors of running workers, releases its own claims, and drops a finished worker\'s mirror', async () => {

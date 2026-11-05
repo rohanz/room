@@ -646,9 +646,17 @@ describe('room_collect', () => {
   it('breaks equal finish times by tag and leaves unrelated workers untouched', async () => {
     const t = setup(), other = second(t)
     t.set('test', { ...t.get('test'), finishedAt: 1 })
+    // A different tag/owner can have the same displayed name. It must neither
+    // supply this collection's captured record nor be changed by collection.
     t.set('foreign', { ...t.w, tag: 'foreign', lead: 'someone-else' })
+    await t.sync()
+    const registry = await registryForDir(lead), foreign = registry.reserved('foreign')!
+    expect(foreign.name).toBe(t.w.name)
     put(worker, 'a.txt', 'a'); put(other, 'b.txt', 'b')
     expect(await t.call({})).toContain('Changes from second, test:')
+    expect(registry.read(foreign.id)).toEqual(foreign)
+    expect(fs.readFileSync(path.join(lead, 'a.txt'), 'utf8')).toBe('a')
+    expect(fs.readFileSync(path.join(lead, 'b.txt'), 'utf8')).toBe('b')
     expect(workerByTag(lead, 'foreign')).toBeDefined()
     expect(t.autoRetire).not.toHaveBeenCalled()
   })
