@@ -75,11 +75,21 @@ export function verifyPrivatePath(file: string, created = false): void {
   const stat = fs.lstatSync(file)
   if (stat.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file}`)
   if (process.platform === 'win32') {
-    // A file created inside a directory this process verified inherits its protected owner-only ACL.
-    if (created && stat.isFile() && verifiedWindows.get(windowsKey(path.dirname(file))) === windowsIdentity(path.dirname(file))) return
+    // Below a Room root this process verified, everything inherits the root's protected owner-only ACL.
+    if (underVerifiedRoomRoot(file)) return
     windowsAcl(file, created); return
   }
   if (stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error(`Room state must be owned by the current user and private: ${file}`)
+}
+/** Windows trusts one boundary per process: the room/ root, created or repaired with a protected, inheritable
+ * owner-only ACL and verified once. Everything below it inherits that ACL (Set-Acl on the root also propagates to
+ * existing inheriting children), so descendants need no PowerShell inspection of their own. */
+function underVerifiedRoomRoot(file: string): boolean {
+  let dir = path.resolve(file)
+  while (path.basename(dir).toLowerCase() !== 'room' && path.dirname(dir) !== dir) dir = path.dirname(dir)
+  if (path.basename(dir).toLowerCase() !== 'room' || path.resolve(file) === dir) return false
+  const known = verifiedWindows.get(windowsKey(dir))
+  return !!known && known === windowsIdentity(dir)
 }
 /** Repair only the requested path from room/ down; never scan children or alter checkout ancestors. */
 export function privateStateDirectory(dir: string): void {
@@ -97,25 +107,16 @@ export function privateStateDirectory(dir: string): void {
   if (!fs.statSync(path.dirname(inState ? root : dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`)
   // Other private output directories retain strict verification and must have an existing parent.
   for (const directory of inState ? directories : [dir]) {
+    if (process.platform === 'win32' && inState && directory !== root) { inheritingDirectory(directory); continue }
     initializeDirectory(directory, inState)
-    if (inState && directory === root) privateMarker(root)
   }
 }
 
-/** Hooks on Windows may write only after the native initializer has verified the root's owner/DACL. */
-function privateMarker(root: string): void {
-  const marker = path.join(root, '.private')
-  let created = false
-  // A raw descriptor write: exclusive create, and it stays out of the way of code that observes whole-file writes.
-  try {
-    const fd = fs.openSync(marker, 'wx', 0o600)
-    try { fs.writeSync(fd, 'v1\n') } finally { fs.closeSync(fd) }
-    created = true
-  }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
-  const stat = fs.lstatSync(marker)
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Room private marker must be a regular file, not a symlink: ${marker}`)
-  verifyPrivatePath(marker, created)
+/** Windows, below the verified Room root: a plain directory that inherits the root's ACL; only refuse links. */
+function inheritingDirectory(dir: string): void {
+  try { fs.mkdirSync(dir) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+  const stat = fs.lstatSync(dir)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`)
 }
 
 function initializeDirectory(dir: string, repair: boolean): void {

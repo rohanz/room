@@ -232,16 +232,9 @@ function privateHookDirectory(dir) {
   if (path.basename(root) !== 'room') throw new Error('Room hook state must be under the Room root')
   const windows = process.platform === 'win32'
   // Top-down repairs make every parent below room/ private before its child is handled. No check on the git common directory above room/: anyone who can write it can already install git hooks that run as this user, so a Room check there adds no protection, and default umask 002 makes it group-writable on Debian and Ubuntu.
-  // Hooks cannot inspect DACLs. Require the native initializer's marker before creating anything on Windows.
-  // The marker is trusted, not re-verified: checking the DACL would spawn PowerShell on every tool call. Only the
-  // initializer writes it, after protecting the root; planting one or loosening the root afterwards needs write
-  // access to the root or ownership of it, and the MCP re-verifies (and repairs) the root whenever it uses it.
-  if (windows) {
-    const rootStat = fs.lstatSync(root)
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink: ${root}`)
-    const marker = path.join(root, '.private'), stat = fs.lstatSync(marker)
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Room private marker must be a regular file, not a symlink: ${marker}`)
-  }
+  // Windows: hooks cannot set an ACL cheaply, so they create plain directories. Until the MCP or daemon first
+  // protects the room/ root (one PowerShell check per process, which also propagates to what hooks wrote), these
+  // inherit the repository's .git ACL: the same boundary that already guards the repository's own git hooks.
   for (const directory of directories) {
     let created = false
     try { fs.mkdirSync(directory, { mode: 0o700 }); created = true }

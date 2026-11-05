@@ -15237,11 +15237,18 @@ function verifyPrivatePath(file, created = false) {
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file}`);
   if (process.platform === "win32") {
-    if (created && stat.isFile() && verifiedWindows.get(windowsKey(path.dirname(file))) === windowsIdentity(path.dirname(file))) return;
+    if (underVerifiedRoomRoot(file)) return;
     windowsAcl(file, created);
     return;
   }
   if (stat.isSymbolicLink() || process.getuid && stat.uid !== process.getuid() || (stat.mode & 63) !== 0) throw new Error(`Room state must be owned by the current user and private: ${file}`);
+}
+function underVerifiedRoomRoot(file) {
+  let dir = path.resolve(file);
+  while (path.basename(dir).toLowerCase() !== "room" && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  if (path.basename(dir).toLowerCase() !== "room" || path.resolve(file) === dir) return false;
+  const known = verifiedWindows.get(windowsKey(dir));
+  return !!known && known === windowsIdentity(dir);
 }
 function privateStateDirectory(dir) {
   dir = path.resolve(dir);
@@ -15255,27 +15262,21 @@ function privateStateDirectory(dir) {
   const inState = path.basename(root) === "room";
   if (!fs.statSync(path.dirname(inState ? root : dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
   for (const directory of inState ? directories : [dir]) {
+    if (process.platform === "win32" && inState && directory !== root) {
+      inheritingDirectory(directory);
+      continue;
+    }
     initializeDirectory(directory, inState);
-    if (inState && directory === root) privateMarker(root);
   }
 }
-function privateMarker(root) {
-  const marker = path.join(root, ".private");
-  let created = false;
+function inheritingDirectory(dir) {
   try {
-    const fd = fs.openSync(marker, "wx", 384);
-    try {
-      fs.writeSync(fd, "v1\n");
-    } finally {
-      fs.closeSync(fd);
-    }
-    created = true;
+    fs.mkdirSync(dir);
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
-  const stat = fs.lstatSync(marker);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Room private marker must be a regular file, not a symlink: ${marker}`);
-  verifyPrivatePath(marker, created);
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`);
 }
 function initializeDirectory(dir, repair) {
   let created = false;

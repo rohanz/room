@@ -24,7 +24,7 @@ function files(dir: string): string[] { return fs.readdirSync(dir, { withFileTyp
 function directoryWriters(relative: string, source: string): string[] {
   const failures: string[] = []
   const allowances = new Map(Object.entries(nonState[relative] ?? {}).map(([args, count]) => [normalized(args), count]))
-  if (relative === 'relay/src/private-state.ts') allowances.set('private initializer', 1)
+  if (relative === 'relay/src/private-state.ts') { allowances.set('private initializer', 1); allowances.set('windows inheriting directory', 1) }
   if (relative === 'relay/src/leases.ts') allowances.set('durable directory', 1)
   if (relative === '../plugins/room/hooks/common.mjs') allowances.set('hook initializer', 1)
   const tree = ts.createSourceFile(relative, source, ts.ScriptTarget.Latest, true)
@@ -43,7 +43,10 @@ function directoryWriters(relative: string, source: string): string[] {
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'privateHookDirectory'
       const privateInitializer = relative === 'relay/src/private-state.ts' && args === 'dir, { mode: 0o700 }'
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'initializeDirectory'
-      const key = privateInitializer ? 'private initializer' : durableExisting ? 'durable directory' : hookInitializer ? 'hook initializer' : args
+      // Windows below the verified Room root: a plain directory inheriting the root's protected ACL.
+      const inheriting = relative === 'relay/src/private-state.ts' && args === 'dir'
+        && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'inheritingDirectory'
+      const key = privateInitializer ? 'private initializer' : inheriting ? 'windows inheriting directory' : durableExisting ? 'durable directory' : hookInitializer ? 'hook initializer' : args
       const remaining = allowances.get(key) ?? 0
       if (remaining > 0) allowances.set(key, remaining - 1)
       else failures.push(`${relative}:${tree.getLineAndCharacterOfPosition(node.getStart()).line + 1} ${args}`)

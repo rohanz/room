@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -21,16 +22,6 @@ it.skipIf(process.platform === 'win32')('accepts a group-writable git parent (um
     expect(fs.statSync(common).mode & 0o7777).toBe(mode)
     expect(fs.statSync(path.join(common, 'room')).mode & 0o777).toBe(0o700)
   }
-})
-
-it('writes a regular private version marker only at the verified Room root', () => {
-  const { room } = fixture(), session = path.join(room, 'sessions', 'sid')
-  privateStateDirectory(session)
-  const marker = path.join(room, '.private')
-  expect(fs.lstatSync(marker).isFile()).toBe(true)
-  expect(fs.readFileSync(marker, 'utf8')).toBe('v1\n')
-  verifyPrivatePath(marker)
-  expect(fs.existsSync(path.join(session, '.private'))).toBe(false)
 })
 
 it.skipIf(process.platform === 'win32')('repairs only owned legacy directories along the requested state path, once each', () => {
@@ -92,4 +83,20 @@ it('does not contact or stop a different daemon instance when fixture ownership 
   const fetch = vi.spyOn(globalThis, 'fetch')
   await expect(stopLocalDaemon(root, undefined, '11111111-1111-1111-1111-111111111111')).resolves.toBe('different daemon instance')
   expect(fetch).not.toHaveBeenCalled()
+})
+
+// Windows only: protecting the room/ root must propagate to what a hook already wrote below it with plain calls.
+it.runIf(process.platform === 'win32')('protecting the Windows Room root makes existing hook-written files private', () => {
+  const { root, room } = fixture(), session = path.join(room, 'sessions', 'sid'), file = path.join(session, 'session.json')
+  fs.mkdirSync(session, { recursive: true }); fs.writeFileSync(file, '{}')
+  const grants = (target: string) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `@((Get-Acl -LiteralPath $env:T).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value }) -join ','`],
+  { env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'psmodulepath')), T: target }, encoding: 'utf8' }).trim().split(',')
+  // Loosen the root the way a broad parent would: an inheritable grant to Everyone (S-1-1-0) reaches the file.
+  execFileSync('icacls', [room, '/grant', '*S-1-1-0:(OI)(CI)R'], { stdio: 'ignore' })
+  expect(grants(file)).toContain('S-1-1-0')
+  privateStateDirectory(session)
+  expect(grants(file)).not.toContain('S-1-1-0')
+  expect(grants(room)).not.toContain('S-1-1-0')
+  void root
 })
