@@ -42,12 +42,33 @@ const variants = [
   { name: 'detached, minimal env, windowsHide false', detached: true, env: minimalEnv(), stdio: 'ignore', windowsHide: false },
 ]
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-probe-'))
-for (const v of variants) {
-  const out = path.join(dir, `${variants.indexOf(v)}.json`)
+let probeN = 0
+async function probe(v) {
+  const out = path.join(dir, `${probeN++}.json`)
   const started = Date.now()
   const child = spawn(process.execPath, [process.argv[1], 'child', out, dir], { detached: v.detached, env: v.env, stdio: v.stdio, windowsHide: v.windowsHide, shell: false })
   child.unref()
   while (!fs.existsSync(out) && Date.now() - started < 45_000) await new Promise(r => setTimeout(r, 200))
-  const result = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : { ok: false, message: 'no result within 45 s' }
-  console.log(`${v.name}: ${JSON.stringify(result)}`)
+  return fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : { ok: false, message: 'no result within 45 s' }
+}
+// Bisect: which variables missing from the minimal env make PowerShell slow (fast = under 8 s, attached).
+const base = minimalEnv(), extra = Object.keys(process.env).filter(k => !(k in base) && k.toLowerCase() !== 'psmodulepath')
+console.log(`variables outside the daemon allowlist: ${extra.join(', ')}`)
+const fast = async keys => {
+  const env = { ...base }; for (const k of keys) env[k] = process.env[k]
+  const r = await probe({ detached: false, env, stdio: 'ignore', windowsHide: true })
+  console.log(`  +${keys.length} vars [${keys.slice(0, 6).join(', ')}${keys.length > 6 ? ', …' : ''}]: ${r.ok ? r.ms + ' ms' : 'failed'}`)
+  return r.ok && r.ms < 8000
+}
+if (await fast(extra)) {
+  let candidates = extra
+  while (candidates.length > 1) {
+    const half = candidates.slice(0, Math.ceil(candidates.length / 2))
+    candidates = (await fast(half)) ? half : candidates.slice(half.length)
+  }
+  const sufficient = candidates
+  console.log(`a single sufficient variable: ${sufficient[0]} = ${JSON.stringify(process.env[sufficient[0]])}`)
+}
+for (const v of variants) {
+  console.log(`${v.name}: ${JSON.stringify(await probe(v))}`)
 }
