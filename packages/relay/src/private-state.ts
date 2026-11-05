@@ -38,7 +38,11 @@ function windowsAcl(file: string, protectNew = false, createDirectory = false, r
   let report: AclReport
   try {
     report = JSON.parse(execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, ROOM_PRIVATE_PATH: file }, timeout: 5000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) as AclReport
-  } catch { throw new Error(`Cannot verify the Windows owner/DACL for ${file}; use a private local state directory and permit bounded ACL inspection, then retry`) }
+  } catch (error) {
+    const e = error as NodeJS.ErrnoException & { stderr?: string; signal?: string }
+    const cause = e.code === 'ETIMEDOUT' || e.signal ? 'PowerShell timed out' : (String(e.stderr ?? '').trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300)
+    throw new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`)
+  }
   if (!report || !Array.isArray(report.grants) || typeof report.user !== 'string') throw new Error(`Invalid Windows ACL inspection for ${file}`)
   checkWindowsAcl(report, file)
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`)

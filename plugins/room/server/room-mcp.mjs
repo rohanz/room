@@ -24316,8 +24316,10 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
   let report;
   try {
     report = JSON.parse(execFileSync2("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, ROOM_PRIVATE_PATH: file }, timeout: 5e3, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
-  } catch {
-    throw new Error(`Cannot verify the Windows owner/DACL for ${file}; use a private local state directory and permit bounded ACL inspection, then retry`);
+  } catch (error2) {
+    const e = error2;
+    const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
+    throw new Error(`Cannot verify the Windows owner/DACL for ${file} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
   }
   if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file}`);
   checkWindowsAcl(report, file);
