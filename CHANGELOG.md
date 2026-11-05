@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Combined previews no longer refuse idle peers as "moved".** A preview treated publication heartbeats, manifest and Git revision bumps, worker sequence numbers and ref timestamps as movement, so previews refused even when nobody was editing. Movement now means a change to what the preview applies (content, paths, base, sharing, authority, acknowledgement or ref values), and a refusal names what moved and which baseline or HEAD it could not verify.
+
 ## 0.17.34
 
 - **Local rooms run on a standalone daemon** (docs/superpowers/specs/2026-11-05-local-daemon.md). A local room's state now lives in one daemon process per clone instead of inside whichever session started first, so closing that session no longer takes the room down. The daemon starts on the first join, outlives sessions, saves before it stops, and exits after five minutes with no writers. It negotiates the `room.daemon` capability and refuses older clients before sync. Leaving or losing the connection keeps your local replica so a reconnect resumes it; an explicit `room_leave` or a switch to another room disposes it.

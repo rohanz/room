@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import * as gitModule from '@room/roomd/git'
 import { RoomDoc, gitBlobHash, manifestKey } from '@room/shared'
 import { handlers } from '../src/tools/files.js'
+import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -110,6 +111,22 @@ it('names every participant that moved, retaining the revisions actually tested'
   expect(reply).toContain('ben (rev 1, base ')
   expect(reply).toContain('chris (rev 7, base ')
   expect(reply).toContain('ben, chris moved since this snapshot was built')
+  expect(reply).toContain('path "ben.txt" (content or availability)')
+  expect(reply).toContain('path "chris.txt" (content or availability)')
+})
+
+it('keeps command evidence current when idle peers republish identical bytes during the command', async () => {
+  const { session, preview, publish } = fixture()
+  const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
+  const pending = preview({ people: ['ben', 'chris'], run: `touch '${marker}'; while ! test -e '${release}'; do sleep 0.05; done; echo "1 passed"` })
+  try {
+    await waitForFile(marker)
+    publish('ben', 2, 'snapshot\n'); publish('chris', 8, 'stable\n')
+  } finally { fs.writeFileSync(release, 'go') }
+  const reply = await pending
+  expect(reply).toContain('tests: PASSED (exit 0)')
+  expect(reply).not.toContain('SNAPSHOT result')
+  expect(session.lastPreview?.testsPassed).toBe(true)
 })
 
 it('keeps current passing previews eligible for room_done evidence', async () => {
@@ -164,15 +181,68 @@ it('still settles and rebuilds when a revision changes during tree construction'
   expect(session.lastPreview?.testsPassed).toBe(true)
 })
 
+it.each(['heartbeat', 'revision'])('runs with two idle peers receiving only a %s during assembly', async kind => {
+  const { room, session, state, preview, base } = fixture()
+  let updates = 0
+  state.baseFor = () => {
+    updates++
+    for (const person of ['ben', 'chris']) {
+      const head = room.manifestHead.get(person)!
+      room.manifestHead.set(person, { ...head, scannedAt: Date.now(),
+        ...(kind === 'revision' ? { rev: head.rev + 1, semRev: head.semRev + 1, textPrefixes: [`unused-policy-prefix-${updates}`] } : {}) })
+      const record = room.participants.get(`${person}\0git`)!
+      room.participants.set(`${person}\0git`, { ...record, rev: Number(record.rev) + 1 })
+      room.participants.set(`${person}\0holder`, { ...room.participants.get(`${person}\0holder`)!, at: updates })
+      const entries = room.manifest.get(manifestKey(person, '1'))!
+      const entry = entries.get(`${person}.txt`)!
+      entries.set(`${person}.txt`, { ...entry, at: updates })
+    }
+    return base
+  }
+  const reply = await preview({ people: ['ben', 'chris'], run: 'test "$(cat ben.txt)" = snapshot && test "$(cat chris.txt)" = stable && echo "1 passed"' })
+  expect(updates).toBe(6) // selection + one build, no metadata-induced retries
+  expect(reply).toContain('tests: PASSED (exit 0)')
+  expect(reply).toMatch(/snapshot inputs sha256: [a-f0-9]{64}/)
+  expect(reply).not.toContain('SNAPSHOT result')
+  expect(session.lastPreview?.testsPassed).toBe(true)
+})
+
+it.each(['content', 'paths', 'base', 'authority', 'sharing', 'text availability'])('still detects real %s movement and names the changed input', async kind => {
+  const { room, session, state, publish } = fixture()
+  const result = await buildCombinedTree(state, session, ['ben', 'chris'].map(person => ({ person, session })))
+  expect(result.isCurrent()).toBe(true)
+  let detail: string
+  if (kind === 'content') { publish('ben', 2, 'changed\n'); detail = 'path "ben.txt"' }
+  else if (kind === 'paths') {
+    room.manifest.get(manifestKey('ben', '1'))!.set('added.txt', { change: 'D', state: 'shared', at: 1, fence: '1' })
+    detail = 'path "added.txt"'
+  } else if (kind === 'base') {
+    room.manifestHead.set('ben', { ...room.manifestHead.get('ben')!, base: 'a'.repeat(40) })
+    detail = 'Git base or HEAD'
+  } else if (kind === 'authority') {
+    room.participants.set('ben\0holder', { sessionId: 'replacement', epoch: 2 })
+    detail = 'publisher authority'
+  } else if (kind === 'sharing') {
+    room.manifestHead.set('ben', { ...room.manifestHead.get('ben')!, level: 'intent' })
+    detail = 'sharing or coverage'
+  } else {
+    room.overlays.get(manifestKey('ben', '1'))!.delete('ben.txt')
+    detail = 'path "ben.txt"'
+  }
+  expect(result.moved()).toEqual(['ben'])
+  expect(result.movementDetails().join('\n')).toContain(`ben: ${detail}`)
+})
+
 it('keeps construction retries bounded and never runs a command on an unsettled build', async () => {
   const { session, state, preview, publish, base } = fixture()
   let rev = 1, waited = 0
-  state.baseFor = () => { publish('ben', ++rev, 'moving\n'); return base }
+  state.baseFor = () => { publish('ben', ++rev, `moving ${rev}\n`); return base }
   state.now = () => waited
-  state.ctx!.sleep = async ms => { waited += ms; publish('ben', ++rev, 'moving\n') }
+  state.ctx!.sleep = async ms => { waited += ms; publish('ben', ++rev, `moving ${rev}\n`) }
   const marker = path.join(root!, 'must-not-run')
   const reply = await preview({ person: 'ben', run: `touch '${marker}'; echo "1 passed"` })
-  expect(reply).toBe('ben moved during the preview; re-run. The combined code was NOT fully checked')
+  expect(reply).toContain('ben moved during the preview; re-run. The combined code was NOT fully checked')
+  expect(reply).toContain('Changed inputs: ben: path "ben.txt" (content or availability)')
   expect(fs.existsSync(marker)).toBe(false)
   expect(waited).toBe(12_000)
   expect(session.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })

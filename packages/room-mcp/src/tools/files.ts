@@ -349,9 +349,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
-      const movedReply = (moved: string[]) => {
+      const movedReply = (moved: string[], details: string[] = []) => {
         recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
-        return `${(moved.length ? moved : people).join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
+        return `${(moved.length ? moved : people).join(', ')} moved during the preview; re-run. The combined code was NOT fully checked${details.length ? `\nChanged inputs: ${details.join('; ')}` : ''}`
       }
       // Settle movements during construction; a command result belongs to the built snapshot.
       const settler = previewSettler(state, participants)
@@ -400,7 +400,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             // for a command; movements after it starts still produce a snapshot result.
             if (!result.isCurrent()) {
               if (await settler.settle(result.settledWorkers())) continue
-              return movedReply(result.moved())
+              return movedReply(result.moved(), result.movementDetails())
             }
             const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
             ranOk = verdict.passed
@@ -418,10 +418,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             out[verdictIndex] = out[verdictIndex].replace(/^tests:/gm, 'snapshot tests:')
             out.unshift(`SNAPSHOT result for "${run}" (not the current combined code):`)
             out.push(`${result.moved().join(', ')} moved since this snapshot was built. A pass is interim evidence for the recorded revisions. Re-run room_preview_merge with run="${run}" when your files change, a moved peer can affect this command, a failure needs confirmation, or for the final current preview before room_done. The latest combined code was NOT checked`)
+            out.push(`Changed inputs: ${result.movementDetails().join('; ')}`)
             return previewPhase('collect', () => out.join('\n'))
           }
           if (await settler.settle(result.settledWorkers())) continue
-          return movedReply(result.moved())
+          return movedReply(result.moved(), result.movementDetails())
         }
         recordPreview({ clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
           ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) })
@@ -430,7 +431,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (previewGenerations.get(caller) === generation && complete && !hardCount && ranOk && appliedFromOthers) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return previewPhase('collect', () => out.join('\n'))
       } } catch (error) {
-        if (error instanceof PreviewMoved) return movedReply(error.people)
+        if (error instanceof PreviewMoved) return movedReply(error.people, error.details)
         const message = error instanceof Error ? error.message : String(error)
         if (!isGitTimeout(error)) throw error
         recordPreview({ clean: false, complete: false })

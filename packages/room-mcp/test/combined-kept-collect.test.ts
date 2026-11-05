@@ -11,6 +11,7 @@ import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { localWorkers } from '../src/worker-registry.js'
+import { refreshWorkerBase } from '../src/worker-refresh.js'
 import { hubSeam } from './fixtures/hub.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { testPolicyStore } from './policy-fixture.js'
@@ -72,12 +73,16 @@ it('requires a new post-application acknowledgement after publisher replacement'
   expect(t.room.manifestHead.get('lead')!.fence).not.toBe(head.fence)
 })
 
-it('tracks own-caller record, collection ref and merge-order key changes in snapshot freshness', async () => {
+it('ignores registry bookkeeping but tracks own-caller baseline, collection ref and merge-order inputs', async () => {
   const t = await fixture(), result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   expect(result.isCurrent()).toBe(true)
   const record = t.registry.reservedByTagOrName('lead+api')!
-  await t.registry.update(record.id, old => ({ ...old, seq: old.seq + 1 }))
-  expect(result.moved()).toContain('lead+api')
+  await t.registry.update(record.id, old => ({ ...old,
+    keptPublication: { ...old.keptPublication!, ack: { ...old.keptPublication!.ack!, rev: old.keptPublication!.ack!.rev + 1 } }, seq: old.seq + 1 }))
+  expect(result.isCurrent()).toBe(true)
+  // Repacking refs also preserves their applied values.
+  git(t.root, 'pack-refs', '--all')
+  expect(result.isCurrent()).toBe(true)
   const keySnapshot = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   const report = t.registry.reports(record.id)[0]
   await t.registry.writeReport(record.id, { ...report, done: { ...report.done!, at: report.done!.at + 1000 } })
@@ -86,6 +91,31 @@ it('tracks own-caller record, collection ref and merge-order key changes in snap
   const next = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   git(t.root, 'update-ref', `refs/room/collect-head/${record.tag}/${record.id}`, git(t.root, 'rev-parse', 'HEAD'))
   expect(next.moved()).toContain('lead+api')
+  expect(next.movementDetails().join('\n')).toContain('lead+api: baseline ref refs/room/collect-head/')
+  const baselineSnapshot = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
+  await t.registry.update(record.id, old => ({ ...old, carriedUntracked: [{ path: 'new.txt', sha: 'a'.repeat(40) }], seq: old.seq + 1 }))
+  expect(baselineSnapshot.moved()).toContain('lead+api')
+})
+
+it('proves a kept worker baseline after a real refresh rebase onto the committed lead tree', async () => {
+  const t = await fixture(), record = t.registry.reservedByTagOrName('lead+api')!
+  const lead = t.sessions.get('lead')!, worker = t.sessions.get('lead+api')!
+  git(t.root, 'add', '.'); git(t.root, 'commit', '-qm', 'commit delivered output and lead note')
+  const refreshed = await refreshWorkerBase(t.root, record)
+  expect(refreshed.kind).toBe('rebased')
+  if (refreshed.kind !== 'rebased') throw new Error(JSON.stringify(refreshed))
+  await t.registry.update(record.id, old => ({ ...old, base: refreshed.base, carriedBase: refreshed.carriedBase,
+    carriedUntracked: refreshed.carriedUntracked, keptPublication: undefined, seq: old.seq + 1 }))
+  git(t.root, 'update-ref', `refs/room/collect-head/${record.tag}/${record.id}`, refreshed.base)
+  await lead.daemon.reconcileGitChanges()
+  for (const file of ['src/api.ts', 'tests/api.test.ts']) publishFixture(t.room, record.name, file,
+    fs.readFileSync(path.join(worker.dir, file), 'utf8'), { base: refreshed.base })
+  // A refresh baseline is a real lead commit, not a private kept-snapshot commit.
+  expect(git(t.root, 'log', '-1', '--format=%s', refreshed.base)).not.toBe('room: kept collection baseline')
+  const result = await t.preview(record.name, ['lead+backend', 'lead+consumer', 'lead'])
+  expect(result.gaps).toEqual([])
+  expect(result.conflictingPaths.size).toBe(0)
+  expect(result.merged.get('src/api.ts')).toBe(t.expected.get('src/api.ts'))
 })
 
 async function carriedFixture(carry = true) {
