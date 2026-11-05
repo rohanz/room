@@ -1,10 +1,10 @@
 import fs from 'node:fs'
 import { compatibilityFromHealth } from './client-compat.js'
 import { createSessionBinding } from './binding.js'
-import os from 'node:os'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { createClaudeInstall, claudePlugin as adapterClaudePlugin } from './hosts/claude-install.js'
+import { createCodexInstall, codexPlugin as adapterCodexPlugin, codexHooksRoot as adapterCodexHooksRoot, codexRoomHookTrustStatus as adapterCodexRoomHookTrustStatus, codexRoomHooksTrusted as adapterCodexRoomHooksTrusted } from './hosts/codex-install.js'
+import { hookVersion as adapterHookVersion, installCommand as command, type InstalledPlugin } from './hosts/install-io.js'
 import { fileURLToPath } from 'node:url'
 import { resolveConfig } from './config.js'
 import { credentialsPath, getCredential } from './credentials.js'
@@ -15,18 +15,12 @@ import { canonicalRelayWarning, cloneId, deterministicPort, legacyRelayRunning, 
 import { gitCommonDir } from '@room/roomd'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
-const exec = promisify(execFile)
 const minimumGit = [2, 31, 0] // git rev-parse --path-format=absolute
-export const CODEX_ROOM_HOOK_HASHES = {
-  'pre_tool_use:0:0': 'sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb',
-  'session_start:0:0': 'sha256:96fd593f780005aedd3d3796345ed66ef79f6b3751129aed8a120818ddf11d18',
-} as const
-/** Hash of the frozen hooks.json bytes for which Codex 0.158 produced the identities above. */
-export const CODEX_ROOM_HOOKS_FILE_SHA256 = '336c0b90c935ff627f9988ceb92e21c887b44c9b6e904b2c2ddd9a188db4b777'
+export { CODEX_ROOM_HOOK_HASHES, CODEX_ROOM_HOOKS_FILE_SHA256 } from './hosts/codex-install.js'
 /** INFO states context that proves no problem; it never carries a fix. */
 type Result = { level: 'PASS' | 'INFO' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
 /** `cached`: Claude loads this plugin from the install record's cache path (not a directory marketplace). */
-type Plugin = { version?: string; recordedVersion?: string; root?: string; hooksRoot?: string; cached?: boolean }
+type Plugin = InstalledPlugin
 export interface DoctorFacts {
   node?: string; git?: string; repo: boolean; claudeCli: boolean; codexCli: boolean
   claudeListOk?: boolean; codexListOk?: boolean
@@ -74,20 +68,9 @@ function atLeast(raw: string | undefined, min: number[]): boolean {
   for (let i = 0; i < 3; i++) if (got[i] !== min[i]) return got[i] > min[i]
   return true
 }
-export function hookVersion(text?: string): string | undefined { return text?.match(/export const HOOKS_VERSION = ['"]([^'"]+)['"]/)?.[1] }
-export function codexRoomHooksTrusted(toml?: string): boolean {
-  return codexRoomHookTrustStatus(toml) === 'trusted'
-}
-export function codexRoomHookTrustStatus(toml?: string): 'trusted' | 'modified' | 'absent' {
-  if (!toml) return 'absent'
-  const sections = [...toml.matchAll(/^\[hooks\.state\."room@room:hooks\.json:([^"\]]+)"\]([\s\S]*?)(?=^\[|$(?![\s\S]))/gm)]
-  const hashes = Object.entries(CODEX_ROOM_HOOK_HASHES).map(([kind, expected]) => {
-    const body = sections.find(m => m[1] === kind)?.[2]
-    return { expected, stored: body?.match(/^trusted_hash\s*=\s*"(sha256:[a-f\d]{64})"/m)?.[1] }
-  })
-  if (hashes.some(h => !h.stored)) return 'absent'
-  return hashes.every(h => h.stored === h.expected) ? 'trusted' : 'modified'
-}
+export function hookVersion(text?: string): string | undefined { return adapterHookVersion(text) }
+export function codexRoomHooksTrusted(toml?: string): boolean { return adapterCodexRoomHooksTrusted(toml) }
+export function codexRoomHookTrustStatus(toml?: string): 'trusted' | 'modified' | 'absent' { return adapterCodexRoomHookTrustStatus(toml) }
 export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Result[] {
   const rows: Result[] = []
   const add = (level: Result['level'], name: string, finding: string, fix?: string) => rows.push({ level, name, finding, fix })
@@ -179,37 +162,15 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
 export function formatDoctor(rows: Result[]): string {
   return rows.map(r => `${r.level}  ${r.name}: ${r.finding}${r.level !== 'PASS' && r.fix ? `\n      fix: ${r.fix}` : ''}`).join('\n')
 }
-async function command(file: string, args: string[]): Promise<string | undefined> {
-  try { return (await exec(file, args, { timeout: 2500, maxBuffer: 256 * 1024 })).stdout.trim() }
-  catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : '' }
-}
-function read(file?: string): string | undefined { try { return file ? fs.readFileSync(file, 'utf8') : undefined } catch { return undefined } }
-function manifestVersion(root: string | undefined, host: 'claude' | 'codex'): string | undefined {
-  const contents = read(root && path.join(root, host === 'claude' ? '.claude-plugin' : '.codex-plugin', 'plugin.json'))
-  try { return (JSON.parse(contents ?? '') as { version?: string }).version } catch { return undefined }
-}
 export function claudePlugin(row: { version?: string; installPath?: string } | undefined, marketplaces: unknown): Plugin | undefined {
-  if (!row) return undefined
-  const market = Array.isArray(marketplaces) ? marketplaces.find(m => m?.name === 'room') as { source?: string; path?: string; installLocation?: string } | undefined : undefined
-  const root = market?.source?.toLowerCase() === 'directory' && (market.path || market.installLocation)
-    ? path.join(market.path ?? market.installLocation!, 'plugins', 'room') : row.installPath
-  return { version: manifestVersion(root, 'claude'), recordedVersion: row.version, root, cached: root === row.installPath }
+  return adapterClaudePlugin(row, marketplaces)
 }
 export function codexPlugin(row: { version?: string; marketplaceName?: string } | undefined, marketplaces: unknown, codexHome: string): Plugin | undefined {
-  if (!row) return undefined
-  const root = row.version && path.join(codexHome, 'plugins', 'cache', 'room', 'room', row.version)
-  return { version: manifestVersion(root, 'codex'), recordedVersion: row.version, root, hooksRoot: codexHooksRoot(marketplaces, row.marketplaceName) }
+  return adapterCodexPlugin(row, marketplaces, codexHome)
 }
 /** Codex runs hooks from the marketplace root (a local path or its Git snapshot), not from the plugin cache. */
 export function codexHooksRoot(marketplaces: unknown, name: string | undefined): string | undefined {
-  const root = (marketplaces as { marketplaces?: { name?: string; root?: string }[] } | undefined)?.marketplaces?.find(m => m?.name === name)?.root
-  if (!root) return undefined
-  let entry: string | undefined
-  try {
-    const listing = JSON.parse(fs.readFileSync(path.join(root, '.agents', 'plugins', 'marketplace.json'), 'utf8')) as { plugins?: { name?: string; source?: { path?: string } }[] }
-    entry = listing.plugins?.find(p => p?.name === 'room')?.source?.path
-  } catch { /* an older marketplace layout */ }
-  return path.resolve(root, entry ?? path.join('plugins', 'room'))
+  return adapterCodexHooksRoot(marketplaces, name)
 }
 export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string; schema?: number; hub?: number; storage?: string; compat?: unknown }> {
   try {
@@ -245,31 +206,22 @@ export function hookCompatibilityWarning(dir?: string): string | undefined {
 
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
 async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
-  const [gitVersion, head, claudeJson, claudeMarketsJson, codexJson, codexMarketsJson, claudeVersion] = await Promise.all([
+  const [gitVersion, head, claudeInstall, codexInstall] = await Promise.all([
     command('git', ['--version']), command('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD']),
-    command('claude', ['plugin', 'list', '--json']), command('claude', ['plugin', 'marketplace', 'list', '--json']), command('codex', ['plugin', 'list', '--json']),
-    command('codex', ['plugin', 'marketplace', 'list', '--json']), command('claude', ['--version']),
+    createClaudeInstall().inspectInstall(), createCodexInstall().inspectInstall(),
   ])
-  let claudeList: unknown, claudeMarkets: unknown, codexList: unknown, codexMarkets: unknown
-  try { claudeList = JSON.parse(claudeJson ?? '') } catch { /* CLI unavailable */ }
-  try { claudeMarkets = JSON.parse(claudeMarketsJson ?? '') } catch { /* CLI unavailable */ }
-  try { codexList = JSON.parse(codexJson ?? '') } catch { /* CLI unavailable */ }
-  try { codexMarkets = JSON.parse(codexMarketsJson ?? '') } catch { /* CLI unavailable */ }
-  const claudeRow = Array.isArray(claudeList) ? claudeList.find(x => x?.id === 'room@room') : undefined
-  const codexRow = (codexList as { installed?: unknown[] } | undefined)?.installed?.find((x: any) => x?.pluginId === 'room@room') as any
-  const claude = claudePlugin(claudeRow, claudeMarkets)
-  const codex = codexPlugin(codexRow, codexMarkets, process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'))
+  const claude = claudeInstall.record, codex = codexInstall.record
   const f: DoctorFacts = {
-    node: process.version, git: gitVersion, repo: !!head, claudeCli: claudeJson !== undefined, codexCli: codexJson !== undefined,
-    claudeListOk: Array.isArray(claudeList), codexListOk: Array.isArray((codexList as { installed?: unknown[] } | undefined)?.installed),
-    claude, codex, claudeVersion, inSession, wakeSession: inSession && process.env.ROOM_HOST === 'claude',
+    node: process.version, git: gitVersion, repo: !!head, claudeCli: claudeInstall.cli !== 'absent', codexCli: codexInstall.cli !== 'absent',
+    claudeListOk: claudeInstall.listing === 'ok', codexListOk: codexInstall.listing === 'ok',
+    claude, codex, claudeVersion: claudeInstall.version, inSession, wakeSession: inSession && process.env.ROOM_HOST === 'claude',
     wakeBound: claudeWakeAvailable({ host: 'claude' }),
     ...(inSession && (process.env.ROOM_HOST === 'codex' || process.env.ROOM_HOST === 'claude') ? {
       sessionHost: process.env.ROOM_HOST, deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }), deliveryHost: process.env.ROOM_HOST === 'claude' ? 'Claude' : 'Codex',
     } : {}),
-    claudeHooks: read(claude?.root && path.join(claude.root, 'hooks', 'common.mjs')),
-    codexHooks: read(codex?.hooksRoot && path.join(codex.hooksRoot, 'hooks', 'common.mjs')),
-    codexTrust: read(path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), 'config.toml')),
+    claudeHooks: claudeInstall.hooks,
+    codexHooks: codexInstall.hooks,
+    codexTrust: codexInstall.trust,
     stale: inSession ? createStaleVersionWarning(fileURLToPath(import.meta.url))() : undefined,
   }
   try {

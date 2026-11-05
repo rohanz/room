@@ -9,6 +9,7 @@ import { defaultSpawner, probeProcessNow, stopWorkerWithEscalation, type Process
 import { leadClaudePluginDir, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
 import { workerShellEnvWarnings, writeWorkerShellEnv } from './worker-shell-env.js'
 import { realGitCommonDir } from '@room/roomd'
+import { workerLaunchOptions } from './hosts/selection.js'
 
 export class WorkerLaunchError extends Error {
   constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number, readonly stopped = false) { super(message) }
@@ -103,7 +104,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const port = reservation.port
     const nameEpoch = await reserveWorkerName(s, `${policy.owner}+${tag}`, id, policy.log)
     const portChanged = command.mode === 'resume' && port !== command.oldPort
-    const shellEnv = policy.host === 'claude' ? writeWorkerShellEnv(s.dir, tag) : {}
+    const launchOptions = workerLaunchOptions(policy.host)
+    const shellEnv = launchOptions.shellEnvHook ? writeWorkerShellEnv(s.dir, tag) : {}
     const env = workerProcessEnv({ shellEnvFile: shellEnv.file, threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
@@ -124,7 +126,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('budget', String(e instanceof Error ? e.message : e)) }
     const built = workerCommand(policy.host, policy.model, prompt, policy.claudeChannel,
       policy.effort, { tag, sessionId: command.sessionId, resume: command.mode === 'resume',
-        maxBudgetUsd, shellEnvHook: policy.host === 'claude', wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: policy.host === 'claude' ? leadClaudePluginDir() : undefined })
+        maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir() : undefined })
     const priority = workerPriority(built, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')

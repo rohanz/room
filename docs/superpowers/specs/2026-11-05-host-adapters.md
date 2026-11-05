@@ -345,6 +345,10 @@ These are behavior changes, excluded from every extraction step. Each needs its 
 
 Other protocol replacements, envelope-cap changes, broader hook id aliases, changes to suffix evidence or user-facing background unknown, and elimination of the Codex idle race likewise require separate behavior work. None is bundled into extraction.
 
+## Addendum 2026-11-05 (slice 4): installation readers
+
+0.17.33 replaced the newest-cache reader with the authenticated contract listing (`installedCodexRoomContract` in worker-config.ts), so the "newest-cache versus active-install" change deferred below no longer exists as a behaviour to defer; slice 4 moved the contract reader unchanged behind the Codex adapter. Steps 1–3 of the extraction order shipped together in this release.
+
 ## Addendum 2026-11-05: Codex MCP connection sharing
 
 Codex 0.166.0 can share one local stdio MCP process across chats (`mcp_connection_sharing`, gated with

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Host adapters, slices 2–4 of docs/superpowers/specs/2026-11-05-host-adapters.md (behaviour-preserving): typed host ports under `packages/room-mcp/src/hosts/` with both-host fixtures for argv, hook envelopes, install facts, wake outcomes and log facts, and a tracked inventory of every host-specific branch that later slices must shrink; pre-binding classification, host selection and worker command and runtime rules moved behind the Claude and Codex adapters with today's precedence rules intact; installation readers and doctor host diagnostics moved behind them with every doctor row byte-identical. Dated host snapshots for both hosts: docs/archive/reports/host-survey-2026-11-05-{claude,codex}.md.
+
 ## 0.17.33
 
 - Protocol negotiation, release N of the local plumbing plan (docs/superpowers/specs/2026-11-05-protocol-negotiation.md): hub protocol, Y.Doc schema and capabilities are advertised and selected deterministically before any document update, with an explicit support window of the current release plus three minors back (floor 0.17.0). The hosted server and the local relay still serve unchanged 0.17.x clients on the exact schema-2/proto-1 path (pinned first-frame replay fixtures prove it); a refusal names which side must change and to what. The plugin negotiates with servers, relays and its own hook endpoint; `room_state check=true` reports contract ranges instead of a hardcoded schema failure.

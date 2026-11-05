@@ -5,6 +5,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, probeCredential, runDoctor, hookCompatibilityWarning, type DoctorFacts } from '../src/doctor.js'
+import { createClaudeInstall } from '../src/hosts/claude-install.js'
+import { createCodexInstall } from '../src/hosts/codex-install.js'
+import type { InstallIO } from '../src/hosts/install-io.js'
 import type { Session } from '../src/session.js'
 import { createWakeSender } from '../src/wake-path.js'
 import { handlers as scopeHandlers } from '../src/tools/scope.js'
@@ -325,4 +328,78 @@ it('room_state check diagnoses a never-synced session and its selected checkout'
   expect(await tools.call('room_state', { check: true })).toMatch(/^PASS  doctor: report from tool\nINFO  Room server process: pid \d+; CPU [\d.]+ s \(user [\d.]+, system [\d.]+\); RSS \d+ MB; up /)
   expect(doctor).toHaveBeenCalledWith('/selected/checkout', { inSession: true, selected: { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, sessionWarning: undefined, sessionBound: undefined })
   expect(active.daemon.touch).not.toHaveBeenCalled()
+})
+
+
+describe('host installation evidence', () => {
+  function fakeIO(outputs: Record<string, string | undefined>, files: Record<string, string> = {}): InstallIO {
+    return {
+      command: vi.fn(async (file, args) => outputs[[file, ...args].join(' ')]),
+      readFile: vi.fn(file => {
+        if (!(file in files)) throw new Error('missing fixture')
+        return files[file]
+      }),
+    }
+  }
+  it.each([
+    [undefined, 'absent'], ['', 'present'], ['not JSON', 'present'], ['{}', 'present'],
+  ] as const)('keeps an unanswered/malformed listing unknown (%s)', async (raw, cli) => {
+    const io = fakeIO({ 'claude plugin list --json': raw, 'codex plugin list --json': raw })
+    expect(await createClaudeInstall(io).inspectInstall()).toMatchObject({ cli, listing: 'unknown', plugin: 'unknown' })
+    expect(await createCodexInstall({ CODEX_HOME: '/codex' }, io).inspectInstall()).toMatchObject({ cli, listing: 'unknown', plugin: 'unknown' })
+  })
+  it('distinguishes successfully listed absence and keeps Claude version failure as empty evidence', async () => {
+    const io = fakeIO({ 'claude plugin list --json': '[]', 'codex plugin list --json': '{"installed":[]}', 'claude --version': '' })
+    expect(await createClaudeInstall(io).inspectInstall()).toMatchObject({ cli: 'present', listing: 'ok', plugin: 'absent', version: '', hookTrust: 'not-applicable' })
+    expect(await createCodexInstall({ CODEX_HOME: '/codex' }, io).inspectInstall()).toMatchObject({ cli: 'present', listing: 'ok', plugin: 'absent' })
+  })
+  it('keeps directory source, loaded files, stale bookkeeping and raw hooks separate', async () => {
+    const market = path.resolve('/fixture/market'), root = path.join(market, 'plugins', 'room')
+    const hooks = `export const HOOKS_VERSION = '${version}'`
+    const io = fakeIO({
+      'claude plugin list --json': JSON.stringify([{ id: 'room@room', version: '0.8.0', installPath: '/stale/cache' }]),
+      'claude plugin marketplace list --json': JSON.stringify([{ name: 'room', source: 'directory', path: market }]),
+      'claude --version': '2.1.300',
+    }, { [path.join(root, '.claude-plugin', 'plugin.json')]: JSON.stringify({ version }), [path.join(root, 'hooks', 'common.mjs')]: hooks })
+    expect(await createClaudeInstall(io).inspectInstall()).toEqual({
+      record: { version, recordedVersion: '0.8.0', root, cached: false },
+      cli: 'present', version: '2.1.300', listing: 'ok', plugin: 'present',
+      bundleRoot: root, hooksRoot: root, loadedVersion: version, recordedVersion: '0.8.0', source: 'directory', cached: false,
+      hooks, hooksVersion: version, hookTrust: 'not-applicable',
+      remedies: ['claude plugin marketplace update room && claude plugin update room@room'],
+    })
+    // Empty record roots have historically compared equal and must not acquire a directory warning.
+    expect(claudePlugin({}, [])).toEqual({ root: undefined, version: undefined, recordedVersion: undefined, cached: true })
+  })
+  it('keeps doctor first-row evidence independent of enabled/unique executable-contract admission', async () => {
+    const home = path.resolve('/fixture/codex'), market = path.resolve('/fixture/snapshot')
+    const cache = path.join(home, 'plugins', 'cache', 'room', 'room', '0.8.0')
+    const hooksRoot = path.join(market, 'custom-room')
+    const hooks = `export const HOOKS_VERSION = '${version}'`
+    const io = fakeIO({
+      'codex plugin list --json': JSON.stringify({ installed: [
+        { pluginId: 'other@room', version: '99.0.0' },
+        { pluginId: 'room@room', version: '0.8.0', marketplaceName: 'room', enabled: false },
+        { pluginId: 'room@room', version: '99.0.0', marketplaceName: 'room' },
+      ] }),
+      'codex plugin marketplace list --json': JSON.stringify({ marketplaces: [{ name: 'room', root: market }] }),
+    }, {
+      [path.join(cache, '.codex-plugin', 'plugin.json')]: JSON.stringify({ version: '0.8.0' }),
+      [path.join(market, '.agents', 'plugins', 'marketplace.json')]: JSON.stringify({ plugins: [{ name: 'room', source: { path: './custom-room' } }] }),
+      [path.join(hooksRoot, 'hooks', 'common.mjs')]: hooks,
+      [path.join(home, 'config.toml')]: trust,
+    })
+    expect(await createCodexInstall({ CODEX_HOME: home }, io).inspectInstall()).toEqual({
+      record: { version: '0.8.0', recordedVersion: '0.8.0', root: cache, hooksRoot },
+      cli: 'present', listing: 'ok', plugin: 'present', bundleRoot: cache, hooksRoot,
+      loadedVersion: '0.8.0', recordedVersion: '0.8.0', hooks, hooksVersion: version, trust, hookTrust: 'trusted',
+      remedies: ['codex plugin marketplace upgrade room && codex plugin add room@room'],
+    })
+    expect(io.command).toHaveBeenCalledTimes(2)
+    // Inspection must remain read-only and limited to plugin facts and Codex's hook trust config.
+    expect(vi.mocked(io.readFile).mock.calls.map(([file]) => file)).toEqual([
+      path.join(cache, '.codex-plugin', 'plugin.json'), path.join(market, '.agents', 'plugins', 'marketplace.json'),
+      path.join(hooksRoot, 'hooks', 'common.mjs'), path.join(home, 'config.toml'),
+    ])
+  })
 })

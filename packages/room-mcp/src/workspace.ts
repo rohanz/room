@@ -2,9 +2,11 @@
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { gitCommonDir } from '@room/roomd'
+import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
+import { workspaceAdapter } from './hosts/selection.js'
+import { deferWorkspace } from './hosts/codex-binding.js'
 
 export type ParentCommandReader = () => string
-const samePlace = (a: string, b: string): boolean => { try { return fs.realpathSync(a) === fs.realpathSync(b) } catch { return false } }
 
 /**
  * The session's folder without call metadata. ROOM_DIR (workers) is explicit. Codex starts Room in
@@ -13,12 +15,7 @@ const samePlace = (a: string, b: string): boolean => { try { return fs.realpathS
  * only supplies the spelling (a symlinked path) of that same folder.
  */
 export function fallbackWorkspace(env: NodeJS.ProcessEnv, processDir: string): string {
-  const value = (key: string) => env[key]?.trim() || undefined
-  const explicit = value('ROOM_DIR')
-  if (explicit) return explicit
-  if (env.ROOM_HOST === 'codex') return value('PWD') ?? value('INIT_CWD') ?? processDir
-  const pwd = value('PWD')
-  return pwd && samePlace(pwd, processDir) ? pwd : processDir
+  return workspaceAdapter(env).startup({ env, processDir, platform: process.platform }).fallbackDir
 }
 
 export const parentCommand: ParentCommandReader = () => execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
@@ -27,12 +24,7 @@ export const parentCommand: ParentCommandReader = () => execFileSync('ps', ['-o'
 
 /** Unknown parent identity is conservative: Codex's inherited PWD may belong to another session. */
 export function deferForSharedCodex(env: NodeJS.ProcessEnv, readParent: ParentCommandReader = parentCommand, platform = process.platform): boolean {
-  if (env.ROOM_HOST !== 'codex' || (env.ROOM_DIR && env.ROOM_DIR.trim())) return false
-  if (platform === 'win32') return true
-  try {
-    const command = readParent().trim()
-    return !command || command.includes('app-server')
-  } catch { return true }
+  return deferWorkspace(env, readParent, platform)
 }
 
 const worktreeRoot = (dir: string): string | undefined => {
@@ -42,25 +34,15 @@ const worktreeRoot = (dir: string): string | undefined => {
 
 /** Thread identity supplied by Codex, including daemon calls that carry no workspaces. */
 export function codexThreadFromMeta(params: { _meta?: unknown }): string | undefined {
-  const meta = params._meta
-  if (!meta || typeof meta !== 'object') return undefined
-  const fields = meta as Record<string, unknown>
-  const turn = fields['x-codex-turn-metadata']
-  const id = turn && typeof turn === 'object' ? (turn as Record<string, unknown>).thread_id : undefined
-  return typeof id === 'string' ? id : undefined
+  return callMetadata.decodeCall(params._meta).toolSessionId
 }
 
 /** Tool-call metadata is supplied by Codex, not by MCP initialize or roots/list. */
 export function codexWorkspace(params: { _meta?: unknown }, rootOf: (dir: string) => string | undefined = worktreeRoot): string | undefined {
-  const meta = params._meta
-  if (!meta || typeof meta !== 'object') return undefined
-  const turn = (meta as Record<string, unknown>)['x-codex-turn-metadata']
-  if (!turn || typeof turn !== 'object') return undefined
-  const workspaces = (turn as Record<string, unknown>).workspaces
-  if (!workspaces || typeof workspaces !== 'object' || Array.isArray(workspaces)) return undefined
+  const candidates = callMetadata.decodeCall(params._meta).workspaceCandidates
   const roots = new Set<string>()
   const plain = new Set<string>()
-  for (const key of Object.keys(workspaces)) {
+  for (const key of candidates) {
     try {
       const real = fs.realpathSync(key)
       const root = rootOf(real)

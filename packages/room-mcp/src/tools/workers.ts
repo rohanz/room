@@ -9,6 +9,8 @@ import { releaseClaimsOnDone } from './claims.js'
 import { publisherLine, retainedList } from './share.js'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { workerAdapter } from '../hosts/index.js'
+import { workerHost } from '../hosts/selection.js'
 import os from 'node:os'
 import path from 'node:path'
 import { completionId, completionMessage, highestSeq, manifestPaths, participantRecord, staleWorkersNote, type DoneMsg, type NoteMsg } from '@room/shared'
@@ -175,7 +177,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const task = String(a.task ?? '').trim()
       if (!task) return 'error: task is required'
       if (a.host !== undefined && a.host !== 'codex' && a.host !== 'claude') return 'error: host must be codex or claude'
-      const host: WorkerHost = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === 'codex' ? 'codex' : 'claude'
+      const host: WorkerHost = workerHost(a.host)
       if (host === 'codex' && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
         const mismatch = codexRoomCompatibilityMismatch(undefined, installedCodexRoomContract(), state.log)
         if (mismatch) return `error: ${mismatch}`
@@ -230,7 +232,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           : { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
-      const hostSessionId = host === 'claude' ? randomUUID() : undefined
+      const hostSessionId = workerAdapter(host).freshSessionId()
       const usedPorts = workerPortsInUse(registry.list())
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
       const record: WorkerRecord = {

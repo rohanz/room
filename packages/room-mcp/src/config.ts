@@ -12,10 +12,12 @@ import { gitCommonDir } from '@room/roomd'
 import { mainWorktree } from '@room/roomd/local'
 import { parseShare, type ShareLevel } from '@room/roomd'
 import { legacyLocalBranchRoom } from './room-name.js'
+import { claudeChannel as resolveChannel } from './hosts/claude-binding.js'
+import { sessionHost } from './hosts/selection.js'
 
 const TEAM_SERVER_REQUIRED = 'No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.'
 export const LOCAL = 'local'
-export const DEFAULT_CLAUDE_CHANNEL = 'plugin:room@room'
+export { DEFAULT_CLAUDE_CHANNEL } from './hosts/claude-binding.js'
 const DEFAULT_MAX_WORKERS = 8
 /** Display only (room_state's stale-claim label). Deletion is the hub's fixed expiry (ROOM_STALE_MS in @room/shared). */
 const DEFAULT_STALE_DAYS = 7
@@ -131,7 +133,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const explicitRoom = value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined)
   return {
     // Empty explicitly disables development channels; do not discard it with value().
-    claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
+    claudeChannel: resolveChannel(args.claudeChannel, e),
     workerId: value(e.ROOM_WORKER_ID),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where, teamServer), teamServer, where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
@@ -146,15 +148,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
 
 /** Explicit worker host wins, then static plugin env and the parent process; 'agent' when none says. */
 export function resolveSessionHost(env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } })): string {
-  const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
-  if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST!
-  if (host(env.ROOM_HOST)) return env.ROOM_HOST!
-  try {
-    const command = path.basename(parentCommand().trim()).toLowerCase()
-    if (/^codex(?:[.-]|$)/.test(command)) return 'codex'
-    if (/^claude(?:[.-]|$)/.test(command)) return 'claude'
-  } catch { /* ps unavailable */ }
-  return value(env.CLAUDE_CODE_SESSION_ID) ? 'claude' : 'agent'
+  return sessionHost(env, parentCommand)
 }
 
 /**

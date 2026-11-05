@@ -1,46 +1,28 @@
 import fs from 'node:fs'
-import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { CURRENT_COMPAT, parseAdvertisement, selectContract, type CompatAdvertisement } from '@room/hub-core'
+import { CURRENT_COMPAT, selectContract } from '@room/hub-core'
 import { WORKER_RECORD_SCHEMA } from '@room/shared'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { leadClaudePluginDir as adapterLeadClaudePluginDir } from './hosts/claude-install.js'
+import { installedCodexRoomContract as adapterInstalledCodexRoomContract, type WorkerContract } from './hosts/codex-install.js'
+export type { WorkerContract } from './hosts/codex-install.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { normalizeExplicitRoomName } from './room-name.js'
-import { CODEX_SHELL_FILTER, POWERSHELL_HOOK_ARGS } from './worker-shell-env.js'
+import { workerAdapter } from './hosts/index.js'
+import type { HostId as WorkerHost } from './hosts/types.js'
+import { workerRuntimeForHost } from './hosts/selection.js'
 
-export type WorkerHost = 'claude' | 'codex'
+export type { HostId as WorkerHost } from './hosts/types.js'
 
 export function workerRuntime(host: WorkerHost, model?: string, effort?: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
-  const clean = (value: string | undefined) => value?.trim() || undefined
-  const prefix = host === 'codex' ? 'ROOM_CODEX_WORKER_' : 'ROOM_CLAUDE_WORKER_'
-  return {
-    model: clean(model) ?? clean(env[`${prefix}MODEL`]) ?? clean(env.ROOM_WORKER_MODEL),
-    effort: clean(effort) ?? clean(env[`${prefix}EFFORT`]) ?? clean(env.ROOM_WORKER_EFFORT),
-  }
+  return workerRuntimeForHost(host, { model, effort }, env)
 }
 
 /** Read only public model settings; neither host's credential files are inspected. */
 export function hostDefaultRuntime(host: WorkerHost, dir: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
-  if (host === 'codex') {
-    try {
-      const config = fs.readFileSync(path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8')
-      const top = config.split(/^\s*\[/m, 1)[0]
-      const value = (key: string) => top.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']`, 'm'))?.[1]
-      return { model: value('model'), effort: value('model_reasoning_effort') }
-    } catch { return {} }
-  }
-  const roots = [path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json'), path.join(dir, '.claude', 'settings.json')]
-  let model: string | undefined
-  for (const file of roots) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { model?: unknown }
-      if (typeof parsed.model === 'string' && parsed.model.trim()) model = parsed.model.trim()
-    } catch { /* absent or invalid settings */ }
-  }
-  return { model }
+  return workerAdapter(host, env).defaults(dir)
 }
 
 export const WORKER_PORT_START = 4400
@@ -167,40 +149,18 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
 }
 
 export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
-export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return host === 'claude' && effort === 'minimal' ? 'low' : effort }
+export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return workerAdapter(host).normalizeRuntime({ effort }).effort }
 
 export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string; shellEnvHook?: boolean }
 
 /** The bundle path identifies the plugin Claude actually loaded, even when its root env is absent. */
 export function leadClaudePluginDir(env: NodeJS.ProcessEnv = process.env, modulePath = fileURLToPath(import.meta.url), installedPath?: string): string | undefined {
-  const root = env.CLAUDE_PLUGIN_ROOT || (path.basename(path.dirname(modulePath)) === 'server' ? path.dirname(path.dirname(modulePath)) : undefined)
-  if (!root) return undefined
-  const resolved = path.resolve(root)
-  if (installedPath === undefined) {
-    try {
-      const file = path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plugins', 'installed_plugins.json')
-      const installs = JSON.parse(fs.readFileSync(file, 'utf8')) as { plugins?: { 'room@room'?: { installPath?: string }[] } }
-      installedPath = installs.plugins?.['room@room']?.at(-1)?.installPath
-    } catch { /* A development plugin may have no installed copy. */ }
-  }
-  return installedPath && path.resolve(installedPath) === resolved ? undefined : resolved
+  return adapterLeadClaudePluginDir(env, modulePath, installedPath)
 }
-
-export interface WorkerContract { release: string; compat: CompatAdvertisement; workerRecordSchema: number }
 
 /** Resolve the installed entry selected by Codex, then authenticate its descriptor against its executable. */
 export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env): WorkerContract | undefined {
-  try {
-    const listing = JSON.parse(execFileSync('codex', ['plugin', 'list', '--json'], { env, encoding: 'utf8', timeout: 2500, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })) as { installed?: { pluginId?: string; version?: string; enabled?: boolean }[] }
-    const entries = listing.installed?.filter(row => row.pluginId === 'room@room' && row.enabled !== false)
-    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return undefined
-    const root = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'plugins', 'cache', 'room', 'room', entries[0].version, 'server')
-    if (fs.statSync(path.join(root, 'compat.json')).size > 4096 || fs.statSync(path.join(root, 'room-mcp.mjs')).size > 64 * 1024 * 1024) return undefined
-    const raw = fs.readFileSync(path.join(root, 'compat.json'), 'utf8')
-    const descriptor = JSON.parse(raw)
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return undefined
-    return { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
-  } catch { return undefined }
+  return adapterInstalledCodexRoomContract(env)
 }
 
 export function codexRoomCompatibilityMismatch(
@@ -225,19 +185,9 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
   if (effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
   effort = hostWorkerEffort(host, effort)
   if (options.resume && !options.sessionId) throw new Error('resuming a worker requires its host session id')
-  if (host === 'codex') return { cmd: 'codex', args: options.resume
-    ? ['exec', 'resume', options.sessionId!, '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt]
-    : ['exec', '-s', 'workspace-write', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
-  const settings = {
-    ...(options.pluginDir ? { enabledPlugins: { 'room@room': false } } : {}),
-    ...(options.shellEnvHook ? { hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [
-      { type: 'command', command: 'node', args: POWERSHELL_HOOK_ARGS, timeout: 5 },
-    ] }] } } : {}),
-  }
-  return {
-    cmd: 'claude',
-    args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir] : []), ...(Object.keys(settings).length ? ['--settings', JSON.stringify(settings)] : []), ...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
-  }
+  return workerAdapter(host).command({ ...options, mode: options.resume ? 'resume' : 'fresh',
+    runtime: { model, effort }, prompt, claudeChannel, tag: options.tag ?? '',
+    shellEnvHook: options.shellEnvHook ?? false, wakeChannels: options.wakeChannels ?? false })
 }
 
 export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | undefined {

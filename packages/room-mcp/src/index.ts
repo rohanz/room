@@ -20,13 +20,15 @@ import { FlushedStdioTransport } from './transport.js'
 import { admitCodexThread } from './session.js'
 import { CODEX_WORKER_BIND_WAIT_MS, createSessionBinding, isCodexExecWorker } from './binding.js'
 import { startArbitration } from './arbitration.js'
-import { codexThreadFromMeta, codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
+import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import { PresenceEnd, attachingParentReader, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
 import { admitWorkerEnvironment, ownWorkerNames } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
+import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
+import { channelCapabilities } from './hosts/claude-binding.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
 export const RELEASE_VERSION = pluginManifest.version
@@ -90,7 +92,7 @@ async function main() {
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const mcp = new RoomMcpServer(
     { name: 'room', version: RELEASE_VERSION },
-    { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
+    { capabilities: { tools: {}, experimental: channelCapabilities }, instructions: AGENT_INSTRUCTIONS() },
   )
   let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
@@ -257,7 +259,7 @@ async function main() {
   // The reply's ledger batch commits when its bytes reach the host's pipe (FlushedStdioTransport).
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const threadId = codexThreadFromMeta(req.params)
+    const threadId = callMetadata.decodeCall(req.params._meta).toolSessionId
     if (threadId) admitCodexThread(threadId)
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {

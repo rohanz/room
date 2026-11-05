@@ -14,6 +14,7 @@ import { boundSession, readSessionRecord, type Session } from './session.js'
 import { WorkerRegistry, registrySnapshotForDir } from './worker-registry.js'
 import type { NoteMsg } from '@room/shared'
 import { parentCommand, type ParentCommandReader } from './workspace.js'
+import { presenceKind } from './hosts/selection.js'
 
 export type HostKind = 'shared-app-server' | 'interactive'
 
@@ -61,8 +62,7 @@ export function joinedPresenceWorkers(sessions: readonly Session[], hasWrite: (d
 
 /** A Codex MCP under a shared `codex app-server` cannot see its thread end (registry §18); every other host is a stdio child. */
 export function hostKind(env: NodeJS.ProcessEnv = process.env, readParent: ParentCommandReader = parentCommand): HostKind {
-  if (env.ROOM_HOST !== 'codex' && env.ROOM_WORKER_HOST !== 'codex') return 'interactive'
-  try { return readParent().includes('app-server') ? 'shared-app-server' : 'interactive' } catch { return 'interactive' }
+  return presenceKind(env, readParent)
 }
 
 /** H1 (registry §18): release this session's own claims and scope after eight idle hours, journaled so a crash replays once. */
