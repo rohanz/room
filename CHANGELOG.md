@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.34
 
 - **Local rooms run on a standalone daemon** (docs/superpowers/specs/2026-11-05-local-daemon.md). A local room's state now lives in one daemon process per clone instead of inside whichever session started first, so closing that session no longer takes the room down. The daemon starts on the first join, outlives sessions, saves before it stops, and exits after five minutes with no writers. It negotiates the `room.daemon` capability and refuses older clients before sync. Leaving or losing the connection keeps your local replica so a reconnect resumes it; an explicit `room_leave` or a switch to another room disposes it.
 - **One-time cutover for existing local rooms** (docs/upgrading.md, "Local daemon cutover"). The first daemon start is gated on the old relay owner having exited and no live pre-daemon client remaining. A refusal names what it found, with pid or port for an unknown owner, and malformed records block rather than being ignored. Rollback is executable: `room-daemon.mjs stop` performs an authenticated, save-first stop before you reinstall an older release.
