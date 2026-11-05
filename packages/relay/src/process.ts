@@ -1,4 +1,5 @@
 /** Process identity: the kernel's birth marker and executable for a pid (moved from room-mcp's worker-process.ts). */
+import { parseWindowsProcessTable, windowsProcessCommand, windowsProcessName } from './windows-process-core.js'
 import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -31,43 +32,8 @@ const systemProcessReaders: ProcessReaders = {
   },
 }
 
-/** Windows uses case-insensitive executable basenames; only the terminal .exe suffix is removed. */
-export function windowsProcessName(name: string): string {
-  return path.win32.basename(name).toLowerCase().replace(/\.exe$/, '')
-}
-
 export interface WindowsProcessInfo extends ProcessInfo { ppid: number }
-
-/** CIM JSON projected by readWindowsProcessTable; preserve all seven fractional birth digits. */
-export function parseWindowsProcessTable(output: string): Map<number, WindowsProcessInfo> {
-  const table = new Map<number, WindowsProcessInfo>()
-  let parsed: unknown
-  try { parsed = JSON.parse(output.replace(/^\uFEFF/, '').trim()) } catch { return table }
-  for (const row of Array.isArray(parsed) ? parsed : [parsed]) {
-    if (!row || typeof row !== 'object') continue
-    const { pid, ppid, creationDate, name } = row as Record<string, unknown>
-    if (!Number.isSafeInteger(pid) || (pid as number) <= 0 || !Number.isSafeInteger(ppid) || (ppid as number) < 0) continue
-    let startTime: string | undefined
-    if (typeof creationDate === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(creationDate)) {
-      // Date.parse truncates precision and normalizes impossible days; validate without using it as the token.
-      const millis = Date.parse(creationDate)
-      if (Number.isFinite(millis) && new Date(millis).toISOString() === creationDate.slice(0, 23) + 'Z') startTime = `windows:${creationDate}`
-    }
-    const executable = typeof name === 'string' && name ? windowsProcessName(name) || undefined : undefined
-    table.set(pid as number, { ppid: ppid as number, startTime, executable })
-  }
-  return table
-}
-
-/** The PowerShell arguments that read the CIM process table (one PID when given), shared by sync and async reads. */
-export function windowsProcessCommand(pid?: number): string[] | undefined {
-  if (pid !== undefined && (!Number.isSafeInteger(pid) || pid <= 0)) return undefined
-  const query = `Get-CimInstance Win32_Process${pid === undefined ? '' : ` -Filter "ProcessId = ${pid}"`}`
-  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-    + `@(${query} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; `
-    + "creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress"
-  return ['-NoProfile', '-NonInteractive', '-Command', script]
-}
+export { windowsProcessName, parseWindowsProcessTable, windowsProcessCommand }
 
 /** No WMIC dependency, command lines or environments. A PID filter bounds per-worker queries. */
 export function readWindowsProcessTable(readers: Pick<ProcessReaders, 'exec'>, pid?: number, timeout = 3000): Map<number, WindowsProcessInfo> {

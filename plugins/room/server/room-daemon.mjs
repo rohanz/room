@@ -3778,10 +3778,10 @@ var init_yjs = __esm({
       }
     };
     getPathTo = (parent, child) => {
-      const path11 = [];
+      const path12 = [];
       while (child._item !== null && child !== parent) {
         if (child._item.parentSub !== null) {
-          path11.unshift(child._item.parentSub);
+          path12.unshift(child._item.parentSub);
         } else {
           let i = 0;
           let c = (
@@ -3794,12 +3794,12 @@ var init_yjs = __esm({
             }
             c = c.right;
           }
-          path11.unshift(i);
+          path12.unshift(i);
         }
         child = /** @type {AbstractType<any>} */
         child._item.parent;
       }
-      return path11;
+      return path12;
     };
     warnPrematureAccess = () => {
       warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -8251,13 +8251,13 @@ function msgPaths(m) {
   if ("path" in m) return typeof m.path === "string" ? [m.path] : [];
   return [];
 }
-function scopeCovers(scope, path11) {
-  return Array.isArray(scope?.paths) && scope.paths.some((p) => typeof p === "string" && containsPath(p, path11));
+function scopeCovers(scope, path12) {
+  return Array.isArray(scope?.paths) && scope.paths.some((p) => typeof p === "string" && containsPath(p, path12));
 }
 function messageAreas(m, scopes) {
   const out = /* @__PURE__ */ new Set();
   if (m.type === "scope") out.add(m.area);
-  for (const path11 of msgPaths(m)) for (const scope of scopes) if (scope && typeof scope.area === "string" && scopeCovers(scope, path11)) out.add(scope.area);
+  for (const path12 of msgPaths(m)) for (const scope of scopes) if (scope && typeof scope.area === "string" && scopeCovers(scope, path12)) out.add(scope.area);
   return Array.from(out).sort();
 }
 function ledger(messages, scopes, q = {}) {
@@ -8842,16 +8842,16 @@ function workerMemory(doc) {
     const manifest = manifests.get(key);
     if (!manifest) continue;
     const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence);
-    const texts = entries.flatMap(([path11, entry]) => {
-      const value2 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key)?.get(path11) : void 0;
-      return value2 ? [[path11, value2.toString()]] : [];
+    const texts = entries.flatMap(([path12, entry]) => {
+      const value2 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key)?.get(path12) : void 0;
+      return value2 ? [[path12, value2.toString()]] : [];
     });
-    const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path11]) => path11));
+    const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path12]) => path12));
     for (const prefix2 of head.textPrefixes ?? []) if (!prefix2.endsWith("/") && !manifest.has(prefix2)) shared.add(prefix2);
     const baseTexts = [...doc.getMap("basetextFlat")].flatMap(([key2, value2]) => {
       const prefix2 = `${worker.name}\0${head.base}:`;
-      const path11 = key2.startsWith(prefix2) ? key2.slice(prefix2.length) : void 0;
-      return path11 !== void 0 && shared.has(path11) ? [[path11, value2]] : [];
+      const path12 = key2.startsWith(prefix2) ? key2.slice(prefix2.length) : void 0;
+      return path12 !== void 0 && shared.has(path12) ? [[path12, value2]] : [];
     });
     const p = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? "released" }, git, entries, texts, baseTexts };
     if (matchesRevision(p, latest) && !contradicted(doc, p)) publications.set(worker.id, p);
@@ -8988,16 +8988,16 @@ var init_base = __esm({
           }
         }
       }
-      addToPath(path11, added, removed, oldPosInc, options) {
-        const last2 = path11.lastComponent;
+      addToPath(path12, added, removed, oldPosInc, options) {
+        const last2 = path12.lastComponent;
         if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
           return {
-            oldPos: path11.oldPos + oldPosInc,
+            oldPos: path12.oldPos + oldPosInc,
             lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
           };
         } else {
           return {
-            oldPos: path11.oldPos + oldPosInc,
+            oldPos: path12.oldPos + oldPosInc,
             lastComponent: { count: 1, added, removed, previousComponent: last2 }
           };
         }
@@ -9527,14 +9527,14 @@ var init_doc = __esm({
         const live = this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath));
         if (live !== void 0) return live;
         const retained = retainedPublication(this, person);
-        return retained?.head.base === sha ? retained.baseTexts.find(([path11]) => path11 === relpath)?.[1] : void 0;
+        return retained?.head.base === sha ? retained.baseTexts.find(([path12]) => path12 === relpath)?.[1] : void 0;
       }
       /** Remove only this participant's entries that no longer back their live work. */
       reconcileBaseTexts(person, origin, baseSha) {
         const head = this.manifestHead.get(person);
         const base = baseSha ?? head?.base;
         const current = head ? this.manifest.get(manifestKey(person, head.fence)) : void 0;
-        const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path11]) => `${base}:${path11}`));
+        const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path12]) => `${base}:${path12}`));
         this.doc.transact(() => {
           const prefix2 = this.baseTextPrefix(person);
           for (const key of this.ownedBaseTexts.keys()) {
@@ -13705,11 +13705,11 @@ var require_websocket_server = __commonJS({
 
 // packages/relay/src/daemon-bin.ts
 import fs10 from "node:fs";
-import path10 from "node:path";
+import path11 from "node:path";
 
 // packages/relay/src/daemon.ts
 import fs9 from "node:fs";
-import path9 from "node:path";
+import path10 from "node:path";
 import crypto6 from "node:crypto";
 
 // packages/hub-core/src/protocol.ts
@@ -15159,12 +15159,12 @@ function incarnationFile(file, io) {
 
 // packages/relay/src/hub.ts
 import fs5 from "node:fs";
-import path5 from "node:path";
+import path6 from "node:path";
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // packages/relay/src/leases.ts
 import fs4 from "node:fs";
-import path4 from "node:path";
+import path5 from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 // packages/relay/src/private-state.ts
@@ -15407,34 +15407,8 @@ function privateStateDirectory(dir) {
   }
 }
 
-// packages/relay/src/process.ts
-import { execFile as execFile2, execFileSync as execFileSync2 } from "node:child_process";
-import fs3 from "node:fs";
+// packages/relay/src/windows-process-core.ts
 import path3 from "node:path";
-function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
-var systemProcessReaders = {
-  platform: process.platform,
-  readFile: (file) => fs3.readFileSync(file, "utf8"),
-  readLink: (file) => fs3.readlinkSync(file),
-  exec: (file, args3, options) => execFileSync2(file, args3, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 3e3,
-    ...options,
-    ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
-  }),
-  execAsync: (file, args3, options, done) => {
-    execFile2(file, args3, { encoding: "utf8", windowsHide: true, ...options }, (error, stdout) => done(error, stdout));
-  }
-};
 function windowsProcessName(name) {
   return path3.win32.basename(name).toLowerCase().replace(/\.exe$/, "");
 }
@@ -15462,10 +15436,39 @@ function parseWindowsProcessTable(output) {
 }
 function windowsProcessCommand(pid) {
   if (pid !== void 0 && (!Number.isSafeInteger(pid) || pid <= 0)) return void 0;
-  const query = `Get-CimInstance Win32_Process${pid === void 0 ? "" : ` -Filter "ProcessId = ${pid}"`}`;
-  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @(${query} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress`;
+  const filter = pid === void 0 ? "" : ` WHERE ProcessId = ${pid}`;
+  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate, Name FROM Win32_Process${filter}'; $rows = foreach ($p in $searcher.Get()) { $c = if ($p.CreationDate) { '"' + [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"' } else { 'null' }; $n = ([string]$p.Name).Replace('\\', '\\\\').Replace('"', '\\"'); '{"pid":' + [int]$p.ProcessId + ',"ppid":' + [int]$p.ParentProcessId + ',"creationDate":' + $c + ',"name":"' + $n + '"}' }; '[' + ($rows -join ',') + ']'`;
   return ["-NoProfile", "-NonInteractive", "-Command", script];
 }
+
+// packages/relay/src/process.ts
+import { execFile as execFile2, execFileSync as execFileSync2 } from "node:child_process";
+import fs3 from "node:fs";
+import path4 from "node:path";
+function pidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+var systemProcessReaders = {
+  platform: process.platform,
+  readFile: (file) => fs3.readFileSync(file, "utf8"),
+  readLink: (file) => fs3.readlinkSync(file),
+  exec: (file, args3, options) => execFileSync2(file, args3, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 3e3,
+    ...options,
+    ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
+  }),
+  execAsync: (file, args3, options, done) => {
+    execFile2(file, args3, { encoding: "utf8", windowsHide: true, ...options }, (error, stdout) => done(error, stdout));
+  }
+};
 function readWindowsProcessTable(readers, pid, timeout = 3e3) {
   const args3 = windowsProcessCommand(pid);
   return args3 ? parseWindowsProcessTable(readers.exec("powershell.exe", args3, { timeout, maxBuffer: WINDOWS_MAX_BUFFER })) : /* @__PURE__ */ new Map();
@@ -15497,13 +15500,13 @@ function linuxProcessName(files) {
   let name = read2(files.comm)?.replace(/\n$/, "") || void 0;
   if (!name || name.length >= 15) {
     const argv0 = read2(files.cmdline)?.split("\0")[0];
-    const invoked = argv0 ? path3.basename(argv0) : void 0;
+    const invoked = argv0 ? path4.basename(argv0) : void 0;
     if (invoked && (!name || invoked.startsWith(name))) name = invoked;
   }
   if (name && !/^\d+(?:\.\d+)+/.test(name)) return name;
   const exe = read2(files.exe)?.replace(/ \(deleted\)$/, "");
   if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return "claude";
-  return name ?? (exe ? path3.basename(exe) : void 0);
+  return name ?? (exe ? path4.basename(exe) : void 0);
 }
 function probeProcess(pid, readers) {
   return readers ? probeUncached(pid, readers) : systemProbe(pid);
@@ -15539,7 +15542,7 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
       if (!boot) return unreadable();
       let executable;
       try {
-        executable = path3.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
+        executable = path4.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
       } catch {
       }
       return { startTime: `darwin:${boot}:${startSeconds2}`, executable };
@@ -15676,7 +15679,7 @@ function syncDirectory(dir) {
   }
 }
 function ensureDurableDirectory(dir, holdsFile = true) {
-  const parent = path4.dirname(dir);
+  const parent = path5.dirname(dir);
   if (parent === dir) {
     if (!fs4.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
@@ -15703,7 +15706,7 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
     if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
     if (pidAlive(pid)) continue;
     try {
-      fs4.unlinkSync(path4.join(dir, name));
+      fs4.unlinkSync(path5.join(dir, name));
       removed++;
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
@@ -15713,7 +15716,7 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
   return removed;
 }
 function writeTemp(file, content) {
-  const dir = path4.dirname(file);
+  const dir = path5.dirname(file);
   ensureDurableDirectory(dir);
   cleanupOrphanTemps(dir);
   const start = probeOwnProcess()?.startTime;
@@ -15740,21 +15743,21 @@ function createExclusive(file, content) {
       if (e.code === "EEXIST") return false;
       throw e;
     }
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
     return true;
   } finally {
     fs4.rmSync(temp, { force: true });
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
   }
 }
 function writeAtomic(file, content) {
   const temp = writeTemp(file, content);
   try {
     renameAtomic(temp, file);
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
   } finally {
     fs4.rmSync(temp, { force: true });
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
   }
 }
 function renameAtomic(temp, file) {
@@ -15802,7 +15805,7 @@ function acquireGuard(file, probe, depth = 0) {
     const latestHolder = latest && leaseToken(latest);
     if (latestHolder && liveness(latestHolder, probe) === "dead") {
       fs4.unlinkSync(file);
-      syncDirectory(path4.dirname(file));
+      syncDirectory(path5.dirname(file));
     }
   } finally {
     releaseGuard(`${file}.guard`, outer);
@@ -15814,7 +15817,7 @@ function releaseGuard(file, token) {
   const current = read(file);
   if (current && leaseToken(current)?.nonce === token.nonce) {
     fs4.unlinkSync(file);
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
   }
 }
 function withGuard(file, fn, probe = probeProcess) {
@@ -15833,7 +15836,7 @@ function compareAndRelease(file, token) {
     const current = read(file);
     if (!current || leaseToken(current)?.nonce !== token.nonce) return false;
     fs4.unlinkSync(file);
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
     return true;
   });
 }
@@ -15843,13 +15846,13 @@ function recover(file, orphan, probe = probeProcess) {
     const owner = current && leaseToken(current);
     if (!current || !owner || liveness(owner, probe) !== "dead" || !orphan(current)) return false;
     fs4.unlinkSync(file);
-    syncDirectory(path4.dirname(file));
+    syncDirectory(path5.dirname(file));
     return true;
   });
 }
 
 // packages/relay/src/hub.ts
-var hubDir = (commonDir) => path5.join(commonDir, "room", "hub");
+var hubDir = (commonDir) => path6.join(commonDir, "room", "hub");
 function readJson(file) {
   try {
     return JSON.parse(fs5.readFileSync(file, "utf8"));
@@ -15867,7 +15870,7 @@ var AuthorityLock = class _AuthorityLock {
   token;
   /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
   static take(commonDir) {
-    const file = path5.join(hubDir(commonDir), "authority.lock");
+    const file = path6.join(hubDir(commonDir), "authority.lock");
     const own = probeOwnProcess();
     const token = { pid: process.pid, startTime: own?.startTime ?? "", executable: own?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
     if (createExclusive(file, token)) return new _AuthorityLock(file, token);
@@ -15893,11 +15896,11 @@ var AuthorityLock = class _AuthorityLock {
   }
 };
 function incarnationFile2(commonDir) {
-  const file = path5.join(hubDir(commonDir), "incarnation.json");
+  const file = path6.join(hubDir(commonDir), "incarnation.json");
   return incarnationFile(file, { nullIsMissing: true, read: (file2) => fs5.readFileSync(file2, "utf8"), write: writeAtomic });
 }
 function relayLeaseFile(commonDir, room) {
-  const file = path5.join(commonDir, "room", "hub-leases", `${createHash2("sha256").update(room).digest("hex")}.json`);
+  const file = path6.join(commonDir, "room", "hub-leases", `${createHash2("sha256").update(room).digest("hex")}.json`);
   return {
     read: async () => {
       try {
@@ -15956,8 +15959,8 @@ function localViewKey(key, room) {
 function viewTicketProof(viewKey, room, ts, nonce) {
   return mac(viewKey, `ticket\0${room}\0${ts}\0${nonce}`);
 }
-function localProofHeader(key, method, path11, port, ts = Date.now(), nonce = crypto.randomBytes(16).toString("hex")) {
-  return `Room-Proof ${ts}.${nonce}.${mac(key, `client\0${method.toUpperCase()}\0${path11}\0${port}\0${ts}\0${nonce}`)}`;
+function localProofHeader(key, method, path12, port, ts = Date.now(), nonce = crypto.randomBytes(16).toString("hex")) {
+  return `Room-Proof ${ts}.${nonce}.${mac(key, `client\0${method.toUpperCase()}\0${path12}\0${port}\0${ts}\0${nonce}`)}`;
 }
 var ProofVerifier = class {
   constructor(key, port, now = Date.now) {
@@ -15969,7 +15972,7 @@ var ProofVerifier = class {
   port;
   now;
   seen = /* @__PURE__ */ new Map();
-  verify(header, method, path11) {
+  verify(header, method, path12) {
     if (typeof header !== "string") return false;
     const match = /^Room-Proof (\d{13})\.([a-f0-9]{32})\.([a-f0-9]{64})$/.exec(header);
     if (!match) return false;
@@ -15978,7 +15981,7 @@ var ProofVerifier = class {
     if (Math.abs(ts - now) > PROOF_WINDOW_MS) return false;
     for (const [n, expiry] of this.seen) if (expiry <= now) this.seen.delete(n);
     if (this.seen.has(nonce) || this.seen.size >= REPLAY_CACHE_MAX) return false;
-    const expected = mac(this.key, `client\0${method.toUpperCase()}\0${path11}\0${this.port}\0${ts}\0${nonce}`);
+    const expected = mac(this.key, `client\0${method.toUpperCase()}\0${path12}\0${this.port}\0${ts}\0${nonce}`);
     if (!sameProof(proof, expected)) return false;
     this.seen.set(nonce, now + PROOF_WINDOW_MS);
     return true;
@@ -16038,7 +16041,7 @@ async function relayHealth(port, key, timeoutMs = 800) {
 
 // packages/relay/src/memory.ts
 import fs6 from "node:fs";
-import path6 from "node:path";
+import path7 from "node:path";
 import crypto2 from "node:crypto";
 init_yjs();
 var stderr = (line) => {
@@ -16084,7 +16087,7 @@ function largestRoots(update) {
   }
 }
 function memoryFile(commonDir, room) {
-  return path6.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
+  return path7.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
 }
 function syncDirectory2(dir) {
   let fd;
@@ -16150,8 +16153,8 @@ function writeMemory(commonDir, room, doc, log2, warnings, failure) {
     if (update.byteLength > MAX_MEMORY_BYTES) {
       warnings.warn(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log2);
     }
-    privateStateDirectory(path6.dirname(file));
-    fs6.chmodSync(path6.dirname(file), 448);
+    privateStateDirectory(path7.dirname(file));
+    fs6.chmodSync(path7.dirname(file), 448);
     const fd = fs6.openSync(temp, "wx", 384);
     try {
       fs6.writeFileSync(fd, update);
@@ -16161,7 +16164,7 @@ function writeMemory(commonDir, room, doc, log2, warnings, failure) {
     }
     if (process.platform === "win32") verifyPrivatePath(temp, true);
     fs6.renameSync(temp, file);
-    syncDirectory2(path6.dirname(file));
+    syncDirectory2(path7.dirname(file));
     return void 0;
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
@@ -16313,13 +16316,13 @@ async function finalSave(memories, delays = FINAL_SAVE_RETRY_MS) {
 init_yjs();
 import crypto3 from "node:crypto";
 import fs7 from "node:fs";
-import path7 from "node:path";
+import path8 from "node:path";
 var empty2 = () => ({ messages: [], claims: [], scopes: [], scopeSnapshots: {}, sources: {}, messageSources: {}, identities: {}, complete: false });
-var ledgerFile = (common, room) => path7.join(common, "room", "relay", `migrated-${crypto3.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
-var legacyDir = (common) => path7.join(common, "room-local");
+var ledgerFile = (common, room) => path8.join(common, "room", "relay", `migrated-${crypto3.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
+var legacyDir = (common) => path8.join(common, "room-local");
 function oldRunning(common, probe) {
   try {
-    const info = JSON.parse(fs7.readFileSync(path7.join(common, "room-local.json"), "utf8"));
+    const info = JSON.parse(fs7.readFileSync(path8.join(common, "room-local.json"), "utf8"));
     const observed = probe(Number(info.pid));
     if (!observed) return false;
     if (info.startTime && observed.startTime && !sameStartTime(info.startTime, observed.startTime)) return false;
@@ -16333,7 +16336,7 @@ function readLedger(common, room) {
   const scoped = ledgerFile(common, room);
   let file = scoped;
   if (!fs7.existsSync(scoped)) {
-    const old = path7.join(common, "room", "relay", "migrated.json");
+    const old = path8.join(common, "room", "relay", "migrated.json");
     try {
       const candidate = JSON.parse(fs7.readFileSync(old, "utf8"));
       const names = Object.keys(candidate.sources ?? {});
@@ -16353,7 +16356,7 @@ function readLedger(common, room) {
 }
 function writeLedger(common, room, ledger2) {
   const file = ledgerFile(common, room), temp = `${file}.${process.pid}-${crypto3.randomBytes(4).toString("hex")}.tmp`;
-  privateStateDirectory(path7.dirname(file));
+  privateStateDirectory(path8.dirname(file));
   try {
     fs7.writeFileSync(temp, JSON.stringify(ledger2) + "\n", { flag: "wx", mode: 384 });
     fs7.renameSync(temp, file);
@@ -16396,7 +16399,7 @@ function sources(common, room) {
         throw new Error(`invalid legacy snapshot name: ${file}`);
       }
       if (name !== room && !name.startsWith(`${room}/`)) return [];
-      const full2 = path7.join(legacyDir(common), file);
+      const full2 = path8.join(legacyDir(common), file);
       const stat = fs7.statSync(full2);
       return [{ file: full2, name, mtime: stat.mtimeMs, size: stat.size, revision: `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` }];
     });
@@ -16623,7 +16626,7 @@ function catchUpDecoded(common, room, targetDoc, log2, limits, files, running, l
 function forgetLegacyLocal(common, room) {
   for (const { file } of sources(common, room)) fs7.rmSync(file, { force: true });
   fs7.rmSync(ledgerFile(common, room), { force: true });
-  const old = path7.join(common, "room", "relay", "migrated.json");
+  const old = path8.join(common, "room", "relay", "migrated.json");
   try {
     const ledger2 = JSON.parse(fs7.readFileSync(old, "utf8"));
     const names = Object.keys(ledger2.sources ?? {});
@@ -16636,7 +16639,7 @@ function forgetLegacyLocal(common, room) {
 import crypto5 from "node:crypto";
 import fs8 from "node:fs";
 import http2 from "node:http";
-import path8 from "node:path";
+import path9 from "node:path";
 
 // node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -17720,9 +17723,9 @@ function relayConnectionHandler(docs, opts) {
     }
   };
 }
-var LOCAL_FILE = path8.join("room", "relay.json");
+var LOCAL_FILE = path9.join("room", "relay.json");
 function relayFile(commonDir) {
-  return path8.join(commonDir, LOCAL_FILE);
+  return path9.join(commonDir, LOCAL_FILE);
 }
 function deterministicPort(commonDir) {
   let real = commonDir;
@@ -18146,7 +18149,7 @@ async function startLocalDaemon(opts) {
   const phase = (name) => log2(`startup pid ${process.pid}: ${name}`);
   phase("state check");
   await primePrivateState(commonDir);
-  privateStateDirectory(path9.join(commonDir, "room"));
+  privateStateDirectory(path10.join(commonDir, "room"));
   phase("state verified");
   phase("lease acquisition");
   const lock = AuthorityLock.take(commonDir);
@@ -18282,15 +18285,15 @@ var log = () => {
 };
 try {
   const commonDir = fs10.realpathSync.native(value("--common-dir"));
-  if (!path10.isAbsolute(commonDir)) throw new Error("daemon common directory must be absolute");
+  if (!path11.isAbsolute(commonDir)) throw new Error("daemon common directory must be absolute");
   if (args2[0] === "stop") {
     await stopLocalDaemon(commonDir);
     process.stdout.write("Daemon saved and process exit verified.\n");
   } else {
     if (args2[0] && !args2[0].startsWith("--") && args2[0] !== "start") throw new Error("usage: room-daemon.mjs [start|stop] --common-dir <absolute git common directory> [--room <room>]");
     await primePrivateState(commonDir);
-    privateStateDirectory(path10.join(commonDir, "room"));
-    const file = path10.join(commonDir, "room", "daemon.log");
+    privateStateDirectory(path11.join(commonDir, "room"));
+    const file = path11.join(commonDir, "room", "daemon.log");
     let created = false;
     try {
       const fd = fs10.openSync(file, "wx", 384);

@@ -1,6 +1,7 @@
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
 import { initializePrivateDirectory, privateDirectoryPath } from './private-core.mjs'
+import { parseWindowsProcessTable, windowsProcessCommand, windowsProcessName } from './windows-process-core.mjs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -382,41 +383,12 @@ export function linuxProcessName(files) {
   return name ?? (exe ? path.basename(exe) : undefined)
 }
 
-/** Windows uses case-insensitive executable basenames; only the terminal .exe suffix is removed. */
-export function windowsProcessName(name) {
-  return path.win32.basename(name).toLowerCase().replace(/\.exe$/, '')
-}
-
-/** CIM JSON projected by readWindowsProcessTable; preserve all seven fractional birth digits. */
-export function parseWindowsProcessTable(output) {
-  const table = new Map()
-  let parsed
-  try { parsed = JSON.parse(output.replace(/^\uFEFF/, '').trim()) } catch { return table }
-  for (const row of Array.isArray(parsed) ? parsed : [parsed]) {
-    if (!row || typeof row !== 'object') continue
-    const { pid, ppid, creationDate, name } = row
-    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid < 0) continue
-    let startTime
-    if (typeof creationDate === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(creationDate)) {
-      // Date.parse truncates precision and normalizes impossible days; validate without using it as the token.
-      const millis = Date.parse(creationDate)
-      if (Number.isFinite(millis) && new Date(millis).toISOString() === creationDate.slice(0, 23) + 'Z') startTime = `windows:${creationDate}`
-    }
-    const executable = typeof name === 'string' && name ? windowsProcessName(name) || undefined : undefined
-    table.set(pid, { ppid, startTime, executable })
-  }
-  return table
-}
-
 /** No WMIC dependency, command lines or environments. A PID filter bounds per-worker queries. */
 export function readWindowsProcessTable(readers, pid) {
-  if (pid !== undefined && (!Number.isSafeInteger(pid) || pid <= 0)) return new Map()
-  const query = `Get-CimInstance Win32_Process${pid === undefined ? '' : ` -Filter "ProcessId = ${pid}"`}`
-  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-    + `@(${query} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; `
-    + "creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress"
-  return parseWindowsProcessTable(readers.exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }))
+  const args = windowsProcessCommand(pid)
+  return args ? parseWindowsProcessTable(readers.exec('powershell.exe', args, { timeout: 3000, maxBuffer: 8 * 1024 * 1024 })) : new Map()
 }
+export { windowsProcessName, parseWindowsProcessTable }
 
 function processTable(readers, onReadError) {
   const table = new Map()

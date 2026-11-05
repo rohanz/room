@@ -2,7 +2,7 @@
 // and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
 //
 // Run:        npm run build:plugin   (from the repository root; paths are cwd-relative). Needs `npm ci`.
-// Overwrites: plugins/room/server/{room-mcp,room-daemon,parse-worker}.mjs and hooks/private-core.mjs;
+// Overwrites: plugins/room/server/{room-mcp,room-daemon,parse-worker}.mjs and hooks/private-core.mjs and hooks/windows-process-core.mjs;
 // replaces plugins/room/server/grammars/ and (via packages/web/dist) plugins/room/web/.
 // All generated plugin assets are committed; CI checks they are current.
 // --skip-web  rebuilds only the server bundle (for sandboxes that cannot build the web view): partial output, never commit it.
@@ -29,6 +29,9 @@ await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worke
 
 // One builtins-only privacy policy for hooks and the relay; committed and checked with the other plugin assets.
 await build({ entryPoints: ['packages/relay/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
+  bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
+// One builtins-only Windows process table reader for hooks and the relay.
+await build({ entryPoints: ['packages/relay/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
 
 const grammarDir = 'plugins/room/server/grammars'
