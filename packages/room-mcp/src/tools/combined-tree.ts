@@ -10,7 +10,7 @@ import { gitMergeFile } from '../merge.js'
 import { carryRef, collectHeadRef, workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
-import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
+import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline, localWorkers, registrySnapshotForDir } from '../worker-registry.js'
 import { keptPublicationMatches } from '../kept-publication.js'
@@ -52,10 +52,8 @@ function publicationInputs(snap: ParticipantMetadataSnapshot | undefined, text: 
 type PublicationInputs = ReturnType<typeof publicationInputs>
 type PublicationLink = { person: string; session: Session; name: string; inputs: PublicationInputs }
 const currentPublicationInputs = (state: HandlerState, session: Session, name: string) => {
-  const snap = snapshotMetadata(session.room, name, viewOf(state, session))
-  const retained = snap?.retained && new Map(snap.retained.texts)
-  return publicationInputs(snap, p => retained ? retained.get(p)
-    : session.room.overlayText(`${name}\0${snap?.head.fence}`, p)?.toString())
+  const snap = snapshot(session.room, name, viewOf(state, session))
+  return publicationInputs(snap, p => snap?.texts.get(p))
 }
 const publicationMovement = (state: HandlerState, links: readonly PublicationLink[]) => links.flatMap(({ person, session, name, inputs: before }) => {
   const after = currentPublicationInputs(state, session, name)
