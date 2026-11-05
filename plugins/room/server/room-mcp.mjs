@@ -25517,6 +25517,7 @@ var init_proof = __esm({
 
 // packages/relay/src/daemon.ts
 import fs12 from "node:fs";
+import os2 from "node:os";
 import path9 from "node:path";
 import { spawn as spawn2 } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -25576,9 +25577,17 @@ function startupContender(commonDir2) {
     return void 0;
   }
 }
-function startupFailure(commonDir2, pid, reason) {
-  const tail = startupLog(commonDir2);
-  return new Error(`local daemon startup unavailable${pid ? ` (child pid ${pid})` : ""}: ${reason}; ${tail ? `daemon.log (last ${STARTUP_LOG_BYTES} bytes, up to 5 lines):
+function startupReport(file) {
+  if (!file) return "";
+  try {
+    return fs12.readFileSync(file, "utf8").slice(0, 2048).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, " ").trim();
+  } catch {
+    return "";
+  }
+}
+function startupFailure(commonDir2, pid, reason, report) {
+  const tail = startupLog(commonDir2), fatal = startupReport(report);
+  return new Error(`local daemon startup unavailable${pid ? ` (child pid ${pid})` : ""}: ${reason}${fatal ? `; daemon error: ${fatal}` : ""}; ${tail ? `daemon.log (last ${STARTUP_LOG_BYTES} bytes, up to 5 lines):
 ${tail}` : "no readable private daemon.log tail; inspect room/daemon.log and authority owner; retry after repair"}`);
 }
 function ensureLocalDaemon(commonDir2, room, opts = {}) {
@@ -25632,35 +25641,44 @@ async function ensure(commonDir2, room, opts) {
   if (!path9.isAbsolute(entry) || !fs12.statSync(entry).isFile()) throw new Error("local daemon entry must be an absolute installed bundle path");
   const env = {};
   for (const name of ["PATH", "Path", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LOCALAPPDATA", "LANG", "LC_ALL", "TZ"]) if (process.env[name] !== void 0) env[name] = process.env[name];
-  const child = spawn2(process.execPath, [...opts.execArgv ?? [], entry, "--common-dir", commonDir2, "--room", room], { cwd: commonDir2, env, shell: false, detached: true, windowsHide: true, stdio: "ignore" });
-  let launchError, exited = false, exitStatus = "";
-  child.once("error", (error2) => {
-    launchError = error2;
-  });
-  child.once("exit", (code, signal) => {
-    exited = true;
-    exitStatus = signal ? `signal ${signal}` : `code ${code}`;
-  });
-  child.unref();
-  const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS);
-  let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS);
-  let previousLog = startupLog(commonDir2);
-  do {
-    const winner = await ready();
-    if (winner) return { ...winner, launched: winner.pid === child.pid };
-    if (launchError) throw startupFailure(commonDir2, child.pid, `launch failed: ${launchError.message}`);
-    const contender = exited ? startupContender(commonDir2) : child.pid;
-    if (exited && !contender) throw startupFailure(commonDir2, child.pid, `child exited (${exitStatus}); no live authority contender`);
-    const tail = startupLog(commonDir2);
-    if (tail !== previousLog) {
-      const phases = tail.split("\n").filter((line) => line.includes(`startup pid ${contender}: `));
-      if (phases.some((line) => !previousLog.includes(line))) progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS);
-      previousLog = tail;
-    }
-    if (Date.now() >= progressUntil || Date.now() >= hardUntil) break;
-    await new Promise((resolve6) => setTimeout(resolve6, 100));
-  } while (Date.now() < hardUntil);
-  throw startupFailure(commonDir2, child.pid, Date.now() >= hardUntil ? "startup hard cap reached" : "startup phase stalled");
+  const reportDir = fs12.mkdtempSync(path9.join(os2.tmpdir(), "room-daemon-start-"));
+  const report = path9.join(reportDir, "error");
+  try {
+    return await launch();
+  } finally {
+    fs12.rmSync(reportDir, { recursive: true, force: true });
+  }
+  async function launch() {
+    const child = spawn2(process.execPath, [...opts.execArgv ?? [], entry, "--common-dir", commonDir2, "--room", room, "--startup-report", report], { cwd: commonDir2, env, shell: false, detached: true, windowsHide: true, stdio: "ignore" });
+    let launchError, exited = false, exitStatus = "";
+    child.once("error", (error2) => {
+      launchError = error2;
+    });
+    child.once("exit", (code, signal) => {
+      exited = true;
+      exitStatus = signal ? `signal ${signal}` : `code ${code}`;
+    });
+    child.unref();
+    const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS);
+    let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS);
+    let previousLog = startupLog(commonDir2);
+    do {
+      const winner = await ready();
+      if (winner) return { ...winner, launched: winner.pid === child.pid };
+      if (launchError) throw startupFailure(commonDir2, child.pid, `launch failed: ${launchError.message}`, report);
+      const contender = exited ? startupContender(commonDir2) : child.pid;
+      if (exited && !contender) throw startupFailure(commonDir2, child.pid, `child exited (${exitStatus}); no live authority contender`, report);
+      const tail = startupLog(commonDir2);
+      if (tail !== previousLog) {
+        const phases = tail.split("\n").filter((line) => line.includes(`startup pid ${contender}: `));
+        if (phases.some((line) => !previousLog.includes(line))) progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS);
+        previousLog = tail;
+      }
+      if (Date.now() >= progressUntil || Date.now() >= hardUntil) break;
+      await new Promise((resolve6) => setTimeout(resolve6, 100));
+    } while (Date.now() < hardUntil);
+    throw startupFailure(commonDir2, child.pid, Date.now() >= hardUntil ? "startup hard cap reached" : "startup phase stalled", report);
+  }
 }
 var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights;
 var init_daemon = __esm({
@@ -28999,14 +29017,14 @@ var init_base2 = __esm({
 // packages/roomd/src/index.ts
 import fs15 from "node:fs";
 import path12 from "node:path";
-import os2 from "node:os";
+import os3 from "node:os";
 import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
 function machineIdentity(log2) {
   if (process.env.ROOM_MACHINE_ID) return process.env.ROOM_MACHINE_ID;
-  const file = path12.join(process.env.XDG_CONFIG_HOME || path12.join(os2.homedir(), ".config"), "room", "machine-id");
+  const file = path12.join(process.env.XDG_CONFIG_HOME || path12.join(os3.homedir(), ".config"), "room", "machine-id");
   const cached3 = machineIdentities.get(file);
   if (cached3) return cached3;
   try {
@@ -29118,7 +29136,7 @@ var init_src4 = __esm({
     init_base2();
     init_base2();
     init_reanchor();
-    machineHostname = os2.hostname();
+    machineHostname = os3.hostname();
     machineIdentities = /* @__PURE__ */ new Map();
     machineIdentityWarningLogged = false;
     RoomdError = class extends Error {
@@ -30691,11 +30709,11 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 // packages/room-mcp/src/hosts/claude-worker.ts
 import fs18 from "node:fs";
-import os3 from "node:os";
+import os4 from "node:os";
 import path15 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 function defaults(dir, env) {
-  const roots = [path15.join(env.CLAUDE_CONFIG_DIR || path15.join(os3.homedir(), ".claude"), "settings.json"), path15.join(dir, ".claude", "settings.json")];
+  const roots = [path15.join(env.CLAUDE_CONFIG_DIR || path15.join(os4.homedir(), ".claude"), "settings.json"), path15.join(dir, ".claude", "settings.json")];
   let model;
   for (const file of roots) {
     try {
@@ -30738,11 +30756,11 @@ var init_claude_worker = __esm({
 
 // packages/room-mcp/src/hosts/codex-worker.ts
 import fs19 from "node:fs";
-import os4 from "node:os";
+import os5 from "node:os";
 import path16 from "node:path";
 function defaults2(env) {
   try {
-    const config2 = fs19.readFileSync(path16.join(env.CODEX_HOME || path16.join(os4.homedir(), ".codex"), "config.toml"), "utf8");
+    const config2 = fs19.readFileSync(path16.join(env.CODEX_HOME || path16.join(os5.homedir(), ".codex"), "config.toml"), "utf8");
     const top = config2.split(/^\s*\[/m, 1)[0];
     const value5 = (key2) => top.match(new RegExp(`^\\s*${key2}\\s*=\\s*["']([^"']+)["']`, "m"))?.[1];
     return { model: value5("model"), effort: value5("model_reasoning_effort") };
@@ -30841,7 +30859,7 @@ var init_selection = __esm({
 });
 
 // packages/room-mcp/src/config.ts
-import os5 from "node:os";
+import os6 from "node:os";
 import { execFileSync as execFileSync4 } from "node:child_process";
 import path18 from "node:path";
 import fs20 from "node:fs";
@@ -30885,7 +30903,7 @@ async function readRememberedChoice(dir) {
   }
 }
 function resolveCredentialsPath(args2 = {}, e = process.env) {
-  return value4(args2.credentialsPath ?? args2.credentials) ?? value4(e.ROOM_CREDENTIALS) ?? path18.join(value4(e.XDG_CONFIG_HOME) ?? path18.join(os5.homedir(), ".config"), "room", "credentials.json");
+  return value4(args2.credentialsPath ?? args2.credentials) ?? value4(e.ROOM_CREDENTIALS) ?? path18.join(value4(e.XDG_CONFIG_HOME) ?? path18.join(os6.homedir(), ".config"), "room", "credentials.json");
 }
 async function resolveConfig({ env, args: args2 = {}, dir }) {
   const e = env ?? process.env;
@@ -32528,7 +32546,7 @@ var init_install_io = __esm({
 
 // packages/room-mcp/src/hosts/claude-install.ts
 import path21 from "node:path";
-import os7 from "node:os";
+import os8 from "node:os";
 function manifestVersion(root, io) {
   const contents = readInstallFile(root && path21.join(root, ".claude-plugin", "plugin.json"), io);
   try {
@@ -32549,7 +32567,7 @@ function leadClaudePluginDir(env = process.env, modulePath, installedPath, io = 
   const resolved = path21.resolve(root);
   if (installedPath === void 0) {
     try {
-      const file = path21.join(env.CLAUDE_CONFIG_DIR || path21.join(os7.homedir(), ".claude"), "plugins", "installed_plugins.json");
+      const file = path21.join(env.CLAUDE_CONFIG_DIR || path21.join(os8.homedir(), ".claude"), "plugins", "installed_plugins.json");
       const installs = JSON.parse(io.readFile(file));
       installedPath = installs.plugins?.["room@room"]?.at(-1)?.installPath;
     } catch {
@@ -32598,7 +32616,7 @@ var init_claude_install = __esm({
 // packages/room-mcp/src/hosts/codex-install.ts
 import fs25 from "node:fs";
 import path22 from "node:path";
-import os8 from "node:os";
+import os9 from "node:os";
 import { execFileSync as execFileSync5 } from "node:child_process";
 import { createHash as createHash9 } from "node:crypto";
 function codexRoomHookTrustStatus(toml) {
@@ -32640,7 +32658,7 @@ function installedCodexRoomContract(env = process.env) {
     const listing = JSON.parse(execFileSync5("codex", ["plugin", "list", "--json"], { env, encoding: "utf8", timeout: 2500, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] }));
     const entries = listing.installed?.filter((row) => row.pluginId === "room@room" && row.enabled !== false);
     if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return void 0;
-    const root = path22.join(env.CODEX_HOME || path22.join(os8.homedir(), ".codex"), "plugins", "cache", "room", "room", entries[0].version, "server");
+    const root = path22.join(env.CODEX_HOME || path22.join(os9.homedir(), ".codex"), "plugins", "cache", "room", "room", entries[0].version, "server");
     if (fs25.statSync(path22.join(root, "compat.json")).size > 4096 || fs25.statSync(path22.join(root, "room-mcp.mjs")).size > 64 * 1024 * 1024) return void 0;
     const raw = fs25.readFileSync(path22.join(root, "compat.json"), "utf8");
     const descriptor = JSON.parse(raw);
@@ -32661,9 +32679,9 @@ function createCodexInstall(env = process.env, io = defaultInstallIO) {
       io.command("codex", ["plugin", "marketplace", "list", "--json"])
     ]);
     const { listed, row } = decodeCodexDoctorListing(parseInstallListing(json));
-    const plugin = codexPlugin(row, parseInstallListing(marketsJson), env.CODEX_HOME ?? path22.join(os8.homedir(), ".codex"), io);
+    const plugin = codexPlugin(row, parseInstallListing(marketsJson), env.CODEX_HOME ?? path22.join(os9.homedir(), ".codex"), io);
     const hooks = readInstallFile(plugin?.hooksRoot && path22.join(plugin.hooksRoot, "hooks", "common.mjs"), io);
-    const trust = readInstallFile(path22.join(env.CODEX_HOME ?? path22.join(os8.homedir(), ".codex"), "config.toml"), io);
+    const trust = readInstallFile(path22.join(env.CODEX_HOME ?? path22.join(os9.homedir(), ".codex"), "config.toml"), io);
     return {
       record: plugin,
       cli: json === void 0 ? "absent" : "present",
@@ -34967,9 +34985,9 @@ var init_names = __esm({
 
 // packages/room-mcp/src/port-reservations.ts
 import fs33 from "node:fs";
-import os9 from "node:os";
+import os10 from "node:os";
 import path29 from "node:path";
-function reserveWorkerPort(workerId, used = [], configHome = process.env.XDG_CONFIG_HOME || path29.join(os9.homedir(), ".config"), preferredPort) {
+function reserveWorkerPort(workerId, used = [], configHome = process.env.XDG_CONFIG_HOME || path29.join(os10.homedir(), ".config"), preferredPort) {
   const directory = path29.join(configHome, "room", "ports");
   fs33.mkdirSync(directory, { recursive: true, mode: 448 });
   const occupied = new Set(used);
@@ -36680,7 +36698,7 @@ var init_diff3 = __esm({
 // packages/room-mcp/src/merge.ts
 import { execFile as execFile9 } from "node:child_process";
 import fs37 from "node:fs";
-import os10 from "node:os";
+import os11 from "node:os";
 import path35 from "node:path";
 function diff3WithinBudget(a, o, b) {
   if ((a.length + b.length) * o.length > 2e6 || a.length + o.length + b.length > 4096) return false;
@@ -36700,7 +36718,7 @@ async function gitMergeFile(base, ours, theirs, labels) {
   const clean3 = (text2) => ({ status: "clean", algorithm: "git", text: text2, chunks: [{ ok: text2.split("\n") }], conflicts: [] });
   if (ours === theirs || theirs === base) return clean3(ours);
   if (ours === base) return clean3(theirs);
-  const dir = fs37.mkdtempSync(path35.join(os10.tmpdir(), "room-merge-file-"));
+  const dir = fs37.mkdtempSync(path35.join(os11.tmpdir(), "room-merge-file-"));
   const oursPath = path35.join(dir, "ours"), basePath = path35.join(dir, "base"), theirsPath = path35.join(dir, "theirs");
   try {
     fs37.writeFileSync(oursPath, ours);
@@ -38419,7 +38437,7 @@ var init_names2 = __esm({
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { performance as performance3 } from "node:perf_hooks";
 import fs43 from "node:fs";
-import os11 from "node:os";
+import os12 from "node:os";
 import path40 from "node:path";
 import { randomBytes as randomBytes3 } from "node:crypto";
 function currentToolTiming() {
@@ -38537,7 +38555,7 @@ var init_timing = __esm({
     EVENT_LOOP_LAG_MS = 2e3;
     PREVIEW_CHECK_MAX_AGE_MS = 6 * 6e4;
     PREVIEW_CHECK_ENTRY_LIMIT = 500;
-    PREVIEW_CHECK_MARKERS = process.getuid ? path40.join(os11.tmpdir(), `room-preview-checks-${process.getuid()}`) : void 0;
+    PREVIEW_CHECK_MARKERS = process.getuid ? path40.join(os12.tmpdir(), `room-preview-checks-${process.getuid()}`) : void 0;
     context = new AsyncLocalStorage2();
     ms = (value5) => `${Math.round(value5)}ms`;
     ToolTiming = class {
@@ -39017,7 +39035,7 @@ import { execFile as execFile12, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
 import { createHash as createHash15, randomUUID as randomUUID6 } from "node:crypto";
 import fs45 from "node:fs";
-import os12 from "node:os";
+import os13 from "node:os";
 import path42 from "node:path";
 import { performance as performance4 } from "node:perf_hooks";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
@@ -39837,7 +39855,7 @@ async function checkoutSettings(dir) {
     userAttributes = path42.resolve(dir, expanded);
     userIdentity = path42.isAbsolute(expanded) ? expanded : `relative:${expanded}`;
   } else {
-    const home = process.env.HOME || os12.homedir();
+    const home = process.env.HOME || os13.homedir();
     const xdg = process.env.XDG_CONFIG_HOME || path42.join(home, ".config");
     userAttributes = path42.join(xdg, "git", "attributes");
     userIdentity = userAttributes;
@@ -40189,7 +40207,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
         }
       }
       if (!cached3) {
-        dir = await fs45.promises.mkdtemp(path42.join(os12.tmpdir(), "room-merge-"));
+        dir = await fs45.promises.mkdtemp(path42.join(os13.tmpdir(), "room-merge-"));
         dir = await fs45.promises.realpath(dir);
         observe?.baseMaterialized?.();
         await materializeGitTree(s.dir, ancestor, dir);
@@ -40480,7 +40498,7 @@ var init_files = __esm({
 
 // packages/room-mcp/src/worker-git.ts
 import fs46 from "node:fs";
-import os13 from "node:os";
+import os14 from "node:os";
 import path43 from "node:path";
 function generatedPythonEnvironment(root, rel) {
   const dir = path43.join(root, rel);
@@ -40682,7 +40700,7 @@ function patchArgs(base, exclusions, staged = false) {
 }
 function retainUntrackedTree(dir, tag, paths) {
   if (!paths.length) return void 0;
-  const scratch = fs46.mkdtempSync(path43.join(os13.tmpdir(), "room-carry-index-"));
+  const scratch = fs46.mkdtempSync(path43.join(os14.tmpdir(), "room-carry-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path43.join(scratch, "index") };
   const run2 = (args2, wholeTreePaths, stdinFile) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args2], { env, wholeTreePaths, stdinFile }).toString().trim();
   try {
@@ -40776,7 +40794,7 @@ async function prepareWorktreeAttempt(repoDir, tag, leadName, options, retry) {
     const excluded = [".room", ...exclusions].map((p) => `:(exclude,literal)${p.replace(/\/$/, "")}`);
     const patch = await internalGit(repoDir, patchArgs(base, excluded));
     if (patch) {
-      const scratch = fs46.mkdtempSync(path43.join(os13.tmpdir(), "room-carry-patch-"));
+      const scratch = fs46.mkdtempSync(path43.join(os14.tmpdir(), "room-carry-patch-"));
       try {
         const file = path43.join(scratch, "carry.patch");
         fs46.writeFileSync(file, patch, { mode: 384 });
@@ -41025,7 +41043,7 @@ function cleanupWorkerLogs(leadDir, w) {
   }
 }
 async function saveDiscardPatch(leadDir, w, publish2) {
-  const scratch = fs46.mkdtempSync(path43.join(os13.tmpdir(), "room-discard-"));
+  const scratch = fs46.mkdtempSync(path43.join(os14.tmpdir(), "room-discard-"));
   try {
     const run2 = (args2, wholeTreePaths) => boundedGit(w.dir, args2, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path43.join(scratch, "index") });
     const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
@@ -56171,10 +56189,10 @@ import { execFile as execFile14, execFileSync as execFileSync10 } from "node:chi
 // packages/room-mcp/src/codex-app-server.ts
 init_wrapper();
 import fs21 from "node:fs";
-import os6 from "node:os";
+import os7 from "node:os";
 import path19 from "node:path";
 function codexControlSocket(env = process.env) {
-  const file = path19.join(env.CODEX_HOME ?? path19.join(os6.homedir(), ".codex"), "app-server-control", "app-server-control.sock");
+  const file = path19.join(env.CODEX_HOME ?? path19.join(os7.homedir(), ".codex"), "app-server-control", "app-server-control.sock");
   return fs21.existsSync(file) ? file : void 0;
 }
 function postCodexToolOutput(o) {
@@ -58035,7 +58053,7 @@ init_selection();
 init_src();
 import fs56 from "node:fs";
 import { randomUUID as randomUUID8 } from "node:crypto";
-import os14 from "node:os";
+import os15 from "node:os";
 import path50 from "node:path";
 init_src4();
 init_git();
@@ -58401,8 +58419,8 @@ function handlers4(state) {
       const owner = s.me.owner ?? s.me.name, name = `${owner}+${tag}`;
       const { server, isWorker } = workerOrigin(s);
       const count = registry2.occupancy();
-      const cores = Math.max(1, os14.availableParallelism?.() ?? os14.cpus().length);
-      const budget = workerBudget({ cores, memBytes: os14.totalmem(), maxWorkers: max2, running: count });
+      const cores = Math.max(1, os15.availableParallelism?.() ?? os15.cpus().length);
+      const budget = workerBudget({ cores, memBytes: os15.totalmem(), maxWorkers: max2, running: count });
       const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS), inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB);
       const divisor = isWorker ? Math.max(2, max2) : 1;
       const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads;
@@ -60689,7 +60707,7 @@ init_baseline();
 init_worker_state();
 import fs60 from "node:fs";
 import path56 from "node:path";
-import os15 from "node:os";
+import os16 from "node:os";
 import { randomUUID as randomUUID10 } from "node:crypto";
 import { execFile as execFile15 } from "node:child_process";
 var MAX_LISTED = 10;
@@ -60736,7 +60754,7 @@ async function containmentDetails(dir, deltaBase, target, delivered) {
   }
 }
 async function keptHistory(w, base, parent, from2, workingTree, marker) {
-  const temp = fs60.mkdtempSync(path56.join(os15.tmpdir(), "room-refresh-index-"));
+  const temp = fs60.mkdtempSync(path56.join(os16.tmpdir(), "room-refresh-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path56.join(temp, "index") };
   const run2 = async (args2, override = env) => (await boundedGit(w.dir, ["-c", "core.hooksPath=/dev/null", ...identity2, ...args2], void 0, override)).toString().trim();
   try {
@@ -61700,7 +61718,7 @@ import path59 from "node:path";
 
 // packages/room-mcp/src/codex-turn.ts
 import { promises as fs63 } from "node:fs";
-import os16 from "node:os";
+import os17 from "node:os";
 import path58 from "node:path";
 var TAIL_BYTES = 64 * 1024;
 var MAX_READ_BYTES = 1024 * 1024;
@@ -61751,7 +61769,7 @@ var CodexTurnProbe = class {
     const cached3 = this.cursors.get(threadId);
     if (cached3) return cached3.file;
     if (!/^[a-zA-Z0-9-]{1,128}$/.test(threadId)) return void 0;
-    const root = path58.join(this.options.home?.() ?? process.env.CODEX_HOME ?? path58.join(os16.homedir(), ".codex"), "sessions");
+    const root = path58.join(this.options.home?.() ?? process.env.CODEX_HOME ?? path58.join(os17.homedir(), ".codex"), "sessions");
     try {
       const years = (await fs63.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
       for (const year of years) {
@@ -63068,7 +63086,7 @@ init_combined_tree();
 init_files();
 import fs67 from "node:fs";
 import path62 from "node:path";
-import os17 from "node:os";
+import os18 from "node:os";
 import { setImmediate as setImmediate8 } from "node:timers/promises";
 init_context();
 init_retire();
@@ -63245,7 +63263,7 @@ async function assertNoOperation(dir) {
   }
 }
 async function keptSnapshot(w, root, head, paths, scratch = /* @__PURE__ */ new Set()) {
-  const temp = fs67.mkdtempSync(path62.join(os17.tmpdir(), "room-collect-index-"));
+  const temp = fs67.mkdtempSync(path62.join(os18.tmpdir(), "room-collect-index-"));
   const env = { ...process.env, GIT_INDEX_FILE: path62.join(temp, "index") };
   const run2 = async (args2, count) => (await boundedGit(root, ["-c", "core.hooksPath=/dev/null", ...args2], count, env)).toString().trim();
   try {

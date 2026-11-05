@@ -54,5 +54,11 @@ try {
   const cause = error instanceof Error ? error.message : String(error)
   log(`daemon failed: ${cause}`)
   process.stderr.write(`Room daemon: ${cause}\n`)
+  // A failure before daemon.log exists (or before its privacy is verified) is otherwise invisible to the
+  // launcher. It passes a fresh path in its own private temp directory; write once, then exit.
+  const report = args.indexOf('--startup-report')
+  if (report >= 0 && args[report + 1]) {
+    try { fs.writeFileSync(args[report + 1], cause.slice(0, 2048), { flag: 'wx', mode: 0o600 }) } catch { /* the launcher still reports the exit */ }
+  }
   process.exitCode = 1
 }

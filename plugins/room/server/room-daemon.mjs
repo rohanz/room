@@ -18268,5 +18268,12 @@ try {
   log(`daemon failed: ${cause}`);
   process.stderr.write(`Room daemon: ${cause}
 `);
+  const report = args2.indexOf("--startup-report");
+  if (report >= 0 && args2[report + 1]) {
+    try {
+      fs9.writeFileSync(args2[report + 1], cause.slice(0, 2048), { flag: "wx", mode: 384 });
+    } catch {
+    }
+  }
   process.exitCode = 1;
 }

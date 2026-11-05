@@ -12,6 +12,13 @@ import { privateStateDirectory, verifyPrivatePath } from '../src/private-state.j
 import * as proof from '../src/proof.js'
 
 vi.mock('node:child_process', async importOriginal => ({ ...await importOriginal<typeof import('node:child_process')>(), spawn: vi.fn() }))
+// These tests are about the launcher's wait and ownership logic against a real clock. The native Windows ACL
+// check (5-10 s of PowerShell on CI) is covered by private-state tests; here it only adds wall time.
+vi.mock('../src/private-state.js', async importOriginal => {
+  const real = await importOriginal<typeof import('../src/private-state.js')>()
+  const { mkdirSync } = await import('node:fs')
+  return process.platform === 'win32' ? { ...real, primePrivateState: async () => {}, verifyPrivatePath: () => {}, privateStateDirectory: (dir: string) => { mkdirSync(dir, { recursive: true }) } } : real
+})
 
 const dirs: string[] = []
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.mocked(childProcess.spawn).mockReset(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -112,6 +119,24 @@ it('fails fast with a bounded private log tail when its child exits and no winne
   expect(error.message).toContain('daemon.log (last 1024 bytes, up to 5 lines):\nstartup failed: EACCES fixture')
   expect(error.message).not.toContain('excluded old line')
   expect(error.message.length).toBeLessThan(1500)
+})
+
+it('reports a fatal error the child wrote before daemon.log existed, and removes the report directory', async () => {
+  const { dir } = fixture(), child = Object.assign(new EventEmitter(), { pid: 2147483000, unref: vi.fn() })
+  let report = ''
+  vi.mocked(childProcess.spawn).mockImplementation((_cmd, args) => {
+    report = (args as string[])[(args as string[]).indexOf('--startup-report') + 1]
+    fs.writeFileSync(report, 'Cannot verify the Windows owner/DACL for C:\\fixture (PowerShell timed out)', { flag: 'wx', mode: 0o600 })
+    setTimeout(() => child.emit('exit', 1, null), 1)
+    return child as childProcess.ChildProcess
+  })
+  vi.useFakeTimers()
+  const failure = ensureLocalDaemon(dir, 'local/test', { entryPath: path.resolve(import.meta.filename) }).catch(error => error as Error)
+  await vi.advanceTimersByTimeAsync(200)
+  const error = await failure as Error
+  expect(error.message).toContain('child exited (code 1); no live authority contender; daemon error: Cannot verify the Windows owner/DACL for C:\\fixture (PowerShell timed out)')
+  expect(path.basename(path.dirname(report))).toMatch(/^room-daemon-start-/)
+  expect(fs.existsSync(path.dirname(report))).toBe(false)
 })
 
 it.skipIf(process.platform === 'win32')('never exposes a symlinked log in startup diagnostics', async () => {

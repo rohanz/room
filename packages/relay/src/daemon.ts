@@ -1,5 +1,6 @@
 /** Per-clone transport process and its non-owning client launcher. No shell or host identity. */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -191,9 +192,13 @@ function startupContender(commonDir: string): number | undefined {
     return Number.isSafeInteger(holder.pid) && holder.pid! > 0 && pidAlive(holder.pid!) ? holder.pid : undefined
   } catch { return undefined }
 }
-function startupFailure(commonDir: string, pid: number | undefined, reason: string): Error {
-  const tail = startupLog(commonDir)
-  return new Error(`local daemon startup unavailable${pid ? ` (child pid ${pid})` : ''}: ${reason}; ${tail ? `daemon.log (last ${STARTUP_LOG_BYTES} bytes, up to 5 lines):\n${tail}` : 'no readable private daemon.log tail; inspect room/daemon.log and authority owner; retry after repair'}`)
+function startupReport(file: string | undefined): string {
+  if (!file) return ''
+  try { return fs.readFileSync(file, 'utf8').slice(0, 2048).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').trim() } catch { return '' }
+}
+function startupFailure(commonDir: string, pid: number | undefined, reason: string, report?: string): Error {
+  const tail = startupLog(commonDir), fatal = startupReport(report)
+  return new Error(`local daemon startup unavailable${pid ? ` (child pid ${pid})` : ''}: ${reason}${fatal ? `; daemon error: ${fatal}` : ''}; ${tail ? `daemon.log (last ${STARTUP_LOG_BYTES} bytes, up to 5 lines):\n${tail}` : 'no readable private daemon.log tail; inspect room/daemon.log and authority owner; retry after repair'}`)
 }
 
 const flights = new Map<string, Promise<LocalDaemon>>()
@@ -239,32 +244,42 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
   // Keep only OS/runtime basics. No ROOM_*, host identities, NODE_OPTIONS or credentials.
   const env: NodeJS.ProcessEnv = {}
   for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ']) if (process.env[name] !== undefined) env[name] = process.env[name]
-  const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry, '--common-dir', commonDir, '--room', room], { cwd: commonDir, env, shell: false, detached: true, windowsHide: true, stdio: 'ignore' })
-  let launchError: Error | undefined, exited = false, exitStatus = ''
-  child.once('error', error => { launchError = error })
-  child.once('exit', (code, signal) => { exited = true; exitStatus = signal ? `signal ${signal}` : `code ${code}` })
-  child.unref()
-  const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS)
-  let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
-  let previousLog = startupLog(commonDir)
-  do {
-    const winner = await ready()
-    if (winner) return { ...winner, launched: winner.pid === child.pid }
-    if (launchError) throw startupFailure(commonDir, child.pid, `launch failed: ${launchError.message}`)
-    // A losing contender can exit before the lock winner publishes. Preserve that wait while the authority
-    // is live; a dead child without another authority fails immediately instead of burning the startup cap.
-    const contender = exited ? startupContender(commonDir) : child.pid
-    if (exited && !contender) throw startupFailure(commonDir, child.pid, `child exited (${exitStatus}); no live authority contender`)
-    const tail = startupLog(commonDir)
-    if (tail !== previousLog) {
-      const phases = tail.split('\n').filter(line => line.includes(`startup pid ${contender}: `))
-      if (phases.some(line => !previousLog.includes(line))) progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
-      previousLog = tail
-    }
-    if (Date.now() >= progressUntil || Date.now() >= hardUntil) break
-    await new Promise(resolve => setTimeout(resolve, 100))
-  } while (Date.now() < hardUntil)
-  throw startupFailure(commonDir, child.pid, Date.now() >= hardUntil ? 'startup hard cap reached' : 'startup phase stalled')
+  // The child reports a fatal startup error here when it cannot reach daemon.log; a directory only this user can
+  // read, removed once startup resolves either way. The child never holds it open.
+  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-daemon-start-'))
+  const report = path.join(reportDir, 'error')
+  try {
+    return await launch()
+  } finally { fs.rmSync(reportDir, { recursive: true, force: true }) }
+
+  async function launch(): Promise<LocalDaemon> {
+    const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry, '--common-dir', commonDir, '--room', room, '--startup-report', report], { cwd: commonDir, env, shell: false, detached: true, windowsHide: true, stdio: 'ignore' })
+    let launchError: Error | undefined, exited = false, exitStatus = ''
+    child.once('error', error => { launchError = error })
+    child.once('exit', (code, signal) => { exited = true; exitStatus = signal ? `signal ${signal}` : `code ${code}` })
+    child.unref()
+    const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS)
+    let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
+    let previousLog = startupLog(commonDir)
+    do {
+      const winner = await ready()
+      if (winner) return { ...winner, launched: winner.pid === child.pid }
+      if (launchError) throw startupFailure(commonDir, child.pid, `launch failed: ${launchError.message}`, report)
+      // A losing contender can exit before the lock winner publishes. Preserve that wait while the authority
+      // is live; a dead child without another authority fails immediately instead of burning the startup cap.
+      const contender = exited ? startupContender(commonDir) : child.pid
+      if (exited && !contender) throw startupFailure(commonDir, child.pid, `child exited (${exitStatus}); no live authority contender`, report)
+      const tail = startupLog(commonDir)
+      if (tail !== previousLog) {
+        const phases = tail.split('\n').filter(line => line.includes(`startup pid ${contender}: `))
+        if (phases.some(line => !previousLog.includes(line))) progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
+        previousLog = tail
+      }
+      if (Date.now() >= progressUntil || Date.now() >= hardUntil) break
+      await new Promise(resolve => setTimeout(resolve, 100))
+    } while (Date.now() < hardUntil)
+    throw startupFailure(commonDir, child.pid, Date.now() >= hardUntil ? 'startup hard cap reached' : 'startup phase stalled', report)
+  }
 }
 
 /** Drained maintenance only: authenticate the exact discovery instance, save, then verify its exit. */

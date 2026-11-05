@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeAtomic } from '../src/leases.js'
 
@@ -82,7 +83,7 @@ it.runIf(process.platform === 'win32').each(['room', 'config'])('racing Windows 
     }
     writeAtomic(process.env.ROOM_TEST_FILE, {writer: process.env.ROOM_TEST_WRITER});`
   const children = ['one', 'two'].map(writer => {
-    const child = spawn(process.execPath, ['--import', createRequire(import.meta.url).resolve('tsx'), '--input-type=module', '-e', script], {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href, '--input-type=module', '-e', script], {
       env: { ...process.env, ROOM_TEST_BARRIER: barrier, ROOM_TEST_FILE: file, ROOM_TEST_WRITER: writer },
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'], timeout: 40_000,
     })
