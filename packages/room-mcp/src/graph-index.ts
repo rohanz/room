@@ -10,7 +10,9 @@ import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { acquireParseWorker, parseInWorker, TransientParserError, type ParseWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import type { BaselineRead } from '@room/roomd/baseline'
-import { carriedFrom } from './worker-registry.js'
+import { openWorkerReader } from './worker-registry.js'
+import { snapshotBaseline } from './worker-snapshot-view.js'
+import type { WorkerSnapshot } from './worker-store.js'
 import { snapshotStillCurrent } from '@room/shared'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedHistoricalText, readBoundedHistoricalTexts } from './tools/disk-text.js'
 
@@ -173,6 +175,8 @@ export class GraphIndex {
   private base = ''
   private ownPublicationKey: string | undefined = ''
   private stopped = false
+  private carriedSnapshot?: WorkerSnapshot
+  private get workerQuery(): { tag: string } { return { tag: this.me.slice(this.me.lastIndexOf('+') + 1) } }
   private initialStarted = false
   private discovering = false
   private jitterTimer?: ReturnType<typeof setTimeout>
@@ -632,7 +636,8 @@ export class GraphIndex {
 
   /** The baseline read for a deletion may include a worker's carried, untracked blob. */
   private deletionBaseline(path: string): string {
-    const baseline = carriedFrom(this.dir, this.me)?.baseline
+    if (!this.carriedSnapshot?.available) return 'unavailable'
+    const baseline = snapshotBaseline(this.carriedSnapshot, this.me)?.baseline
     return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path)?.sha, baseline?.carriedCommit ?? false])
   }
 
@@ -935,8 +940,12 @@ export class GraphIndex {
       const mineDeleted = myEntry?.change === 'D'
       const ownFileUnavailable = myEntry?.state === 'shared' && !mineDeleted && mine === undefined
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
-      // Only an own manifest entry uses it: the registry read is synchronous, so base files skip it.
-      const own = myEntry ? carriedFrom(this.dir, this.me)?.baseline : undefined
+      // An own manifest entry uses facts acquired before Git/parser awaits. Base files need none.
+      const registry = myEntry ? await openWorkerReader(this.dir) : undefined
+      const facts = await registry?.snapshot(this.workerQuery)
+      if (facts && (!facts.available || facts.blockers.length)) throw new Error('worker baseline unavailable or blocked')
+      if (facts) this.carriedSnapshot = facts
+      const own = myEntry ? snapshotBaseline(facts, this.me)?.baseline : undefined
       const read = (sha: string, file: string) => this.historicalText(sha, file)
       const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
         ? await (own?.untracked.has(path)
@@ -960,6 +969,10 @@ export class GraphIndex {
       if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) {
         await this.yieldAfterIndex()
         return false
+      }
+      if (facts?.available && registry) {
+        const latest = await registry.snapshot(this.workerQuery)
+        if (!latest.available || latest.revision !== facts.revision) return false
       }
       if (this.stopped) return true
       if (generation !== this.generation) return false
@@ -1066,6 +1079,16 @@ export class GraphIndex {
   private publish(status: 'ready' | 'indexing' | 'error'): Promise<void> {
     const generation = this.generation
     this.publication = this.publication.then(async () => {
+      if (this.carriedSnapshot) {
+        const previous = this.carriedSnapshot
+        this.carriedSnapshot = await (await openWorkerReader(this.dir)).snapshot(this.workerQuery)
+        if (!this.carriedSnapshot.available || !previous.available || this.carriedSnapshot.revision !== previous.revision) {
+          this.observedByPath.clear()
+          this.observedRevision++
+          for (const file of this.grantPaths()) if (isSourcePath(file)) void this.refresh(file)
+        }
+        this.withdrawRestricted()
+      }
       const withdrawal = this.withdrawalPending
       await this.publishSnapshot(status, generation, withdrawal)
       const current = this.room.graphs.get(this.me), head = this.room.manifestHead.get(this.me)

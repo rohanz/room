@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { manifestPaths } from '@room/shared'
@@ -40,7 +41,7 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
     createdAt: now, seq: 1, ...patch,
   }
   await registry.writeIntent(record)
-  const active = await registry.update(id, old => ({ ...old, prep: { step: 'prepared' }, phase: 'active',
+  const active = await mutateWorkerFixture(registry, id, old => ({ ...old, prep: { step: 'prepared' }, phase: 'active',
     runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 0 } }], seq: old.seq + 1 }))
   await registry.finishOperation(id)
   return { registry, record: active }
@@ -77,7 +78,7 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
   const registry = await migrated(session.dir)
   for (const w of workers) {
     const id = fixtureId(w)
-    let record = registry.read(id)
+    let record = (await registry.read(id))
     if (!record) {
       const run = { n: 1, mode: 'fresh' as const, intentAt: w.startedAt ?? Date.now(), nonce: `fixture:${id}`,
         busFrontier: 0, promptMsgIds: [], launcher: registry.instance, logStart: 0 }
@@ -94,7 +95,7 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
       try { await registry.writeIntent(initial) }
       catch { continue }
       const process = w.pid ? fixtureProcess(w.pid, w.processStartTime ?? `fixture:${id}`, w.host, w.status === 'running') : undefined
-      record = await registry.update(id, old => ({ ...old, phase: 'active',
+      record = await mutateWorkerFixture(registry, id, old => ({ ...old, phase: 'active',
         runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: w.pid ?? 0,
           ...(process ? { process } : {}) } }], seq: old.seq + 1 }))
       await registry.finishOperation(id)
@@ -109,13 +110,13 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
 /** A fixture worker's run ends: its exit, a done report for `done`, a stop for `dismissed`. */
 export async function finishWorker(session: Session, tag: string, facts: Partial<Pick<FixtureWorker, 'status' | 'exitCode' | 'summary' | 'finishedAt' | 'stopReason'>> = {}): Promise<void> {
   const registry = await migrated(session.dir)
-  const record = registry.list().find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
+  const record = (await registry.list()).find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
   if (!record) throw new Error(`no fixture worker ${tag}`)
   const status = facts.status ?? 'done', run = record.runs.at(-1)!
   if (run.launch?.outcome === 'launched') finishFixtureProcess(run.launch.pid)
-  if (!registry.exits(record.id).some(exit => exit.run === run.n)) await registry.writeExit(record.id,
+  if (!(await registry.exits(record.id)).some(exit => exit.run === run.n)) await registry.writeExit(record.id,
     { run: run.n, code: facts.exitCode ?? (status === 'failed' ? 1 : 0), at: facts.finishedAt ?? Date.now(), witnessed: true })
-  if (status === 'done' && !registry.reports(record.id).some(report => report.done)) {
+  if (status === 'done' && !(await registry.reports(record.id)).some(report => report.done)) {
     await registry.writeReport(record.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: record.createdAt,
       done: { at: facts.finishedAt ?? Date.now(), summary: facts.summary ?? '', changed: manifestPaths(session.room, record.name) } })
   }
@@ -126,11 +127,11 @@ export async function finishWorker(session: Session, tag: string, facts: Partial
 
 /** Every lead's views in `session`'s room, written as its projector would. */
 async function projectAll(session: Session, registry: WorkerRegistry): Promise<void> {
-  const leads = new Set(registry.list().filter(r => r.room === session.roomName).map(r => r.lead.participant))
+  const leads = new Set((await registry.list()).filter(r => r.room === session.roomName).map(r => r.lead.participant))
   for (const lead of leads) await projectWorkers(session, registry, lead, 'joined')
 }
 
 /** The registry's current (not retiring) worker under a tag, as the lifecycle helpers see it. */
-export function workerByTag(dir: string, tag: string): LocalWorker | undefined {
-  return localWorkers(dir, record => record.tag === tag)[0]
+export async function workerByTag(dir: string, tag: string): Promise<LocalWorker | undefined> {
+  return (await localWorkers(dir, record => record.tag === tag))[0]
 }

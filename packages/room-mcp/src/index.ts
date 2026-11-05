@@ -25,7 +25,7 @@ import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWo
 import { PresenceEnd, attachingParentReader, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
-import { admitWorkerEnvironment, ownWorkerNames } from './worker-registry.js'
+import { admitWorkerEnvironment } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
 import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'

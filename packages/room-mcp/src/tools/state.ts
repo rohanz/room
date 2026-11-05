@@ -1,3 +1,5 @@
+import { openWorkerReader } from '../worker-registry.js'
+import { snapshotStatus, type WorkerSnapshot } from '../worker-store.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
 import { createWorkerRuntime, registryRunningWorkers } from './workers.js'
 import { createJoin } from './join.js'
@@ -42,11 +44,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    * team room (the state file is the team room's).
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
+    void refreshWorkerFacts(s).then(() => primaryHooks?.scheduleWrite(), log)
     ledger.bind(s)
     const unwatch = solo.watch(s)
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
       // Only what may reach the hooks: while alone nothing does, and the hook stays quiet.
+      prepare: () => refreshWorkerFacts(s),
       owedCount: () => ledger.candidates(s).filter(solo.audible(s)).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
       sessionDir: () => ctx.binding?.dir(), paused: () => s.rejected
         ? `[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`
@@ -145,21 +149,43 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   })
   const wakes = new WakeReconciler({
     ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
+    prepare: s => refreshWorkerFacts(s),
     send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
     codexTurn: ctx.wakeProbe,
     midTurn: ctx.midTurn,
     ownWorkers: s => ownWorkers(s),
     audible: s => solo.audible(s),
   })
-  const ownWorkers = (s: Session) => new Set(workers.myWorkers(s).map(w => w.name))
+  // Synchronous wake/hook callbacks consume only these explicitly supplied display facts.
+  const factsBySession = new WeakMap<Session, WorkerSnapshot>()
+  const factRequests = new WeakMap<Session, number>()
+  const refreshWorkerFacts = async (s: Session): Promise<void> => {
+    const request = (factRequests.get(s) ?? 0) + 1
+    factRequests.set(s, request)
+    let snapshot: WorkerSnapshot
+    try { snapshot = await (await openWorkerReader(s.dir)).snapshot() }
+    catch (error) { snapshot = { available: false, reason: 'unavailable', detail: String(error) } }
+    if (factRequests.get(s) !== request) return
+    ledger.supplyWorkers(s, snapshot)
+    if (snapshot.available) factsBySession.set(s, snapshot)
+  }
+  const ownWorkers = (s: Session): Set<string> => {
+    const snapshot = factsBySession.get(s)
+    return new Set(snapshot?.available ? snapshot.workers.filter(({ record }) => record.lead.participant === s.me.name && !['retiring', 'retired', 'abandoned'].includes(record.phase)).map(({ record }) => record.name) : [])
+  }
   const solo = new SoloGate({ company: s => company(s), ownWorkers, onChange: () => { scheduleInboxWrite(); wakes.reconcile() } })
   const inboxServices = createInbox({ ledger, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion })
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
   const join = createJoin({ ctx, log, doJoin, doLeave, rooms, now, presences,
-    runningWorkers: s => registryRunningWorkers(s, rooms) })
+    runningWorkers: async s => (await registryRunningWorkers(s, rooms)) })
   const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, log, cleanupMine: join.cleanupMine, now })
-  const company = (s: Session) => hasCompany(s, workers.runningWorkers(s).map(r => r.w), now())
+  const company = (s: Session) => {
+    const snapshot = factsBySession.get(s)
+    const running = snapshot?.available ? snapshot.workers.filter(({ record }) => record.lead.participant === s.me.name &&
+      ['starting', 'running', 'unknown', 'ambiguous'].includes(snapshotStatus(snapshot, record.id)?.status ?? 'unknown')).map(({ record }) => record) : []
+    return hasCompany(s, running, now())
+  }
   const state: HandlerState = {
     ...workers,
     ...join,
@@ -168,7 +194,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...inboxServices,
     ...claims,
     ...areas,
-    ctx, now, log, doJoin, doLeave, doClose, ledger, rooms, S, isMe, mine, 
+    ctx, now, log, doJoin, doLeave, doClose, ledger, rooms, S, isMe, mine,
+    async refreshWorkerFacts() { for (const s of rooms.all()) await refreshWorkerFacts(s) },
     deliveryHealth: () => ctx.binding?.bound() ? wakes.health() : undefined,
     deliveryDegradation: () => wakes.degradation(),
     hasCompany: company, audible: s => solo.audible(s), others, presences,
@@ -189,7 +216,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       }
       const s = ctx.getSession()
       if (!s) { await state.closeWorkersRoom(true).catch(() => {}); return }
-      const running = (await Promise.all(state.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
+      const running = (await Promise.all((await state.runningWorkers(s)).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
       const cancellation = new AbortController()
       const pending = new Set(running.map(r => r.w.tag))
       const stops = running.map(async r => {

@@ -55,6 +55,8 @@ export interface DeliveryHealth {
 }
 
 export interface WakeReconcilerOptions {
+  /** Acquire lifecycle display facts before synchronous ownership/company decisions. */
+  prepare?: (s: Session) => Promise<void>
   ledger: Ledger
   /** The bound host session, re-evaluated on use (registry §17); undefined turns wakes off. */
   bound: () => WakeTarget | undefined
@@ -238,6 +240,8 @@ export class WakeReconciler {
     this.clearTimer()
     await this.refreshOwnCommitReleases()
     if (this.stopped) return
+    if (this.o.prepare) for (const s of this.sessions.keys()) await this.o.prepare(s)
+    if (this.stopped) return
     let due = this.wakeable()
     const live = new Set(due.map(deliveryKey))
     for (const attempts of [this.midTurnAttempts, this.sendAttempts]) for (const key of attempts.keys()) if (!live.has(key)) attempts.delete(key)
@@ -280,6 +284,8 @@ export class WakeReconciler {
     if (since < windowMs) { this.arm(windowMs - since); return }
     // The turn probe and window may have taken time: hook and reply receipts, or HEAD, can move meanwhile.
     await this.refreshOwnCommitReleases()
+    if (this.stopped) return
+    if (this.o.prepare) for (const s of this.sessions.keys()) await this.o.prepare(s)
     if (this.stopped) return
     due = this.wakeable(busy)
     // A mid-turn wake stays eligible for the idle queue until the message is received.

@@ -21,7 +21,7 @@ it('passes a discovered Codex binding to admission without host ID environment v
   const dir = common()
   execFileSync('git', ['-C', dir, 'init', '-q'])
   const registry = await registryForDir(dir)
-  const read = vi.spyOn(registry, 'read').mockReturnValue(intent())
+  const read = vi.spyOn(registry, 'read').mockResolvedValue(intent())
   const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
   const env = { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: 'local/repo' }
   try {
@@ -40,7 +40,7 @@ it.each(['local/repo/special', 'git/gitlab.com/group/subgroup/repo'])('admits a 
   const dir = common()
   execFileSync('git', ['-C', dir, 'init', '-q'])
   const registry = await registryForDir(dir)
-  const read = vi.spyOn(registry, 'read').mockReturnValue({ ...intent(), room } as WorkerRecord)
+  const read = vi.spyOn(registry, 'read').mockResolvedValue({ ...intent(), room } as WorkerRecord)
   const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
   try {
     await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: room })).resolves.toBeUndefined()
@@ -56,7 +56,7 @@ it('admits a worker when ROOM_REGISTRY uses a symlink to the same registry root'
   const registry = await registryForDir(dir)
   const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
   try {
-    vi.spyOn(registry, 'read').mockReturnValue({ ...intent(), room: 'local/repo' } as WorkerRecord)
+    vi.spyOn(registry, 'read').mockResolvedValue({ ...intent(), room: 'local/repo' } as WorkerRecord)
     await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: 'local/repo', ROOM_REGISTRY: path.join(alias, '.git', 'room', 'registry') })).resolves.toBeUndefined()
     expect(admit).toHaveBeenCalledOnce()
   } finally { await closeRegistryForDir(dir) }
@@ -93,11 +93,11 @@ describe('WorkerRegistry durable store', () => {
     await first.writeIntent(intent())
     expect(fs.existsSync(path.join(dir, 'room', 'registry', 'workers', 'w_01.op'))).toBe(true)
     const reopened = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
-    expect(reopened.read('w_01')?.runs[0].launch).toEqual({ outcome: 'ambiguous', at: expect.any(Number) })
-    expect(reopened.status('w_01')?.status).toBe('ambiguous')
+    expect((await reopened.read('w_01'))?.runs[0].launch).toEqual({ outcome: 'ambiguous', at: expect.any(Number) })
+    expect((await reopened.status('w_01'))?.status).toBe('ambiguous')
     await reopened.reconcile()
-    expect(reopened.read('w_01')?.runs).toHaveLength(1)
-    expect(reopened.status('w_01')?.status).toBe('ambiguous')
+    expect((await reopened.read('w_01'))?.runs).toHaveLength(1)
+    expect((await reopened.status('w_01'))?.status).toBe('ambiguous')
   })
 
   it('does not let a second live instance mutate a worker under the operation lease', async () => {
@@ -106,7 +106,7 @@ describe('WorkerRegistry durable store', () => {
     await first.writeIntent(intent())
     const other = await openRegistry(dir, { liveness: () => 'alive', migrate: false,
       identity: { ...token, nonce: 'other' } })
-    await expect(other.update('w_01', r => ({ ...r, seq: r.seq + 1 }))).rejects.toThrow(/operation lease/)
+    await expect(other.command('w_01', { type: 'activate' })).rejects.toThrow(/operation lease/)
   })
 
   it('accepts a matching run-writer handoff after an ambiguous launch', async () => {
@@ -119,8 +119,8 @@ describe('WorkerRegistry durable store', () => {
       { pid: 42, startTime: 'born', executable: '/bin/codex' },
     ], joinedAt: 4 })
     await store.reconcile()
-    expect(store.read('w_01')?.runs[0].launch).toMatchObject({ outcome: 'launched', pid: 42 })
-    expect(store.read('w_01')?.phase).toBe('active')
+    expect((await store.read('w_01'))?.runs[0].launch).toMatchObject({ outcome: 'launched', pid: 42 })
+    expect((await store.read('w_01'))?.phase).toBe('active')
   })
 
   it('lets a restarted writer of the same host session retain a done report', async () => {
@@ -132,7 +132,7 @@ describe('WorkerRegistry durable store', () => {
     const restarted = await openRegistry(dir, { migrate: false, liveness: () => 'dead',
       identity: { ...firstToken, nonce: 'new' } })
     await restarted.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [], joinedAt: 5 })
-    expect(restarted.reports('w_01')[0].done?.summary).toBe('finished')
+    expect((await restarted.reports('w_01'))[0].done?.summary).toBe('finished')
   })
 
   it('adds posted after done and preserves the first chain and host session through restart (S2)', async () => {
@@ -145,7 +145,7 @@ describe('WorkerRegistry durable store', () => {
     await restarted.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [], joinedAt: 5, hostSessionId: 'host-2',
       done: { at: 6, summary: 'finished', changed: ['a.ts'] } })
     await restarted.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [], joinedAt: 7, posted: 'wk:w_01:1' })
-    expect(restarted.reports('w_01')[0]).toMatchObject({ chain, joinedAt: 3, hostSessionId: 'host-1',
+    expect((await restarted.reports('w_01'))[0]).toMatchObject({ chain, joinedAt: 3, hostSessionId: 'host-1',
       done: { at: 6, summary: 'finished' }, posted: 'wk:w_01:1' })
   })
 
@@ -158,7 +158,7 @@ describe('WorkerRegistry durable store', () => {
     await a.reconcile()
     expect(changes).toBeGreaterThan(0)
     const workerFile = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
-    const launched = b.read('w_01')!
+    const launched = (await b.read('w_01'))!
     launched.runs[0].launch = { outcome: 'launched', pid: 42 }
     fs.writeFileSync(workerFile, JSON.stringify(launched))
     await a.reconcile()
@@ -191,7 +191,7 @@ describe('WorkerRegistry durable store', () => {
     await store.writeExit('w_01', { run: 1, code: null, at: 3, witnessed: false })
     await store.writeExit('w_01', { run: 1, code: 7, at: 4, witnessed: true })
     await store.writeExit('w_01', { run: 1, code: null, at: 5, witnessed: false })
-    expect(store.exits('w_01')).toEqual([{ run: 1, code: 7, at: 4, witnessed: true }])
+    expect((await store.exits('w_01'))).toEqual([{ run: 1, code: 7, at: 4, witnessed: true }])
   })
 
   it('counts ambiguous intents against capacity across reopened registries', async () => {
@@ -199,7 +199,7 @@ describe('WorkerRegistry durable store', () => {
     const first = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
     await first.writeIntent(intent(), 1)
     const second = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
-    expect(second.occupancy()).toBe(1)
+    expect((await second.occupancy())).toBe(1)
     await expect(second.writeIntent({ ...intent(), id: 'w_02', tag: 'more', name: 'lead+more' }, 1)).rejects.toThrow(/capacity/)
   })
 
@@ -209,7 +209,7 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(tag), { recursive: true })
     fs.writeFileSync(tag, JSON.stringify({ id: 'w_lost', holder: token, at: 1 }))
     await registry.writeIntent(intent())
-    expect(registry.read('w_01')).toBeDefined()
+    expect((await registry.read('w_01'))).toBeDefined()
     expect(JSON.parse(fs.readFileSync(tag, 'utf8')).id).toBe('w_01')
   })
 
@@ -220,9 +220,9 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, JSON.stringify({ v: 1, sources: { [source.key]: { id: 'w_mapped', state: 'assigned' } }, done: false }))
     const store = await openRegistry(dir, { liveness: () => 'dead', sources: () => [source] })
-    expect(store.read('w_mapped')?.runs[0].launch).toEqual({ outcome: 'imported' })
+    expect((await store.read('w_mapped'))?.runs[0].launch).toEqual({ outcome: 'imported' })
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).sources[source.key]).toEqual({ id: 'w_mapped', state: 'imported' })
-    expect((await openRegistry(dir, { liveness: () => 'dead', sources: () => [source] })).list()).toHaveLength(1)
+    expect((await (await openRegistry(dir, { liveness: () => 'dead', sources: () => [source] })).list())).toHaveLength(1)
   })
 
   it('lets a second process open after the first completes the migration barrier', async () => {
@@ -248,7 +248,7 @@ describe('WorkerRegistry durable store', () => {
     expect(firstCode, firstError).toBe(0)
     expect(secondCode, secondError).toBe(0)
     expect(secondOutput).toContain('done')
-    expect((await openRegistry(dir)).list()).toEqual([])
+    expect((await (await openRegistry(dir)).list())).toEqual([])
   }, 15_000)
 
   it('waits for a live migration guard before recovering a dead migration lock', async () => {
@@ -257,7 +257,7 @@ describe('WorkerRegistry durable store', () => {
     fs.writeFileSync(lock, JSON.stringify({ ...token, pid: -1 }))
     const child = await holdGuard(lock)
     const store = await openRegistry(dir, { sources: () => [] })
-    expect(store.list()).toEqual([])
+    expect((await store.list())).toEqual([])
     expect(await childExit(child)).toBe(0)
   }, 15_000)
 
@@ -289,7 +289,7 @@ describe('WorkerRegistry durable store', () => {
     await store.writeIntent(intent())
     expect(await childExit(capacity)).toBe(0)
     const operation = await holdGuard(path.join(dir, 'room', 'registry', 'workers', 'w_01.op'))
-    expect((await store.update('w_01', record => ({ ...record, seq: record.seq + 1 }))).seq).toBe(2)
+    expect((await store.command('w_01', { type: 'activate' })).seq).toBe(2)
     expect(await childExit(operation)).toBe(0)
     const doc = new RoomDoc()
     doc.claims.set('c', { id: 'c', path: 'src/api.ts', from: 1, to: 2, by: 'lead', byKind: 'agent', intent: 'edit', at: 1 })
@@ -337,14 +337,14 @@ describe('WorkerRegistry durable store', () => {
     git('worktree', 'add', '-qb', 'room/tests', workerDir)
     const commonDir = git('rev-parse', '--git-common-dir')
     const store = await openRegistry(path.resolve(dir, commonDir))
-    const imported = store.list()[0]
+    const imported = (await store.list())[0]
     expect(imported).toMatchObject({ tag: 'tests', branch: 'room/tests', phase: 'active',
       capabilities: { signal: false, resume: false, collect: 'copy' } })
-    expect(store.status(imported.id)?.status).toBe('imported')
+    expect((await store.status(imported.id))?.status).toBe('imported')
     expect(imported.legacy?.unowned).toBe(true)
     expect(imported.lead.participant).toBe('')
     expect((await store.trusted({ participant: 'rohanz', room: 'local/repo', dir }, 'tests'))?.record.id).toBe(imported.id)
-    expect(store.read(imported.id)).toMatchObject({ name: 'rohanz+tests', lead: { participant: 'rohanz', room: 'local/repo' } })
+    expect((await store.read(imported.id))).toMatchObject({ name: 'rohanz+tests', lead: { participant: 'rohanz', room: 'local/repo' } })
     expect(await store.trusted({ participant: 'another', room: 'local/repo', dir }, 'tests')).toBeUndefined()
     expect((await (await openRegistry(path.resolve(dir, commonDir))).trusted({ participant: 'rohanz', room: 'local/repo', dir }, 'tests'))?.record.id).toBe(imported.id)
   })
@@ -361,7 +361,7 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(child), { recursive: true })
     git('worktree', 'add', '-qb', 'room/child', child)
     const store = await openRegistry(path.resolve(dir, git('rev-parse', '--git-common-dir')))
-    expect(store.list().map(record => record.tag).sort()).toEqual(['child', 'parent'])
+    expect((await store.list()).map(record => record.tag).sort()).toEqual(['child', 'parent'])
     const adopted = await store.trusted({ participant: 'real-parent', room: 'local/repo', dir: parent }, 'child')
     expect(adopted?.record).toMatchObject({ name: 'real-parent+child', lead: { participant: 'real-parent' } })
   })
@@ -390,9 +390,9 @@ describe('WorkerRegistry durable store', () => {
     const workerGitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: workerDir, encoding: 'utf8' }).trim()
     fs.writeFileSync(path.join(workerGitDir, 'room-session.json'), JSON.stringify({ worker_id: oldId, host: 'claude', session_id: 'session-1' }))
     const store = await openRegistry(commonDir)
-    expect(store.list()[0]).toMatchObject({ host: 'claude', task: 'old task', legacy: { said: 'old summary' },
+    expect((await store.list())[0]).toMatchObject({ host: 'claude', task: 'old task', legacy: { said: 'old summary' },
       hostSessionId: 'session-1', capabilities: { resume: true, signal: false, collect: 'delta' } })
-    expect(store.list()[0].lead.participant).toBe('')
+    expect((await store.list())[0].lead.participant).toBe('')
     expect(fs.existsSync(carry)).toBe(false)
     expect(fs.existsSync(`${carry}.migrated`)).toBe(true)
   })
@@ -419,7 +419,7 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(legacyMemoryFile(commonDir, room)), { recursive: true })
     fs.copyFileSync(memoryFile(commonDir, room), legacyMemoryFile(commonDir, room))
     const store = await openRegistry(commonDir)
-    expect(store.list()[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
+    expect((await store.list())[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
     expect(await store.trusted({ participant: 'rohanz', room: 'local/explicit', dir }, 'tests')).toBeUndefined()
     doc.doc.destroy()
   })
@@ -438,13 +438,13 @@ describe('WorkerRegistry durable store', () => {
       fs.mkdirSync(path.dirname(file), { recursive: true })
       if (corrupt) fs.writeFileSync(file, new Uint8Array([255, 255, 255]))
       else { fs.writeFileSync(file, new Uint8Array([0])); fs.truncateSync(file, ROOM_DOC_MAX_BYTES + 1) }
-      expect((await openRegistry(commonDir)).list()).toEqual([])
+      expect((await (await openRegistry(commonDir)).list())).toEqual([])
       const repaired = new RoomDoc()
       repaired.doc.getArray('retiredWorkers').push([{ name: 'lead+tests', tag: 'tests', lead: 'lead', host: 'codex',
         task: 'old task', summary: 'kept', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3,
         outcome: 'dismissed', keptWorktree: workerDir }])
       fs.writeFileSync(file, Y.encodeStateAsUpdate(repaired.doc))
-      expect((await openRegistry(commonDir)).list()[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
+      expect((await (await openRegistry(commonDir)).list())[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
       repaired.doc.destroy()
     }
   })
@@ -464,18 +464,18 @@ describe('WorkerRegistry durable store', () => {
       previousCarryRefs: {},
     } })
     const restarted = await openRegistry(commonDir, { migrate: false, liveness: () => 'dead' })
-    expect(restarted.read('w_01')?.phase).toBe('abandoned')
+    expect((await restarted.read('w_01'))?.phase).toBe('abandoned')
     expect(fs.existsSync(workerDir)).toBe(false)
     expect(git('branch', '--list', 'room/tests')).toBe('')
     await restarted.writeIntent({ ...intent(), id: 'w_02' })
-    expect(restarted.read('w_02')).toBeDefined()
+    expect((await restarted.read('w_02'))).toBeDefined()
   })
 
   it('marks an interrupted collect without claiming that a partial apply was undone', async () => {
     const dir = common(), store = await openRegistry(dir, { migrate: false, liveness: () => 'alive' })
     await store.writeIntent({ ...intent(), phase: 'collecting' })
     const reopened = await openRegistry(dir, { migrate: false, liveness: () => 'dead' })
-    expect(reopened.read('w_01')).toMatchObject({ phase: 'active', interrupted: { op: 'collect' } })
+    expect((await reopened.read('w_01'))).toMatchObject({ phase: 'active', interrupted: { op: 'collect' } })
   })
 
   it('quarantines a corrupt worker record and keeps its tag reserved', async () => {
@@ -484,7 +484,7 @@ describe('WorkerRegistry durable store', () => {
     const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
     fs.writeFileSync(file, '{not-json')
     const reopened = await openRegistry(dir, { migrate: false })
-    expect(reopened.list()).toEqual([])
+    expect((await reopened.list())).toEqual([])
     expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
     expect(fs.existsSync(path.join(dir, 'room', 'registry', 'tags', 'tests.json'))).toBe(true)
     await expect(reopened.writeIntent({ ...intent(), id: 'w_02' })).rejects.toThrow(/tag in use/)
@@ -497,8 +497,8 @@ describe('WorkerRegistry durable store', () => {
     const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
     fs.writeFileSync(file, JSON.stringify({ v: 1, id: 'w_01', phase: 'prepared', runs: [{ n: 1 }] }))
     const reopened = await openRegistry(dir, { migrate: false, liveness: identity => identity.pid ? 'alive' : (() => { throw new Error('missing pid') })() })
-    expect(reopened.read('w_01')).toBeUndefined()
-    expect(reopened.read('w_02')).toBeDefined()
+    expect((await reopened.read('w_01'))).toBeUndefined()
+    expect((await reopened.read('w_02'))).toBeDefined()
     expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
     await expect(reopened.writeIntent({ ...intent(), id: 'w_03' })).rejects.toThrow(/tag in use/)
   })

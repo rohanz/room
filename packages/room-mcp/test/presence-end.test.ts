@@ -250,3 +250,22 @@ describe('presence end and the idle lease (registry §18)', () => {
     expect(events).toEqual([])
   })
 })
+
+
+it('does not expire presence when activity arrives during an awaited worker decision', async () => {
+  let resolve!: (value: boolean) => void
+  let entered!: () => void
+  const waiting = new Promise<void>(done => { entered = done })
+  const decision = new Promise<boolean>(done => { resolve = done })
+  const f = fixture('shared-app-server', { leadsWorkers: () => { entered(); return decision } })
+  try {
+    f.advanceTo(IDLE_LEASE_MS + 1)
+    const tick = f.presence.tick()
+    await waiting
+    f.presence.activity()
+    resolve(false)
+    await tick
+    expect(f.presence.hasLeft).toBe(false)
+    expect(f.events).toEqual([])
+  } finally { f.presence.stop() }
+})

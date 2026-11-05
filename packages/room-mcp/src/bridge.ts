@@ -20,6 +20,7 @@ import { digestPath, formatMsg, liveHolder, manifestKey, msgPaths, participantRe
 import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg, RoomDoc } from '@room/shared'
 import type { Session } from './session.js'
 import { registryForDir, type WorkerRegistry } from './worker-registry.js'
+import { snapshotRead, type WorkerSnapshot } from './worker-store.js'
 import type { WorkerRecord } from './worker-status.js'
 import { projectWorkers } from './worker-projector.js'
 
@@ -108,6 +109,8 @@ export class Bridge {
   private tick: ReturnType<typeof setInterval> | null = null
   private stopped = false
   private registry?: WorkerRegistry
+  private facts?: WorkerSnapshot
+  private storageEpoch = 0
   private running: Promise<void> = Promise.resolve()
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {
@@ -116,7 +119,7 @@ export class Bridge {
 
   /** This lead's `local` workers that are not retiring, from the registry (never the room). */
   workers(): WorkerRecord[] {
-    return (this.registry?.list() ?? []).filter(r => r.lead.participant === this.local.me.name && r.room === this.local.roomName
+    return (this.facts?.available ? this.facts.workers.map(fact => fact.record) : []).filter(r => r.lead.participant === this.local.me.name && r.room === this.local.roomName
       && !['retiring', 'retired', 'abandoned'].includes(r.phase))
   }
   private tagOf(name: string): string | undefined { return this.workers().find(w => w.name === name)?.tag }
@@ -185,15 +188,16 @@ export class Bridge {
     )
     this.tick = setInterval(() => this.schedule(), PROJECT_TICK_MS)
     this.tick.unref?.()
-    const attach = (registry: WorkerRegistry) => {
+    const attach = async (registry: WorkerRegistry) => {
       if (this.stopped) return
       this.registry = registry
-      this.unobserve.push(registry.onChange(() => this.schedule()))
+      this.facts = await registry.snapshot()
+      this.unobserve.push(registry.onChange(() => { this.storageEpoch++; this.facts = undefined; this.schedule() }))
       for (const c of l.openClaims()) this.mirrorClaim(c.id)
       this.schedule()
     }
-    if (this.registry) attach(this.registry)
-    else void registryForDir(this.local.dir).then(attach, e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`))
+    if (this.registry) void attach(this.registry).catch(e => this.o.log?.(`bridge: no worker registry: ${String(e)}`))
+    else void registryForDir(this.local.dir).then(attach).catch(e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`))
   }
 
   /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
@@ -224,8 +228,16 @@ export class Bridge {
   }
 
   /** Coordination now, then one serialized projection pass. */
-  sync(): Promise<void> {
-    if (this.stopped) return Promise.resolve()
+  async sync(): Promise<void> {
+    if (this.stopped) return
+    if (this.registry) {
+      try {
+        const facts = await this.registry.snapshot()
+        if (!facts.available) return
+        this.facts = facts
+      } catch (error) { this.o.log?.(`bridge: worker facts unavailable: ${String(error)}`); return }
+    }
+    if (this.stopped) return
     try { this.syncCoordination() } catch (e) { this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`) }
     return this.project()
   }
@@ -235,6 +247,7 @@ export class Bridge {
    * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
    */
   syncCoordination(): void {
+    if (!this.facts?.available) return
     if (this.stopped || !this.registry || !this.team.daemon.fence) return
     const lead = this.team.me.name
     const paths = this.workerPaths()
@@ -269,7 +282,7 @@ export class Bridge {
   private async projectOnce(registry: WorkerRegistry): Promise<void> {
     const authority = this.team.daemon.fence
     if (!authority) return
-    const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this)
+    const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this, () => !this.stopped)
     const currentAuthority = () => this.team.daemon.fence === authority
     if (!written || !currentAuthority()) return
     const keep = new Set(written.map(r => r.id))
@@ -303,6 +316,17 @@ export class Bridge {
    * inherited from the source, never upgraded (N2).
    */
   private async projectWorker(record: WorkerRecord, retry = 0): Promise<void> {
+    if (!this.registry) return
+    const facts = await this.registry.snapshot()
+    if (!facts.available) return
+    this.facts = facts
+    const epoch = this.storageEpoch
+    const fresh = async () => {
+      const latest = await this.registry!.snapshot()
+      if (!latest.available || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false
+      this.facts = latest
+      return true
+    }
     const team = this.team.room, lead = this.team.me.name
     const leadGit = participantRecord(team, lead)?.git
     const fence = this.team.daemon.fence
@@ -320,7 +344,7 @@ export class Bridge {
     sourceMap?.observe(onSourceChange)
     try {
       const valid = () => {
-        const current = this.registry?.read(record.id)
+        const current = this.facts ? snapshotRead(this.facts, record.id) : undefined
         const latestSource = this.local.room.manifestHead.get(record.name)
         const latestLead = participantRecord(team, lead)?.git
         return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id
@@ -330,7 +354,7 @@ export class Bridge {
           && JSON.stringify(participantRecord(this.local.room, record.name)?.holder) === JSON.stringify(sourceHolder)
           && latestSource?.semRev === sourceHead?.semRev && latestSource?.fence === sourceHead?.fence
           && (!sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence)
-          && current?.id === record.id && current.phase === record.phase
+          && epoch === this.storageEpoch && current?.id === record.id && current.seq === record.seq && current.phase === record.phase
           && !['retiring', 'retired', 'abandoned'].includes(current.phase)
       }
       const coverage: Coverage = !policy.publisher ? { kind: 'none', reason: 'not-publisher' }
@@ -353,8 +377,8 @@ export class Bridge {
           this.o.log?.(`bridge: cannot compose ${record.tag}'s projection: ${e instanceof Error ? e.message : String(e)}`)
           return undefined
         })
-        if (!valid()) {
-          const current = this.registry?.read(record.id)
+        if (!await fresh() || !valid()) {
+          const current = await this.registry?.read(record.id)
           if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
           return
         }
@@ -363,8 +387,8 @@ export class Bridge {
           const salt = team.ensureRoomSalt()
           const ignored = await ignoredTrackedPaths(this.local.dir, [...facts.all.keys()])
           // The Git ignore read yields too. A newer policy, source or worker phase must win.
-          if (!valid()) {
-            const current = this.registry?.read(record.id)
+          if (!await fresh() || !valid()) {
+            const current = await this.registry?.read(record.id)
             if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
             return
           }
@@ -396,7 +420,7 @@ export class Bridge {
           }
         }
       } else if (coverage.kind === 'all') complete = false
-      if (!valid()) return
+      if (!await fresh() || !valid()) return
       excluded.sort()
       const key = manifestKey(record.name, fence)
       const prevHead = team.manifestHead.get(record.name)
@@ -438,7 +462,7 @@ export class Bridge {
         await projectionTurn(staleIndex++, valid)
         if (k.startsWith(`${record.name}\u0000`) && k !== key) staleKeys.push(k)
       }
-      if (!valid() || team.manifestHead.get(record.name) !== prevHead || team.manifest.get(key) !== prevMap)
+      if (!await fresh() || !valid() || team.manifestHead.get(record.name) !== prevHead || team.manifest.get(key) !== prevMap)
         throw new ProjectionMoved('projection destination moved')
       if (unchanged) {
         team.doc.transact(() => {
@@ -460,7 +484,7 @@ export class Bridge {
       }, this)
     } catch (error) {
       if (!(error instanceof ProjectionMoved)) throw error
-      const current = this.registry?.read(record.id)
+      const current = await this.registry?.read(record.id)
       if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) await this.projectWorker(current, retry + 1)
     } finally { sourceMap?.unobserve(onSourceChange) }
   }

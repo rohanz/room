@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,7 +11,7 @@ import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { ConflictSet } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
-import { carriedFrom, localWorkerBaseline, registrySnapshotForDir } from '../src/worker-registry.js'
+import { carriedFrom, localWorkerBaseline, openWorkerReader, WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 
@@ -34,10 +35,10 @@ async function populate(dir: string): Promise<{ root: string; peers: string[] }>
     peers.push(record.name)
     template ??= record
   }
-  const registry = registrySnapshotForDir(dir)
+  const registry = (await openWorkerReader(dir))
   const root = registry.root
   for (let n = 0; n < RETIRED; n++) {
-    const id = registry.newId()
+    const id = `w_retired_${n}`
     // Same names as the live peers: a retired incarnation must never stand in for the current one.
     const tag = `w${(n % PEERS) + 1}`
     const record: WorkerRecord = { ...template!, id, tag, name: `lead+${tag}`, phase: 'retired', cleanup: { worktree: 'done' } }
@@ -77,9 +78,10 @@ describe('registry reads during a conflict check', () => {
       provider: { synced: true, on() {}, off() {} }, me: { name: 'lead', kind: 'agent' }, dir, post,
       lease: { fence: () => '1' } } as unknown as Session
     const calls = new Map<string, number>()
+    const baselines = new Map(await Promise.all(names.map(async person => [person, await carriedFrom(dir, person)] as const)))
     const set = new ConflictSet(session, 'lead', session, () => {}, 0, person => {
       calls.set(person, (calls.get(person) ?? 0) + 1)
-      return carriedFrom(dir, person)
+      return baselines.get(person)
     }, async () => undefined)
     // Files written within the last two seconds are always reread; this pass runs after that window.
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -107,21 +109,41 @@ describe('registry reads during a conflict check', () => {
 })
 
 describe('worker registry read cache', () => {
+  it('keeps list plus status close to the pre-facade filesystem budget at 50 and 500 workers', () => {
+    // Reuse the baseline's fresh-process fixtures and fs/fs-promises instrumentation, including failed
+    // calls. Freshly written files exercise the racy-cache path; no artificial aging or warmed cache.
+    const measured = spawnSync(process.execPath, ['--import', 'tsx',
+      fileURLToPath(new URL('../../../scripts/measure-lifecycle.mts', import.meta.url)), '50', '500', '--samples=1'],
+    { encoding: 'utf8', timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })
+    expect(measured.error).toBeUndefined()
+    expect(measured.status, measured.stderr).toBe(0)
+    const summaries = measured.stdout.trim().split('\n').map(line => JSON.parse(line))
+      .filter(row => row.kind === 'summary' && row.phase === 'status')
+    expect(summaries).toHaveLength(2)
+    for (const row of summaries) {
+      expect(row.successfulSamples).toBe(1)
+      expect(row.failedSamples).toBe(0)
+      // Baseline: 6N + 2. Allow only constant snapshot boundary overhead, not extra per-worker scans.
+      expect(row.fsCalls).toHaveLength(1)
+      expect(row.fsCalls[0]).toBeLessThanOrEqual(6 * row.workers + 10)
+    }
+  })
+
   it('resolves a participant to its reserved incarnation, never a retired one with the same name', async () => {
     const { dir } = repo()
     try {
       const { root } = await populate(dir)
       const reads = countRegistryReads(root)
       try {
-        const live = localWorkerBaseline(dir, 'lead+w3')
+        const live = (await localWorkerBaseline(dir, 'lead+w3'))
         expect(live?.name).toBe('lead+w3')
-        expect(registrySnapshotForDir(dir).reserved('w3')?.phase).toBe('active')
+        expect((await (await openWorkerReader(dir)).reserved('w3'))?.phase).toBe('active')
         // A reservation and a record per lookup (just written, so reread): never a scan of the retired records.
         expect(reads.count()).toBeLessThanOrEqual(4)
       } finally { reads.restore() }
-      expect(localWorkerBaseline(dir, 'lead')).toBeUndefined()
-      expect(localWorkerBaseline(dir, 'other+w3')).toBeUndefined()
-      expect(localWorkerBaseline(dir, 'lead+missing')).toBeUndefined()
+      expect((await localWorkerBaseline(dir, 'lead'))).toBeUndefined()
+      expect((await localWorkerBaseline(dir, 'other+w3'))).toBeUndefined()
+      expect((await localWorkerBaseline(dir, 'lead+missing'))).toBeUndefined()
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -129,27 +151,28 @@ describe('worker registry read cache', () => {
     const { dir } = repo()
     try {
       const { record } = await seedRegistryWorker(dir, 'solo')
-      const registry = registrySnapshotForDir(dir)
+      const registry = (await openWorkerReader(dir))
       const file = path.join(registry.root, 'workers', `${record.id}.json`)
-      expect(registry.read(record.id)?.task).toBe('test')
-      expect(registry.list()).toHaveLength(1)
+      expect((await registry.read(record.id))?.task).toBe('test')
+      expect((await registry.list())).toHaveLength(1)
       // Atomic replacement (a new inode), as writeAtomic does.
       const tmp = `${file}.tmp`
       writeFileSync(tmp, JSON.stringify({ ...record, task: 'tast' }))
       fs.renameSync(tmp, file)
-      expect(registrySnapshotForDir(dir).read(record.id)?.task).toBe('tast')
+      expect((await (await openWorkerReader(dir)).read(record.id))?.task).toBe('tast')
       // Same-size in-place rewrite.
       writeFileSync(file, JSON.stringify({ ...record, task: 'tost' }))
-      expect(registrySnapshotForDir(dir).read(record.id)?.task).toBe('tost')
+      expect((await (await openWorkerReader(dir)).read(record.id))?.task).toBe('tost')
       // A returned record is the caller's own copy.
-      registrySnapshotForDir(dir).read(record.id)!.task = 'mutated'
-      expect(registrySnapshotForDir(dir).read(record.id)?.task).toBe('tost')
-      const id = registry.newId()
+      const callerCopy = await (await openWorkerReader(dir)).read(record.id)
+      callerCopy!.task = 'mutated'
+      expect((await (await openWorkerReader(dir)).read(record.id))?.task).toBe('tost')
+      const id = 'w_added'
       writeFileSync(path.join(registry.root, 'workers', `${id}.json`), JSON.stringify({ ...record, id, tag: 'other', name: 'lead+other', phase: 'retired' }))
-      expect(registrySnapshotForDir(dir).list().map(r => r.id).sort()).toEqual([record.id, id].sort())
+      expect((await (await openWorkerReader(dir)).list()).map(r => r.id).sort()).toEqual([record.id, id].sort())
       fs.rmSync(file)
-      expect(registrySnapshotForDir(dir).read(record.id)).toBeUndefined()
-      expect(registrySnapshotForDir(dir).list().map(r => r.id)).toEqual([id])
+      expect((await (await openWorkerReader(dir)).read(record.id))).toBeUndefined()
+      expect((await (await openWorkerReader(dir)).list()).map(r => r.id)).toEqual([id])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
@@ -172,6 +195,55 @@ describe('worker registry read cache', () => {
   }
   const at = (ns: bigint) => vi.setSystemTime(Number(ns / MS))
 
+  it('hashes racy replacement text and reuses settled revision inputs without rereading them', async () => {
+    const { dir } = repo()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const { record } = await seedRegistryWorker(dir, 'solo')
+      const registry = await openWorkerReader(dir)
+      const file = path.join(registry.root, 'workers', `${record.id}.json`)
+      const tick = 1_700_000_000_000_000_000n
+      const stat = frozenStat([file], tick)
+      const reads = countRegistryReads(file)
+      try {
+        at(tick + 100n * MS)
+        writeFileSync(file, JSON.stringify({ ...record, task: 'aaaa' }))
+        const first = await registry.sourceToken('solo')
+        writeFileSync(file, JSON.stringify({ ...record, task: 'bbbb' }))
+        const second = await registry.sourceToken('solo')
+        expect(second).not.toBe(first)
+        expect((await registry.read(record.id))?.task).toBe('bbbb')
+        at(tick + 10_000n * MS)
+        expect(await registry.sourceToken('solo')).toBe(second)
+        reads.reset()
+        expect(await registry.sourceToken('solo')).toBe(second)
+        expect(reads.count()).toBe(0)
+      } finally { reads.restore(); stat.restore() }
+    } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('revalidates the record after capturing status liveness', async () => {
+    const { dir } = repo()
+    try {
+      const { record } = await seedRegistryWorker(dir, 'solo')
+      const file = path.join(dir, '.git', 'room', 'registry', 'workers', `${record.id}.json`)
+      writeFileSync(file, JSON.stringify({ ...record, runs: [{ ...record.runs[0], launch: undefined }] }))
+      let probed = false
+      const registry = await WorkerRegistry.openReader(path.join(dir, '.git'), {
+        liveness: () => {
+          probed = true
+          // A concurrent writer changes the phase while process evidence is collected.
+          writeFileSync(file, JSON.stringify({ ...record, phase: 'abandoned', seq: record.seq + 1 }))
+          return 'alive'
+        },
+      })
+      try {
+        expect((await registry.status(record.id))?.status).toBe('abandoned')
+        expect(probed).toBe(true)
+      } finally { registry.close() }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it.each([
     ['fractional', 1_700_000_000_123_456_789n],
     ['whole-second', 1_700_000_000_000_000_000n],
@@ -180,7 +252,7 @@ describe('worker registry read cache', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
       const { record } = await seedRegistryWorker(dir, 'solo')
-      const registry = registrySnapshotForDir(dir)
+      const registry = (await openWorkerReader(dir))
       const file = path.join(registry.root, 'workers', `${record.id}.json`)
       // Equal-length texts: size, inode and timestamps all collide.
       const text = (task: string) => JSON.stringify({ ...record, task })
@@ -189,21 +261,21 @@ describe('worker registry read cache', () => {
       const reads = countRegistryReads(file)
       try {
         at(tick + 300n * MS)
-        expect(registry.read(record.id)?.task).toBe('aaaa')
+        expect((await registry.read(record.id))?.task).toBe('aaaa')
         // Same tick, same stat: the review's failure was every later call returning 'aaaa'.
         writeFileSync(file, text('bbbb'))
-        expect(registry.read(record.id)?.task).toBe('bbbb')
+        expect((await registry.read(record.id))?.task).toBe('bbbb')
         at(tick + 1500n * MS)
         writeFileSync(file, text('cccc'))
-        expect(registry.read(record.id)?.task).toBe('cccc')
+        expect((await registry.read(record.id))?.task).toBe('cccc')
         // Long after the tick, the entry captured while racy is read once more, then trusted.
         writeFileSync(file, text('dddd'))
         at(tick + 10_000n * MS)
         reads.reset()
-        expect(registry.read(record.id)?.task).toBe('dddd')
+        expect((await registry.read(record.id))?.task).toBe('dddd')
         expect(reads.count()).toBe(1)
         reads.reset()
-        expect(registry.read(record.id)?.task).toBe('dddd')
+        expect((await registry.read(record.id))?.task).toBe('dddd')
         expect(reads.count()).toBe(0)
       } finally { reads.restore(); stat.restore() }
     } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
@@ -214,16 +286,16 @@ describe('worker registry read cache', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
       const { record } = await seedRegistryWorker(dir, 'solo')
-      const registry = registrySnapshotForDir(dir)
+      const registry = (await openWorkerReader(dir))
       const file = path.join(registry.root, 'workers', `${record.id}.json`)
       const tick = 1_700_000_000_500_000_000n
       const stat = frozenStat([file], tick)
       try {
         at(tick - 60_000n * MS)
         writeFileSync(file, JSON.stringify({ ...record, task: 'aaaa' }))
-        expect(registry.read(record.id)?.task).toBe('aaaa')
+        expect((await registry.read(record.id))?.task).toBe('aaaa')
         writeFileSync(file, JSON.stringify({ ...record, task: 'bbbb' }))
-        expect(registry.read(record.id)?.task).toBe('bbbb')
+        expect((await registry.read(record.id))?.task).toBe('bbbb')
       } finally { stat.restore() }
     } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
   })
@@ -233,20 +305,20 @@ describe('worker registry read cache', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
       const { record } = await seedRegistryWorker(dir, 'solo')
-      const registry = registrySnapshotForDir(dir)
+      const registry = (await openWorkerReader(dir))
       const workers = path.join(registry.root, 'workers')
       const tick = 1_700_000_000_250_000_000n
       const stat = frozenStat([workers], tick)
       try {
         at(tick + 100n * MS)
-        expect(registry.list().map(r => r.id)).toEqual([record.id])
-        const id = registry.newId()
+        expect((await registry.list()).map(r => r.id)).toEqual([record.id])
+        const id = 'w_added'
         const added = path.join(workers, `${id}.json`)
         writeFileSync(added, JSON.stringify({ ...record, id, tag: 'other', name: 'lead+other', phase: 'retired' }))
-        expect(registry.list().map(r => r.id).sort()).toEqual([record.id, id].sort())
+        expect((await registry.list()).map(r => r.id).sort()).toEqual([record.id, id].sort())
         fs.rmSync(added)
         at(tick + 10_000n * MS)
-        expect(registry.list().map(r => r.id)).toEqual([record.id])
+        expect((await registry.list()).map(r => r.id)).toEqual([record.id])
       } finally { stat.restore() }
     } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
   })

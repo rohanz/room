@@ -86,7 +86,7 @@ async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; le
   const stateFor = (caller: Session) => ({ S: () => caller,
     rooms: { all: () => [caller], holding: () => caller, holdingWorker: () => caller, reserve: () => true, unreserve() {},
       autoRetire: async () => {}, project: async () => {}, hasHandle: () => false, tracking: () => true },
-    myWorkers: () => localWorkers(caller.dir), workerAlive: () => false, now: Date.now,
+    myWorkers: async () => (await localWorkers(caller.dir)), workerAlive: () => false, now: Date.now,
     baseFor: (_s: Session, person: string) => manifestHeadOf(room, person)?.base ?? base,
     ctx: { probe: () => undefined, listCwdProcesses: () => [] }, shareOf: () => 'full',
   } as unknown as HandlerState)
@@ -100,7 +100,7 @@ async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; le
     }
     expect(await collectHandlers(stateFor(lead)).room_collect({ keep: true })).toContain('kept api')
   }
-  const kept = new Map(localWorkers(root).map(worker => [worker.name, worker.base!]))
+  const kept = new Map((await localWorkers(root)).map(worker => [worker.name, worker.base!]))
   put(root, 'docs/NOTES.md', 'docs-only lead commit\n')
   git(root, 'add', '--', 'docs/NOTES.md'); git(root, 'commit', '-qm', 'docs only')
   const round = (opts.keeps ?? 1) + 1
@@ -178,12 +178,12 @@ function sharedFixture(options: Parameters<typeof fixture>[0], prepare?: (t: Pre
   })()
 }
 
-function gitOracle(t: PreviewFixture) {
+async function gitOracle(t: PreviewFixture) {
   // Independent Git oracle: use actual registry collection order and each
   // worker's saved baseline, without calling the preview merge implementation.
   const scratch = path.join(t.root, '.room', 'oracle'); fs.mkdirSync(scratch)
   let folded = fs.readFileSync(path.join(t.root, 'shared.txt'), 'utf8')
-  const ordered = localWorkers(t.root).sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0) || a.tag.localeCompare(b.tag))
+  const ordered = (await localWorkers(t.root)).sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0) || a.tag.localeCompare(b.tag))
   for (const worker of ordered) {
     const base = execFileSync('git', ['-C', t.root, 'show', `${worker.base}:shared.txt`], { encoding: 'utf8' })
     fs.writeFileSync(path.join(scratch, 'base'), base); fs.writeFileSync(path.join(scratch, 'ours'), folded)

@@ -106,7 +106,7 @@ it.each([
 ] as const)('a worker that committed before room_done: %s', async (_, exited) => {
   const t = await world()
   expect(await t.call('room_spawn', { tag: 'w1', task: 'Fix two', carry: false })).toContain('spawned w1')
-  const w = workerByTag(t.dir, 'w1')!
+  const w = (await workerByTag(t.dir, 'w1'))!
   const worker = await t.workerSession('w1')
   // Work, commit (as a "PR per issue" brief asks), then one more uncommitted edit.
   fs.writeFileSync(path.join(w.dir, 'app.py'), 'one = 1\ntwo = "TWO"\nthree = 3\n')
@@ -117,7 +117,7 @@ it.each([
   if (exited) {
     await worker.leave()
     t.exits.get('w1')!(0)
-    await vi.waitFor(() => expect(workerByTag(t.dir, 'w1')).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
+    await vi.waitFor(async () => expect((await workerByTag(t.dir, 'w1'))).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
   const preview = await t.call('room_preview_merge', { people: ['ana+w1'], run: 'grep -q TWO app.py && grep -q "Fix two" CHANGES.rst && test -f notes.txt' })
   expect(preview).not.toContain('updating after a commit')

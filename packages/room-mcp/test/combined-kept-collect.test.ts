@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { fixture, git, gitOracle, names, put, rooms, roots, sharedText, source } from './combined-kept-preview-fixture.js'
 import { manifestHeadOf, RoomDoc } from '@room/shared'
 import fs from 'node:fs'
@@ -18,7 +19,7 @@ import { registerWorkers } from './registry-fixture.js'
 
 it('real collect matches the independent repeated-line Git oracle and the full preview', async () => {
   const t = await fixture({ shared: 'repeated' })
-  gitOracle(t)
+  await gitOracle(t)
   const before = t.snapshot(), result = await t.preview('lead', names.slice(1))
   expect(result.complete, result.out.join('\n')).toBe(true)
   expect(result.conflictingPaths.size, result.out.join('\n')).toBe(0)
@@ -59,11 +60,11 @@ it('requires a new post-application acknowledgement after publisher replacement'
   let result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   expect(result.complete).toBe(false)
   expect(result.gaps.some(gap => gap.why.includes('acknowledged post-baseline'))).toBe(true)
-  const records = t.registry.list()
+  const records = (await t.registry.list())
   for (const record of records) {
     const proof = await acknowledgeKeptPublication(lead, record.keptPublication, [])
     expect(proof.pending).toBe(false)
-    await t.registry.update(record.id, old => ({ ...old, keptPublication: { ...proof, base: record.base }, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { ...proof, base: record.base }, seq: old.seq + 1 }))
   }
   result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   expect(result.complete, result.out.join('\n')).toBe(true)
@@ -74,18 +75,18 @@ it('requires a new post-application acknowledgement after publisher replacement'
 
 it('tracks own-caller record, collection ref and merge-order key changes in snapshot freshness', async () => {
   const t = await fixture(), result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
-  expect(result.isCurrent()).toBe(true)
-  const record = t.registry.reservedByTagOrName('lead+api')!
-  await t.registry.update(record.id, old => ({ ...old, seq: old.seq + 1 }))
-  expect(result.moved()).toContain('lead+api')
+  expect((await result.isCurrent())).toBe(true)
+  const record = (await t.registry.reservedByTagOrName('lead+api'))!
+  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, seq: old.seq + 1 }))
+  expect((await result.moved())).toContain('lead+api')
   const keySnapshot = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
-  const report = t.registry.reports(record.id)[0]
+  const report = (await t.registry.reports(record.id))[0]
   await t.registry.writeReport(record.id, { ...report, done: { ...report.done!, at: report.done!.at + 1000 } })
-  expect(t.registry.read(record.id)!.seq).toBe(record.seq + 1)
-  expect(keySnapshot.moved()).toContain('lead+api')
+  expect((await t.registry.read(record.id))!.seq).toBe(record.seq + 1)
+  expect((await keySnapshot.moved())).toContain('lead+api')
   const next = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   git(t.root, 'update-ref', `refs/room/collect-head/${record.tag}/${record.id}`, git(t.root, 'rev-parse', 'HEAD'))
-  expect(next.moved()).toContain('lead+api')
+  expect((await next.moved())).toContain('lead+api')
 })
 
 async function carriedFixture(carry = true) {
@@ -120,10 +121,10 @@ it('rejects a complete stale pre-carry lead frame including unchanged carried un
 })
 
 it('accepts a verified carried publication and requires reacknowledgement after replacement', async () => {
-  const t = await carriedFixture(), record = t.registry.reservedByTagOrName('lead+carry')!
+  const t = await carriedFixture(), record = (await t.registry.reservedByTagOrName('lead+carry'))!
   const proof = await acknowledgeKeptPublication(t.lead, undefined, t.prepared.carried!.paths)
   expect(proof.pending).toBe(false)
-  await t.registry.update(record.id, old => ({ ...old, keptPublication: { ...proof, base: record.base }, seq: old.seq + 1 }))
+  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { ...proof, base: record.base }, seq: old.seq + 1 }))
   const result = await t.preview()
   expect(result.complete, result.out.join('\n')).toBe(true)
   expect(result.merged.get('shared.txt')).toBe(sharedText([2, 'carried input']))
@@ -142,7 +143,7 @@ it('does not require carried-publication acknowledgement for carry=false', async
 })
 
 it.each(['missing', 'rewritten'])('refuses real collect when a kept baseline ref is %s without changing lead/worker bytes or indexes', async kind => {
-  const t = await fixture(), record = t.registry.reservedByTagOrName('lead+api')!
+  const t = await fixture(), record = (await t.registry.reservedByTagOrName('lead+api'))!
   const ref = `refs/room/collect-head/${record.tag}/${record.id}`
   if (kind === 'missing') git(t.root, 'update-ref', '-d', ref)
   else git(t.root, 'update-ref', ref, git(t.root, 'rev-parse', 'HEAD'))
@@ -153,11 +154,11 @@ it.each(['missing', 'rewritten'])('refuses real collect when a kept baseline ref
 })
 
 it('refuses collect after a plain worker baseline falls off the lead history', async () => {
-  const t = await fixture(), record = t.registry.reservedByTagOrName('lead+api')!
+  const t = await fixture(), record = (await t.registry.reservedByTagOrName('lead+api'))!
   const dir = t.sessions.get('lead+api')!.dir
   git(dir, 'add', 'src/api.ts'); git(dir, 'commit', '-qm', 'private checkpoint before spawn')
   const base = git(dir, 'rev-parse', 'HEAD')
-  await t.registry.update(record.id, old => ({ ...old, base, collectedKeep: undefined, carriedBase: undefined, keptPublication: undefined, seq: old.seq + 1 }))
+  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, base, collectedKeep: undefined, carriedBase: undefined, keptPublication: undefined, seq: old.seq + 1 }))
   put(dir, 'src/api.ts', source('api', 3))
   const before = t.snapshot(), refs = git(t.root, 'show-ref')
   const reply = await collectHandlers(t.stateFor(t.sessions.get('lead')!)).room_collect({ tag: 'api', keep: true })
@@ -166,11 +167,11 @@ it('refuses collect after a plain worker baseline falls off the lead history', a
 })
 
 it.each(['missing', 'mismatched'])('does not certify a plain checkpoint from a %s published actual HEAD', async kind => {
-  const t = await carriedFixture(false), record = t.registry.reservedByTagOrName('lead+carry')!
+  const t = await carriedFixture(false), record = (await t.registry.reservedByTagOrName('lead+carry'))!
   const dir = t.worker.dir
   git(dir, 'add', 'own.txt'); git(dir, 'commit', '-qm', 'checkpoint')
   const base = git(dir, 'rev-parse', 'HEAD')
-  await t.registry.update(record.id, old => ({ ...old, base, seq: old.seq + 1 }))
+  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, base, seq: old.seq + 1 }))
   publishFixture(t.room, t.worker.me.name, 'own.txt', 'changed after checkpoint\n', { base })
   const leadGit = t.room.participants.get('lead\0git')!
   t.room.participants.set('lead\0git', { ...leadGit, head: kind === 'missing' ? undefined : base, ...(kind === 'mismatched' ? { fence: 'wrong' } : {}) })
@@ -178,9 +179,9 @@ it.each(['missing', 'mismatched'])('does not certify a plain checkpoint from a %
 })
 
 it.each([false, true])('checks the immediate worker-lead publication in a three-generation preview (stale=%s)', async stale => {
-  const t = await carriedFixture(), parentRecord = t.registry.reservedByTagOrName('lead+carry')!
+  const t = await carriedFixture(), parentRecord = (await t.registry.reservedByTagOrName('lead+carry'))!
   const parentProof = await acknowledgeKeptPublication(t.lead, undefined, t.prepared.carried!.paths)
-  await t.registry.update(parentRecord.id, old => ({ ...old, keptPublication: { ...parentProof, base: old.base }, seq: old.seq + 1 }))
+  await mutateWorkerFixture(t.registry, parentRecord.id, old => ({ ...old, keptPublication: { ...parentProof, base: old.base }, seq: old.seq + 1 }))
   const child = await prepareWorktree(t.worker.dir, 'grand', t.worker.me.name, { linkExclusions: [] })
   await registerWorkers(t.worker, [{ tag: 'grand', name: 'lead+carry+grand', lead: t.worker.me.name, dir: child.dir, branch: child.branch,
     status: 'done', base: child.base, carriedBase: child.carriedBase, carriedUntracked: child.carriedUntracked, host: 'codex', task: 'grand', pid: 0, startedAt: 2 }])
@@ -188,10 +189,10 @@ it.each([false, true])('checks the immediate worker-lead publication in a three-
     for (const p of ['shared.txt', 'new.txt', 'own.txt']) publishFixture(t.room, t.worker.me.name, p, fs.readFileSync(path.join(t.worker.dir, p), 'utf8'), { base: t.prepared.base })
     t.room.participants.set(`${t.worker.me.name}\0git`, { ...t.room.participants.get(`${t.worker.me.name}\0git`)!, head: git(t.worker.dir, 'rev-parse', 'HEAD') })
   }
-  const record = t.registry.reservedByTagOrName('lead+carry+grand')!
+  const record = (await t.registry.reservedByTagOrName('lead+carry+grand'))!
   const proof = await acknowledgeKeptPublication(t.worker, undefined, child.carried!.paths)
   expect(proof.pending).toBe(false)
-  await t.registry.update(record.id, old => ({ ...old, keptPublication: { ...proof, base: old.base }, seq: old.seq + 1 }))
+  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { ...proof, base: old.base }, seq: old.seq + 1 }))
   if (stale) t.room.participants.set(`${t.worker.me.name}\0holder`, { ...t.room.participants.get(`${t.worker.me.name}\0holder`)!, sessionId: 'replacement' })
   put(child.dir, 'grand.txt', 'grand own note\n')
   publishFixture(t.room, record.name, 'grand.txt', 'grand own note\n', { base: child.base })
@@ -209,20 +210,20 @@ it.each([false, true])('checks the immediate worker-lead publication in a three-
 })
 
 it('retains the worker and marks unknown freshness when optional ACK metadata is malformed', async () => {
-  const t = await fixture(), record = t.registry.reservedByTagOrName('lead+api')!
+  const t = await fixture(), record = (await t.registry.reservedByTagOrName('lead+api'))!
   fs.writeFileSync(path.join(t.registry.root, 'workers', `${record.id}.json`), JSON.stringify({ ...record, keptPublication: { pending: false, paths: [7], ack: {} } }))
-  expect(t.registry.read(record.id)).toMatchObject({ id: record.id, keptPublication: { paths: [], pending: true, overflow: true } })
-  expect(localWorkers(t.root).some(worker => worker.id === record.id)).toBe(true)
+  expect((await t.registry.read(record.id))).toMatchObject({ id: record.id, keptPublication: { paths: [], pending: true, overflow: true } })
+  expect((await localWorkers(t.root)).some(worker => worker.id === record.id)).toBe(true)
   expect((await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])).complete).toBe(false)
 })
 
 it('gaps a lead-absent later baseline that reverts an earlier delivery back to the common ancestor', async () => {
-  const t = await fixture({ shared: 'disjoint' }), api = t.registry.reservedByTagOrName('lead+api')!, backend = t.registry.reservedByTagOrName('lead+backend')!
+  const t = await fixture({ shared: 'disjoint' }), api = (await t.registry.reservedByTagOrName('lead+api'))!, backend = (await t.registry.reservedByTagOrName('lead+backend'))!
   const dir = t.sessions.get('lead+backend')!.dir
   git(dir, 'reset', '-q', '--hard', api.base!)
   put(dir, 'shared.txt', sharedText()); git(dir, 'add', 'shared.txt'); git(dir, 'commit', '-qm', 'later baseline reverts earlier delivery')
   const base = git(dir, 'rev-parse', 'HEAD')
-  await t.registry.update(backend.id, old => ({ ...old, base, seq: old.seq + 1 }))
+  await mutateWorkerFixture(t.registry, backend.id, old => ({ ...old, base, seq: old.seq + 1 }))
   publishFixture(t.room, backend.name, 'shared.txt', sharedText(), { base })
   const result = await t.preview('lead+api', ['lead+backend', 'lead+consumer'])
   expect(result.complete).toBe(false)

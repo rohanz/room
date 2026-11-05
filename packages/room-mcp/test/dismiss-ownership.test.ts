@@ -54,7 +54,7 @@ function fixture(ownedWorktree: boolean | 'noncanonical' | 'nested') {
 
 async function dismiss(t: ReturnType<typeof fixture>): Promise<string> {
   await registerWorkers(t.s, t.workers)
-  return t.state.dismissWorker(t.s, workerByTag(t.s.dir, 'test')!, 'stop')
+  return t.state.dismissWorker(t.s, (await workerByTag(t.s.dir, 'test'))!, 'stop')
 }
 
 describe('dismissWorker ownership', () => {

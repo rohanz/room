@@ -759,7 +759,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     })
     if (lease.fence()) publishing = await attachPublication()
     else policyStore.setPublisher(false)
-    started = daemon = await timed('daemon start', () => startRoomd({ ...daemonOptions, negotiation: negotiation ? { ...negotiation, onSelection: reply => { negotiation.onSelection(reply); selected = { ...reply.selection, legacy: false } } } : undefined, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
+    started = daemon = await timed('daemon start', async () => startRoomd({ ...daemonOptions, negotiation: negotiation ? { ...negotiation, onSelection: reply => { negotiation.onSelection(reply); selected = { ...reply.selection, legacy: false } } } : undefined, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: (await workerCarried(options.dir)),
       // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
       onProvider: provider => { currentProvider = provider; startupCapClose = captureCapClose(provider) },
       post: (from, body, opts) => {

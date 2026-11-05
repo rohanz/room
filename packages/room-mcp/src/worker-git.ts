@@ -468,11 +468,11 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     if (!w.id) return true // Legacy direct callers have no registry capability.
     const { registryForDir } = await import('./worker-registry.js')
     const registry = await registryForDir(leadDir)
-    const record = registry.read(w.id)
-    if (!record) return w.branch === `room/${w.tag}` && registry.list().every(peer =>
+    const record = (await registry.read(w.id))
+    if (!record) return w.branch === `room/${w.tag}` && (await registry.list()).every(peer =>
       path.resolve(peer.dir) !== path.resolve(w.dir) || peer.tag === w.tag)
-    return !record.sharedWith && !registry.worktreeOwner(record)
-      && registry.checkoutUsers(record).length === 0
+    return !record.sharedWith && !(await registry.worktreeOwner(record))
+      && (await registry.checkoutUsers(record)).length === 0
   }
   if (!await available()) return false
   if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
@@ -498,7 +498,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     let retainedOwner = false
     if (!discarded && w.id) {
       const { registryForDir } = await import('./worker-registry.js')
-      const owner = (await registryForDir(leadDir)).read(w.id)
+      const owner = await (await registryForDir(leadDir)).read(w.id)
       retainedOwner = owner?.phase === 'retired' && !!owner.keptWorktree && !!owner.archive?.keptReason?.startsWith('shared checkout: ')
     }
     if (retainedOwner) {

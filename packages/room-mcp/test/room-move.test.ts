@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 // A room move preflights the target, leaves, joins, and goes back to the old room if the join still fails.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -66,7 +67,7 @@ const LOCAL_ROOM = () => `local/${basename(dir)}`
 const STILL = () => ` You're still in this machine's local room (${LOCAL_ROOM()}), which works for agents on this computer.`
 async function recordWorker(tag: string, finished = false): Promise<void> {
   const { registry, record } = await seedRegistryWorker(dir, tag)
-  await registry.update(record.id, old => ({ ...old, lead: { ...old.lead, participant: 'Ada', room: LOCAL_ROOM() }, seq: old.seq + 1 }))
+  await mutateWorkerFixture(registry, record.id, old => ({ ...old, lead: { ...old.lead, participant: 'Ada', room: LOCAL_ROOM() }, seq: old.seq + 1 }))
   if (finished) await registry.writeExit(record.id, { run: 1, code: 0, at: Date.now(), witnessed: true })
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Worker lifecycle storage sits behind one asynchronous interface** (slice 1 of docs/superpowers/plans/2026-11-06-sqlite-state.md). Every reader and writer of worker records, runs, reports, exits and collection state now goes through a typed async facade with named lifecycle commands instead of synchronous file reads and edit callbacks; the files on disk and their rules are unchanged. This prepares the move to SQLite and changes no behaviour. Status reads are faster: 303 file calls and 5.6 ms for 50 workers, against 302 calls and 8.4 ms before, and 49 ms against 85 ms for 500 (docs/archive/reports/2026-11-06-lifecycle-baseline.md).
+- **A stopped session can no longer post a worker's completion into a room it has left.** Stopping a worker projector now also stops a pass that was already in flight, so a completion is delivered once, by the session that owns the room.
+
 ## 0.17.34
 
 - **Local rooms run on a standalone daemon** (docs/superpowers/specs/2026-11-05-local-daemon.md). A local room's state now lives in one daemon process per clone instead of inside whichever session started first, so closing that session no longer takes the room down. The daemon starts on the first join, outlives sessions, saves before it stops, and exits after five minutes with no writers. It negotiates the `room.daemon` capability and refuses older clients before sync. Leaving or losing the connection keeps your local replica so a reconnect resumes it; an explicit `room_leave` or a switch to another room disposes it.

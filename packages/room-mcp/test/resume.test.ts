@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -76,7 +77,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
     }])
   }
   /** The worker's registry record under a tag (spawned or seeded), for run facts the lifecycle view does not carry. */
-  const record = async (tag: string) => (await registryForDir(dir)).list().find(r => r.tag === tag)
+  const record = async (tag: string) => (await (await registryForDir(dir)).list()).find(r => r.tag === tag)
   return { dir, room, session, tools, record, specs, spawned, exits, errors, kills, logs, seed, portFile: (port: number) => join(dir, 'room', 'ports', String(port)) }
 }
 
@@ -104,14 +105,16 @@ describe('resumed worker boundaries', () => {
     if (acceptance === 'mcp') {
       const worker = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
       vi.stubEnv('ROOM_WORKER_ID', record.id); vi.stubEnv('ROOM_WORKER_RUN', String(run.n)); vi.stubEnv('ROOM_LAUNCH_NONCE', run.nonce)
-      new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) }).acceptPrompt(worker)
+      const ledger = new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) })
+      ledger.supplyWorkers(worker, await (await registryForDir(t.dir)).snapshot())
+      ledger.acceptPrompt(worker)
     } else {
       writeFileSync(join(t.dir, '.room', 'workers', 'backlog.log'), JSON.stringify({
         type: 'assistant', session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] },
       }) + '\n')
       await t.exits[0](0)
       const registry = await registryForDir(t.dir)
-      expect(registry.status(record.id)?.status).toBe('done')
+      expect((await registry.status(record.id))?.status).toBe('done')
       await projectWorkers(t.session, registry, 'rohanz', 'joined')
     }
     for (const m of [old, followUp]) expect(t.room.seen(record.name).get(m.id)).toMatchObject({ via: 'prompt' })
@@ -129,6 +132,7 @@ describe('resumed worker boundaries', () => {
     const worker = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
     vi.stubEnv('ROOM_WORKER_ID', record.id); vi.stubEnv('ROOM_WORKER_RUN', String(run.n)); vi.stubEnv('ROOM_LAUNCH_NONCE', run.nonce)
     const ledger = new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) })
+    ledger.supplyWorkers(worker, await (await registryForDir(t.dir)).snapshot())
     ledger.acceptPrompt(worker)
     expect(t.room.seen(record.name).has(old.id)).toBe(false)
     expect(ledger.candidates(worker).map(m => m.id)).toContain(old.id)
@@ -138,7 +142,7 @@ describe('resumed worker boundaries', () => {
     const stale = hubAppend(t.room, { name: 'rohanz', kind: 'agent' }, { type: 'answer', to: 'rohanz+reused', inReplyTo: 'q-old', text: 'STALE_FOR_THE_EARLIER_WORKER' })
     await t.seed('reused')
     const registry = await registryForDir(t.dir), seeded = (await t.record('reused'))!
-    await registry.update(seeded.id, old => ({ ...old, runs: old.runs.map(r => r.n === 1 ? { ...r, busFrontier: highestSeq(t.room) } : r), seq: old.seq + 1 }))
+    await mutateWorkerFixture(registry, seeded.id, old => ({ ...old, runs: old.runs.map(r => r.n === 1 ? { ...r, busFrontier: highestSeq(t.room) } : r), seq: old.seq + 1 }))
     const whileStopped = hubAppend(t.room, { name: 'teammate', kind: 'agent' }, { type: 'question', to: 'rohanz+reused', text: 'SENT_WHILE_STOPPED' })
     expect(await t.tools.call('room_send', { type: 'note', to: 'reused', text: 'NEW_FOLLOW_UP' })).toContain('resumed reused')
     const run = (await t.record('reused'))!.runs.at(-1)!
@@ -165,6 +169,7 @@ describe('resumed worker boundaries', () => {
     const worker = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
     vi.stubEnv('ROOM_WORKER_ID', record.id); vi.stubEnv('ROOM_WORKER_RUN', String(run.n)); vi.stubEnv('ROOM_LAUNCH_NONCE', run.nonce)
     const ledger = new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) })
+    ledger.supplyWorkers(worker, await (await registryForDir(t.dir)).snapshot())
     expect(ledger.candidates(worker).map(m => m.id)).not.toContain(run.promptMsgIds[0])
     ledger.acceptPrompt(worker)
     expect(t.room.seen(record.name).get(run.promptMsgIds[0])).toMatchObject({ via: 'prompt', s: record.hostSessionId })
@@ -181,7 +186,7 @@ describe('resumed worker boundaries', () => {
     append({ type: 'assistant', session_id: 'another-session', message: { content: [{ type: 'text', text: 'wrong' }] } })
     await t.exits[0](0)
     const registry = await registryForDir(t.dir)
-    expect(registry.status(record.id)?.status).toBe('done')
+    expect((await registry.status(record.id))?.status).toBe('done')
     await projectWorkers(t.session, registry, 'rohanz', 'joined')
     expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
     append({ type: 'assistant', session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] } })
@@ -212,7 +217,7 @@ describe('resumed worker boundaries', () => {
       writeFileSync(log, JSON.stringify({ type: 'assistant', session_id: first.hostSessionId,
         message: { content: [{ type: 'text', text: 'accepted' }] } }) + '\n')
       await t.exits[0](0)
-      expect(registry.status(first.id)?.status).toBe('done')
+      expect((await registry.status(first.id))?.status).toBe('done')
       await projectWorkers(t.session, registry, 'rohanz', 'joined')
       expect(t.room.seen(first.name).has(firstMessage.id)).toBe(true)
 
@@ -222,7 +227,7 @@ describe('resumed worker boundaries', () => {
       writeFileSync(log, JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true,
         num_turns: 0, session_id: first.hostSessionId, result: 'No conversation found' }) + '\n', { flag: 'a' })
       await t.exits[1](1)
-      expect(registry.status(first.id)?.status).toBe('failed')
+      expect((await registry.status(first.id))?.status).toBe('failed')
       await projectWorkers(t.session, registry, 'rohanz', 'joined')
       expect(t.room.seen(first.name).has(secondRun.promptMsgIds[0])).toBe(false)
       await projector?.project() // Drain any registry-triggered passes before testing the trim event.
@@ -258,7 +263,7 @@ describe('resumed worker boundaries', () => {
       writeFileSync(join(t.dir, '.room', 'workers', 'unfenced.log'), JSON.stringify({ type: 'assistant',
         session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] } }) + '\n')
       await t.exits[0](0)
-      expect(registry.status(record.id)?.status).toBe('done')
+      expect((await registry.status(record.id))?.status).toBe('done')
       await projectWorkers(t.session, registry, 'rohanz', 'joined')
       expect(t.room.seen(record.name).has(id)).toBe(true)
       ;(t.session.daemon as { fence?: string }).fence = undefined
@@ -329,7 +334,7 @@ describe('resumed worker boundaries', () => {
     }) + '\n')
     await t.exits[0](1)
     const registry = await registryForDir(t.dir)
-    expect(registry.status(record.id)?.status).toBe('failed')
+    expect((await registry.status(record.id))?.status).toBe('failed')
     expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('no longer exists'))).toBe(true)
     await projectWorkers(t.session, registry, 'rohanz', 'joined')
     expect(t.room.workerViewOf(record.name)?.note).toContain('no longer exists; the message stays owed')
@@ -341,9 +346,9 @@ describe('resumed worker boundaries', () => {
     expect(await t.tools.call('room_spawn', { tag: 'fresh', task: 'test', host: 'codex' })).toContain('spawned fresh')
     expect((await t.record('fresh'))?.runs.map(run => run.mode)).toEqual(['fresh'])
     await t.exits[0](0)
-    expect(workerByTag(t.dir, 'fresh')?.status).toBe('done')
+    expect((await workerByTag(t.dir, 'fresh'))?.status).toBe('done')
     expect(t.room.messages().filter(m => m.type === 'done' && m.summary.includes('ended without a report'))).toHaveLength(1)
-    expect(workerByTag(t.dir, 'fresh')?.summary).not.toContain('background')
+    expect((await workerByTag(t.dir, 'fresh'))?.summary).not.toContain('background')
   })
 
   it('publishes no plain log line from a no-report exit, only the log path and the model text', async () => {
@@ -360,7 +365,7 @@ describe('resumed worker boundaries', () => {
     expect(done).toHaveLength(1)
     expect(done[0].summary).toContain('All tests pass.')
     expect(done[0].summary).toContain('quiet.log')
-    const published = JSON.stringify([t.room.messages(), workerByTag(t.dir, 'quiet')])
+    const published = JSON.stringify([t.room.messages(), (await workerByTag(t.dir, 'quiet'))])
     expect(published).not.toContain('secret')
   })
 
@@ -380,8 +385,8 @@ describe('resumed worker boundaries', () => {
     await t.exits[0](0)
     const said = 'ended without a report — background work was still running (1 background task(s) killed at exit)'
     expect(t.room.messages().filter(m => m.type === 'done' && m.summary.startsWith(said))).toHaveLength(1)
-    expect(workerByTag(t.dir, 'bg')?.summary).toContain(said)
-    expect(workerByTag(t.dir, 'bg')?.summary).not.toContain('sleep 40')
+    expect((await workerByTag(t.dir, 'bg'))?.summary).toContain(said)
+    expect((await workerByTag(t.dir, 'bg'))?.summary).not.toContain('sleep 40')
   })
 
   it('reads the lead-side log of a worker started in a checkout outside the repo', async () => {
@@ -393,7 +398,7 @@ describe('resumed worker boundaries', () => {
       writeFileSync(join(t.dir, '.room', 'workers', 'sib.log'), unawaited())
       await t.exits[0](0)
       const said = 'ended without a report — background work was still running (1 background task(s) killed at exit)'
-      expect(workerByTag(t.dir, 'sib')?.summary).toContain(said)
+      expect((await workerByTag(t.dir, 'sib'))?.summary).toContain(said)
     } finally { rmSync(outside, { recursive: true, force: true }) }
   })
 
@@ -405,9 +410,9 @@ describe('resumed worker boundaries', () => {
     writeFileSync(join(t.dir, '.room', 'workers', 'bgresume.log'), 'x'.repeat(run.logStart) + '\n' + unawaited(record.hostSessionId))
     await t.exits[0](0)
     const said = 'exited without room_done — background work was still running (1 background task(s) killed at exit)'
-    expect(workerByTag(t.dir, 'bgresume')).toMatchObject({ status: 'failed' })
+    expect((await workerByTag(t.dir, 'bgresume'))).toMatchObject({ status: 'failed' })
     const registry = await registryForDir(t.dir)
-    expect(registry.status(record.id)?.note).toBe(said)
+    expect((await registry.status(record.id))?.note).toBe(said)
     expect(t.room.messages().filter(m => m.priority === 'interrupt' && m.type === 'note' && m.text.includes(said))).toHaveLength(1)
   })
 
@@ -419,9 +424,9 @@ describe('resumed worker boundaries', () => {
     writeFileSync(join(t.dir, '.room', 'workers', 'bgdone.log'), 'x'.repeat(run.logStart) + '\n' + unawaited(record.hostSessionId))
     await t.exits[0](0)
     const said = 'follow-up ended without room_done — background work was still running (1 background task(s) killed at exit)'
-    expect(workerByTag(t.dir, 'bgdone')).toMatchObject({ status: 'done' })
+    expect((await workerByTag(t.dir, 'bgdone'))).toMatchObject({ status: 'done' })
     const registry = await registryForDir(t.dir)
-    expect(registry.status(record.id)?.note).toBe(said)
+    expect((await registry.status(record.id))?.note).toBe(said)
     expect(t.room.messages().filter(m => m.type === 'done' && m.summary.startsWith(said))).toHaveLength(1)
   })
 
@@ -430,7 +435,7 @@ describe('resumed worker boundaries', () => {
     await t.seed('broken', { host: 'codex', summary: 'initial work done' })
     expect(await t.tools.call('room_send', { type: 'note', to: 'broken', text: 'check cleanup' })).toContain('resumed broken')
     await t.exits[0](1)
-    expect(workerByTag(t.dir, 'broken')).toMatchObject({ status: 'failed', exitCode: 1 })
+    expect((await workerByTag(t.dir, 'broken'))).toMatchObject({ status: 'failed', exitCode: 1 })
     expect(t.room.messages().filter(m => m.priority === 'interrupt')).toMatchObject([{ to: 'rohanz', text: expect.stringContaining('worker broken failed: exit 1') }])
     const record = (await t.record('broken'))!, run = record.runs.at(-1)!
     expect(t.room.messages().filter(m => m.type === 'done' && m.id === `wk:${record.id}:${run.n}`)).toEqual([])
@@ -440,7 +445,7 @@ describe('resumed worker boundaries', () => {
     const t = setup()
     const before = hubAppend(t.room, t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
     expect(await t.tools.call('room_spawn', { tag: 'briefed', task: 'review', host: 'claude' })).toContain('spawned briefed')
-    const record = (await registryForDir(t.dir)).list().find(r => r.tag === 'briefed')!
+    const record = (await (await registryForDir(t.dir)).list()).find(r => r.tag === 'briefed')!
     expect(record.runs[0].busFrontier).toBe(before.seq)
   })
 
@@ -450,7 +455,7 @@ describe('resumed worker boundaries', () => {
     const between = hubAppend(t.room, t.session.me, { type: 'note', text: 'before resume', priority: 'notify' })
     const resumed = t.room.messages().at(-1)!
     expect(await t.tools.call('room_send', { type: 'note', to: 'briefed', text: 'continue' })).toContain('resumed briefed')
-    const record = (await registryForDir(t.dir)).list().find(r => r.tag === 'briefed')!
+    const record = (await (await registryForDir(t.dir)).list()).find(r => r.tag === 'briefed')!
     expect(record.runs.at(-1)).toMatchObject({ n: 2, busFrontier: expect.any(Number) })
     expect(record.runs.at(-1)!.busFrontier).toBeGreaterThanOrEqual(resumed.seq!)
     const after = hubAppend(t.room, t.session.me, { type: 'note', text: 'after resume', priority: 'notify' })
@@ -458,7 +463,9 @@ describe('resumed worker boundaries', () => {
     // A resumed run whose session lost its cursor seeds from the new run's busFrontier: later broadcasts are owed, earlier ones are not.
     vi.stubEnv('ROOM_WORKER_ID', record.id)
     vi.stubEnv('ROOM_WORKER_RUN', '2')
-    const owed = new Ledger({ sessionId: () => 'worker-session', route: () => ({}) }).candidates(joined).map(m => m.id)
+    const ledger = new Ledger({ sessionId: () => 'worker-session', route: () => ({}) })
+    ledger.supplyWorkers(joined, await (await registryForDir(t.dir)).snapshot())
+    const owed = ledger.candidates(joined).map(m => m.id)
     expect(owed).not.toContain(between.id)
     expect(owed).toContain(after.id)
   })
@@ -475,13 +482,13 @@ describe('resumed worker boundaries', () => {
     vi.stubEnv('ROOM_WORKER_NICE', '0')
     const t = setup()
     expect(await t.tools.call('room_spawn', { tag: 'narrow', task: 'test', share: 'intent', host: 'claude' })).toContain('spawned narrow')
-    const initial = workerByTag(t.dir, 'narrow')!
+    const initial = (await workerByTag(t.dir, 'narrow'))!
     expect(initial.share).toBe('intent')
     // The worker reports done (room_done), then its process exits.
-    const registry = await registryForDir(t.dir), run = registry.read(initial.id)!.runs.at(-1)!
+    const registry = await registryForDir(t.dir), run = (await registry.read(initial.id))!.runs.at(-1)!
     await registry.writeReport(initial.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: Date.now(), done: { at: Date.now(), summary: 'done', changed: [] } })
     await t.exits[0](0)
-    expect(workerByTag(t.dir, 'narrow')).toMatchObject({ status: 'done', exitCode: 0 })
+    expect((await workerByTag(t.dir, 'narrow'))).toMatchObject({ status: 'done', exitCode: 0 })
     expect(await t.tools.call('room_send', { type: 'note', to: 'narrow', text: 'again' })).toContain('resumed narrow')
     expect(t.specs[1].env.ROOM_SHARE).toBe('intent')
   })
@@ -490,11 +497,11 @@ describe('resumed worker boundaries', () => {
     const t = setup()
     await t.seed('stopped', { status: 'dismissed', stopReason: 'lead-session-ended' })
     const registry = await registryForDir(t.dir)
-    const id = workerByTag(t.dir, 'stopped')!.id
-    expect(registry.read(id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
+    const id = (await workerByTag(t.dir, 'stopped'))!.id
+    expect((await registry.read(id))?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
     expect(await t.tools.call('room_send', { type: 'note', to: 'stopped', text: 'again' })).toContain('resumed stopped')
-    expect(registry.read(id)?.runs.at(-1)?.n).toBe(2)
-    expect(registry.status(id)?.status).toBe('running')
+    expect((await registry.read(id))?.runs.at(-1)?.n).toBe(2)
+    expect((await registry.status(id))?.status).toBe('running')
   })
 
   it('refuses resume at capacity', async () => {
@@ -552,7 +559,7 @@ describe('resumed worker boundaries', () => {
     const t = setup()
     await t.seed('retry')
     const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, attach: () => ({ stop() {} }) })
-    const w = workerByTag(t.dir, 'retry')!
+    const w = (await workerByTag(t.dir, 'retry'))!
     expect(await rooms.resumeWorker(t.session, w, 'again', { spawner: () => { throw new Error('unavailable') }, maxWorkers: 1 })).toContain('could not resume retry')
     const second = await rooms.resumeWorker(t.session, w, 'again', { spawner: () => ({ pid: 9001, started: Promise.resolve(), onExit: () => {}, kill: () => true }), maxWorkers: 1 })
     expect(second).toContain('resumed retry')
@@ -563,7 +570,7 @@ describe('resumed worker boundaries', () => {
     await t.seed('crash')
     expect(await t.tools.call('room_send', { type: 'note', to: 'crash', text: 'again' })).toContain('resumed crash')
     await t.exits[0](-1)
-    expect(workerByTag(t.dir, 'crash')).toMatchObject({ status: 'failed', exitCode: -1 })
+    expect((await workerByTag(t.dir, 'crash'))).toMatchObject({ status: 'failed', exitCode: -1 })
     expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('worker crash failed: exit -1'))).toBe(true)
   })
 
@@ -578,8 +585,8 @@ describe('resumed worker boundaries', () => {
     writeFileSync(log, 'x'.repeat(run.logStart) + '\n        log.debug("lagged session %s notes_len=%d", session.id, len(notes))\n"exit_code":0,"status":"completed"}}\n')
     await t.exits[0](null, 'SIGTERM')
     const registry = await registryForDir(t.dir)
-    expect(registry.exits(record.id).find(exit => exit.run === run.n)).toMatchObject({ code: null, signal: 'SIGTERM', witnessed: true })
-    expect(registry.status(record.id)).toMatchObject({ status: 'failed', note: 'killed by SIGTERM' })
+    expect((await registry.exits(record.id)).find(exit => exit.run === run.n)).toMatchObject({ code: null, signal: 'SIGTERM', witnessed: true })
+    expect((await registry.status(record.id))).toMatchObject({ status: 'failed', note: 'killed by SIGTERM' })
     const [interrupt] = t.room.messages().filter(m => m.priority === 'interrupt')
     expect(interrupt).toMatchObject({ to: 'rohanz', text: `worker killed failed: killed by SIGTERM; log: ${log}` })
     expect(interrupt.text).not.toMatch(/lagged|exit_code|notes_len/)
@@ -591,7 +598,7 @@ describe('resumed worker boundaries', () => {
     const record = (await t.record('freshkill'))!
     expect(t.specs[0].env.ROOM_WORKER_ID).toBe(record.id)
     await t.exits[0](null, 'SIGKILL')
-    expect((await registryForDir(t.dir)).exits(record.id)).toMatchObject([{ run: 1, code: null, signal: 'SIGKILL', witnessed: true }])
+    expect((await (await registryForDir(t.dir)).exits(record.id))).toMatchObject([{ run: 1, code: null, signal: 'SIGKILL', witnessed: true }])
     expect(t.room.messages().filter(m => m.priority === 'interrupt').map(m => m.text))
       .toEqual([expect.stringMatching(/^worker freshkill failed: killed by SIGKILL; log: /)])
   })
@@ -604,7 +611,7 @@ describe('resumed worker boundaries', () => {
     writeFileSync(join(t.dir, '.room', 'workers', 'stdin.mcp.log'), `${new Date(0).toISOString()} stopping: SIGTERM\n${new Date().toISOString()} stopping: stdin closed\n`)
     await t.exits[0](null)
     const registry = await registryForDir(t.dir)
-    expect(registry.status(record.id)).toMatchObject({ status: 'failed', note: 'host process ended (stdin closed)' })
+    expect((await registry.status(record.id))).toMatchObject({ status: 'failed', note: 'host process ended (stdin closed)' })
     expect(t.room.messages().filter(m => m.priority === 'interrupt').map(m => m.text))
       .toEqual([expect.stringMatching(/^worker stdin failed: host process ended \(stdin closed\); log: /)])
   })
@@ -612,7 +619,7 @@ describe('resumed worker boundaries', () => {
   it('refuses a vanished worktree before posting a message or starting a host', async () => {
     const t = setup()
     await t.seed('vanished')
-    rmSync(workerByTag(t.dir, 'vanished')!.dir, { recursive: true, force: true })
+    rmSync((await workerByTag(t.dir, 'vanished'))!.dir, { recursive: true, force: true })
     const before = t.room.messages().length
     expect(await t.tools.call('room_send', { type: 'note', to: 'vanished', text: 'again' })).toMatch(/error: cannot resume vanished: its worktree no longer exists$/)
     expect(t.specs).toHaveLength(0)

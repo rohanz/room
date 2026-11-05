@@ -19,7 +19,7 @@ import { git } from '@room/roomd/git'
  */
 export async function retireWorker(rooms: Rooms, s: Session, id: string, archive: RetiredWorker, extra: Pick<WorkerRecord, 'keptWorktree'> = {}): Promise<void> {
   const registry = await registryForDir(s.dir)
-  const record = registry.read(id)
+  const record = (await registry.read(id))
   if (!record) return
   if (fs.existsSync(path.join(record.dir, '.git'))) PolicyStore.retire(record.dir, record.room, record.name, new URL(s.roomUrl).origin)
   await registry.beginRetirement(id, archive, extra)
@@ -45,10 +45,10 @@ export type RemoveCheckoutOptions = {
  */
 export async function removeCollectedCheckout(s: Session, record: WorkerRecord | undefined, w: LocalWorker, processes: CollectedProcesses, o: RemoveCheckoutOptions = {}): Promise<CleanupResult> {
   const registry = await registryForDir(s.dir)
-  const users = record ? registry.checkoutUsers(record) : []
+  const users = record ? (await registry.checkoutUsers(record)) : []
   if (users.length && !o.retireUser) return { removed: false, reason: `its worktree is shared with ${users.map(user => user.record.tag).join(', ')}` }
   for (const { record: user } of users) await o.retireUser!(user)
-  const nested = registry.list().filter(other => other.lead.participant === w.name && !['retiring', 'retired', 'abandoned'].includes(other.phase))
+  const nested = (await registry.list()).filter(other => other.lead.participant === w.name && !['retiring', 'retired', 'abandoned'].includes(other.phase))
   if (nested.length) return { removed: false, reason: 'nested workers remain: ' + nested.map(other => other.tag).join(', ') }
   const ignored = await ignoredWorkerArtifacts(w, s.dir)
   if (ignored.length) return { removed: false, reason: 'uncopied ignored artifacts', lines: [...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`), `retained worktree: ${w.dir}`] }
@@ -58,7 +58,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
     const changed = await uncollectedWorkerPaths(s.dir, w, captured)
     if (changed.length) return { removed: false, reason: `changed since collection: ${changed.join(', ')}; copy it (mode="copy") or discard=true` }
   }
-  const workers = registry.list().flatMap(other => { const st = registry.status(other.id); return st ? [realStateInput(other, st)] : [] })
+  const workers = (await Promise.all((await registry.list()).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()
   const terminated: string[] = []
   const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
   // retireWorker ends sharing only while the checkout exists; end it before the checkout goes.
@@ -85,8 +85,8 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
  */
 export async function finishPendingCollect(s: Session, rooms: Rooms, id: string, processes: CollectedProcesses): Promise<string | undefined> {
   const registry = await registryForDir(s.dir)
-  const record = registry.read(id)
-  const status = record?.collectPending && record.phase === 'active' ? registry.status(id) : undefined
+  const record = (await registry.read(id))
+  const status = record?.collectPending && record.phase === 'active' ? (await registry.status(id)) : undefined
   if (!record || !status) return undefined
   const w = realStateInput(record, status)
   const kept = (reason: string) => `kept ${w.tag}: ${reason}`
@@ -94,20 +94,20 @@ export async function finishPendingCollect(s: Session, rooms: Rooms, id: string,
   try { if (!await registry.beginOperation(id, 'collect')) return kept('already being handled') }
   catch { return kept('already being handled') }
   try {
-    const fresh = registry.read(id)
+    const fresh = (await registry.read(id))
     if (!fresh?.collectPending || fresh.phase !== 'active' || await processes.alive(w)) return kept('changed while finishing; call room_collect again')
     const retiredAt = Date.now()
-    const files = [...new Set(registry.reports(id).flatMap(report => report.done?.changed ?? []))].sort()
-    const archive = (summary: string) => registry.archiveOf(fresh, { summary, files, fileCount: files.length,
-      finishedAt: w.finishedAt ?? fresh.collectPending!.at, retiredAt, outcome: 'dismissed', disposition: 'collected' })
-    const borrowed = fresh.sharedWith ?? registry.worktreeOwner(fresh)?.tag
+    const files = [...new Set((await registry.reports(id)).flatMap(report => report.done?.changed ?? []))].sort()
+    const archive = async (summary: string) => (await registry.archiveOf(fresh, { summary, files, fileCount: files.length,
+      finishedAt: w.finishedAt ?? fresh.collectPending!.at, retiredAt, outcome: 'dismissed', disposition: 'collected' }))
+    const borrowed = fresh.sharedWith ?? (await registry.worktreeOwner(fresh))?.tag
     if (borrowed) {
-      await retireWorker(rooms, s, id, archive(w.summary ?? ''))
+      await retireWorker(rooms, s, id, (await archive(w.summary ?? '')))
       return `detached ${w.tag}; the worktree belongs to ${borrowed}`
     }
     if (!fs.existsSync(w.dir)) {
       await pruneMissingWorkerWorktree(s.dir, w)
-      await retireWorker(rooms, s, id, archive(w.summary ?? ''))
+      await retireWorker(rooms, s, id, (await archive(w.summary ?? '')))
       return `retired ${w.tag}: its worktree was already gone`
     }
     const result = await removeCollectedCheckout(s, fresh, w, processes)
@@ -115,7 +115,7 @@ export async function finishPendingCollect(s: Session, rooms: Rooms, id: string,
       if (result.reason !== fresh.collectPending.reason) await registry.deferCollectCleanup(id, result.reason)
       return [kept(result.reason), ...result.lines ?? []].join('\n')
     }
-    await retireWorker(rooms, s, id, archive(w.summary ?? ''))
+    await retireWorker(rooms, s, id, (await archive(w.summary ?? '')))
     return `cleaned up ${w.tag}: temporary files, branch and logs` + (result.terminated.length ? `\nstopped processes from ${w.tag}: ${result.terminated.join(', ')}` : '')
   } finally { await registry.finishOperation(id) }
 }
@@ -130,19 +130,16 @@ const LEGACY_UNCONFIRMED = 'clean exit not confirmed'
  */
 async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, processes: CollectedProcesses): Promise<void> {
   const registry = await registryForDir(s.dir)
-  const status = registry.status(record.id)
+  const status = (await registry.status(record.id))
   if (!status || !record.keptWorktree || !fs.existsSync(record.keptWorktree)) return
   const w = { ...realStateInput(record, status), dir: record.keptWorktree }
   if (await processes.alive(w)) return
   try { if (!await registry.beginOperation(record.id, 'collect')) return } catch { return }
   try {
-    const fresh = registry.read(record.id)
+    const fresh = (await registry.read(record.id))
     if (fresh?.phase !== 'retired' || fresh.keptWorktree !== w.dir || fresh.archive?.keptReason !== LEGACY_UNCONFIRMED) return
     if (!(await removeCollectedCheckout(s, fresh, w, processes)).removed) return
-    await registry.update(fresh.id, old => {
-      const { keptWorktree: _kept, keptReason: _reason, ...archive } = old.archive ?? {}
-      return { ...old, keptWorktree: undefined, archive: archive as RetiredWorker, seq: old.seq + 1 }
-    })
+    await registry.command(fresh.id, { type: 'retired-checkout-removed' })
     for (const room of rooms.all()) {
       const list = room.room.doc.getArray<RetiredWorker>('retiredWorkers')
       const index = list.toArray().findIndex(entry => entry.id === fresh.id)
@@ -164,7 +161,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   const probe = rooms.probe.bind(rooms)
   // Retired records otherwise accumulate for the clone's lifetime; the room's archive entry outlives them.
   await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
-  for (const record of registry.list()) {
+  for (const record of (await registry.list())) {
     if (record.lead.participant !== s.me.name || record.room !== s.roomName) continue
     const processes: CollectedProcesses = { probe, list: rooms.listCwdProcesses, alive: async w =>
       rooms.hasHandle(s, w) || !processExited(await workerRealState(s.dir, w, { process: true, probe })) }
@@ -178,7 +175,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
       await finishPendingCollect(s, rooms, record.id, processes).catch(() => {})
       continue
     }
-    const status = registry.status(record.id)
+    const status = (await registry.status(record.id))
     if (!status) continue
     const w = realStateInput(record, status)
     // The next lead must be able to explain and resume intentionally stopped work.
@@ -200,52 +197,56 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     if (w.status === 'running') { await registry.reconcile(); continue }
     if (w.status !== 'done' && !state.dismissed) continue
     // Git awaits must not let an old evaluation retire a newer run or a session that left.
-    const current = () => registry.read(record.id)?.seq === record.seq && !rooms.hasHandle(s, w) && rooms.tracking(s)
+    const captured = await registry.freshness(record.id)
+    if (!captured || captured.seq !== record.seq) continue
+    const current = async () => (await registry.freshness(record.id))?.revision === captured.revision && !rooms.hasHandle(s, w) && rooms.tracking(s)
     const retiredAt = Date.now()
     if (state.worktree === 'vanished') {
       try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
-      if (!current()) continue
-      await retireWorker(rooms, s, record.id, registry.archiveOf(record, { summary: 'worktree was already gone', finishedAt: w.finishedAt ?? retiredAt,
-        retiredAt, disposition: 'discarded' }))
+      if (!await current()) continue
+      await retireWorker(rooms, s, record.id, (await registry.archiveOf(record, { summary: 'worktree was already gone', finishedAt: w.finishedAt ?? retiredAt,
+        retiredAt, disposition: 'discarded' })))
       continue
     }
-    const workers = registry.list().flatMap(other => { const st = registry.status(other.id); return st ? [realStateInput(other, st)] : [] })
+    const workers = (await Promise.all((await registry.list()).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()
     const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process }
     const outcome = decideRetire(facts)
-    if (!outcome || !current()) continue
+    if (!outcome || !await current()) continue
     // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
     // the lead can copy it or explicitly discard it, exactly as manual collection does.
     try { if ((await ignoredWorkerArtifacts(w, s.dir)).length) continue }
     catch { continue }
-    const reported = registry.reports(record.id).flatMap(report => report.done?.changed ?? [])
+    const reported = (await registry.reports(record.id)).flatMap(report => report.done?.changed ?? [])
     const files = [...new Set([...manifestPaths(s.room, w.name), ...reported])].sort()
     if (facts.clean && w.exitCode === 0) {
       // Spawn and resume borrow the owner's operation lane. Hold it through the
       // final checkout-user check, cwd cleanup, and retirement record.
+      if (!await current()) continue
       try { await registry.beginOperation(record.id, 'collect') } catch { continue }
       try {
-        if (!current()) continue
-        const fresh = registry.read(record.id)
-        if (!fresh) continue
-        const borrower = !!fresh.sharedWith || !!registry.worktreeOwner(fresh)
-        const users = borrower ? [] : registry.checkoutUsers(fresh)
+        // Admission changes the operation revision itself. Under its lease, validate the
+        // authoritative record again rather than comparing the pre-admission display revision.
+        const fresh = (await registry.read(record.id))
+        if (!fresh || fresh.seq !== record.seq || rooms.hasHandle(s, w) || !rooms.tracking(s)) continue
+        const borrower = !!fresh.sharedWith || !!(await registry.worktreeOwner(fresh))
+        const users = borrower ? [] : (await registry.checkoutUsers(fresh))
         if (!borrower && !users.length) {
           if (!await cleanupWorker(s.dir, w, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue
         }
         const reason = users.length ? `shared checkout: ${users.map(user => user.record.tag).join(', ')}` : undefined
-        await retireWorker(rooms, s, record.id, registry.archiveOf(record, {
+        await retireWorker(rooms, s, record.id, (await registry.archiveOf(record, {
           summary: w.summary ?? '', files, fileCount: files.length, finishedAt: w.finishedAt ?? retiredAt, retiredAt,
           outcome, disposition: state.dismissed ? 'discarded' : 'collected',
           ...(reason ? { keptWorktree: w.dir, keptReason: reason } : {}),
           ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
-        }), reason ? { keptWorktree: w.dir } : {})
+        })), reason ? { keptWorktree: w.dir } : {})
       } catch { /* A later pass can retry without losing this checkout. */ }
       finally { await registry.finishOperation(record.id) }
       continue
     }
-    await retireWorker(rooms, s, record.id, registry.archiveOf(record, {
+    await retireWorker(rooms, s, record.id, (await registry.archiveOf(record, {
       summary: w.summary ?? '', files, fileCount: files.length, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome, disposition: state.dismissed ? 'discarded' : 'collected',
       ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
-    }))
+    })))
   }
 }

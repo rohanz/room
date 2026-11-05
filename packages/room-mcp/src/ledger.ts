@@ -9,9 +9,9 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { highestSeq, messageForMe, owed, participantRecord, supersededConflictNotices, type MessageRouteContext, type Msg, type Via } from '@room/shared'
 import { writeAtomic } from './leases.js'
-import { registrySnapshotForDir } from './worker-registry.js'
+import { snapshotRead, type WorkerSnapshot } from './worker-store.js'
+import type { WorkerRecord } from './worker-status.js'
 import type { Session } from './session.js'
-import { workerCarried } from './worker-registry.js'
 
 /** A reply batch is held until its transport write settles; a hook batch until the hook confirms. */
 const REPLY_LEASE_MS = 60_000
@@ -67,6 +67,10 @@ export class Ledger {
   private readonly onDelivered = new Map<string, () => void>()
   private delivered?: Record<string, { at: number; via: Via }>
   private readonly bound = new WeakSet<Session>()
+  private readonly workerSnapshots = new WeakMap<Session, WorkerSnapshot>()
+
+  /** Facts supplied by the async attachment/request boundary; callbacks never open storage. */
+  supplyWorkers(s: Session, snapshot: WorkerSnapshot): void { this.workerSnapshots.set(s, snapshot) }
 
   constructor(private readonly o: LedgerOptions) {}
 
@@ -122,6 +126,8 @@ export class Ledger {
   /** What `s` is owed now, reserved or not: for counts and wake decisions, never a receipt. */
   candidates(s: Session): Msg[] {
     if (!this.fenced(s)) return []
+    // A worker's launch and prompt facts must arrive before delivery can choose a frontier.
+    if (process.env.ROOM_WORKER_ID && !this.workerSnapshots.get(s)?.available) return []
     this.prune(s)
     const cursor = this.route(s)
     const prompt = new Set(this.promptIds(s))
@@ -179,7 +185,7 @@ export class Ledger {
     const id = process.env.ROOM_WORKER_ID, number = Number(process.env.ROOM_WORKER_RUN)
     if (!id || !Number.isSafeInteger(number) || !process.env.ROOM_LAUNCH_NONCE) return []
     try {
-      const record = registrySnapshotForDir(s.dir).read(id), run = record?.runs.at(-1)
+      const record = this.workerSnapshots.get(s) ? snapshotRead(this.workerSnapshots.get(s)!, id) : undefined, run = record?.runs.at(-1)
       if (record?.room !== s.roomName || record.name !== s.me.name || record.hostSessionId !== this.o.sessionId()
         || run?.n !== number || run.nonce !== process.env.ROOM_LAUNCH_NONCE || run.mode !== 'resume') return []
       return run.promptMsgIds
@@ -250,13 +256,14 @@ export class Ledger {
   }
 
   /** The seq a worker's addressed messages start after (its first run's spawn): earlier ones went to a previous worker of that name. */
-  spawnFrontier(s: Session, workerId: string, name = s.me.name): number | undefined { return spawnFrontier(s, workerId, name) }
+  spawnFrontier(s: Session, record: Pick<WorkerRecord, 'id' | 'name' | 'room' | 'runs'>, name = s.me.name): number | undefined { return spawnFrontier(s, record, name) }
 
   // ---- cursor (ledger "Cursor") -------------------------------------------------------------
 
   /** The cursor, with this call's routing decisions recorded: a broadcast `messageForMe` rejects goes to `routed` (MF2). */
   private route(s: Session): Cursor {
     const cursor = this.cursor(s)
+    if (process.env.ROOM_WORKER_ID && !this.workerSnapshots.get(s)?.available) return cursor
     const context = this.o.route(s)
     const onBus = new Set<string>()
     let changed = false
@@ -276,11 +283,14 @@ export class Ledger {
     if (cursor?.participant === s.me.name) return cursor
     const stored = this.readCursors()[s.roomName]
     const kept = stored?.participant === s.me.name && Number.isSafeInteger(stored.frontier)
-    const spawn = ownSpawnFrontier(s)
+    const facts = this.workerSnapshots.get(s)
+    const spawn = ownSpawnFrontier(s, facts)
     cursor = kept
       ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) }
-      : { participant: s.me.name, frontier: ownLaunchFrontier(s) ?? highestSeq(s.room), routed: new Set() }
+      : { participant: s.me.name, frontier: ownLaunchFrontier(s, facts) ?? highestSeq(s.room), routed: new Set() }
     if (spawn !== undefined) cursor.addressedFrom = spawn
+    // A missing worker snapshot cannot establish a durable launch frontier.
+    if (process.env.ROOM_WORKER_ID && !facts?.available) return cursor
     this.cursors.set(s, cursor)
     if (!kept) this.persistCursor(s, cursor)
     return cursor
@@ -327,11 +337,11 @@ export class Ledger {
  * A spawned worker's seed: its own run's `busFrontier`, the lead's highest seq at launch intent, so the
  * lead's later briefing is above it (ledger "Cursor"). Everyone else takes the highest seq at first bind.
  */
-function ownLaunchFrontier(s: Session): number | undefined {
+function ownLaunchFrontier(s: Session, snapshot: WorkerSnapshot | undefined): number | undefined {
   const id = process.env.ROOM_WORKER_ID, run = Number(process.env.ROOM_WORKER_RUN)
   if (!id || !Number.isSafeInteger(run)) return undefined
   try {
-    const record = registrySnapshotForDir(s.dir).read(id)
+    const record = snapshot ? snapshotRead(snapshot, id) : undefined
     return record?.name === s.me.name ? record.runs.find(r => r.n === run)?.busFrontier : undefined
   } catch { return undefined }
 }
@@ -340,14 +350,13 @@ function ownLaunchFrontier(s: Session): number | undefined {
  * A spawned worker's first run's `busFrontier`: addressed messages at or below it went to an earlier worker under
  * the same name (a reused tag). A resumed run keeps this anchor, so what was sent while it was stopped stays owed.
  */
-function ownSpawnFrontier(s: Session): number | undefined {
+function ownSpawnFrontier(s: Session, snapshot: WorkerSnapshot | undefined): number | undefined {
   const id = process.env.ROOM_WORKER_ID
-  return id ? spawnFrontier(s, id, s.me.name) : undefined
+  return id && snapshot ? spawnFrontier(s, snapshotRead(snapshot, id), s.me.name) : undefined
 }
 
-function spawnFrontier(s: Session, id: string, name: string): number | undefined {
+function spawnFrontier(s: Session, record: Pick<WorkerRecord, 'id' | 'name' | 'room' | 'runs'> | undefined, name: string): number | undefined {
   try {
-    const record = registrySnapshotForDir(s.dir).read(id)
     if (record?.name !== name || record.room !== s.roomName) return undefined
     const first = record.runs.find(r => r.n === 1) ?? record.runs[0]
     // An imported 0.16 worker has no spawn point: its earlier mail is its own. A spawn's frontier may be 0.

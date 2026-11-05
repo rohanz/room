@@ -91,17 +91,18 @@ export interface HandlerState {
   doClose: (s: Session) => Promise<string[]>
   /** The session's delivery ledger: the only selector and receipt writer. */
   ledger: Ledger
+  refreshWorkerFacts(): Promise<void>
   deliveryHealth: () => import('../wake-reconciler.js').DeliveryHealth | undefined
   deliveryDegradation: () => import('../wake-reconciler.js').DeliveryHealth['degraded']
   rooms: Rooms
   S: () => Session
   isMe: (s: Session, p: { name: string; kind: string }) => boolean
   mine: (s: Session) => Claim[]
-  myWorkers: (s: Session) => LocalWorker[]
+  myWorkers: (s: Session) => LocalWorker[] | Promise<LocalWorker[]>
   workerAlive: (s: Session, w: LocalWorker) => boolean
   ensureWorkersRoom: (lead: Session) => Promise<Session>
   closeWorkersRoom: (preserveFacts?: boolean) => Promise<void>
-  runningWorkers: (s: Session) => { s: Session; w: LocalWorker }[]
+  runningWorkers: (s: Session) => Promise<{ s: Session; w: LocalWorker }[]>
   hasCompany: (s: Session) => CompanyState
   /** Whether a message may wake this session or reach its hooks now (solo.ts: silent while alone). */
   audible: (s: Session) => (m: Msg) => boolean
@@ -185,7 +186,7 @@ export class NeedFetch extends Error { constructor(public person: string, public
 
 /** Local worktree reads require a registry capability; replicated worker fields grant none. */
 export async function trustedWorker(s: Session, person: string): Promise<LocalWorker | undefined> {
-  const worker = localWorkers(s.dir, record => record.name === person && record.lead.participant === s.me.name)[0]
+  const worker = (await localWorkers(s.dir, record => record.name === person && record.lead.participant === s.me.name))[0]
   if (!worker?.id) return undefined
   const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag)
   if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return undefined

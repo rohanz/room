@@ -26,7 +26,7 @@ import { localWorkerView } from '../worker-projector.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
-import { localWorkers, registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
+import { localWorkers, openWorkerReader, registryForDir } from '../worker-registry.js'
 import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
 import { postWorkerMessage } from '../post.js'
 import { watcherExclusionWarning } from '../watcher-exclusions.js'
@@ -61,7 +61,7 @@ export const defs: ToolDef[] = [
 export async function deferWorkerCompletion(ctx: ToolCtx, dir: string, summary: string): Promise<string | undefined> {
   const id = ctx.config?.workerId ?? process.env.ROOM_WORKER_ID
   if (!id || !summary.trim()) return undefined
-  const registry = await registryForDir(dir), record = registry.read(id), run = record?.runs.at(-1)
+  const registry = await registryForDir(dir), record = (await registry.read(id)), run = record?.runs.at(-1)
   if (!record || !run || process.env.ROOM_WORKER_RUN && Number(process.env.ROOM_WORKER_RUN) !== run.n ||
       process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== run.nonce)
     return 'error: this worker run was collected, discarded or superseded'
@@ -90,10 +90,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const sc = s.room.scope(s.me.name)
       const myId = ctx.config?.workerId ?? process.env.ROOM_WORKER_ID
       const registry = myId ? await registryForDir(s.dir) : undefined
-      const ownRecord = myId ? registry?.read(myId) : undefined
+      const ownRecord = myId ? (await registry?.read(myId)) : undefined
       const ownRun = ownRecord?.runs.at(-1)
       // Claims mirroring a worker that is still running are the worker's, not this task's.
-      const live = new Set(runningWorkers(s).map(x => x.w.tag))
+      const live = new Set((await runningWorkers(s)).map(x => x.w.tag))
       const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
       let released = 0
       /** The run's posted outcome when it is not this report: the lead was not sent this one. */
@@ -113,14 +113,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           saved = true
           release()
           await registry!.postCompletion(myId, ownRun.n, async (id, record, report) => {
-            const message = completionMessage(record, ownRun, registry!.status(myId)!, report)
+            // postCompletion supplies the durable report for this run. Re-reading live
+            // status here adds unrelated lifecycle work between reporting and posting.
+            const message = completionMessage(record, ownRun, { status: 'done' }, report)
             if (!message || message.id !== id || message.body.type !== 'done') throw new Error('worker completion message unavailable')
             const posted = await s.post<DoneMsg>(s.me, message.body, { id, auto: true })
             if (!posted.ok) throw new Error(posted.text)
           })
           // postCompletion posts nothing once the run's outcome is out; only this report's own id means the lead has it.
           const id = completionId(myId, ownRun.n, done.k)
-          if (registry!.reports(myId).find(value => value.run === ownRun.n)?.posted !== id) notTold = registry!.read(myId)?.runs.find(value => value.n === ownRun.n)?.posted ?? id
+          if ((await registry!.reports(myId)).find(value => value.run === ownRun.n)?.posted !== id) notTold = (await registry!.read(myId))?.runs.find(value => value.n === ownRun.n)?.posted ?? id
         })
         reporting = report.catch(() => {})
         try {
@@ -194,7 +196,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const id = registry.newId(), nonce = randomUUID()
       const owner = s.me.owner ?? s.me.name, name = `${owner}+${tag}`
       const { server, isWorker } = workerOrigin(s)
-      const count = registry.occupancy()
+      const count = (await registry.occupancy())
       const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
       const budget = workerBudget({ cores, memBytes: os.totalmem(), maxWorkers: max, running: count })
       const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS), inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB)
@@ -225,7 +227,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
-      const sharedOwner = suppliedDir && !outside ? registry.list().find(record => !record.sharedWith && !['retiring', 'retired', 'abandoned'].includes(record.phase)
+      const sharedOwner = suppliedDir && !outside ? (await registry.list()).find(record => !record.sharedWith && !['retiring', 'retired', 'abandoned'].includes(record.phase)
         && record.lead.participant === s.me.name && path.resolve(record.dir) === path.resolve(dir)) : undefined
       if (suppliedDir && !outside && !await isOwnedWorkerWorktree(s.dir,
         sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch }
@@ -233,7 +235,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
       const hostSessionId = workerAdapter(host).freshSessionId()
-      const usedPorts = workerPortsInUse(registry.list())
+      const usedPorts = workerPortsInUse((await registry.list()))
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
@@ -253,12 +255,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         let carriedBase: string | undefined, carriedUntracked: PreparedWorktree['carriedUntracked'], skippedCarry: PreparedWorktree['skippedCarry']
         let prepared: PreparedWorktree | undefined
         if (!suppliedDir) {
-          await registry.update(id, old => ({ ...old, phase: 'preparing', seq: old.seq + 1 }))
+          await registry.command(id, { type: 'prepare-start' })
           try {
             prepared = await timed('prepare', () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, {
               linkExclusions: linkPaths, carry: a.carry !== false,
-              onStep: async (step, facts) => { await registry.update(id, old => ({ ...old,
-                prep: { ...old.prep, ...facts, step }, seq: old.seq + 1 })) } }))
+              onStep: async (step, facts) => { await registry.command(id, { type: 'prepare-step', step, facts }) } }))
             base = prepared.base; created = prepared.created
             carried = prepared.carried; carryFailed = prepared.carryFailed ?? false; carryError = prepared.carryError
             carriedBase = prepared.carriedBase; carriedUntracked = prepared.carriedUntracked; skippedCarry = prepared.skippedCarry
@@ -267,9 +268,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const publication = base && carried?.paths?.length
           ? await timed('carry-publication', () => acknowledgeKeptPublication(s, undefined, carried!.paths!)) : undefined
-        await registry.update(id, old => ({ ...old, phase: 'prepared', prep: { ...old.prep, step: 'prepared', created,
-          branchCreated: prepared?.branchCreated, branchExisted: old.prep.branchExisted ?? (prepared?.branchCreated ? false : undefined) },
-          ...(!suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined } : {}), seq: old.seq + 1 }))
+        await registry.command(id, { type: 'prepare-finish', created, branchCreated: prepared?.branchCreated,
+          facts: !suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined } : {} })
         if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
@@ -284,12 +284,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, deps: deps.prompt, sessionId: hostSessionId },
           { setHandle: (workerId, proc) => rooms.setHandle(s, workerId, proc),
             watch: (_workerId, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
-          { onLaunched: async pid => { await registry.update(id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
+          { onLaunched: async pid => { await registry.command(id, { type: 'launch', run: 1, nonce, launch: { outcome: 'launched', pid } }) },
           onSpawn: async result => {
-            await registry.update(id, old => ({ ...old, phase: 'active', port: result.port,
-              budget: { ...old.budget, nice: result.nice }, link,
-              runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: result.proc.pid,
-                ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+            await registry.command(id, { type: 'launch', run: 1, nonce, phase: 'active', port: result.port, nice: result.nice, link,
+              launch: { outcome: 'launched', pid: result.proc.pid,
+                ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: result.processExecutable ?? '' } } : {}) } })
           }, onExit: async (code, signal) => {
             await registry.writeExit(id, { run: 1, code, ...(signal ? { signal } : {}), witnessed: true, at: now() })
             rooms.dropHandle(s, id)
@@ -302,8 +301,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
             // A write failure cannot turn a returned child into a never-launched run.
             // Keep the record even if this second persistence attempt also fails.
-            if (!registry.read(id)?.runs[0].launch) await registry.update(id, old => ({ ...old,
-              phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'ambiguous', at: now() } }], seq: old.seq + 1 }))
+            if (!(await registry.read(id))?.runs[0].launch) await registry.command(id, { type: 'launch', run: 1, nonce, phase: 'active', launch: { outcome: 'ambiguous', at: now() } })
               .catch(writeError => state.log(`worker launch outcome: ${writeError}`))
             await registry.beginStop(id, reason).catch(writeError => state.log(`worker launch stop record: ${writeError}`))
             if (!error.stopped) return `error: stop unconfirmed for ${tag} (pid ${error.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`
@@ -312,11 +310,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const prefix = error.phase === 'port' ? 'could not allocate a worker port: '
             : error.phase === 'budget' || error.phase === 'cancelled' ? ''
             : `could not start ${host}: `
-          if (!registry.read(id)?.runs[0].launch) {
+          if (!(await registry.read(id))?.runs[0].launch) {
             await registry.abandonPreparation(id).catch(cleanup => state.log(`worker preparation cleanup: ${cleanup}`))
             return `error: ${prefix}${error.message}`
           }
-          await registry.update(id, old => ({ ...old, phase: 'active', seq: old.seq + 1 }))
+          await registry.command(id, { type: 'activate' })
           return `error: ${prefix}${error.message}`
         }
         const { proc, port, env, nice, logFile } = launched
@@ -330,7 +328,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (wakeNote) out.unshift(wakeNote)
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
-        const stale = staleWorkersNote(myWorkers(s).filter(w => w.id !== id).flatMap(w => localWorkerView(s, w.id) ?? []), now())
+        const stale = staleWorkersNote((await Promise.all((await myWorkers(s)).filter(w => w.id !== id).map(async w => (await localWorkerView(s, w.id)) ?? []))).flat(), now())
         if (stale) out.push('note: ' + stale)
         if (publication?.pending) out.push('carried preview freshness pending: publication could not be verified; previews including the lead report a gap. Plain room_send retries.')
         if (!spawnExplained.has(lead)) out.push(await browserViewLine(s))
@@ -374,21 +372,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): { s: Session; w: LocalWorker }[] {
-  const registry = registrySnapshotForDir(s.dir)
-  return registry.list().flatMap(record => {
-    const status = registry.status(record.id)
+export async function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): Promise<{ s: Session; w: LocalWorker }[]> {
+  const registry = await openWorkerReader(s.dir)
+  return (await Promise.all((await registry.list()).map(async record => {
+    const status = (await registry.status(record.id))
     if (!status || record.lead.participant !== s.me.name) return []
     const room = rooms.all().find(candidate => candidate.roomName === record.room) ?? s
     const liveHandle = rooms.hasHandle(room, realStateInput(record, status))
     if (!['starting', 'running', 'unknown', 'ambiguous'].includes(status.status) && !liveHandle) return []
     return [{ s: room, w: realStateInput(record, status) }]
-  })
+  }))).flat()
 }
 
 export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
   const { ctx, rooms, doJoin, doLeave, log, cleanupMine, now } = deps
-  const myWorkers = (s: Session): LocalWorker[] => localWorkers(s.dir, record => record.lead.participant === s.me.name && record.room === s.roomName)
+  const myWorkers = async (s: Session): Promise<LocalWorker[]> => (await localWorkers(s.dir, record => record.lead.participant === s.me.name && record.room === s.roomName))
   const workerAlive = (s: Session, w: LocalWorker): boolean => rooms.hasHandle(s, w) || workerProcessLive(w.pid, w, ctx.probe)
   const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
       if (lead.local) return lead
@@ -406,7 +404,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       await doLeave(ws)
       rooms.remove(ws)
     }
-  const runningWorkers = (s: Session): { s: Session; w: LocalWorker }[] => registryRunningWorkers(s, rooms)
+  const runningWorkers = async (s: Session): Promise<{ s: Session; w: LocalWorker }[]> => (await registryRunningWorkers(s, rooms))
   const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
       const registry = await registryForDir(s.dir)
       const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
@@ -433,7 +431,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
-      const ownedWorktree = !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...localWorkers(s.dir)] })).cwd
+      const ownedWorktree = !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...(await localWorkers(s.dir))] })).cwd
       const stopped: string[] = []
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {

@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -317,17 +318,17 @@ describe('worker preview pair baselines', () => {
     const call = (tool: string, args: Record<string, unknown>) => leadTools.call(tool, args) as Promise<string>
     async function spawn(tag: string) {
       const reply = await call('room_spawn', { tag, task: `task ${tag}` })
-      const w = workerByTag(repo, tag)
+      const w = (await workerByTag(repo, tag))
       expect(w, reply).toBeTruthy()
       return { reply, w: w!, dir: w!.dir }
     }
     /** The worker reports with room_done through its own session, then its process exits cleanly. */
     async function finish(tag: string) {
-      const w = workerByTag(repo, tag)!
+      const w = (await workerByTag(repo, tag))!
       let ws: Session | null = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
       const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
       const registry = await registryForDir(repo)
-      const record = registry.list().find(record => record.tag === tag)!
+      const record = (await registry.list()).find(record => record.tag === tag)!
       const run = record.runs.at(-1)!
       await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
       process.env.ROOM_WORKER_ID = record.id
@@ -335,10 +336,10 @@ describe('worker preview pair baselines', () => {
       finally { delete process.env.ROOM_WORKER_ID }
       await tools.shutdown(); ws?.graph?.stop()
       exits.get(tag)!(0)
-      await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
+      await vi.waitFor(async () => expect((await workerByTag(repo, tag))).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
     }
     async function workerPreview(tag: string, run: string) {
-      const w = workerByTag(repo, tag)!
+      const w = (await workerByTag(repo, tag))!
       const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
       const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
       startsPreviewMaintenance = true
@@ -382,7 +383,7 @@ describe('worker preview pair baselines', () => {
       const xBase = git(x.dir, 'commit-tree', git(x.dir, 'rev-parse', `${x.w.base}^{tree}`), '-p', head, '-m', 'second carried snapshot')
       git(x.dir, 'reset', '-q', '--hard', xBase)
       const registry = await registryForDir(repo)
-      await registry.update(x.w.id, old => ({ ...old, base: xBase, carriedBase: xBase, seq: old.seq + 1 }))
+      await mutateWorkerFixture(registry, x.w.id, old => ({ ...old, base: xBase, carriedBase: xBase, seq: old.seq + 1 }))
       expect(xBase).not.toBe(w.w.base)
       put(w.dir, 'shared.txt', lines([2, 'lead carried fixed']))
       publishFixture(t.a, 'rohanz+w', 'shared.txt', lines([2, 'lead carried fixed']), { base: w.w.carriedBase })
@@ -404,7 +405,7 @@ describe('worker preview pair baselines', () => {
       put(w.dir, 'shared.txt', lines([2, 'DELIVERED']))
       await t.finish('w')
       expect(await t.call('room_collect', { tag: 'w', keep: true })).toContain('kept w')
-      const s1 = workerByTag(repo, 'w')!.base!
+      const s1 = (await workerByTag(repo, 'w'))!.base!
       put(w.dir, 'shared.txt', lines([2, 'DELIVERED fixed']))
       publishFixture(t.a, 'rohanz+w', 'shared.txt', lines([2, 'DELIVERED fixed']), { base: s1 })
       const xs = fakeSession(t.b, { name: 'rohanz+x', kind: 'agent', owner: 'rohanz', label: 'x' }, x.dir)

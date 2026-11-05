@@ -1,3 +1,4 @@
+import { asyncFilter } from '../async-filter.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { git, gitBlobInfoMany, gitWholeTree, isGitTimeout, type GitBlobInfo } from '@room/roomd/git'
@@ -11,7 +12,7 @@ import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshotMetadata, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
-import { carriedFrom, localWorkerBaseline, localWorkers, registrySnapshotForDir } from '../worker-registry.js'
+import { carriedFrom, localWorkerBaseline, localWorkers, openWorkerReader } from '../worker-registry.js'
 import { keptPublicationMatches } from '../kept-publication.js'
 import type { LocalWorker } from '../worker-status.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
@@ -62,7 +63,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   for (;;) {
     const result = await buildCombinedTreeOnce(state, caller, participants, options)
     if (result.current) return result
-    if (!await settler.settle(result.settledWorkers())) throw new PreviewMoved(result.moved())
+    if (!await settler.settle(await result.settledWorkers())) throw new PreviewMoved(await result.moved())
   }
 }
 
@@ -183,10 +184,10 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   // The exemption holds only for the run captured here; a resumed or restarted worker is checked again.
   const settledRuns = new Map<string, { dir: string; lead: string; run: string }>()
   const runOf = (w: LocalWorker) => [w.status, w.pid, w.startedAt, w.finishedAt, w.exitCode].join(':')
-  const settledWorkers = () => new Set([...settledRuns].filter(([person, captured]) => {
-    const now = localWorkers(captured.dir, record => record.name === person && record.lead.participant === captured.lead)[0]
+  const settledWorkers = async () => new Set((await asyncFilter([...settledRuns], async ([person, captured]) => {
+    const now = (await localWorkers(captured.dir, record => record.name === person && record.lead.participant === captured.lead))[0]
     return !!now && now.status !== 'running' && runOf(now) === captured.run
-  }).map(([person]) => person))
+  })).map(([person]) => person))
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
@@ -324,22 +325,21 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const allSides = [{ person: caller.me.name, session: caller }, ...participants]
   // One relation per side for this build, reused by provenance, pairing and the
   // lead-absent check. Freshness still re-reads records when the result is used.
-  const relations = new Map<string, ReturnType<typeof carriedFrom>>()
+  const relations = new Map<string, Awaited<ReturnType<typeof carriedFrom>>>()
   const relationFor = (dir: string, person: string) => {
     const key = `${dir}\0${person}`
-    if (!relations.has(key)) relations.set(key, carriedFrom(dir, person))
     return relations.get(key)
   }
-  for (const { person, session } of allSides) relationFor(session.dir, person)
+  for (const { person, session } of allSides) relations.set(`${session.dir}\0${person}`, await carriedFrom(session.dir, person))
   const callerCarried = relationFor(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline
   const includedNames = new Set(allSides.map(side => side.person))
-  const registry = registrySnapshotForDir(caller.dir)
-  const records = new Map(allSides.flatMap(({ person }) => {
-    const record = registry.reservedByTagOrName(person)
+  const registry = await openWorkerReader(caller.dir)
+  const records = new Map((await Promise.all(allSides.map(async ({ person }) => {
+    const record = (await registry.reservedByTagOrName(person))
     return record?.name === person && record.room === caller.roomName && !['retiring', 'retired', 'abandoned', 'discarding'].includes(record.phase)
       ? [[person, record] as const] : []
-  }))
-  const workersById = new Map((records.size ? localWorkers(caller.dir) : []).map(worker => [worker.id, worker]))
+  }))).flat())
+  const workersById = new Map((records.size ? (await localWorkers(caller.dir)) : []).map(worker => [worker.id, worker]))
   // Use the same incarnation as the captured record, even when an unrelated
   // legacy record happens to reuse a participant name.
   const workerStates = new Map([...records].flatMap(([person, record]) => {
@@ -389,9 +389,10 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const headStamp = () => { try { const head = fs.readFileSync(path.join(callerGitDir, 'HEAD'), 'utf8'); return head + ':' + (head.startsWith('ref: ') ? refStamp(head.slice(5).trim()) : '') } catch { return 'absent' } }
   const capturedHead = headStamp()
   const localHead = (await git(caller.dir, ['rev-parse', 'HEAD'])).trim()
-  const lifecycle = [...records].map(([person, record]) => ({ person, id: record.id, base: record.base, seq: record.seq,
+  const lifecycle = await Promise.all([...records].map(async ([person, record]) => ({ person, id: record.id, base: record.base, seq: record.seq,
+    revision: (await registry.freshness(record.id))?.revision,
     key: [workerStates.get(person)?.finishedAt ?? 0, record.tag].join(':'),
-    refs: [collectHeadRef(record.tag, record.id), carryRef(record.tag)].map(ref => [ref, refStamp(ref)] as const) }))
+    refs: [collectHeadRef(record.tag, record.id), carryRef(record.tag)].map(ref => [ref, refStamp(ref)] as const) })))
   const proven = new Map<string, Baseline>()
   if (anchor) for (const { person, session } of contributors) {
     const relation = relationFor(session.dir, person), record = records.get(person)
@@ -509,12 +510,12 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const callerOnlyPath = (p: string) => !!options.skipCallerOnly && !theirPaths.has(p)
   // ls-files represents nested repositories/submodules as directory entries.
   // They are not file text and cannot participate in a file merge preview.
-  const safetySides = [{ session: caller, person: caller.me.name }, ...participants].map(({ session, person }) => {
+  const safetySides = (await Promise.all([{ session: caller, person: caller.me.name }, ...participants].map(async ({ session, person }) => {
     const worker = previewWorker(session, person)
     const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
     return { person, root: dir ? rootOf(dir) : undefined,
-      linkedInputs: workerOwnedPaths(localWorkerBaseline(session.dir, person)) }
-  })
+      linkedInputs: workerOwnedPaths((await localWorkerBaseline(session.dir, person))) }
+  })))
   const diskDirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
   for (const p of pathSet) {
     await new Promise<void>(resolve => setImmediate(resolve))
@@ -762,7 +763,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       const prior = owners.get(p) ?? [caller.me.name]
       const pairNames: string[] = []
       for (const owner of prior) {
-        const ownerSession = owner === caller.me.name ? caller : rooms.holding(owner, caller)
+        const ownerSession = owner === caller.me.name ? caller : (await rooms.holding(owner, caller))
         const ownerRaw = await previewText(ownerSession, p, owner)
         const ownerText = ownerRaw === null ? '' : ownerRaw ?? b
         const pairResult = await gitMergeFile(b ?? '', ownerText ?? '', theirs ?? '', { ours: owner, base: 'base', theirs: person })
@@ -814,19 +815,20 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
 
   if (anchor) out.unshift(`preview anchor: ${anchorName} (${anchored ? 'published snapshot' : 'local working tree'}); contributors use canonical collection order`)
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  const moved = () => {
-    const settled = settledWorkers()
+  const moved = async () => {
+    const settled = await settledWorkers()
     const resumed = [...settledRuns.keys()].filter(person => !settled.has(person))
-    const changedLifecycle = lifecycle.filter(captured => {
-      const current = registry.read(captured.id)
-      const worker = localWorkers(caller.dir, record => record.id === captured.id)[0]
-      return !current || current.base !== captured.base || current.seq !== captured.seq
+    const changedLifecycle = (await asyncFilter(lifecycle, async captured => {
+      const current = (await registry.read(captured.id))
+      const revision = (await registry.freshness(captured.id))?.revision
+      const worker = (await localWorkers(caller.dir, record => record.id === captured.id))[0]
+      return !current || revision !== captured.revision || current.base !== captured.base || current.seq !== captured.seq
         || [worker?.finishedAt ?? 0, current.tag].join(':') !== captured.key
         || captured.refs.some(([ref, value]) => refStamp(ref) !== value)
-    }).map(captured => captured.person)
+    })).map(captured => captured.person)
     return [...new Set([...(headStamp() !== capturedHead || refStamp('packed-refs') !== packedStamp ? [caller.me.name] : []), ...resumed, ...changedLifecycle, ...movedSince(state, publicationLinks.filter(({ person }) => !settledRuns.has(person)))])]
   }
-  const isCurrent = () => moved().length === 0
+  const isCurrent = async () => (await moved()).length === 0
   // Keep provenance from this build, never from a later publication during a command.
   // Disk inputs are authoritative local bytes, so an overlay revision would mislabel them.
   const snapshotInputs = bases.map(({ person, base }) => {
@@ -836,7 +838,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         : snap ? `rev ${snap.head.rev}` : 'no manifest record'
     return `${person} (${source}, base ${base.slice(0, 10)})`
   })
-  return { ancestor, deltaBases, includedParticipants, snapshotInputs, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, settledWorkers }
+  return { ancestor, deltaBases, includedParticipants, snapshotInputs, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: await isCurrent(), isCurrent, moved, settledWorkers }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

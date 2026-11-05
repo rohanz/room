@@ -143,7 +143,7 @@ describe('room_collect', () => {
       expect(await t.call({ tag: 'test' })).toMatch(/file\.txt changed during collection; nothing written, retry/)
       expect(fs.readFileSync(path.join(lead, 'file.txt')).length).toBeGreaterThan(512 * 1024)
       expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
-      expect(workerByTag(lead, 'test')).toBeDefined()
+      expect((await workerByTag(lead, 'test'))).toBeDefined()
     } finally { seam.mockRestore() }
   })
 
@@ -156,7 +156,7 @@ describe('room_collect', () => {
     expect(fired).toBe(true)
     expect(reply).toMatch(/file\.txt changed during collection; nothing written, retry/)
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('new human edit\n')
-    expect(workerByTag(lead, 'test')).toBeDefined()
+    expect((await workerByTag(lead, 'test'))).toBeDefined()
     expect(release).not.toHaveBeenCalled()
   })
 
@@ -174,8 +174,8 @@ describe('room_collect', () => {
     expect(reply).toMatch(/file\.txt changed during collection; nothing written, retry/)
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('new human edit\n')
     expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
-    expect(workerByTag(lead, 'test')).toBeDefined()
-    expect(workerByTag(lead, 'second')).toBeDefined()
+    expect((await workerByTag(lead, 'test'))).toBeDefined()
+    expect((await workerByTag(lead, 'second'))).toBeDefined()
     expect(release).not.toHaveBeenCalled()
   })
 
@@ -201,7 +201,7 @@ describe('room_collect', () => {
       expect(await t.call({ tag: 'test' })).toContain('injected write failure')
       expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false)
       expect(fs.existsSync(path.join(lead, 'b.txt'))).toBe(false)
-      expect(workerByTag(lead, 'test')).toBeDefined()
+      expect((await workerByTag(lead, 'test'))).toBeDefined()
     } finally { seam.mockRestore() }
   })
 

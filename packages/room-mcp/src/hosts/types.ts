@@ -2,6 +2,8 @@
  * Lifetimes: pre-binding/fences per MCP, transports per target, log decoders per run/scope,
  * hook codecs per invocation, installation evidence per environment. */
 export type HostId = 'claude' | 'codex'; // extend explicitly when a host ships
+export type PresenceKind = 'shared-app-server' | 'interactive'
+export function isHostId(value: unknown): value is HostId { return value === 'claude' || value === 'codex' }
 export type Env = Readonly<Record<string, string | undefined>>;
 export type ProcessIdentity = { pid: number; startTime: string; executable: string };
 export type Runtime = { model?: string; effort?: string };

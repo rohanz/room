@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { collectionRefs, commit, expectKeptRefreshRefused, git, head, put, read, repo, snapshot, status, world } from './worker-refresh-fixture.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -17,9 +18,9 @@ describe('room_send refresh=true', () => {
     await t.call('room_collect', { tag: 'kept', keep: true })
     git(repo, 'add', '--', 'keep.txt'); git(repo, 'commit', '-qm', 'delivered only')
     await expectKeptRefreshRefused(t, w.dir, 'snapshot changes not contained in your HEAD: notes.md, shared.txt', ['notes.md'])
-    const before = snapshot(w.dir, 'kept', ['notes.md']), refsBefore = await collectionRefs('kept')
+    const before = (await snapshot(w.dir, 'kept', ['notes.md'])), refsBefore = await collectionRefs('kept')
     expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'plain resume' })).toContain('resumed kept')
-    expect(snapshot(w.dir, 'kept', ['notes.md'])).toEqual(before)
+    expect((await snapshot(w.dir, 'kept', ['notes.md']))).toEqual(before)
     expect(await collectionRefs('kept')).toEqual(refsBefore)
     await t.finish('kept')
     const target = commit(repo, 'commit carried WIP')
@@ -28,8 +29,8 @@ describe('room_send refresh=true', () => {
     expect(read(w.dir, 'notes.md')).toBe('lead scratch\n')
     expect(read(w.dir, 'keep.txt')).toBe('k1\ndelivered\n')
     expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(target)
-    expect(workerByTag(repo, 'kept')!.base).toBe(target)
-    expect(workerByTag(repo, 'kept')!.carriedBase).toBeUndefined()
+    expect((await workerByTag(repo, 'kept'))!.base).toBe(target)
+    expect((await workerByTag(repo, 'kept'))!.carriedBase).toBeUndefined()
     expect(await collectionRefs('kept')).toEqual({ ...refsBefore, 'collect-head': target })
     expect(status(w.dir)).toEqual([])
     expect(status(repo)).toEqual([])
@@ -71,7 +72,7 @@ describe('room_send refresh=true', () => {
     expect(paths.map(p => read(w.dir, p))).toEqual(['one\n', 'two\n', 'three\n'])
     expect(paths.map(p => read(repo, p))).toEqual(['one\n', 'two\n', 'three\n'])
     expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(target)
-    expect(workerByTag(repo, 'kept')!.base).toBe(target)
+    expect((await workerByTag(repo, 'kept'))!.base).toBe(target)
     expect(await collectionRefs('kept')).toEqual({ ...refsBefore, 'collect-head': target })
     expect(status(w.dir)).toEqual([])
     expect(status(repo)).toEqual([])
@@ -95,16 +96,16 @@ describe('room_send refresh=true', () => {
     // Distinct staged and unstaged follow-up bytes must also survive refusal.
     put(w.dir, 'follow-up.txt', 'staged follow-up\n'); git(w.dir, 'add', 'follow-up.txt')
     put(w.dir, 'follow-up.txt', 'unstaged follow-up\n')
-    const before = snapshot(w.dir, 'kept'), refsBefore = await collectionRefs('kept')
-    const leadBefore = snapshot(repo, 'kept'), launchesBefore = t.launches.get('kept')!.length
+    const before = (await snapshot(w.dir, 'kept')), refsBefore = await collectionRefs('kept')
+    const leadBefore = (await snapshot(repo, 'kept')), launchesBefore = t.launches.get('kept')!.length
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'round 3', refresh: true })
     expect(reply).toContain('did not refresh kept')
     expect(reply).toContain(`snapshot changes not contained in your HEAD: ${sameFile ? 'shared.txt' : 'keep.txt'}`)
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
     expect(await collectionRefs('kept')).toEqual(refsBefore)
-    expect(snapshot(repo, 'kept')).toEqual(leadBefore)
+    expect((await snapshot(repo, 'kept'))).toEqual(leadBefore)
     expect(t.launches.get('kept')).toHaveLength(launchesBefore)
-    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
   })
 
   it.each([false, true])('reports cumulative uncommitted delivery on a no-op after a second keep with no new delta (worker committed: %s)', async committed => {
@@ -116,14 +117,14 @@ describe('room_send refresh=true', () => {
     await t.call('room_send', { type: 'note', to: 'kept', text: 'check again' })
     await t.finish('kept')
     expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('Changes from kept: already present')
-    const before = snapshot(w.dir, 'kept'), refsBefore = await collectionRefs('kept'), leadBefore = snapshot(repo, 'kept')
+    const before = (await snapshot(w.dir, 'kept')), refsBefore = await collectionRefs('kept'), leadBefore = (await snapshot(repo, 'kept'))
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
     expect(reply).toContain('already has your HEAD')
     expect(reply).toContain('its kept snapshot is unchanged; collected output is still uncommitted in your checkout')
     expect(reply).toContain('resumed kept')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
     expect(await collectionRefs('kept')).toEqual(refsBefore)
-    expect(snapshot(repo, 'kept')).toEqual(leadBefore)
+    expect((await snapshot(repo, 'kept'))).toEqual(leadBefore)
   })
 
   it.each([false, true])('accepts cumulative delivery committed exactly after two keeps and replays follow-ups (worker committed: %s)', async committed => {
@@ -148,7 +149,7 @@ describe('room_send refresh=true', () => {
     expect(read(w.dir, 'follow-up.txt')).toBe('unstaged follow-up\n')
     expect(git(w.dir, 'log', '--format=%s', `${target}..HEAD`)).toBe('post-keep commit')
     expect(status(w.dir)).toEqual(['?? follow-up.txt'])
-    expect(workerByTag(repo, 'kept')!.base).toBe(target)
+    expect((await workerByTag(repo, 'kept'))!.base).toBe(target)
     expect(await collectionRefs('kept')).toEqual({ ...refsBefore, 'collect-head': target })
   })
 
@@ -166,16 +167,16 @@ describe('room_send refresh=true', () => {
     git(w.dir, 'reset', '--hard', parent); git(repo, 'reset', '--hard', target)
     const baseline = git(repo, 'commit-tree', tree, '-p', parent, '-m', 'room: kept collection baseline')
     const registry = await registryForDir(repo)
-    await registry.update(w.id, old => ({ ...old, base: baseline, collectedKeep: true, seq: old.seq + 1 }))
+    await mutateWorkerFixture(registry, w.id, old => ({ ...old, base: baseline, collectedKeep: true, seq: old.seq + 1 }))
     git(repo, 'update-ref', `refs/room/collect-head/kept/${w.id}`, baseline)
     git(repo, 'update-ref', `refs/room/collect-base/kept/${w.id}`, head)
-    const before = snapshot(w.dir, 'kept'), refsBefore = await collectionRefs('kept'), leadBefore = snapshot(repo, 'kept')
+    const before = (await snapshot(w.dir, 'kept')), refsBefore = await collectionRefs('kept'), leadBefore = (await snapshot(repo, 'kept'))
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
     expect(reply).toContain('did not refresh kept')
     expect(reply).toContain('cannot verify a unique cumulative snapshot base')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
     expect(await collectionRefs('kept')).toEqual(refsBefore)
-    expect(snapshot(repo, 'kept')).toEqual(leadBefore)
+    expect((await snapshot(repo, 'kept'))).toEqual(leadBefore)
     expect(t.launches.get('kept')).toHaveLength(1)
   })
 
@@ -186,14 +187,14 @@ describe('room_send refresh=true', () => {
     await t.finish('kept')
     expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
     expect(read(repo, 'shared.txt')).toBe('delivered\nb\nlead-own\n')
-    const before = snapshot(w.dir, 'kept')
+    const before = (await snapshot(w.dir, 'kept'))
     const leadBefore = { head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }
     const launchesBefore = t.launches.get('kept')!.length
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
     expect(reply).toContain('snapshot changes not contained in your HEAD')
     expect(reply).toContain('snapshot changes not contained in your HEAD: shared.txt')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
-    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
+    expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
     expect(t.launches.get('kept')).toHaveLength(launchesBefore)
     expect({ head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }).toEqual(leadBefore)
     expect(read(w.dir, 'shared.txt')).toBe('delivered\nb\nc\n')
@@ -207,14 +208,14 @@ describe('room_send refresh=true', () => {
     put(repo, 'shared.txt', 'delivered\nb\nlead-own\n')
     const blob = execFileSync('git', ['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'a\nb\nlead-own\n', encoding: 'utf8' }).trim()
     git(repo, 'update-index', '--cacheinfo', '100644', blob, 'shared.txt'); git(repo, 'commit', '-qm', 'lead own hunk only')
-    const before = snapshot(w.dir, 'kept')
+    const before = (await snapshot(w.dir, 'kept'))
     const leadBefore = { head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }
     const launchesBefore = t.launches.get('kept')!.length
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
     expect(reply).toContain('snapshot changes not contained in your HEAD')
     expect(reply).toContain('snapshot changes not contained in your HEAD: shared.txt')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
-    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
+    expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
     expect(t.launches.get('kept')).toHaveLength(launchesBefore)
     expect({ head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }).toEqual(leadBefore)
     expect(read(w.dir, 'shared.txt')).toBe('delivered\nb\nc\n')
@@ -232,14 +233,14 @@ describe('room_send refresh=true', () => {
     const second = await t.call('room_collect', { tag: 'kept', keep: true })
     expect(second).toContain('Changes from kept: keep.txt')
     expect(read(repo, 'keep.txt')).toBe('delivered\nround2\n')
-    const before = snapshot(w.dir, 'kept')
+    const before = (await snapshot(w.dir, 'kept'))
     const leadBefore = { head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }
     const launchesBefore = t.launches.get('kept')!.length
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'round 3', refresh: true })
     expect(reply).toContain('snapshot changes not contained in your HEAD')
     expect(reply).toContain('snapshot changes not contained in your HEAD: keep.txt')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
-    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
+    expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
     expect(t.launches.get('kept')).toHaveLength(launchesBefore)
     expect({ head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }).toEqual(leadBefore)
     expect(read(w.dir, 'keep.txt')).toBe('delivered\nround2\n')
@@ -264,11 +265,11 @@ describe('room_send refresh=true', () => {
     expect(read(repo, 'keep.txt')).toBe('delivered\n')
     put(repo, 'specs/later.md', 'spec\n')
     git(repo, 'add', 'specs'); git(repo, 'commit', '-qm', 'spec only')
-    const before = snapshot(w.dir, 'kept')
+    const before = (await snapshot(w.dir, 'kept'))
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'fix your keep.txt', refresh: true })
     expect(reply).toContain('snapshot changes not contained in your HEAD')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
-    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
+    expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
     expect(t.launches.get('kept')).toHaveLength(1)
   })
 
@@ -278,15 +279,15 @@ describe('room_send refresh=true', () => {
     if (committed) commit(w.dir, 'worker delivered edit')
     await t.finish('kept')
     await t.call('room_collect', { tag: 'kept', keep: true })
-    const before = snapshot(w.dir, 'kept')
-    const record = (await registryForDir(repo)).list().find(record => record.tag === 'kept')!
+    const before = (await snapshot(w.dir, 'kept'))
+    const record = (await (await registryForDir(repo)).list()).find(record => record.tag === 'kept')!
     const ref = 'refs/room/collect-head/kept/' + record.id
     const refBefore = git(repo, 'rev-parse', ref), leadBefore = status(repo)
     const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
     expect(reply).toContain('already has your HEAD')
     expect(reply).toContain('collected output is still uncommitted in your checkout')
     expect(reply).toContain('resumed kept')
-    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect((await snapshot(w.dir, 'kept'))).toEqual(before)
     expect(git(repo, 'rev-parse', ref)).toBe(refBefore)
     expect(status(repo)).toEqual(leadBefore)
     put(w.dir, 'second.txt', 'second delta\n')
@@ -305,10 +306,10 @@ describe('room_send refresh=true', () => {
     const leadHead = git(repo, 'rev-parse', 'HEAD')
     put(repo, 'shared.txt', 'independent lead edit\nb\nc\n')
     const leadBefore = status(repo)
-    const workerBefore = snapshot(w.dir, 'kept')
+    const workerBefore = (await snapshot(w.dir, 'kept'))
     expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true }))
       .toContain('snapshot changes not contained in your HEAD')
-    expect(snapshot(w.dir, 'kept')).toEqual(workerBefore)
+    expect((await snapshot(w.dir, 'kept'))).toEqual(workerBefore)
     expect(status(repo)).toEqual(leadBefore)
     expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue without refresh' })).toContain('resumed kept')
     expect(read(w.dir, 'keep.txt')).toBe('delivered\n')
@@ -329,18 +330,18 @@ describe('room_send refresh=true', () => {
     await t.finish('kept')
     await t.call('room_collect', { tag: 'kept', keep: true })
     const registry = await registryForDir(repo)
-    const record = registry.list().find(record => record.tag === 'kept')!
+    const record = (await registry.list()).find(record => record.tag === 'kept')!
     const ref = `refs/room/collect-head/kept/${record.id}`
     const before = git(repo, 'rev-parse', ref)
     const target = commit(repo, 'commit collected output')
-    const real = WorkerRegistry.prototype.update
-    const spy = vi.spyOn(WorkerRegistry.prototype, 'update').mockImplementation(function (this: WorkerRegistry, id, edit) {
-      if (id === record.id && edit(this.read(id)!).base === target) return Promise.reject(new Error('injected base write failure'))
-      return real.call(this, id, edit)
+    const real = WorkerRegistry.prototype.command
+    const spy = vi.spyOn(WorkerRegistry.prototype, 'command').mockImplementation(async function (this: WorkerRegistry, id, command, expectedSeq) {
+      if (id === record.id && command.type === 'rebase' && command.base === target) return Promise.reject(new Error('injected base write failure'))
+      return real.call(this, id, command, expectedSeq)
     })
     try {
       expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('could not record its new base')
-      expect(registry.read(record.id)?.base).toBe(record.base)
+      expect((await registry.read(record.id))?.base).toBe(record.base)
       expect(git(repo, 'rev-parse', ref)).toBe(before)
     } finally { spy.mockRestore() }
   })
@@ -354,13 +355,13 @@ describe('room_send refresh=true', () => {
     expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('rebased kept onto your HEAD')
     await t.finish('kept')
     const registry = await registryForDir(repo)
-    const record = registry.list().find(record => record.tag === 'kept')!
-    await registry.update(record.id, old => ({ ...old, hostSessionId: undefined, seq: old.seq + 1 }))
-    expect(workerByTag(repo, 'kept')?.hostSessionId).toBeUndefined()
+    const record = (await registry.list()).find(record => record.tag === 'kept')!
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, hostSessionId: undefined, seq: old.seq + 1 }))
+    expect((await workerByTag(repo, 'kept'))?.hostSessionId).toBeUndefined()
     expect(git(repo, 'rev-parse', `refs/room/collect-head/kept/${record.id}`)).toBe(target)
     await t.retire()
-    expect(registry.read(record.id)?.phase).toBe('active')
-    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect((await registry.read(record.id))?.phase).toBe('active')
+    expect((await workerByTag(repo, 'kept'))?.status).toBe('done')
     expect(fs.existsSync(w.dir)).toBe(true)
   })
 

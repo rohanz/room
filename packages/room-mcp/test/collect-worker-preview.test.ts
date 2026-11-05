@@ -182,13 +182,14 @@ describe('worker preview', () => {
     carry(t, worker, 'test', { 'app.py': LINES.replace('two', 'W'), 'notes.txt': 'draft\n' })
     put(lead, 'app.py', LINES.replace('two', 'W2')); put(lead, 'notes.txt', 'draft 2\n')
     put(worker, 'app.py', LINES.replace('two', 'W').replace('five', 'WORKER'))
+    await t.sync()
+    const workerBase = (await workerByTag(lead, 'test'))!.base!
     Object.assign(t.state, {
       rooms: { ...t.state.rooms, all: () => [t.s], holding: () => t.s },
       others: () => ['lead+test'], presences: () => [], withheld: () => undefined,
-      baseFor: (_s: unknown, person: string) => person === 'lead' ? head : workerByTag(lead, 'test')!.base, shareOf: () => 'full',
+      baseFor: (_s: unknown, person: string) => person === 'lead' ? head : workerBase, shareOf: () => 'full',
       liveText: async () => undefined,
     })
-    await t.sync()
     const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat app.py notes.txt' })
     expect(result).toContain('both changed, merge cleanly: app.py')
     expect(result).not.toContain('notes.txt (lead+test')

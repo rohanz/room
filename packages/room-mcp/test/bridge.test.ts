@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -368,7 +369,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     // ran. A connected provider's clock would have ticked; emit that heartbeat here before syncing.
     const heartbeat = () => t.workerPresence.setLocalState(t.workerPresence.getLocalState())
     heartbeat()
-    await t.registry.update(t.record.id, old => ({ ...old, base: C, carriedBase: C, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, t.record.id, old => ({ ...old, base: C, carriedBase: C, seq: old.seq + 1 }))
     publishSource(t.local.b, {}, { base: C })
     await t.bridge.sync() // create the previous Y map so its reads can be observed
 
@@ -451,7 +452,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     expect(t.team.b.manifestHead.has(worker.name)).toBe(true)
     expect(t.team.b.participants.has(`${worker.name}\u0000proj`)).toBe(true)
     ;(t.teamLead.daemon as { fence?: string }).fence = LEAD_FENCE
-    await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'done' }))
+    await t.registry.beginRetirement(t.record.id, (await t.registry.archiveOf(t.record, { summary: 'done' })))
     await t.bridge.sync()
     expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
   })
@@ -461,7 +462,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     publishSource(t.local.b, {})
     const target = t.bridge as unknown as { composeFacts: (...args: unknown[]) => Promise<unknown> }
     vi.spyOn(target, 'composeFacts').mockImplementation(async () => {
-      await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'done' }))
+      await t.registry.beginRetirement(t.record.id, (await t.registry.archiveOf(t.record, { summary: 'done' })))
       throw new Error('git unavailable')
     })
     await t.bridge.sync()
@@ -474,7 +475,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     symlinkSync('private-target', join(dir, 'link.py'))
     git('add', 'link.py'); git('commit', '-qm', 'carried symlink')
     C = git('rev-parse', 'HEAD').trim()
-    await t.registry.update(t.record.id, old => ({ ...old, base: C, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, t.record.id, old => ({ ...old, base: C, seq: old.seq + 1 }))
     publishSource(t.local.b, {})
     await t.bridge.sync()
     const head = t.team.b.manifestHead.get(worker.name)!
@@ -620,7 +621,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     git('add', '.'); git('commit', '-qm', 'more carried')
     const C2 = git('rev-parse', 'HEAD').trim()
     git('checkout', '-q', B)
-    await t.registry.update(t.record.id, old => ({ ...old, base: C2, carriedBase: C2, seq: old.seq + 1 }))
+    await mutateWorkerFixture(t.registry, t.record.id, old => ({ ...old, base: C2, carriedBase: C2, seq: old.seq + 1 }))
     publishSource(t.local.b, {}, { base: C2 })
     t.bridge.start()
     await t.bridge.sync()
@@ -654,13 +655,13 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     await t.bridge.sync()
     expect(t.team.b.manifest.has(manifestKey(worker.name, LEAD_FENCE))).toBe(false)
     expect(t.team.b.manifestHead.get(worker.name)?.fence).toBe('2')
-    await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'collected', disposition: 'collected' }))
+    await t.registry.beginRetirement(t.record.id, (await t.registry.archiveOf(t.record, { summary: 'collected', disposition: 'collected' })))
     await t.bridge.sync()
     expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
     expect(participantRecord(t.team.b, worker.name)).toBeUndefined()
     expect(t.team.b.workerViews.has(t.record.id)).toBe(false)
     expect(t.team.b.retiredWorkers().map(r => r.id)).toEqual([t.record.id])
-    expect(t.registry.read(t.record.id)?.cleanup).toEqual({ [LOCAL]: 'pending', [TEAM]: 'done' })
+    expect((await t.registry.read(t.record.id))?.cleanup).toEqual({ [LOCAL]: 'pending', [TEAM]: 'done' })
     expect(t.team.b.coordination.has(lead.name)).toBe(false)
   })
 

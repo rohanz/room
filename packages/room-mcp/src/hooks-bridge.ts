@@ -12,12 +12,13 @@ import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
 import { writeAtomic } from './leases.js'
-import { ownWorkerNames } from './worker-registry.js'
 import { workerText } from './tools/context.js'
 import { DISK_TEXT_LIMIT, readBoundedHistoricalText } from './tools/disk-text.js'
 import { git } from '@room/roomd/git'
 
 export interface HooksBridgeOptions {
+  /** Acquire display facts before the synchronous selection/count callbacks run. */
+  prepare?: () => Promise<void>
   /** How many messages this participant is owed now (the ledger's selection, unreserved or not). */
   owedCount: () => number
   /** How many local notices wait for a handoff. */
@@ -95,6 +96,8 @@ export class HooksBridge {
 
   /** state.json: counts and coordination while fenced, or a minimal paused health state on lease loss. */
   async write(): Promise<void> {
+    if (this.stopped) return
+    if (this.o.prepare) await this.o.prepare()
     if (this.stopped) return
     const revision = this.revision
     const leaseFence = this.s.lease?.fence()

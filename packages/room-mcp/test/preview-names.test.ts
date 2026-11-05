@@ -162,8 +162,8 @@ it('includes the caller\'s own running worker even without overlapping paths', a
   const instance = (await registryForDir(directory)).instance
   const { registry } = await seedRegistryWorker(directory, 'two', { name: sibling, room: session.roomName,
     lead: { participant: caller, room: session.roomName, instance }, base: state.baseFor(session, caller) })
-  expect(registry.list()).toHaveLength(1)
-  expect(state.myWorkers(session).map(w => w.name)).toEqual([sibling])
+  expect((await registry.list())).toHaveLength(1)
+  expect((await state.myWorkers(session)).map(w => w.name)).toEqual([sibling])
   const result = await previewFor(state)({})
   expect(result).toContain('step 1: merge ana+two')
   expect(result).toContain('skipped 1 present participant without overlapping paths: ana; include with people: ["ana"]')

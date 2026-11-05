@@ -55,7 +55,7 @@ const ignore = () => {}
 /** The worker reports room_done for its current run (a done report), while its process may still be alive. */
 async function reportDone(tag: string, summary = ''): Promise<void> {
   const registry = await registryForDir(dir)
-  const record = registry.list().find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))!, run = record.runs.at(-1)!
+  const record = (await registry.list()).find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))!, run = record.runs.at(-1)!
   await registry.writeReport(record.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary, changed: [] } })
 }
 
@@ -66,10 +66,10 @@ const createTools = (ctx: Parameters<typeof createRoomTools>[0]) => {
     const session = ctx.getSession()
     if (session && args[0] === 'room_done' && !ctx.config?.workerId && !process.env.ROOM_WORKER_ID) {
       const registry = await registryForDir(session.dir)
-      const record = registry.list().find(record => record.name === session.me.name)
+      const record = (await registry.list()).find(record => record.name === session.me.name)
       const run = record?.runs.at(-1)
       if (record && run) {
-        if (!registry.reports(record.id).some(report => report.run === run.n)) await registry.admit({
+        if (!(await registry.reports(record.id)).some(report => report.run === run.n)) await registry.admit({
           id: record.id, run: run.n, nonce: run.nonce, dir: record.dir,
           chain: [], hostSessionId: record.hostSessionId,
         })

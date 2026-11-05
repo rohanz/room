@@ -13,7 +13,7 @@ describe('room_collect', () => {
     const t = httpxWorkers()
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools; the worktree belongs to port-fix')
     expect(fs.existsSync(worker)).toBe(true)
-    expect(workerByTag(lead, 'port-bools')).toBeUndefined()
+    expect((await workerByTag(lead, 'port-bools'))).toBeUndefined()
     expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discarded port-fix')
     expect(fs.existsSync(worker)).toBe(false)
   })
@@ -28,14 +28,14 @@ describe('room_collect', () => {
     const t = httpxWorkers()
     await t.sync()
     const registry = await registryForDir(lead)
-    const record = registry.read('w_port-bools')!
-    const archive = { ...registry.archiveOf(record, { summary: 'kept', disposition: 'collected' }), keptWorktree: worker }
+    const record = (await registry.read('w_port-bools'))!
+    const archive = { ...(await registry.archiveOf(record, { summary: 'kept', disposition: 'collected' })), keptWorktree: worker }
     await registry.beginRetirement(record.id, archive, { keptWorktree: worker })
     await registry.finishCleanup(record.id, t.s.roomName)
     t.s.room.retireWorker(record.id, { ...archive, id: record.id }, () => {})
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools; the worktree belongs to port-fix')
     expect(fs.existsSync(worker)).toBe(true)
-    expect(workerByTag(lead, 'port-fix')).toBeDefined()
+    expect((await workerByTag(lead, 'port-fix'))).toBeDefined()
   })
 
   it('discards port-fix after retiring finished port-bools', async () => {
@@ -44,8 +44,8 @@ describe('room_collect', () => {
     expect(result).toContain('detached port-bools')
     expect(result).toContain('discarded port-fix')
     expect(fs.existsSync(worker)).toBe(false)
-    expect(workerByTag(lead, 'port-fix')).toBeUndefined()
-    expect(workerByTag(lead, 'port-bools')).toBeUndefined()
+    expect((await workerByTag(lead, 'port-fix'))).toBeUndefined()
+    expect((await workerByTag(lead, 'port-bools'))).toBeUndefined()
   })
 
   it('keeps port-fix while port-bools still runs in its worktree', async () => {
@@ -53,7 +53,7 @@ describe('room_collect', () => {
     const result = await t.call({ tag: 'port-fix', discard: true })
     expect(result).toContain('port-bools is still running')
     expect(fs.existsSync(worker)).toBe(true)
-    expect(workerByTag(lead, 'port-fix')).toBeDefined()
+    expect((await workerByTag(lead, 'port-fix'))).toBeDefined()
   })
 
   it('collects the owner changes but keeps its running borrower and checkout', async () => {
@@ -65,7 +65,7 @@ describe('room_collect', () => {
     expect(result).toContain('Changes from port-fix: new.txt')
     expect(result).toContain("kept port-fix's worktree: port-bools is still running in it")
     expect(fs.existsSync(worker)).toBe(true)
-    expect(workerByTag(lead, 'port-bools')?.status).toBe('running')
+    expect((await workerByTag(lead, 'port-bools'))?.status).toBe('running')
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('shared output')
     expect(list).not.toHaveBeenCalled()
   })
@@ -77,7 +77,7 @@ describe('room_collect', () => {
     expect(result).toContain('retired port-bools with port-fix')
     expect(result).toContain('cleaned up port-fix')
     expect(fs.existsSync(worker)).toBe(false)
-    expect(workerByTag(lead, 'port-bools')).toBeUndefined()
+    expect((await workerByTag(lead, 'port-bools'))).toBeUndefined()
   })
 
   it('detaches the last discarded borrower without authorizing owner cleanup', async () => {
@@ -90,7 +90,7 @@ describe('room_collect', () => {
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
     expect(fs.existsSync(worker)).toBe(true)
-    expect((await registryForDir(lead)).read('w_port-fix')?.keptWorktree).toBe(worker)
+    expect((await (await registryForDir(lead)).read('w_port-fix'))?.keptWorktree).toBe(worker)
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
     expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discard refused; ignored artifacts')
     expect(await t.call({ tag: 'port-fix', discard: true, force: true })).toContain('discarded port-fix')
@@ -117,7 +117,7 @@ describe('room_collect', () => {
     expect(result).toContain(`kept port-fix's worktree at ${worker}: ignored files not copied: artifact.bin`)
     expect(result).toContain('Copy what you need from there, then room_collect(tag="port-fix", discard=true) (add force=true to delete ignored files too)')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
-    const owner = (await registryForDir(lead)).read('w_port-fix')
+    const owner = (await (await registryForDir(lead)).read('w_port-fix'))
     expect(owner?.keptWorktree).toBe(worker)
     expect(owner?.archive?.keptReason).toContain('artifact.bin')
     expect(t.s.room.retiredWorkers().find(r => r.tag === 'port-fix')?.keptReason).toContain('artifact.bin')
@@ -137,7 +137,7 @@ describe('room_collect', () => {
     t.state.rooms.project = async () => {
       await project()
       const registry = await registryForDir(lead)
-      if (!wrote && registry.read('w_port-bools')?.phase === 'retired') {
+      if (!wrote && (await registry.read('w_port-bools'))?.phase === 'retired') {
         wrote = true
         put(worker, 'late.txt', 'uncopied late output')
         if (committed) { git(worker, 'add', 'late.txt'); git(worker, 'commit', '-qm', 'late work') }
@@ -175,7 +175,7 @@ describe('room_collect', () => {
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
     const registry = await registryForDir(lead)
-    const owner = registry.read('w_port-fix')!, status = registry.status(owner.id)!
+    const owner = (await registry.read('w_port-fix'))!, status = (await registry.status(owner.id))!
     const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
     await registry.beginOperation(owner.id, 'collect')
     try {
@@ -198,7 +198,7 @@ describe('room_collect', () => {
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
     const registry = await registryForDir(lead)
-    const owner = registry.read('w_port-fix')!, status = registry.status(owner.id)!
+    const owner = (await registry.read('w_port-fix'))!, status = (await registry.status(owner.id))!
     const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
     await registry.beginOperation(owner.id, 'collect')
     try {
@@ -220,10 +220,10 @@ describe('room_collect', () => {
       tracking: () => true, listCwdProcesses: list } as never
     await autoRetire(t.s, rooms)
     const registry = await registryForDir(lead)
-    expect(registry.read('w_port-fix')?.phase).toBe('retired')
-    expect(registry.read('w_port-fix')?.keptWorktree).toBe(worker)
+    expect((await registry.read('w_port-fix'))?.phase).toBe('retired')
+    expect((await registry.read('w_port-fix'))?.keptWorktree).toBe(worker)
     expect(fs.existsSync(worker)).toBe(true)
-    expect(workerByTag(lead, 'port-bools')?.status).toBe('running')
+    expect((await workerByTag(lead, 'port-bools'))?.status).toBe('running')
     expect(list).not.toHaveBeenCalled()
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
@@ -235,7 +235,7 @@ describe('room_collect', () => {
     t.set('port-bools', { ...t.get('port-bools'), hostSessionId: 'borrower-session' })
     await t.sync()
     const registry = await registryForDir(lead)
-    expect(registry.status('w_port-bools')?.status).toBe('done')
+    expect((await registry.status('w_port-bools'))?.status).toBe('done')
     await registry.beginOperation('w_port-fix', 'collect')
     try {
       await expect(registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 }))
@@ -253,16 +253,16 @@ describe('room_collect', () => {
     const t = httpxWorkers()
     await t.sync()
     const registry = await registryForDir(lead)
-    const prior = registry.read('w_port-bools')!
+    const prior = (await registry.read('w_port-bools'))!
     const late = { ...prior, id: 'w_late', tag: 'late', name: 'lead+late', phase: 'intent' as const,
       prep: { step: 'plan' as const }, runs: [{ ...prior.runs[0], launch: undefined }], seq: 1 }
     await registry.beginOperation('w_port-fix', 'collect')
     try {
       await expect(registry.writeIntent(late)).rejects.toThrow('worker operation lease held')
-      expect(registry.read('w_late')).toBeUndefined()
+      expect((await registry.read('w_late'))).toBeUndefined()
     } finally { await registry.finishOperation('w_port-fix') }
     await registry.writeIntent(late)
-    expect(registry.read('w_late')?.sharedWith).toBe('w_port-fix')
+    expect((await registry.read('w_late'))?.sharedWith).toBe('w_port-fix')
     await registry.finishOperation('w_late')
   })
 
@@ -272,8 +272,8 @@ describe('room_collect', () => {
     const registry = await registryForDir(lead)
     await registry.beginDiscard('w_port-fix', false, [])
     await registry.replayDiscard('w_port-fix')
-    expect(registry.read('w_port-bools')?.phase).toBe('retiring')
-    expect(registry.read('w_port-fix')?.phase).toBe('retiring')
+    expect((await registry.read('w_port-bools'))?.phase).toBe('retiring')
+    expect((await registry.read('w_port-fix'))?.phase).toBe('retiring')
     expect(fs.existsSync(worker)).toBe(false)
   })
 
@@ -283,8 +283,8 @@ describe('room_collect', () => {
     fs.rmSync(worker, { recursive: true, force: true })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
     expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discarded port-fix')
-    expect(workerByTag(lead, 'port-fix')).toBeUndefined()
-    expect(workerByTag(lead, 'port-bools')).toBeUndefined()
+    expect((await workerByTag(lead, 'port-fix'))).toBeUndefined()
+    expect((await workerByTag(lead, 'port-bools'))).toBeUndefined()
   })
 
   it('retires the borrower when the vanished owner is discarded first', async () => {
@@ -294,8 +294,8 @@ describe('room_collect', () => {
     const result = await t.call({ tag: 'port-fix', discard: true })
     expect(result).toContain('detached port-bools')
     expect(result).toContain('discarded port-fix; its worktree was already gone')
-    expect(workerByTag(lead, 'port-fix')).toBeUndefined()
-    expect(workerByTag(lead, 'port-bools')).toBeUndefined()
+    expect((await workerByTag(lead, 'port-fix'))).toBeUndefined()
+    expect((await workerByTag(lead, 'port-bools'))).toBeUndefined()
   })
 
   it('leaves all files and indexes untouched on a conflict', async () => {

@@ -90,7 +90,7 @@ it('yields during the path-safety pass before checking the last path', async () 
   })
   const realpath = fs.realpathSync.bind(fs)
   let turned = false, sawTurn = false
-  const registryReads = vi.spyOn(WorkerRegistry, 'snapshot')
+  const registryReads = vi.spyOn(WorkerRegistry.prototype, 'snapshot')
   const spy = vi.spyOn(fs, 'realpathSync').mockImplementation(((file: string) => {
     if (file.endsWith('held-000')) setImmediate(() => { turned = true })
     if (file.endsWith('held-095')) sawTurn = turned

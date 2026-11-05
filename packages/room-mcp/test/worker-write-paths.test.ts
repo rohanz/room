@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -40,14 +41,14 @@ describe('registry write paths', () => {
     await worker.admit(admission)
     await worker.reportDone(record.id, 1, 'finished', ['src/a.ts'])
     await worker.admit({ ...admission, hostSessionId: 'late-thread' })
-    expect(worker.read(record.id)?.hostSessionId).toBeUndefined() // lead still owns the operation
-    expect(worker.reports(record.id)[0]).toMatchObject({ hostSessionId: 'late-thread', done: { summary: 'finished' } })
+    expect((await worker.read(record.id))?.hostSessionId).toBeUndefined() // lead still owns the operation
+    expect((await worker.reports(record.id))[0]).toMatchObject({ hostSessionId: 'late-thread', done: { summary: 'finished' } })
     await lead.finishOperation(record.id)
     worker.close(); lead.close()
     const restarted = await open(root, 'restarted')
     await restarted.reconcile()
-    expect(restarted.read(record.id)?.hostSessionId).toBe('late-thread')
-    expect(restarted.reports(record.id)[0].done?.summary).toBe('finished')
+    expect((await restarted.read(record.id))?.hostSessionId).toBe('late-thread')
+    expect((await restarted.reports(record.id))[0].done?.summary).toBe('finished')
     restarted.close()
   })
 
@@ -63,7 +64,7 @@ describe('registry write paths', () => {
     }
     await store.finishOperation(record.id)
     await store.reconcile()
-    expect(store.read(record.id)?.hostSessionId).toBe('original-thread')
+    expect((await store.read(record.id))?.hostSessionId).toBe('original-thread')
     store.close()
   })
 
@@ -79,24 +80,24 @@ describe('registry write paths', () => {
     const { root, record } = fixture()
     const lead = await open(root)
     await lead.writeIntent(record)
-    await lead.update(record.id, old => ({ ...old, phase: 'prepared', prep: { step: 'prepared' }, seq: old.seq + 1 }))
+    await mutateWorkerFixture(lead, record.id, old => ({ ...old, phase: 'prepared', prep: { step: 'prepared' }, seq: old.seq + 1 }))
     const observer = await open(root, 'observer', 'dead')
-    expect(observer.status(record.id)?.status).toBe('ambiguous')
-    expect(observer.read(record.id)?.runs).toHaveLength(1)
+    expect((await observer.status(record.id))?.status).toBe('ambiguous')
+    expect((await observer.read(record.id))?.runs).toHaveLength(1)
     await observer.reconcile()
-    expect(observer.read(record.id)?.runs).toHaveLength(1)
+    expect((await observer.read(record.id))?.runs).toHaveLength(1)
   })
 
   it('keeps a tag reserved through retirement cleanup, then permits reuse', async () => {
     const { root, record } = fixture()
     const store = await open(root)
     await store.writeIntent(record)
-    await store.update(record.id, old => ({ ...old, phase: 'retiring', cleanup: { [old.room]: 'pending' }, seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'retiring', cleanup: { [old.room]: 'pending' }, seq: old.seq + 1 }))
     const next = { ...record, id: 'w_next', runs: [{ ...record.runs[0], nonce: 'nonce-next' }] }
     await expect(store.writeIntent(next)).rejects.toThrow('tag in use: tests')
-    await store.update(record.id, old => ({ ...old, phase: 'retired', cleanup: { [old.room]: 'done' }, seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'retired', cleanup: { [old.room]: 'done' }, seq: old.seq + 1 }))
     await store.writeIntent(next)
-    expect(store.read(next.id)?.tag).toBe('tests')
+    expect((await store.read(next.id))?.tag).toBe('tests')
   })
 
   it('admits one matching worker writer, preserves done, and posts the completion once', async () => {
@@ -110,14 +111,14 @@ describe('registry write paths', () => {
     await worker.admit(admission)
     await lead.finishOperation(record.id)
     await worker.reconcile()
-    expect(worker.read(record.id)?.hostSessionId).toBe('thread-1')
+    expect((await worker.read(record.id))?.hostSessionId).toBe('thread-1')
     await expect(other.admit(admission)).rejects.toThrow(/writer|admitted/)
     await worker.reportDone(record.id, 1, 'finished', ['src/a.ts'])
     await worker.postCompletion(record.id, 1, () => {})
     let posts = 0
     await worker.postCompletion(record.id, 1, () => { posts++ })
     expect(posts).toBe(0)
-    expect(worker.reports(record.id)[0]).toMatchObject({ done: { summary: 'finished' }, posted: 'wk:w_write:1' })
+    expect((await worker.reports(record.id))[0]).toMatchObject({ done: { summary: 'finished' }, posted: 'wk:w_write:1' })
   })
 
   it('posts a second report in the same run under its own ID, once, even when its first post is refused', async () => {
@@ -137,28 +138,28 @@ describe('registry write paths', () => {
     await worker.postCompletion(record.id, 1, id => { posted.push(id) })
     await worker.postCompletion(record.id, 1, id => { posted.push(id) })
     expect(posted).toEqual(['wk:w_write:1', 'wk:w_write:1:2'])
-    expect(worker.reports(record.id)[0]).toMatchObject({ done: { summary: 'second, retried', k: 2 }, posted: 'wk:w_write:1:2' })
+    expect((await worker.reports(record.id))[0]).toMatchObject({ done: { summary: 'second, retried', k: 2 }, posted: 'wk:w_write:1:2' })
   })
 
   it('posts a witnessed failure with the same deterministic run ID once', async () => {
     const { root, record } = fixture()
     const store = await open(root)
     await store.writeIntent(record)
-    await store.update(record.id, old => ({ ...old, phase: 'active',
+    await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'active',
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
     await store.writeExit(record.id, { run: 1, code: 1, at: 10, witnessed: true })
     const posted: string[] = []
     expect(await store.postObservedFailure(record.id, 1, message => posted.push(message.id))).toBe(true)
     expect(await store.postObservedFailure(record.id, 1, message => posted.push(message.id))).toBe(false)
     expect(posted).toEqual(['wk:w_write:1'])
-    expect(store.read(record.id)?.runs[0].posted).toBe('wk:w_write:1')
+    expect((await store.read(record.id))?.runs[0].posted).toBe('wk:w_write:1')
   })
 
   it('requires a hash-matching stable patch through discard replay', async () => {
     const { root, record } = fixture()
     const store = await open(root)
     await store.writeIntent(record)
-    await store.update(record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
+    await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
     await store.beginDiscard(record.id, false, [])
     await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
     const patch = path.join(root, 'room/registry/patches/w_write.patch')
@@ -179,7 +180,7 @@ describe('registry write paths', () => {
     const bytes = Buffer.from('recovery patch')
     const file = path.join(root, 'room/registry/patches/w_write.patch')
     const sha256 = createHash('sha256').update(bytes).digest('hex')
-    await store.update(record.id, old => ({ ...old,
+    await mutateWorkerFixture(store, record.id, old => ({ ...old,
       discard: { ...old.discard!, patch: { path: file, sha256 } }, seq: old.seq + 1 }))
     expect(fs.existsSync(file)).toBe(false)
     await store.recordDiscardPatch(record.id, bytes)
@@ -204,12 +205,12 @@ describe('registry write paths', () => {
     await lead.writeIntent(record)
     // Supply a verified identity so injected liveness controls this fixture.
     // A PID-only launch must be retained if that PID happens to exist on CI.
-    await lead.update(record.id, old => ({ ...old, base, prep: { step: 'prepared' }, phase: 'active',
+    await mutateWorkerFixture(lead, record.id, old => ({ ...old, base, prep: { step: 'prepared' }, phase: 'active',
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: process.pid, process: { pid: process.pid, startTime: 'fixture-host', executable: 'codex' } } }], seq: old.seq + 1 }))
     await lead.beginDiscard(record.id, true, [])
     const observer = await open(root, 'observer', 'dead')
-    expect(observer.read(record.id)?.phase).toBe('retiring')
-    expect(observer.read(record.id)?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })
+    expect((await observer.read(record.id))?.phase).toBe('retiring')
+    expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })
     expect(fs.existsSync(record.dir)).toBe(false)
     expect(fs.readFileSync(path.join(root, 'room/registry/patches/w_write.patch'), 'utf8')).toContain('recover me')
   }, 30_000)
@@ -218,10 +219,10 @@ describe('registry write paths', () => {
     const { root, record } = fixture()
     const lead = await open(root)
     await lead.writeIntent(record)
-    await lead.update(record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
+    await mutateWorkerFixture(lead, record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
     await lead.beginCollect(record.id)
     const observer = await open(root, 'observer', 'dead')
-    expect(observer.read(record.id)?.phase).toBe('active')
-    expect(observer.read(record.id)?.interrupted?.detail).toMatch(/partial apply/)
+    expect((await observer.read(record.id))?.phase).toBe('active')
+    expect((await observer.read(record.id))?.interrupted?.detail).toMatch(/partial apply/)
   })
 })

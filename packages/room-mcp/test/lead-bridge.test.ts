@@ -125,8 +125,8 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     expect(left[0]).toMatchObject({ mirrorOf: 'money', intent: '[money] bump' })
     expect(left.some(c => c.id === own.id)).toBe(false)
     // once the worker is done its mirror is fair game for the lead's next room_done
-    const worker = workerByTag(dir, 'money')!
-    const registry = await registryForDir(dir), record = registry.read(worker.id)!, run = record.runs.at(-1)!
+    const worker = (await workerByTag(dir, 'money'))!
+    const registry = await registryForDir(dir), record = (await registry.read(worker.id))!, run = record.runs.at(-1)!
     await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     const workerDone = await asWorker(worker.id, () => t.workerTools.call('room_done', { summary: 'cents done' }))
     expect(workerDone).toContain('marked done')
@@ -147,7 +147,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     await vi.waitFor(() => expect(woken).toHaveLength(1))
     expect(woken[0]).toContain('rohanz+money')
     expect(woken[0]).not.toContain('exited without room_done')
-    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'done', exitCode: 0 })
+    expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'done', exitCode: 0 })
     await t.leadTools.call('room_leave', { force: true })
   })
 })

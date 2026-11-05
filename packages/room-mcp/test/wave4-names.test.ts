@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -118,13 +119,13 @@ it('M12 writes a minimal paused hook state after the name fence disappears', () 
   awareness.destroy(); room.doc.destroy()
 })
 
-it('M7 inspects held work and durable worker decisions in every joined room', () => {
+it('M7 inspects held work and durable worker decisions in every joined room', async () => {
   const dir = temporary()
   const a = memorySession({ name: 'ada', kind: 'agent' }, dir, undefined, 'team/repo/main')
   const b = memorySession({ name: 'ada', kind: 'agent' }, dir, undefined, 'local/repo/main')
   b.room.setScope({ by: 'ada', byKind: 'agent', area: 'x', summary: 'x', paths: ['x'] })
   expect(joinedPresenceHolds([a, b])).toBe(true)
-  expect(joinedPresenceWorkers([a, b], (_dir, room) => room === b.roomName)).toBe(true)
+  expect((await joinedPresenceWorkers([a, b], (_dir, room) => room === b.roomName))).toBe(true)
   a.awareness.destroy(); b.awareness.destroy(); a.room.doc.destroy(); b.room.doc.destroy()
 })
 
@@ -156,7 +157,7 @@ it('M8 preserves mirrored worker claims and coordination when host shutdown stop
   const team = memorySession({ name: 'ada', kind: 'agent' }, dir, undefined, 'team/repo/main')
   const workers = memorySession({ name: 'ada', kind: 'agent' }, dir, undefined, 'local/repo/main')
   const { registry, record } = await seedRegistryWorker(dir, 'work')
-  await registry.update(record.id, old => ({ ...old, seq: old.seq + 1, name: 'ada+work', room: workers.roomName,
+  await mutateWorkerFixture(registry, record.id, old => ({ ...old, seq: old.seq + 1, name: 'ada+work', room: workers.roomName,
     lead: { ...old.lead, participant: 'ada', room: workers.roomName } }))
   workers.room.addClaim({ path: 'x', from: 1, to: 1, by: 'ada+work', byKind: 'agent', intent: 'edit x' })
   let current: Session | null = team
