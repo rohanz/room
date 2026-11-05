@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { validatePins, validatePinCommit } from './compat-pins.mjs'
-import { run } from './compat-process.mts'
+import { run, capture } from './compat-process.mts'
 
 type Pin = { tag: string; commit?: string }
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -101,10 +101,10 @@ async function main() {
   const pins: Pin[] = validatePins(JSON.parse(await fs.readFile(path.join(root, 'scripts/compat-pins.json'), 'utf8')))
   const plan = selectPairs(pins, only)
   const version = JSON.parse(await fs.readFile(path.join(root, 'plugins/room/.claude-plugin/plugin.json'), 'utf8')).version
-  const localTags = new Set((await run('git', ['for-each-ref', '--format=%(refname)', 'refs/tags'], root)).trim().split('\n'))
+  const localTags = new Set((await capture('git', ['for-each-ref', '--format=%(refname)', 'refs/tags'], root)).trim().split('\n'))
   for (const pin of pins) {
     const commit = localTags.has(`refs/tags/${pin.tag}`)
-      ? (await run('git', ['rev-parse', '--verify', `refs/tags/${pin.tag}^{commit}`], root)).trim() : undefined
+      ? (await capture('git', ['rev-parse', '--verify', `refs/tags/${pin.tag}^{commit}`], root)).trim() : undefined
     validatePinCommit(pin, version, commit)
   }
   if (list) { console.table(plan); return }
@@ -114,7 +114,7 @@ async function main() {
   try {
     // All Git mutations stay in scratch, including fetches and worktree metadata.
     await run('git', ['clone', '--bare', '--no-hardlinks', root, repo], scratch)
-    const remote = (await run('git', ['remote', 'get-url', 'origin'], root)).trim()
+    const remote = (await capture('git', ['remote', 'get-url', 'origin'], root)).trim()
     const commits = new Map<string, string>()
     for (const pin of pins) {
       const ref = `refs/compat/${pin.tag}`
@@ -123,21 +123,21 @@ async function main() {
         if (pendingCandidate(pin, version, error)) { rows.push({ tag: pin.tag, status: 'PENDING' }); continue }
         throw error
       }
-      const commit = (await run('git', ['--git-dir', repo, 'rev-parse', `${ref}^{commit}`], scratch)).trim()
+      const commit = (await capture('git', ['--git-dir', repo, 'rev-parse', `${ref}^{commit}`], scratch)).trim()
       validatePinCommit(pin, version, commit)
       commits.set(pin.tag, commit)
     }
     const current = path.join(scratch, 'current')
     await run('git', ['--git-dir', repo, 'worktree', 'add', '--detach', current, 'HEAD'], scratch)
-    const patch = await run('git', ['diff', '--binary', 'HEAD'], root)
+    const patch = await capture('git', ['diff', '--binary', 'HEAD'], root)
     if (patch) await run('git', ['apply', '--binary', '-'], current, 30_000, patch)
-    const untracked = (await run('git', ['ls-files', '--others', '--exclude-standard', '-z'], root)).split('\0').filter(Boolean)
+    const untracked = (await capture('git', ['ls-files', '--others', '--exclude-standard', '-z'], root)).split('\0').filter(Boolean)
     for (const file of untracked) {
       const target = path.join(current, file)
       await fs.mkdir(path.dirname(target), { recursive: true })
       await fs.copyFile(path.join(root, file), target)
     }
-    console.log('candidate', JSON.stringify({ commit: (await run('git', ['rev-parse', 'HEAD'], root)).trim(), dirty: !!patch || !!untracked.length, ...await build(current) }))
+    console.log('candidate', JSON.stringify({ commit: (await capture('git', ['rev-parse', 'HEAD'], root)).trim(), dirty: !!patch || !!untracked.length, ...await build(current) }))
     for (const pair of plan.filter(pair => pair.tag === 'candidate')) {
       const { transport } = pair
       const started = Date.now()

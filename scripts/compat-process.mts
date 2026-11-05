@@ -1,4 +1,15 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+
+/**
+ * Stdout alone, for output that is parsed or fed to another command. `run` merges stderr into its result,
+ * and Git's line-ending warnings on Windows ("LF will be replaced by CRLF") would otherwise turn an empty
+ * diff into an invalid patch.
+ */
+export async function capture(command: string, args: string[], cwd: string, timeoutMs = 120_000, env = cleanEnv()): Promise<string> {
+  const { stdout } = await promisify(execFile)(command, args, { cwd, env, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8', windowsHide: true })
+  return stdout
+}
 
 export function cleanEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(ROOM_|CLAUDE_|CODEX_|OIDC_|GITHUB_|YPERSISTENCE$|NODE_ENV$|PORT$|HOST$|GIT_)/.test(key)))
