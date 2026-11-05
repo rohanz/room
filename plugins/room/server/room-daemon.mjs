@@ -15297,10 +15297,11 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     foreach ($child in $children) {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
+        # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
+        $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+        if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Room state is owned by $childOwner : $child" };
         $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted});
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
-          $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
-          if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Cannot repair Room state owned by $childOwner : $child" };
           # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
           # read with its inherited entries would persist those entries as explicit ones.
           & $icacls $child /reset /q | Out-Null;
@@ -15437,7 +15438,7 @@ function parseWindowsProcessTable(output) {
 function windowsProcessCommand(pid) {
   if (pid !== void 0 && (!Number.isSafeInteger(pid) || pid <= 0)) return void 0;
   const filter = pid === void 0 ? "" : ` WHERE ProcessId = ${pid}`;
-  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate, Name FROM Win32_Process${filter}'; $rows = foreach ($p in $searcher.Get()) { $c = if ($p.CreationDate) { '"' + [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"' } else { 'null' }; $n = ([string]$p.Name).Replace('\\', '\\\\').Replace('"', '\\"'); '{"pid":' + [int]$p.ProcessId + ',"ppid":' + [int]$p.ParentProcessId + ',"creationDate":' + $c + ',"name":"' + $n + '"}' }; '[' + ($rows -join ',') + ']'`;
+  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate, Name FROM Win32_Process${filter}'; $rows = foreach ($p in $searcher.Get()) { $c = if ($p.CreationDate) { '"' + [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"' } else { 'null' }; $n = [regex]::Replace(([string]$p.Name).Replace('\\', '\\\\').Replace('"', '\\"'), '[\\x00-\\x1f]', { param($m) '\\u{0:x4}' -f [int][char]$m.Value }); '{"pid":' + [int]$p.ProcessId + ',"ppid":' + [int]$p.ParentProcessId + ',"creationDate":' + $c + ',"name":"' + $n + '"}' }; '[' + ($rows -join ',') + ']'`;
   return ["-NoProfile", "-NonInteractive", "-Command", script];
 }
 

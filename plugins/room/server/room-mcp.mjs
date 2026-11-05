@@ -24460,10 +24460,11 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     foreach ($child in $children) {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
+        # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
+        $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+        if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Room state is owned by $childOwner : $child" };
         $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted});
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
-          $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
-          if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Cannot repair Room state owned by $childOwner : $child" };
           # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
           # read with its inherited entries would persist those entries as explicit ones.
           & $icacls $child /reset /q | Out-Null;
@@ -24660,7 +24661,7 @@ function parseWindowsProcessTable(output) {
 function windowsProcessCommand(pid) {
   if (pid !== void 0 && (!Number.isSafeInteger(pid) || pid <= 0)) return void 0;
   const filter = pid === void 0 ? "" : ` WHERE ProcessId = ${pid}`;
-  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate, Name FROM Win32_Process${filter}'; $rows = foreach ($p in $searcher.Get()) { $c = if ($p.CreationDate) { '"' + [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"' } else { 'null' }; $n = ([string]$p.Name).Replace('\\', '\\\\').Replace('"', '\\"'); '{"pid":' + [int]$p.ProcessId + ',"ppid":' + [int]$p.ParentProcessId + ',"creationDate":' + $c + ',"name":"' + $n + '"}' }; '[' + ($rows -join ',') + ']'`;
+  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate, Name FROM Win32_Process${filter}'; $rows = foreach ($p in $searcher.Get()) { $c = if ($p.CreationDate) { '"' + [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) + '"' } else { 'null' }; $n = [regex]::Replace(([string]$p.Name).Replace('\\', '\\\\').Replace('"', '\\"'), '[\\x00-\\x1f]', { param($m) '\\u{0:x4}' -f [int][char]$m.Value }); '{"pid":' + [int]$p.ProcessId + ',"ppid":' + [int]$p.ParentProcessId + ',"creationDate":' + $c + ',"name":"' + $n + '"}' }; '[' + ($rows -join ',') + ']'`;
   return ["-NoProfile", "-NonInteractive", "-Command", script];
 }
 var init_windows_process_core = __esm({
@@ -25592,6 +25593,7 @@ var init_proof = __esm({
 import fs13 from "node:fs";
 import os2 from "node:os";
 import path11 from "node:path";
+import crypto2 from "node:crypto";
 import { spawn as spawn2 } from "node:child_process";
 import { fileURLToPath } from "node:url";
 function discovery(commonDir2) {
@@ -25722,7 +25724,8 @@ async function ensure(commonDir2, room, opts) {
   const entry = opts.entryPath ?? fileURLToPath(new URL("./room-daemon.mjs", import.meta.url));
   if (!path11.isAbsolute(entry) || !fs13.statSync(entry).isFile()) throw new Error("local daemon entry must be an absolute installed bundle path");
   const env = daemonChildEnvironment();
-  const reportDir = fs13.mkdtempSync(path11.join(os2.tmpdir(), "room-daemon-start-"));
+  const reportDir = path11.join(os2.tmpdir(), `room-daemon-start-${crypto2.randomBytes(12).toString("hex")}`);
+  privateStateDirectory(reportDir);
   const report = path11.join(reportDir, "error");
   try {
     return await launch();
@@ -26052,7 +26055,7 @@ var init_awareness = __esm({
 });
 
 // packages/relay/src/secure.ts
-import crypto2 from "node:crypto";
+import crypto3 from "node:crypto";
 var MAGIC, LABEL, INFO_C2S, INFO_S2C, SecureSession;
 var init_secure = __esm({
   "packages/relay/src/secure.ts"() {
@@ -26079,12 +26082,12 @@ var init_secure = __esm({
       get ready() {
         return !!this.tx;
       }
-      clientHello(nonce = crypto2.randomBytes(16)) {
+      clientHello(nonce = crypto3.randomBytes(16)) {
         if (this.role !== "client" || this.cn || nonce.length !== 16) throw new Error("invalid client hello");
         this.cn = Buffer.from(nonce);
         return Buffer.concat([MAGIC, this.cn]);
       }
-      relayHello(frame, nonce = crypto2.randomBytes(16)) {
+      relayHello(frame, nonce = crypto3.randomBytes(16)) {
         if (this.role !== "relay" || this.cn || frame.length !== MAGIC.length + 16 || nonce.length !== 16 || !Buffer.from(frame.subarray(0, MAGIC.length)).equals(MAGIC)) throw new Error("invalid relay hello");
         this.cn = Buffer.from(frame.subarray(MAGIC.length));
         this.sn = Buffer.from(nonce);
@@ -26095,16 +26098,16 @@ var init_secure = __esm({
       acceptRelayHello(frame) {
         if (this.role !== "client" || !this.cn || this.sn || frame.length !== MAGIC.length + 48 || !Buffer.from(frame.subarray(0, MAGIC.length)).equals(MAGIC)) throw new Error("invalid relay proof");
         this.sn = Buffer.from(frame.subarray(MAGIC.length, MAGIC.length + 16));
-        if (!crypto2.timingSafeEqual(Buffer.from(frame.subarray(MAGIC.length + 16)), this.proof())) throw new Error("invalid relay proof");
+        if (!crypto3.timingSafeEqual(Buffer.from(frame.subarray(MAGIC.length + 16)), this.proof())) throw new Error("invalid relay proof");
         this.derive();
       }
       proof() {
-        return crypto2.createHmac("sha256", this.key).update(LABEL).update(this.cn).update(this.sn).update(Buffer.from([0])).update(this.room).digest();
+        return crypto3.createHmac("sha256", this.key).update(LABEL).update(this.cn).update(this.sn).update(Buffer.from([0])).update(this.room).digest();
       }
       derive() {
         const salt = Buffer.concat([this.cn, this.sn]);
-        const c2s = Buffer.from(crypto2.hkdfSync("sha256", this.key, salt, INFO_C2S, 32));
-        const s2c = Buffer.from(crypto2.hkdfSync("sha256", this.key, salt, INFO_S2C, 32));
+        const c2s = Buffer.from(crypto3.hkdfSync("sha256", this.key, salt, INFO_C2S, 32));
+        const s2c = Buffer.from(crypto3.hkdfSync("sha256", this.key, salt, INFO_S2C, 32));
         this.tx = this.role === "client" ? c2s : s2c;
         this.rx = this.role === "client" ? s2c : c2s;
       }
@@ -26115,13 +26118,13 @@ var init_secure = __esm({
       }
       encrypt(data) {
         if (!this.tx) throw new Error("handshake incomplete");
-        const cipher = crypto2.createCipheriv("aes-256-gcm", this.tx, this.iv(this.sent++));
+        const cipher = crypto3.createCipheriv("aes-256-gcm", this.tx, this.iv(this.sent++));
         return Buffer.concat([cipher.update(data), cipher.final(), cipher.getAuthTag()]);
       }
       decrypt(data) {
         if (!this.rx || data.length < 16) throw new Error("invalid encrypted frame");
         const frame = Buffer.from(data);
-        const decipher = crypto2.createDecipheriv("aes-256-gcm", this.rx, this.iv(this.received));
+        const decipher = crypto3.createDecipheriv("aes-256-gcm", this.rx, this.iv(this.received));
         decipher.setAuthTag(frame.subarray(frame.length - 16));
         const plain = Buffer.concat([decipher.update(frame.subarray(0, -16)), decipher.final()]);
         this.received++;
@@ -26155,7 +26158,7 @@ var init_awareness2 = __esm({
 });
 
 // packages/relay/src/index.ts
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 import fs14 from "node:fs";
 import path12 from "node:path";
 function relayFile(commonDir2) {
@@ -26175,7 +26178,7 @@ function deterministicPort(commonDir2) {
     real = fs14.realpathSync.native(commonDir2);
   } catch {
   }
-  const h = crypto3.createHash("sha1").update("schema-2\0").update(real).digest();
+  const h = crypto4.createHash("sha1").update("schema-2\0").update(real).digest();
   return 4e4 + h.readUInt32BE(0) % 2e4;
 }
 function cloneId(commonDir2) {
@@ -26184,7 +26187,7 @@ function cloneId(commonDir2) {
     real = fs14.realpathSync.native(commonDir2);
   } catch {
   }
-  return crypto3.createHash("sha256").update(real).digest("hex");
+  return crypto4.createHash("sha256").update(real).digest("hex");
 }
 function canonicalRelayWarning(port, commonDir2, identity3, info) {
   const h = identity3?.health;

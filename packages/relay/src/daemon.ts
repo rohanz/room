@@ -261,7 +261,10 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
   const env = daemonChildEnvironment()
   // The child reports a fatal startup error here when it cannot reach daemon.log; a directory only this user can
   // read, removed once startup resolves either way. The child never holds it open.
-  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-daemon-start-'))
+  // Created through the private-state helper: 0700 on POSIX, a protected owner-only ACL on Windows, even when
+  // TEMP is shared or customised. The random name is not a security boundary; the ACL is.
+  const reportDir = path.join(os.tmpdir(), `room-daemon-start-${crypto.randomBytes(12).toString('hex')}`)
+  privateStateDirectory(reportDir)
   const report = path.join(reportDir, 'error')
   try {
     return await launch()

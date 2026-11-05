@@ -42,7 +42,7 @@ export function windowsProcessCommand(pid?: number): string[] | undefined {
     + `$searcher = [wmisearcher]'SELECT ProcessId, ParentProcessId, CreationDate, Name FROM Win32_Process${filter}'; `
     + '$rows = foreach ($p in $searcher.Get()) { '
     + '$c = if ($p.CreationDate) { \'"\' + [Management.ManagementDateTimeConverter]::ToDateTime($p.CreationDate).ToUniversalTime().ToString(\'o\', [Globalization.CultureInfo]::InvariantCulture) + \'"\' } else { \'null\' }; '
-    + '$n = ([string]$p.Name).Replace(\'\\\', \'\\\\\').Replace(\'"\', \'\\"\'); '
+    + '$n = [regex]::Replace(([string]$p.Name).Replace(\'\\\', \'\\\\\').Replace(\'"\', \'\\"\'), \'[\\x00-\\x1f]\', { param($m) \'\\u{0:x4}\' -f [int][char]$m.Value }); '
     + "'{\"pid\":' + [int]$p.ProcessId + ',\"ppid\":' + [int]$p.ParentProcessId + ',\"creationDate\":' + $c + ',\"name\":\"' + $n + '\"}' }; "
     + "'[' + ($rows -join ',') + ']'"
   return ['-NoProfile', '-NonInteractive', '-Command', script]

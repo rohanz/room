@@ -139,6 +139,7 @@ it('reports a fatal error the child wrote before daemon.log existed, and removes
   let report = ''
   vi.mocked(childProcess.spawn).mockImplementation((_cmd, args) => {
     report = (args as string[])[(args as string[]).indexOf('--startup-report') + 1]
+    if (process.platform !== 'win32') expect(fs.statSync(path.dirname(report)).mode & 0o777).toBe(0o700)
     fs.writeFileSync(report, 'Cannot verify the Windows owner/DACL for C:\\fixture (PowerShell timed out)', { flag: 'wx', mode: 0o600 })
     setTimeout(() => child.emit('exit', 1, null), 1)
     return child as childProcess.ChildProcess

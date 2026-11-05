@@ -92,10 +92,11 @@ function windowsAclScript(protectNew: boolean, createDirectory: boolean, repair:
     foreach ($child in $children) {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
+        # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
+        $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+        if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Room state is owned by $childOwner : $child" };
         $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted});
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
-          $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
-          if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Cannot repair Room state owned by $childOwner : $child" };
           # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
           # read with its inherited entries would persist those entries as explicit ones.
           & $icacls $child /reset /q | Out-Null;

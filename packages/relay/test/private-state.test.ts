@@ -174,3 +174,12 @@ it.runIf(process.platform === 'win32')('async Windows priming creates the protec
   expect(report.grants.length).toBeGreaterThan(0)
   expect(report.grants.filter(sid => ![report.user, 'S-1-5-18', 'S-1-5-32-544'].includes(sid))).toEqual([])
 }, 45_000) // async native initialization and an independent native ACL assertion each have a 20 s bound
+
+// Windows only: a descendant owned by someone else can rewrite its own DACL later, so its owner is refused even
+// when its grants look private. The CI runner is elevated, which lets the test hand ownership to SYSTEM.
+it.runIf(process.platform === 'win32')('refuses a Windows Room descendant owned by another principal', async () => {
+  const { root, room } = fixture(), file = path.join(room, 'sessions', 'owned', 'session.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '{}')
+  execFileSync('icacls', [file, '/setowner', '*S-1-5-18'], { stdio: 'pipe' })
+  await expect(primePrivateState(root)).rejects.toThrow(/owned by S-1-5-18/)
+})
