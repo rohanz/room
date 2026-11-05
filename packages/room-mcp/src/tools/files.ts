@@ -1,3 +1,4 @@
+import { checkoutPublisherName } from '../checkout-publication.js'
 import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
 import { boundedTwoFilesPatch } from './reader-diff.js'
@@ -250,14 +251,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
       const present = Array.from(new Set(allSessions.flatMap(s => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter(name => presences(s).some(p => p.user.name === name)))))
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
-      const myPaths = [...manifestPaths(caller.room, caller.me.name), ...(caller.room.scope(caller.me.name)?.paths ?? [])]
+      const myPaths = [...manifestPaths(caller.room, checkoutPublisherName(caller.room, caller.me.name) ?? caller.me.name), ...(caller.room.scope(caller.me.name)?.paths ?? [])]
       const unavailable: string[] = []
       const uncertainOverlap = new Set<string>()
       const overlaps = async (person: string) => {
         const session = rooms.holding(person, caller)
         const worker = session.room.acceptedWorkerViewOf(person)
         if (worker?.lead === caller.me.name && worker.status === 'running') return true
-        const theirs = manifestPaths(session.room, person)
+        const theirs = manifestPaths(session.room, checkoutPublisherName(session.room, person) ?? person)
         try {
           const mineBase = baseFor(caller, caller.me.name), theirBase = baseFor(session, person)
           const remote = await roomRemote(caller.dir, caller.roomName)

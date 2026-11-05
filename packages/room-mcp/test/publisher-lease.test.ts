@@ -2,12 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InstanceToken } from '../src/leases.js'
-import { PublisherLease } from '../src/publisher-lease.js'
+import { attachPublisher, PublisherLease } from '../src/publisher-lease.js'
 
 const dirs: string[] = []
-afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 function commonDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-publisher-'))
   dirs.push(dir)
@@ -72,9 +72,82 @@ describe('publisher lease (registry §16)', () => {
     expect(other.publisher('local/r-workers')).toBe('rohan')
     await lead.detach('local/r-workers')
     expect(lead.holds()).toBe(true)
-    expect(other.publisher('local/r-workers')).toBe('rohan')
+    // Never redirect readers into another room's participant namespace.
+    expect(other.publisher('local/r-workers')).toBeUndefined()
     await lead.detach('https://room.example/github.com/o/r')
     expect(fs.readdirSync(path.join(common, 'room', 'publishers')).filter(f => f.endsWith('.json'))).toEqual([])
     expect(await other.tick()).toBe(true)
   })
+})
+
+it('an active second session requests an idle publisher to yield before taking over', async () => {
+  const common = commonDir()
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const idle = lease(common, 'idle')
+  await idle.attach('local/r', 'idle')
+  // Reproduce a live process that has not received a tool call for eight hours.
+  now += 8 * 60 * 60_000
+  const active = lease(common, 'active')
+  await active.attach('local/r', 'active')
+  const demotions: boolean[] = []
+  idle.onChange(() => demotions.push(idle.holds()))
+  expect(active.holds()).toBe(false)
+  await idle.tick()
+  expect(idle.holds()).toBe(false)
+  expect(demotions).toEqual([false])
+  expect(await active.tick()).toBe(true)
+  expect(idle.publisher('local/r')).toBe('active')
+  // A still-idle old process cannot steal it back.
+  expect(await idle.tick()).toBe(false)
+})
+
+it('verified activity cancels an idle handoff request; publication ticks do not count as activity', async () => {
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const common = commonDir(), idle = lease(common, 'idle')
+  await idle.attach('team/r', 'idle')
+  now += 121_000
+  const active = lease(common, 'active')
+  await active.attach('team/r', 'active')
+  expect(JSON.parse(fs.readFileSync(idle.file, 'utf8')).requested).toBeDefined()
+  await idle.activity()
+  expect(idle.holds()).toBe(true)
+  expect(await active.tick()).toBe(false)
+  expect(JSON.parse(fs.readFileSync(idle.file, 'utf8')).lastActive).toBe(now)
+  now += 121_000
+  await active.activity()
+  await idle.tick()
+  expect(idle.holds()).toBe(false)
+  expect(await active.tick()).toBe(true)
+})
+
+it('withdraws every attached room synchronously before the successor can publish', async () => {
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const common = commonDir(), old = lease(common, 'old')
+  const publishing = new Set<string>()
+  const attach = (l: PublisherLease, roomKey: string, participant: string) => attachPublisher({
+    lease: l, roomKey, participant, named: () => true,
+    setPublisher: value => { if (value) publishing.add(participant); else publishing.delete(participant) },
+  })
+  const team = await attach(old, 'team/r', 'old-team')
+  const local = await attach(old, 'local/r', 'old-local')
+  now += 121_000
+  const next = lease(common, 'next')
+  const active = await attach(next, 'team/r', 'active')
+  expect(publishing).toEqual(new Set(['old-team', 'old-local']))
+  // A listener runs inside withdrawal, while the old lease file still exists.
+  old.onChange(() => {
+    if (!old.holds()) {
+      expect(fs.existsSync(old.file)).toBe(true)
+      expect(publishing.size).toBe(0)
+      expect(next.holds()).toBe(false)
+    }
+  })
+  await old.tick()
+  expect(publishing.size).toBe(0)
+  await next.tick()
+  expect(publishing).toEqual(new Set(['active']))
+  await team.detach(); await local.detach(); await active.detach()
 })

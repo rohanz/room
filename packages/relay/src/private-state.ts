@@ -6,11 +6,30 @@ import { execFileSync } from 'node:child_process'
 interface AclReport { owner: string; user: string; protected: boolean; grants: string[]; repaired?: boolean }
 export function checkWindowsAcl(report: AclReport, file: string): void {
   const allowed = new Set([report.user, 'S-1-5-18', 'S-1-5-32-544'])
-  if (report.owner !== report.user || !report.protected || report.grants.some(sid => !allowed.has(sid))) {
+  // An elevated administrator's new files are owned by BUILTIN\Administrators on Windows Server; ownership alone
+  // grants no access, and the grants below are what keep the state private.
+  if ((report.owner !== report.user && report.owner !== 'S-1-5-32-544') || !report.protected || report.grants.some(sid => !allowed.has(sid))) {
     throw new Error(`Room state is not private: ${file}; owner ${report.owner}; offending grants ${report.grants.filter(sid => !allowed.has(sid)).join(', ') || 'none'}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`)
   }
 }
+/** Paths this process has already verified on Windows, keyed to their file identity: one PowerShell run per path
+ * per process, not per write. A replaced path has a new identity and is inspected again. */
+const verifiedWindows = new Map<string, string>()
+const windowsKey = (file: string) => path.resolve(file).toLowerCase()
+function windowsIdentity(file: string): string | undefined {
+  try { const stat = fs.lstatSync(file, { bigint: true }); return `${stat.dev}:${stat.ino}` } catch { return undefined }
+}
+/** Windows PowerShell 5.1 cannot load Microsoft.PowerShell.Security when it inherits PowerShell 7's PSModulePath
+ * (for example when the host was started from pwsh); without the variable it uses its own default module path. */
+function windowsPowerShellEnv(file: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(process.env)) if (key.toLowerCase() !== 'psmodulepath') env[key] = value
+  env.ROOM_PRIVATE_PATH = file
+  return env
+}
 function windowsAcl(file: string, protectNew = false, createDirectory = false, repair = false): void {
+  const key = windowsKey(file), known = verifiedWindows.get(key)
+  if (known && !protectNew && known === windowsIdentity(file)) return
   // The path travels through the environment, never interpolated into PowerShell source.
   const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     function PrivateAcl($directory) {
@@ -37,7 +56,7 @@ function windowsAcl(file: string, protectNew = false, createDirectory = false, r
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`
   let report: AclReport
   try {
-    report = JSON.parse(execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, ROOM_PRIVATE_PATH: file }, timeout: 5000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) as AclReport
+    report = JSON.parse(execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { env: windowsPowerShellEnv(file), timeout: 20_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) as AclReport
   } catch (error) {
     const e = error as NodeJS.ErrnoException & { stderr?: string; signal?: string }
     const cause = e.code === 'ETIMEDOUT' || e.signal ? 'PowerShell timed out' : (String(e.stderr ?? '').trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300)
@@ -46,12 +65,18 @@ function windowsAcl(file: string, protectNew = false, createDirectory = false, r
   if (!report || !Array.isArray(report.grants) || typeof report.user !== 'string') throw new Error(`Invalid Windows ACL inspection for ${file}`)
   checkWindowsAcl(report, file)
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`)
+  const identity = windowsIdentity(file)
+  if (identity) verifiedWindows.set(key, identity)
 }
 /** Protect only newly created Room files; never rewrite checkout ACLs. */
 export function verifyPrivatePath(file: string, created = false): void {
   const stat = fs.lstatSync(file)
   if (stat.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file}`)
-  if (process.platform === 'win32') { windowsAcl(file, created); return }
+  if (process.platform === 'win32') {
+    // A file created inside a directory this process verified inherits its protected owner-only ACL.
+    if (created && stat.isFile() && verifiedWindows.get(windowsKey(path.dirname(file))) === windowsIdentity(path.dirname(file))) return
+    windowsAcl(file, created); return
+  }
   if (stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error(`Room state must be owned by the current user and private: ${file}`)
 }
 /** Repair only the requested path from room/ down; never scan children or alter checkout ancestors. */

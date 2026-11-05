@@ -404,3 +404,33 @@ it('keeps the 512 KB default for local files in a preview and names the file ins
   const preview = await handlers(state).room_preview_merge({ person: 'ben' })
   expect(preview).toContain('NOT previewed (over 512 KB): app.py')
 })
+
+it('previews the publishing checkout when the requested active lead is a non-publisher', async () => {
+  const { room, head, entries, texts, state } = fixture()
+  const value = 'checkout change\n'
+  entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(value), size: value.length, at: 1, fence: '1' })
+  texts.set('app.py', new Y.Text(value))
+  room.participants.set('active-lead\0holder', { sessionId: 'active-1', epoch: 1 })
+  room.manifestHead.set('active-lead', { ...head, base: 'obsolete-secondary-base', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'ben' })
+  state.others = () => ['ben', 'active-lead']
+  state.baseFor = (_s, person) => room.manifestHead.get(person)?.base ?? head.base
+  const result = await handlers(state).room_preview_merge({ person: 'active-lead' })
+  expect(result).toContain('app.py')
+  expect(result).not.toContain('PARTIAL preview')
+  expect(result).not.toContain('coverage not-publisher')
+})
+
+it('reports a stale checkout publication without applying its old text', async () => {
+  const { room, head, entries, texts, session, state } = fixture()
+  const value = 'stale checkout change\n'
+  entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(value), size: value.length, at: 1, fence: '1' })
+  texts.set('app.py', new Y.Text(value))
+  room.manifestHead.set('ben', { ...head, scannedAt: Date.now() - 8 * 60 * 60_000 })
+  startsPreviewMaintenance = true
+  const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat app.py)" = base && echo "1 passed"' })
+  expect(result).toContain('stale publication')
+  expect(result).toContain('PARTIAL preview')
+  expect(session.lastPreview?.complete).toBe(false)
+  expect(result).toContain('old text was not used')
+  expect(result).toContain('passed on a PARTIAL tree')
+})

@@ -18552,6 +18552,51 @@ var init_src = __esm({
   }
 });
 
+// packages/room-mcp/src/checkout-publication.ts
+function checkoutPublication(room, name, view) {
+  const links = [];
+  const seen = /* @__PURE__ */ new Set();
+  while (!seen.has(name)) {
+    seen.add(name);
+    const snap = snapshot(room, name, view);
+    if (!snap) return { links, snap: void 0 };
+    links.push(snap);
+    if (!snap.fenceValid || snap.head.coverage.kind !== "none" || snap.head.coverage.reason !== "not-publisher") return { links, snap };
+    if (!snap.head.publisher) return { links, snap: void 0 };
+    name = snap.head.publisher;
+  }
+  return { links, snap: void 0 };
+}
+function stalePublication(room, snap, now) {
+  const worker = room.acceptedWorkerViewOf(snap.name);
+  if (snap.retained || worker && worker.status !== "running") return false;
+  return !Number.isFinite(snap.head.scannedAt) || snap.head.scannedAt > now || now - snap.head.scannedAt > 12e4;
+}
+function checkoutPublisherName(room, name) {
+  const seen = /* @__PURE__ */ new Set();
+  while (!seen.has(name)) {
+    seen.add(name);
+    const head = manifestHeadOf(room, name);
+    if (!head) return seen.size > 1 ? name : void 0;
+    if (head.coverage.kind !== "none" || head.coverage.reason !== "not-publisher") return name;
+    if (!head.publisher) return void 0;
+    name = head.publisher;
+  }
+  return void 0;
+}
+function checkoutContact(room, requested, view) {
+  const publisher = checkoutPublisherName(room, requested);
+  if (!publisher) return requested;
+  const candidates = view.filter((p) => p.fresh && !p.holder?.ended && typeof p.idleMin === "number" && Number.isFinite(p.idleMin) && checkoutPublisherName(room, p.name) === publisher);
+  return candidates.sort((a, b) => a.idleMin - b.idleMin || Number(b.name === requested) - Number(a.name === requested))[0]?.name ?? requested;
+}
+var init_checkout_publication = __esm({
+  "packages/room-mcp/src/checkout-publication.ts"() {
+    "use strict";
+    init_src();
+  }
+});
+
 // packages/roomd/src/repo-path.ts
 import fs from "node:fs";
 import path from "node:path";
@@ -20210,6 +20255,10 @@ var init_publisher = __esm({
       /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
       applyInputs(next) {
         const { host: host2 } = this;
+        if (!next.policy.publisher && next.policy.publisherName && next.policy.publisherName !== host2.name) {
+          const fence2 = host2.roomDoc.manifestHead.get(next.policy.publisherName)?.fence;
+          if (fence2) this.formerPublisher = { name: next.policy.publisherName, fence: fence2 };
+        }
         if (next.policy.publisher && !host2.inputs.policy.publisher && this.formerPublisher) {
           withdrawFormerPublisher(host2.roomDoc, this.formerPublisher.name, this.formerPublisher.fence, host2.name);
           this.formerPublisher = void 0;
@@ -20267,6 +20316,7 @@ var init_publisher = __esm({
           base: next.head,
           level: next.policy.level,
           prefixes: next.policy.textPrefixes,
+          scannedAt: host2.roomDoc.manifestHead.get(host2.name)?.scannedAt ?? 0,
           complete: host2.roomDoc.manifestHead.get(host2.name)?.complete ?? false,
           ...next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? "another session" }
         }, facts);
@@ -24285,11 +24335,27 @@ import path5 from "node:path";
 import { execFileSync as execFileSync2 } from "node:child_process";
 function checkWindowsAcl(report, file) {
   const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
-  if (report.owner !== report.user || !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
+  if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
     throw new Error(`Room state is not private: ${file}; owner ${report.owner}; offending grants ${report.grants.filter((sid) => !allowed.has(sid)).join(", ") || "none"}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`);
   }
 }
+function windowsIdentity(file) {
+  try {
+    const stat4 = fs8.lstatSync(file, { bigint: true });
+    return `${stat4.dev}:${stat4.ino}`;
+  } catch {
+    return void 0;
+  }
+}
+function windowsPowerShellEnv(file) {
+  const env = {};
+  for (const [key2, value5] of Object.entries(process.env)) if (key2.toLowerCase() !== "psmodulepath") env[key2] = value5;
+  env.ROOM_PRIVATE_PATH = file;
+  return env;
+}
 function windowsAcl(file, protectNew = false, createDirectory = false, repair = false) {
+  const key2 = windowsKey(file), known = verifiedWindows.get(key2);
+  if (known && !protectNew && known === windowsIdentity(file)) return;
   const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     function PrivateAcl($directory) {
       if ($directory) { $acl=New-Object Security.AccessControl.DirectorySecurity; $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
@@ -24315,7 +24381,7 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
   let report;
   try {
-    report = JSON.parse(execFileSync2("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, ROOM_PRIVATE_PATH: file }, timeout: 5e3, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    report = JSON.parse(execFileSync2("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
   } catch (error2) {
     const e = error2;
     const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
@@ -24324,11 +24390,14 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
   if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file}`);
   checkWindowsAcl(report, file);
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`);
+  const identity3 = windowsIdentity(file);
+  if (identity3) verifiedWindows.set(key2, identity3);
 }
 function verifyPrivatePath(file, created = false) {
   const stat4 = fs8.lstatSync(file);
   if (stat4.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file}`);
   if (process.platform === "win32") {
+    if (created && stat4.isFile() && verifiedWindows.get(windowsKey(path5.dirname(file))) === windowsIdentity(path5.dirname(file))) return;
     windowsAcl(file, created);
     return;
   }
@@ -24403,9 +24472,12 @@ function initializeDirectory(dir, repair) {
   }
   verifyPrivatePath(dir);
 }
+var verifiedWindows, windowsKey;
 var init_private_state = __esm({
   "packages/relay/src/private-state.ts"() {
     "use strict";
+    verifiedWindows = /* @__PURE__ */ new Map();
+    windowsKey = (file) => path5.resolve(file).toLowerCase();
   }
 });
 
@@ -36839,16 +36911,15 @@ var init_context = __esm({
 
 // packages/room-mcp/src/tools/share.ts
 function checkoutPublisher(s) {
-  const head = s.room.manifestHead.get(s.me.name);
-  const publisher = head?.coverage.kind === "none" && head.coverage.reason === "not-publisher" ? head.publisher : void 0;
-  return typeof publisher === "string" && publisher ? publisher : void 0;
+  const publisher = checkoutPublisherName(s.room, s.me.name);
+  return publisher !== s.me.name ? publisher : void 0;
 }
 function publisherLine(s) {
   const publisher = checkoutPublisher(s);
   if (!publisher) return void 0;
   const primary = [...s.awareness.getStates().values()].find((state) => state?.user?.name === publisher);
   const level = primary?.share === "full" || primary?.share === "declared" || primary?.share === "intent" ? ` (${primary.share})` : "";
-  return `This checkout's file text is published by ${publisher} and follows ${publisher}'s sharing settings${level}.`;
+  return `This checkout's file text is published by ${publisher} and follows ${publisher}'s sharing settings${level}. Address ${checkoutContact(s.room, s.me.name, participantsView(s.room, s.awareness, Date.now()))} for this checkout's publication.`;
 }
 function retainedList(paths) {
   return `${paths.slice(0, 8).join(", ")}${paths.length > 8 ? `, +${paths.length - 8} more` : ""}`;
@@ -36894,6 +36965,8 @@ var defs;
 var init_share = __esm({
   "packages/room-mcp/src/tools/share.ts"() {
     "use strict";
+    init_src();
+    init_checkout_publication();
     init_config();
     init_context();
     defs = [
@@ -37131,14 +37204,22 @@ function scratchCollectNote(byPerson, tagOf, outcome) {
   return `not collected: worker scratch (${scratchKind}): ${listScratch(byPath, (people) => people.map(tagOf).join(", "))}` + (folders.length ? `; saved under ${andList(folders)}` : "") + (unsaved ? `; NOT saved (lost when the worktree is removed; copy with mode=copy first): ${unsaved}` : "");
 }
 async function buildCombinedTreeOnce(state, caller, participants, options = {}) {
-  const { rooms, baseFor } = state;
+  const { rooms } = state;
+  const baseFor = (session, person) => {
+    const fallback2 = state.baseFor(session, person);
+    return snapshots.get(person)?.snap?.head.base ?? fallback2;
+  };
   const limit = options.limit ?? DISK_TEXT_LIMIT;
   const people = participants.map((p) => p.person);
   const snapshots = /* @__PURE__ */ new Map();
+  const publicationLinks = [];
+  const stale = /* @__PURE__ */ new Set();
   const acceptedRecords = /* @__PURE__ */ new Map();
   if (!options.diskOnly) for (const { person, session } of participants) {
     const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : [];
-    const snap = snapshot(session.room, person, view);
+    const { snap, links } = checkoutPublication(session.room, person, view);
+    publicationLinks.push(...links.map((snap2) => ({ person, session, snap: snap2 })));
+    if (snap && stalePublication(session.room, snap, state.now?.() ?? Date.now())) stale.add(person);
     snapshots.set(person, { session, snap });
     const record2 = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view);
     if (record2 !== "updating") acceptedRecords.set(person, { ...record2 });
@@ -37177,6 +37258,10 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       continue;
     }
     const age = Math.max(0, Math.floor(((state.now?.() ?? Date.now()) - snap.head.scannedAt) / 1e3));
+    const contact = checkoutContact(session.room, person, viewOf(state, session));
+    if (snap.name === person && contact !== person) coverageLines.push(`${person}: address ${contact} for this checkout`);
+    if (snap.name !== person) coverageLines.push(`${person}: checkout publication by ${snap.name}; address ${contact} for this checkout`);
+    if (stale.has(person)) gaps.push({ person, why: `stale publication from ${snap.name} (scanned ${age}s ago); ask the active session to refresh` });
     coverageLines.push(`${person} (${snap.head.level}, scanned ${age}s ago, rev ${snap.head.rev}):`);
     const shared = [...snap.entries].filter(([, entry]) => entry.state === "shared").map(([path66]) => path66);
     const held = [...snap.entries].filter(([, entry]) => entry.state === "held").map(([path66, entry]) => `${path66} (${entry.held ?? "not shared"})`);
@@ -37230,6 +37315,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const cached3 = versions2.get(p);
     if (cached3) return cached3;
     const snap = snapshots.get(person)?.snap;
+    if (stale.has(person)) return { kind: "unknown", why: "updating", detail: "stale publication; old text was not used" };
     let version3 = await versionOf(snap, p, {
       gitAt,
       known: (hash3) => readBoundedCheckoutText(caller.dir, hash3, p, "utf8", false).catch(() => void 0)
@@ -37809,7 +37895,7 @@ ${conflicts.join("\n")}`);
       const worker = localWorkers(caller.dir, (record2) => record2.id === captured.id)[0];
       return !current2 || current2.base !== captured.base || current2.seq !== captured.seq || [worker?.finishedAt ?? 0, current2.tag].join(":") !== captured.key || captured.refs.some(([ref, value5]) => refStamp(ref) !== value5);
     }).map((captured) => captured.person);
-    return [.../* @__PURE__ */ new Set([...headStamp() !== capturedHead || refStamp("packed-refs") !== packedStamp ? [caller.me.name] : [], ...resumed, ...changedLifecycle, ...movedSince(state, [...snapshots].filter(([person]) => !settledRuns.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))])];
+    return [.../* @__PURE__ */ new Set([...headStamp() !== capturedHead || refStamp("packed-refs") !== packedStamp ? [caller.me.name] : [], ...resumed, ...changedLifecycle, ...movedSince(state, publicationLinks.filter(({ person }) => !settledRuns.has(person)))])];
   };
   const isCurrent = () => moved().length === 0;
   const snapshotInputs = bases.map(({ person, base }) => {
@@ -37837,6 +37923,7 @@ var init_combined_tree = __esm({
     init_git();
     init_src4();
     init_src4();
+    init_checkout_publication();
     init_merge();
     init_worker_git();
     init_worker_state();
@@ -39029,14 +39116,14 @@ ${s.graph.contractCoverageNote}` : ""}`;
       const presentSession = (person) => allSessions.find((s) => presences(s).some((p) => p.user.name === person));
       const present = Array.from(new Set(allSessions.flatMap((s) => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter((name) => presences(s).some((p) => p.user.name === name)))));
       const available = Array.from(new Set(allSessions.flatMap((s) => others(s)))).filter((p) => p !== caller.me.name);
-      const myPaths = [...manifestPaths(caller.room, caller.me.name), ...caller.room.scope(caller.me.name)?.paths ?? []];
+      const myPaths = [...manifestPaths(caller.room, checkoutPublisherName(caller.room, caller.me.name) ?? caller.me.name), ...caller.room.scope(caller.me.name)?.paths ?? []];
       const unavailable2 = [];
       const uncertainOverlap = /* @__PURE__ */ new Set();
       const overlaps = async (person) => {
         const session = rooms.holding(person, caller);
         const worker = session.room.acceptedWorkerViewOf(person);
         if (worker?.lead === caller.me.name && worker.status === "running") return true;
-        const theirs = manifestPaths(session.room, person);
+        const theirs = manifestPaths(session.room, checkoutPublisherName(session.room, person) ?? person);
         try {
           const mineBase = baseFor(caller, caller.me.name), theirBase = baseFor(session, person);
           const remote = await roomRemote(caller.dir, caller.roomName);
@@ -40160,6 +40247,7 @@ var defs2, ownDiskText, previewGenerations, executable, SETUP_TIMEOUT_MS, checkL
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
+    init_checkout_publication();
     init_git();
     init_src4();
     init_reader_diff();
@@ -40359,6 +40447,19 @@ async function ignoredWorkerArtifacts(w, leadDir) {
   const artifacts = [];
   for (const p of candidates) if (await informativeIgnored(w.dir, leadDir, p.replace(/\/$/, ""))) artifacts.push(p);
   return artifacts.sort();
+}
+function inheritWorkerRefs(commonDir2, owner, retry) {
+  const sources = privateWorkerRefs(owner), targets = privateWorkerRefs(retry);
+  const refs = boundedGitSync(commonDir2, ["--git-dir", commonDir2, "for-each-ref", "--format=%(refname) %(objectname)", ...sources]).toString();
+  const values = new Map(refs.trim().split("\n").filter(Boolean).map((line) => line.split(" ")));
+  const commands = sources.map((ref, index) => values.has(ref) ? `update ${targets[index]} ${values.get(ref)}` : `delete ${targets[index]}`);
+  boundedGitSync(commonDir2, ["--git-dir", commonDir2, "update-ref", "--stdin"], { input: Buffer.from(commands.join("\n") + "\n") });
+}
+function removeWorkerRefs(commonDir2, worker) {
+  boundedGitSync(commonDir2, ["--git-dir", commonDir2, "update-ref", "--stdin"], {
+    input: Buffer.from(privateWorkerRefs(worker).map((ref) => `delete ${ref}
+`).join(""))
+  });
 }
 async function uncollectedWorkerPaths(leadDir, w, capturedHead) {
   const exclusions = workerOwnedPaths(w).exclusions;
@@ -40916,7 +41017,7 @@ function saveWorkerScratch(leadRoot, workers) {
   }
   return { saved, skipped };
 }
-var WORKERS_DIR, lstatOrUndefined, collectHeadRef, collectBaseRef, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, CARRY_FILE_LIMIT, SCRATCH_FILE_LIMIT, SCRATCH_TOTAL_LIMIT, SCRATCH_DIR;
+var WORKERS_DIR, lstatOrUndefined, collectHeadRef, collectBaseRef, privateWorkerRefs, carriedSubject, internalGit, carryRef, carriedUntrackedRef, pathExcluded, CARRY_FILE_LIMIT, SCRATCH_FILE_LIMIT, SCRATCH_TOTAL_LIMIT, SCRATCH_DIR;
 var init_worker_git = __esm({
   "packages/room-mcp/src/worker-git.ts"() {
     "use strict";
@@ -40938,6 +41039,12 @@ var init_worker_git = __esm({
     };
     collectHeadRef = (tag, id3) => `refs/room/collect-head/${tag}/${id3}`;
     collectBaseRef = (tag, id3) => `refs/room/collect-base/${tag}/${id3}`;
+    privateWorkerRefs = (w) => [
+      carryRef(w.tag),
+      carriedUntrackedRef(w.tag),
+      collectHeadRef(w.tag, w.id),
+      collectBaseRef(w.tag, w.id)
+    ];
     carriedSubject = (leadName) => `${ROOM_CARRY_IDENTITY.subjectPrefix}${leadName}`;
     internalGit = (dir, args2) => git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args2]);
     carryRef = (tag) => `refs/room/carry/${tag}`;
@@ -41838,7 +41945,16 @@ var init_worker_registry = __esm({
         try {
           if (record2.sharedWith) {
             const owner = this.read(record2.sharedWith);
-            if (!owner || owner.sharedWith || path44.resolve(owner.dir) !== path44.resolve(record2.dir) || ["retiring", "retired", "abandoned"].includes(owner.phase)) throw new Error("shared worktree owner is no longer available");
+            if (!owner || owner.sharedWith || path44.resolve(owner.dir) !== path44.resolve(record2.dir) || owner.lead.participant !== record2.lead.participant || owner.lead.room !== record2.lead.room || ["retiring", "retired", "abandoned"].includes(owner.phase)) throw new Error("shared worktree owner is no longer available");
+            record2 = {
+              ...record2,
+              base: owner.base,
+              carriedBase: owner.carriedBase,
+              carriedUntracked: owner.carriedUntracked,
+              collectedKeep: owner.collectedKeep,
+              keptPublication: owner.keptPublication,
+              capabilities: { ...record2.capabilities, collect: owner.capabilities.collect }
+            };
           }
           const deadline = performance5.now() + GUARD_WAIT_MS2;
           for (; ; ) {
@@ -41865,6 +41981,18 @@ var init_worker_registry = __esm({
             }
           }
           this.heldOperations.set(record2.id, "spawn");
+          if (record2.sharedWith) {
+            try {
+              inheritWorkerRefs(this.commonDir, this.read(record2.sharedWith), record2);
+            } catch (error2) {
+              try {
+                await this.abandonPreparation(record2.id);
+              } finally {
+                await this.finishOperation(record2.id);
+              }
+              throw error2;
+            }
+          }
           this.changed(record2.id);
         } finally {
           if (record2.sharedWith) await this.finishOperation(record2.sharedWith);
@@ -42155,6 +42283,7 @@ var init_worker_registry = __esm({
         if (current2?.phase !== "retiring" || current2.cleanup?.[roomKey2] !== "pending") return current2;
         return this.update(id3, (old) => {
           const cleanup = { ...old.cleanup, [roomKey2]: "done" };
+          if (old.sharedWith && Object.values(cleanup).every((state) => state === "done")) removeWorkerRefs(this.commonDir, old);
           return { ...old, cleanup, ...Object.values(cleanup).every((state) => state === "done") ? { phase: "retired" } : {}, seq: old.seq + 1 };
         });
       }
@@ -42407,6 +42536,10 @@ var init_worker_registry = __esm({
       }
       rollbackPreparation(record2) {
         const prep = record2.prep;
+        if (record2.sharedWith) {
+          removeWorkerRefs(this.commonDir, record2);
+          return;
+        }
         if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) return;
         const leadDir = path44.dirname(path44.dirname(path44.dirname(record2.dir)));
         if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
@@ -42453,7 +42586,7 @@ var init_worker_registry = __esm({
       async abandonPreparation(id3) {
         const record2 = this.read(id3);
         if (!record2 || record2.runs.at(-1)?.launch) return;
-        if (record2.phase === "preparing" || record2.phase === "prepared") this.rollbackPreparation(record2);
+        if (record2.sharedWith || record2.phase === "preparing" || record2.phase === "prepared") this.rollbackPreparation(record2);
         await this.update(id3, (old) => ({ ...old, phase: "abandoned", seq: old.seq + 1 }));
       }
       async reconcile() {
@@ -44026,6 +44159,10 @@ async function attachPublisher(o) {
   }, o.tickMs ?? PUBLISHER_TICK_MS);
   timer.unref?.();
   return {
+    async activity() {
+      await o.lease.activity();
+      sync();
+    },
     async detach() {
       clearInterval(timer);
       unsubscribe2();
@@ -44034,11 +44171,12 @@ async function attachPublisher(o) {
     }
   };
 }
-var GUARD_WAIT_MS3, PublisherLease, leases, PUBLISHER_TICK_MS;
+var PUBLISHER_IDLE_MS, GUARD_WAIT_MS3, PublisherLease, leases, PUBLISHER_TICK_MS;
 var init_publisher_lease = __esm({
   "packages/room-mcp/src/publisher-lease.ts"() {
     "use strict";
     init_leases2();
+    PUBLISHER_IDLE_MS = 12e4;
     GUARD_WAIT_MS3 = 3e4;
     PublisherLease = class {
       constructor(commonDir2, worktree, token, probe) {
@@ -44056,6 +44194,8 @@ var init_publisher_lease = __esm({
       attached = /* @__PURE__ */ new Map();
       listeners = /* @__PURE__ */ new Set();
       held = false;
+      lastActive = Date.now();
+      yielding;
       work = Promise.resolve();
       read() {
         try {
@@ -44069,7 +44209,7 @@ var init_publisher_lease = __esm({
         return c.holder?.nonce === this.token.nonce;
       }
       content() {
-        return { worktree: this.worktree, holder: this.token, attachments: Object.fromEntries(this.attached) };
+        return { worktree: this.worktree, holder: this.token, attachments: Object.fromEntries(this.attached), lastActive: this.lastActive };
       }
       /** Mutations run one at a time; each re-reads the file under its guard. */
       serial(fn) {
@@ -44081,7 +44221,7 @@ var init_publisher_lease = __esm({
       /** This instance holds the lease (nonce included), as of the file now. */
       holds() {
         const now = this.read();
-        const holds = !!now && this.mine(now);
+        const holds = !this.yielding && !!now && this.mine(now);
         if (holds !== this.held) {
           this.held = holds;
           this.emit();
@@ -44091,8 +44231,9 @@ var init_publisher_lease = __esm({
       /** Who publishes this checkout in `roomKey` when it is not this instance: the holder's attachment there. */
       publisher(roomKey2) {
         const now = this.read();
+        if (this.yielding) return this.yielding.attachments[roomKey2];
         if (!now || this.mine(now)) return void 0;
-        return now.attachments?.[roomKey2] ?? Object.values(now.attachments ?? {})[0];
+        return now.attachments?.[roomKey2];
       }
       onChange(listener) {
         this.listeners.add(listener);
@@ -44121,6 +44262,11 @@ var init_publisher_lease = __esm({
           this.holds();
         });
       }
+      /** A Room call or verified PreToolUse hook, never a timer or file watcher. */
+      activity() {
+        this.lastActive = Date.now();
+        return this.tick();
+      }
       /** The reconcile tick of an attached session that does not publish: one of them wins a released or dead lease. */
       tick() {
         return this.serial(async () => this.attached.size ? this.take() : false);
@@ -44128,13 +44274,32 @@ var init_publisher_lease = __esm({
       async take() {
         const current2 = this.read();
         if (current2 && this.mine(current2)) {
+          const requested = current2.requested;
+          if (requested && Date.now() - this.lastActive >= PUBLISHER_IDLE_MS && Date.now() - (current2.lastActive ?? this.lastActive) >= PUBLISHER_IDLE_MS && Date.now() - requested.at < PUBLISHER_IDLE_MS && liveness(requested.holder, this.probe) !== "dead") {
+            this.yielding = requested;
+            this.holds();
+            try {
+              await guarded3(() => compareAndRelease(this.file, this.token));
+            } finally {
+              this.yielding = void 0;
+            }
+            return false;
+          }
           const want = this.content();
-          if (JSON.stringify(current2.attachments) !== JSON.stringify(want.attachments)) await guarded3(() => replace2(this.file, (c) => this.mine(c), want));
+          if (JSON.stringify(current2.attachments) !== JSON.stringify(want.attachments) || current2.lastActive !== this.lastActive) await guarded3(() => replace2(this.file, (c) => this.mine(c), want));
           return this.holds();
         }
         if (current2 && liveness(current2.holder, this.probe) === "dead") {
           const nonce = current2.holder.nonce;
           await guarded3(() => recover(this.file, (c) => c.holder?.nonce === nonce, this.probe));
+        }
+        if (Date.now() - this.lastActive >= PUBLISHER_IDLE_MS) return this.holds();
+        if (current2 && !this.mine(current2) && typeof current2.lastActive === "number" && Date.now() - current2.lastActive >= PUBLISHER_IDLE_MS) {
+          await guarded3(() => replace2(
+            this.file,
+            (c) => c.holder?.nonce === current2.holder.nonce && c.lastActive === current2.lastActive && JSON.stringify(c.attachments) === JSON.stringify(current2.attachments) && typeof c.lastActive === "number" && Date.now() - c.lastActive >= PUBLISHER_IDLE_MS,
+            { ...current2, requested: { holder: this.token, attachments: Object.fromEntries(this.attached), at: this.lastActive } }
+          ));
         }
         if (!fs50.existsSync(this.file)) createExclusive(this.file, this.content());
         return this.holds();
@@ -45525,15 +45690,28 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     };
   }
   daemon = started;
-  const records = watchSessionRecords({ daemon: started, binding, sessionId, boundAtJoin, hostCurrent, lease });
+  const publicationActivity = async () => {
+    await publishing?.activity();
+  };
+  const records = watchSessionRecords({
+    daemon: started,
+    binding,
+    sessionId,
+    boundAtJoin,
+    hostCurrent,
+    lease,
+    publicationActivity: () => {
+      void publicationActivity().catch((error2) => options.log?.(`warn: publisher activity: ${String(error2)}`));
+    }
+  });
   const stop = started.stop.bind(started);
   started.stop = async (reason) => {
     records.stop();
     await stop(reason);
   };
-  return { daemon: started, me: { name, kind: options.kind ?? "agent", owner, ...label ? { label } : {} }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose(), contract: () => started.provider.wsconnected ? selected : void 0, compatibilityRefusal: () => compatibilityRefusal };
+  return { daemon: started, me: { name, kind: options.kind ?? "agent", owner, ...label ? { label } : {} }, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose(), contract: () => started.provider.wsconnected ? selected : void 0, compatibilityRefusal: () => compatibilityRefusal };
 }
-function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurrent, lease }) {
+function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurrent, lease, publicationActivity }) {
   const publishRuntime = () => {
     if (!hostCurrent()) return;
     const current2 = daemon.provider.awareness.getLocalState();
@@ -45574,6 +45752,7 @@ function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurr
       if (typeof activity.at !== "number" || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return;
       lastActivity = activity.at;
       daemon.touch();
+      publicationActivity();
       hookActivity?.();
     } catch {
     }
@@ -45708,7 +45887,7 @@ async function joinSession(opts) {
   const shareMax = await timed("preflight", () => serverShareMax(server, shareRequested, fetchServer));
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
   const view = await timed("view token", () => viewToken(server, roomName, creds, opts.log));
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ""}`;
   const session = {
@@ -45720,6 +45899,7 @@ async function joinSession(opts) {
     lease,
     me,
     autoTagNote,
+    publicationActivity,
     refreshRuntime,
     onHookActivity,
     onRebind,
@@ -45895,10 +46075,10 @@ async function joinLocal(dir, opts) {
   const local = await ensureDaemon(common, roomName, dir, opts.log);
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
-  let daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal;
+  let daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal;
   try {
     ;
-    ({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, replica: replica.doc, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag));
+    ({ daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, replica: replica.doc, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag));
   } catch (e) {
     await local.stop();
     throw e;
@@ -45918,6 +46098,7 @@ async function joinLocal(dir, opts) {
     lease,
     me,
     autoTagNote,
+    publicationActivity,
     refreshRuntime,
     onHookActivity,
     onRebind,
@@ -55851,6 +56032,9 @@ init_src();
 // packages/room-mcp/src/tools/index.ts
 init_src();
 
+// packages/room-mcp/src/tools/state.ts
+init_checkout_publication();
+
 // packages/room-mcp/src/prompt.ts
 init_config();
 
@@ -58213,11 +58397,7 @@ function handlers4(state) {
             branchCreated: prepared?.branchCreated,
             branchExisted: old.prep.branchExisted ?? (prepared?.branchCreated ? false : void 0)
           },
-          base,
-          carriedBase,
-          carriedUntracked,
-          skippedCarry,
-          keptPublication: publication ? { ...publication, base } : void 0,
+          ...!suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : void 0 } : {},
           seq: old.seq + 1
         }));
         if (toolCallAborted()) throw new Error("tool call cancelled");
@@ -62534,7 +62714,10 @@ function createHandlerState(ctx) {
     const cur = s.awareness.getLocalState() ?? {};
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() });
   };
-  const baseFor = (s, person) => manifestHeadOf(s.room, person)?.base ?? participantRecord(s.room, person)?.git?.base ?? "HEAD";
+  const baseFor = (s, person) => {
+    const publisher = checkoutPublisherName(s.room, person) ?? person;
+    return manifestHeadOf(s.room, publisher)?.base ?? participantRecord(s.room, publisher)?.git?.base ?? "HEAD";
+  };
   const baseText = async (s, path66, person = s.me.name) => readBoundedHistoricalText(s.dir, baseFor(s, person), path66);
   const readVersion = async (s, path66, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -63862,6 +64045,7 @@ function createTools(ctx) {
     if (toolCallAborted()) return "error: tool call cancelled";
     const current2 = ctx.getSession();
     current2?.daemon.touch();
+    if (current2?.publicationActivity) await current2.publicationActivity();
     if (current2?.compatibilityRefusal && !["room_state", "room_leave"].includes(name)) return `error: ${current2.compatibilityRefusal}`;
     const closed = current2?.closed;
     const offlineTool = name === "room_state" || name === "room_send" || name === "room_wait" || name === "room_collect";

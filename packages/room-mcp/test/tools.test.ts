@@ -306,10 +306,14 @@ describe('session gating', () => {
   it('touches before dispatch, including failed calls, and reports recent actions', async () => {
     const t = setup()
     const touch = vi.spyOn(t.session!.daemon, 'touch')
+    const publicationActivity = vi.fn(async () => { expect(touch).toHaveBeenCalledTimes(1) })
+    t.session!.publicationActivity = publicationActivity
     try {
       const call = t.tools.call('room_scope', {})
       expect(touch).toHaveBeenCalledTimes(1)
       expect(await call).toContain('error:')
+      expect(publicationActivity).toHaveBeenCalledOnce()
+      delete t.session!.publicationActivity
       t.session!.awareness.setLocalState({ user: me, status: 'idle', lastActive: Date.now() - 240_000 })
       const out = await t.tools.call('room_state', {})
       expect(out).toContain('last action 4m ago')

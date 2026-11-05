@@ -143,6 +143,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (toolCallAborted()) return 'error: tool call cancelled'
       const current = ctx.getSession()
       current?.daemon.touch()
+      if (current?.publicationActivity) await current.publicationActivity()
       if (current?.compatibilityRefusal && !['room_state', 'room_leave'].includes(name)) return `error: ${current.compatibilityRefusal}`
       const closed = current?.closed
       const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect'

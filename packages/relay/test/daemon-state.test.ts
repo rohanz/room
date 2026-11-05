@@ -55,6 +55,8 @@ it('requires the explicit daemon lifecycle contract, leaving the legacy baseline
 it('accepts only the private native Windows owner and protected effective DACL', () => {
   const privateAcl = { owner: 'S-1-user', user: 'S-1-user', protected: true, grants: ['S-1-user', 'S-1-5-18', 'S-1-5-32-544'] }
   expect(() => checkWindowsAcl(privateAcl, 'state')).not.toThrow()
+  // An elevated administrator's files are owned by BUILTIN\\Administrators on Windows Server: ownership alone grants no access.
+  expect(() => checkWindowsAcl({ ...privateAcl, owner: 'S-1-5-32-544' }, 'state')).not.toThrow()
   for (const report of [{ ...privateAcl, owner: 'other' }, { ...privateAcl, protected: false }, { ...privateAcl, grants: [...privateAcl.grants, 'S-1-1-0'] }]) expect(() => checkWindowsAcl(report, 'state')).toThrow(/not private/)
 })
 

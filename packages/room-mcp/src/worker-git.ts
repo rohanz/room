@@ -124,6 +124,26 @@ export type WorkerCleanupPreservation = {
 export const collectHeadRef = (tag: string, id: string) => `refs/room/collect-head/${tag}/${id}`
 export const collectBaseRef = (tag: string, id: string) => `refs/room/collect-base/${tag}/${id}`
 
+const privateWorkerRefs = (w: Pick<LocalWorker, 'tag' | 'id'>) => [
+  carryRef(w.tag), carriedUntrackedRef(w.tag), collectHeadRef(w.tag, w.id), collectBaseRef(w.tag, w.id),
+]
+
+/** Pin the same carry/kept objects under a borrower's identity. The owner lane must be held. */
+export function inheritWorkerRefs(commonDir: string, owner: Pick<LocalWorker, 'tag' | 'id'>, retry: Pick<LocalWorker, 'tag' | 'id'>): void {
+  const sources = privateWorkerRefs(owner), targets = privateWorkerRefs(retry)
+  const refs = boundedGitSync(commonDir, ['--git-dir', commonDir, 'for-each-ref', '--format=%(refname) %(objectname)', ...sources]).toString()
+  const values = new Map(refs.trim().split('\n').filter(Boolean).map(line => line.split(' ') as [string, string]))
+  const commands = sources.map((ref, index) => values.has(ref) ? `update ${targets[index]} ${values.get(ref)}` : `delete ${targets[index]}`)
+  boundedGitSync(commonDir, ['--git-dir', commonDir, 'update-ref', '--stdin'], { input: Buffer.from(commands.join('\n') + '\n') })
+}
+
+/** A detached borrower owns only its pins; never delete its owner's refs or checkout. */
+export function removeWorkerRefs(commonDir: string, worker: Pick<LocalWorker, 'tag' | 'id'>): void {
+  boundedGitSync(commonDir, ['--git-dir', commonDir, 'update-ref', '--stdin'], {
+    input: Buffer.from(privateWorkerRefs(worker).map(ref => `delete ${ref}\n`).join('')),
+  })
+}
+
 /** Compare checkout output against the lead, including commits after collection's captured HEAD. */
 export async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, capturedHead?: string): Promise<string[]> {
   const exclusions = workerOwnedPaths(w).exclusions

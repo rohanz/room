@@ -3,12 +3,13 @@ import path from 'node:path'
 import { git, gitBlobInfoMany, gitWholeTree, isGitTimeout, type GitBlobInfo } from '@room/roomd/git'
 import { ensureCommit, roomRemote } from '@room/roomd'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
+import { checkoutContact, checkoutPublication, stalePublication } from '../checkout-publication.js'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { carryRef, collectHeadRef, workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
-import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
+import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshotMetadata, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline, localWorkers, registrySnapshotForDir } from '../worker-registry.js'
 import { keptPublicationMatches } from '../kept-publication.js'
@@ -153,15 +154,23 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
 async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number } = {}) {
-  const { rooms, baseFor } = state
+  const { rooms } = state
+  const baseFor = (session: Session, person: string) => {
+    const fallback = state.baseFor(session, person)
+    return snapshots.get(person)?.snap?.head.base ?? fallback
+  }
   /** Per-file byte ceiling for local and Git reads; collection raises it, previews keep the default. */
   const limit = options.limit ?? DISK_TEXT_LIMIT
   const people = participants.map(p => p.person)
   const snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
+  const publicationLinks: { person: string; session: Session; snap: ParticipantSnapshot }[] = []
+  const stale = new Set<string>()
   const acceptedRecords = new Map<string, ParticipantGit>()
   if (!options.diskOnly) for (const { person, session } of participants) {
     const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []
-    const snap = snapshot(session.room, person, view)
+    const { snap, links } = checkoutPublication(session.room, person, view)
+    publicationLinks.push(...links.map(snap => ({ person, session, snap })))
+    if (snap && stalePublication(session.room, snap, state.now?.() ?? Date.now())) stale.add(person)
     snapshots.set(person, { session, snap })
     const record = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view)
     if (record !== 'updating') acceptedRecords.set(person, { ...record })
@@ -194,6 +203,10 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (previewWorker(session, person)) { coverageLines.push(`${person}: trusted local worktree`); continue }
     if (!snap) { gaps.push({ person, why: 'no manifest record' }); coverageLines.push(`${person}: no manifest record`); continue }
     const age = Math.max(0, Math.floor(((state.now?.() ?? Date.now()) - snap.head.scannedAt) / 1000))
+    const contact = checkoutContact(session.room, person, viewOf(state, session))
+    if (snap.name === person && contact !== person) coverageLines.push(`${person}: address ${contact} for this checkout`)
+    if (snap.name !== person) coverageLines.push(`${person}: checkout publication by ${snap.name}; address ${contact} for this checkout`)
+    if (stale.has(person)) gaps.push({ person, why: `stale publication from ${snap.name} (scanned ${age}s ago); ask the active session to refresh` })
     coverageLines.push(`${person} (${snap.head.level}, scanned ${age}s ago, rev ${snap.head.rev}):`)
     const shared = [...snap.entries].filter(([, entry]) => entry.state === 'shared').map(([path]) => path)
     const held = [...snap.entries].filter(([, entry]) => entry.state === 'held').map(([path, entry]) => `${path} (${entry.held ?? 'not shared'})`)
@@ -247,6 +260,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const cached = versions.get(p)
     if (cached) return cached
     const snap = snapshots.get(person)?.snap
+    if (stale.has(person)) return { kind: 'unknown', why: 'updating', detail: 'stale publication; old text was not used' }
     let version = await versionOf(snap, p, {
       gitAt,
       known: hash => readBoundedCheckoutText(caller.dir, hash, p, 'utf8', false).catch(() => undefined),
@@ -810,7 +824,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         || [worker?.finishedAt ?? 0, current.tag].join(':') !== captured.key
         || captured.refs.some(([ref, value]) => refStamp(ref) !== value)
     }).map(captured => captured.person)
-    return [...new Set([...(headStamp() !== capturedHead || refStamp('packed-refs') !== packedStamp ? [caller.me.name] : []), ...resumed, ...changedLifecycle, ...movedSince(state, [...snapshots].filter(([person]) => !settledRuns.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))])]
+    return [...new Set([...(headStamp() !== capturedHead || refStamp('packed-refs') !== packedStamp ? [caller.me.name] : []), ...resumed, ...changedLifecycle, ...movedSince(state, publicationLinks.filter(({ person }) => !settledRuns.has(person)))])]
   }
   const isCurrent = () => moved().length === 0
   // Keep provenance from this build, never from a later publication during a command.

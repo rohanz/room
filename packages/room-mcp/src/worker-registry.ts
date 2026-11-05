@@ -16,7 +16,7 @@ import { HOST_ENDED, idleClaimsDue, statusOf, type ExitObservation, type Livenes
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { sameStartTime } from '@room/relay/process'
 
@@ -769,7 +769,13 @@ export class WorkerRegistry {
     if (record.sharedWith) {
       const owner = this.read(record.sharedWith)
       if (!owner || owner.sharedWith || path.resolve(owner.dir) !== path.resolve(record.dir)
+        || owner.lead.participant !== record.lead.participant || owner.lead.room !== record.lead.room
         || ['retiring', 'retired', 'abandoned'].includes(owner.phase)) throw new Error('shared worktree owner is no longer available')
+      // dir= continues the owner's tree, including carried WIP or a kept snapshot.
+      // Capture it in the same lane as collect/refresh, before exposing the borrower.
+      record = { ...record, base: owner.base, carriedBase: owner.carriedBase,
+        carriedUntracked: owner.carriedUntracked, collectedKeep: owner.collectedKeep,
+        keptPublication: owner.keptPublication, capabilities: { ...record.capabilities, collect: owner.capabilities.collect } }
     }
     const deadline = performance.now() + GUARD_WAIT_MS
     for (;;) {
@@ -795,6 +801,14 @@ export class WorkerRegistry {
       } catch (error) { await pauseForGuard(deadline, error) }
     }
     this.heldOperations.set(record.id, 'spawn')
+    if (record.sharedWith) {
+      try { inheritWorkerRefs(this.commonDir, this.read(record.sharedWith)!, record) }
+      catch (error) {
+        try { await this.abandonPreparation(record.id) }
+        finally { await this.finishOperation(record.id) }
+        throw error
+      }
+    }
     this.changed(record.id)
     } finally { if (record.sharedWith) await this.finishOperation(record.sharedWith) }
   }
@@ -1066,6 +1080,7 @@ export class WorkerRegistry {
     if (current?.phase !== 'retiring' || current.cleanup?.[roomKey] !== 'pending') return current
     return this.update(id, old => {
       const cleanup = { ...old.cleanup, [roomKey]: 'done' as const }
+      if (old.sharedWith && Object.values(cleanup).every(state => state === 'done')) removeWorkerRefs(this.commonDir, old)
       return { ...old, cleanup, ...(Object.values(cleanup).every(state => state === 'done') ? { phase: 'retired' as const } : {}), seq: old.seq + 1 }
     })
   }
@@ -1295,6 +1310,7 @@ export class WorkerRegistry {
 
   private rollbackPreparation(record: WorkerRecord): void {
     const prep = record.prep
+    if (record.sharedWith) { removeWorkerRefs(this.commonDir, record); return }
     // A supplied directory has no resources for this preparation to undo.
     if (prep.created !== true && prep.branchCreated !== true
       && !Object.keys(prep.previousCarryRefs ?? {}).length) return
@@ -1332,7 +1348,7 @@ export class WorkerRegistry {
   async abandonPreparation(id: string): Promise<void> {
     const record = this.read(id)
     if (!record || record.runs.at(-1)?.launch) return
-    if (record.phase === 'preparing' || record.phase === 'prepared') this.rollbackPreparation(record)
+    if (record.sharedWith || record.phase === 'preparing' || record.phase === 'prepared') this.rollbackPreparation(record)
     await this.update(id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
   }
 

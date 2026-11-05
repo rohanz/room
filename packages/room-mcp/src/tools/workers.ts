@@ -269,7 +269,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ? await timed('carry-publication', () => acknowledgeKeptPublication(s, undefined, carried!.paths!)) : undefined
         await registry.update(id, old => ({ ...old, phase: 'prepared', prep: { ...old.prep, step: 'prepared', created,
           branchCreated: prepared?.branchCreated, branchExisted: old.prep.branchExisted ?? (prepared?.branchCreated ? false : undefined) },
-          base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined, seq: old.seq + 1 }))
+          ...(!suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined } : {}), seq: old.seq + 1 }))
         if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }

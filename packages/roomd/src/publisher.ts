@@ -92,6 +92,10 @@ export class Publisher {
   /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
   applyInputs(next: PublicationInputs): void {
     const { host } = this
+    if (!next.policy.publisher && next.policy.publisherName && next.policy.publisherName !== host.name) {
+      const fence = host.roomDoc.manifestHead.get(next.policy.publisherName)?.fence
+      if (fence) this.formerPublisher = { name: next.policy.publisherName, fence }
+    }
     if (next.policy.publisher && !host.inputs.policy.publisher && this.formerPublisher) {
       withdrawFormerPublisher(host.roomDoc, this.formerPublisher.name, this.formerPublisher.fence, host.name)
       this.formerPublisher = undefined
@@ -135,7 +139,7 @@ export class Publisher {
       for (const path of this.excludedPaths) if (!factPaths.has(path)) facts.push({ path, change: 'M', excluded: true })
     }
     const manifestPlan = prepareManifestPublication({ room: host.roomDoc, name: host.name, fence, base: next.head, level: next.policy.level,
-      prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
+      prefixes: next.policy.textPrefixes, scannedAt: host.roomDoc.manifestHead.get(host.name)?.scannedAt ?? 0, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
       ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
     const wantedBase = new Set(facts.filter(f => !f.excluded && authorizesText(next.policy, f.path)).map(f => `${host.name}\0${next.head}:${f.path}`))
     const baseTextDeletes = [...host.roomDoc.ownedBaseTexts.keys()].filter(key => key.startsWith(`${host.name}\0`) && !wantedBase.has(key))

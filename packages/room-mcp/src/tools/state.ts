@@ -1,3 +1,4 @@
+import { checkoutPublisherName } from '../checkout-publication.js'
 import { createWorkerRuntime, registryRunningWorkers } from './workers.js'
 import { createJoin } from './join.js'
 import { createShare } from './share.js'
@@ -101,7 +102,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   /** The commit a person's overlay is a delta from (their own HEAD). A carried worker in a
    *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
    *  and its workers) uses the carried commit itself. */
-  const baseFor = (s: Session, person: string) => manifestHeadOf(s.room, person)?.base ?? participantRecord(s.room, person)?.git?.base ?? 'HEAD'
+  const baseFor = (s: Session, person: string) => {
+    const publisher = checkoutPublisherName(s.room, person) ?? person
+    return manifestHeadOf(s.room, publisher)?.base ?? participantRecord(s.room, publisher)?.git?.base ?? 'HEAD'
+  }
   const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => readBoundedHistoricalText(s.dir, baseFor(s, person), path)
   const readVersion: HandlerState['readVersion'] = async (s, path, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {

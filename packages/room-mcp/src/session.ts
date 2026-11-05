@@ -116,6 +116,8 @@ export interface Session {
   /** Latest preview started by this MCP session; never reconstructed from shared room history. */
   lastPreview?: { clean: boolean; complete: boolean; testsPassed?: boolean; partialPassed?: boolean; testsCommand?: string }
   policyStore: PolicyStore
+  /** Verified tool activity for the checkout publisher lease. */
+  publicationActivity?: () => Promise<void>
   /** Refresh hook/session runtime metadata before a Room tool is dispatched. */
   refreshRuntime?: () => void
   /** Route a verified bound hook contact to the host's monotonic presence clock. */
@@ -590,7 +592,7 @@ export function encodeRoom(roomName: string): string { return encodeURIComponent
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
 /** What a join resolved: the daemon under a leased name, its store, and the lease and hub that keep the name. */
-export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; refreshRuntime: () => void; onHookActivity: (listener: () => void) => void; onRebind: (listener: (sessionId: string) => void) => void; startupCapClose: () => CapClose | undefined; contract: () => (ContractSelection & { legacy: boolean }) | undefined; compatibilityRefusal: () => string | undefined }
+export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; publicationActivity: () => Promise<void>; refreshRuntime: () => void; onHookActivity: (listener: () => void) => void; onRebind: (listener: (sessionId: string) => void) => void; startupCapClose: () => CapClose | undefined; contract: () => (ContractSelection & { legacy: boolean }) | undefined; compatibilityRefusal: () => string | undefined }
 
 /** Keep a live daemon in sync when a sharing grant changes or settles. */
 export function applySessionPolicy(daemon: Roomd, policy: PolicyStore['policy']): void {
@@ -783,10 +785,12 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     started.stop = async (reason?: string) => { stopLegacyWatch(); stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
   }
   daemon = started
-  const records = watchSessionRecords({ daemon: started, binding, sessionId, boundAtJoin, hostCurrent, lease })
+  const publicationActivity = async () => { await publishing?.activity() }
+  const records = watchSessionRecords({ daemon: started, binding, sessionId, boundAtJoin, hostCurrent, lease,
+    publicationActivity: () => { void publicationActivity().catch(error => options.log?.(`warn: publisher activity: ${String(error)}`)) } })
   const stop = started.stop.bind(started)
   started.stop = async (reason?: string) => { records.stop(); await stop(reason) }
-  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose(), contract: () => started.provider.wsconnected ? selected : undefined, compatibilityRefusal: () => compatibilityRefusal }
+  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime: records.refresh, onHookActivity: records.onHookActivity, onRebind: records.onRebind, startupCapClose: () => startupCapClose(), contract: () => started.provider.wsconnected ? selected : undefined, compatibilityRefusal: () => compatibilityRefusal }
 }
 
 /** What watchSessionRecords installs; `stop` ends the poll before the daemon stops. */
@@ -800,9 +804,9 @@ interface SessionRecordsWatch {
 }
 
 /** Poll the bound host session's records into the daemon's presence; a rebinding withdraws publisher authority. */
-function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurrent, lease }: {
+function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurrent, lease, publicationActivity }: {
   daemon: Roomd; binding: ReturnType<typeof createSessionBinding>; sessionId: string; boundAtJoin: string | undefined
-  hostCurrent: () => boolean; lease: ParticipantLease
+  hostCurrent: () => boolean; lease: ParticipantLease; publicationActivity: () => void
 }): SessionRecordsWatch {
   // The bound session's records (ledger SF3): SessionStart's session.json, the before-edit hook's runtime.json
   // and hook-activity.json. Polled, since a new binding (Claude /clear) moves them to another directory.
@@ -837,6 +841,7 @@ function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurr
       if (typeof activity.at !== 'number' || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return
       lastActivity = activity.at
       daemon.touch()
+      publicationActivity()
       hookActivity?.()
     } catch { /* absent or partially written hook state; retry on the next poll */ }
   }
@@ -965,7 +970,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested, fetchServer))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds, opts.log))
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
   const session: Session = {
@@ -975,7 +980,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     daemon,
     policyStore,
     lease,
-    me, autoTagNote, refreshRuntime, onHookActivity, onRebind,
+    me, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind,
     dir,
     roomUrl,
     roomName,
@@ -1127,9 +1132,9 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const local = await ensureDaemon(common, roomName, dir, opts.log)
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined, contract: NamedRoomd['contract'], compatibilityRefusal: NamedRoomd['compatibilityRefusal']
+  let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, publicationActivity: () => Promise<void>, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined, contract: NamedRoomd['contract'], compatibilityRefusal: NamedRoomd['compatibilityRefusal']
   try {
-    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, replica: replica.doc, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, replica: replica.doc, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   if (replica.disposed) { await daemon.stop(); await local.stop(); throw new RoomdError('local join was cancelled by an explicit leave', 2) }
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
@@ -1141,7 +1146,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     daemon,
     policyStore,
     lease,
-    me, autoTagNote, refreshRuntime, onHookActivity, onRebind,
+    me, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind,
     dir,
     roomUrl,
     roomName,

@@ -1,8 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gitCommonDir } from '@room/roomd'
+import { publisherLease, type PublisherLeaseFile } from '../src/publisher-lease.js'
+import { worktreePath } from '../src/choice.js'
+import { writeAtomic } from '../src/leases.js'
 import { participantRecord, snapshot, versionOf } from '@room/shared'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
@@ -88,3 +92,51 @@ describe('one publisher per checkout, end to end (registry §16, D5)', () => {
     await vi.waitFor(() => expect(next.room.manifestHead.get(next.me.name)?.coverage).toEqual({ kind: 'all' }), { timeout: 15_000 })
   }, 90_000)
 })
+
+it('hands an idle checkout to its active session and previews either session through the new publisher', async () => {
+  const idle = await joinSession({ dir, sessionId: 'idle-activity', log: () => {} })
+  sessions.push(idle)
+  const active = await joinSession({ dir, sessionId: 'active-activity', log: () => {} })
+  sessions.push(active)
+  const common = await gitCommonDir(dir)
+  const folder = join(common, 'room', 'publishers')
+  const file = readdirSync(folder).filter(name => name.endsWith('.json')).map(name => join(folder, name))
+    .find(file => (JSON.parse(readFileSync(file, 'utf8')) as PublisherLeaseFile).holder.sessionId === 'idle-activity')!
+  const record = JSON.parse(readFileSync(file, 'utf8')) as PublisherLeaseFile
+  const authority = publisherLease(common, await worktreePath(dir), record.holder)
+  // Age only this checkout's activity clock, leaving hub/name/transport clocks real.
+  const aged = Date.now() - 8 * 60 * 60_000
+  ;(authority as unknown as { lastActive: number }).lastActive = aged
+  writeAtomic(file, { ...record, lastActive: aged })
+  let overlap = false
+  const check = () => { overlap ||= publishing(idle) && publishing(active) }
+  const unwatch = [idle.policyStore.watch(check), active.policyStore.watch(check)]
+  try {
+    await active.publicationActivity!()
+    await vi.waitFor(() => {
+      check()
+      expect(publishing(active)).toBe(true)
+      expect(publishing(idle)).toBe(false)
+    }, { timeout: 15_000 })
+    expect(overlap).toBe(false)
+    writeFileSync(join(dir, 'app.py'), 'x = 73\n')
+    await active.daemon.reconcileGitChanges()
+    await active.daemon.settle()
+    const workerDir = join(dir, '.room', 'workers', 'activity-peer')
+    git('worktree', 'add', '-qb', 'activity-peer', workerDir)
+    const peer = await joinSession({ dir: workerDir, sessionId: 'activity-peer', log: () => {} })
+    sessions.push(peer)
+    await vi.waitFor(() => expect(peer.room.manifestHead.get(idle.me.name)?.publisher).toBe(active.me.name), { timeout: 10_000 })
+    const tools = createTools({ cwd: workerDir, getSession: () => peer, setSession: () => {} })
+    try {
+      for (const person of [idle.me.name, active.me.name]) {
+        const result = await tools.call('room_preview_merge', { people: [person], run: 'test "$(cat app.py)" = "x = 73" && echo "1 passed"' })
+        expect(result).not.toContain('PARTIAL')
+        expect(result).toContain('tests: PASSED')
+      }
+    } finally { await tools.shutdown(); sessions.splice(sessions.indexOf(peer), 1) }
+    const state = createTools({ cwd: dir, getSession: () => idle, setSession: () => {} })
+    try { expect(await state.call('room_state', {})).toContain(`published by ${active.me.name}`) }
+    finally { await state.shutdown(); sessions.splice(sessions.indexOf(idle), 1) }
+  } finally { for (const stop of unwatch) stop() }
+}, 60_000)

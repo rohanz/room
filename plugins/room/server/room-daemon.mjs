@@ -15173,11 +15173,29 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 function checkWindowsAcl(report, file) {
   const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
-  if (report.owner !== report.user || !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
+  if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
     throw new Error(`Room state is not private: ${file}; owner ${report.owner}; offending grants ${report.grants.filter((sid) => !allowed.has(sid)).join(", ") || "none"}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`);
   }
 }
+var verifiedWindows = /* @__PURE__ */ new Map();
+var windowsKey = (file) => path.resolve(file).toLowerCase();
+function windowsIdentity(file) {
+  try {
+    const stat = fs.lstatSync(file, { bigint: true });
+    return `${stat.dev}:${stat.ino}`;
+  } catch {
+    return void 0;
+  }
+}
+function windowsPowerShellEnv(file) {
+  const env = {};
+  for (const [key, value2] of Object.entries(process.env)) if (key.toLowerCase() !== "psmodulepath") env[key] = value2;
+  env.ROOM_PRIVATE_PATH = file;
+  return env;
+}
 function windowsAcl(file, protectNew = false, createDirectory = false, repair = false) {
+  const key = windowsKey(file), known = verifiedWindows.get(key);
+  if (known && !protectNew && known === windowsIdentity(file)) return;
   const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     function PrivateAcl($directory) {
       if ($directory) { $acl=New-Object Security.AccessControl.DirectorySecurity; $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
@@ -15203,7 +15221,7 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
     @{owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;user=$u.Value;protected=$a.AreAccessRulesProtected;grants=$g;repaired=$repaired} | ConvertTo-Json -Compress`;
   let report;
   try {
-    report = JSON.parse(execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, ROOM_PRIVATE_PATH: file }, timeout: 5e3, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
+    report = JSON.parse(execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { env: windowsPowerShellEnv(file), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
   } catch (error) {
     const e = error;
     const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
@@ -15212,11 +15230,14 @@ function windowsAcl(file, protectNew = false, createDirectory = false, repair = 
   if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file}`);
   checkWindowsAcl(report, file);
   if (repair && report.repaired) console.error(`Room repaired private state directory: ${file}`);
+  const identity = windowsIdentity(file);
+  if (identity) verifiedWindows.set(key, identity);
 }
 function verifyPrivatePath(file, created = false) {
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file}`);
   if (process.platform === "win32") {
+    if (created && stat.isFile() && verifiedWindows.get(windowsKey(path.dirname(file))) === windowsIdentity(path.dirname(file))) return;
     windowsAcl(file, created);
     return;
   }
