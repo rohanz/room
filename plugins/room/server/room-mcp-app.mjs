@@ -49919,17 +49919,29 @@ __export(worker_registry_exports, {
   workerCarried: () => workerCarried,
   workerLogFile: () => workerLogFile
 });
+import { AsyncLocalStorage as AsyncLocalStorage5 } from "node:async_hooks";
 import fs61 from "node:fs";
 import path60 from "node:path";
 import { randomBytes as randomBytes9 } from "node:crypto";
 function beginWorkerRegistries() {
   holders++;
-  let ended = false;
-  return async () => {
-    if (ended) return;
-    ended = true;
-    if (--holders === 0) await shutdownWorkerRegistries();
+  let ended = false, released = false;
+  const lease = {
+    get ended() {
+      return ended;
+    },
+    fence() {
+      ended = true;
+    },
+    async end() {
+      ended = true;
+      if (released) return;
+      released = true;
+      if (--holders === 0) await shutdownWorkerRegistries();
+    },
+    run: (fn) => leaseScope.run(lease, fn)
   };
+  return lease;
 }
 function retire(registry2) {
   let done = retiring.get(registry2);
@@ -49962,16 +49974,17 @@ async function shutdownWorkerRegistries() {
   }
 }
 function registryForDir(dir, sessionId) {
-  if (shuttingDown) return Promise.reject(shutdownRefusal());
-  const call = openRegistry(dir, sessionId, epoch);
+  const lease = leaseScope.getStore();
+  if (shuttingDown || lease?.ended) return Promise.reject(shutdownRefusal());
+  const call = openRegistry(dir, sessionId, epoch, lease);
   const tracked = call.catch(() => {
   }).finally(() => calls.delete(tracked));
   calls.add(tracked);
   return call;
 }
-async function openRegistry(dir, sessionId, started) {
+async function openRegistry(dir, sessionId, started, lease) {
   const common = await gitCommonDir(dir);
-  if (epoch !== started) throw shutdownRefusal();
+  if (epoch !== started || lease?.ended) throw shutdownRefusal();
   if (!fs61.existsSync(path60.join(common, "HEAD"))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`);
   let pending2 = registries.get(common);
   if (!pending2) {
@@ -49994,7 +50007,7 @@ async function openRegistry(dir, sessionId, started) {
     };
     const opened = WorkerRegistry.open(common, { identity: identity4, watch: !process.env.VITEST }).then((registry2) => {
       live.add(registry2);
-      if (epoch !== started) {
+      if (epoch !== started || lease?.ended) {
         void retire(registry2);
         throw shutdownRefusal();
       }
@@ -50116,7 +50129,7 @@ async function workerCarried(dir, env = process.env) {
   if (!id3 || !safeId(id3)) return void 0;
   return (await openWorkerReader(dir)).read(id3);
 }
-var registries, MAX_PROCESS_REGISTRIES, epoch, shuttingDown, calls, live, retiring, shutdownRefusal, holders, admitted, WorkerRegistry;
+var registries, MAX_PROCESS_REGISTRIES, epoch, shuttingDown, calls, live, retiring, shutdownRefusal, holders, leaseScope, admitted, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
@@ -50140,6 +50153,7 @@ var init_worker_registry = __esm({
     retiring = /* @__PURE__ */ new Map();
     shutdownRefusal = () => new StorageRefused("unavailable", "this Room MCP is shutting down; no worker registry opens");
     holders = 0;
+    leaseScope = new AsyncLocalStorage5();
     WorkerRegistry = class _WorkerRegistry {
       constructor(store, file) {
         this.store = store;
@@ -66542,7 +66556,7 @@ init_context();
 init_disk_text();
 var SHUTDOWN_SETTLE_MS = 2e3;
 function createHandlerState(ctx) {
-  const endRegistries = beginWorkerRegistries();
+  const registryLease = beginWorkerRegistries();
   const now = ctx.now ?? (() => Date.now());
   const log2 = ctx.log ?? ((l) => process.stderr.write(`room-mcp: ${l}
 `));
@@ -66770,9 +66784,11 @@ function createHandlerState(ctx) {
     scheduleInboxWrite,
     upgraded,
     attachHooks: (s) => rooms.add(s, "primary"),
+    registryLease,
     clearStale: (s) => state.cleanupMine(s, "stale from an earlier session"),
     async shutdown() {
       rooms.close();
+      registryLease.fence();
       preserveBridgeFacts = true;
       wakes.stop();
       for (const joined of rooms.all()) {
@@ -66791,7 +66807,7 @@ function createHandlerState(ctx) {
         const started = performance.now();
         const remaining = () => Math.max(0, SHUTDOWN_SETTLE_MS - (performance.now() - started));
         const quiet = await rooms.settle(remaining());
-        const stopped = await within(endRegistries(), remaining());
+        const stopped = await within(registryLease.end(), remaining());
         if (!quiet || !stopped) log2(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`);
       };
       if (!s) {
@@ -68084,71 +68100,74 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       const items = chosen.map((c) => ({ id: c.m.id, priority: c.m.priority, line: line(c) }));
       return { batch, items, notices, more };
     },
-    async call(name, args2, signal, handoff2) {
-      if (name === "room_state" && args2?.check === true) return handlers10.room_state(args2);
-      let release;
-      if (CHOOSES_ROOM.has(name)) {
-        pendingMoves++;
-        const previous = moves;
-        const mine = new Promise((resolve6) => {
-          release = () => {
-            pendingMoves--;
-            resolve6();
-          };
-        });
-        moves = previous.then(() => mine);
-        const wait = untilAborted(signal);
-        const cancelled = await Promise.race([previous.then(async () => {
-          while (workerOps.size) await Promise.all([...workerOps]);
-        }).then(() => false), wait.aborted]);
-        wait.done();
-        if (cancelled) {
-          release();
-          return "error: tool call cancelled";
-        }
-      } else if (WORKER_OPS.has(name)) {
-        const wait = untilAborted(signal);
-        while (pendingMoves) {
-          if (await Promise.race([moves.then(() => false), wait.aborted])) {
-            wait.done();
-            return "error: tool call cancelled";
-          }
-        }
-        wait.done();
-        const done = new Promise((resolve6) => {
-          release = resolve6;
-        });
-        workerOps.add(done);
-        void done.then(() => workerOps.delete(done));
-      }
-      try {
-        if (name === "room_spawn") currentToolTiming()?.endQueue();
-        const operation = name === "room_spawn" ? "spawn" : name === "room_collect" ? args2?.discard ? "discard" : "collect" : name === "room_done" ? "report" : name === "room_send" ? "message" : name === "room_preview_merge" ? "preview" : "reconcile";
-        return await withDirectoryAdmission(ctx.getSession()?.dir ?? ctx.cwd, operation, async () => {
-          const batch = ledger2.open("reply");
-          try {
-            const body = await run3(name, args2, signal, batch);
-            const rejected = ctx.getSession()?.rejected;
-            const result3 = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room
-
-${body}` : body;
-            const warning = name === "room_state" ? staleVersionWarning() : void 0;
-            const text2 = warning ? `${warning}
-${result3}` : result3;
-            if (signal?.aborted) ledger2.release(batch);
-            else if (handoff2) handoff2({ text: text2, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
-            else ledger2.commit(batch);
-            return text2;
-          } catch (e) {
-            ledger2.release(batch);
-            throw e;
-          }
-        });
-      } finally {
-        release?.();
-      }
+    call(name, args2, signal, handoff2) {
+      return state.registryLease.run(() => callTool(name, args2, signal, handoff2));
     }
   };
+  async function callTool(name, args2, signal, handoff2) {
+    if (name === "room_state" && args2?.check === true) return handlers10.room_state(args2);
+    let release;
+    if (CHOOSES_ROOM.has(name)) {
+      pendingMoves++;
+      const previous = moves;
+      const mine = new Promise((resolve6) => {
+        release = () => {
+          pendingMoves--;
+          resolve6();
+        };
+      });
+      moves = previous.then(() => mine);
+      const wait = untilAborted(signal);
+      const cancelled = await Promise.race([previous.then(async () => {
+        while (workerOps.size) await Promise.all([...workerOps]);
+      }).then(() => false), wait.aborted]);
+      wait.done();
+      if (cancelled) {
+        release();
+        return "error: tool call cancelled";
+      }
+    } else if (WORKER_OPS.has(name)) {
+      const wait = untilAborted(signal);
+      while (pendingMoves) {
+        if (await Promise.race([moves.then(() => false), wait.aborted])) {
+          wait.done();
+          return "error: tool call cancelled";
+        }
+      }
+      wait.done();
+      const done = new Promise((resolve6) => {
+        release = resolve6;
+      });
+      workerOps.add(done);
+      void done.then(() => workerOps.delete(done));
+    }
+    try {
+      if (name === "room_spawn") currentToolTiming()?.endQueue();
+      const operation = name === "room_spawn" ? "spawn" : name === "room_collect" ? args2?.discard ? "discard" : "collect" : name === "room_done" ? "report" : name === "room_send" ? "message" : name === "room_preview_merge" ? "preview" : "reconcile";
+      return await withDirectoryAdmission(ctx.getSession()?.dir ?? ctx.cwd, operation, async () => {
+        const batch = ledger2.open("reply");
+        try {
+          const body = await run3(name, args2, signal, batch);
+          const rejected = ctx.getSession()?.rejected;
+          const result3 = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room
+
+${body}` : body;
+          const warning = name === "room_state" ? staleVersionWarning() : void 0;
+          const text2 = warning ? `${warning}
+${result3}` : result3;
+          if (signal?.aborted) ledger2.release(batch);
+          else if (handoff2) handoff2({ text: text2, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
+          else ledger2.commit(batch);
+          return text2;
+        } catch (e) {
+          ledger2.release(batch);
+          throw e;
+        }
+      });
+    } finally {
+      release?.();
+    }
+  }
 }
 
 // packages/room-mcp/src/index.ts
