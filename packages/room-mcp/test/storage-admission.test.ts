@@ -375,7 +375,11 @@ it('keeps a registration whose ticket file vanished while its operation is still
     await new Promise(resolve => setTimeout(resolve, 1300))
     const during = await m.gate.drain(m.owner)
     expect(during.complete).toBe(false)
-    expect(during.live.map(view => view.id)).toEqual([expect.stringMatching(/^registration:/)])
+    // The registration blocks the drain as this live process's evidence. A Windows identity probe can be
+    // inconclusive under load ('unknown', which also blocks); it must never read as dead, which an operator could resolve.
+    expect([...during.live, ...during.unknown].map(view => view.id), JSON.stringify(during)).toEqual([expect.stringMatching(/^registration:/)])
+    expect(during.dead, JSON.stringify(during)).toEqual([])
+    if (process.platform !== 'win32') expect(during.live.map(view => view.id)).toEqual([expect.stringMatching(/^registration:/)])
     paused.resolve()
     await operation
     // Finishing the operation lets the sweep acknowledge by unregistering.
