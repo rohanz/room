@@ -35002,9 +35002,9 @@ function directoryChain(root, dir) {
   }
   return { state: "present" };
 }
-function sessionEntries(root, within = path34.dirname(path34.dirname(root))) {
+function sessionEntries(root, within2 = path34.dirname(path34.dirname(root))) {
   const result3 = [];
-  const chain = directoryChain(within, root);
+  const chain = directoryChain(within2, root);
   if (chain.state === "issue") return [{ kind: "issue", path: root, message: chain.message }];
   if (chain.state === "absent") return [];
   try {
@@ -43084,6 +43084,18 @@ function workerOrigin(s) {
     isWorker: !!process.env.ROOM_TAG || !!s.room.workerViewOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name
   };
 }
+async function within(work, ms2) {
+  let timer;
+  const late = new Promise((resolve6) => {
+    timer = setTimeout(() => resolve6(false), ms2);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([work.then(() => true, () => true), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 var toolSignal, currentToolSignal, Rooms;
 var init_registry = __esm({
   "packages/room-mcp/src/registry.ts"() {
@@ -43195,17 +43207,8 @@ var init_registry = __esm({
        * stopped attachments). False when some is still running: its admission keeps this process registered as recovery
        * evidence rather than acknowledging a drain it has not reached.
        */
-      async settle(deadlineMs) {
-        let timer;
-        const late = new Promise((resolve6) => {
-          timer = setTimeout(() => resolve6(false), deadlineMs);
-          timer.unref();
-        });
-        try {
-          return await Promise.race([Promise.allSettled([...this.background]).then(() => true), late]);
-        } finally {
-          clearTimeout(timer);
-        }
+      settle(deadlineMs) {
+        return within(Promise.allSettled([...this.background]), deadlineMs);
       }
       stopAttachment(attachment) {
         attachment?.stop();
@@ -45646,7 +45649,10 @@ async function processCwds(since) {
     const uid2 = typeof process.getuid === "function" ? process.getuid() : void 0;
     return procCwds(pids.filter((name) => /^\d+$/.test(name)), uid2, {
       readCwd: (pid) => fs56.promises.readlink(`/proc/${pid}/cwd`),
-      ownerOf: (pid) => fs56.promises.stat(`/proc/${pid}`).then((st) => st.uid, () => void 0),
+      ownerOf: (pid) => fs56.promises.stat(`/proc/${pid}`).then((st) => st.uid, (error2) => {
+        const code = error2.code;
+        return code === "ENOENT" || code === "ESRCH" ? "gone" : void 0;
+      }),
       startedAt: linuxProcessStart
     }, since);
   }
@@ -45676,7 +45682,9 @@ async function procCwds(pids, uid, read2, since) {
       if (code === "ENOENT" || code === "ESRCH") continue;
       if (code === "EACCES" || code === "EPERM") {
         const owner = await read2.ownerOf(pid);
-        if (owner === void 0 || owner !== uid) continue;
+        if (owner === "gone") continue;
+        if (owner === void 0 || uid === void 0) return void 0;
+        if (owner !== uid) continue;
         const started = since === void 0 ? void 0 : await read2.startedAt(pid);
         if (started !== void 0 && started < since) continue;
       }
@@ -48234,6 +48242,8 @@ var init_worker_file_store = __esm({
       watchSettle;
       backgroundRun;
       backgroundAgain = false;
+      /** Set by shutdown(): no later reopen (ensureGeneration) restarts watchers or the poll timer. */
+      shut = false;
       backgroundClosed = true;
       generation = 0;
       reopening;
@@ -48284,6 +48294,12 @@ var init_worker_file_store = __esm({
         this.watchSettle = void 0;
         for (const watcher of this.watchers.splice(0)) watcher.close();
       }
+      /** Stop background reconciliation for good; resolves once a pass already running has finished. */
+      async shutdown() {
+        this.shut = true;
+        this.close();
+        await this.backgroundRun;
+      }
       /**
        * Watch/timer reconciliation is single-flight: one run at a time, and changes observed during a run request exactly
        * one more run after it. Admission makes each run asynchronous from its first step, so microtask coalescing alone
@@ -48310,6 +48326,7 @@ var init_worker_file_store = __esm({
         });
       }
       watch() {
+        if (this.shut) return;
         this.backgroundClosed = false;
         for (const dir of [this.root, path58.join(this.root, "runs")]) {
           privateStateDirectory(dir);
@@ -49861,6 +49878,7 @@ __export(worker_registry_exports, {
   openWorkerReader: () => openWorkerReader,
   ownWorkerNames: () => ownWorkerNames,
   registryForDir: () => registryForDir,
+  shutdownWorkerRegistries: () => shutdownWorkerRegistries,
   workerCarried: () => workerCarried,
   workerLogFile: () => workerLogFile
 });
@@ -49872,6 +49890,13 @@ async function closeRegistryForDir(dir) {
   const pending2 = registries.get(common);
   registries.delete(common);
   (await pending2?.catch(() => void 0))?.close();
+}
+async function shutdownWorkerRegistries() {
+  const pending2 = [...registries.values()];
+  registries.clear();
+  await Promise.all(pending2.map(async (entry) => {
+    await (await entry.catch(() => void 0))?.shutdown();
+  }));
 }
 async function registryForDir(dir, sessionId) {
   const common = await gitCommonDir(dir);
@@ -50087,6 +50112,10 @@ var init_worker_registry = __esm({
       }
       close() {
         this.file?.close();
+      }
+      /** Stop background reconciliation for good and wait for a pass already running. */
+      async shutdown() {
+        await this.file?.shutdown();
       }
       onChange(listener) {
         return this.backend().onChange(listener);
@@ -66656,7 +66685,11 @@ function createHandlerState(ctx) {
       }
       const s = ctx.getSession();
       const settle = async () => {
-        if (!await rooms.settle(SHUTDOWN_SETTLE_MS)) log2(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`);
+        const started = performance.now();
+        const remaining = () => Math.max(0, SHUTDOWN_SETTLE_MS - (performance.now() - started));
+        const quiet = await rooms.settle(remaining());
+        const stopped = await within(shutdownWorkerRegistries(), remaining());
+        if (!quiet || !stopped) log2(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`);
       };
       if (!s) {
         await state.closeWorkersRoom(true).catch(() => {
