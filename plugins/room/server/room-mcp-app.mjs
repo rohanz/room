@@ -46356,7 +46356,7 @@ async function runTrackedProcess(file, args2, options) {
   const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options;
   const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS;
   let admission;
-  let retainTicket = false;
+  let retainTicket = false, groupPid;
   try {
     return await new Promise((resolve6, reject) => {
       if (signal?.aborted) {
@@ -46364,6 +46364,7 @@ async function runTrackedProcess(file, args2, options) {
         return;
       }
       const child = spawn5("sh", ["-c", previewProcessGate, "sh", file, ...args2], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      groupPid = child.pid;
       const out = [], err = [];
       const output = () => Buffer.concat(out).toString() + Buffer.concat(err).toString();
       let bytes = 0, failed, settled = false;
@@ -46467,7 +46468,23 @@ async function runTrackedProcess(file, args2, options) {
   } finally {
     const finish = await admission?.catch(() => void 0);
     if (!retainTicket) await finish?.();
+    else if (finish && groupPid) releaseWhenGroupGone(groupPid, file, finish);
   }
+}
+function releaseWhenGroupGone(pid, file, release) {
+  const check = async () => {
+    try {
+      if (await previewGroupAlive(pid, file)) {
+        setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref();
+        return;
+      }
+      await release();
+    } catch (error2) {
+      console.warn(`room preview: retained helper ${pid}: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref();
+    }
+  };
+  setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref();
 }
 function setPreviewProcessProbeForTests(probe) {
   processProbeForTests = probe;
@@ -47121,7 +47138,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     await fs57.promises.rm(index, { force: true });
   }
 }
-var defs2, ownDiskText, previewGenerations, executable, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, PreviewCancelled, PreviewCleanupIncomplete, previewProcesses, previewProcessGate, CLEANUP_GRACE_MS, KILL_AFTER_MS, cleanupForTests, previewGroupAlive, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
+var defs2, ownDiskText, previewGenerations, executable, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, PreviewCancelled, PreviewCleanupIncomplete, previewProcesses, previewProcessGate, CLEANUP_GRACE_MS, KILL_AFTER_MS, cleanupForTests, previewGroupAlive, RETAINED_HELPER_POLL_MS, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -47215,6 +47232,7 @@ var init_files = __esm({
     KILL_AFTER_MS = 2e3;
     cleanupForTests = {};
     previewGroupAlive = (pid, file) => cleanupForTests.groupAlive ? cleanupForTests.groupAlive(pid, file) : processGroupAlive(pid);
+    RETAINED_HELPER_POLL_MS = 1e3;
     gitSetup = (dir, args2) => {
       const store = previewProcesses.getStore();
       const lock = store?.lock;
