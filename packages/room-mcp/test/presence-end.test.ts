@@ -212,11 +212,13 @@ describe('presence end and the idle lease (registry §18)', () => {
 
     it('does not end the session while the process that attached the MCP still runs (Windows launcher or stale record)', () => {
       const probe = probeWith({ 7: parent, 9: undefined })
-      const record = { hostPid: 9 }
+      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'codex' }] }
       const verdict = hostRecordAlive(record, parent, probe)
       expect(verdict.alive).toBeUndefined()
       expect(verdict.stale).toContain('recorded host pid 9 is gone')
       expect(verdict.stale).toContain('pid 7, codex')
+      // A chain holding only a hook interpreter names no host: unknown, whatever the operating system's pids are.
+      expect(hostRecordAlive({ hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'cmd' }] }, parent, probe).alive).toBeUndefined()
     })
 
     it('treats a reused host pid like a gone one', () => {

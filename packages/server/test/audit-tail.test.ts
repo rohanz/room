@@ -1,7 +1,7 @@
 /** The audit file grows for the server's lifetime: a listing reads only the requested tail within a
  *  byte and time budget, rotation splits it into segments, and retention that deletes old segments is
  *  reported, so neither a truncated scan nor a pruned history is ever presented as complete. */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -42,9 +42,13 @@ describe('audit tail', () => {
     expect(tail).toEqual({ entries: range(19_990, 20_000).map(entry), complete: true, gaps: [] })
   })
 
-  it('reports a passed deadline', async () => {
+  it('reports a deadline that passes during the scan, keeping the newest entries read so far', async () => {
     const dir = tmp(); writeLog(path.join(dir, 'audit.log'), range(1, 20_000))
-    const tail = await new FileStore({ dir }).readAudit({ limit: 10_000, deadlineMs: 0 })
+    // A controlled clock: the deadline is set and the first chunk is read at t, then time has moved past it.
+    let calls = 0
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => 1_000_000 + (calls++ < 2 ? 0 : 1))
+    let tail
+    try { tail = await new FileStore({ dir }).readAudit({ limit: 10_000, deadlineMs: 0 }) } finally { clock.mockRestore() }
     expect(tail.complete).toBe(false)
     expect(tail.gaps).toEqual(['deadline'])
     expect(tail.entries.length).toBeLessThan(10_000)
