@@ -45676,18 +45676,6 @@ async function tryPreviewLock(entry) {
       void finishAdmission2?.().catch(() => {
       });
     });
-    void (async () => {
-      if (!child.pid) return;
-      finishAdmission2 = await admitStorageHelper(child.pid);
-      if (closed) {
-        await finishAdmission2?.();
-        return;
-      }
-      child.stdin.write("GO\n");
-    })().catch(() => {
-      child.stdin.end();
-      child.kill();
-    });
     let settled = false;
     let timer;
     const finish = (release) => {
@@ -45709,7 +45697,19 @@ async function tryPreviewLock(entry) {
     });
     child.on("error", () => finish());
     child.on("close", () => finish());
-    timer = setTimeout(() => finish(), 1e3);
+    void (async () => {
+      if (!child.pid) return;
+      finishAdmission2 = await admitStorageHelper(child.pid);
+      if (closed) {
+        await finishAdmission2?.();
+        return;
+      }
+      child.stdin.write("GO\n");
+      if (!settled) timer = setTimeout(() => finish(), LOCK_ATTEMPT_MS);
+    })().catch(() => {
+      child.stdin.end();
+      child.kill();
+    });
   });
 }
 async function quarantinePreview(entry, reason, since = Date.now()) {
@@ -45848,12 +45848,13 @@ async function evictPreviewLru(root, cap, remove) {
     if (await remove(entry.entry, entry.used)) total -= entry.bytes;
   }
 }
-var lockUnavailableForTests, previewQuarantinePath, cwdsForTests, LINUX_CLK_TCK, linuxBootMs, previewMetaPath;
+var lockUnavailableForTests, LOCK_ATTEMPT_MS, previewQuarantinePath, cwdsForTests, LINUX_CLK_TCK, linuxBootMs, previewMetaPath;
 var init_preview_cache = __esm({
   "packages/room-mcp/src/preview-cache.ts"() {
     "use strict";
     init_storage_admission();
     lockUnavailableForTests = false;
+    LOCK_ATTEMPT_MS = 1e3;
     previewQuarantinePath = (entry) => `${entry}.quarantine`;
     LINUX_CLK_TCK = 100;
     previewMetaPath = (entry) => `${entry}.meta.json`;
