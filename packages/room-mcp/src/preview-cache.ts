@@ -47,11 +47,20 @@ export async function readProcessGroupTable(): Promise<{ pgid: number; stat: str
  * look alive forever and its cached tree could never be reclaimed. When the process table cannot be read, the signal
  * probe is the fallback.
  */
+/**
+ * Signal-0 fallback when the process table cannot be read. Only ESRCH proves absence: EPERM means the target exists
+ * but cannot be signalled, and any other failure is unknown, so both count as alive. Callers retain or wait (within
+ * their own bounds) rather than treat an unreadable process as gone.
+ */
+function signalProbeAlive(target: number): boolean {
+  try { process.kill(target, 0); return true }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
+}
 /** Whether one process is still running (a zombie has exited and only awaits reaping). Same fallback as the group check. */
 export async function processAlive(pid: number, table: () => Promise<{ pid: number; stat: string }[]> = readProcessTable): Promise<boolean> {
   let rows: { pid: number; stat: string }[]
   try { rows = await table() }
-  catch { try { process.kill(pid, 0); return true } catch { return false } }
+  catch { return signalProbeAlive(pid) }
   return rows.some(row => row.pid === pid && !row.stat.startsWith('Z'))
 }
 
@@ -62,7 +71,7 @@ async function readProcessTable(): Promise<{ pid: number; stat: string }[]> {
 export async function processGroupAlive(pgid: number, table: () => Promise<{ pgid: number; stat: string }[]> = readProcessGroupTable): Promise<boolean> {
   let rows: { pgid: number; stat: string }[]
   try { rows = await table() }
-  catch { try { process.kill(-pgid, 0); return true } catch { return false } }
+  catch { return signalProbeAlive(-pgid) }
   return rows.some(row => row.pgid === pgid && !row.stat.startsWith('Z'))
 }
 
