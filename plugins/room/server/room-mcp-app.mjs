@@ -45522,17 +45522,20 @@ function readTable(column) {
 async function readProcessGroupTable() {
   return (await readTable("pgid")).map(({ key: key2, stat: stat4 }) => ({ pgid: key2, stat: stat4 }));
 }
+function signalProbeAlive(target) {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error2) {
+    return error2.code !== "ESRCH";
+  }
+}
 async function processGroupAlive(pgid, table = readProcessGroupTable) {
   let rows;
   try {
     rows = await table();
   } catch {
-    try {
-      process.kill(-pgid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+    return signalProbeAlive(-pgid);
   }
   return rows.some((row) => row.pgid === pgid && !row.stat.startsWith("Z"));
 }
