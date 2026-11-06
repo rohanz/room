@@ -27,7 +27,7 @@ import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
-import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
+import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, previewTreeInUse, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
 import { parsePsLstartUtc, pidAlive } from '@room/local-state/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { leadsCheckout } from '../checkout-lead.js'
@@ -659,7 +659,9 @@ class PreviewCleanupIncomplete extends Error {
   out = ''
   constructor(readonly graceMs: number, readonly reason?: Error) { super(`process cleanup did not finish within ${graceMs}ms`) }
 }
-const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal }>()
+/** `tree` is the preview tree this attempt works in, once chosen, and when the attempt started. */
+const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal; tree?: PreviewTree }>()
+type PreviewTree = { dir: string; since: number }
 // Keep the registered shell alive with the same executable while its child performs the effect.
 export const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; "$@"; status=$?; exit "$status"'
 
@@ -689,10 +691,13 @@ interface TrackedProcessOptions {
   lock?: PreviewUnlock
   env?: NodeJS.ProcessEnv
   signal?: AbortSignal
+  /** The preview tree the process works in; defaults to the attempt's tree. */
+  tree?: PreviewTree
 }
 
 async function runTrackedProcess(file: string, args: string[], options: TrackedProcessOptions): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
   const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options
+  const tree = options.tree ?? previewProcesses.getStore()?.tree
   const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS
   let admission: Promise<(() => Promise<void>) | undefined> | undefined
   let retainTicket = false, groupPid: number | undefined
@@ -791,20 +796,23 @@ async function runTrackedProcess(file: string, args: string[], options: TrackedP
     // original group leader exited. A surviving descendant must never disappear from the drain report.
     const finish = await admission?.catch(() => undefined)
     if (!retainTicket) await finish?.()
-    else if (finish && groupPid) releaseWhenGroupGone(groupPid, file, finish)
+    else if (finish && groupPid) releaseWhenHelperGone(groupPid, file, tree, finish)
   }
 }
 
 /**
- * A cleanup-incomplete preview keeps its helper ticket while any process in its group survives, then releases it, so
- * drain reports the survivors and this MCP can still acknowledge once they are gone. If an operator resolves the
- * ticket first, the later release finds it absent. Polls without holding the process open.
+ * A cleanup-incomplete preview keeps its helper ticket while any process in its group survives and, when it ran in a
+ * preview tree, while any process (an escaped descendant included) still works inside that tree, then releases it, so
+ * drain reports the survivors and this MCP can still acknowledge once they are gone. Both probes fail closed. A
+ * descendant that left both the group and the tree is beyond this evidence, as it is for the tree's quarantine. If an
+ * operator resolves the ticket first, the later release finds it absent. Polls without holding the process open.
  */
 const RETAINED_HELPER_POLL_MS = 1000
-function releaseWhenGroupGone(pid: number, file: string, release: () => Promise<void>): void {
+function releaseWhenHelperGone(pid: number, file: string, tree: PreviewTree | undefined, release: () => Promise<void>): void {
   const check = async () => {
     try {
-      if (await previewGroupAlive(pid, file)) { setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref(); return }
+      const inUse = await previewGroupAlive(pid, file) || (!!tree && await previewTreeInUse(tree.dir, tree.since))
+      if (inUse) { setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref(); return }
       await release()
     } catch (error) {
       console.warn(`room preview: retained helper ${pid}: ${error instanceof Error ? error.message : String(error)}`)
@@ -1294,6 +1302,9 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
 async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string,
   options: { modes: ReadonlyMap<string, number>; observe?: PreviewObserver; historyKey: string; signal?: AbortSignal }): Promise<TestResult> {
   const { modes, observe, historyKey, signal } = options
+  // A process that was already running when this attempt began cannot be one of its descendants.
+  const attemptStartedAt = Date.now()
+  const useTree = (tree: string) => { previewProcesses.getStore()!.tree = { dir: tree, since: attemptStartedAt } }
   let dir: string | undefined
   // Processes outlived the cleanup deadline: leave the tree in place and its lock held until they exit.
   let survivors = false
@@ -1339,6 +1350,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       cached = !!release
       if (cached) {
         dir = cache!
+        useTree(dir)
         try {
           await preparePreviewEntry(s.dir, dir)
           reused = await preparePreviewCache(s.dir, dir, ancestor, source!, observe)
@@ -1354,6 +1366,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       if (!cached) {
         dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-merge-'))
         dir = await fs.promises.realpath(dir)
+        useTree(dir)
         observe?.baseMaterialized?.()
         await materializeGitTree(s.dir, ancestor, dir)
       }
@@ -1450,6 +1463,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       if (survivors) { if (!cached || quarantined) void release?.().catch(() => undefined) }
       else await release?.()
       if (release) previewProcesses.getStore()!.lock = undefined
+      previewProcesses.getStore()!.tree = undefined
       // Maintenance never delays the preview reply and is bounded per pass.
       const evict = cached || previewCapBytes() === 0
       const key = await previewKeyPath(s.dir).catch(() => undefined)

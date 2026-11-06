@@ -234,12 +234,21 @@ export async function clearPreviewQuarantine(entry: string): Promise<boolean> {
   const marker = previewQuarantinePath(entry)
   const marked = await fs.promises.lstat(marker).then(() => true, error => (error as NodeJS.ErrnoException).code !== 'ENOENT')
   if (!marked) return true
-  const real = await fs.promises.realpath(entry).catch(() => path.resolve(entry))
   const since = await fs.promises.readFile(marker, 'utf8').then(text => { const v = (JSON.parse(text) as { since?: unknown }).since; return typeof v === 'number' ? v : undefined }, () => undefined)
-  const cwds = await processCwds(since)
-  if (!cwds || cwds.some(cwd => cwd === real || cwd.startsWith(`${real}${path.sep}`))) return false
+  if (await previewTreeInUse(entry, since)) return false
   await fs.promises.rm(marker, { force: true })
   return true
+}
+
+/**
+ * Whether any of this user's processes has its working directory inside a preview tree. Fails closed: an unreadable
+ * or partial listing counts as in use. `since` disregards an unreadable process that started before the work in
+ * question, as for a quarantine. A process that left both the tree and its process group is beyond this evidence.
+ */
+export async function previewTreeInUse(entry: string, since?: number): Promise<boolean> {
+  const real = await fs.promises.realpath(entry).catch(() => path.resolve(entry))
+  const cwds = await processCwds(since)
+  return !cwds || cwds.some(cwd => cwd === real || cwd.startsWith(`${real}${path.sep}`))
 }
 
 type PreviewMeta = { bytes: number; used: number }

@@ -207,3 +207,27 @@ it('keeps a cleanup-incomplete helper ticket while its group survives, then rele
     expect((await storageGate(common).status()).registrations).toBe(0)
   } finally { setPreviewCleanupForTests(); await f.dispose() }
 }, 30_000)
+
+it('keeps a cleanup-incomplete helper ticket while an escaped descendant works in the preview tree after its group is gone', async () => {
+  if (!posix) return
+  const f = await fixture(true)
+  const pidFile = path.join(f.root, 'escaped.pid')
+  try {
+    // Every original group reads as gone, so only the escaped descendant's working directory can hold the ticket.
+    setPreviewCleanupForTests({ graceMs: 500, groupAlive: async () => false })
+    const common = path.join(f.root, '.git')
+    // A new process group the check cannot signal, with the cached tree as its cwd and the stdout pipe open.
+    const escape = `node -e ${JSON.stringify(`const c=require('child_process').spawn('sleep',['30'],{detached:true,stdio:'inherit'}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); c.unref()`)}`
+    const result = await withDirectoryAdmission(f.root, 'preview', () =>
+      runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'FIRST\n']]), `${escape}; echo '1 passed'`))
+    expect(result.text).toContain('command completion: incomplete')
+    const previewTickets = async () => (await storageGate(common).listTickets()).tickets.filter(ticket => ticket.kind === 'preview')
+    // Several release polls pass with the group gone; the descendant in the tree keeps the ticket for drain.
+    await new Promise(resolve => setTimeout(resolve, 3500))
+    expect((await previewTickets()).length).toBeGreaterThan(0)
+    f.killPidFile(pidFile)
+    await vi.waitFor(async () => expect(await previewTickets()).toEqual([]), { timeout: 15_000, interval: 200 })
+    await closeStorageAdmissions()
+    expect((await storageGate(common).status()).registrations).toBe(0)
+  } finally { setPreviewCleanupForTests(); await f.dispose(pidFile) }
+}, 45_000)
