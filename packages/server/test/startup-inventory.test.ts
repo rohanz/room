@@ -5,8 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { LeveldbPersistence } from 'y-leveldb'
 import * as Y from 'yjs'
+
+// Resolved from this file, so a run from the repository root and one from packages/server start the same server.
+const repo = fileURLToPath(new URL('../../../', import.meta.url))
 
 it('reads no stored values and runs no inventory at startup with several persisted documents', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'room-startup-inventory-'))
@@ -23,7 +27,7 @@ it('reads no stored values and runs no inventory at startup with several persist
     // Resolve levelup from this checkout, not the temporary fixture directory.
     await fs.writeFile(preload, `
 const { createRequire } = require('node:module');
-const localRequire = createRequire(${JSON.stringify(path.join(process.cwd(), 'package.json'))});
+const localRequire = createRequire(${JSON.stringify(path.join(repo, 'package.json'))});
 const LevelUP = localRequire('levelup');
 const original = LevelUP.prototype.createReadStream;
 let valueReads = 0, keyReads = 0, completed = false;
@@ -44,7 +48,7 @@ console.log = (...args) => {
 `)
     const { stdout } = await promisify(execFile)(process.execPath,
       ['--require', preload, '--import', 'tsx', 'packages/server/src/index.ts'], {
-        cwd: process.cwd(), timeout: 15_000,
+        cwd: repo, timeout: 15_000,
         env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: 'fake',
           YPERSISTENCE: dir, DATABASE_URL: '', PORT: '4401' },
       })

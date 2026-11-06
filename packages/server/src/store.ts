@@ -247,6 +247,8 @@ export interface FileStoreOptions {
   auditRotateBytes?: number
   /** Rotated segments kept; older ones are deleted and recorded as pruned (ROOM_AUDIT_KEEP_FILES). Default: all. */
   auditKeepFiles?: number
+  /** The clock audit scans measure their deadline against. Default Date.now. */
+  now?: () => number
 }
 
 /** Default audit segment size before rotation. */
@@ -334,6 +336,7 @@ export class FileStore implements Store {
   private memDroppedThrough = -Infinity
   private readonly auditRotateBytes: number
   private readonly auditKeepFiles?: number
+  private readonly now: () => number
   /** Size of audit.log as this process last knew it; read on first append. */
   private auditSize?: number
   private readonly roomWrites = new SnapshotWriter<string>(async text => { if (this.roomsFile) writeAtomicFile(this.roomsFile, text) })
@@ -346,6 +349,7 @@ export class FileStore implements Store {
   })
 
   constructor(o: FileStoreOptions = {}) {
+    this.now = o.now ?? Date.now
     this.sessionsFile = o.sessionsFile ?? (o.dir ? path.join(o.dir, 'sessions.json') : undefined)
     this.roomsFile = o.roomsFile ?? (o.dir ? path.join(o.dir, 'rooms.json') : undefined)
     this.auditFile = o.auditFile ?? (o.dir ? path.join(o.dir, 'audit.log') : undefined)
@@ -418,7 +422,7 @@ export class FileStore implements Store {
     }
     return withAuditHandles(this.auditFile, q.maxScanBytes, async ({ handles, all, pruned, vanished, rotated }) => {
       if (rotated) return { entries: [], complete: false, gaps: ['rotated'] }
-      const r = await scanAuditTail(handles, q)
+      const r = await scanAuditTail(handles, q, this.now)
       if (r.reachedStart && !all) r.gaps.add('scan-bytes')
       // Which entries a vanished segment held is unknown, so the whole read is suspect.
       if (vanished || (r.reachedStart && all && pruned !== undefined && q.since <= pruned)) r.gaps.add('pruned')
@@ -432,7 +436,7 @@ export class FileStore implements Store {
     if (!this.auditFile) return incomplete()
     return withAuditHandles(this.auditFile, o.maxBytes + 1, async ({ handles, all, pruned, vanished, rotated }) => {
       if (rotated || vanished || !all || pruned !== undefined || handles.reduce((n, h) => n + h.size, 0) > o.maxBytes) return incomplete()
-      const r = await scanAuditTail(handles, { since: -Infinity, limit: o.limit + 1, maxScanBytes: o.maxBytes, deadlineMs: AUDIT_SCAN_DEADLINE_MS, strict: true })
+      const r = await scanAuditTail(handles, { since: -Infinity, limit: o.limit + 1, maxScanBytes: o.maxBytes, deadlineMs: AUDIT_SCAN_DEADLINE_MS, strict: true }, this.now)
       if (!r.reachedStart || r.gaps.size || r.entries.length > o.limit) return incomplete()
       return { entries: r.entries, complete: true }
     })

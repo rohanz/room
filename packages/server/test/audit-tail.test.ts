@@ -1,7 +1,7 @@
 /** The audit file grows for the server's lifetime: a listing reads only the requested tail within a
  *  byte and time budget, rotation splits it into segments, and retention that deletes old segments is
  *  reported, so neither a truncated scan nor a pruned history is ever presented as complete. */
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -44,15 +44,20 @@ describe('audit tail', () => {
 
   it('reports a deadline that passes during the scan, keeping the newest entries read so far', async () => {
     const dir = tmp(); writeLog(path.join(dir, 'audit.log'), range(1, 20_000))
-    // A controlled clock: the deadline is set and the first chunk is read at t, then time has moved past it.
-    let calls = 0
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => 1_000_000 + (calls++ < 2 ? 0 : 1))
-    let tail
-    try { tail = await new FileStore({ dir }).readAudit({ limit: 10_000, deadlineMs: 0 }) } finally { clock.mockRestore() }
+    let t = 0 // each clock reading is one millisecond later
+    const tail = await new FileStore({ dir, now: () => t++ }).readAudit({ limit: 10_000, deadlineMs: 1 })
     expect(tail.complete).toBe(false)
     expect(tail.gaps).toEqual(['deadline'])
+    expect(tail.entries.length).toBeGreaterThan(0)
     expect(tail.entries.length).toBeLessThan(10_000)
     expect(tail.entries.at(-1)!.at).toBe(20_000)
+  })
+
+  it('reports a deadline that passed before the first read with no entries', async () => {
+    const dir = tmp(); writeLog(path.join(dir, 'audit.log'), range(1, 100))
+    let t = 0
+    const tail = await new FileStore({ dir, now: () => (t += 10) }).readAudit({ deadlineMs: 1 })
+    expect(tail).toEqual({ entries: [], complete: false, gaps: ['deadline'] })
   })
 
   it('skips unreadable and overlong lines, saying so, without buffering an overlong line whole', async () => {
