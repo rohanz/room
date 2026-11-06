@@ -68,7 +68,8 @@
         "src/doctor.ts!",
         "test/**/*.test.ts",
         "src/entry.ts!",
-        "src/offline/entry.ts!"
+        "src/offline/entry.ts!",
+        "test/fixtures/storage-helper-owner.ts"
       ],
       "project": [
         "src/**/*.ts!",

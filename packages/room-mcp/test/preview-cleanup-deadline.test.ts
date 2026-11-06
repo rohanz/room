@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { closeStorageAdmissions, storageGate, withDirectoryAdmission } from '../src/storage-admission.js'
 import { previewCachePath, runInMergedTree, setPreviewCleanupForTests } from '../src/tools/files.js'
 import { clearPreviewQuarantine, previewQuarantinePath, quarantinePreview, setPreviewCwdsForTests, tryPreviewLock, lsofCwds, procCwds } from '../src/preview-cache.js'
 import type { Session } from '../src/session.js'
@@ -184,3 +185,25 @@ it('the process probes fail closed: a partial lsof listing or an unreadable own 
   // a deleted cwd keeps its path for prefix matching
   expect(await procCwds(['1'], 501, readers({ '1': '/t/x (deleted)' }))).toEqual(['/t/x'])
 })
+
+it('keeps a cleanup-incomplete helper ticket while its group survives, then releases it so the MCP can acknowledge', async () => {
+  if (!posix) return
+  const f = await fixture(true)
+  let survivors = true
+  try {
+    setPreviewCleanupForTests({ graceMs: 300, groupAlive: async (_pid, file) => file !== 'git' && survivors })
+    const common = path.join(f.root, '.git')
+    const result = await withDirectoryAdmission(f.root, 'preview', () =>
+      runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'FIRST\n']]), `echo '1 passed'`))
+    expect(result.text).toContain('command completion: incomplete')
+    // The operation's own ticket is finished; the surviving group's helper tickets stay visible to drain.
+    const previewTickets = async () => (await storageGate(common).listTickets()).tickets.filter(ticket => ticket.kind === 'preview')
+    expect((await previewTickets()).length).toBeGreaterThan(0)
+    survivors = false
+    await vi.waitFor(async () => expect(await previewTickets()).toEqual([]), { timeout: 5000 })
+    await vi.waitFor(async () => expect((await storageGate(common).status()).tickets).toBe(0), { timeout: 5000 })
+    // Nothing outstanding remains, so this MCP can acknowledge by unregistering.
+    await closeStorageAdmissions()
+    expect((await storageGate(common).status()).registrations).toBe(0)
+  } finally { setPreviewCleanupForTests(); await f.dispose() }
+}, 30_000)

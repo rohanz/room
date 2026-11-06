@@ -695,10 +695,11 @@ async function runTrackedProcess(file: string, args: string[], options: TrackedP
   const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options
   const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS
   let admission: Promise<(() => Promise<void>) | undefined> | undefined
-  let retainTicket = false
+  let retainTicket = false, groupPid: number | undefined
   try { return await new Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }>((resolve, reject) => {
     if (signal?.aborted) { reject(new PreviewCancelled()); return }
     const child = spawn('sh', ['-c', previewProcessGate, 'sh', file, ...args], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    groupPid = child.pid
     const out: Buffer[] = [], err: Buffer[] = []
     const output = () => Buffer.concat(out).toString() + Buffer.concat(err).toString()
     let bytes = 0, failed: Error | undefined, settled = false
@@ -790,7 +791,27 @@ async function runTrackedProcess(file: string, args: string[], options: TrackedP
     // original group leader exited. A surviving descendant must never disappear from the drain report.
     const finish = await admission?.catch(() => undefined)
     if (!retainTicket) await finish?.()
+    else if (finish && groupPid) releaseWhenGroupGone(groupPid, file, finish)
   }
+}
+
+/**
+ * A cleanup-incomplete preview keeps its helper ticket while any process in its group survives, then releases it, so
+ * drain reports the survivors and this MCP can still acknowledge once they are gone. If an operator resolves the
+ * ticket first, the later release finds it absent. Polls without holding the process open.
+ */
+const RETAINED_HELPER_POLL_MS = 1000
+function releaseWhenGroupGone(pid: number, file: string, release: () => Promise<void>): void {
+  const check = async () => {
+    try {
+      if (await previewGroupAlive(pid, file)) { setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref(); return }
+      await release()
+    } catch (error) {
+      console.warn(`room preview: retained helper ${pid}: ${error instanceof Error ? error.message : String(error)}`)
+      setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref()
+    }
+  }
+  setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref()
 }
 
 const gitSetup = (dir: string, args: string[]) => {

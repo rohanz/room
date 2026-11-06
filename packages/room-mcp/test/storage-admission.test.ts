@@ -381,3 +381,41 @@ it('keeps a registration whose ticket file vanished while its operation is still
     await m.gate.reopen(m.owner)
   } finally { paused.resolve(); await operation.catch(() => {}); await m.close() }
 })
+
+it('a production preview helper keeps drain blocked after its MCP is killed, until the helper itself is gone', async () => {
+  if (process.platform === 'win32') return
+  const { common } = fixture()
+  const { createRequire } = await import('node:module')
+  const { fileURLToPath } = await import('node:url')
+  const require = createRequire(import.meta.url)
+  const mcp = spawn(process.execPath, ['--import', require.resolve('tsx'), fileURLToPath(new URL('./fixtures/storage-helper-owner.ts', import.meta.url)), common],
+    { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+  let helperPid: number | undefined
+  try {
+    const ready = await new Promise<{ helperPid: number; mcpPid: number }>((resolve, reject) => {
+      mcp.once('message', value => resolve(value as { helperPid: number; mcpPid: number }))
+      mcp.once('exit', code => reject(new Error(`helper owner exited ${code}`)))
+    })
+    helperPid = ready.helperPid
+    mcp.kill('SIGKILL'); await once(mcp, 'exit')
+    const m = await maintenance(common)
+    try {
+      const progress = await m.gate.drain(m.owner)
+      expect(progress.complete).toBe(false)
+      // The helper ticket is judged by the helper's own identity, written by production admitStorageHelper.
+      const helperTicket = progress.live.find(view => view.pid === ready.helperPid)
+      expect(helperTicket).toBeDefined()
+      expect(progress.live.every(view => view.pid !== ready.mcpPid)).toBe(true) // never judged by the dead MCP
+      await expect(m.gate.resolveDead(m.owner, helperTicket!.id, 'must refuse while the helper runs')).rejects.toMatchObject({ reason: 'blocked' })
+      process.kill(-ready.helperPid, 'SIGKILL'); helperPid = undefined
+      await vi.waitFor(async () => expect((await m.gate.drain(m.owner)).live).toEqual([]), { timeout: 5000 })
+      for (let pass = 0; pass < 2; pass++)
+        for (const view of (await m.gate.drain(m.owner)).dead) await m.gate.resolveDead(m.owner, view.id, 'test reconciled the helper and its MCP')
+      expect((await m.gate.drain(m.owner)).complete).toBe(true)
+      await m.gate.reopen(m.owner)
+    } finally { await m.close() }
+  } finally {
+    if (mcp.exitCode === null && mcp.signalCode === null) mcp.kill('SIGKILL')
+    if (helperPid) { try { process.kill(-helperPid, 'SIGKILL') } catch { /* gone */ } }
+  }
+}, 60_000)
