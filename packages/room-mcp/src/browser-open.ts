@@ -1,4 +1,4 @@
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { rename, rm, writeFile } from 'node:fs/promises'

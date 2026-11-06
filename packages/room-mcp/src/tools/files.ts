@@ -27,7 +27,7 @@ import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
 import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
-import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
+import { parsePsLstartUtc, pidAlive } from '@room/local-state/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { leadsCheckout } from '../checkout-lead.js'
 

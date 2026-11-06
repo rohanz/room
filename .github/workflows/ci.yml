@@ -27,10 +27,10 @@ jobs:
       - name: Check durable directory creation on Windows
         run: >-
           npx vitest run
-          packages/relay/test/durable-directory.test.ts
+          packages/local-state/test/durable-directory.test.ts
           packages/server/test/durable-directory.test.ts
           packages/relay/test/private-state.test.ts
-          packages/relay/test/private-state-prime.test.ts
+          packages/local-state/test/private-state-prime.test.ts
           packages/relay/test/daemon-launch.test.ts
 
   windows-native-smoke:
@@ -49,7 +49,7 @@ jobs:
       # Package configs use package-relative include paths. Vitest resolves --config against --root.
       # Setup clears inherited Room/host identity, points config at temp, and never uses account credentials.
       - name: Relay process identity on Windows
-        run: npx vitest run --root packages/relay --config vitest.config.ts test/windows-process.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-relay.json"
+        run: npx vitest run --root packages/local-state --config vitest.config.ts test/windows-process.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-relay.json"
       - name: Worker process and shell identity on Windows
         run: npx vitest run --root packages/room-mcp --config vitest.config.ts test/windows-process.test.ts test/windows-process-native.test.ts test/launch-identity.test.ts test/worker-shell-env.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-workers.json"
       - name: Local relay, hooks, executable paths and retained launch smoke

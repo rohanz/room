@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { primePrivateState, privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
+import { primePrivateState, privateStateDirectory, verifyPrivatePath } from '@room/local-state/private-state'
 import { stopLocalDaemon } from '../src/daemon.js'
 
 const roots: string[] = []

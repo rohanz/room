@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { startLocalDaemon, stopLocalDaemon } from './daemon.js'
-import { primePrivateState, privateStateDirectory, verifyPrivatePath } from './private-state.js'
+import { primePrivateState, privateStateDirectory, verifyPrivatePath } from '@room/local-state/private-state'
 
 const args = process.argv.slice(2)
 const value = (flag: string): string => {

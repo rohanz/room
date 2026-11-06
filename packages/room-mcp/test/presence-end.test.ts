@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, joinedPresenceWorkers, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
-import type { ProcessInfo } from '@room/relay/process'
+import type { ProcessInfo } from '@room/local-state/process'
 import { writeSessionRecord, type Session } from '../src/session.js'
 
 import { closeRegistryForDir, WorkerRegistry } from '../src/worker-registry.js'

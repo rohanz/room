@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { cloneId, privateStateDirectory, relayIdentity, verifyPrivatePath } from '@room/relay'
-import { liveness, writeAtomic, type Liveness, type ProcessIdentity } from '@room/relay/leases'
-import { sameStartTime, type ProcessProbe } from '@room/relay/process'
+import { cloneId, relayIdentity } from '@room/relay'
+import { privateStateDirectory, verifyPrivatePath } from '@room/local-state/private-state'
+import { liveness, writeAtomic, type Liveness, type ProcessIdentity } from '@room/local-state/leases'
+import { sameStartTime, type ProcessProbe } from '@room/local-state/process'
 
 const exec = promisify(execFile)
 const MAX_RECORD_BYTES = 2 * 1024 * 1024

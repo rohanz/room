@@ -1,7 +1,7 @@
 import { deleteFixture, publishFixture } from './fixtures/manifest.js'
 import fs from 'node:fs'
 import net from 'node:net'
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'

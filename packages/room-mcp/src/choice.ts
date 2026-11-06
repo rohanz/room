@@ -11,7 +11,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { primePrivateDirectory } from '@room/relay'
+import { primePrivateDirectory } from '@room/local-state/private-state'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd'
 import { mainWorktree } from '@room/roomd/local'

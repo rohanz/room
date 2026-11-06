@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { probeProcessNow } from '@room/relay/process'
+import { probeProcessNow } from '@room/local-state/process'
 import { defaultSpawner, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation, terminateWorktreeProcesses } from '../src/worker-process.js'
 import { captureOwnedWorkerIdentity } from '../src/worker-launch.js'
 

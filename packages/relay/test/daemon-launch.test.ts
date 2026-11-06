@@ -8,14 +8,14 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { CURRENT_COMPAT } from '@room/hub-core'
 import { cloneId } from '../src/index.js'
 import { daemonChildEnvironment, ensureLocalDaemon } from '../src/daemon.js'
-import { privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
+import { privateStateDirectory, verifyPrivatePath } from '@room/local-state/private-state'
 import * as proof from '../src/proof.js'
 
 vi.mock('node:child_process', async importOriginal => ({ ...await importOriginal<typeof import('node:child_process')>(), spawn: vi.fn() }))
 // These tests are about the launcher's wait and ownership logic against a real clock. The native Windows ACL
 // check (5-10 s of PowerShell on CI) is covered by private-state tests; here it only adds wall time.
-vi.mock('../src/private-state.js', async importOriginal => {
-  const real = await importOriginal<typeof import('../src/private-state.js')>()
+vi.mock('@room/local-state/private-state', async importOriginal => {
+  const real = await importOriginal<typeof import('@room/local-state/private-state')>()
   const { mkdirSync } = await import('node:fs')
   return process.platform === 'win32' ? { ...real, primePrivateState: async () => {}, verifyPrivatePath: () => {}, privateStateDirectory: (dir: string) => { mkdirSync(dir, { recursive: true }) } } : real
 })

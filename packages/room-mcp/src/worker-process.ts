@@ -183,8 +183,8 @@ export async function stopWorkerWithEscalation(options: {
   return wait()
 }
 
-export { pidAlive, parsePsLstartUtc, probeOwnProcess, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
-import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+export { pidAlive, parsePsLstartUtc, probeOwnProcess, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/local-state/process'
+import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/local-state/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
   return pid > 0 && probe(pid) !== undefined

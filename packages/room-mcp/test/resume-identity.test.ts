@@ -11,8 +11,8 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 
 const identities = vi.hoisted(() => ({ cached: { startTime: 'darwin:1:100', executable: 'claude' }, fresh: { startTime: 'darwin:1:200', executable: 'claude' } }))
-vi.mock('@room/relay/process', async importOriginal => {
-  const actual = await importOriginal<typeof import('@room/relay/process')>()
+vi.mock('@room/local-state/process', async importOriginal => {
+  const actual = await importOriginal<typeof import('@room/local-state/process')>()
   return { ...actual, probeProcess: (pid: number) => pid > 6000 ? identities.cached : actual.probeProcess(pid),
     probeProcessNow: (pid: number) => pid > 6000 ? identities.fresh : actual.probeProcessNow(pid) }
 })

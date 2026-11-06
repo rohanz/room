@@ -28,10 +28,10 @@ await build({ ...bundleOptions, entryPoints: ['packages/relay/src/daemon-bin.ts'
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worker.ts'], outfile: 'plugins/room/server/parse-worker.mjs' })
 
 // One builtins-only privacy policy for hooks and the relay; committed and checked with the other plugin assets.
-await build({ entryPoints: ['packages/relay/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
+await build({ entryPoints: ['packages/local-state/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
 // One builtins-only Windows process table reader for hooks and the relay.
-await build({ entryPoints: ['packages/relay/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
+await build({ entryPoints: ['packages/local-state/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
 await build({ entryPoints: ['packages/room-mcp/src/hosts/session-host.ts'], outfile: 'plugins/room/hooks/session-host.mjs', bundle: true, platform: 'node', format: 'esm' })
 

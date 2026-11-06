@@ -1,7 +1,7 @@
 import { legacyWorkerHost, retainedSessionMissing } from './hosts/lifecycle.js'
 import type { HostId } from './hosts/types.js'
 /** The local source of truth for worker operations. No replicated document grants local authority. */
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
@@ -20,7 +20,7 @@ import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorker
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
 import { WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
-import { sameStartTime } from '@room/relay/process'
+import { sameStartTime } from '@room/local-state/process'
 
 export interface LegacySource {
   key: string; tag: string; dir: string; branch: string; host: HostId

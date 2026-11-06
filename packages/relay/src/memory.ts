@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { privateStateDirectory, verifyPrivatePath } from './private-state.js'
+import { privateStateDirectory, verifyPrivatePath } from '@room/local-state/private-state'
 import * as Y from 'yjs'
 import { MAX_MEMORY_BYTES, ROOM_DOC_MAX_BYTES, memoryTypes, memorySnapshot } from '@room/shared'
 

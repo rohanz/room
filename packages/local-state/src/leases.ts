@@ -38,7 +38,28 @@ function syncDirectory(dir: string): void {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
-function ensureDurableDirectory(dir: string, holdsFile = true): void {
+/**
+ * Directories whose entry this process has made durable (parent fsynced after observing them), by identity.
+ * A replaced directory has a new dev/ino, so it is walked again; the map is bounded and only an optimization.
+ */
+const durableDirectories = new Map<string, string>()
+const DURABLE_DIRECTORY_CACHE = 1024
+function directoryIdentity(dir: string): string | undefined {
+  try { const stat = fs.statSync(dir, { bigint: true }); return stat.isDirectory() ? `${stat.dev}:${stat.ino}` : undefined }
+  catch { return undefined }
+}
+
+function durableDirectory(dir: string, holdsFile = true): void {
+  const known = durableDirectories.get(dir)
+  if (known !== undefined && known === directoryIdentity(dir)) return
+  ensureDurableDirectory(dir, holdsFile)
+  const identity = directoryIdentity(dir)
+  if (identity === undefined) return
+  if (durableDirectories.size >= DURABLE_DIRECTORY_CACHE) durableDirectories.clear()
+  durableDirectories.set(dir, identity)
+}
+
+function ensureDurableDirectory(dir: string, holdsFile: boolean): void {
   const parent = path.dirname(dir)
   // A drive/share root already exists; Windows rejects mkdir on it with EPERM.
   // Stop only here: existing descendants still need their parent synced below.
@@ -46,7 +67,7 @@ function ensureDurableDirectory(dir: string, holdsFile = true): void {
     if (!fs.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
     return
   }
-  ensureDurableDirectory(parent, false)
+  durableDirectory(parent, false)
   try {
     // Every atomic writer uses the same creation/Windows ACL policy as daemon startup.
     if (process.platform === 'win32' && !holdsFile) fs.mkdirSync(dir) // ancestors hold no private files
@@ -82,7 +103,7 @@ export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProce
 
 function writeTemp(file: string, content: object): string {
   const dir = path.dirname(file)
-  ensureDurableDirectory(dir)
+  durableDirectory(dir)
   cleanupOrphanTemps(dir)
   const start = probeOwnProcess()?.startTime
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : 'u'}-n${randomUUID()}.tmp`

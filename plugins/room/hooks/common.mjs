@@ -344,7 +344,7 @@ export function writeStdout(text) {
 
 /**
  * This hook's ancestor processes as `{pid, startTime, executable}`, the identity room-mcp's probeProcess
- * reads (relay/src/process.ts), so the MCP can find the record whose chain holds its host (registry §17).
+ * reads (local-state/src/process.ts), so the MCP can find the record whose chain holds its host (registry §17).
  */
 export function processChain(start = process.ppid, depth = 8, readers = systemProcessReaders, onReadError = () => {}) {
   const table = processTable(readers, onReadError)
@@ -371,7 +371,7 @@ const systemProcessReaders = {
 }
 
 /**
- * Copy of linuxProcessName in packages/relay/src/process.ts (hooks cannot import it; a test keeps
+ * Copy of linuxProcessName in packages/local-state/src/process.ts (hooks cannot import it; a test keeps
  * them equal): the name as invoked, so a native Claude linked to `.../claude/versions/2.1.286` is `claude`.
  */
 export function linuxProcessName(files) {

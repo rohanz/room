@@ -241,7 +241,7 @@ it.skipIf(process.platform !== 'win32').each(['preflight-first', 'client-first']
   const daemon = await ensureLocalDaemon(dir, room, { entryPath: fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), execArgv: ['--import', require.resolve('tsx')], startupTimeoutMs: 15000 })
   daemonPids.push(daemon.pid)
   expect((await relayHealth(daemon.port, daemon.key))?.ready).toBe(true)
-  const { verifyPrivatePath } = await import('../src/private-state.js')
+  const { verifyPrivatePath } = await import('@room/local-state/private-state')
   verifyPrivatePath(path.join(dir, 'room'))
   verifyPrivatePath(path.join(dir, 'room/relay.json'))
   await stopLocalDaemon(dir)

@@ -83,12 +83,14 @@ async function build(dir: string, pin?: Pin) {
     const daemonSource = path.join(dir, 'packages/relay/src/daemon.ts')
     const hasDaemon = await fs.access(daemonSource).then(() => true, () => false)
     const hasClientCompat = await fs.access(path.join(dir, 'packages/room-mcp/src/client-compat.ts')).then(() => true, () => false)
+    // Process identity moved from relay to local-state after 0.17.39.
+    const processSource = await fs.access(path.join(dir, 'packages/local-state/src/process.ts')).then(() => './packages/local-state/src/process.ts', () => './packages/relay/src/process.ts')
     await fs.writeFile(entry, [
       ...(hasClientCompat ? ["export * as clientCompat from './packages/room-mcp/src/client-compat.ts'"] : []),
       ...(hasDaemon ? ["export * as daemon from './packages/relay/src/daemon.ts'"] : []),
       "export * as contracts from './packages/hub-core/src/protocol.ts'",
       "export * as workerRecords from './packages/shared/src/index.ts'",
-      "export * as processes from './packages/relay/src/process.ts'",
+      `export * as processes from '${processSource}'`,
       "export { WebSocket } from 'ws'",
       "export { startRelay, AuthorityLock, SecureSession } from './packages/relay/src/index.ts'",
       "export { HubClient, hubTransport } from './packages/room-mcp/src/hub-client.ts'",

@@ -192,3 +192,21 @@ it.runIf(process.platform === 'win32')('surfaces Windows create denial below an 
     expect(fs.existsSync(path.join(parent, 'new'))).toBe(false)
   } finally { execFileSync('icacls', [parent, '/remove:d', `*${user}`], { stdio: 'pipe' }) }
 }, 30_000)
+
+it('syncs ancestors once per directory identity and walks again after the directory is replaced', () => {
+  const dir = setup(), nested = path.join(dir, 'a', 'b'), file = path.join(nested, 'record.json')
+  const fsync = vi.spyOn(fs, 'fsyncSync')
+  writeAtomic(file, { n: 1 })
+  const first = fsync.mock.calls.length
+  fsync.mockClear()
+  writeAtomic(file, { n: 2 })
+  const repeat = fsync.mock.calls.length
+  expect(repeat).toBeLessThan(first)
+  // A replaced directory has a new identity: the walk recreates it and makes its entry durable again.
+  fs.rmSync(path.join(dir, 'a'), { recursive: true })
+  fsync.mockClear()
+  writeAtomic(file, { n: 3 })
+  expect(fsync.mock.calls.length).toBeGreaterThan(repeat)
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ n: 3 })
+  if (process.platform !== 'win32') expect(fs.statSync(path.join(dir, 'a')).mode & 0o777).toBe(0o700)
+})
