@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import { main, runLegacyImport, legacyStatus, withMaintenance } from '../src/offline/room-state.js'
-import { importLegacyWorkers, type LegacySource } from '../src/offline/legacy-import.js'
+import { discoverLegacyWorktrees, importBudget, importLegacyWorkers, type LegacySource } from '../src/offline/legacy-import.js'
 import { WorkerRegistry } from '../src/worker-registry.js'
 import { closeStorageAdmissions } from '../src/storage-admission.js'
 
@@ -100,4 +100,73 @@ it('resolves a verified-dead ticket with an audit note, then explicitly reopens 
   const reopened = run(['reopen', '--common-dir', common])
   expect(reopened.status, reopened.stderr).toBe(0)
   expect((await legacyStatus(common)).gate?.phase).toBe('legacy')
+})
+
+
+it('persists the pre-registry decision before newer worker worktrees appear', async () => {
+  const { root, common } = fixture()
+  const registry = await WorkerRegistry.open(common, { watch: false })
+  registry.close()
+  execFileSync('git', ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-q', '--allow-empty', '-m', 'base'])
+  execFileSync('git', ['-C', root, 'worktree', 'add', '-qb', 'room/new', path.join(root, '.room/workers/new')])
+  await closeStorageAdmissions()
+  expect((await legacyStatus(common)).maintenanceRequired).toBe(false)
+  const reopened = await WorkerRegistry.open(common, { watch: false })
+  reopened.close()
+  expect(fs.existsSync(path.join(common, 'room/registry/migration.json'))).toBe(false)
+})
+
+it('refuses unreadable registered Room worktrees instead of omitting them from inventory', () => {
+  const { root, common } = fixture()
+  execFileSync('git', ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-q', '--allow-empty', '-m', 'base'])
+  const worker = path.join(root, '.room/workers/old')
+  execFileSync('git', ['-C', root, 'worktree', 'add', '-qb', 'room/old', worker])
+  const original = fs.realpathSync
+  vi.spyOn(fs, 'realpathSync').mockImplementation(((file: fs.PathLike) => {
+    if (String(file).endsWith('/.room/workers/old')) throw Object.assign(new Error('inventory I/O failure'), { code: 'EACCES' })
+    return original(file)
+  }) as typeof fs.realpathSync)
+  expect(() => discoverLegacyWorktrees(common)).toThrow('inventory is incomplete')
+})
+
+it('never completes a checkpoint with a previously assigned source absent from inventory', async () => {
+  const { common, source } = fixture(), file = path.join(common, 'room/registry/migration.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({ v: 1, done: false, sources: { [source.key]: { id: 'w_stable', state: 'assigned' } } }))
+  await expect(runLegacyImport(common, { sources: () => [] })).rejects.toThrow('assignments remain unresolved')
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).done).toBe(false)
+  expect((await legacyStatus(common)).gate?.phase).toBe('draining')
+})
+
+it('expires the whole offline attempt before publication and leaves the gate draining', async () => {
+  const { common, source } = fixture()
+  let elapsed = 0
+  await expect(runLegacyImport(common, {
+    mono: () => elapsed,
+    sources: () => { elapsed = 10 * 60_000; return [source] },
+  })).rejects.toThrow('exceeded 10 minutes')
+  expect(fs.existsSync(path.join(common, 'room/registry/migration.json'))).toBe(false)
+  expect((await legacyStatus(common)).gate?.phase).toBe('draining')
+})
+
+it('checks the deadline again after Git preparation and before publishing worker records', async () => {
+  const { common, source } = fixture()
+  let elapsed = 0
+  Object.defineProperty(source, 'oldId', { get() { elapsed = 10 * 60_000; return undefined } })
+  await expect(runLegacyImport(common, { mono: () => elapsed, sources: () => [source] })).rejects.toThrow('exceeded 10 minutes')
+  const map = JSON.parse(fs.readFileSync(path.join(common, 'room/registry/migration.json'), 'utf8'))
+  expect(map.done).toBe(false)
+  expect(map.sources[source.key].state).toBe('assigned')
+  expect(fs.existsSync(path.join(common, 'room/registry/workers', map.sources[source.key].id + '.json'))).toBe(false)
+  expect((await legacyStatus(common)).gate?.phase).toBe('draining')
+})
+
+it('bounds every Git subprocess by the remaining absolute attempt budget', () => {
+  let now = 0
+  const budget = importBudget(() => now, 4000)
+  expect(budget.gitTimeout()).toBe(3000)
+  now = 3900
+  expect(budget.gitTimeout()).toBe(100)
+  now = 4000
+  expect(() => budget.gitTimeout()).toThrow('exceeded 10 minutes')
 })

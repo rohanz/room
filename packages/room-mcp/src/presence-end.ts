@@ -1,3 +1,4 @@
+import { withoutAdmission } from './storage-admission.js'
 import { sessionHostIdentity } from './hosts/session-host.js'
 /**
  * Presence ends within a bounded time once the host session has finished, even when the MCP lives on
@@ -229,7 +230,7 @@ export class PresenceEnd {
     this.episodeId = options.episodeId ?? 'interactive'
     this.last = this.mono()
     if (options.tickMs !== 0) {
-      this.timer = setInterval(() => { void this.tick() }, options.tickMs ?? PRESENCE_TICK_MS)
+      this.timer = setInterval(() => { void withoutAdmission(() => this.tick()).catch(error => options.log?.(`presence check will retry: ${error instanceof Error ? error.message : String(error)}`)) }, options.tickMs ?? PRESENCE_TICK_MS)
       this.timer.unref?.()
     }
   }
@@ -298,7 +299,12 @@ export class PresenceEnd {
       }
     }
     }
-    if (this.options.withWorkersAdmission) await this.options.withWorkersAdmission(decide)
-    else await decide()
+    try {
+      if (this.options.withWorkersAdmission) await this.options.withWorkersAdmission(decide)
+      else await decide()
+    } catch (error) {
+      // Maintenance/capacity refusal gives us no authority to decide presence. Keep it and retry next tick.
+      this.options.log?.(`worker admission unavailable; presence retained: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -12,9 +13,10 @@ import { completionMessage } from '@room/shared'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 const token = (nonce: string) => ({ pid: 100, startTime: 'born', executable: 'node', sessionId: 'host', nonce })
-function fixture(): { root: string; record: WorkerRecord } {
+function fixture(checkout = false): { root: string; record: WorkerRecord } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-writes-'))
   roots.push(root)
+  execFileSync('git', ['init', ...(checkout ? [] : ['--bare']), '-q', root])
   fs.mkdirSync(path.join(root, '.room/workers/tests'), { recursive: true })
   const record: WorkerRecord = {
     v: 1, id: 'w_write', tag: 'tests', name: 'lead+tests', mode: 'local', room: 'local/repo',
@@ -27,7 +29,7 @@ function fixture(): { root: string; record: WorkerRecord } {
   }
   return { root, record }
 }
-const open = (root: string, nonce = 'lead', alive: 'alive' | 'dead' = 'alive') => WorkerRegistry.open(root,
+const open = (root: string, nonce = 'lead', alive: 'alive' | 'dead' = 'alive') => openAdmittedRegistry(fs.existsSync(path.join(root, 'HEAD')) ? root : path.join(root, '.git'),
   { identity: token(nonce), migrate: false, watch: false, liveness: () => alive })
 
 describe('registry write paths', () => {
@@ -162,7 +164,7 @@ describe('registry write paths', () => {
     await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
     await store.beginDiscard(record.id, false, [])
     await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
-    const patch = path.join(root, 'room/registry/patches/w_write.patch')
+    const patch = path.join(store.root, 'patches/w_write.patch')
     expect(fs.readFileSync(patch, 'utf8')).toBe('patch body')
     await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
     expect(fs.readdirSync(path.dirname(patch))).toEqual(['w_write.patch'])
@@ -178,7 +180,7 @@ describe('registry write paths', () => {
     await store.writeIntent(record)
     await store.beginDiscard(record.id, true, [])
     const bytes = Buffer.from('recovery patch')
-    const file = path.join(root, 'room/registry/patches/w_write.patch')
+    const file = path.join(store.root, 'patches/w_write.patch')
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     await mutateWorkerFixture(store, record.id, old => ({ ...old,
       discard: { ...old.discard!, patch: { path: file, sha256 } }, seq: old.seq + 1 }))
@@ -190,7 +192,7 @@ describe('registry write paths', () => {
   })
 
   it('replays an abandoned discard plan and retires after publishing its patch', async () => {
-    const { root, record } = fixture()
+    const { root, record } = fixture(true)
     const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
     git(root, 'init', '-q')
     git(root, 'config', 'user.name', 'Lead')
@@ -198,10 +200,10 @@ describe('registry write paths', () => {
     fs.writeFileSync(path.join(root, 'base.txt'), 'base\n')
     git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
     const base = git(root, 'rev-parse', 'HEAD')
+    const lead = await open(root)
     fs.rmSync(record.dir, { recursive: true })
     git(root, 'worktree', 'add', '-qb', 'room/tests', record.dir)
     fs.writeFileSync(path.join(record.dir, 'change.txt'), 'recover me\n')
-    const lead = await open(root)
     await lead.writeIntent(record)
     // Supply a verified identity so injected liveness controls this fixture.
     // A PID-only launch must be retained if that PID happens to exist on CI.
@@ -212,7 +214,7 @@ describe('registry write paths', () => {
     expect((await observer.read(record.id))?.phase).toBe('retiring')
     expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })
     expect(fs.existsSync(record.dir)).toBe(false)
-    expect(fs.readFileSync(path.join(root, 'room/registry/patches/w_write.patch'), 'utf8')).toContain('recover me')
+    expect(fs.readFileSync(path.join(lead.root, 'patches/w_write.patch'), 'utf8')).toContain('recover me')
   }, 30_000)
 
   it('restores an interrupted collect to active with a partial apply warning', async () => {

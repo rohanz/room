@@ -8,12 +8,16 @@ const finishes: (() => Promise<void>)[] = []
 afterEach(async () => { for (const finish of finishes.splice(0)) await finish(); await closeStorageAdmissions() })
 
 export async function openAdmittedRegistry(common: string, options: RegistryOptions = {}): Promise<WorkerRegistry> {
-  let capture!: ReturnType<typeof AsyncLocalStorage.snapshot>, registry!: WorkerRegistry
+  return openAdmittedStore(common, () => WorkerRegistry.open(common, options))
+}
+
+export async function openAdmittedStore<T extends { close(): void }>(common: string, open: () => Promise<T>): Promise<T> {
+  let capture!: ReturnType<typeof AsyncLocalStorage.snapshot>, registry!: T
   let ready!: () => void, end!: () => void
   const entered = new Promise<void>(resolve => { ready = resolve })
   const ended = new Promise<void>(resolve => { end = resolve })
   const operation = withAdmission(common, 'reconcile', async () => {
-    registry = await WorkerRegistry.open(common, options)
+    registry = await open()
     capture = AsyncLocalStorage.snapshot()
     ready()
     await ended

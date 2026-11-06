@@ -5,13 +5,13 @@ import { openStorageGate } from '@room/local-state/gate'
 import { compareAndRelease, createExclusive, recover, type InstanceToken } from '@room/local-state/leases'
 import { GATE_LIMITS, STORAGE_PATHS, StorageRefused, type GateOwner, type StorageGate } from '@room/local-state/protocol'
 import { storageInstance } from '../storage-admission.js'
-import { importLegacyWorkers, legacyImportRequired, legacyImportRemedy, type LegacySource } from './legacy-import.js'
+import { importBudget, importLegacyWorkers, legacyImportRequired, legacyImportRemedy, preRegistryImportRequired, type LegacySource } from './legacy-import.js'
 import manifest from '../../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
 const pause = () => new Promise<void>(resolve => setTimeout(resolve, 25))
 export async function legacyStatus(commonDir: string) {
   const gate = openStorageGate(commonDir), status = await gate.status()
-  const required = legacyImportRequired(gate.commonDir, status.legacyImport)
+  const required = legacyImportRequired(gate.commonDir, status.legacyImport, status.gate)
   return { ...status, maintenanceRequired: status.maintenanceRequired || required,
     ...(required ? { remedy: legacyImportRemedy(gate.commonDir) } : status.refusal?.remedy ? { remedy: status.refusal.remedy } : {}) }
 }
@@ -32,7 +32,9 @@ export async function withMaintenance<T>(commonDir: string, fn: (gate: StorageGa
   if (!acquired) throw new StorageRefused('maintenance', 'migration ownership wait exceeded 30 s; existing owner retained')
   let registration
   try {
-    registration = await gate.register({ instance, kind: 'maintenance', release: manifest.version })
+    const before = await gate.status()
+    const preRegistryImport = before.gate?.preRegistryImport ?? (preRegistryImportRequired(gate.commonDir) ? 'required' : 'not-needed')
+    registration = await gate.register({ instance, kind: 'maintenance', release: manifest.version, preRegistryImport })
     const owner = { instance, token: randomBytes(16).toString('hex') }
     const status = await gate.status()
     if (status.gate?.phase === 'draining') await gate.takeOver(owner)
@@ -58,19 +60,22 @@ export async function withMaintenance<T>(commonDir: string, fn: (gate: StorageGa
   }
 }
 
-export async function runLegacyImport(commonDir: string, options: { sources?: (commonDir: string) => LegacySource[]; now?: () => number } = {}): Promise<void> {
+export async function runLegacyImport(commonDir: string, options: { sources?: (commonDir: string) => LegacySource[]; now?: () => number; mono?: () => number } = {}): Promise<void> {
+  const budget = importBudget(options.mono)
   await withMaintenance(commonDir, async (gate, owner) => {
     const deadline = performance.now() + GATE_LIMITS.drainMs
     for (;;) {
+      budget.check()
       const progress = await gate.drain(owner)
       if (progress.complete) break
       if (performance.now() >= deadline) throw new StorageRefused('maintenance', 'drain timed out; gate remains draining; reconcile outstanding tickets before retrying')
       await pause()
     }
-    await importLegacyWorkers(gate.commonDir, owner.instance, { ...options, verify: async () => {
+    await importLegacyWorkers(gate.commonDir, owner.instance, { ...options, budget, verify: async () => {
       if (!(await gate.drain(owner)).complete) throw new StorageRefused('maintenance', 'legacy import requires a complete drain')
     } })
-    await gate.reopen(owner)
+    budget.check()
+    await gate.reopen(owner, { notAfter: budget.notAfter })
   })
 }
 
@@ -101,7 +106,8 @@ export async function main(argv: string[]): Promise<number> {
       await withMaintenance(common, async (gate, owner) => {
         if (command === 'resolve-ticket') await gate.resolveDead(owner, ticket!, note!)
         else {
-          if (legacyImportRequired(gate.commonDir, (await gate.status()).legacyImport))
+          const status = await gate.status()
+          if (legacyImportRequired(gate.commonDir, status.legacyImport, status.gate))
             throw new StorageRefused('maintenance', 'offline legacy import still required', legacyImportRemedy(gate.commonDir))
           await gate.reopen(owner)
         }

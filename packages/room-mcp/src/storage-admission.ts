@@ -15,7 +15,7 @@ import { probeOwnProcess } from '@room/local-state/process'
 import type { InstanceToken } from '@room/local-state/leases'
 import { preflight } from '@room/local-state/preflight'
 import { GATE_LIMITS, StorageRefused, type OperationKind, type PreflightResult, type ReadValidation, type Registration, type StorageGate, type Ticket } from '@room/local-state/protocol'
-import { legacyImportRequired, legacyImportRemedy } from './offline/legacy-import.js'
+import { legacyImportRequired, legacyImportRemedy, preRegistryImportRequired } from './offline/legacy-import.js'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
 interface ProcessRegistration { gate: StorageGate; registration: Registration; preflight: PreflightResult }
@@ -86,7 +86,7 @@ export async function requireAdmission(commonDir: string): Promise<Ticket> {
 export async function assertLegacyReady(commonDir: string, gate = storageGate(commonDir)): Promise<void> {
   const status = await gate.status()
   if (status.refusal) throw new StorageRefused(status.refusal.reason, status.refusal.detail, status.refusal.remedy)
-  if (legacyImportRequired(gate.commonDir, status.legacyImport))
+  if (legacyImportRequired(gate.commonDir, status.legacyImport, status.gate))
     throw new StorageRefused('maintenance', 'offline legacy import required', legacyImportRemedy(gate.commonDir))
 }
 
@@ -103,7 +103,9 @@ export async function storageRegistration(commonDir: string): Promise<ProcessReg
     const evidence = await preflight('mcp', { commonDir: common })
     if (!evidence.ok) throw new StorageRefused('unavailable', evidence.detail, evidence.remedy)
     if (timedOut()) throw new StorageRefused('unavailable', 'storage startup check exceeded 10 s')
-    const registration = await gate.register({ instance: storageInstance(), kind: 'mcp', release: manifest.version })
+    const status = await gate.status()
+    const preRegistryImport = status.gate?.preRegistryImport ?? (preRegistryImportRequired(common) ? 'required' : 'not-needed')
+    const registration = await gate.register({ instance: storageInstance(), kind: 'mcp', release: manifest.version, preRegistryImport })
     try {
       if (timedOut()) throw new StorageRefused('unavailable', 'storage startup check exceeded 10 s')
       await assertLegacyReady(common, gate)
@@ -147,7 +149,9 @@ export async function withAdmission<T>(commonDir: string, kind: OperationKind, f
 export async function detachedAdmission(commonDir: string, kind: OperationKind): Promise<{
   run<T>(fn: () => Promise<T>): Promise<T>; finish(): Promise<void>
 }> {
-  const common = storageGate(commonDir).commonDir, parent = currentAdmission(common)
+  const common = storageGate(commonDir).commonDir, enclosing = ambient.getStore()
+  const parent = enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)
+    ? await acquire(enclosing, common) : undefined
   const { gate, registration } = await storageRegistration(common)
   const ticket = await gate.admit(registration, kind, { parent })
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
@@ -168,6 +172,7 @@ export async function withValidatedRead<T>(commonDir: string, fn: () => Promise<
     if (!scope?.active || scope.ticket || scope.commonDir && scope.commonDir !== gate.commonDir) return
     if (scope.observed !== undefined && scope.observed !== generation)
       throw new StorageRefused('maintenance', 'storage changed during this operation; nothing was changed, retry it')
+    scope.commonDir = gate.commonDir
     scope.observed = generation
   }
   const enclosing = reads.getStore()
@@ -175,6 +180,7 @@ export async function withValidatedRead<T>(commonDir: string, fn: () => Promise<
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await gate.observe()
     if (before.phase !== 'legacy') throw new StorageRefused('maintenance', 'storage is under maintenance')
+    remember(before.generation)
     const context = { commonDir: gate.commonDir, active: true }
     let value: T
     try { value = await reads.run(context, fn) }

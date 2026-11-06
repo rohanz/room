@@ -1,3 +1,4 @@
+import { openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { publishFixture } from './fixtures/manifest.js'
 /**
@@ -160,7 +161,7 @@ function record(root: string, id: string, tag = 'money'): WorkerRecord {
     createdAt: 1, seq: 1,
   }
 }
-function storeRoot(): string { const root = mkdtempSync(join(tmpdir(), 'room-registry-status-')); roots.push(root); return root }
+function storeRoot(): string { const root = mkdtempSync(join(tmpdir(), 'room-registry-status-')); roots.push(root); execFileSync('git', ['init', '--bare', '-q', root]); return root }
 
 describe('worker identity and durable exits', () => {
   it('keeps process handles keyed by worker id and room', () => {
@@ -177,7 +178,7 @@ describe('worker identity and durable exits', () => {
   })
 
   it('reuses a tag only after retirement, with a fresh id; an old exit does not alter the new run', async () => {
-    const root = storeRoot(), store = await WorkerRegistry.open(root, { migrate: false, watch: false,
+    const root = storeRoot(), store = await openAdmittedRegistry(root, { migrate: false, watch: false,
       identity: token, liveness: () => 'alive' })
     const first = record(root, 'w_first'), next = record(root, 'w_next')
     await store.writeIntent({ ...first, phase: 'intent', runs: [{ ...first.runs[0], launch: undefined }] })
@@ -191,7 +192,7 @@ describe('worker identity and durable exits', () => {
   })
 
   it('records an unwitnessed exit with unknown cause and no death interrupt', async () => {
-    const root = storeRoot(), store = await WorkerRegistry.open(root, { migrate: false, watch: false,
+    const root = storeRoot(), store = await openAdmittedRegistry(root, { migrate: false, watch: false,
       identity: token, liveness: () => 'dead' })
     const w = record(root, 'w_dead')
     await store.writeIntent({ ...w, phase: 'intent', runs: [{ ...w.runs[0], launch: undefined }] })

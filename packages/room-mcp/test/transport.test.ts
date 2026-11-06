@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 // Ledger test 6 (MF1): a reply's receipts are written only once its bytes reached the host's pipe.
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -25,7 +26,7 @@ function pipe(error: Error | null | 'never') {
 }
 
 async function reply(error: Error | null | 'never') {
-  const dir = mkdtempSync(join(tmpdir(), 'room-transport-')); dirs.push(dir)
+  const dir = mkdtempSync(join(tmpdir(), 'room-transport-')); dirs.push(dir); execFileSync('git', ['init', '-q', dir])
   const s = memorySession(me, dir)
   const m = hubAppend<NoteMsg>(s.room, quinn, { type: 'note', to: me.name, text: 'owed to Pat' })
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })

@@ -2263,6 +2263,16 @@
       "path": "plugins/room/hooks/codecs.mjs",
       "text": "const host = flag >= 0 && argv[flag + 1] ? argv[flag + 1] : 'codex'",
       "reason": "Step-6 hook-only registry and frozen no-flag startup invocation default; all field/protocol interpretation stays in host-owned standalone codecs."
+    },
+    {
+      "path": "packages/room-mcp/src/storage-admission.ts",
+      "text": "import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }",
+      "reason": "Host-neutral storage registration release metadata; both plugin manifests carry the same version (release-version.test.ts)."
+    },
+    {
+      "path": "packages/room-mcp/src/offline/room-state.ts",
+      "text": "import manifest from '../../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }",
+      "reason": "Host-neutral storage registration release metadata; both plugin manifests carry the same version (release-version.test.ts)."
     }
   ]
 }

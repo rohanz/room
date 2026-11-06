@@ -1,3 +1,4 @@
+import { openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, expect, it, vi } from 'vitest'
@@ -108,7 +109,7 @@ describe('retired worker record retention', () => {
       return held
     })
   }
-  const otherInstance = (registry: WorkerRegistry) => WorkerRegistry.open(registry.commonDir,
+  const otherInstance = (registry: WorkerRegistry) => openAdmittedRegistry(registry.commonDir,
     { identity: { ...registry.instance, nonce: `other-${registry.instance.nonce}` }, watch: false, migrate: false })
 
   it('keeps a record whose operation lease another instance takes mid-prune (a borrower resume)', async () => {
@@ -186,4 +187,19 @@ describe('retired worker record retention', () => {
       other.close()
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
   })
+})
+
+
+it('prunes retired history in a fresh compatibility clone without an import checkpoint', async () => {
+  const dir = repo()
+  const registry = await registryForDir(dir)
+  try {
+    const { record } = await seedRegistryWorker(dir, 'fresh-expired')
+    const retiredAt = Date.now() - ROOM_STALE_MS - DAY
+    await mutateWorkerFixture(registry, record.id, async old => ({ ...old, phase: 'retired', seq: old.seq + 1,
+      archive: await registry.archiveOf(old, { summary: '', retiredAt }), cleanup: { [old.room]: 'done' } }))
+    fs.rmSync(path.join(registry.root, 'migration.json'))
+    expect((await registry.pruneRetired(ROOM_STALE_MS)).map(r => r.id)).toEqual([record.id])
+    expect(fs.existsSync(path.join(registry.root, 'migration.json'))).toBe(false)
+  } finally { registry.close(); rmSync(dir, { recursive: true, force: true }) }
 })

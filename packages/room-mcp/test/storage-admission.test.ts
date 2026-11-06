@@ -8,8 +8,10 @@ import { openStorageGate } from '@room/local-state/gate'
 import { createExclusive, compareAndRelease } from '@room/local-state/leases'
 import { GATE_LIMITS } from '@room/local-state/protocol'
 import { WorkerRegistry } from '../src/worker-registry.js'
-import { admitStorageHelper, closeStorageAdmissions, currentAdmission, detachedAdmission, storageGate, storageInstance, storageRegistration, withAdmission, withValidatedRead, withoutAdmission } from '../src/storage-admission.js'
+import { admitStorageHelper, closeStorageAdmissions, currentAdmission, detachedAdmission, storageGate, storageInstance, storageRegistration, withAdmission, withValidatedRead, withoutAdmission, withDirectoryAdmission, requireAdmission } from '../src/storage-admission.js'
 import * as runtime from '@room/local-state/preflight'
+import * as gateModule from '@room/local-state/gate'
+import { previewProcessGate } from '../src/tools/files.js'
 
 const roots: string[] = []
 function fixture() {
@@ -166,24 +168,105 @@ it('validates a complete nested display once without registering or creating tic
 
 it('keeps an actual preview helper visible to drain after its parent call returns', async () => {
   const { common } = fixture()
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  const child = spawn('sh', ['-c', previewProcessGate, 'sh', process.execPath, '-e', 'process.stdout.write("effect\\n"); setInterval(() => {}, 1000)'], { detached: true, stdio: ['pipe', 'pipe', 'ignore'] })
   await once(child, 'spawn')
   const exited = once(child, 'exit')
   let finish: (() => Promise<void>) | undefined
   let m: Awaited<ReturnType<typeof maintenance>> | undefined
   try {
     await withAdmission(common, 'preview', async () => { finish = await admitStorageHelper(child.pid!) })
+    const started = once(child.stdout, 'data')
+    child.stdin.end('GO\n')
+    await started
+    // The shell must remain the registered executable after the gated command starts.
+    const listing = await storageGate(common).listTickets()
+    expect(listing.tickets[0].holderState).toBe('alive')
     m = await maintenance(common)
     const drain = await m.gate.drain(m.owner)
     expect(drain.complete).toBe(false)
     expect((await m.gate.status()).tickets).toBe(1)
-    child.kill('SIGTERM'); await exited
+    process.kill(-child.pid!, 'SIGTERM'); await exited
     await finish!(); finish = undefined
     expect((await m.gate.drain(m.owner)).complete).toBe(true)
     await m.gate.reopen(m.owner)
   } finally {
-    if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await exited }
+    if (child.exitCode === null && child.signalCode === null) { process.kill(-child.pid!, 'SIGTERM'); await exited }
     await finish?.()
     await m?.close()
   }
+})
+
+
+describe('lazy directory admission', () => {
+  it('does no gate I/O or Git resolution for a call with no lifecycle work, including an undefined session directory', async () => {
+    const canonical = vi.spyOn(gateModule, 'canonicalCommonDir')
+    const open = vi.spyOn(gateModule, 'openStorageGate')
+    const flight = vi.spyOn(runtime, 'preflight')
+    expect(await withDirectoryAdmission(undefined, 'message', async () => 'sent')).toBe('sent')
+    expect(await withDirectoryAdmission('/not/a/git/directory', 'message', async () => 'read')).toBe('read')
+    expect(canonical).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+    expect(flight).not.toHaveBeenCalled()
+  })
+
+  it('acquires once on the first mutation, reuses nested/concurrent requests and finishes on scope exit', async () => {
+    const { common, dir } = fixture(), gate = storageGate(common)
+    await storageRegistration(common)
+    const admit = vi.spyOn(gate, 'admit'), finish = vi.spyOn(gate, 'finish')
+    await withDirectoryAdmission(dir, 'collect', async () => {
+      await withValidatedRead(common, async () => undefined)
+      expect(admit).not.toHaveBeenCalled()
+      const [a, b] = await Promise.all([requireAdmission(common), requireAdmission(common)])
+      expect(a.id).toBe(b.id)
+      await withDirectoryAdmission(dir, 'stop', async () => {
+        expect((await requireAdmission(common)).id).toBe(a.id)
+        expect(await withAdmission(common, 'stop', async ticket => ticket.id)).toBe(a.id)
+      })
+      expect(finish).not.toHaveBeenCalled()
+    })
+    expect(admit).toHaveBeenCalledTimes(1)
+    expect(finish).toHaveBeenCalledTimes(1)
+    expect((await gate.status()).tickets).toBe(0)
+  })
+
+  it('refuses a generation changed since its pre-ticket read, before effects', async () => {
+    const { common, dir } = fixture()
+    await storageRegistration(common)
+    const m = await maintenance(common), effect = vi.fn()
+    try {
+      await expect(withDirectoryAdmission(dir, 'collect', async () => {
+        await withValidatedRead(common, async () => 'old facts')
+        await m.gate.drain(m.owner); await m.gate.reopen(m.owner)
+        await withAdmission(common, 'collect', async () => effect())
+      })).rejects.toMatchObject({ reason: 'maintenance' })
+      expect(effect).not.toHaveBeenCalled()
+      expect((await m.gate.status()).tickets).toBe(0)
+    } finally { await m.close() }
+  })
+
+  it('finishes an acquired ticket even when the tool throws', async () => {
+    const { common, dir } = fixture(), gate = storageGate(common)
+    const finish = vi.spyOn(gate, 'finish')
+    await expect(withDirectoryAdmission(dir, 'collect', async () => {
+      await requireAdmission(common)
+      throw new Error('tool failed')
+    })).rejects.toThrow('tool failed')
+    expect(finish).toHaveBeenCalledTimes(1)
+    expect((await gate.status()).tickets).toBe(0)
+  })
+})
+
+
+it('fences detached work against the lazy parent’s pre-ticket generation', async () => {
+  const { common, dir } = fixture()
+  await storageRegistration(common)
+  const m = await maintenance(common)
+  try {
+    await expect(withDirectoryAdmission(dir, 'preview', async () => {
+      await withValidatedRead(common, async () => 'before')
+      await m.gate.drain(m.owner); await m.gate.reopen(m.owner)
+      await detachedAdmission(common, 'preview')
+    })).rejects.toMatchObject({ reason: 'maintenance' })
+    expect((await m.gate.status()).tickets).toBe(0)
+  } finally { await m.close() }
 })

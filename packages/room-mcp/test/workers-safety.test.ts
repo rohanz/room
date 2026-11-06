@@ -1,3 +1,5 @@
+import { withDirectoryAdmission } from '../src/storage-admission.js'
+import { runLegacyImport } from '../src/offline/room-state.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
 import { setParticipantBase } from '@room/shared/testing'
@@ -280,8 +282,11 @@ describe('worker safety', () => {
       runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'old', busFrontier: 0, promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
       createdAt: 1, seq: 1,
     }
-    await registry.writeIntent(abandoned)
-    await registry.abandonPreparation(abandoned.id)
+    await withDirectoryAdmission(dir, 'spawn', async () => {
+      await registry.writeIntent(abandoned)
+      await registry.abandonPreparation(abandoned.id)
+      await registry.finishOperation(abandoned.id)
+    })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'new', host: 'codex' })).toContain('spawned money')
     const current = (await registry.reserved('money'))!
     expect(current.id).not.toBe(abandoned.id)
@@ -294,6 +299,7 @@ describe('worker safety', () => {
     // shared fixture registry, so use a fresh repository for this startup assertion.
     const { repo, head } = realRepo()
     const prepared = await prepareWorktree(repo, 'same', 'rohanz')
+    await runLegacyImport(join(repo, '.git'))
     const t = setupLead(repo, head)
     writeFileSync(join(repo, 'lead-only.txt'), 'lead edit')
     try {

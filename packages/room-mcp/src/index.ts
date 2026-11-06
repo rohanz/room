@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { storageRegistration, closeStorageAdmissions, withDirectoryAdmission } from './storage-admission.js'
+import { storageRegistration, closeStorageAdmissions, withAdmission } from './storage-admission.js'
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
 import path from 'node:path'
@@ -10,7 +10,7 @@ import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
-import { joinableRoot, sameFolder } from './repository.js'
+import { joinableRoot, repositoryProblem, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { primePrivateState } from '@room/local-state/private-state'
@@ -104,8 +104,9 @@ async function main() {
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
     logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
     initialize: async (dir: string, signal: AbortSignal) => {
-      const common = await gitCommonDir(dir)
-      await storageRegistration(common)
+      // Keep the non-repository runtime alive to explain the remedy and recheck on the next call.
+      // joinSession registers storage if this folder becomes a repository later.
+      if (!await repositoryProblem(dir)) await storageRegistration(await gitCommonDir(dir))
       let session: Session | null = null
       // The startup choice only: environment is fixed for the process, and room_join/room_close/joinSession re-resolve it.
       // Resolve and prime while config reads are already awaiting Git; a deferred workspace stays unbound until a call.
@@ -166,7 +167,7 @@ async function main() {
         hostAlive: () => hostSessionAlive(dir, attachingParent()),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
-        withWorkersAdmission: work => withDirectoryAdmission(dir, 'idle-release', work),
+        withWorkersAdmission: async work => withAdmission(await gitCommonDir(dir), 'idle-release', work),
         waiting: () => tools.waiting(),
         hostEnded: reason => { void bye(reason) },
         leave: async idle => { for (const joined of [...tools.joinedSessions()].reverse()) await tools.drop(joined, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },

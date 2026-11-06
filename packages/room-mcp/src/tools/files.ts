@@ -387,8 +387,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             let modeCount = 0
             for (const p of merged.keys()) {
               if (modeCount++ % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve))
-              let leadMode = 0o644
-              try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+              const leadMode = previewDiskMode(path.join(caller.dir, p))
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
             }
             // Metadata/mode reads can outlast this build's currency. Settle before paying
@@ -661,7 +660,14 @@ class PreviewCleanupIncomplete extends Error {
   constructor(readonly graceMs: number, readonly reason?: Error) { super(`process cleanup did not finish within ${graceMs}ms`) }
 }
 const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal }>()
-const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
+// Keep the registered shell alive with the same executable while its child performs the effect.
+export const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; "$@"; status=$?; exit "$status"'
+
+function previewDiskMode(file: string): number {
+  try { const stat = fs.lstatSync(file); if (stat.isFile()) return stat.mode & 0o777 }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  return 0o644
+}
 
 /** After a stop or an exit, how long group termination and pipe closure may take before the result is incomplete. */
 const CLEANUP_GRACE_MS = 10_000

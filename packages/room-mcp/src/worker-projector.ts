@@ -1,4 +1,4 @@
-import { currentAdmission, withDirectoryAdmission, withoutAdmission } from './storage-admission.js'
+import { currentAdmission, withAdmission, withoutAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 /**
  * The lead-side writer of its workers' room facts (registry §13): in each room a lead session is in, the
@@ -30,7 +30,8 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
  * written, so projection cannot undo retirement (N2). Returns the written records for the caller's own facts.
  */
 export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown, active: () => boolean = () => true): Promise<WorkerRecord[] | undefined> {
-  return withDirectoryAdmission(s.dir, 'project', async () => {
+  if (!s.daemon.fence || !active()) return undefined
+  return withAdmission(registry.commonDir, 'project', async () => {
   const roomKey = s.roomName, fence = s.daemon.fence
   const current = () => active() && s.daemon.fence === fence
   if (!fence || !current()) return undefined

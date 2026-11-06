@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -21,7 +22,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 it('aborting room_wait removes its listeners and leaves a later answer unread', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'room-wait-cancel-'))
-  roots.push(dir)
+  roots.push(dir); execFileSync('git', ['init', '-q', dir])
   const room = new RoomDoc(new Y.Doc())
   room.colors.set(answerer.name, '#000')
   const awareness = new Awareness(room.doc)
@@ -68,7 +69,7 @@ describe('one response, one owner (ledger test 7)', () => {
   const lead = { name: 'Lead', kind: 'agent' as const }
   const setup = () => {
     const dir = mkdtempSync(join(tmpdir(), 'room-wait-batch-'))
-    roots.push(dir)
+    roots.push(dir); execFileSync('git', ['init', '-q', dir])
     const s = memorySession(lead, dir)
     s.room.colors.set(answerer.name, 0)
     return { s, tools: createTools({ getSession: () => s, setSession: () => {}, cwd: dir }) }

@@ -1,0 +1,622 @@
+{
+  "date": "2026-11-06",
+  "worker": "s2-fix-mcp",
+  "findings": {
+    "1": "The registered preview shell supervises its child without exec, keeping its executable identity stable for the helper ticket lifetime.",
+    "3": "An unreadable candidate worktree aborts discovery; unresolved migration assignments prevent done publication.",
+    "5": "Presence admission refusals retain presence and are caught at the timer boundary; other admission timers audited.",
+    "7": "A shared ten-minute attempt budget covers drain/import, bounds Git subprocesses and checks before each publication, including final reopen under the gate guard.",
+    "10": "Retired pruning uses the same durable legacy-readiness predicate as online admission."
+  },
+  "additional": [
+    "Preserved lazy scopes: no Git/gate I/O before lifecycle work, one shared ticket per lifecycle call, generation fence remembered before reads and applied to detached children.",
+    "Computed preRegistryImport before registration, preserving the durable decision so modern worktrees do not require legacy import.",
+    "Reconciliation defers a live operation lane owned by another call token, even within the same MCP instance.",
+    "Repaired real Git/common-directory and per-call admission fixtures; isolated adapter-neutral manifest metadata ownership entries.",
+    "Added undefined-directory non-lifecycle broadcast coverage; fixture restores its directory before unrelated shutdown cleanup.",
+    "Made preview mode preparation observable through a named helper after the admission wrapper changed the stack; responsiveness assertions unchanged.",
+    "Non-repository startup defers storage registration until a repository is joinable, preserving the friendly remedy and recheck-on-next-call behavior.",
+    "Solo-room fixture closes storage registrations before deleting its gate between tests."
+  ],
+  "timerAudit": [
+    "PresenceEnd tick: catches conservative admission failure; interval catches unexpected errors.",
+    "Registry auto-retire interval: catches failures.",
+    "File store background reconciliation: catches/stops on gate refusal.",
+    "Worker projector: explicit ticket before read-to-CRDT effects; pass catches errors; no-fence no-op remains free.",
+    "Bridge scheduler, conflict-set timer, messaging wait callbacks: rejection paths handled.",
+    "Preview sweep: detached ticket created in awaited entry; background child catches failure.",
+    "Idle release: explicit ticket spans read-to-leave effects."
+  ],
+  "validationNotes": [
+    "Local checks are iterative evidence at successive revisions, not a single final-source full suite run.",
+    "Sandbox cannot listen on sockets or read native process identity. A direct tsx CLI probe reproduced EPERM for its IPC socket, explaining non-repo MCP connection closure.",
+    "Local typecheck cannot see the collected peer reopen(owner,{notAfter}) signature; combined preview typecheck passes.",
+    "All previews omit generated plugin assets because of sharing/read limits. Source-test results do not certify a complete integrated/release tree.",
+    "Full integrated suite and plugin rebuild remain with the lead. No timeout or correctness assertion was relaxed.",
+    "Group 2 tools teardown and mode-preparation probe failures were fixed and passed group 4; group 3 non-repo startup and solo fixture failures were fixed and passed group 4.",
+    "The final current-source input hash is bc815c3ba7bf5c074c28abb5ab6c92fa518df9850f36adbab1eaa5f85a982c7d. Adding this evidence artifact does not change tested source inputs."
+  ],
+  "previews": [
+    {
+      "group": 1,
+      "people": [
+        "rohanz+slice2-lead"
+      ],
+      "inputHash": "ceefef2f074b9b3cebe1a40d3d73758b5ebcb3c77fe08dd510a4313cafe866b5",
+      "environment": "darwin/arm64 Node 22.23.4; clean ROOM_TAG/OWNER/SERVER; serial maxWorkers1",
+      "partial": true,
+      "checks": [
+        {
+          "check": "typecheck",
+          "exit": 0
+        },
+        {
+          "check": "storage-admission",
+          "exit": 0
+        },
+        {
+          "check": "storage-offline",
+          "exit": 0
+        },
+        {
+          "check": "lifecycle-characterization",
+          "exit": 0
+        },
+        {
+          "check": "registry-read-cache",
+          "exit": 0
+        },
+        {
+          "check": "registry-retention",
+          "exit": 0
+        },
+        {
+          "check": "presence-end",
+          "exit": 0
+        }
+      ],
+      "elapsedMs": 49414
+    },
+    {
+      "group": 2,
+      "people": [
+        "rohanz+slice2-lead"
+      ],
+      "inputHash": "ceefef2f074b9b3cebe1a40d3d73758b5ebcb3c77fe08dd510a4313cafe866b5",
+      "partial": true,
+      "checks": [
+        {
+          "check": "tools",
+          "exit": 1,
+          "summary": "Tests  1 failed | 125 passed | 1 skipped (127)",
+          "failure": " FAIL  test/tools.test.ts > session gating > sends a non-lifecycle broadcast from a session without a directory\nTypeError: The \"path\" argument must be of type string. Received undefined\n \u276f worktreeGitDirFromDotGit ../roomd/src/git-dirs.ts:9:21\n      7| /** Hooks must resolve without starting Git and fall back to <dir>/.gi\u2026\n      8| export function worktreeGitDirFromDotGit(dir: string): string {\n      9|   let gitDir = path.join(dir, '.git')\n       |                     ^\n     10|   try {\n     11|     if (fs.statSync(gitDir).isFile()) {\n \u276f commonGitDirFromDotGit ../roomd/src/git-dirs.ts:26:16\n \u276f openWorkerReader src/worker-registry.ts:64:18\n \u276f registryRunningWorkers src/tools/workers.ts:387:26\n \u276f Object.runningWorkers src/tools/workers.ts:420:98\n \u276f Object.shutdown src/tools/state.ts:219:55\n \u276f test/tools.test.ts:269:85\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed (1)\n      Tests  1 failed | 125 passed | 1 skipped (127)\n   Start at  19:45:14\n   Duration  59.18s (tests 98%, transform 1%)\n\n"
+        },
+        {
+          "check": "manifest-preview",
+          "exit": 1,
+          "summary": "Tests  1 failed | 18 passed | 1 skipped (20)",
+          "failure": " FAIL  test/manifest-preview.test.ts > services an event-loop turn within preview mode preparation\nAssertionError: expected false to be true // Object.is equality\n\n- Expected\n+ Received\n\n- true\n+ false\n\n \u276f test/manifest-preview.test.ts:163:25\n    161|     startsPreviewMaintenance = true\n    162|     expect(await handlers(state).room_preview_merge({ person: 'ben', r\u2026\n    163|     expect(lastSawTurn).toBe(true)\n       |                         ^\n    164|   } finally { seam.mockRestore() }\n    165| })\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed (1)\n      Tests  1 failed | 18 passed | 1 skipped (20)\n   Start at  19:46:14\n   Duration  22.42s (tests 96%, transform 3%, import 1%)\n\n"
+        },
+        {
+          "check": "committed-deletions",
+          "exit": 0,
+          "summary": "Tests  11 passed (11)"
+        },
+        {
+          "check": "worker-preview-cache",
+          "exit": 0,
+          "summary": "Tests  6 passed (6)"
+        },
+        {
+          "check": "carry-wip",
+          "exit": 0,
+          "summary": "Tests  33 passed (33)"
+        }
+      ],
+      "elapsedMs": 209796
+    },
+    {
+      "group": 3,
+      "people": [
+        "rohanz+slice2-lead"
+      ],
+      "inputHash": "5f19229c52fc4cdf708cf03f8439d4259d7e49049a10d1533488832cca8ac827",
+      "partial": true,
+      "checks": [
+        {
+          "check": "local",
+          "exit": 0,
+          "summary": "Tests  12 passed (12)"
+        },
+        {
+          "check": "solo-quiet",
+          "exit": 1,
+          "summary": "Tests  1 failed | 3 passed (4)",
+          "failure": " FAIL  test/solo-quiet.test.ts > own workers are company for their own notices only\nStorageRefused: Room storage unavailable: storage gate not initialized; register first; run `node <plugin>/server/room-state.mjs status --common-dir <git common dir>` for details\n \u276f FileStorageGate.requireGate ../local-state/src/gate.ts:154:22\n    152|   private requireGate(): StorageGateRecord {\n    153|     const gate = this.readGate()\n    154|     if (!gate) throw new StorageRefused('unavailable', this.activation\u2026\n       |                      ^\n    155|       ? 'storage activation evidence exists without a storage gate' : \u2026\n    156|     return gate\n \u276f ../local-state/src/gate.ts:247:25\n \u276f withGuard ../local-state/src/leases.ts:192:20\n \u276f FileStorageGate.guarded ../local-state/src/gate.ts:129:20\n \u276f FileStorageGate.admit ../local-state/src/gate.ts:246:17\n \u276f withAdmission src/storage-admission.ts:142:29\n \u276f Function.open src/worker-registry.ts:168:18\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n   Start at  19:53:01\n   Duration  3.66s (tests 72%, transform 23%, import 5%)\n\n"
+        },
+        {
+          "check": "wakes-audit",
+          "exit": 0,
+          "summary": "Tests  24 passed (24)"
+        },
+        {
+          "check": "hooks",
+          "exit": 0,
+          "summary": "Tests  104 passed (104)"
+        },
+        {
+          "check": "non-repo",
+          "exit": 1,
+          "summary": "Tests  2 failed | 11 passed (13)",
+          "failure": " FAIL  test/non-repo.test.ts > a folder that is not a git repository > answers every room tool with one plain message, never retries, and joins once the folder becomes a repository\nAssertionError: expected 'Room could not start for /private/var\u2026' to be 'Room works inside a git repository, a\u2026' // Object.is equality\n\nExpected: \"Room works inside a git repository, and /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-nonrepo-gC92UL isn't one. Run `git init` and make a first commit, or open the project's repository folder, then say 'join the room' again.\"\nReceived: \"Room could not start for /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-nonrepo-gC92UL: git rev-parse --git-common-dir failed: fatal: not a git repository (or any of the parent directories): .git; try again.\"\n\n \u276f test/non-repo.test.ts:58:41\n     56|     const mcp = await startMcp(dir)\n     57|     const started = Date.now()\n     58|     expect(await mcp.call('room_join')).toBe(notRepo(dir))\n       |                                         ^\n     59|     expect(await mcp.call('room_state')).toBe(notRepo(dir))\n     60|     expect(await mcp.call('room_send', { text: 'hi' })).toBe(notRepo(d\u2026\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/2]\u23af\n\n FAIL  test/non-repo.test.ts > a folder that is not a git repository > never falls back to another repository named by an inherited PWD\nAssertionError: expected 'Room could not start for /private/var\u2026' to be 'Room works inside a git repository, a\u2026' // Object.is equality\n\nExpected: \"Room works inside a git repository, and /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-nonrepo-MOPUDN isn't one. Run `git init` and make a first commit, or open the project's repository folder, then say 'join the room' again.\"\nReceived: \"Room could not start for /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-nonrepo-MOPUDN: git rev-parse --git-common-dir failed: fatal: not a git repository (or any of the parent directories): .git; try again.\"\n\n \u276f test/non-repo.test.ts:80:41\n     78|     const other = initRepo(tempDir('room-other-'))\n     79|     const mcp = await startMcp(dir, { PWD: other })\n     80|     expect(await mcp.call('room_join')).toBe(notRepo(dir))\n       |                                         ^\n     81|     expect(await mcp.call('room_state')).toBe(notRepo(dir))\n     82|     expect(mcp.lines.join('\\n')).not.toContain(path.basename(other))\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[2/2]\u23af\n\n\n Test Files  1 failed (1)\n      Tests  2 failed | 11 passed (13)\n   Start at  19:53:17\n   Duration  9.84s (tests 90%, transform 8%, import 3%)\n\n"
+        }
+      ],
+      "elapsedMs": 81562
+    },
+    {
+      "group": 4,
+      "people": [
+        "rohanz+slice2-lead"
+      ],
+      "inputHash": "bc815c3ba7bf5c074c28abb5ab6c92fa518df9850f36adbab1eaa5f85a982c7d",
+      "partial": true,
+      "checks": [
+        {
+          "check": "tools",
+          "exit": 0,
+          "summary": "Tests  126 passed | 1 skipped (127)"
+        },
+        {
+          "check": "manifest-preview",
+          "exit": 0,
+          "summary": "Tests  19 passed | 1 skipped (20)"
+        },
+        {
+          "check": "solo-quiet",
+          "exit": 0,
+          "summary": "Tests  4 passed (4)"
+        },
+        {
+          "check": "non-repo",
+          "exit": 0,
+          "summary": "Tests  13 passed (13)"
+        }
+      ]
+    },
+    {
+      "group": 5,
+      "people": [
+        "rohanz+slice2-lead"
+      ],
+      "inputHash": "bc815c3ba7bf5c074c28abb5ab6c92fa518df9850f36adbab1eaa5f85a982c7d",
+      "partial": true,
+      "checks": [
+        {
+          "check": "typecheck",
+          "exit": 0
+        }
+      ],
+      "benchmark": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "node": "v22.23.4",
+        "filesystemType": 26,
+        "samples": 30,
+        "warmup": 3,
+        "concurrency": 1,
+        "operation": "warmed lazy scope, requireAdmission, finish; no lifecycle body",
+        "p50Ms": 38.069417000000044,
+        "p95Ms": 43.02937500000007,
+        "meanMs": 38.98413193333333,
+        "emptyCalls": 10000,
+        "emptyTotalMs": 28.466916000000083
+      }
+    }
+  ],
+  "benchmarkMethod": {
+    "source": "\nimport fs from 'node:fs';\nimport os from 'node:os';\nimport path from 'node:path';\nimport {execFileSync} from 'node:child_process';\nimport {performance} from 'node:perf_hooks';\nimport {storageRegistration,withDirectoryAdmission,requireAdmission,closeStorageAdmissions} from './packages/room-mcp/src/storage-admission.ts';\nconst root=fs.mkdtempSync(path.join(os.tmpdir(),'room-lazy-cost-'));\ntry {\nexecFileSync('git',['init','-q',root]);\nconst common=path.join(root,'.git');\nawait storageRegistration(common);\nfor(let i=0;i<3;i++) await withDirectoryAdmission(root,'collect',async()=>{await requireAdmission(common)});\nconst values=[];\nfor(let i=0;i<30;i++) {const at=performance.now(); await withDirectoryAdmission(root,'collect',async()=>{await requireAdmission(common)});values.push(performance.now()-at)}\nconst at=performance.now();\nfor(let i=0;i<10000;i++) await withDirectoryAdmission(undefined,'collect',async()=>{});\nconst emptyTotalMs=performance.now()-at;\nvalues.sort((a,b)=>a-b);\nconsole.log('BENCHMARK '+JSON.stringify({platform:process.platform,arch:process.arch,node:process.version,filesystemType:fs.statfsSync(root).type,samples:30,warmup:3,concurrency:1,operation:'warmed lazy scope, requireAdmission, finish; no lifecycle body',p50Ms:values[15],p95Ms:values[28],meanMs:values.reduce((a,b)=>a+b,0)/values.length,emptyCalls:10000,emptyTotalMs}));\n} finally {await closeStorageAdmissions();fs.rmSync(root,{recursive:true,force:true})}",
+    "limits": "Single warmed native filesystem run, type 26; no contention or lifecycle body; startup/preflight excluded. Does not establish tail latency under contention."
+  },
+  "finalOutcome": "All targeted files have passing focused evidence across iterative sandbox runs and named native source previews. No complete single-revision full room-mcp suite or release-bundle verification was performed in this worker.",
+  "localIterativeChecks": {
+    "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/room-mcp --config vitest.config.ts test/<file>.test.ts --maxWorkers 1",
+    "sourcePatchSha256": "ae55d92248d295ecab0a70d5e461540a38089927b6189a4996011c1475a0a58e",
+    "files": {
+      "bridge": {
+        "summary": "35 passed | 1 skipped (36)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "carry-cleanliness": {
+        "summary": "19 passed (19)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "carry-wip": {
+        "summary": "4 failed | 29 passed (33)",
+        "passed": false,
+        "failures": [
+          "test/carry-wip.test.ts > carrying the lead's uncommitted work into a worker (acceptance) > removes the private carry refs after normal worker cleanup without a carry owner record",
+          "test/carry-wip.test.ts > carrying the lead's uncommitted work into a worker (acceptance) > worker preview includes a lead commit after spawn when the lead overlay omits the file",
+          "test/carry-wip.test.ts > carrying the lead's uncommitted work into a worker (acceptance) > (G1) a sibling preview keeps carried untracked files the sibling left as carried",
+          "test/carry-wip.test.ts > carrying the lead's uncommitted work into a worker (acceptance) > (R2) preview shows a worker file recreated (untracked) at a path the carry commit deleted"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "preview helper identity is unreadable"
+        ]
+      },
+      "collect-borrowers": {
+        "summary": "24 passed (24)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "collect": {
+        "summary": "113 passed (113)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "committed-deletions": {
+        "summary": "5 failed | 6 passed (11)",
+        "passed": false,
+        "failures": [
+          "test/committed-deletions.test.ts > preview applies committed rename and keeps independent lead changes",
+          "test/committed-deletions.test.ts > preview applies staged rename and keeps independent lead changes",
+          "test/committed-deletions.test.ts > preview applies committed deletion and keeps independent lead changes",
+          "test/committed-deletions.test.ts > preview applies a published peer committed rename with no deletion manifest entry",
+          "test/committed-deletions.test.ts > preview applies a published peer committed deletion with no deletion manifest entry"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "preview helper identity is unreadable"
+        ]
+      },
+      "conflict-set": {
+        "summary": "130 passed (130)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "delivery-fixes": {
+        "summary": "7 passed (7)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "hooks": {
+        "summary": "9 failed | 95 passed (104)",
+        "passed": false,
+        "failures": [
+          "test/hooks.test.ts > live arbitration through the MCP endpoint (ledger test 8) > the hook prints what the MCP selected and confirms; the receipt says via hook",
+          "test/hooks.test.ts > live arbitration through the MCP endpoint (ledger test 8) > a hook that dies after printing and before its confirm: no receipt; M is offered again after the lease",
+          "test/hooks.test.ts > live arbitration through the MCP endpoint (ledger test 8) > MCP unreachable: only the content-free pending line, and nothing is suppressed later",
+          "test/hooks.test.ts > live arbitration through the MCP endpoint (ledger test 8) > another session's hook gets nothing from this MCP",
+          "test/hooks.test.ts > local notices are items (ledger test 9) > the disclosure claimant dies before stdout: the notice is shown later, then never again",
+          "test/hooks.test.ts > local notices are items (ledger test 9) > two racing hooks: the notice is shown once",
+          "test/hooks.test.ts > local notices are items (ledger test 9) > a tool reply and a hook: whichever selects first shows it, once",
+          "test/hooks.test.ts > session records (registry \u00a717, ledger SF3) > SessionStart records codex from the hook definition, with the ancestor chain the MCP binds by",
+          "test/hooks.test.ts > session records (registry \u00a717, ledger SF3) > SessionStart records claude from the hook definition, with the ancestor chain the MCP binds by"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "listen EPERM"
+        ]
+      },
+      "hosts_host-branches": {
+        "summary": "1 passed (1)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "lifecycle-async-boundaries": {
+        "summary": "6 passed (6)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "lifecycle-characterization": {
+        "summary": "4 failed | 30 passed (34)",
+        "passed": false,
+        "failures": [
+          "test/lifecycle-characterization.test.ts > facade lifecycle storage observable contract > preserves claude admission identity, report completion IDs and witnessed exit evidence after reopen",
+          "test/lifecycle-characterization.test.ts > facade lifecycle storage observable contract > preserves codex admission identity, report completion IDs and witnessed exit evidence after reopen",
+          "test/lifecycle-characterization.test.ts > file adapter lifecycle storage observable contract > preserves claude admission identity, report completion IDs and witnessed exit evidence after reopen",
+          "test/lifecycle-characterization.test.ts > file adapter lifecycle storage observable contract > preserves codex admission identity, report completion IDs and witnessed exit evidence after reopen"
+        ],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "lifecycle-cleanup": {
+        "summary": "12 passed (12)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "local-naming": {
+        "summary": "24 passed (24)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "local": {
+        "summary": "10 failed | 2 passed (12)",
+        "passed": false,
+        "failures": [
+          "test/local.test.ts > local mode (no server) > accepts a custom name and reports the actual room in the reply, browser and state",
+          "test/local.test.ts > local mode (no server) > a local session refused for the size cap (4413) pauses publication, reconnects after a minute and clears once it holds",
+          "test/local.test.ts > local mode (no server) > preserves an explicit local room for a worker",
+          "test/local.test.ts > local mode (no server) > a dispatched worker joins its lead's relay from a worktree of the clone, and never starts a relay in another repository",
+          "test/local.test.ts > local mode (no server) > a worker starts a standalone daemon without a lead, and a later lead joins it",
+          "test/local.test.ts > local mode (no server) > a nested host in a worker worktree starts a standalone daemon without worker variables",
+          "test/local.test.ts > local mode (no server) > a worker in another repository than its lead's is refused for good, and never touches that repository's relay",
+          "test/local.test.ts > local mode (no server) > joins a local room without any server, names it after the clone, and a tagged second session shares it",
+          "test/local.test.ts > local mode (no server) > local close applies forget but retains the client document until explicit leave",
+          "test/local.test.ts > local mode (no server) > leaving the launching session preserves the daemon and the other client"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "cannot establish daemon process birth identity"
+        ]
+      },
+      "manifest-preview": {
+        "summary": "6 failed | 13 passed | 1 skipped (20)",
+        "passed": false,
+        "failures": [
+          "test/manifest-preview.test.ts > services an event-loop turn between merged file materialisations",
+          "test/manifest-preview.test.ts > services an event-loop turn within preview mode preparation",
+          "test/manifest-preview.test.ts > keeps a hashless held file out of the combined tree and records a partial passing run",
+          "test/manifest-preview.test.ts > names the accepted base after a combined-tree retry",
+          "test/manifest-preview.test.ts > labels live changes from the accepted retry snapshot",
+          "test/manifest-preview.test.ts > reports a stale checkout publication without applying its old text"
+        ],
+        "stage": "iterative local rerun",
+        "sandboxSignals": [
+          "preview helper identity is unreadable"
+        ]
+      },
+      "non-repo": {
+        "summary": "3 failed | 10 passed (13)",
+        "passed": false,
+        "failures": [
+          "test/non-repo.test.ts > a folder that is not a git repository > answers every room tool with one plain message, never retries, and joins once the folder becomes a repository",
+          "test/non-repo.test.ts > a folder that is not a git repository > still resolves the repository root from a subfolder",
+          "test/non-repo.test.ts > a folder that is not a git repository > never falls back to another repository named by an inherited PWD"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "Connection closed"
+        ]
+      },
+      "notices": {
+        "summary": "37 passed (37)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "presence-end": {
+        "summary": "27 passed (27)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "preview-timeout": {
+        "summary": "1 passed (1)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "registry-names-fixes": {
+        "summary": "5 passed (5)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "registry-read-cache": {
+        "summary": "24 passed (24)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "registry-retention": {
+        "summary": "7 passed (7)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "registry-write-fixes": {
+        "summary": "10 passed (10)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "registry": {
+        "summary": "15 passed (15)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "repo-path-callers": {
+        "summary": "11 passed (11)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "solo-quiet": {
+        "summary": "4 failed (4)",
+        "passed": false,
+        "failures": [
+          "test/solo-quiet.test.ts > a solo participant: base, Room and conflict notices do not wake or reach the hook, but room_state shows them",
+          "test/solo-quiet.test.ts > company wakes for what arrives with it, never for the notices posted while alone",
+          "test/solo-quiet.test.ts > own workers are company for their own notices only",
+          "test/solo-quiet.test.ts > a distinct agent in the same checkout wakes for an addressed question and reaches the hook"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "listen EPERM"
+        ]
+      },
+      "storage-admission": {
+        "summary": "1 failed | 12 passed (13)",
+        "passed": false,
+        "failures": [
+          "test/storage-admission.test.ts > keeps an actual preview helper visible to drain after its parent call returns"
+        ],
+        "stage": "iterative local rerun",
+        "sandboxSignals": [
+          "preview helper identity is unreadable"
+        ]
+      },
+      "storage-offline": {
+        "summary": "12 passed (12)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "tools": {
+        "summary": "9 failed | 116 passed | 1 skipped (126)",
+        "passed": false,
+        "failures": [
+          "test/tools.test.ts > session gating > reports the exact command only when the last clean combined preview tests passed",
+          "test/tools.test.ts > preview merge > preserves live Unicode UTF-8 bytes with and without a run command",
+          "test/tools.test.ts > preview merge > defaults to present participants, reports offline overlays, and supports both opt-ins",
+          "test/tools.test.ts > preview merge > merges multiple people in order into one combined scratch tree",
+          "test/tools.test.ts > preview merge > a conflict where one side built on the other is reported as resolvable and can be resolved",
+          "test/tools.test.ts > preview merge > run= executes a command in the merged tree and never touches the clone",
+          "test/tools.test.ts > preview merge > does not certify a zero-exit failure summary and uses the same result for room_done",
+          "test/tools.test.ts > preview merge > strips Room control variables but provides the merged-tree marker",
+          "test/tools.test.ts > preview merge > propagates a failing pipeline stage when bash is available"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "preview helper identity is unreadable"
+        ]
+      },
+      "transport": {
+        "summary": "3 passed (3)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "wait-cancel": {
+        "summary": "4 passed (4)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "wakes-audit": {
+        "summary": "6 failed | 18 passed (24)",
+        "passed": false,
+        "failures": [
+          "test/wakes-audit.test.ts > wakes (ledger test 11, MF8) > the Codex queue text has no body; the content is delivered once, by the reply, and never woken again",
+          "test/wakes-audit.test.ts > wakes (ledger test 11, MF8) > the wake fails, the MCP restarts in the same session, and M is woken once",
+          "test/wakes-audit.test.ts > wakes (ledger test 11, MF8) > messages owed before the session first bound are left for its first reply, not woken",
+          "test/wakes-audit.test.ts > wakes (ledger test 11, MF8) > a wait cancel triggers a reconcile: the interrupt the wait had selected is woken",
+          "test/wakes-audit.test.ts > wakes (ledger test 11, MF8) > a hook reserves M and dies; its lease expires with no other event, and M is woken",
+          "test/wakes-audit.test.ts > wakes (ledger test 11, MF8) > the 2026-09-27 Codex queue scenario: a queued pointer, then the edit hook hands M off once; no duplicate, no loss"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": [
+          "listen EPERM"
+        ]
+      },
+      "wave4-names": {
+        "summary": "10 passed (10)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "worker-inventory-boundary": {
+        "summary": "5 passed (5)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "worker-preview-cache": {
+        "summary": "6 failed (6)",
+        "passed": false,
+        "failures": [
+          "test/worker-preview-cache.test.ts > removes the worker clone's idle preview cache on cleanup (discarded: false)",
+          "test/worker-preview-cache.test.ts > removes the worker clone's idle preview cache on cleanup (discarded: true)",
+          "test/worker-preview-cache.test.ts > removes the cache when the worker checkout has already vanished",
+          "test/worker-preview-cache.test.ts > reclaims a locked cache left by a clone that is gone on the next preview",
+          "test/worker-preview-cache.test.ts > leaves an entry whose preview still holds the lock, and reclaims it once the holder exits",
+          "test/worker-preview-cache.test.ts > removes a partial first checkout left by a killed preview of a gone clone"
+        ],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "worker-registry": {
+        "summary": "38 passed (38)",
+        "passed": true,
+        "failures": [],
+        "stage": "initial local run",
+        "sandboxSignals": []
+      },
+      "worker-retry-collect": {
+        "summary": "5 passed (5)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "worker-write-paths": {
+        "summary": "12 passed (12)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "workers-plumbing": {
+        "summary": "18 passed (18)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "workers-safety": {
+        "summary": "22 passed (22)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      },
+      "retirement": {
+        "summary": "35 passed (35)",
+        "passed": true,
+        "failures": [],
+        "stage": "iterative local rerun",
+        "sandboxSignals": []
+      }
+    }
+  },
+  "targetedFileCount": 42,
+  "finalSourcePatchSha256": "8b1c15148a07db05a92256c9142b15d86f9418c0e87217a569b0d899dbae533d"
+}

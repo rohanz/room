@@ -23,7 +23,7 @@ import { WorkerEvidenceBlocked, requireWorkerEvidence, workerEvidence, requireWo
 import { sameStartTime } from '@room/local-state/process'
 
 export type { LegacySource } from './offline/legacy-import.js'
-import type { LegacySource, MigrationMap } from './offline/legacy-import.js'
+import { legacyImportRequired, type LegacySource } from './offline/legacy-import.js'
 export interface RegistryOptions {
   liveness?: LivenessProbe; now?: () => number; identity?: InstanceToken
   /** @deprecated Offline import owns these options; the online store ignores them. */
@@ -978,7 +978,8 @@ export class FileWorkerStore {
   async pruneRetired(maxAgeMs: number): Promise<WorkerRecord[]> {
     return withAdmission(this.commonDir, 'prune', async () => {
       await this.ensureGeneration()
-    if (!readJson<MigrationMap>(path.join(this.root, 'migration.json'))?.done) return []
+    const status = await storageGate(this.commonDir).status()
+    if (legacyImportRequired(this.commonDir, status.legacyImport, status.gate)) return []
     const ended = (record: WorkerRecord) => record.phase === 'retired' || record.phase === 'abandoned'
     const borrowers = (records: WorkerRecord[]) => new Set(records.filter(record => !ended(record))
       .flatMap(record => [record.sharedWith, this.#worktreeOwner(record)?.id]).filter(Boolean))
@@ -1359,11 +1360,17 @@ export class FileWorkerStore {
       if (!run) continue
       // The operation lease itself is deliberately not treated as launch evidence.
       const hadOp = fs.existsSync(this.opFile(record.id))
-      const op = this.#readFact(this.opFile(record.id), (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
+      const op = this.#readFact(this.opFile(record.id), (value): value is { holder: InstanceToken; callToken?: string; generation?: number } => object(value) && tokenShape(value.holder))
       if (hadOp && !op) continue
       if (op && this.alive(op.holder) === 'dead') {
         yielded = true
         await leaseRetry(() => recover(this.opFile(record.id), () => true))
+      }
+      if (op && this.alive(op.holder) !== 'dead') {
+        const ticket = currentAdmission(this.commonDir)!
+        // Reconciliation is a separate call too. A shared MCP identity does not let it update a live
+        // spawn/collect/discard lane owned by another ticket; leave that record for a later pass.
+        if (op.holder.nonce !== this.identity.nonce || op.callToken !== ticket.id || op.generation !== ticket.generation) continue
       }
       // An earlier recovery await may have let another call publish or corrupt run
       // evidence. Recheck the deciding scope rather than trusting the preflight copy.

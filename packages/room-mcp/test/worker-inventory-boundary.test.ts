@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
@@ -100,12 +101,14 @@ store.snapshot()
 it('does not expose scanners through a computed dynamic import at runtime', async () => {
   const modulePath = '../src/' + 'worker-file-store.js'
   const module = await import(modulePath)
-  const store = await module.FileWorkerStore.openReader(src)
+  const common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-boundary-reader-'))
+  execFileSync('git', ['init', '--bare', '-q', common])
+  const store = await module.FileWorkerStore.openReader(common)
   try {
     for (const name of ['decodeFact', 'readCachedJson', 'cachedFiles']) expect(module[name], name).toBeUndefined()
     for (const name of ['readFact', 'read', 'inventory', 'list', 'reserved', 'reservedByTagOrName',
       'worktreeOwner', 'status', 'operationInProgress', 'occupancy', 'reports', 'exits', 'factRevision', 'statusLiveness'])
       expect(store[name], name).toBeUndefined()
     expect(typeof store.snapshot).toBe('function')
-  } finally { store.close() }
+  } finally { store.close(); fs.rmSync(common, { recursive: true, force: true }) }
 })

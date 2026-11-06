@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
@@ -23,7 +24,7 @@ import { testPolicyStore } from './policy-fixture.js'
 let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
 let startsPreviewMaintenance = false
-beforeEach(() => {
+beforeEach(async () => {
   startsPreviewMaintenance = false
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-repo-path-callers-')))
   lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'w')
@@ -32,6 +33,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(lead, 'file.txt'), 'base\n')
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
   fs.appendFileSync(path.join(lead, '.git', 'info', 'exclude'), '.room/\n')
+  await storageRegistration(path.join(lead, '.git'))
   git(lead, 'worktree', 'add', '-qb', 'room/w', worker)
 })
 afterEach(async () => {
