@@ -26730,8 +26730,7 @@ async function acquire(context2, commonDir2) {
   if (context2.acquiring && context2.commonDir === common) return context2.acquiring;
   context2.commonDir = common;
   context2.acquiring = (async () => {
-    const { gate, registration } = await storageRegistration(common);
-    const ticket = await admitTracked(gate, registration, context2.kind);
+    const { gate, ticket } = await admitTracked(common, context2.kind);
     if (!context2.active) {
       await finishAdmission(gate, ticket);
       throw new StorageRefused("unavailable", "operation ended before admission");
@@ -26808,15 +26807,10 @@ function unregisterDraining() {
   drainingSweep = (async () => {
     do {
       drainRequested = false;
-      for (const [common, pending2] of registrations) {
+      for (const [common, pending2] of [...registrations]) {
         const state = await pending2.catch(() => void 0);
         if (!state || outstanding.has(common) || (await state.gate.observe()).phase !== "draining") continue;
-        try {
-          await state.gate.unregister(state.registration);
-          if (registrations.get(common) === pending2) registrations.delete(common);
-        } catch (error2) {
-          if (!(error2 instanceof StorageRefused && error2.reason === "busy")) throw error2;
-        }
+        await retireRegistration(common, pending2, state);
       }
     } while (drainRequested);
   })().finally(() => {
@@ -26824,13 +26818,24 @@ function unregisterDraining() {
   });
   return drainingSweep;
 }
-async function admitTracked(gate, registration, kind, options) {
-  settleOutstanding(gate.commonDir, 1);
+async function admitTracked(common, kind, options) {
+  settleOutstanding(common, 1);
   try {
-    return await gate.admit(registration, kind, options);
+    const { gate, registration } = await storageRegistration(common);
+    return { gate, ticket: await gate.admit(registration, kind, options) };
   } catch (error2) {
-    settleOutstanding(gate.commonDir, -1);
+    settleOutstanding(common, -1);
     throw error2;
+  }
+}
+async function retireRegistration(common, pending2, state) {
+  if (outstanding.has(common) || registrations.get(common) !== pending2) return;
+  registrations.delete(common);
+  try {
+    await state.gate.unregister(state.registration);
+  } catch (error2) {
+    if (!registrations.has(common)) registrations.set(common, pending2);
+    if (!(error2 instanceof StorageRefused && error2.reason === "busy")) throw error2;
   }
 }
 async function finishAdmission(gate, ticket) {
@@ -26844,20 +26849,14 @@ async function finishAdmission(gate, ticket) {
 async function closeStorageAdmissions() {
   await Promise.allSettled([...startups]);
   await drainingSweep;
-  for (const [common, pending2] of registrations) {
+  for (const [common, pending2] of [...registrations]) {
     const state = await pending2.catch(() => void 0);
     if (!state) continue;
     if (!fs31.existsSync(common)) {
       registrations.delete(common);
       continue;
     }
-    if (outstanding.has(common)) continue;
-    try {
-      await state.gate.unregister(state.registration);
-      registrations.delete(common);
-    } catch (error2) {
-      if (!(error2 instanceof StorageRefused && error2.reason === "busy")) throw error2;
-    }
+    await retireRegistration(common, pending2, state);
   }
   if (!registrations.size) {
     await closeStorageGates();
@@ -26867,8 +26866,7 @@ async function closeStorageAdmissions() {
 async function withAdmission(commonDir2, kind, fn) {
   const common = storageGate(commonDir2).commonDir, enclosing = ambient.getStore();
   if (enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)) return fn(await acquire(enclosing, common));
-  const { gate, registration } = await storageRegistration(common);
-  const ticket = await admitTracked(gate, registration, kind);
+  const { gate, ticket } = await admitTracked(common, kind);
   const context2 = { kind, commonDir: common, ticket, gate, active: true };
   try {
     return await ambient.run(context2, () => fn(ticket));
@@ -26880,8 +26878,7 @@ async function withAdmission(commonDir2, kind, fn) {
 async function detachedAdmission(commonDir2, kind) {
   const common = storageGate(commonDir2).commonDir, enclosing = ambient.getStore();
   const parent = enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common) ? await acquire(enclosing, common) : void 0;
-  const { gate, registration } = await storageRegistration(common);
-  const ticket = await admitTracked(gate, registration, kind, { parent });
+  const { gate, ticket } = await admitTracked(common, kind, { parent });
   const context2 = { kind, commonDir: common, ticket, gate, active: true };
   let started = false;
   const finish = async () => {
@@ -26962,8 +26959,7 @@ async function admitStorageHelper(pid) {
   const { probeProcessAsync: probeProcessAsync2 } = await Promise.resolve().then(() => (init_process(), process_exports));
   const identity4 = await probeProcessAsync2(pid);
   if (!identity4?.startTime || !identity4.executable) throw new StorageRefused("unavailable", "preview helper identity is unreadable");
-  const { gate, registration } = await storageRegistration(common);
-  const ticket = await admitTracked(gate, registration, "preview", {
+  const { gate, ticket } = await admitTracked(common, "preview", {
     parent,
     identity: { pid, startTime: identity4.startTime, executable: identity4.executable }
   });

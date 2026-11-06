@@ -15961,15 +15961,10 @@ function unregisterDraining() {
   drainingSweep = (async () => {
     do {
       drainRequested = false;
-      for (const [common, pending2] of registrations) {
+      for (const [common, pending2] of [...registrations]) {
         const state = await pending2.catch(() => void 0);
         if (!state || outstanding.has(common) || (await state.gate.observe()).phase !== "draining") continue;
-        try {
-          await state.gate.unregister(state.registration);
-          if (registrations.get(common) === pending2) registrations.delete(common);
-        } catch (error) {
-          if (!(error instanceof StorageRefused && error.reason === "busy")) throw error;
-        }
+        await retireRegistration(common, pending2, state);
       }
     } while (drainRequested);
   })().finally(() => {
@@ -15983,23 +15978,27 @@ var drainWatch = setInterval(() => {
 }, 1e3);
 drainWatch.unref();
 var outstanding = /* @__PURE__ */ new Map();
+async function retireRegistration(common, pending2, state) {
+  if (outstanding.has(common) || registrations.get(common) !== pending2) return;
+  registrations.delete(common);
+  try {
+    await state.gate.unregister(state.registration);
+  } catch (error) {
+    if (!registrations.has(common)) registrations.set(common, pending2);
+    if (!(error instanceof StorageRefused && error.reason === "busy")) throw error;
+  }
+}
 async function closeStorageAdmissions() {
   await Promise.allSettled([...startups]);
   await drainingSweep;
-  for (const [common, pending2] of registrations) {
+  for (const [common, pending2] of [...registrations]) {
     const state = await pending2.catch(() => void 0);
     if (!state) continue;
     if (!fs8.existsSync(common)) {
       registrations.delete(common);
       continue;
     }
-    if (outstanding.has(common)) continue;
-    try {
-      await state.gate.unregister(state.registration);
-      registrations.delete(common);
-    } catch (error) {
-      if (!(error instanceof StorageRefused && error.reason === "busy")) throw error;
-    }
+    await retireRegistration(common, pending2, state);
   }
   if (!registrations.size) {
     await closeStorageGates();
