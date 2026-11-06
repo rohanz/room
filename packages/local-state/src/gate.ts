@@ -377,9 +377,13 @@ export class FileStorageGate implements StorageGate {
     return this.progress(gate)
   }
 
-  /** Registration evidence is separate from volatile tickets. Never interpret lifecycle leases here. */
-  private async registrationEvidence(ticketNames: string[]): Promise<TicketListing['tickets']> {
-    const holders = new Set(ticketNames.map(name => name.split('.')[0]))
+  /**
+   * Registration evidence is separate from volatile tickets. Never interpret lifecycle leases here. A ticket name
+   * whose record was read and found gone (Windows lists a delete-pending name until its last handle closes) does not
+   * cover its holder, so that holder's registration evidence is still reported.
+   */
+  private async registrationEvidence(ticketNames: string[], gone: ReadonlySet<string> = new Set()): Promise<TicketListing['tickets']> {
+    const holders = new Set(ticketNames.filter(name => !gone.has(name)).map(name => name.split('.')[0]))
     const names = this.registrationNames(), evidence: TicketListing['tickets'] = []
     for (let start = 0; start < names.length; start += this.limits.scanBatch) {
       for (const name of names.slice(start, start + this.limits.scanBatch)) {
@@ -403,12 +407,12 @@ export class FileStorageGate implements StorageGate {
 
   private async progress(gate: StorageGateRecord): Promise<DrainProgress> {
     const live: TicketView[] = [], unknown: TicketView[] = [], dead: TicketView[] = []
-    const names = this.ticketNames()
+    const names = this.ticketNames(), gone = new Set<string>()
     for (let start = 0; start < names.length; start += this.limits.scanBatch) {
       for (const name of names.slice(start, start + this.limits.scanBatch)) {
         const [, holder, id] = TICKET_FILE.exec(name)!
         let ticket: Ticket | undefined
-        try { const raw = readRecord(path.join(this.ticketDir, name), MAX_RECORD_BYTES); if (raw === undefined) continue; ticket = parseTicket(raw, holder, id) }
+        try { const raw = readRecord(path.join(this.ticketDir, name), MAX_RECORD_BYTES); if (raw === undefined) { gone.add(name); continue }; ticket = parseTicket(raw, holder, id) }
         catch { unknown.push({ id, kind: 'reconcile', generation: 0, holder, pid: 0, admittedAt: 0 }); continue }
         const view: TicketView = { id, kind: ticket.kind, generation: ticket.generation, holder, pid: ticket.identity.pid,
           ...(ticket.parent ? { parent: ticket.parent } : {}), admittedAt: ticket.admittedAt }
@@ -417,7 +421,7 @@ export class FileStorageGate implements StorageGate {
       }
       await yieldTurn()
     }
-    for (const { holderState, ...view } of await this.registrationEvidence(names)) {
+    for (const { holderState, ...view } of await this.registrationEvidence(names, gone)) {
       ;(holderState === 'alive' ? live : holderState === 'dead' ? dead : unknown).push(view)
     }
     if (!names.length) await this.pruneDeadRegistrations()
@@ -531,18 +535,18 @@ export class FileStorageGate implements StorageGate {
   async listTickets(limit: number = this.limits.scanBatch): Promise<TicketListing> {
     const names = this.ticketNames().sort()
     const bound = Math.max(0, Math.min(limit, this.limits.scanBatch))
-    const tickets: TicketListing['tickets'] = []
+    const tickets: TicketListing['tickets'] = [], gone = new Set<string>()
     for (const name of names.slice(0, bound)) {
       const [, holder, id] = TICKET_FILE.exec(name)!
       try {
         const raw = readRecord(path.join(this.ticketDir, name), MAX_RECORD_BYTES)
-        if (raw === undefined) continue
+        if (raw === undefined) { gone.add(name); continue }
         const ticket = parseTicket(raw, holder, id)
         tickets.push({ id, kind: ticket.kind, generation: ticket.generation, holder, pid: ticket.identity.pid,
           ...(ticket.parent ? { parent: ticket.parent } : {}), admittedAt: ticket.admittedAt, holderState: this.alive(ticket.identity) })
       } catch { tickets.push({ id, kind: 'reconcile', generation: 0, holder, pid: 0, admittedAt: 0, holderState: 'unreadable' }) }
     }
-    const evidence = await this.registrationEvidence(names)
+    const evidence = await this.registrationEvidence(names, gone)
     tickets.push(...evidence.slice(0, Math.max(0, bound - tickets.length)))
     const total = names.length + evidence.length
     return { tickets, total, truncated: total > bound }

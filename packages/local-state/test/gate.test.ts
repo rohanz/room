@@ -476,3 +476,23 @@ describe('lock-free admission', () => {
     expect((await gate.drain(owner)).complete).toBe(true)
   })
 })
+
+it('reports a holder\'s registration evidence while its deleted ticket name is still listed (Windows delete-pending)', async () => {
+  const dir = commonDir(), gate = openStorageGate(dir, world())
+  const holder = await gate.register({ instance: token(), kind: 'mcp', release: 'test' })
+  const ticket = await gate.admit(holder, 'collect')
+  const file = path.join(dir, STORAGE_PATHS.tickets, `${holder.instance.nonce}.${ticket.id}.json`)
+  const owner = await maintenance(gate, dir)
+  // The name stays in the directory listing, but the record is gone, as for a delete-pending file on Windows.
+  const lstat = fs.lstatSync.bind(fs)
+  const pending = vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+    if (String(target) === file) throw Object.assign(new Error('ENOENT: delete pending'), { code: 'ENOENT' })
+    return lstat(target, options)
+  }) as typeof fs.lstatSync)
+  try {
+    const during = await gate.drain(owner)
+    expect(during.complete).toBe(false)
+    expect(during.live.map(view => view.id)).toEqual([`registration:${holder.instance.nonce}`])
+    expect((await gate.listTickets()).tickets.map(view => view.id)).toEqual([`registration:${holder.instance.nonce}`])
+  } finally { pending.mockRestore() }
+})

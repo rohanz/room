@@ -246,7 +246,8 @@ async function pair(transport: string, authority: string, currentClient: string)
     await timed('teardown', async () => {
       if (peer) await stop(peer)
       await stop(server)
-      await fs.rm(dir, { recursive: true, force: true })
+      // Windows can release a just-exited process's directory handles after its exit event (EBUSY on rmdir).
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     })
   }
 }

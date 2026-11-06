@@ -11,7 +11,9 @@ import type { FilesystemReaders } from '../src/filesystem.js'
 
 const require = createRequire(import.meta.url)
 const roots: string[] = []
-afterEach(() => { for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+// A deadline test leaves its worker blocked (up to 10 s) with probe.sqlite open; Windows refuses to unlink an open
+// file (EBUSY) until that worker ends, so cleanup retries (Node's linear backoff covers the block).
+afterEach(() => { for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }) })
 function commonDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preflight-'))
   roots.push(dir)

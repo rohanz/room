@@ -84,7 +84,9 @@ export function discoverLegacyWorktrees(commonDir: string, budget = importBudget
   const display = legacyDisplay(commonDir)
   const out: LegacySource[] = []
   for (const block of output.split(/\n\s*\n/)) {
-    const dir = /^worktree (.+)$/m.exec(block)?.[1]
+    // Git lists Windows paths with forward slashes: resolve to native separators before matching Room's layout.
+    const listed = /^worktree (.+)$/m.exec(block)?.[1]
+    const dir = listed === undefined ? undefined : path.resolve(listed)
     const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]
     if (!dir || !branch?.startsWith('room/')) continue
     const tag = branch.slice(5)
