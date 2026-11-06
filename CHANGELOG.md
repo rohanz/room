@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.38
 
 - **The local daemon cutover no longer refuses clones that have been used.** Since 0.17.34 the cutover read every entry under `.git/room/sessions/` as a session folder, so the clone-wide idle-episode counter in that folder failed with `ENOTDIR` and every clone that had ever written it was refused. Session records are folders; files there are now skipped. The cutover rehearsal script seeds that counter so this is exercised.
 - **Symlinks, special files and unreadable entries in Room's state block the cutover; they are never followed or read as absent.** This covers session entries, every inventory record and every inventory folder from the git directory down. Records are read to end of file with a size bound, and a record that disappears or grows while being read blocks.
