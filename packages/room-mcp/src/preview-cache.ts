@@ -159,7 +159,10 @@ async function processCwds(since?: number): Promise<string[] | undefined> {
     const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
     return procCwds(pids.filter(name => /^\d+$/.test(name)), uid, {
       readCwd: pid => fs.promises.readlink(`/proc/${pid}/cwd`),
-      ownerOf: pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, () => undefined),
+      ownerOf: pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, error => {
+        const code = (error as NodeJS.ErrnoException).code
+        return code === 'ENOENT' || code === 'ESRCH' ? 'gone' as const : undefined
+      }),
       startedAt: linuxProcessStart,
     }, since)
   }
@@ -181,14 +184,15 @@ export function lsofCwds(error: Error | null, stdout: string): string[] | undefi
 
 export type ProcReaders = {
   readCwd: (pid: string) => Promise<string>
-  ownerOf: (pid: string) => Promise<number | undefined>
+  /** The owning uid; 'gone' when the process provably exited; undefined when ownership cannot be established. */
+  ownerOf: (pid: string) => Promise<number | 'gone' | undefined>
   /** When the process started, ms since the epoch; undefined when unreadable. */
   startedAt: (pid: string) => Promise<number | undefined>
 }
 
 /**
- * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that another user owns
- * (EACCES/EPERM) is not ours to wait for; our own process with an unreadable working directory (non-dumpable:
+ * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that another user provably owns
+ * (EACCES/EPERM, with a readable foreign owner) is not ours to wait for; unknown ownership makes the listing incomplete; our own process with an unreadable working directory (non-dumpable:
  * setuid or setcap) is disregarded only when it provably started before the check (`since`), since it cannot be
  * that check's descendant; any other failure makes the listing incomplete.
  */
@@ -201,7 +205,10 @@ export async function procCwds(pids: string[], uid: number | undefined, read: Pr
       if (code === 'ENOENT' || code === 'ESRCH') continue
       if (code === 'EACCES' || code === 'EPERM') {
         const owner = await read.ownerOf(pid)
-        if (owner === undefined || owner !== uid) continue
+        if (owner === 'gone') continue
+        // Unknown ownership is not evidence the process is foreign: the listing is incomplete.
+        if (owner === undefined || uid === undefined) return undefined
+        if (owner !== uid) continue
         const started = since === undefined ? undefined : await read.startedAt(pid)
         if (started !== undefined && started < since!) continue
       }

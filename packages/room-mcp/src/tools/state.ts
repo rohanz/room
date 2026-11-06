@@ -1,5 +1,5 @@
 import { withoutAdmission } from '../storage-admission.js'
-import { openWorkerReader } from '../worker-registry.js'
+import { openWorkerReader, shutdownWorkerRegistries } from '../worker-registry.js'
 import { snapshotStatus, type WorkerSnapshot } from '../worker-store.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
 import { createWorkerRuntime, registryRunningWorkers } from './workers.js'
@@ -15,7 +15,7 @@ import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { WakeReconciler } from '../wake-reconciler.js'
 import { ConflictSet } from '../conflict-set.js'
-import { Rooms, type Attachment, type Role } from '../registry.js'
+import { Rooms, within, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, detachCheckout, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
 import { Ledger } from '../ledger.js'
 import { createRelevance } from '../relevance.js'
@@ -221,8 +221,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       }
       const s = ctx.getSession()
       // Registry work these sessions started finishes its admission before the caller closes storage admissions.
+      // Then every cached registry stops watching and polling for good, so nothing reconciles after admissions close.
       const settle = async () => {
-        if (!await rooms.settle(SHUTDOWN_SETTLE_MS)) log(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`)
+        const started = performance.now()
+        const remaining = () => Math.max(0, SHUTDOWN_SETTLE_MS - (performance.now() - started))
+        const quiet = await rooms.settle(remaining())
+        const stopped = await within(shutdownWorkerRegistries(), remaining())
+        if (!quiet || !stopped) log(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`)
       }
       if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await settle(); return }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')

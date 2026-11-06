@@ -197,6 +197,8 @@ export class FileWorkerStore {
   private watchSettle?: ReturnType<typeof setTimeout>
   private backgroundRun?: Promise<void>
   private backgroundAgain = false
+  /** Set by shutdown(): no later reopen (ensureGeneration) restarts watchers or the poll timer. */
+  private shut = false
   private backgroundClosed = true
   private generation = 0
   private reopening?: Promise<void>
@@ -244,6 +246,12 @@ export class FileWorkerStore {
     return new FileWorkerStore(storageGate(commonDir).commonDir, { ...options, migrate: false, watch: false }, true)
   }
   close(): void { this.backgroundClosed = true; clearInterval(this.timer); this.timer = undefined; clearTimeout(this.watchSettle); this.watchSettle = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
+  /** Stop background reconciliation for good; resolves once a pass already running has finished. */
+  async shutdown(): Promise<void> {
+    this.shut = true
+    this.close()
+    await this.backgroundRun
+  }
   /**
    * Watch/timer reconciliation is single-flight: one run at a time, and changes observed during a run request exactly
    * one more run after it. Admission makes each run asynchronous from its first step, so microtask coalescing alone
@@ -262,6 +270,7 @@ export class FileWorkerStore {
     })().finally(() => { this.backgroundRun = undefined })
   }
   private watch(): void {
+    if (this.shut) return
     this.backgroundClosed = false
     for (const dir of [this.root, path.join(this.root, 'runs')]) {
       privateStateDirectory(dir)

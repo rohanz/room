@@ -80,6 +80,14 @@ export function workerOrigin(s: Session): { server: string; isWorker: boolean } 
   }
 }
 
+/** Whether `work` settles within `ms`; it is not cancelled when it does not. */
+export async function within(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); timer.unref() })
+  try { return await Promise.race([work.then(() => true as const, () => true as const), late]) }
+  finally { clearTimeout(timer) }
+}
+
 export class Rooms {
   private entries = new Map<Session, { role: Role; attachment?: Attachment }>()
   private tracked = new WeakSet<Session>()
@@ -154,12 +162,7 @@ export class Rooms {
    * stopped attachments). False when some is still running: its admission keeps this process registered as recovery
    * evidence rather than acknowledging a drain it has not reached.
    */
-  async settle(deadlineMs: number): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const late = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), deadlineMs); timer.unref() })
-    try { return await Promise.race([Promise.allSettled([...this.background]).then(() => true as const), late]) }
-    finally { clearTimeout(timer) }
-  }
+  settle(deadlineMs: number): Promise<boolean> { return within(Promise.allSettled([...this.background]), deadlineMs) }
   private stopAttachment(attachment: Attachment | undefined): void {
     attachment?.stop()
     if (attachment?.settled) this.inBackground(attachment.settled())

@@ -25,6 +25,15 @@ export async function closeRegistryForDir(dir: string): Promise<void> {
   registries.delete(common)
   ;(await pending?.catch(() => undefined))?.close()
 }
+/**
+ * MCP shutdown: stop every cached registry's watchers and poll timer for good and wait for passes already running, so
+ * no background reconcile admits after storage admissions close. A later registryForDir opens a fresh registry.
+ */
+export async function shutdownWorkerRegistries(): Promise<void> {
+  const pending = [...registries.values()]
+  registries.clear()
+  await Promise.all(pending.map(async entry => { await (await entry.catch(() => undefined))?.shutdown() }))
+}
 /** One token and watcher per common dir for this MCP process. */
 export async function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
@@ -200,6 +209,8 @@ export class WorkerRegistry {
   get instance(): InstanceToken { return this.backend().instance }
   newId(): string { return this.backend().newId() }
   close(): void { this.file?.close() }
+  /** Stop background reconciliation for good and wait for a pass already running. */
+  async shutdown(): Promise<void> { await this.file?.shutdown() }
   onChange(listener: (id?: string) => void): () => void { return this.backend().onChange(listener) }
   /** Validate the complete logical display, including nested status enrichment. */
   validatedRead<T>(fn: () => Promise<T>): Promise<T> {

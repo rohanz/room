@@ -165,7 +165,7 @@ it('the process probes fail closed: a partial lsof listing or an unreadable own 
   expect(lsofCwds(null, '')).toBeUndefined()
   expect(lsofCwds(null, 'p1\nn/a\np2\nn/b (deleted)\n')).toEqual(['/a', '/b (deleted)'])
   const err = (code: string) => Object.assign(new Error(code), { code })
-  const readers = (map: Record<string, string | Error>, owners: Record<string, number | undefined> = {}, starts: Record<string, number | undefined> = {}) => ({
+  const readers = (map: Record<string, string | Error>, owners: Record<string, number | 'gone' | undefined> = {}, starts: Record<string, number | undefined> = {}) => ({
     readCwd: async (pid: string) => { const v = map[pid]; if (v instanceof Error) throw v; return v },
     ownerOf: async (pid: string) => pid in owners ? owners[pid] : 501,
     startedAt: async (pid: string) => starts[pid],
@@ -181,7 +181,9 @@ it('the process probes fail closed: a partial lsof listing or an unreadable own 
   // any other error is incomplete
   expect(await procCwds(['1'], 501, readers({ '1': err('EIO') }))).toBeUndefined()
   // an owner that vanished between listing and stat is an exited process
-  expect(await procCwds(['1'], 501, readers({ '1': err('EPERM') }, { '1': undefined }))).toEqual([])
+  expect(await procCwds(['1'], 501, readers({ '1': err('EPERM') }, { '1': 'gone' }))).toEqual([])
+  // unknown ownership of a process whose cwd is denied is not proof it is foreign: the listing is incomplete
+  expect(await procCwds(['1', '2'], 501, readers({ '1': '/a', '2': err('EACCES') }, { '2': undefined }))).toBeUndefined()
   // a deleted cwd keeps its path for prefix matching
   expect(await procCwds(['1'], 501, readers({ '1': '/t/x (deleted)' }))).toEqual(['/t/x'])
 })
