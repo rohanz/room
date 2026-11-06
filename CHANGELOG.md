@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The local daemon cutover no longer refuses clones that have been used.** Since 0.17.34 the cutover read every entry under `.git/room/sessions/` as a session folder, so the clone-wide idle-episode counter in that folder failed with `ENOTDIR` and every clone that had ever written it was refused. Session records are folders; files there are now skipped. The cutover rehearsal script seeds that counter so this is exercised.
+
 ## 0.17.37
 
 - Host adapters, steps 4–6 of docs/superpowers/specs/2026-11-05-host-adapters.md (behaviour-preserving): Claude and Codex worker plans own their shell isolation (filters, env scripts, PowerShell encodings), with a shared artifact writer that applies environment only after a successful write; per-host log decoders turn run logs into one normalized fact union, replacing the mixed host event type; per-host hook codecs own field and tool aliases, transcript reduction and output envelopes, emitted as builtins-only hook modules. `hooks.json` and hook executable paths are unchanged, and every argv, log and hook fixture matches 0.17.36.

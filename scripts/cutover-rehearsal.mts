@@ -75,6 +75,11 @@ try {
   const oldOwner = relayInfo()
   check('old runtime owns the clone', !!oldOwner && oldOwner.runtime !== 'daemon', JSON.stringify({ pid: oldOwner?.pid, runtime: oldOwner?.runtime ?? 'in-session' }))
 
+  // A clone that has been used for a while also holds clone-wide files in sessions/, such as the durable
+  // idle-episode counter. 0.17.34-0.17.37 refused cutover on it (ENOTDIR); keep the rehearsal realistic.
+  fs.mkdirSync(path.join(common, 'room', 'sessions'), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(common, 'room', 'sessions', 'idle-episode.json'), JSON.stringify({ max: 2 }) + '\n', { mode: 0o600 })
+
   step('drain: close every old client and wait for the old owner to save and exit')
   await ben.close(); await ada.close(); clients.length = 0
   await until('old owner exit', () => !oldOwner || !alive(oldOwner.pid))
