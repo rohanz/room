@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.39
 
 - **`room_state check=true` stays readable on a used clone.** The cutover section listed every recorded session, MCP and worker, one row each (about 95,000 characters on a clone with 290 records, more than an agent's tool output allows). It now shows each record that blocks or that a person resolved, and one count line per kind for the rest. What the cutover inspects and records is unchanged.
 
