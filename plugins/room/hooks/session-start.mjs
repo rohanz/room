@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { sessionHostIdentity } from './session-host.mjs'
 import { startupHookCodec } from './codecs.mjs'
 import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, selectReply, writeStdout, processChain, companyLine, CONTEXT_CAP, fitLines, joinedLength, STATE_MAX_BYTES } from './common.mjs'
 
@@ -22,7 +23,7 @@ const dir = sessionDir(root, id)
 const now = Date.now()
 let readError
 const chain = processChain(undefined, undefined, undefined, error => { readError = error?.code ?? error?.name ?? 'unknown' })
-const hostPid = chain.find(p => codec.matchesHostProcess(p))?.pid
+const hostPid = sessionHostIdentity({ host, chain })?.pid
 if (hostPid === undefined) {
   try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: host could not be identified; host=${host} chain length=${chain.length} read error=${readError ?? 'none; no matching ancestor'}\n`) } catch { /* ignore */ }
 }

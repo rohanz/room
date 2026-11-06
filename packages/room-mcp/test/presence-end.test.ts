@@ -212,7 +212,7 @@ describe('presence end and the idle lease (registry §18)', () => {
 
     it('does not end the session while the process that attached the MCP still runs (Windows launcher or stale record)', () => {
       const probe = probeWith({ 7: parent, 9: undefined })
-      const record = { hostPid: 9, chain: [{ pid: 9, startTime: 'linux:boot:50', executable: 'cmd' }] }
+      const record = { hostPid: 9 }
       const verdict = hostRecordAlive(record, parent, probe)
       expect(verdict.alive).toBeUndefined()
       expect(verdict.stale).toContain('recorded host pid 9 is gone')
@@ -289,4 +289,20 @@ it.each(['activity', 'stop'] as const)('does not expire presence when %s arrives
     expect(f.presence.hasLeft).toBe(false)
     expect(f.events).toEqual([])
   } finally { f.presence.stop() }
+})
+
+it('ignores a live shared supervisor when the nearest background Claude host died', () => {
+  const chain = [
+    { pid: 49716, startTime: 'bg', executable: 'claude bg-spare' },
+    { pid: 49656, startTime: 'pty', executable: 'claude bg-pty-host' },
+    { pid: 41119, startTime: 'supervisor', executable: 'claude' },
+  ]
+  expect(hostRecordAlive({ host: 'claude', hostPid: 41119, chain }, undefined,
+    pid => chain.find(p => p.pid === pid && pid === 41119), 1, () => false)).toEqual({ alive: false })
+})
+
+it('reports unknown, not dead, when a record carries no host evidence', () => {
+  const chain = [{ pid: 3, startTime: 'shell', executable: 'zsh' }]
+  expect(hostRecordAlive({ host: 'claude', chain } as unknown as Parameters<typeof hostRecordAlive>[0], undefined,
+    () => undefined, 1, () => false)).toEqual({ alive: undefined })
 })

@@ -1,3 +1,5 @@
+import { sessionHostIdentity } from './hosts/session-host.js'
+import { sessionEntries } from './session-entries.js'
 import { requireDaemonRuntime } from './daemon-cutover.js'
 import { trackConnection } from './connection.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
@@ -8,7 +10,7 @@ import { CURRENT_COMPAT, LEGACY_COMPAT, selectContract, type ContractSelection, 
  * their replica across transports and join attempts; a standalone process owns local transport.
  * Explicit `room_leave` disposes the logical session.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -170,14 +172,12 @@ export function readSessionRecord(commonDir: string, sessionId: string): Session
 
 function sessionRecords(commonDir: string): SessionRecord[] {
   const root = join(commonDir, 'room', 'sessions')
-  let entries: string[]
-  try { entries = readdirSync(root) }
-  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []; throw e }
   const records: SessionRecord[] = []
-  for (const entry of entries) {
+  for (const entry of sessionEntries(root)) {
+    if (entry.kind !== 'directory') continue
     try {
-      const record = JSON.parse(readFileSync(join(root, entry, 'session.json'), 'utf8')) as SessionRecord
-      if (record?.session_id && sessionDirectory(commonDir, record.session_id) === join(root, entry)) records.push(record)
+      const record = JSON.parse(readFileSync(join(entry.path, 'session.json'), 'utf8')) as SessionRecord
+      if (record?.session_id && sessionDirectory(commonDir, record.session_id) === entry.path) records.push(record)
     } catch (e) {
       if (e instanceof SyntaxError || ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) continue
       throw e
@@ -206,6 +206,11 @@ export interface SessionBindingOptions {
 function processIdentity(pid: number, probe: ProcessProbe): ProcessIdentity | undefined {
   const info = probe(pid)
   return info?.startTime && info.executable ? { pid, startTime: info.startTime, executable: info.executable } : undefined
+}
+
+function ownSession(record: SessionRecord, parent: ProcessIdentity): boolean {
+  const host = sessionHostIdentity(record)
+  return !!host && sameProcess(host, parent)
 }
 
 function sameProcess(a: ProcessIdentity, b: ProcessIdentity): boolean {
@@ -293,7 +298,7 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
     if (options.appServer || args?.match(/^\S+/)?.[0] === 'app-server') return undefined
     if (args === undefined) return undefined
   }
-  const matching = parent && records.filter(record => !record.worker_id && record.chain?.some(member => sameProcess(member, parent))).sort((a, b) => b.at - a.at)[0]
+  const matching = parent && records.filter(record => !record.worker_id && ownSession(record, parent)).sort((a, b) => b.at - a.at)[0]
   if (matching) return { id: matching.session_id, host }
   return host === 'claude' && env.CLAUDE_CODE_SESSION_ID ? { id: env.CLAUDE_CODE_SESSION_ID, host } : undefined
 }

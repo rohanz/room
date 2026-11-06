@@ -1649,11 +1649,6 @@
     },
     {
       "path": "plugins/room/hooks/common.mjs",
-      "line": 372,
-      "text": "if (exe && /[\\\\/]claude[\\\\/]versions[\\\\/][^\\\\/]+$/.test(exe)) return 'claude'"
-    },
-    {
-      "path": "plugins/room/hooks/common.mjs",
       "line": 653,
       "text": "* Claude Code caps a hook's additionalContext at 10,000 characters; over it, the model sees a file path and"
     },
@@ -2126,6 +2121,11 @@
       "path": "plugins/room/hooks/session-start.mjs",
       "line": 57,
       "text": "// An inbox over the cap (only an oversized notice; the MCP bounds items) is not printed or confirmed: it stays owed."
+    },
+    {
+      "path": "plugins/room/hooks/common.mjs",
+      "line": 372,
+      "text": "if (exe && /[\\\\/]claude[\\\\/]versions[\\\\/][^\\\\/]+$/.test(exe)) return 'claude'"
     }
   ],
   "compatibility": [

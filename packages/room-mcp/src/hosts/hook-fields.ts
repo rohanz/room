@@ -59,7 +59,6 @@ export function hookContext(event: HookEvent['event'], text: string) {
 export function compatibilityHookCodec(host?: string): HookCodec {
   return { decode: (event, raw, _argv, incomplete) => decodeHookFields(event, raw, incomplete),
     reduceRuntime: reduceHookEffort, context: hookContext,
-    matchesHostProcess: process => new RegExp(`^${host}(?:[.-]|$)`, 'i').test(process.executable ?? ''),
     tool: hookTool, command: hookCommand, pathFields: hookPathFields,
   }
 }

@@ -24,6 +24,16 @@ it.each(['claude', 'codex'] as const)('%s standalone hook bundle is fresh and im
   }
 })
 
+it('host selection hook bundle is fresh and imports only builtins', async () => {
+  // Same options as scripts/build-plugin.mjs.
+  const result = await build({ absWorkingDir: root, entryPoints: ['packages/room-mcp/src/hosts/session-host.ts'], bundle: true, platform: 'node', format: 'esm', write: false, metafile: true })
+  expect(result.outputFiles[0].text).toBe(fs.readFileSync(new URL('../../../../plugins/room/hooks/session-host.mjs', import.meta.url), 'utf8'))
+  expect(Object.keys(result.metafile!.inputs).every(file => file.startsWith('packages/room-mcp/src/hosts/'))).toBe(true)
+  for (const output of Object.values(result.metafile!.outputs)) for (const imported of output.imports) {
+    expect(imported.external && builtinModules.includes(imported.path.replace(/^node:/, ''))).toBe(true)
+  }
+})
+
 it('keeps Codex hooks.json byte-identical, including its frozen executable paths and matchers', () => {
   const bytes = fs.readFileSync(new URL('../../../../plugins/room/hooks.json', import.meta.url))
   expect(createHash('sha256').update(bytes).digest('hex')).toBe('336c0b90c935ff627f9988ceb92e21c887b44c9b6e904b2c2ddd9a188db4b777')
@@ -62,18 +72,10 @@ it.each(Object.keys(codecs) as (keyof typeof codecs)[])('%s retains startup-only
   }
 })
 
-it('preserves executable-name matching, unknown explicit hosts and no-record runtime interpretation', () => {
-  for (const host of Object.keys(codecs) as (keyof typeof codecs)[]) {
-    const codec = hookCodecFor(host)
-    for (const executable of [host, `${host}.exe`, `${host}-native`, host.toUpperCase()]) {
-      expect(codec.matchesHostProcess({ executable })).toBe(true)
-    }
-    for (const executable of ['cmd.exe', 'node', `${host}Extra`, '/bin/' + host]) expect(codec.matchesHostProcess({ executable })).toBe(false)
-  }
+it('preserves unknown explicit hosts and no-record runtime interpretation', () => {
   expect(startupHookCodec(['--host']).host).toBe('codex')
   const custom = startupHookCodec(['--host', 'custom'])
   expect(custom.host).toBe('custom')
-  expect(custom.codec.matchesHostProcess({ executable: 'custom.exe' })).toBe(true)
   const compatibility = compatibilityHookCodec()
   const event = compatibility.decode('before-tool', { model: 'ignored', transcript_path: '/ignored', effort: { level: ' high ' } }, [])
   expect(event.transcriptPath).toBeUndefined()

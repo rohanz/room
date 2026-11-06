@@ -35,6 +35,5 @@ export const claudeHookCodec: HookCodec = {
     return next
   },
   context: hookContext,
-  matchesHostProcess: process => /^claude(?:[.-]|$)/i.test(process.executable ?? ''),
   tool: hookTool, command: hookCommand, pathFields: hookPathFields,
 }

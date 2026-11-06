@@ -33,6 +33,8 @@ await build({ entryPoints: ['packages/relay/src/private-core.ts'], outfile: 'plu
 // One builtins-only Windows process table reader for hooks and the relay.
 await build({ entryPoints: ['packages/relay/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
+await build({ entryPoints: ['packages/room-mcp/src/hosts/session-host.ts'], outfile: 'plugins/room/hooks/session-host.mjs', bundle: true, platform: 'node', format: 'esm' })
+
 // Pure host hook codecs; shipped beside the frozen executable entry points, with no MCP dependency.
 for (const host of ['claude', 'codex']) {
   await build({ entryPoints: [`packages/room-mcp/src/hosts/${host}-hook-codec.ts`], outfile: `plugins/room/hooks/${host}-hook-codec.mjs`,

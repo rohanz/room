@@ -53,6 +53,28 @@ describe('host session binding', () => {
     expect(boundSession({ commonDir: dir, host: 'claude', parent: { ...mac, startTime: 'darwin:1789781723:1790860993' }, env: {} })).toEqual({ id: 'mac', host: 'claude' })
   })
 
+  it.each(['claude', '2.1.318', 'node'])('binds a lead to its own session, not a newer nested %s', executable => {
+    const dir = common()
+    const shell = { pid: 80, startTime: 'birth-80', executable: 'zsh' }, nested = { pid: 81, startTime: 'birth-81', executable: 'claude' }
+    record(dir, 'outer', 'claude', 1, [parent])
+    record(dir, 'nested', 'claude', 2, [{ ...nested, executable }, shell, parent])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent, env: {} })).toEqual({ id: 'outer', host: 'claude' })
+    // The nested MCP's own parent is probed under the same name its hook recorded.
+    expect(boundSession({ commonDir: dir, host: 'claude', parent: { ...nested, executable }, env: {} })).toEqual({ id: 'nested', host: 'claude' })
+    // macOS names a native Claude by its version file; the record and the live probe agree on that name.
+    const real = { pid: 2662, startTime: 'birth-2662', executable: '2.1.318' }, pty = { pid: 91999, startTime: 'birth-91999', executable: 'claude' }
+    record(dir, 'old-mac', 'claude', 3, [real, pty])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent: real, env: {} })).toEqual({ id: 'old-mac', host: 'claude' })
+  })
+
+  it('accepts one hook interpreter in front of the host, and nothing else', () => {
+    const dir = common()
+    record(dir, 'via-shell', 'claude', 1, [{ pid: 90, startTime: 'birth-90', executable: 'bash' }, parent])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent, env: {} })).toEqual({ id: 'via-shell', host: 'claude' })
+    record(dir, 'two-shells', 'claude', 2, [{ pid: 91, startTime: 'birth-91', executable: 'sh' }, { pid: 92, startTime: 'birth-92', executable: 'zsh' }, parent])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent, env: {} })).toEqual({ id: 'via-shell', host: 'claude' })
+  })
+
   it('binds each lead to its parent and rebinds Claude after /clear', () => {
     const dir = common()
     record(dir, 'claude-a', 'claude', 1, [parent])
@@ -123,4 +145,14 @@ describe('host session binding', () => {
     }
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex exec app-server', env: {} })).toEqual({ id: 'codex-spaces', host: 'codex' })
   })
+})
+
+it.skipIf(process.platform === 'win32')('never binds a symlinked session directory and skips clone-wide files', () => {
+  const dir = common(), outside = common()
+  record(outside, 'linked', 'claude', 1, [parent])
+  const target = sessionDirectory(dir, 'linked')
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(path.join(path.dirname(target), 'idle-episode.json'), '{}')
+  fs.symlinkSync(sessionDirectory(outside, 'linked'), target)
+  expect(boundSession({ commonDir: dir, host: 'claude', parent, env: {} })).toBeUndefined()
 })

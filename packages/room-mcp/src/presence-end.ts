@@ -1,3 +1,4 @@
+import { sessionHostIdentity } from './hosts/session-host.js'
 /**
  * Presence ends within a bounded time once the host session has finished, even when the MCP lives on
  * (registry §18, D5). An interactive host ends by stdin EOF, with the bound `session.json` hostPid as the
@@ -135,10 +136,12 @@ export function attachingParentReader(probe: ProcessProbe = probeProcess, ppid =
  * MCP is gone too: a record can name a pid that was never this session's host (a transient launcher shell on Windows,
  * or a record from before the host restarted), and an interactive host still ends by stdin EOF.
  */
-export function hostRecordAlive(record: { hostPid: number; chain?: ProcessIdentity[] }, parent: ProcessIdentity | undefined,
+export function hostRecordAlive(record: { host?: string; hostPid: number; chain?: ProcessIdentity[] }, parent: ProcessIdentity | undefined,
   probe: ProcessProbe = probeProcess, ppid = process.ppid, alive: (pid: number) => boolean = pidAlive): HostLiveness {
-  const identity = record.chain?.find(member => member.pid === record.hostPid)
-  const hostAlive = identity ? liveness(identity, probe) !== 'dead' : alive(record.hostPid)
+  const identity = sessionHostIdentity(record)
+  // No host evidence at all is unknown, never death: stdin EOF still ends an interactive host.
+  if (!identity) return { alive: undefined }
+  const hostAlive = identity.startTime ? liveness(identity, probe) !== 'dead' : alive(identity.pid)
   if (hostAlive) return { alive: true }
   // An unreadable parent identity (a slow Windows CIM read) is not evidence of death: fall back to pid existence.
   const parentAlive = parent ? liveness(parent, probe) !== 'dead' : ppid > 1 && alive(ppid)

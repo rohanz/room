@@ -43,7 +43,6 @@ function compatibilityHookCodec(host) {
     decode: (event, raw, _argv, incomplete) => decodeHookFields(event, raw, incomplete),
     reduceRuntime: reduceHookEffort,
     context: hookContext,
-    matchesHostProcess: (process) => new RegExp(`^${host}(?:[.-]|$)`, "i").test(process.executable ?? ""),
     tool: hookTool,
     command: hookCommand,
     pathFields: hookPathFields
@@ -59,7 +58,6 @@ var codexHookCodec = {
     return next;
   },
   context: hookContext,
-  matchesHostProcess: (process) => /^codex(?:[.-]|$)/i.test(process.executable ?? ""),
   tool: hookTool,
   command: hookCommand,
   pathFields: hookPathFields

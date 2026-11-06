@@ -1,3 +1,4 @@
+import { daemonCutoverRows, inspectDaemonCutover } from './daemon-cutover.js'
 import fs from 'node:fs'
 import { compatibilityFromHealth } from './client-compat.js'
 import { createSessionBinding } from './binding.js'
@@ -276,5 +277,10 @@ export async function runDoctor(dir: string, { inSession = false, selected, sess
   const facts = await collectDoctorFacts(dir, inSession, selected)
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning
   if (inSession && sessionBound !== undefined) facts.sessionBound = sessionBound
-  return formatDoctor(evaluateDoctor(facts))
+  const report = formatDoctor(evaluateDoctor(facts))
+  if (!inSession && facts.repo && !facts.server) {
+    try { return [report, ...daemonCutoverRows(await inspectDaemonCutover(await gitCommonDir(dir)))].join('\n') }
+    catch (error) { return `${report}\nFAIL  local daemon cutover: ${error instanceof Error ? error.message : String(error)}` }
+  }
+  return report
 }

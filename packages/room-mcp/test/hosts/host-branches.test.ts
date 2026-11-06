@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url))
 // Host-owned source is audited under src/hosts; hook-codecs.test.ts checks these exact bundles for freshness.
-const generatedCodecs = new Set(['plugins/room/hooks/claude-hook-codec.mjs', 'plugins/room/hooks/codex-hook-codec.mjs'])
+// Generated from packages/room-mcp/src/hosts by scripts/build-plugin.mjs; hook-codecs.test.ts checks each is fresh.
+const generatedCodecs = new Set(['plugins/room/hooks/claude-hook-codec.mjs', 'plugins/room/hooks/codex-hook-codec.mjs', 'plugins/room/hooks/session-host.mjs'])
 const inventory = JSON.parse(fs.readFileSync(new URL('./host-branches.json', import.meta.url), 'utf8')) as {
   baseline: string; pattern: string; entries: { path: string; line: number; text: string }[]
   compatibility: { path: string; text: string; reason: string }[]

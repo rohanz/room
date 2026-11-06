@@ -115,7 +115,6 @@ export interface HostAdapter {
     decode(event: 'start' | 'before-tool', raw: unknown, argv: readonly string[]): HookEvent;
     reduceRuntime(event: HookEvent, evidence: TranscriptEvidence): unknown;
     context(event: HookEvent['event'], text: string): unknown;
-    matchesHostProcess(process: ProcessIdentity): boolean;
   };
   createLogDecoder?(context: LogContext): HostLogDecoder;
   inspectInstall(): Promise<InstallEvidence>;

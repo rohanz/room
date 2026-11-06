@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { cloneId, privateStateDirectory } from '@room/relay'
 import { probeProcessNow } from '@room/relay/process'
-import { inspectDaemonCutover, requireDaemonRuntime, daemonCutoverRows } from '../src/daemon-cutover.js'
+import { inspectDaemonCutover, requireDaemonRuntime, daemonCutoverRows, resolveDaemonCutover, cutoverResolveCommand } from '../src/daemon-cutover.js'
 import * as cutover from '../src/daemon-cutover.js'
 import * as doctor from '../src/doctor.js'
 import { LOCAL, joinSession, writeSessionRecord } from '../src/session.js'
@@ -36,6 +36,60 @@ function owner(common: string, pid = 100, runtime?: string) {
 }
 
 describe('drained daemon cutover', () => {
+  it('remembers exact drained bytes, but judges changed/new records and old-owner takeover', async () => {
+    const { common } = fixture()
+    owner(common, 300)
+    const file = path.join(common, 'room/sessions/old/mcp.json')
+    write(file, identity(400))
+    await requireDaemonRuntime(common, inspectOptions)
+    const uncertain = { ...inspectOptions, probe: (pid: number) => pid === 400 ? {} : probe(pid) }
+    const state = await inspectDaemonCutover(common, uncertain)
+    expect(state.blocked).toBe(false)
+    expect(state.clients[0].skipped).toBe(true)
+    expect(daemonCutoverRows(state).join('\n')).toContain('unchanged record previously drained; skipped')
+    await requireDaemonRuntime(common, uncertain)
+    write(file, { ...identity(400), changed: true })
+    expect((await inspectDaemonCutover(common, uncertain)).blocked).toBe(true)
+    write(file, identity(400))
+    write(path.join(common, 'room/sessions/new/mcp.json'), identity(200))
+    expect((await inspectDaemonCutover(common, uncertain)).blocked).toBe(true)
+    fs.rmSync(path.join(common, 'room/sessions/new'), { recursive: true })
+    owner(common, 100)
+    expect((await inspectDaemonCutover(common, uncertain)).blocked).toBe(true)
+    owner(common, 300)
+    const drain = path.join(common, 'room/daemon-cutover.json')
+    const old = JSON.parse(fs.readFileSync(drain, 'utf8'))
+    delete old.drainedClients
+    write(drain, old)
+    expect((await inspectDaemonCutover(common, uncertain)).blocked).toBe(true)
+  })
+  it('re-judges a drained worker when its run report changes, and never skips a live process', async () => {
+    const { common } = fixture()
+    owner(common, 300)
+    const worker = path.join(common, 'room/registry/workers/w1.json')
+    write(worker, { id: 'w1', host: 'claude', phase: 'active', runs: [{ n: 1, mode: 'fresh', launch: { outcome: 'launched', pid: 400, process: identity(400) } }] })
+    await requireDaemonRuntime(common, inspectOptions)
+    const report = path.join(common, 'room/registry/runs/w1/1.report.json')
+    write(report, { hostProcess: identity(200) })
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.clients.find(c => c.kind === 'worker')).toMatchObject({ liveness: 'alive' })
+    expect(state.clients.find(c => c.kind === 'worker')?.skipped).toBeUndefined()
+    // The worker record and report are unchanged since a second drain, but the process now reads alive: it blocks.
+    fs.rmSync(report)
+    await requireDaemonRuntime(common, inspectOptions)
+    const revived = await inspectDaemonCutover(common, { ...inspectOptions, probe: (pid: number) => pid === 400 ? identity(400) : probe(pid) })
+    expect(revived.clients.find(c => c.kind === 'worker')).toMatchObject({ liveness: 'alive' })
+    expect(revived.blocked).toBe(true)
+  })
+  it('shows cutover rows in scope diagnostics after the join gate refuses', async () => {
+    const { common, clone } = fixture()
+    write(path.join(common, 'room/sessions/old/mcp.json'), { pid: process.ppid })
+    await expect(joinSession({ dir: clone, server: LOCAL, name: 'Ada' })).rejects.toThrow('drain required')
+    const report = vi.spyOn(doctor, 'runDoctor').mockResolvedValue('WARN  fixture')
+    const tools = createTools({ cwd: clone, getSession: () => null, setSession: () => {} })
+    try { expect(await tools.call('room_state', { check: true })).toContain('FAIL  local daemon cutover: drain required') }
+    finally { report.mockRestore(); await tools.shutdown() }
+  })
   it.skipIf(process.platform === 'win32')('repairs the 0.17.33 directory tree on use and completes cutover', async () => {
     const { common } = fixture(), room = path.join(common, 'room'), session = path.join(room, 'sessions', 'old-session')
     fs.mkdirSync(session, { recursive: true })
@@ -192,8 +246,8 @@ describe('drained daemon cutover', () => {
   it('does not let a dead daemon-client marker exempt a live legacy host', async () => {
     const { common } = fixture()
     write(path.join(common, 'room/sessions/old/mcp.json'), { ...identity(300), runtime: 'daemon-client' })
-    write(path.join(common, 'room/sessions/old/session.json'), { session_id: 'old', hostPid: 200, chain: [identity(200)] })
-    const state = await inspectDaemonCutover(common, inspectOptions)
+    write(path.join(common, 'room/sessions/old/session.json'), { session_id: 'old', host: 'claude', hostPid: 200, chain: [{ ...identity(200), executable: 'claude' }] })
+    const state = await inspectDaemonCutover(common, { ...inspectOptions, probe: pid => pid === 200 ? { ...identity(pid), executable: 'claude' } : undefined })
     expect(state.blocked).toBe(true)
     expect(state.clients.find(c => c.kind === 'session')).toMatchObject({ pid: 200, runtime: 'legacy', liveness: 'alive' })
   })
@@ -229,7 +283,7 @@ describe('drained daemon cutover', () => {
   it.each(['room/sessions/invalid/session.json', 'room-session.json'])('blocks a non-numeric hostPid in %s', async location => {
     const { common } = fixture()
     const file = path.join(common, location)
-    write(file, { session_id: 'invalid', hostPid: '200', chain: [identity(200)] })
+    write(file, { session_id: 'invalid', hostPid: '200' })
     const state = await inspectDaemonCutover(common, inspectOptions)
     expect(state.blocked).toBe(true)
     expect(state.clients[0]).toMatchObject({ liveness: 'unknown' })
@@ -354,4 +408,185 @@ describe('drained daemon cutover', () => {
       await expect(requireDaemonRuntime(common, { authenticate: noHealth })).resolves.toBeUndefined()
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill() }
   })
+})
+
+describe('historical host and ambiguous launch evidence', () => {
+  it.each([false, true])('uses nearest background host, live=%s', async live => {
+    const { common } = fixture()
+    const chain = [{ ...identity(49716), executable: 'claude bg-spare' }, { ...identity(49656), executable: 'claude bg-pty-host' }, { ...identity(41119), executable: 'claude' }]
+    write(path.join(common, 'room/sessions/bg/session.json'), { host: 'claude', hostPid: 41119, chain })
+    const state = await inspectDaemonCutover(common, { probe: pid => chain.find(p => p.pid === pid && (pid === 41119 || live)) })
+    expect(state.blocked).toBe(live)
+    expect(state.clients[0]).toMatchObject({ pid: 49716, liveness: live ? 'alive' : 'dead' })
+  })
+  it('uses the first host even with an old macOS version-numbered name', async () => {
+    const { common } = fixture()
+    write(path.join(common, 'room/sessions/mac/session.json'), { host: 'claude', hostPid: 41119,
+      chain: [{ ...identity(2662), executable: '2.1.318' }, { ...identity(91999), executable: 'claude' }, { ...identity(41119), executable: 'claude' }] })
+    const state = await inspectDaemonCutover(common, { probe: pid => pid === 91999 ? { ...identity(pid), executable: 'claude' } : undefined })
+    expect(state.clients[0]).toMatchObject({ pid: 2662, liveness: 'dead' })
+    expect(state.blocked).toBe(false)
+  })
+  it('does not let a reused pid make a fully identified dead worker unknown', async () => {
+    const { common } = fixture()
+    owner(common, 300)
+    write(path.join(common, 'room/registry/workers/w2.json'), { id: 'w2', host: 'claude', phase: 'active',
+      runs: [{ n: 1, mode: 'fresh', launch: { outcome: 'launched', pid: 200, process: { ...identity(200), startTime: 'earlier-birth' } } }] })
+    // pid 200 now belongs to a different, live process (probe returns another start time).
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.clients.find(c => c.kind === 'worker')).toMatchObject({ liveness: 'dead' })
+    expect(state.blocked).toBe(false)
+  })
+  it('keeps identityless ambiguous launches blocking and prints human checks', async () => {
+    const { common } = fixture()
+    write(path.join(common, 'room/registry/workers/w.json'), { id: 'w', dir: '/worker', hostSessionId: 'session-id', logFile: '/worker.log',
+      runs: [{ n: 1, launch: { outcome: 'ambiguous' } }] })
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.blocked).toBe(true)
+    expect(daemonCutoverRows(state).join('\n')).toMatch(/FIX.*working directory.*session-id.*worker.log.*Record "room\/registry\/workers\/w.json".*cutover-resolve.*'--record' 'room\/registry\/workers\/w.json'/)
+  })
+})
+describe('operator resolution', () => {
+  it('quotes the printed command for POSIX shells and PowerShell', () => {
+    const args = ['/plugin dir/room-mcp.mjs', 'cutover-resolve', '--dir', "/Users/o'brien/repo", '--record', 'room/registry/workers/w.json']
+    expect(cutoverResolveCommand(args, 'darwin')).toBe(`node '/plugin dir/room-mcp.mjs' 'cutover-resolve' '--dir' '/Users/o'\\''brien/repo' '--record' 'room/registry/workers/w.json'`)
+    expect(cutoverResolveCommand(args, 'win32')).toBe(`& node '/plugin dir/room-mcp.mjs' 'cutover-resolve' '--dir' '/Users/o''brien/repo' '--record' 'room/registry/workers/w.json'`)
+  })
+  it('blocks a session whose chain names two hook shells in front of the host', async () => {
+    const { common } = fixture()
+    write(path.join(common, 'room/sessions/s/session.json'), { session_id: 's', host: 'claude', hostPid: 100,
+      chain: [identity(301), { ...identity(302), executable: 'zsh' }, { ...identity(100), executable: 'claude' }].map((m, i) => i === 0 ? { ...m, executable: 'sh' } : m) })
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.clients.find(c => c.kind === 'session')).toMatchObject({ liveness: 'unknown' })
+    expect(state.blocked).toBe(true)
+  })
+  it('treats a record that vanishes or grows while being read as unreadable evidence', async () => {
+    const { common } = fixture()
+    const file = path.join(common, 'room/sessions/s/mcp.json')
+    write(file, identity(300))
+    const open = vi.spyOn(fs, 'openSync').mockImplementationOnce(() => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }) })
+    try { expect((await inspectDaemonCutover(common, inspectOptions)).issues.join('\n')).toMatch(/sessions\/s\/mcp\.json: ENOENT/) }
+    finally { open.mockRestore() }
+    write(file, { ...identity(300), padding: 'x'.repeat(3 * 1024 * 1024) })
+    const real = fs.lstatSync, lstat = vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike) => {
+      const stat = real(target)
+      return String(target).endsWith(path.join('sessions', 's', 'mcp.json')) ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { size: 10 }) : stat
+    }) as typeof fs.lstatSync)
+    const realF = fs.fstatSync, fstat = vi.spyOn(fs, 'fstatSync').mockImplementation(((fd: number) => {
+      const stat = realF(fd)
+      return stat.size > 1024 * 1024 ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { size: 10 }) : stat
+    }) as typeof fs.fstatSync)
+    // Both size checks see 10 bytes; the file grew to 3 MB after them. The bounded read must still refuse it.
+    try { expect((await inspectDaemonCutover(common, inspectOptions)).issues.join('\n')).toMatch(/sessions\/s\/mcp\.json exceeds/) }
+    finally { lstat.mockRestore(); fstat.mockRestore() }
+  })
+  it.skipIf(process.platform === 'win32')('refuses linked inventory folders instead of reading them as empty', async () => {
+    const { common, root } = fixture()
+    const elsewhere = path.join(root, 'elsewhere')
+    fs.mkdirSync(path.join(elsewhere, 's'), { recursive: true })
+    fs.writeFileSync(path.join(elsewhere, 's', 'mcp.json'), JSON.stringify(identity(100)))
+    fs.symlinkSync(elsewhere, path.join(common, 'room/sessions'))
+    const linked = await inspectDaemonCutover(common, inspectOptions)
+    expect(linked.blocked).toBe(true)
+    expect(linked.issues.join('\n')).toMatch(/room\/sessions must be a directory, not a symlink/)
+    fs.rmSync(path.join(common, 'room/sessions'))
+    fs.mkdirSync(path.join(common, 'room/registry'), { recursive: true })
+    fs.symlinkSync(path.join(root, 'missing'), path.join(common, 'room/registry/workers'))
+    const dangling = await inspectDaemonCutover(common, inspectOptions)
+    expect(dangling.blocked).toBe(true)
+    expect(dangling.issues.join('\n')).toMatch(/registry\/workers must be a directory, not a symlink/)
+  })
+  it.skipIf(process.platform === 'win32')('refuses linked inventory records: a link is never read or taken as absent', async () => {
+    const { common, root } = fixture()
+    const planted = path.join(root, 'planted.json')
+    fs.writeFileSync(planted, JSON.stringify({ ...identity(100), runtime: 'daemon-client' }))
+    fs.mkdirSync(path.join(common, 'room/sessions/s'), { recursive: true })
+    fs.symlinkSync(planted, path.join(common, 'room/sessions/s/mcp.json'))
+    const linked = await inspectDaemonCutover(common, inspectOptions)
+    expect(linked.blocked).toBe(true)
+    expect(linked.issues.join('\n')).toContain('mcp.json must be a regular file, not a symlink')
+    fs.rmSync(path.join(common, 'room/sessions/s'), { recursive: true })
+    write(path.join(common, 'room/registry/workers/w.json'), { id: 'w', runs: [{ n: 1, launch: { outcome: 'launched', process: identity(300) } }] })
+    fs.mkdirSync(path.join(common, 'room/registry/runs/w'), { recursive: true })
+    fs.symlinkSync(path.join(root, 'missing.json'), path.join(common, 'room/registry/runs/w/1.report.json'))
+    const dangling = await inspectDaemonCutover(common, inspectOptions)
+    expect(dangling.blocked).toBe(true)
+    expect(dangling.issues.join('\n')).toContain('1.report.json must be a regular file, not a symlink')
+  })
+  it.skipIf(process.platform === 'win32')('refuses linked or foreign waiver files instead of trusting them', async () => {
+    const { common, root } = fixture()
+    const source = 'room/registry/workers/w.json'
+    write(path.join(common, source), { id: 'w', runs: [{ n: 1, launch: { outcome: 'ambiguous' } }] })
+    await resolveDaemonCutover(common, source, true, undefined, inspectOptions)
+    const file = path.join(common, 'room/daemon-cutover-resolutions.json')
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ v: 1, clone: cloneId(common) })
+    expect((await inspectDaemonCutover(common, inspectOptions)).blocked).toBe(false)
+    // Copied into another clone, the same resolutions do not waive anything there.
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+    write(file, { ...saved, clone: 'another-clone' })
+    const foreign = await inspectDaemonCutover(common, inspectOptions)
+    expect(foreign.blocked).toBe(true)
+    expect(foreign.issues.join('\n')).toContain('must name this clone')
+    // A link to a waiver file elsewhere is refused, not followed.
+    const outside = path.join(root, 'planted.json')
+    fs.writeFileSync(outside, JSON.stringify(saved), { mode: 0o600 })
+    fs.rmSync(file); fs.symlinkSync(outside, file)
+    const linked = await inspectDaemonCutover(common, inspectOptions)
+    expect(linked.blocked).toBe(true)
+    expect(linked.issues.join('\n')).toContain('regular file, not a symlink')
+    fs.rmSync(file)
+    const drain = path.join(common, 'room/daemon-cutover.json')
+    fs.writeFileSync(outside, JSON.stringify({ v: 1, clone: cloneId(common), at: 1 }), { mode: 0o600 })
+    fs.symlinkSync(outside, drain)
+    expect((await inspectDaemonCutover(common, inspectOptions)).issues.join('\n')).toContain('regular file, not a symlink')
+  })
+  it('requires confirmation, a blocking source, and non-live evidence', async () => {
+    const { common } = fixture()
+    const source = 'room/sessions/s/mcp.json'
+    write(path.join(common, source), identity(100))
+    await expect(resolveDaemonCutover(common, source, false, undefined, inspectOptions)).rejects.toThrow('--confirm-not-running')
+    await expect(resolveDaemonCutover(common, 'missing', true, undefined, inspectOptions)).rejects.toThrow('not currently blocking')
+    await expect(resolveDaemonCutover(common, source, true, undefined, inspectOptions)).rejects.toThrow('live process')
+    write(path.join(common, source), identity(300))
+    await expect(resolveDaemonCutover(common, source, true, undefined, inspectOptions)).rejects.toThrow('not currently blocking')
+  })
+  it('skips exact fingerprints, re-judges records and reports, and never skips alive', async () => {
+    const { common } = fixture()
+    const source = 'room/registry/workers/w.json', file = path.join(common, source)
+    const worker = { id: 'w', runs: [{ n: 1, launch: { outcome: 'ambiguous' } }] }
+    write(file, worker)
+    await resolveDaemonCutover(common, source, true, 'checked transcript and log', inspectOptions)
+    let state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.blocked).toBe(false)
+    expect(daemonCutoverRows(state).join('\n')).toContain('resolved by operator at')
+    await expect(resolveDaemonCutover(common, source, true, undefined, inspectOptions)).rejects.toThrow('not currently blocking')
+    write(file, { ...worker, changed: true })
+    expect((await inspectDaemonCutover(common, inspectOptions)).blocked).toBe(true)
+    write(file, worker)
+    const report = path.join(common, 'room/registry/runs/w/1.report.json')
+    write(report, { hostProcess: identity(300) })
+    const uncertain = { ...inspectOptions, probe: () => ({}) }
+    expect((await inspectDaemonCutover(common, uncertain)).blocked).toBe(true)
+    await resolveDaemonCutover(common, source, true, undefined, uncertain)
+    expect((await inspectDaemonCutover(common, uncertain)).blocked).toBe(false)
+    state = await inspectDaemonCutover(common, { ...inspectOptions, probe: identity })
+    expect(state.blocked).toBe(true)
+    expect(state.clients[0].skipped).toBeUndefined()
+    expect(fs.statSync(path.join(common, 'room/daemon-cutover-resolutions.json')).mode & 0o777).toBe(0o600)
+  })
+})
+
+it.each([
+  [300, 200, 300, 'alive'],
+  [100, 300, 300, 'alive'],
+  [300, 300, 100, 'unknown'],
+  [300, 400, 300, 'unknown'],
+  [300, 300, 300, 'dead'],
+])('judges every worker identity (%s, %s, %s -> %s)', async (launchPid, reportPid, pid, expected) => {
+  const { common } = fixture()
+  write(path.join(common, 'room/registry/workers/w.json'), { id: 'w', runs: [{ n: 1,
+    launch: { outcome: 'launched', process: identity(Number(launchPid)), pid } }] })
+  write(path.join(common, 'room/registry/runs/w/1.report.json'), { hostProcess: identity(Number(reportPid)) })
+  const state = await inspectDaemonCutover(common, { ...inspectOptions, probe: pid => pid === 400 ? {} : probe(pid) })
+  expect(state.clients[0].liveness).toBe(expected)
 })

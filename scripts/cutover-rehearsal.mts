@@ -22,6 +22,7 @@ const arg = (name: string, fallback?: string) => {
   return path.resolve(value)
 }
 const oldPlugin = arg('--old'), newPlugin = arg('--new', path.join(import.meta.dirname, '..', 'plugins', 'room'))
+const fromClone = process.argv.includes('--from-clone') ? arg('--from-clone') : undefined
 const bundle = (plugin: string) => {
   const file = path.join(plugin, 'server', 'room-mcp.mjs')
   if (!fs.existsSync(file)) throw new Error(`no MCP bundle at ${file}`)
@@ -30,7 +31,9 @@ const bundle = (plugin: string) => {
 const version = (plugin: string) => JSON.parse(fs.readFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), 'utf8')).version as string
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-cutover-rehearsal-'))
+fs.chmodSync(root, 0o700)
 const clone = path.join(root, 'shop')
+try {
 fs.mkdirSync(clone)
 const git = (...args: string[]) => execFileSync('git', args, { cwd: clone, encoding: 'utf8' }).trim()
 git('init', '-q'); git('config', 'user.email', 'rehearsal@example.invalid'); git('config', 'user.name', 'Rehearsal')
@@ -38,11 +41,15 @@ fs.writeFileSync(path.join(clone, 'app.py'), 'def total(items):\n    return sum(
 git('add', '.'); git('commit', '-qm', 'init')
 const common = path.resolve(clone, git('rev-parse', '--git-common-dir'))
 
+function scrubbedEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(ROOM_|CLAUDE|CODEX_)/.test(k)) env[k] = v
+  return env
+}
 const clients: Client[] = []
 async function session(plugin: string, name: string) {
   const home = fs.mkdtempSync(path.join(root, `home-${name}-`))
-  const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(ROOM_|CLAUDE|CODEX_)/.test(k)) env[k] = v
+  const env = scrubbedEnv()
   Object.assign(env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'), ROOM_DIR: clone, ROOM_NAME: name })
   const stderr: string[] = []
   const transport = new StdioClientTransport({ command: process.execPath, args: [bundle(plugin)], env, cwd: clone, stderr: 'pipe' })
@@ -60,12 +67,34 @@ const until = async (what: string, ok: () => boolean | Promise<boolean>, ms = 60
   const end = Date.now() + ms
   while (!(await ok())) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await new Promise(r => setTimeout(r, 250)) }
 }
+/** On failure keep only the logs and a key-free discovery record, never the copied room state. */
+const keepDiagnostics = () => {
+  const kept = fs.mkdtempSync(path.join(os.tmpdir(), 'room-cutover-diagnostics-'))
+  fs.chmodSync(kept, 0o700)
+  for (const [from, name] of [[path.join(common, 'room-mcp.log'), 'room-mcp.log'], [path.join(common, 'room-mcp.log.1'), 'room-mcp.log.1'],
+    [path.join(common, 'room', 'daemon.log'), 'daemon.log']] as const) if (fs.existsSync(from)) fs.copyFileSync(from, path.join(kept, name))
+  const info = relayInfo() as Record<string, unknown> | undefined
+  if (info) fs.writeFileSync(path.join(kept, 'relay.json'), JSON.stringify({ ...info, key: undefined }, null, 2), { mode: 0o600 })
+  return kept
+}
 const step = (text: string) => console.log(`\n== ${text}`)
 const check = (label: string, ok: boolean, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `: ${detail}` : ''}`); if (!ok) failures++ }
 let failures = 0
 const MAIL = `REHEARSAL-MAIL-${Date.now()}`
 
 try {
+  if (fromClone) {
+    const target = path.join(common, 'room')
+    fs.cpSync(path.join(fromClone, 'room'), target, { recursive: true, dereference: false, filter: source => {
+      const name = path.basename(source)
+      // The source clone's drain record and operator resolutions are bound to that clone and never apply here.
+      return name !== 'relay.key' && !/lock/i.test(name) && name !== 'daemon-cutover.json' && name !== 'daemon-cutover-resolutions.json'
+        && !fs.lstatSync(source).isSymbolicLink()
+    } })
+    // Discovery from another clone must never address its live listener or carry its key.
+    const discovery = path.join(target, 'relay.json')
+    if (fs.existsSync(discovery)) fs.writeFileSync(discovery, JSON.stringify({ schema: 2, pid: 2147483647, port: 1, key: 'rehearsal-only' }), { mode: 0o600 })
+  }
   step(`old plugin ${version(oldPlugin)}: Ada and Ben join and leave unread mail`)
   const ada = await session(oldPlugin, 'Ada'), ben = await session(oldPlugin, 'Ben')
   console.log((await ada.call('room_state')).split('\n')[0])
@@ -85,11 +114,27 @@ try {
   await until('old owner exit', () => !oldOwner || !alive(oldOwner.pid))
   check('old owner exited', !oldOwner || !alive(oldOwner.pid))
 
+  if (process.argv.includes('--resolve-blocked')) {
+    // Plays the operator in this scratch copy only: each record the cutover cannot prove gone is resolved with the
+    // printed command, as a person would after the checks it names. Never use this flag's logic on a live clone.
+    step('operator: resolve records the cutover cannot prove gone (scratch copy only)')
+    const mcp = path.join(newPlugin, 'server', 'room-mcp.mjs')
+    let report = ''
+    try { report = execFileSync(process.execPath, [mcp, 'doctor', '--dir', clone], { encoding: 'utf8', env: scrubbedEnv() }) }
+    catch (error) { report = String((error as { stdout?: string }).stdout ?? '') }
+    const records = [...report.matchAll(/^FIX .*?Record ("(?:[^"\\]|\\.)*")\. /gm)].map(m => JSON.parse(m[1]) as string)
+    for (const record of records) {
+      execFileSync(process.execPath, [mcp, 'cutover-resolve', '--dir', clone, '--record', record, '--confirm-not-running', '--note', 'rehearsal'], { encoding: 'utf8', env: scrubbedEnv() })
+      console.log(`resolved ${record}`)
+    }
+    check('blocked records resolved through the documented command', true, `${records.length} record(s)`)
+  }
   step(`new plugin ${version(newPlugin)}: Ben starts, cutover runs, daemon starts`)
   const newBen = await session(newPlugin, 'Ben')
   const health = await newBen.call('room_state', { check: true })
   console.log(health.split('\n').filter(line => /cutover|daemon|FAIL|WARN/i.test(line)).join('\n') || health.split('\n').slice(0, 8).join('\n'))
   check('check reports no failures', !/^\s*FAIL/m.test(health))
+  check('check reports the cutover rows', /^INFO  local daemon cutover: /m.test(health))
   check('daemon owns the clone', relayInfo()?.runtime === 'daemon', JSON.stringify(relayInfo() && { pid: relayInfo()!.pid, runtime: relayInfo()!.runtime }))
   check('drain record written', fs.existsSync(path.join(common, 'room', 'daemon-cutover.json')))
   let mail = ''
@@ -111,8 +156,10 @@ try {
   if (info && alive(info.pid) && info.runtime === 'daemon') {
     try { execFileSync(process.execPath, [path.join(newPlugin, 'server', 'room-daemon.mjs'), 'stop', '--common-dir', common], { stdio: 'ignore' }) } catch { /* reported above */ }
   }
-  if (failures === 0) fs.rmSync(root, { recursive: true, force: true })
-  else console.log(`\nkept ${root} for inspection (room/daemon.log, room-mcp.log)`)
+  if (failures) console.log(`\nkept diagnostics in ${keepDiagnostics()} (private; delete when done)`)
+  fs.rmSync(root, { recursive: true, force: true })
   console.log(failures === 0 ? '\nREHEARSAL PASSED' : `\nREHEARSAL FAILED (${failures})`)
-  process.exit(failures === 0 ? 0 : 1)
+  process.exitCode = failures === 0 ? 0 : 1
 }
+
+} finally { fs.rmSync(root, { recursive: true, force: true }) }

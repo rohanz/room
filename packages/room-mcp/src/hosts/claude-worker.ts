@@ -35,6 +35,7 @@ function command(input: WorkerCommandInput) {
 
 export function createClaudeWorker(env: Env = process.env): Pick<NonNullable<HostAdapter['worker']>, 'capabilities' | 'freshSessionId' | 'defaults' | 'normalizeRuntime' | 'command'> & WorkerShellIsolation {
   return { capabilities: { resume: true }, freshSessionId: () => randomUUID(),
+    // Every 0.17 release pre-generates a Claude worker's id at intent and passes it as --session-id or --resume.
     defaults: cwd => defaults(cwd, env),
     normalizeRuntime: runtime => ({ ...runtime, effort: runtime.effort === 'minimal' ? 'low' : runtime.effort }), command,
     launchOptions: { shellEnvHook: true, developmentPlugin: true }, inheritedShellEnvFile: env.CLAUDE_ENV_FILE,

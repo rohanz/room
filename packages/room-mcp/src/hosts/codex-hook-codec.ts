@@ -10,6 +10,5 @@ export const codexHookCodec: HookCodec = {
     return next
   },
   context: hookContext,
-  matchesHostProcess: process => /^codex(?:[.-]|$)/i.test(process.executable ?? ''),
   tool: hookTool, command: hookCommand, pathFields: hookPathFields,
 }
