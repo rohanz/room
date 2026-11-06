@@ -167,6 +167,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     const old = hubAppend<NoteMsg>(t.local.a, lead, { type: 'note', text: 'before spawn', priority: 'notify' })
     hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
     await settle()
+    await t.bridge.sync() // relay is an admitted operation; wait for it rather than for elapsed time
     const relayed = t.local.b.messages().find(m => m.type === 'note' && m.to === worker.name)!
     // The worker's frontier is above the old broadcast; the relayed copy is addressed, so it is owed regardless.
     const workerSession = fakeSession(t.local.b, worker, LOCAL, true)
