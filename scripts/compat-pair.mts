@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
-import { cleanEnv } from './compat-process.mts'
+import { cleanEnv, timed } from './compat-process.mts'
 
 const self = fileURLToPath(import.meta.url)
 const [mode, authorityRoot, clientRoot, extra] = process.argv.slice(2)
@@ -207,13 +207,14 @@ async function client(root: string, endpoint: string, key?: string) {
 
 async function pair(transport: string, authority: string, currentClient: string) {
   assert(['server', 'relay', 'daemon'].includes(transport))
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'room-compat-pair-'))
+  const dir = await fs.mkdtemp(path.join(extra || os.tmpdir(), 'room-compat-pair-'))
   let key = transport === 'relay' ? randomBytes(32).toString('hex') : ''
+  const startup = performance.now()
   const server = transport === 'daemon'
-    ? spawn(process.execPath, ['--import', 'tsx', self, '--daemon', authority, dir], { env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe', 'pipe'] })
+    ? spawn(process.execPath, ['--import', import.meta.resolve('tsx'), self, '--daemon', authority, dir], { cwd: dir, env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe', 'pipe'] })
     : transport === 'relay'
-    ? spawn(process.execPath, ['--import', 'tsx', self, '--relay', authority, dir, key], { env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
-    : spawn(process.execPath, ['--import', 'tsx', self, '--server', authority], { cwd: path.dirname(self), env: { ...cleanEnv(), PORT: '0', HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe'] })
+    ? spawn(process.execPath, ['--import', import.meta.resolve('tsx'), self, '--relay', authority, dir, key], { cwd: dir, env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(process.execPath, ['--import', import.meta.resolve('tsx'), self, '--server', authority], { cwd: dir, env: { ...cleanEnv(), PORT: '0', HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe'] })
   let output = '', port = 0, serverError: Error | undefined
   if (transport === 'daemon') {
     server.stdio[3]!.on('data', (data: Buffer) => {
@@ -231,17 +232,22 @@ async function pair(transport: string, authority: string, currentClient: string)
   server.stderr!.on('data', data => { output = (output + data.toString()).slice(-64_000) })
   let peer: ChildProcess | undefined
   try {
-    await until(() => { if (serverError || server.exitCode !== null) throw serverError ?? new Error(`authority exited: ${output}`); return port > 0 && (transport !== 'daemon' || key.length === 64) }, 'authority readiness')
-    peer = spawn(process.execPath, ['--import', 'tsx', self, '--client', currentClient, `ws://127.0.0.1:${port}`], { env: cleanEnv(), stdio: ['pipe', 'inherit', 'inherit'] })
-    peer.stdin!.end(key)
-    await new Promise<void>((resolve, reject) => {
-      peer!.once('error', reject)
-      peer!.once('close', code => code === 0 ? resolve() : reject(new Error(`client exited ${code}`)))
+    try { await until(() => { if (serverError || server.exitCode !== null) throw serverError ?? new Error(`authority exited: ${output}`); return port > 0 && (transport !== 'daemon' || key.length === 64) }, 'authority readiness') }
+    finally { console.log(`TIMING ${transport} startup ms=${Math.round(performance.now() - startup)}`) }
+    await timed('exchange', async () => {
+      peer = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), self, '--client', currentClient, `ws://127.0.0.1:${port}`], { cwd: dir, env: cleanEnv(), stdio: ['pipe', 'inherit', 'inherit'] })
+      peer.stdin!.end(key)
+      await new Promise<void>((resolve, reject) => {
+        peer!.once('error', reject)
+        peer!.once('close', code => code === 0 ? resolve() : reject(new Error(`client exited ${code}`)))
+      })
     })
   } finally {
-    if (peer) await stop(peer)
-    await stop(server)
-    await fs.rm(dir, { recursive: true, force: true })
+    await timed('teardown', async () => {
+      if (peer) await stop(peer)
+      await stop(server)
+      await fs.rm(dir, { recursive: true, force: true })
+    })
   }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === self) {

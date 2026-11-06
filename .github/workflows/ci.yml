@@ -96,11 +96,22 @@ jobs:
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v4
+        id: compat-node
         with:
           node-version: '22'
           cache: npm
       - run: npm ci
+      # Each directory is keyed by immutable pin commit + OS/arch/Node + recipe.
+      # Prefix restore retains old releases when the pins list grows; candidate is never cached.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/room-compat-cache
+          key: compat-prepared-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compat-node.outputs.node-version }}-${{ hashFiles('scripts/compat-matrix.mts', 'scripts/compat-process.mts') }}-${{ hashFiles('scripts/compat-pins.json') }}
+          restore-keys: |
+            compat-prepared-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compat-node.outputs.node-version }}-${{ hashFiles('scripts/compat-matrix.mts', 'scripts/compat-process.mts') }}-
       - name: Pinned old/new process wire fixtures (no model calls)
+        env:
+          COMPAT_CACHE_DIR: ${{ runner.temp }}/room-compat-cache
         run: npx tsx scripts/compat-matrix.mts
 
   # Keep the existing required "test" status as the gate for independent jobs.

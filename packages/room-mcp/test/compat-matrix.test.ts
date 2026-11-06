@@ -12,8 +12,8 @@ import { holderDeadCheck } from '../../relay/src/hub.js'
 import { EventEmitter } from 'node:events'
 import { fixtureHolder, observeSocketMessages, validateAcquireTrace } from '../../../scripts/compat-pair.mts'
 import { updatePins, validatePins, validatePinCommit } from '../../../scripts/compat-pins.mjs'
-import { pairPlan, pendingCandidate, selectPairs, validateDescriptor } from '../../../scripts/compat-matrix.mts'
-import { run } from '../../../scripts/compat-process.mts'
+import { pairPlan, pendingCandidate, selectPairs, validateDescriptor, parseConcurrency } from '../../../scripts/compat-matrix.mts'
+import { run, boundedMap } from '../../../scripts/compat-process.mts'
 
 const root = fileURLToPath(new URL('../../../', import.meta.url))
 const initial = [{ tag: 'v0.17.0', commit: 'ec13dcd83f67895c622410e3d9e8f53b5c5cb7a2' }, { tag: 'v0.17.32', commit: '77bf1c448d6ce883b844443204c7c9c7306d0c4c' }]
@@ -72,6 +72,50 @@ describe('compatibility release pins', () => {
 })
 
 describe('compatibility process harness without sockets', () => {
+  it('defaults to at most four available CPUs and rejects invalid concurrency', () => {
+    expect(parseConcurrency(undefined, 2)).toBe(2)
+    expect(parseConcurrency(undefined, 64)).toBe(4)
+    expect(parseConcurrency('1')).toBe(1)
+    expect(parseConcurrency('8')).toBe(8)
+    for (const value of ['0', '-1', '1.5', 'NaN', '', 'Infinity', '9007199254740992']) {
+      expect(() => parseConcurrency(value)).toThrow('positive integer')
+    }
+  })
+  it('bounds parallel work, runs every pair once and preserves plan order', async () => {
+    const plan = selectPairs(initial)
+    let active = 0, peak = 0
+    const seen: unknown[] = []
+    const results = await boundedMap(plan, 3, async pair => {
+      seen.push(pair)
+      peak = Math.max(peak, ++active)
+      await new Promise(resolve => setTimeout(resolve, pair.authority === 'old' ? 5 : 1))
+      active--
+      return pair
+    })
+    expect(peak).toBe(3)
+    expect(active).toBe(0)
+    expect(new Set(seen).size).toBe(plan.length)
+    expect(results).toEqual(plan)
+    expect(await boundedMap([], 4, async () => 1)).toEqual([])
+    await expect(boundedMap(plan, 0, async pair => pair)).rejects.toThrow('positive integer')
+  })
+  it('drains running work after failure without starting queued pairs', async () => {
+    const started: number[] = [], finished: number[] = []
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const result = boundedMap([0, 1, 2, 3], 2, async index => {
+      started.push(index)
+      if (index === 0) throw new Error('interrupted')
+      await gate
+      finished.push(index)
+    })
+    await Promise.resolve()
+    expect(started).toEqual([0, 1])
+    release()
+    await expect(result).rejects.toThrow('interrupted')
+    expect(finished).toEqual([1])
+    expect(started).toEqual([0, 1])
+  })
   it('permits only the exact untagged candidate and never masks other fetch errors', () => {
     const missing = new Error("fatal: couldn't find remote ref refs/tags/v0.18.0")
     expect(pendingCandidate({ tag: 'v0.18.0' }, '0.18.0', missing)).toBe(true)

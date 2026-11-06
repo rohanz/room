@@ -56,3 +56,26 @@ export async function run(command: string, args: string[], cwd: string, timeoutM
     process.removeListener('SIGTERM', onTerm)
   }
 }
+
+/** Timings include failed phases and use a monotonic clock. */
+export async function timed<T>(label: string, action: () => Promise<T>): Promise<T> {
+  const started = performance.now()
+  try { return await action() }
+  finally { console.log(`TIMING ${label} ms=${Math.round(performance.now() - started)}`) }
+}
+
+/** Stop scheduling on failure, but drain in-flight work before its resources are removed. */
+export async function boundedMap<T, R>(items: readonly T[], concurrency: number, action: (item: T) => Promise<R>): Promise<R[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('concurrency must be a positive integer')
+  const results: R[] = new Array(items.length)
+  let next = 0, failed = false, failure: unknown
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (!failed && next < items.length) {
+      const index = next++
+      try { results[index] = await action(items[index]) }
+      catch (error) { if (!failed) failure = error; failed = true }
+    }
+  }))
+  if (failed) throw failure
+  return results
+}

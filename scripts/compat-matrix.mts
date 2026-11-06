@@ -1,4 +1,7 @@
 // Real process fixtures, no models. --list is socket/network/build-free.
+// --concurrency N bounds pairs within each release; --concurrency 1 measures serial execution.
+// COMPAT_CACHE_DIR opts into persistent immutable preparations; use a dedicated, single-writer
+// directory outside the checkout. Without it only candidate + one pinned installation live at once.
 // Invoke through tsx: its dynamic-import transform cannot handle a shebang here.
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -7,7 +10,7 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { validatePins, validatePinCommit } from './compat-pins.mjs'
-import { run, capture } from './compat-process.mts'
+import { run, capture, timed, boundedMap } from './compat-process.mts'
 
 type Pin = { tag: string; commit?: string; unsupported?: Partial<Record<NodeJS.Platform, string>> }
 export type Pair = { tag: string; transport: 'server' | 'relay' | 'daemon'; authority: 'old' | 'new'; client: 'old' | 'new'; skip?: string }
@@ -60,53 +63,63 @@ export async function validateDescriptor(dir: string, pin?: Pin) {
 }
 const digest = async (file: string) => createHash('sha256').update(await fs.readFile(file)).digest('hex')
 
+export function parseConcurrency(value?: string, cores = os.availableParallelism()): number {
+  if (value === undefined) return Math.min(cores, 4)
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error('--concurrency must be a positive integer')
+  return Number(value)
+}
+
 async function build(dir: string, pin?: Pin) {
+  const label = pin?.tag ?? 'candidate'
   const npmCli = process.env.npm_execpath
   if (!npmCli) throw new Error('Run with npx tsx scripts/compat-matrix.mts (npm_execpath is required)')
-  await run(process.execPath, [npmCli, 'ci', '--no-audit', '--no-fund'], dir, 240_000)
-  // Released scripts, unchanged. The plugin bundle contains that release's relay.
-  await run(process.execPath, ['scripts/build-server.mjs'], dir)
-  await run(process.execPath, ['scripts/build-plugin.mjs', '--skip-web'], dir)
-  // Export the genuine released APIs for process fixtures, without editing old source.
-  const entry = path.join(dir, '.compat-exports.mjs')
-  const daemonSource = path.join(dir, 'packages/relay/src/daemon.ts')
-  const hasDaemon = await fs.access(daemonSource).then(() => true, () => false)
-  const hasClientCompat = await fs.access(path.join(dir, 'packages/room-mcp/src/client-compat.ts')).then(() => true, () => false)
-  await fs.writeFile(entry, [
-    ...(hasClientCompat ? ["export * as clientCompat from './packages/room-mcp/src/client-compat.ts'"] : []),
-    ...(hasDaemon ? ["export * as daemon from './packages/relay/src/daemon.ts'"] : []),
-    "export * as contracts from './packages/hub-core/src/protocol.ts'",
-    "export * as workerRecords from './packages/shared/src/index.ts'",
-    "export * as processes from './packages/relay/src/process.ts'",
-    "export { WebSocket } from 'ws'",
-    "export { startRelay, AuthorityLock, SecureSession } from './packages/relay/src/index.ts'",
-    "export { HubClient, hubTransport } from './packages/room-mcp/src/hub-client.ts'",
-    "export { authorizedWebSocket } from './packages/roomd/src/ws-auth.ts'",
-    "export { RoomDoc, roomConnection } from './packages/shared/src/index.ts'",
-    "export { WebsocketProvider } from 'y-websocket'",
-    "export { Doc } from 'yjs'",
-  ].join('\n'))
-  const buildScript = "import {build} from 'esbuild'; await build({entryPoints:['.compat-exports.mjs'],bundle:true,platform:'node',format:'esm',target:'node22',external:['yjs','ws'],outfile:'.compat-exports.bundle.mjs',banner:{js:\"import {createRequire} from 'node:module'; const require=createRequire(import.meta.url);\"}})"
-  await run(process.execPath, ['--input-type=module', '-e', buildScript], dir)
-  await validateDescriptor(dir, pin)
-  return {
-    node: process.version,
-    npm: (await run(process.execPath, [npmCli, '--version'], dir)).trim(),
-    lockSha256: await digest(path.join(dir, 'package-lock.json')),
-    serverSha256: await digest(path.join(dir, 'packages/server/dist/server.mjs')),
-    pluginSha256: await digest(path.join(dir, 'plugins/room/server/room-mcp.mjs')),
-    fixtureSha256: await digest(path.join(dir, '.compat-exports.bundle.mjs')),
-  }
+  await timed(`${label} install`, () => run(process.execPath, [npmCli, 'ci', '--no-audit', '--no-fund'], dir, 240_000))
+  return timed(`${label} build`, async () => {
+    // Released scripts, unchanged. The plugin bundle contains that release's relay.
+    await run(process.execPath, ['scripts/build-server.mjs'], dir)
+    await run(process.execPath, ['scripts/build-plugin.mjs', '--skip-web'], dir)
+    // Export the genuine released APIs for process fixtures, without editing old source.
+    const entry = path.join(dir, '.compat-exports.mjs')
+    const daemonSource = path.join(dir, 'packages/relay/src/daemon.ts')
+    const hasDaemon = await fs.access(daemonSource).then(() => true, () => false)
+    const hasClientCompat = await fs.access(path.join(dir, 'packages/room-mcp/src/client-compat.ts')).then(() => true, () => false)
+    await fs.writeFile(entry, [
+      ...(hasClientCompat ? ["export * as clientCompat from './packages/room-mcp/src/client-compat.ts'"] : []),
+      ...(hasDaemon ? ["export * as daemon from './packages/relay/src/daemon.ts'"] : []),
+      "export * as contracts from './packages/hub-core/src/protocol.ts'",
+      "export * as workerRecords from './packages/shared/src/index.ts'",
+      "export * as processes from './packages/relay/src/process.ts'",
+      "export { WebSocket } from 'ws'",
+      "export { startRelay, AuthorityLock, SecureSession } from './packages/relay/src/index.ts'",
+      "export { HubClient, hubTransport } from './packages/room-mcp/src/hub-client.ts'",
+      "export { authorizedWebSocket } from './packages/roomd/src/ws-auth.ts'",
+      "export { RoomDoc, roomConnection } from './packages/shared/src/index.ts'",
+      "export { WebsocketProvider } from 'y-websocket'",
+      "export { Doc } from 'yjs'",
+    ].join('\n'))
+    const buildScript = "import {build} from 'esbuild'; await build({entryPoints:['.compat-exports.mjs'],bundle:true,platform:'node',format:'esm',target:'node22',external:['yjs','ws'],outfile:'.compat-exports.bundle.mjs',banner:{js:\"import {createRequire} from 'node:module'; const require=createRequire(import.meta.url);\"}})"
+    await run(process.execPath, ['--input-type=module', '-e', buildScript], dir)
+    await validateDescriptor(dir, pin)
+    return {
+      node: process.version,
+      npm: (await run(process.execPath, [npmCli, '--version'], dir)).trim(),
+      lockSha256: await digest(path.join(dir, 'package-lock.json')),
+      serverSha256: await digest(path.join(dir, 'packages/server/dist/server.mjs')),
+      pluginSha256: await digest(path.join(dir, 'plugins/room/server/room-mcp.mjs')),
+      fixtureSha256: await digest(path.join(dir, '.compat-exports.bundle.mjs')),
+    }
+  })
 }
 
 async function main() {
   const args = process.argv.slice(2)
-  let list = false, only: string | undefined
+  let list = false, only: string | undefined, concurrency = parseConcurrency()
   while (args.length) {
     const flag = args.shift()
     if (flag === '--list') list = true
+    else if (flag === '--concurrency' && args.length) concurrency = parseConcurrency(args.shift())
     else if (flag === '--only' && args.length && !only) only = args.shift()
-    else throw new Error('usage: npx tsx scripts/compat-matrix.mts [--list] [--only <tag|candidate>[:server|relay|daemon]]')
+    else throw new Error('usage: npx tsx scripts/compat-matrix.mts [--list] [--concurrency N] [--only <tag|candidate>[:server|relay|daemon]]')
   }
   const pins: Pin[] = validatePins(JSON.parse(await fs.readFile(path.join(root, 'scripts/compat-pins.json'), 'utf8')))
   const plan = selectPairs(pins, only)
@@ -118,17 +131,18 @@ async function main() {
     validatePinCommit(pin, version, commit)
   }
   if (list) { console.table(plan); return }
+  console.log(`compat concurrency=${concurrency}`)
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'room-compat-'))
   const repo = path.join(scratch, 'repo.git')
   const rows: Array<Record<string, unknown>> = []
   try {
     // All Git mutations stay in scratch, including fetches and worktree metadata.
-    await run('git', ['clone', '--bare', '--no-hardlinks', root, repo], scratch)
+    await timed('matrix clone', () => run('git', ['clone', '--bare', '--no-hardlinks', root, repo], scratch))
     const remote = (await capture('git', ['remote', 'get-url', 'origin'], root)).trim()
     const commits = new Map<string, string>()
     for (const pin of pins) {
       const ref = `refs/compat/${pin.tag}`
-      try { await run('git', ['--git-dir', repo, 'fetch', '--no-tags', remote, `refs/tags/${pin.tag}:${ref}`], scratch) }
+      try { await timed(`${pin.tag} fetch`, () => run('git', ['--git-dir', repo, 'fetch', '--no-tags', remote, `refs/tags/${pin.tag}:${ref}`], scratch)) }
       catch (error) {
         if (pendingCandidate(pin, version, error)) { rows.push({ tag: pin.tag, status: 'PENDING' }); continue }
         throw error
@@ -138,7 +152,7 @@ async function main() {
       commits.set(pin.tag, commit)
     }
     const current = path.join(scratch, 'current')
-    await run('git', ['--git-dir', repo, 'worktree', 'add', '--detach', current, 'HEAD'], scratch)
+    await timed('candidate checkout', () => run('git', ['--git-dir', repo, 'worktree', 'add', '--detach', current, 'HEAD'], scratch))
     const patch = await capture('git', ['diff', '--binary', 'HEAD'], root)
     if (patch) await run('git', ['apply', '--binary', '-'], current, 30_000, patch)
     const untracked = (await capture('git', ['ls-files', '--others', '--exclude-standard', '-z'], root)).split('\0').filter(Boolean)
@@ -148,37 +162,79 @@ async function main() {
       await fs.copyFile(path.join(root, file), target)
     }
     console.log('candidate', JSON.stringify({ commit: (await capture('git', ['rev-parse', 'HEAD'], root)).trim(), dirty: !!patch || !!untracked.length, ...await build(current) }))
-    for (const pair of plan.filter(pair => pair.tag === 'candidate')) {
-      const { transport } = pair
-      const started = Date.now()
-      try {
-        console.log((await run(process.execPath, ['--import', 'tsx', path.join(root, 'scripts/compat-pair.mts'), transport, current, current], root, 30_000)).trim())
-        rows.push({ ...pair, status: 'PASS', ms: Date.now() - started })
-      } catch (error) { if (process.exitCode === 130 || process.exitCode === 143) throw error; rows.push({ ...pair, status: 'FAIL', ms: Date.now() - started }); console.error(String(error)) }
+    async function pairs(tag: string, old: string) {
+      const results = await boundedMap(plan.filter(pair => pair.tag === tag), concurrency, async pair => {
+        if (pair.skip) {
+          console.log(`SKIP ${pair.tag} ${pair.transport} old authority on ${process.platform}: ${pair.skip}`)
+          return { ...pair, status: 'SKIP' }
+        }
+        const started = performance.now()
+        const label = `${pair.tag} ${pair.transport} ${pair.authority}->${pair.client}`
+        try {
+          const output = await run(process.execPath, ['--import', 'tsx', path.join(root, 'scripts/compat-pair.mts'), pair.transport,
+            pair.authority === 'old' ? old : current, pair.client === 'old' ? old : current, scratch], root, 30_000)
+          console.log(`PAIR ${label}\n${output.trim()}\nEND ${label}`)
+          return { ...pair, status: 'PASS', ms: Math.round(performance.now() - started) }
+        } catch (error) {
+          console.error(`PAIR ${label}\n${String(error)}\nEND ${label}`)
+          if (process.exitCode === 130 || process.exitCode === 143) throw error
+          return { ...pair, status: 'FAIL', ms: Math.round(performance.now() - started) }
+        }
+      })
+      rows.push(...results)
     }
+    await pairs('candidate', current)
+    // Cache only immutable releases, never the dirty candidate. The key also invalidates
+    // installed native dependencies and fixture generation when their inputs change.
+    // Use a dedicated directory owned by this run (CI restores it before invocation).
+    const cacheRoot = process.env.COMPAT_CACHE_DIR
+    const recipe = createHash('sha256').update(await fs.readFile(path.join(root, 'scripts/compat-matrix.mts'))).update(await fs.readFile(path.join(root, 'scripts/compat-process.mts'))).digest('hex')
+    const npmVersion = (await run(process.execPath, [process.env.npm_execpath!, '--version'], root)).trim()
     for (const pin of pins) {
       const commit = commits.get(pin.tag)
       if (!commit || !plan.some(pair => pair.tag === pin.tag)) continue
-      const old = path.join(scratch, pin.tag)
-      await run('git', ['--git-dir', repo, 'worktree', 'add', '--detach', old, commit], scratch)
-      console.log(pin.tag, JSON.stringify({ commit, ...await build(old, pin) }))
-      for (const pair of plan.filter(row => row.tag === pin.tag)) {
-        if (pair.skip) { console.log(`SKIP ${pair.tag} ${pair.transport} old authority on ${process.platform}: ${pair.skip}`); rows.push({ ...pair, status: 'SKIP' }); continue }
-        const started = Date.now()
-        try {
-          const output = await run(process.execPath, ['--import', 'tsx', path.join(root, 'scripts/compat-pair.mts'), pair.transport,
-            pair.authority === 'old' ? old : current, pair.client === 'old' ? old : current], root, 30_000)
-          console.log(output.trim())
-          rows.push({ ...pair, status: 'PASS', ms: Date.now() - started })
-        } catch (error) { if (process.exitCode === 130 || process.exitCode === 143) throw error; rows.push({ ...pair, status: 'FAIL', ms: Date.now() - started }); console.error(String(error)) }
+      const runtimeRecipe = createHash('sha256').update(`${process.platform}-${process.arch}-${process.version}-${npmVersion}-${recipe}`).digest('hex').slice(0, 16)
+      const key = `${commit}-${runtimeRecipe}`
+      const old = cacheRoot ? path.resolve(cacheRoot, key) : path.join(scratch, pin.tag)
+      const marker = path.join(old, '.compat-ready.json')
+      let metadata: Awaited<ReturnType<typeof build>> | undefined
+      if (cacheRoot) {
+        try { metadata = JSON.parse(await fs.readFile(marker, 'utf8')) }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       }
-      // Bound installed dependency disk/heap use: only one archived tag at a time.
-      await run('git', ['--git-dir', repo, 'worktree', 'remove', '--force', old], scratch)
+      if (metadata) {
+        await timed(`${pin.tag} cache-check`, async () => {
+          for (const [file, expected] of [
+            ['package-lock.json', metadata!.lockSha256],
+            ['packages/server/dist/server.mjs', metadata!.serverSha256],
+            ['plugins/room/server/room-mcp.mjs', metadata!.pluginSha256],
+            ['.compat-exports.bundle.mjs', metadata!.fixtureSha256],
+          ]) if (await digest(path.join(old, file)) !== expected) throw new Error(`corrupt compatibility cache: ${old}/${file}`)
+          await validateDescriptor(old, pin)
+        })
+        console.log(`${pin.tag} cache HIT`)
+      } else {
+        await fs.rm(old, { recursive: true, force: true })
+        await fs.mkdir(path.dirname(old), { recursive: true })
+        await timed(`${pin.tag} checkout`, () => run('git', ['--git-dir', repo, 'worktree', 'add', '--detach', old, commit], scratch))
+        metadata = await build(old, pin)
+        if (cacheRoot) {
+          // Detach the cached source tree from disposable worktree metadata.
+          await fs.rm(path.join(old, '.git'))
+          // The marker is what makes an entry a cache hit, so it appears whole or not at all.
+          const pending = `${marker}.${process.pid}.tmp`
+          await fs.writeFile(pending, JSON.stringify(metadata))
+          await fs.rename(pending, marker)
+        }
+      }
+      console.log(pin.tag, JSON.stringify({ commit, ...metadata }))
+      await pairs(pin.tag, old)
+      if (!cacheRoot) await timed(`${pin.tag} cleanup`, () => run('git', ['--git-dir', repo, 'worktree', 'remove', '--force', old], scratch))
     }
     if (rows.some(row => row.status === 'FAIL')) process.exitCode = 1
   } finally {
     console.table(rows)
-    await fs.rm(scratch, { recursive: true, force: true })
+    await timed('matrix cleanup', () => fs.rm(scratch, { recursive: true, force: true }))
   }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
