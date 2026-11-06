@@ -407,8 +407,8 @@ function createProcessProbe(readers, options = {}) {
   };
   const inFlight = /* @__PURE__ */ new Map();
   const readInBackground = (pid) => {
-    const pending = inFlight.get(pid);
-    if (pending) return pending;
+    const pending2 = inFlight.get(pid);
+    if (pending2) return pending2;
     const args2 = windowsProcessCommand(pid);
     if (!args2 || !readers.execAsync || inFlight.size >= WINDOWS_MAX_IN_FLIGHT) return Promise.resolve({});
     const started = ++reads2, execAsync = readers.execAsync;
@@ -3339,9 +3339,9 @@ var init_yjs = __esm({
       const store = doc.store;
       const ss = readClientsStructRefs(structDecoder, doc);
       const restStructs = integrateStructs(transaction, store, ss);
-      const pending = store.pendingStructs;
-      if (pending) {
-        for (const [client, clock] of pending.missing) {
+      const pending2 = store.pendingStructs;
+      if (pending2) {
+        for (const [client, clock] of pending2.missing) {
           if (clock < getState(store, client)) {
             retry = true;
             break;
@@ -3349,12 +3349,12 @@ var init_yjs = __esm({
         }
         if (restStructs) {
           for (const [client, clock] of restStructs.missing) {
-            const mclock = pending.missing.get(client);
+            const mclock = pending2.missing.get(client);
             if (mclock == null || mclock > clock) {
-              pending.missing.set(client, clock);
+              pending2.missing.set(client, clock);
             }
           }
-          pending.update = mergeUpdatesV2([pending.update, restStructs.update]);
+          pending2.update = mergeUpdatesV2([pending2.update, restStructs.update]);
         }
       } else {
         store.pendingStructs = restStructs;
@@ -9105,7 +9105,7 @@ var init_delivery = __esm({
       /** Minute-only full recompute; correct any drift before the next post can use it. */
       verify() {
         let field = this.bus.drift();
-        const pending = /* @__PURE__ */ new Map(), sizes = /* @__PURE__ */ new Map(), recipients = /* @__PURE__ */ new Map();
+        const pending2 = /* @__PURE__ */ new Map(), sizes = /* @__PURE__ */ new Map(), recipients = /* @__PURE__ */ new Map();
         const mailIds = /* @__PURE__ */ new Map(), mailSizes = /* @__PURE__ */ new Map(), outcomeSizes = /* @__PURE__ */ new Map();
         const badMail = /* @__PURE__ */ new Set(), badOutcomes = /* @__PURE__ */ new Set(), aliases = /* @__PURE__ */ new Set(), duplicateBus = /* @__PURE__ */ new Set();
         const busCounts = /* @__PURE__ */ new Map();
@@ -9125,8 +9125,8 @@ var init_delivery = __esm({
         }
         for (const m of [...this.doc.mail.values(), ...this.doc.messages()]) {
           if (!validMessageShape(m)) continue;
-          if (!pending.has(m.id) && isOwed(this.doc, m)) {
-            pending.set(m.id, m);
+          if (!pending2.has(m.id) && isOwed(this.doc, m)) {
+            pending2.set(m.id, m);
             const size2 = sizeOf(m), r = recipients.get(m.to) ?? { count: 0, bytes: 0 };
             r.count++;
             r.bytes += size2;
@@ -9150,7 +9150,7 @@ var init_delivery = __esm({
         const sameSet = (a, b) => a.size === b.size && [...a].every((id2) => b.has(id2));
         const overCap = new Set([...recipients].filter(([, r]) => r.count > OWED_PER_RECIPIENT || r.bytes > OWED_BYTES_PER_RECIPIENT).map(([name]) => name));
         if (!field && owedBytes !== this.owedBytes) field = "owedBytes";
-        if (!field && (!sameMap(pending, this.pending) || !sameMap(sizes, this.sizes))) field = "pending";
+        if (!field && (!sameMap(pending2, this.pending) || !sameMap(sizes, this.sizes))) field = "pending";
         if (!field && (recipients.size !== this.recipients.size || [...recipients].some(([name, r]) => {
           const old = this.recipients.get(name);
           return r.count !== old?.count || r.bytes !== old.bytes;
@@ -9214,7 +9214,7 @@ function revisions(doc) {
   };
   for (const r of doc.getMap(REVISIONS).values()) see(r);
   for (const p of doc.getMap("completedPublications").values()) see(publicationRevision(p));
-  const names = /* @__PURE__ */ new Set([...latest.keys(), ...[...doc.getMap("workerViews").values()].map((worker) => worker.name)]);
+  const names = /* @__PURE__ */ new Set([...latest.keys(), ...[...doc.getMap("workerViews").values()].map((worker2) => worker2.name)]);
   const participants = doc.getMap("participants");
   const heads = doc.getMap("manifestHead");
   for (const name of names) {
@@ -14767,10 +14767,68 @@ import { randomBytes as randomBytes5 } from "node:crypto";
 // packages/local-state/src/gate.ts
 init_leases();
 init_private_state();
-init_protocol();
 import fs5 from "node:fs";
 import path6 from "node:path";
 import { randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+
+// packages/local-state/src/gate-thread.ts
+init_protocol();
+import { Worker } from "node:worker_threads";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+var worker;
+var sequence = 0;
+var pending = /* @__PURE__ */ new Map();
+function thread() {
+  if (worker) return worker;
+  const source = import.meta.url.endsWith(".ts");
+  const entry = new URL(import.meta.url.endsWith(".mjs") ? "./gate-worker.mjs" : source ? "./gate-worker.ts" : "./gate-worker.js", import.meta.url);
+  const current = source ? new Worker(`import { register } from ${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)}; register(); await import(${JSON.stringify(entry.href)})`, { eval: true, execArgv: [] }) : new Worker(entry, { execArgv: [] });
+  worker = current;
+  const fail = (detail) => {
+    if (worker !== current) return;
+    worker = void 0;
+    for (const request of pending.values()) request.reject(new StorageRefused(
+      "unavailable",
+      detail,
+      "inspect storage gate status before retrying; an interrupted write may have completed"
+    ));
+    pending.clear();
+    current.unref();
+  };
+  current.on("message", (message) => {
+    if (worker !== current) return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    if (!pending.size) current.unref();
+    const error = message.error;
+    if (!error) request.resolve(message.value);
+    else request.reject(error.reason ? new StorageRefused(error.reason, error.detail, error.remedy) : Object.assign(new Error(error.detail), { code: error.code }));
+  });
+  current.on("error", (error) => fail(`storage gate worker failed: ${error.message.slice(0, 400)}`));
+  current.on("exit", (code) => fail(`storage gate worker exited (${code})`));
+  current.unref();
+  return current;
+}
+function callGateThread(commonDir, options, method, args2) {
+  const result = new Promise((resolve, reject) => {
+    const current = thread(), id2 = ++sequence;
+    pending.set(id2, { resolve, reject });
+    current.ref();
+    try {
+      current.postMessage({ id: id2, commonDir, options: { limits: options.limits }, method, args: args2 });
+    } catch (error) {
+      pending.delete(id2);
+      if (!pending.size) current.unref();
+      reject(error);
+    }
+  });
+  return result;
+}
+
+// packages/local-state/src/gate.ts
+init_protocol();
 var PHASES = ["legacy", "draining", "staging", "db-complete", "active"];
 var KINDS = ["mcp", "helper", "daemon", "maintenance"];
 var MAX_GATE_BYTES = 64 * 1024;
@@ -14844,7 +14902,23 @@ function canonicalCommonDir(commonDir) {
   return canonical;
 }
 function openStorageGate(commonDir, options = {}) {
-  return new FileStorageGate(canonicalCommonDir(commonDir), options);
+  const gate = new FileStorageGate(canonicalCommonDir(commonDir), options);
+  if (options.now || options.liveness) return gate;
+  return {
+    commonDir: gate.commonDir,
+    register: (...args2) => callGateThread(gate.commonDir, options, "register", args2),
+    admit: (...args2) => callGateThread(gate.commonDir, options, "admit", args2),
+    finish: (...args2) => callGateThread(gate.commonDir, options, "finish", args2),
+    unregister: (...args2) => callGateThread(gate.commonDir, options, "unregister", args2),
+    drain: (...args2) => callGateThread(gate.commonDir, options, "drain", args2),
+    resolveDead: (...args2) => callGateThread(gate.commonDir, options, "resolveDead", args2),
+    takeOver: (...args2) => callGateThread(gate.commonDir, options, "takeOver", args2),
+    reopen: (...args2) => callGateThread(gate.commonDir, options, "reopen", args2),
+    status: (...args2) => callGateThread(gate.commonDir, options, "status", args2),
+    listTickets: (...args2) => callGateThread(gate.commonDir, options, "listTickets", args2),
+    // The read-only hot path remains one cached lstat; it never syncs or probes processes.
+    observe: () => gate.observe()
+  };
 }
 var FileStorageGate = class {
   constructor(commonDir, options) {
@@ -15522,14 +15596,14 @@ function legacyDisplay(commonDir) {
       if (fs7.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MiB`);
       applyUpdate(doc, fs7.readFileSync(file));
       const room = new RoomDoc(doc);
-      for (const worker of doc.getMap("workers").values()) {
-        if (!worker.dir || !worker.id) continue;
-        found.set(canonical(worker.dir), {
-          oldId: worker.id,
-          host: worker.host,
-          model: worker.model,
-          task: worker.task,
-          said: worker.summary
+      for (const worker2 of doc.getMap("workers").values()) {
+        if (!worker2.dir || !worker2.id) continue;
+        found.set(canonical(worker2.dir), {
+          oldId: worker2.id,
+          host: worker2.host,
+          model: worker2.model,
+          task: worker2.task,
+          said: worker2.summary
         });
       }
       for (const retired of room.retiredWorkers()) {
@@ -15741,8 +15815,8 @@ function storageInstance() {
   };
 }
 async function closeStorageAdmissions() {
-  for (const [common, pending] of registrations) {
-    const state = await pending.catch(() => void 0);
+  for (const [common, pending2] of registrations) {
+    const state = await pending2.catch(() => void 0);
     if (!state) continue;
     try {
       await state.gate.unregister(state.registration);

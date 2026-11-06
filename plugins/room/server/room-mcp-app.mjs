@@ -487,8 +487,8 @@ function createProcessProbe(readers, options = {}) {
   };
   const inFlight = /* @__PURE__ */ new Map();
   const readInBackground = (pid) => {
-    const pending = inFlight.get(pid);
-    if (pending) return pending;
+    const pending2 = inFlight.get(pid);
+    if (pending2) return pending2;
     const args2 = windowsProcessCommand(pid);
     if (!args2 || !readers.execAsync || inFlight.size >= WINDOWS_MAX_IN_FLIGHT) return Promise.resolve({});
     const started = ++reads2, execAsync = readers.execAsync;
@@ -871,6 +871,67 @@ var init_protocol = __esm({
   }
 });
 
+// packages/local-state/src/gate-thread.ts
+import { Worker } from "node:worker_threads";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+function thread() {
+  if (worker) return worker;
+  const source = import.meta.url.endsWith(".ts");
+  const entry = new URL(import.meta.url.endsWith(".mjs") ? "./gate-worker.mjs" : source ? "./gate-worker.ts" : "./gate-worker.js", import.meta.url);
+  const current2 = source ? new Worker(`import { register } from ${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)}; register(); await import(${JSON.stringify(entry.href)})`, { eval: true, execArgv: [] }) : new Worker(entry, { execArgv: [] });
+  worker = current2;
+  const fail = (detail) => {
+    if (worker !== current2) return;
+    worker = void 0;
+    for (const request of pending.values()) request.reject(new StorageRefused(
+      "unavailable",
+      detail,
+      "inspect storage gate status before retrying; an interrupted write may have completed"
+    ));
+    pending.clear();
+    current2.unref();
+  };
+  current2.on("message", (message2) => {
+    if (worker !== current2) return;
+    const request = pending.get(message2.id);
+    if (!request) return;
+    pending.delete(message2.id);
+    if (!pending.size) current2.unref();
+    const error2 = message2.error;
+    if (!error2) request.resolve(message2.value);
+    else request.reject(error2.reason ? new StorageRefused(error2.reason, error2.detail, error2.remedy) : Object.assign(new Error(error2.detail), { code: error2.code }));
+  });
+  current2.on("error", (error2) => fail(`storage gate worker failed: ${error2.message.slice(0, 400)}`));
+  current2.on("exit", (code) => fail(`storage gate worker exited (${code})`));
+  current2.unref();
+  return current2;
+}
+function callGateThread(commonDir2, options, method, args2) {
+  const result3 = new Promise((resolve6, reject) => {
+    const current2 = thread(), id3 = ++sequence;
+    pending.set(id3, { resolve: resolve6, reject });
+    current2.ref();
+    try {
+      current2.postMessage({ id: id3, commonDir: commonDir2, options: { limits: options.limits }, method, args: args2 });
+    } catch (error2) {
+      pending.delete(id3);
+      if (!pending.size) current2.unref();
+      reject(error2);
+    }
+  });
+  return result3;
+}
+var worker, sequence, pending;
+var init_gate_thread = __esm({
+  "packages/local-state/src/gate-thread.ts"() {
+    "use strict";
+    init_protocol();
+    sequence = 0;
+    pending = /* @__PURE__ */ new Map();
+  }
+});
+
 // packages/local-state/src/gate.ts
 import fs5 from "node:fs";
 import path6 from "node:path";
@@ -925,7 +986,23 @@ function canonicalCommonDir(commonDir2) {
   return canonical;
 }
 function openStorageGate(commonDir2, options = {}) {
-  return new FileStorageGate(canonicalCommonDir(commonDir2), options);
+  const gate = new FileStorageGate(canonicalCommonDir(commonDir2), options);
+  if (options.now || options.liveness) return gate;
+  return {
+    commonDir: gate.commonDir,
+    register: (...args2) => callGateThread(gate.commonDir, options, "register", args2),
+    admit: (...args2) => callGateThread(gate.commonDir, options, "admit", args2),
+    finish: (...args2) => callGateThread(gate.commonDir, options, "finish", args2),
+    unregister: (...args2) => callGateThread(gate.commonDir, options, "unregister", args2),
+    drain: (...args2) => callGateThread(gate.commonDir, options, "drain", args2),
+    resolveDead: (...args2) => callGateThread(gate.commonDir, options, "resolveDead", args2),
+    takeOver: (...args2) => callGateThread(gate.commonDir, options, "takeOver", args2),
+    reopen: (...args2) => callGateThread(gate.commonDir, options, "reopen", args2),
+    status: (...args2) => callGateThread(gate.commonDir, options, "status", args2),
+    listTickets: (...args2) => callGateThread(gate.commonDir, options, "listTickets", args2),
+    // The read-only hot path remains one cached lstat; it never syncs or probes processes.
+    observe: () => gate.observe()
+  };
 }
 function syncDirectoryQuietly(dir) {
   let fd;
@@ -944,6 +1021,7 @@ var init_gate = __esm({
     "use strict";
     init_leases();
     init_private_state();
+    init_gate_thread();
     init_protocol();
     PHASES = ["legacy", "draining", "staging", "db-complete", "active"];
     KINDS = ["mcp", "helper", "daemon", "maintenance"];
@@ -1548,7 +1626,7 @@ var init_filesystem = __esm({
 // packages/local-state/src/preflight.ts
 import fs7 from "node:fs";
 import path8 from "node:path";
-import { Worker } from "node:worker_threads";
+import { Worker as Worker2 } from "node:worker_threads";
 import { randomBytes as randomBytes2 } from "node:crypto";
 function compareVersions(a, b) {
   const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
@@ -1584,7 +1662,7 @@ async function preflight(surface, options = {}) {
     elapsedMs: 0
   };
   const fail = (failure, detail) => ({ ok: false, failure, evidence: { ...evidence, elapsedMs: Math.round(performance.now() - started) }, detail: detail.replace(/[\r\n]/g, " ").slice(0, MAX_DETAIL), remedy: REMEDY2 });
-  let worker;
+  let worker2;
   let timer;
   let timedOut = false;
   const timeout = () => fail("timeout", `preflight exceeded ${options.timeoutMs ?? GATE_LIMITS.preflightMs} ms`);
@@ -1602,14 +1680,14 @@ async function preflight(surface, options = {}) {
     };
     const exited = (code) => error2(new Error(`probe worker exited (${code})`));
     const cleanup = () => {
-      worker.off("message", done);
-      worker.off("error", error2);
-      worker.off("exit", exited);
+      worker2.off("message", done);
+      worker2.off("error", error2);
+      worker2.off("exit", exited);
     };
-    worker.once("message", done);
-    worker.once("error", error2);
-    worker.once("exit", exited);
-    worker.postMessage(message2);
+    worker2.once("message", done);
+    worker2.once("error", error2);
+    worker2.once("exit", exited);
+    worker2.postMessage(message2);
   });
   const work = async () => {
     const version3 = evidence.node;
@@ -1619,7 +1697,7 @@ async function preflight(surface, options = {}) {
     if (release.name !== "node" || source !== "nodejs.org" || shared)
       return fail("node-vendor", "runtime must identify nodejs.org Node.js with bundled SQLite (no shared/system SQLite)");
     check();
-    worker = new Worker(SQLITE_PROBE_SOURCE, {
+    worker2 = new Worker2(SQLITE_PROBE_SOURCE, {
       eval: true,
       execArgv: [],
       workerData: { deadline: deadlineAt, sqliteFloor: SQLITE_FLOOR, importSqlite: options.importSqlite }
@@ -1661,7 +1739,7 @@ async function preflight(surface, options = {}) {
   const deadline = new Promise((resolve6) => {
     timer = setTimeout(() => {
       timedOut = true;
-      void worker?.terminate().catch(() => {
+      void worker2?.terminate().catch(() => {
       });
       resolve6(timeout());
     }, Math.max(0, deadlineAt - performance.now()));
@@ -1673,7 +1751,7 @@ async function preflight(surface, options = {}) {
     return timedOut || performance.now() >= deadlineAt ? timeout() : fail("sqlite-api", `probe worker failed: ${error2.message}`);
   } finally {
     clearTimeout(timer);
-    void worker?.terminate().catch(() => {
+    void worker2?.terminate().catch(() => {
     });
   }
 }
@@ -4412,9 +4490,9 @@ var init_yjs = __esm({
       const store = doc.store;
       const ss = readClientsStructRefs(structDecoder, doc);
       const restStructs = integrateStructs(transaction, store, ss);
-      const pending = store.pendingStructs;
-      if (pending) {
-        for (const [client, clock] of pending.missing) {
+      const pending2 = store.pendingStructs;
+      if (pending2) {
+        for (const [client, clock] of pending2.missing) {
           if (clock < getState(store, client)) {
             retry = true;
             break;
@@ -4422,12 +4500,12 @@ var init_yjs = __esm({
         }
         if (restStructs) {
           for (const [client, clock] of restStructs.missing) {
-            const mclock = pending.missing.get(client);
+            const mclock = pending2.missing.get(client);
             if (mclock == null || mclock > clock) {
-              pending.missing.set(client, clock);
+              pending2.missing.set(client, clock);
             }
           }
-          pending.update = mergeUpdatesV2([pending.update, restStructs.update]);
+          pending2.update = mergeUpdatesV2([pending2.update, restStructs.update]);
         }
       } else {
         store.pendingStructs = restStructs;
@@ -10343,7 +10421,7 @@ var init_delivery = __esm({
       /** Minute-only full recompute; correct any drift before the next post can use it. */
       verify() {
         let field = this.bus.drift();
-        const pending = /* @__PURE__ */ new Map(), sizes = /* @__PURE__ */ new Map(), recipients = /* @__PURE__ */ new Map();
+        const pending2 = /* @__PURE__ */ new Map(), sizes = /* @__PURE__ */ new Map(), recipients = /* @__PURE__ */ new Map();
         const mailIds = /* @__PURE__ */ new Map(), mailSizes = /* @__PURE__ */ new Map(), outcomeSizes = /* @__PURE__ */ new Map();
         const badMail = /* @__PURE__ */ new Set(), badOutcomes = /* @__PURE__ */ new Set(), aliases = /* @__PURE__ */ new Set(), duplicateBus = /* @__PURE__ */ new Set();
         const busCounts = /* @__PURE__ */ new Map();
@@ -10363,8 +10441,8 @@ var init_delivery = __esm({
         }
         for (const m of [...this.doc.mail.values(), ...this.doc.messages()]) {
           if (!validMessageShape(m)) continue;
-          if (!pending.has(m.id) && isOwed(this.doc, m)) {
-            pending.set(m.id, m);
+          if (!pending2.has(m.id) && isOwed(this.doc, m)) {
+            pending2.set(m.id, m);
             const size2 = sizeOf(m), r = recipients.get(m.to) ?? { count: 0, bytes: 0 };
             r.count++;
             r.bytes += size2;
@@ -10388,7 +10466,7 @@ var init_delivery = __esm({
         const sameSet = (a, b) => a.size === b.size && [...a].every((id3) => b.has(id3));
         const overCap = new Set([...recipients].filter(([, r]) => r.count > OWED_PER_RECIPIENT || r.bytes > OWED_BYTES_PER_RECIPIENT).map(([name]) => name));
         if (!field && owedBytes !== this.owedBytes) field = "owedBytes";
-        if (!field && (!sameMap(pending, this.pending) || !sameMap(sizes, this.sizes))) field = "pending";
+        if (!field && (!sameMap(pending2, this.pending) || !sameMap(sizes, this.sizes))) field = "pending";
         if (!field && (recipients.size !== this.recipients.size || [...recipients].some(([name, r]) => {
           const old = this.recipients.get(name);
           return r.count !== old?.count || r.bytes !== old.bytes;
@@ -10452,7 +10530,7 @@ function revisions(doc) {
   };
   for (const r of doc.getMap(REVISIONS).values()) see(r);
   for (const p of doc.getMap("completedPublications").values()) see(publicationRevision(p));
-  const names = /* @__PURE__ */ new Set([...latest.keys(), ...[...doc.getMap("workerViews").values()].map((worker) => worker.name)]);
+  const names = /* @__PURE__ */ new Set([...latest.keys(), ...[...doc.getMap("workerViews").values()].map((worker2) => worker2.name)]);
   const participants = doc.getMap("participants");
   const heads = doc.getMap("manifestHead");
   for (const name of names) {
@@ -11624,7 +11702,7 @@ function participantsView(doc, awareness, now) {
     const split2 = key2.lastIndexOf("\0");
     if (split2 > 0) names.add(key2.slice(0, split2));
   }
-  for (const worker of doc.workerViews.values()) if (retainedPublication(doc, worker.name)) names.add(worker.name);
+  for (const worker2 of doc.workerViews.values()) if (retainedPublication(doc, worker2.name)) names.add(worker2.name);
   const current2 = /* @__PURE__ */ new Map();
   for (const [clientId, value5] of awareness.getStates()) {
     const state = value5;
@@ -11717,15 +11795,15 @@ function idleLabel(idleMin, claims = 0) {
   const span = idleMin < 60 ? `${Math.floor(idleMin)} min` : `${Math.floor(idleMin / 60)} h`;
   return `idle ${span}${claims ? `; holds ${claims} claim${claims === 1 ? "" : "s"}` : ""}`;
 }
-function participantIdentityLine(current2, name, worker, fallbackKind) {
+function participantIdentityLine(current2, name, worker2, fallbackKind) {
   const p = [...current2].filter((p2) => p2.user.name === name).sort((a, b) => Number(isAgentic(b.user.kind)) - Number(isAgentic(a.user.kind)) || (b.lastActive ?? 0) - (a.lastActive ?? 0))[0];
-  const id3 = p?.user ?? (worker ? { name, kind: "agent", owner: worker.name.split("+")[0], label: worker.tag } : fallbackKind ? { name, kind: fallbackKind } : void 0);
+  const id3 = p?.user ?? (worker2 ? { name, kind: "agent", owner: worker2.name.split("+")[0], label: worker2.tag } : fallbackKind ? { name, kind: fallbackKind } : void 0);
   if (!id3) return name;
   const parts = [describeIdentity(id3)];
-  const host2 = p?.host ?? worker?.host;
+  const host2 = p?.host ?? worker2?.host;
   if (host2 && host2 !== "agent" && host2 !== id3.label) parts.push(host2);
-  const model = p?.model ?? worker?.model;
-  const effort = p?.effort ?? worker?.effort;
+  const model = p?.model ?? worker2?.model;
+  const effort = p?.effort ?? worker2?.effort;
   if (model) parts.push(model);
   if (effort) parts.push(effort);
   return parts.join(" \xB7 ");
@@ -11734,7 +11812,7 @@ function deriveParticipants(input) {
   const now = input.now ?? Date.now();
   const names = /* @__PURE__ */ new Set();
   for (const presence of input.presences) names.add(presence.user.name);
-  for (const worker of input.workers ?? []) names.add(worker.name);
+  for (const worker2 of input.workers ?? []) names.add(worker2.name);
   for (const [name] of input.scopes) names.add(name);
   for (const name of input.overlayPeople) names.add(name);
   return Array.from(names).sort().map((name) => {
@@ -11940,7 +12018,7 @@ function manifestHeadOf(room, name) {
   return room.manifestHead.get(name) ?? retainedPublication(room, name)?.head;
 }
 function manifestNames(room) {
-  return [.../* @__PURE__ */ new Set([...room.manifestHead.keys(), ...[...room.workerViews.values()].filter((worker) => retainedPublication(room, worker.name)).map((worker) => worker.name)])].sort();
+  return [.../* @__PURE__ */ new Set([...room.manifestHead.keys(), ...[...room.workerViews.values()].filter((worker2) => retainedPublication(room, worker2.name)).map((worker2) => worker2.name)])].sort();
 }
 function manifestPaths(room, name) {
   const fence = room.manifestHead.get(name)?.fence;
@@ -12442,7 +12520,7 @@ var completionId;
 var init_worker_messages = __esm({
   "packages/shared/src/worker-messages.ts"() {
     "use strict";
-    completionId = (worker, run3, k = 1) => `wk:${worker}:${run3}${k > 1 ? `:${k}` : ""}`;
+    completionId = (worker2, run3, k = 1) => `wk:${worker2}:${run3}${k > 1 ? `:${k}` : ""}`;
   }
 });
 
@@ -12488,7 +12566,7 @@ var init_wake = __esm({
 // packages/shared/src/graph.ts
 function whitespaceOutsideLiterals(text2, separator) {
   const chunks = [];
-  let quote2 = "", escaped = false, pending = false;
+  let quote2 = "", escaped = false, pending2 = false;
   for (const ch of text2.trim()) {
     if (quote2) {
       chunks.push(ch);
@@ -12496,14 +12574,14 @@ function whitespaceOutsideLiterals(text2, separator) {
       else if (ch === "\\") escaped = true;
       else if (ch === quote2) quote2 = "";
     } else if (ch === '"' || ch === "'" || ch === "`") {
-      if (pending && chunks.length) chunks.push(separator);
-      pending = false;
+      if (pending2 && chunks.length) chunks.push(separator);
+      pending2 = false;
       quote2 = ch;
       chunks.push(ch);
-    } else if (/\s/.test(ch)) pending = true;
+    } else if (/\s/.test(ch)) pending2 = true;
     else {
-      if (pending && chunks.length) chunks.push(separator);
-      pending = false;
+      if (pending2 && chunks.length) chunks.push(separator);
+      pending2 = false;
       chunks.push(ch);
     }
   }
@@ -13590,7 +13668,7 @@ function codexItem(item, dir) {
   }
 }
 function createCodexLogDecoder(context2) {
-  let thread, failed, error2;
+  let thread2, failed, error2;
   return {
     backgroundTasks: "unknown",
     acceptsLine: (line) => context2.scope !== "activity-window" || line.includes('"item.'),
@@ -13604,11 +13682,11 @@ function createCodexLogDecoder(context2) {
         return facts;
       }
       if (event.type === "thread.started") {
-        thread = event.thread_id;
-        if (typeof thread === "string") facts.push({ kind: "session", id: thread });
+        thread2 = event.thread_id;
+        if (typeof thread2 === "string") facts.push({ kind: "session", id: thread2 });
       }
       if (event.type === "turn.started") {
-        const id3 = event.thread_id ?? thread;
+        const id3 = event.thread_id ?? thread2;
         if (typeof id3 === "string") facts.push({ kind: "resume-accepted", id: id3 });
       }
       if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") {
@@ -13699,10 +13777,10 @@ function apply(facts, decoded) {
   }
 }
 function consume(entry, text2) {
-  let pending = entry.pending + text2, end;
-  while ((end = pending.indexOf("\n")) >= 0) {
-    const line = pending.slice(0, end).trim();
-    pending = pending.slice(end + 1);
+  let pending2 = entry.pending + text2, end;
+  while ((end = pending2.indexOf("\n")) >= 0) {
+    const line = pending2.slice(0, end).trim();
+    pending2 = pending2.slice(end + 1);
     if (!line.startsWith("{")) continue;
     let raw;
     try {
@@ -13717,7 +13795,7 @@ function consume(entry, text2) {
       }
     }
   }
-  entry.pending = pending.length > PENDING_CAP ? "" : pending;
+  entry.pending = pending2.length > PENDING_CAP ? "" : pending2;
 }
 function remembers(fd, at, expected) {
   if (!expected.length) return true;
@@ -13831,21 +13909,21 @@ function* completeLogLines(file, start = 0) {
   try {
     fd = fs11.openSync(file, "r");
     const size2 = fs11.fstatSync(fd).size;
-    let offset = Math.max(0, Math.min(start, size2)), pending = "";
+    let offset = Math.max(0, Math.min(start, size2)), pending2 = "";
     const chunk = Buffer.alloc(64 * 1024);
     while (offset < size2) {
       const count = fs11.readSync(fd, chunk, 0, Math.min(chunk.length, size2 - offset), offset);
       if (!count) break;
       offset += count;
-      pending += chunk.toString("utf8", 0, count);
+      pending2 += chunk.toString("utf8", 0, count);
       let end;
-      while ((end = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, end).trim();
-        pending = pending.slice(end + 1);
+      while ((end = pending2.indexOf("\n")) >= 0) {
+        const line = pending2.slice(0, end).trim();
+        pending2 = pending2.slice(end + 1);
         if (!line.startsWith("{")) continue;
         yield line;
       }
-      if (pending.length > 1024 * 1024) pending = "";
+      if (pending2.length > 1024 * 1024) pending2 = "";
     }
   } catch {
   } finally {
@@ -14378,14 +14456,14 @@ function boundedGitSync(dir, args2, options = {}) {
     if (typeof stdin === "number") fs13.closeSync(stdin);
   }
 }
-function workerBaseline(worker) {
-  if (!worker?.base) return void 0;
+function workerBaseline(worker2) {
+  if (!worker2?.base) return void 0;
   return {
-    worker: worker.name,
-    sha: worker.base,
-    dir: worker.dir,
-    carriedCommit: !!worker.carriedBase && worker.carriedBase === worker.base,
-    untracked: new Map((worker.carriedUntracked ?? []).map((file) => [file.path, { sha: file.sha, mode: file.mode }]))
+    worker: worker2.name,
+    sha: worker2.base,
+    dir: worker2.dir,
+    carriedCommit: !!worker2.carriedBase && worker2.carriedBase === worker2.base,
+    untracked: new Map((worker2.carriedUntracked ?? []).map((file) => [file.path, { sha: file.sha, mode: file.mode }]))
   };
 }
 async function carriedPaths(baseline2) {
@@ -14590,12 +14668,12 @@ async function carriedCommitUnchangedPaths(baseline2, paths) {
   });
   return unchanged;
 }
-async function workerChangedPaths(worker) {
-  const baseline2 = workerBaseline(worker);
+async function workerChangedPaths(worker2) {
+  const baseline2 = workerBaseline(worker2);
   const base = baseline2?.sha ?? "HEAD";
-  const exclusions = [".room", ...worker.link ?? []].map((p) => `:(exclude,literal)${p}`);
-  const tracked = (await boundedGit(worker.dir, ["diff", "--no-renames", "--name-only", "-z", base, "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
-  const untracked = (await boundedGit(worker.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
+  const exclusions = [".room", ...worker2.link ?? []].map((p) => `:(exclude,literal)${p}`);
+  const tracked = (await boundedGit(worker2.dir, ["diff", "--no-renames", "--name-only", "-z", base, "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
+  const untracked = (await boundedGit(worker2.dir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split("\0").filter(Boolean);
   const unchanged = carriedUnchangedPaths(baseline2);
   return [.../* @__PURE__ */ new Set([...tracked, ...untracked, ...baseline2?.untracked.keys() ?? []])].filter((p) => !unchanged.has(p)).sort();
 }
@@ -24594,11 +24672,11 @@ var init_src4 = __esm({
         const prev = this.appliedHead;
         const firstTransition = this.appliedRefs === void 0;
         const claimSnapshot = prev !== head || firstTransition ? await this.snapshotOwnClaims(prev) : [];
-        const pending = this.pendingClaimValidation;
+        const pending2 = this.pendingClaimValidation;
         const pendingIds = /* @__PURE__ */ new Set();
-        if (pending?.fence === fence) {
+        if (pending2?.fence === fence) {
           const byId = new Map(claimSnapshot.map((c) => [c.id, c]));
-          for (const [id3, original] of pending.claims) {
+          for (const [id3, original] of pending2.claims) {
             if (JSON.stringify(this.roomDoc.claims.get(id3)) === original.claimState) {
               byId.set(id3, original);
               pendingIds.add(id3);
@@ -24914,28 +24992,28 @@ var init_src4 = __esm({
       }
       /** One bounded claim-validation slice per publisher tick, independent of later HEAD movement. */
       async retryPendingClaims(head, fence) {
-        const pending = this.pendingClaimValidation;
-        if (!pending || pending.head !== head || pending.fence !== fence || !pending.claims.size) return;
-        const [id3, original] = pending.claims.entries().next().value;
+        const pending2 = this.pendingClaimValidation;
+        if (!pending2 || pending2.head !== head || pending2.fence !== fence || !pending2.claims.size) return;
+        const [id3, original] = pending2.claims.entries().next().value;
         if (JSON.stringify(this.roomDoc.claims.get(id3)) !== original.claimState) {
-          pending.claims.delete(id3);
+          pending2.claims.delete(id3);
           this.claimSearchProgress.delete(id3);
-          if (!pending.claims.size) this.pendingClaimValidation = void 0;
+          if (!pending2.claims.size) this.pendingClaimValidation = void 0;
           return;
         }
         const inputs = this.inputs;
         const changes = await this.reanchorOwnClaims(head, [original]);
         const finalHead = await gitHead(this.dir);
-        if (this.stopped || this.fence !== fence || this.inputs !== inputs || this.pendingClaimValidation !== pending || pending.head !== head || pending.fence !== fence || pending.claims.get(id3) !== original || finalHead !== head || !this.claimFilesValid(changes)) return;
+        if (this.stopped || this.fence !== fence || this.inputs !== inputs || this.pendingClaimValidation !== pending2 || pending2.head !== head || pending2.fence !== fence || pending2.claims.get(id3) !== original || finalHead !== head || !this.claimFilesValid(changes)) return;
         if (JSON.stringify(this.roomDoc.claims.get(id3)) !== original.claimState) {
-          pending.claims.delete(id3);
+          pending2.claims.delete(id3);
           this.claimSearchProgress.delete(id3);
-          if (!pending.claims.size) this.pendingClaimValidation = void 0;
+          if (!pending2.claims.size) this.pendingClaimValidation = void 0;
           return;
         }
         if (changes.uncertain.includes(id3)) {
-          pending.claims.delete(id3);
-          pending.claims.set(id3, original);
+          pending2.claims.delete(id3);
+          pending2.claims.set(id3, original);
           return;
         }
         const notices = [];
@@ -24960,9 +25038,9 @@ var init_src4 = __esm({
             this.log(text2);
           }
         }, this);
-        pending.claims.delete(id3);
+        pending2.claims.delete(id3);
         this.claimSearchProgress.delete(id3);
-        if (!pending.claims.size) this.pendingClaimValidation = void 0;
+        if (!pending2.claims.size) this.pendingClaimValidation = void 0;
         for (const notice of notices) this.post(notice.from, notice.body);
       }
       /** Validate claims recovered from a branch-room archive after the first repo-room join. */
@@ -25470,7 +25548,7 @@ var init_codex_install = __esm({
       "pre_tool_use:0:0": "sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb",
       "session_start:0:0": "sha256:96fd593f780005aedd3d3796345ed66ef79f6b3751129aed8a120818ddf11d18"
     };
-    EXECUTABLE_BUNDLES = ["room-mcp.mjs", "room-mcp-app.mjs", "room-daemon.mjs", "room-daemon-app.mjs", "room-state.mjs", "room-state-app.mjs", "parse-worker.mjs"];
+    EXECUTABLE_BUNDLES = ["room-mcp.mjs", "room-mcp-app.mjs", "room-daemon.mjs", "room-daemon-app.mjs", "room-state.mjs", "room-state-app.mjs", "parse-worker.mjs", "gate-worker.mjs"];
   }
 });
 
@@ -25958,9 +26036,9 @@ function unawaitedBackgroundTasks(logFile, logStart, host2, identity4) {
   const evidence = readBackgroundTasks(logFile, logStart, host2, identity4);
   return evidence.kind === "observed" ? evidence.count : 0;
 }
-function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
+function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker2, probe) {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
-  if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false;
+  if (worker2 && !pidIsOurWorker(pid, worker2, probe && probe !== probeProcess ? probe : probeProcessNow)) return false;
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
   try {
     process.kill(pid, signal);
@@ -26280,7 +26358,7 @@ async function workerRealState(leadDir, w, options = {}) {
     exitCode: w.exitCode,
     dismissed: w.status === "dismissed"
   };
-  if (options.process) state.process = options.hasHandle ? "ours" : (deps.process ?? ((worker) => workerProcessOwnership(worker.pid, worker, options.probe)))(w);
+  if (options.process) state.process = options.hasHandle ? "ours" : (deps.process ?? ((worker2) => workerProcessOwnership(worker2.pid, worker2, options.probe)))(w);
   if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers);
   if (options.branch) {
     const ref = `refs/heads/${w.branch}`;
@@ -26517,7 +26595,7 @@ async function acquire(context2, commonDir2) {
   context2.acquiring = (async () => {
     const { gate, registration } = await storageRegistration(common);
     const ticket = await gate.admit(registration, context2.kind);
-    if (context2.observed !== void 0 && context2.observed !== ticket.generation) {
+    if (context2.observed !== void 0 && !sameEpoch(context2.observed, ticket.generation)) {
       await gate.finish(ticket);
       throw new StorageRefused("maintenance", "storage changed during this operation; nothing was changed, retry it");
     }
@@ -26551,8 +26629,8 @@ async function assertLegacyReady(commonDir2, gate = storageGate(commonDir2)) {
 }
 async function storageRegistration(commonDir2) {
   const gate = storageGate(commonDir2), common = gate.commonDir;
-  let pending = registrations.get(common);
-  if (pending) return pending;
+  let pending2 = registrations.get(common);
+  if (pending2) return pending2;
   let expired = false;
   const deadline = performance.now() + GATE_LIMITS.startupMs;
   const timedOut = () => expired || performance.now() >= deadline;
@@ -26581,16 +26659,16 @@ async function storageRegistration(commonDir2) {
     }, GATE_LIMITS.startupMs);
     timer.unref?.();
   });
-  pending = Promise.race([work(), timeout]).finally(() => clearTimeout(timer));
-  registrations.set(common, pending);
-  void pending.catch(() => {
-    if (registrations.get(common) === pending) registrations.delete(common);
+  pending2 = Promise.race([work(), timeout]).finally(() => clearTimeout(timer));
+  registrations.set(common, pending2);
+  void pending2.catch(() => {
+    if (registrations.get(common) === pending2) registrations.delete(common);
   });
-  return pending;
+  return pending2;
 }
 async function closeStorageAdmissions() {
-  for (const [common, pending] of registrations) {
-    const state = await pending.catch(() => void 0);
+  for (const [common, pending2] of registrations) {
+    const state = await pending2.catch(() => void 0);
     if (!state) continue;
     try {
       await state.gate.unregister(state.registration);
@@ -26642,7 +26720,7 @@ async function withValidatedRead(commonDir2, fn) {
   const scope = ambient.getStore();
   const remember2 = (generation) => {
     if (!scope?.active || scope.ticket || scope.commonDir && scope.commonDir !== gate.commonDir) return;
-    if (scope.observed !== void 0 && scope.observed !== generation)
+    if (scope.observed !== void 0 && !sameEpoch(scope.observed, generation))
       throw new StorageRefused("maintenance", "storage changed during this operation; nothing was changed, retry it");
     scope.commonDir = gate.commonDir;
     scope.observed = generation;
@@ -26677,9 +26755,9 @@ async function withDirectoryAdmission(dir, kind, fn) {
     return await ambient.run(context2, fn);
   } finally {
     context2.active = false;
-    const pending = context2.acquiring;
-    if (pending) {
-      const ticket = await pending.catch(() => void 0);
+    const pending2 = context2.acquiring;
+    if (pending2) {
+      const ticket = await pending2.catch(() => void 0);
       if (ticket) await context2.gate.finish(ticket);
     }
   }
@@ -26703,8 +26781,8 @@ async function admitStorageHelper(pid) {
   const common = await scopeCommonDir(context2);
   if (!common) return void 0;
   const parent = await acquire(context2, common);
-  const { probeProcessNow: probeProcessNow3 } = await Promise.resolve().then(() => (init_process(), process_exports));
-  const identity4 = probeProcessNow3(pid);
+  const { probeProcessAsync: probeProcessAsync2 } = await Promise.resolve().then(() => (init_process(), process_exports));
+  const identity4 = await probeProcessAsync2(pid);
   if (!identity4?.startTime || !identity4.executable) throw new StorageRefused("unavailable", "preview helper identity is unreadable");
   const gate = storageGate(common);
   const instance = {
@@ -26730,7 +26808,7 @@ async function admitStorageHelper(pid) {
     done = true;
   };
 }
-var registrations, ambient, reads, gates;
+var registrations, ambient, reads, gates, sameEpoch;
 var init_storage_admission = __esm({
   "packages/room-mcp/src/storage-admission.ts"() {
     "use strict";
@@ -26744,6 +26822,7 @@ var init_storage_admission = __esm({
     ambient = new AsyncLocalStorage();
     reads = new AsyncLocalStorage();
     gates = /* @__PURE__ */ new Map();
+    sameEpoch = (a, b) => a === b || a === 0 && b === 1;
     process.on("beforeExit", () => {
       void closeStorageAdmissions().catch(() => {
       });
@@ -34496,8 +34575,8 @@ function checkoutPublication(room, name, view, read2 = (name2) => snapshot(room,
   return { links, snap: void 0 };
 }
 function stalePublication(room, snap, now) {
-  const worker = room.acceptedWorkerViewOf(snap.name);
-  if (snap.retained || worker && worker.status !== "running") return false;
+  const worker2 = room.acceptedWorkerViewOf(snap.name);
+  if (snap.retained || worker2 && worker2.status !== "running") return false;
   return !Number.isFinite(snap.head.scannedAt) || snap.head.scannedAt > now || now - snap.head.scannedAt > 12e4;
 }
 function checkoutPublisherName(room, name) {
@@ -34917,19 +34996,19 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   }
   const workers = path35.join(room, "registry", "workers");
   for (const name of entries(workers).filter((v) => v.endsWith(".json"))) {
-    const file = path35.join(workers, name), worker = read2(file);
-    if (!worker) continue;
-    const runs = Array.isArray(worker.runs) ? worker.runs : [];
+    const file = path35.join(workers, name), worker2 = read2(file);
+    if (!worker2) continue;
+    const runs = Array.isArray(worker2.runs) ? worker2.runs : [];
     const run3 = runs.at(-1), launch = run3?.launch;
-    const reportFile = run3 && typeof worker.id === "string" && /^[\w-]+$/.test(worker.id) && Number.isSafeInteger(run3.n) ? path35.join(room, "registry", "runs", worker.id, `${run3.n}.report.json`) : void 0;
+    const reportFile = run3 && typeof worker2.id === "string" && /^[\w-]+$/.test(worker2.id) && Number.isSafeInteger(run3.n) ? path35.join(room, "registry", "runs", worker2.id, `${run3.n}.report.json`) : void 0;
     const report = reportFile ? read2(reportFile) : void 0;
     const processClaim = has(launch, "pid") || has(launch, "process") || report?.hostProcess != null || launch != null && (!object6(launch) || !["never", "imported"].includes(launch.outcome));
-    if (!processClaim && (launch?.outcome === "never" || ["retired", "abandoned"].includes(worker.phase))) continue;
+    if (!processClaim && (launch?.outcome === "never" || ["retired", "abandoned"].includes(worker2.phase))) continue;
     const identity4 = identityOf(launch?.process) ?? identityOf(report?.hostProcess) ?? identityOf({ pid: launch?.pid });
     const launched = [identityOf(launch?.process), identityOf(report?.hostProcess)].filter((v) => !!v?.startTime);
-    const servedHost = (workerHosts.get(worker.id) ?? []).some((host2) => launched.some((v) => v.pid === host2.pid && sameStartTime(v.startTime, host2.startTime) && v.executable === host2.executable));
-    const runtime = upgradedWorkers.has(worker.id) || servedHost ? "daemon-client" : "legacy";
-    workerProcesses.set(worker.id, { identity: identity4, runtime, processClaim });
+    const servedHost = (workerHosts.get(worker2.id) ?? []).some((host2) => launched.some((v) => v.pid === host2.pid && sameStartTime(v.startTime, host2.startTime) && v.executable === host2.executable));
+    const runtime = upgradedWorkers.has(worker2.id) || servedHost ? "daemon-client" : "legacy";
+    workerProcesses.set(worker2.id, { identity: identity4, runtime, processClaim });
     const full = [
       ...has(launch, "process") ? [identityOf(launch.process)] : [],
       ...has(report, "hostProcess") ? [identityOf(report.hostProcess)] : []
@@ -34938,13 +35017,13 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     const identities = [...full, ...bare];
     const verdicts = identities.map(alive);
     const verdict = verdicts.includes("alive") ? "alive" : !verdicts.length || verdicts.includes("unknown") ? "unknown" : "dead";
-    const checks = `Check any process whose working directory is in ${worker.dir ?? "the worker worktree"}, the host session transcript for hostSessionId ${worker.hostSessionId ?? "(unknown)"}, and the worker log file ${worker.logFile ?? (typeof worker.dir === "string" && typeof worker.tag === "string" ? path35.join(path35.dirname(worker.dir), worker.tag + ".log") : "(see worker record)")}`;
+    const checks = `Check any process whose working directory is in ${worker2.dir ?? "the worker worktree"}, the host session transcript for hostSessionId ${worker2.hostSessionId ?? "(unknown)"}, and the worker log file ${worker2.logFile ?? (typeof worker2.dir === "string" && typeof worker2.tag === "string" ? path35.join(path35.dirname(worker2.dir), worker2.tag + ".log") : "(see worker record)")}`;
     add2({
       kind: "worker",
       source: file,
-      label: String(worker.name ?? worker.tag ?? name),
-      cwd: worker.dir,
-      host: worker.host,
+      label: String(worker2.name ?? worker2.tag ?? name),
+      cwd: worker2.dir,
+      host: worker2.host,
       runtime,
       checks,
       ...!processClaim ? { bindingOnly: true } : {},
@@ -34955,16 +35034,16 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   for (const dir of gitDirs) {
     const file = path35.join(dir, "room-session.json"), session = read2(file);
     if (session) {
-      const worker = workerProcesses.get(session.worker_id);
-      const identity4 = identityOf(session) ?? identityOf({ pid: session.hostPid }) ?? worker?.identity;
-      const processClaim = has(session, "pid") || has(session, "hostPid") || worker?.processClaim;
+      const worker2 = workerProcesses.get(session.worker_id);
+      const identity4 = identityOf(session) ?? identityOf({ pid: session.hostPid }) ?? worker2?.identity;
+      const processClaim = has(session, "pid") || has(session, "hostPid") || worker2?.processClaim;
       add2({
         kind: "legacy-session",
         source: file,
         label: String(session.session_id ?? dir),
         cwd: session.cwd,
         host: session.host,
-        runtime: options.currentSessionId && session.session_id === options.currentSessionId ? "daemon-client" : worker?.runtime ?? "legacy",
+        runtime: options.currentSessionId && session.session_id === options.currentSessionId ? "daemon-client" : worker2?.runtime ?? "legacy",
         ...!processClaim ? { bindingOnly: true } : {}
       }, identity4);
     }
@@ -35221,28 +35300,28 @@ var init_client_compat = __esm({
 });
 
 // packages/room-mcp/src/parse/client.ts
-import { Worker as Worker2 } from "node:worker_threads";
+import { Worker as Worker3 } from "node:worker_threads";
 function acquireParseWorker() {
   let stopped = false;
-  const pending = /* @__PURE__ */ new Set();
+  const pending2 = /* @__PURE__ */ new Set();
   return {
     parse(path79, texts) {
       if (stopped) return Promise.reject(new Error("parser worker is closed"));
       return new Promise((resolve6, reject) => {
-        pending.add(reject);
+        pending2.add(reject);
         void parseInWorker(path79, texts).then((parsed) => {
-          pending.delete(reject);
+          pending2.delete(reject);
           resolve6(parsed);
         }, (error2) => {
-          pending.delete(reject);
+          pending2.delete(reject);
           reject(error2);
         });
       });
     },
     stop() {
       stopped = true;
-      for (const reject of pending) reject(new Error("parser worker is closed"));
-      pending.clear();
+      for (const reject of pending2) reject(new Error("parser worker is closed"));
+      pending2.clear();
     }
   };
 }
@@ -35288,19 +35367,19 @@ var init_client = __esm({
         clearTimeout(this.idle);
         this.idle = void 0;
       }
-      dispose(worker) {
+      dispose(worker2) {
         this.cancelIdle();
         this.worker = void 0;
-        worker.unref();
-        void worker.terminate().catch(() => {
+        worker2.unref();
+        void worker2.terminate().catch(() => {
         });
       }
-      scheduleIdle(worker) {
-        if (this.worker !== worker || this.pending.size || this.stopped) return;
-        worker.unref();
+      scheduleIdle(worker2) {
+        if (this.worker !== worker2 || this.pending.size || this.stopped) return;
+        worker2.unref();
         this.cancelIdle();
         this.idle = setTimeout(() => {
-          if (this.worker === worker && !this.pending.size) this.dispose(worker);
+          if (this.worker === worker2 && !this.pending.size) this.dispose(worker2);
         }, this.idleMs);
         this.idle.unref();
       }
@@ -35308,32 +35387,32 @@ var init_client = __esm({
         if (this.worker) return this.worker;
         const source = import.meta.url.endsWith(".ts");
         const entry = new URL(import.meta.url.endsWith(".mjs") ? "./parse-worker.mjs" : source ? "./worker.ts" : "./worker.js", import.meta.url);
-        let worker;
+        let worker2;
         try {
-          worker = this.options.createWorker?.() ?? (source ? new Worker2(`import { register } from 'tsx/esm/api'; register(); await import(${JSON.stringify(entry.href)})`, { eval: true }) : new Worker2(entry));
+          worker2 = this.options.createWorker?.() ?? (source ? new Worker3(`import { register } from 'tsx/esm/api'; register(); await import(${JSON.stringify(entry.href)})`, { eval: true }) : new Worker3(entry));
         } catch (error2) {
           const failure = error2 instanceof Error ? error2 : new Error(String(error2));
           this.recordCrash(failure);
           throw this.failure ?? new TransientParserError(failure.message, this.retryAt);
         }
-        this.worker = worker;
-        const threadId = worker.threadId;
-        worker.on("message", ({ id: id3, parsed, error: error2 }) => {
-          if (this.worker !== worker) return;
+        this.worker = worker2;
+        const threadId = worker2.threadId;
+        worker2.on("message", ({ id: id3, parsed, error: error2 }) => {
+          if (this.worker !== worker2) return;
           const request = this.pending.get(id3);
           if (!request) return;
           this.pending.delete(id3);
           if (error2) request.reject(new Error(error2));
           else request.resolve(parsed);
-          if (!this.pending.size) this.scheduleIdle(worker);
+          if (!this.pending.size) this.scheduleIdle(worker2);
         });
-        worker.on("error", (error2) => this.fail(worker, error2));
-        worker.on("exit", (code) => {
-          this.fail(worker, new Error(`parser worker exited (${code})`));
+        worker2.on("error", (error2) => this.fail(worker2, error2));
+        worker2.on("exit", (code) => {
+          this.fail(worker2, new Error(`parser worker exited (${code})`));
           this.options.onExit?.(threadId);
         });
-        worker.unref();
-        return worker;
+        worker2.unref();
+        return worker2;
       }
       rejectPending(error2) {
         for (const request of this.pending.values()) request.reject(error2);
@@ -35351,9 +35430,9 @@ var init_client = __esm({
           log2(this.failure.message);
         }
       }
-      fail(worker, error2) {
-        if (this.worker !== worker || this.stopped) return;
-        this.dispose(worker);
+      fail(worker2, error2) {
+        if (this.worker !== worker2 || this.stopped) return;
+        this.dispose(worker2);
         this.recordCrash(error2);
         this.rejectPending(this.failure ?? new TransientParserError(error2.message, this.retryAt));
       }
@@ -35363,13 +35442,13 @@ var init_client = __esm({
         if (Date.now() < this.retryAt) return Promise.reject(new TransientParserError(`parser worker cooling down: ${this.lastCrash?.message}`, this.retryAt));
         this.cancelIdle();
         return new Promise((resolve6, reject) => {
-          const worker = this.start(), id3 = ++this.nextId;
+          const worker2 = this.start(), id3 = ++this.nextId;
           this.pending.set(id3, { resolve: resolve6, reject });
-          worker.ref();
+          worker2.ref();
           try {
-            worker.postMessage({ id: id3, path: path79, texts });
+            worker2.postMessage({ id: id3, path: path79, texts });
           } catch (error2) {
-            this.fail(worker, error2 instanceof Error ? error2 : new Error(String(error2)));
+            this.fail(worker2, error2 instanceof Error ? error2 : new Error(String(error2)));
           }
         });
       }
@@ -37246,9 +37325,9 @@ var init_graph_index = __esm({
       omit(path79, reason) {
         this.admitted.delete(path79);
         if (!this.activePaths.has(path79)) {
-          const pending = this.pending.get(path79);
-          pending?.resolve();
-          pending?.resolveIdle();
+          const pending2 = this.pending.get(path79);
+          pending2?.resolve();
+          pending2?.resolveIdle();
           this.pending.delete(path79);
           const queued = this.refreshQueue.indexOf(path79);
           if (queued >= 0) this.refreshQueue.splice(queued, 1);
@@ -38668,9 +38747,9 @@ var init_hub_client = __esm({
           wait.reject(new Error("hub client closed"));
         }
         this.retryWaits.clear();
-        for (const [id3, pending] of this.pending) {
-          clearTimeout(pending.timer);
-          pending.reject(new Error("hub client closed"));
+        for (const [id3, pending2] of this.pending) {
+          clearTimeout(pending2.timer);
+          pending2.reject(new Error("hub client closed"));
           this.pending.delete(id3);
         }
       }
@@ -38828,9 +38907,9 @@ var init_hub_client = __esm({
       }
       disconnected() {
         this.helloOk = false;
-        for (const pending of this.pending.values()) {
-          clearTimeout(pending.timer);
-          pending.reject(new TransportUnavailable());
+        for (const pending2 of this.pending.values()) {
+          clearTimeout(pending2.timer);
+          pending2.reject(new TransportUnavailable());
         }
         this.pending.clear();
       }
@@ -38849,11 +38928,11 @@ var init_hub_client = __esm({
           return;
         }
         if (!("re" in frame) || typeof frame.re !== "string") return;
-        const pending = this.pending.get(frame.re);
-        if (!pending) return;
+        const pending2 = this.pending.get(frame.re);
+        if (!pending2) return;
         this.pending.delete(frame.re);
-        clearTimeout(pending.timer);
-        pending.resolve(frame);
+        clearTimeout(pending2.timer);
+        pending2.resolve(frame);
       }
       async request(body, onSend, budgetMs, renewal) {
         this.assertOpen();
@@ -39324,7 +39403,7 @@ async function chooseName(o) {
     }
   }
   const holdsWork = (name) => manifestPaths(o.doc, name).length > 0;
-  const workerNames = new Set([...o.doc.retiredWorkers(), ...o.doc.acceptedWorkerViews()].filter((worker) => !o.workerId || worker.id !== o.workerId).map((worker) => worker.name));
+  const workerNames = new Set([...o.doc.retiredWorkers(), ...o.doc.acceptedWorkerViews()].filter((worker2) => !o.workerId || worker2.id !== o.workerId).map((worker2) => worker2.name));
   const chosen = await acquireName({
     commonDir: o.commonDir,
     roomKey: o.roomKey,
@@ -39339,8 +39418,8 @@ async function chooseName(o) {
     workerId: o.workerId,
     takeover: o.takeover,
     skip: (c) => {
-      const worker = participantRecord(o.doc, c.name)?.holder?.workerId;
-      if (worker && worker !== o.workerId || workerNames.has(c.name)) return "belongs to a previous worker";
+      const worker2 = participantRecord(o.doc, c.name)?.holder?.workerId;
+      if (worker2 && worker2 !== o.workerId || workerNames.has(c.name)) return "belongs to a previous worker";
       return c.tag !== remembered && holdsWork(c.name) ? "holds uncommitted work from another clone" : void 0;
     }
   });
@@ -40772,7 +40851,7 @@ import { existsSync as existsSync3, readFileSync as readFileSync2, statSync } fr
 import { createHash as createHash15 } from "node:crypto";
 import { execFileSync as execFileSync9 } from "node:child_process";
 import { basename as basename3, dirname as dirname3, join as join4, resolve as resolve3 } from "node:path";
-import { fileURLToPath as fileURLToPath5, pathToFileURL } from "node:url";
+import { fileURLToPath as fileURLToPath5, pathToFileURL as pathToFileURL2 } from "node:url";
 function findLocalViewer() {
   const here = dirname3(fileURLToPath5(import.meta.url));
   for (const file of [resolve3(here, "..", "web", "viewer.html"), resolve3(here, "..", "..", "web", "dist", "viewer.html")]) {
@@ -40782,7 +40861,7 @@ function findLocalViewer() {
 }
 function localBrowserLink(roomUrl, name, view, viewerFile = findLocalViewer(), web) {
   if (!viewerFile && !web) return VIEWER_MISSING;
-  const base = web ? `${web.replace(/\/+$/, "")}/` : pathToFileURL(resolve3(viewerFile)).href;
+  const base = web ? `${web.replace(/\/+$/, "")}/` : pathToFileURL2(resolve3(viewerFile)).href;
   return `${base}#room=${encodeURIComponent(roomUrl)}&view=${encodeURIComponent(view)}&participant=${encodeURIComponent(name)}&relay=1`;
 }
 function sessionDirectory(commonDir2, sessionId) {
@@ -42318,7 +42397,7 @@ async function launchWorkerProcess(policy, command3, host2, lifecycle) {
     const nameEpoch = await reserveWorkerName(s, `${policy.owner}+${tag}`, id3, policy.log);
     const portChanged = command3.mode === "resume" && port !== command3.oldPort;
     const launchOptions = workerLaunchOptions(policy.host);
-    const worker = workerAdapter(policy.host);
+    const worker2 = workerAdapter(policy.host);
     const env = workerProcessEnv({
       threads: policy.budget.threads,
       memGb: policy.budget.memGb,
@@ -42365,7 +42444,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     }
     if (policy.effort !== void 0 && !WORKER_EFFORTS.includes(policy.effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join("|")}`);
     if (command3.mode === "resume" && !command3.sessionId) throw new Error("resuming a worker requires its host session id");
-    const plan2 = await worker.plan({
+    const plan2 = await worker2.plan({
       tag,
       sessionId: command3.sessionId,
       mode: command3.mode,
@@ -42374,7 +42453,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       cwd: policy.dir,
       logDir: s.dir,
       env: process.env,
-      inheritedShellEnvFile: worker.inheritedShellEnvFile,
+      inheritedShellEnvFile: worker2.inheritedShellEnvFile,
       claudeChannel: policy.claudeChannel === void 0 ? DEFAULT_CLAUDE_CHANNEL : policy.claudeChannel,
       maxBudgetUsd,
       shellEnvHook: launchOptions.shellEnvHook,
@@ -42911,9 +42990,9 @@ var init_registry = __esm({
       /** Auto-retirement (registry §12, decideRetire's rules): after exits, before previews and PR tools, and every minute. */
       async autoRetire(session) {
         for (const s of session ? [session] : this.all()) {
-          const pending = this.retiring.get(s);
-          if (pending) {
-            await pending;
+          const pending2 = this.retiring.get(s);
+          if (pending2) {
+            await pending2;
             await this.autoRetire(s);
             continue;
           }
@@ -43190,7 +43269,7 @@ function hasCompany(s, runningWorkers = [], now = Date.now()) {
     if (p.user.kind === "human" && p.status === "viewing") continue;
     names.set(p.user.name, p.user.name);
   }
-  for (const worker of runningWorkers) if (nb.has(worker.name)) names.set(worker.name, names.get(worker.name) ?? worker.name);
+  for (const worker2 of runningWorkers) if (nb.has(worker2.name)) names.set(worker2.name, names.get(worker2.name) ?? worker2.name);
   const others = Array.from(names.values()).sort((a, b) => a.localeCompare(b));
   return { company: others.length > 0, others };
 }
@@ -43570,10 +43649,10 @@ var init_merge = __esm({
 import fs51 from "node:fs";
 async function trustedWorker(s, person) {
   return withDirectoryAdmission(s.dir, "reconcile", async () => {
-    const worker = (await localWorkers(s.dir, (record2) => record2.name === person && record2.lead.participant === s.me.name))[0];
-    if (!worker?.id) return void 0;
-    const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag);
-    if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return void 0;
+    const worker2 = (await localWorkers(s.dir, (record2) => record2.name === person && record2.lead.participant === s.me.name))[0];
+    if (!worker2?.id) return void 0;
+    const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker2.tag);
+    if (!trusted || trusted.record.id !== worker2.id || trusted.record.name !== person) return void 0;
     return { ...realStateInput(trusted.record, trusted.status), dir: fs51.realpathSync(trusted.record.dir) };
   });
 }
@@ -43721,14 +43800,14 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
     retained.push(p);
   }
   const overflow = previous?.overflow || retained.length !== all2.length;
-  const pending = { paths: retained, pending: true, ...overflow ? { overflow: true } : {} };
-  if (overflow || !s.daemon?.reconcileGitChanges || !s.daemon?.settle || !s.daemon.fence || (checkoutPublisher(s) ?? s.me.name) !== s.me.name) return pending;
+  const pending2 = { paths: retained, pending: true, ...overflow ? { overflow: true } : {} };
+  if (overflow || !s.daemon?.reconcileGitChanges || !s.daemon?.settle || !s.daemon.fence || (checkoutPublisher(s) ?? s.me.name) !== s.me.name) return pending2;
   let timer;
   try {
     return await Promise.race([
       (async () => {
         const [format, expectedHead] = (await git(s.dir, ["rev-parse", "--show-object-format", "HEAD"])).trim().split("\n");
-        if (format !== "sha1" && format !== "sha256") return pending;
+        if (format !== "sha1" && format !== "sha256") return pending2;
         const hash3 = (bytes2) => createHash16(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
         const required2 = /* @__PURE__ */ new Map();
         const root = fs52.realpathSync(s.dir);
@@ -43744,8 +43823,8 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
             return null;
           }
         };
-        for (const p of pending.paths) {
-          if (!validRepoPath(p, DISK_READ_PATH)) return pending;
+        for (const p of pending2.paths) {
+          if (!validRepoPath(p, DISK_READ_PATH)) return pending2;
           required2.set(p, await diskHash(p));
         }
         for (const { p, after } of written) if (required2.has(p)) required2.set(p, after === null ? null : hash3(after));
@@ -43754,21 +43833,21 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
         const publisher = checkoutPublisher(s) ?? s.me.name;
         const meta2 = snapshotMetadata(s.room, publisher, s.awareness ? participantsView(s.room, s.awareness, Date.now()) : []);
         const record2 = meta2?.record, head = meta2?.head;
-        if (publisher !== s.me.name || !head?.complete || head.level !== "full" || head.coverage.kind !== "all" || !meta2?.fenceValid || !record2?.holder || head.fence !== s.daemon.fence || head.fence !== record2.git?.fence || head.base !== record2.git.base || record2.git.head !== expectedHead || String(record2.holder.epoch) !== head.fence) return pending;
+        if (publisher !== s.me.name || !head?.complete || head.level !== "full" || head.coverage.kind !== "all" || !meta2?.fenceValid || !record2?.holder || head.fence !== s.daemon.fence || head.fence !== record2.git?.fence || head.base !== record2.git.base || record2.git.head !== expectedHead || String(record2.holder.epoch) !== head.fence) return pending2;
         const entries = s.room.manifest.get(`${publisher}\0${head.fence}`);
-        const base = await gitBlobInfoMany(s.dir, head.base, pending.paths);
+        const base = await gitBlobInfoMany(s.dir, head.base, pending2.paths);
         const normalized2 = [];
         for (const [p, expected] of required2) {
           const entry = entries?.get(p);
-          if (entry && (entry.fence !== head.fence || entry.state !== "shared" && (entry.held !== "binary" || !entry.hash))) return pending;
-          if (!entry && (!meta2.roomSalt || head.excluded.includes(digestPath(meta2.roomSalt, p)))) return pending;
+          if (entry && (entry.fence !== head.fence || entry.state !== "shared" && (entry.held !== "binary" || !entry.hash))) return pending2;
+          if (!entry && (!meta2.roomSalt || head.excluded.includes(digestPath(meta2.roomSalt, p)))) return pending2;
           if (entry?.state === "shared" && entry.change !== "D") {
             const text2 = s.room.overlayText(`${publisher}\0${head.fence}`, p)?.toString();
-            if (text2 === void 0 || hash3(Buffer.from(text2, "utf8")) !== entry.hash) return pending;
+            if (text2 === void 0 || hash3(Buffer.from(text2, "utf8")) !== entry.hash) return pending2;
           }
           const published = entry?.change === "D" ? null : entry?.hash ?? base.get(p)?.hash ?? null;
           if (published !== expected) {
-            if (entry || expected === null || !base.get(p)) return pending;
+            if (entry || expected === null || !base.get(p)) return pending2;
             normalized2.push(p);
           }
         }
@@ -43783,22 +43862,22 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
             offset++;
           }
           const hashes = (await git(s.dir, ["hash-object", "--", ...chunk])).trim().split("\n");
-          if (hashes.length !== chunk.length) return pending;
+          if (hashes.length !== chunk.length) return pending2;
           for (let i = 0; i < chunk.length; i++) {
             const p = chunk[i];
-            if (hashes[i] !== base.get(p).hash || await diskHash(p) !== required2.get(p)) return pending;
+            if (hashes[i] !== base.get(p).hash || await diskHash(p) !== required2.get(p)) return pending2;
           }
         }
         const current2 = manifestHeadOf(s.room, publisher), holder = participantRecord(s.room, publisher)?.holder;
-        if (!current2 || current2.fence !== head.fence || current2.rev !== head.rev || holder?.sessionId !== record2.holder.sessionId || s.room.roomSalt !== meta2.roomSalt || !meta2.roomSalt || !/^[a-f0-9]{64}$/i.test(meta2.roomSalt)) return pending;
-        return { paths: pending.paths, pending: false, ack: { publisher, sessionId: record2.holder.sessionId, fence: head.fence, rev: head.rev, roomSalt: meta2.roomSalt } };
+        if (!current2 || current2.fence !== head.fence || current2.rev !== head.rev || holder?.sessionId !== record2.holder.sessionId || s.room.roomSalt !== meta2.roomSalt || !meta2.roomSalt || !/^[a-f0-9]{64}$/i.test(meta2.roomSalt)) return pending2;
+        return { paths: pending2.paths, pending: false, ack: { publisher, sessionId: record2.holder.sessionId, fence: head.fence, rev: head.rev, roomSalt: meta2.roomSalt } };
       })(),
       new Promise((resolve6) => {
-        timer = setTimeout(() => resolve6(pending), timeoutMs2);
+        timer = setTimeout(() => resolve6(pending2), timeoutMs2);
       })
     ]);
   } catch {
-    return pending;
+    return pending2;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -44004,13 +44083,13 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (snap.head.excluded.length) gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` });
   }
   const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
-    const worker = previewWorker(session, person);
-    return worker ? [[person, worker]] : [];
+    const worker2 = previewWorker(session, person);
+    return worker2 ? [[person, worker2]] : [];
   }));
   const previewDirs = /* @__PURE__ */ new Set([caller.dir]);
   for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
-    const worker = previewWorker(session, person);
-    if (worker) previewDirs.add(worker.dir);
+    const worker2 = previewWorker(session, person);
+    if (worker2) previewDirs.add(worker2.dir);
   }
   const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
     if (fs53.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
@@ -44178,9 +44257,9 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]));
   const untouched = /* @__PURE__ */ new Map();
   for (const { person, session } of participants) {
-    const pair = pairs.get(person), worker = previewWorker(session, person);
-    if (!carriesWork(pair) || !worker || pair.worker !== person) continue;
-    const root = rootOf(worker.dir);
+    const pair = pairs.get(person), worker2 = previewWorker(session, person);
+    if (!carriesWork(pair) || !worker2 || pair.worker !== person) continue;
+    const root = rootOf(worker2.dir);
     let own2 = false;
     try {
       own2 = fs53.realpathSync(pair.dir) === root;
@@ -44222,13 +44301,13 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     return new Set(candidates.filter((p) => !committed.has(p)));
   };
   for (const [index, item] of [{ person: caller.me.name, session: caller }, ...participants].entries()) {
-    const worker = previewWorker(item.session, item.person);
-    const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : void 0);
+    const worker2 = previewWorker(item.session, item.person);
+    const dir = worker2?.dir ?? (item.person === caller.me.name ? caller.dir : void 0);
     const ignored = dir ? (await gitWholeTree(dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])).split("\0").filter(Boolean) : [];
     if (ignored.length) ignoredBy.set(item.person, [...ignoredBy.get(item.person) ?? [], ...ignored]);
     const changed = dir ? (await gitWholeTree(dir, ["diff", "--no-renames", "--name-only", "-z", ancestor, "--"])).split("\0").filter(Boolean) : [];
     const untracked = dir ? (await gitWholeTree(dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean) : [];
-    const scratch = index > 0 && worker ? await workerScratch(untracked, changed) : /* @__PURE__ */ new Set();
+    const scratch = index > 0 && worker2 ? await workerScratch(untracked, changed) : /* @__PURE__ */ new Set();
     if (scratch.size) scratchBy.set(item.person, scratch);
     const add2 = (p) => {
       if (index > 0 && (leftAlone(item.person, p) || scratch.has(p))) return;
@@ -44253,8 +44332,8 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   ignoredNotes.push(...ignoredOutputNotes(ignoredBy));
   const callerOnlyPath = (p) => !!options.skipCallerOnly && !theirPaths.has(p);
   const safetySides = [{ session: caller, person: caller.me.name }, ...participants].map(({ session, person }) => {
-    const worker = previewWorker(session, person);
-    const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : void 0);
+    const worker2 = previewWorker(session, person);
+    const dir = worker2?.dir ?? (session === caller && person === caller.me.name ? caller.dir : void 0);
     return {
       person,
       root: dir ? rootOf(dir) : void 0,
@@ -44700,8 +44779,8 @@ var init_combined_tree = __esm({
           this.records.set(person, record2);
           if (record2.lead.participant === caller.me.name && !fs53.existsSync(record2.dir))
             this.missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`);
-          const worker = statuses.get(record2.id);
-          if (worker) this.workerStates.set(person, worker);
+          const worker2 = statuses.get(record2.id);
+          if (worker2) this.workerStates.set(person, worker2);
           for (const ref of [collectHeadRef(record2.tag, record2.id), carryRef(record2.tag)]) this.captureRef(ref);
         }
       }
@@ -44741,12 +44820,12 @@ var init_combined_tree = __esm({
           const captured = inputs.workerStates.get(person);
           if (!captured || runOf(realStateInput(trusted.record, trusted.status)) !== runOf(captured))
             throw new PreviewMoved([person], [`${person}: worker run changed during disk authorization`]);
-          const worker = { ...captured, dir: fs53.realpathSync(record2.dir) };
-          const real = await workerRealState(session.dir, worker);
+          const worker2 = { ...captured, dir: fs53.realpathSync(record2.dir) };
+          const real = await workerRealState(session.dir, worker2);
           if (decidePreview(real, true) !== "disk") continue;
-          inputs.workerStates.set(person, worker);
-          byPerson.set(person, worker);
-          if (real.finished) inputs.settledRuns.set(person, { id: record2.id, run: runOf(worker) });
+          inputs.workerStates.set(person, worker2);
+          byPerson.set(person, worker2);
+          if (real.finished) inputs.settledRuns.set(person, { id: record2.id, run: runOf(worker2) });
         }
         for (const record2 of inputs.acceptedRecords.values()) if (record2.upstream) {
           const ref = `refs/remotes/${record2.upstream}`;
@@ -44756,8 +44835,8 @@ var init_combined_tree = __esm({
           );
         }
         await inputs.captureHead(caller.dir, caller.me.name);
-        for (const byPerson of inputs.workers.values()) for (const [person, worker] of byPerson)
-          await inputs.captureHead(worker.dir, person);
+        for (const byPerson of inputs.workers.values()) for (const [person, worker2] of byPerson)
+          await inputs.captureHead(worker2.dir, person);
         for (const [session, bases] of inputs.bases) for (const [person, base] of bases) if (base === "HEAD") {
           const head = inputs.headFor(inputs.worker(session, person)?.dir ?? caller.dir);
           if (!head) throw new Error("preview HEAD is unavailable");
@@ -44825,8 +44904,8 @@ var init_combined_tree = __esm({
       }
       settledFrom(workers) {
         return new Set([...this.settledRuns].filter(([, captured]) => {
-          const worker = workers.get(captured.id);
-          return !!worker && worker.status !== "running" && runOf(worker) === captured.run;
+          const worker2 = workers.get(captured.id);
+          return !!worker2 && worker2.status !== "running" && runOf(worker2) === captured.run;
         }).map(([person]) => person));
       }
       async settledWorkers() {
@@ -45192,8 +45271,8 @@ async function resolveDisplayedName(requested, context2, caller) {
     for (const claim2 of room.room.openClaims()) {
       if (addressKey(displayName({ name: claim2.by, kind: claim2.byKind })) === key2) candidates.add(claim2.by);
     }
-    for (const worker of await context2.myWorkers(room)) if (worker.lead === caller.me.name && (addressKey(worker.tag) === key2 || addressKey(worker.name) === key2)) candidates.add(worker.name);
-    for (const worker of room.room.retiredWorkers()) if (worker.lead === caller.me.name && addressKey(worker.tag) === key2) candidates.add(worker.name);
+    for (const worker2 of await context2.myWorkers(room)) if (worker2.lead === caller.me.name && (addressKey(worker2.tag) === key2 || addressKey(worker2.name) === key2)) candidates.add(worker2.name);
+    for (const worker2 of room.room.retiredWorkers()) if (worker2.lead === caller.me.name && addressKey(worker2.tag) === key2) candidates.add(worker2.name);
   }
   const names = [...candidates].sort();
   if (names.length) return names.length > 1 ? { ambiguous: names } : { name: names[0] };
@@ -45202,8 +45281,8 @@ async function resolveDisplayedName(requested, context2, caller) {
   for (const room of sessions) for (const identity4 of [room.me, ...context2.presences(room).map((p) => p.user)]) {
     if (identity4.kind === "agent") active.set(identity4.name, identity4);
   }
-  for (const room of sessions) for (const worker of room.room.acceptedWorkerViews()) {
-    if (workerLive(worker.status) && !active.has(worker.name)) active.set(worker.name, { name: worker.name, kind: "agent" });
+  for (const room of sessions) for (const worker2 of room.room.acceptedWorkerViews()) {
+    if (workerLive(worker2.status) && !active.has(worker2.name)) active.set(worker2.name, { name: worker2.name, kind: "agent" });
   }
   const owned = [...active.values()].filter((id3) => addressKey(id3.owner ?? id3.name.split("+")[0]) === owner);
   const owners = owned.map((id3) => id3.name).sort();
@@ -45396,15 +45475,15 @@ async function measurePreview(entry, cap) {
     });
   });
   if (du !== void 0) return du;
-  const pending = [entry];
+  const pending2 = [entry];
   let bytes = 0, seen = 0;
-  while (pending.length) {
-    const current2 = pending.pop();
+  while (pending2.length) {
+    const current2 = pending2.pop();
     const stat4 = await fs55.promises.lstat(current2).catch(() => void 0);
     if (!stat4) continue;
     bytes += stat4.blocks ? stat4.blocks * 512 : stat4.size;
     if (++seen > 1e6 || bytes > cap) return cap + 1;
-    if (stat4.isDirectory()) for (const name of await fs55.promises.readdir(current2)) pending.push(path55.join(current2, name));
+    if (stat4.isDirectory()) for (const name of await fs55.promises.readdir(current2)) pending2.push(path55.join(current2, name));
   }
   return bytes;
 }
@@ -45529,11 +45608,11 @@ function handlers2(state) {
       const snap = ownDisk ? void 0 : snapshot(s.room, person, participantsView(s.room, s.awareness, Date.now()));
       const callerSnap = !ownDisk ? snapshot(caller.room, caller.me.name, participantsView(caller.room, caller.awareness, Date.now())) : void 0;
       const myBase = callerSnap?.head.base ?? baseFor(caller, caller.me.name);
-      const worker = await trustedWorker(s, person);
-      const theirBase = worker?.base ?? (ownDisk ? baseFor(s, person) : snap?.head.base ?? baseFor(s, person));
-      const note = !worker && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
+      const worker2 = await trustedWorker(s, person);
+      const theirBase = worker2?.base ?? (ownDisk ? baseFor(s, person) : snap?.head.base ?? baseFor(s, person));
+      const note = !worker2 && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
 ` : "";
-      const label = (text2) => `${worker ? WORKTREE_NOTE + "\n" : ""}${note}${text2}`;
+      const label = (text2) => `${worker2 ? WORKTREE_NOTE + "\n" : ""}${note}${text2}`;
       const fingerprint = createHash18("sha256");
       const record2 = (...values) => {
         fingerprint.update(JSON.stringify(values));
@@ -45542,8 +45621,8 @@ function handlers2(state) {
         label(""),
         theirBase,
         myBase,
-        worker?.id,
-        worker?.dir,
+        worker2?.id,
+        worker2?.dir,
         snap?.head,
         snap?.record,
         snap?.fenceValid,
@@ -45553,9 +45632,9 @@ function handlers2(state) {
         callerSnap?.fenceValid,
         callerSnap?.roomSalt
       );
-      const current2 = () => ownDisk || !!worker || (snap ? snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, Date.now())) : !s.room.manifestHead.has(person)) && (callerSnap ? snapshotStillCurrent(caller.room, callerSnap, participantsView(caller.room, caller.awareness, Date.now())) : baseFor(caller, caller.me.name) === myBase);
+      const current2 = () => ownDisk || !!worker2 || (snap ? snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, Date.now())) : !s.room.manifestHead.has(person)) && (callerSnap ? snapshotStillCurrent(caller.room, callerSnap, participantsView(caller.room, caller.awareness, Date.now())) : baseFor(caller, caller.me.name) === myBase);
       const reportGitFailure = async (error2) => {
-        if (!ownDisk && !worker && await gitCommitMissing(s.dir, theirBase))
+        if (!ownDisk && !worker2 && await gitCommitMissing(s.dir, theirBase))
           throw new Error(`error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; run git fetch, then retry`);
         throw error2;
       };
@@ -45566,7 +45645,7 @@ function handlers2(state) {
         };
         let version3;
         try {
-          version3 = ownDisk || worker ? void 0 : await versionOf(snap, p, {
+          version3 = ownDisk || worker2 ? void 0 : await versionOf(snap, p, {
             gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
             known: (hash3) => readBoundedCheckoutText(s.dir, hash3, p, "utf8", false).catch(() => void 0)
           });
@@ -45581,10 +45660,10 @@ function handlers2(state) {
           }
         }
         if (version3 && !["text", "base", "deleted"].includes(version3.kind)) return gap(gapLine(person, p, version3));
-        const l = ownDisk || worker ? await ownDiskText(worker?.dir ?? s.dir, p) : version3?.kind === "text" ? version3.text : version3?.kind === "base" ? version3.text : null;
+        const l = ownDisk || worker2 ? await ownDiskText(worker2?.dir ?? s.dir, p) : version3?.kind === "text" ? version3.text : version3?.kind === "base" ? version3.text : null;
         let b;
         try {
-          b = await readBoundedHistoricalText(worker?.dir ?? s.dir, theirBase, p) ?? "";
+          b = await readBoundedHistoricalText(worker2?.dir ?? s.dir, theirBase, p) ?? "";
         } catch (error2) {
           if (error2 instanceof HistoricalTextTooLarge) return gap(`${p}: ${person}'s historical text exceeds Room read limit; diff unavailable`);
           return reportGitFailure(error2);
@@ -45598,9 +45677,9 @@ function handlers2(state) {
         if (typeof a.path === "string" && a.path) result3 = label(await one(a.path) || `${a.path}: no difference between base and ${person}'s version`);
         else {
           const parts = [];
-          const paths = worker || ownDisk ? new Set([
-            ...(await gitWholeTree(worker?.dir ?? s.dir, ["diff", "--no-renames", "--name-only", "-z", theirBase, "--"])).split("\0"),
-            ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
+          const paths = worker2 || ownDisk ? new Set([
+            ...(await gitWholeTree(worker2?.dir ?? s.dir, ["diff", "--no-renames", "--name-only", "-z", theirBase, "--"])).split("\0"),
+            ...(await gitWholeTree(worker2?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
           ].filter(Boolean)) : [...snap?.entries.keys() ?? []].sort();
           for (const p of paths) {
             await new Promise((resolve6) => setImmediate(resolve6));
@@ -45636,18 +45715,18 @@ function handlers2(state) {
       const p = a.path;
       const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
       const s = await rooms.holding(person, S());
-      const worker = await trustedWorker(s, person);
-      const note = worker ? ` ${WORKTREE_NOTE}` : "";
+      const worker2 = await trustedWorker(s, person);
+      const note = worker2 ? ` ${WORKTREE_NOTE}` : "";
       const ownDisk = person === s.me.name;
-      const version3 = ownDisk || worker ? void 0 : await readVersion(s, p, person);
+      const version3 = ownDisk || worker2 ? void 0 : await readVersion(s, p, person);
       if (version3 && !["text", "base", "deleted"].includes(version3.kind)) return gapLine(person, p, version3);
-      const t = ownDisk || worker ? await ownDiskText(worker?.dir ?? s.dir, p) : version3?.kind === "text" ? version3.text : version3?.kind === "base" ? version3.text : null;
+      const t = ownDisk || worker2 ? await ownDiskText(worker2?.dir ?? s.dir, p) : version3?.kind === "text" ? version3.text : version3?.kind === "base" ? version3.text : null;
       if (t === null) {
         if (ownDisk && await baseText(s, p, person) === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`;
         return `${p}: deleted by ${person} (uncommitted)${note}`;
       }
       if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`;
-      const edited = ownDisk ? t !== await baseText(s, p, person) : !!worker || version3?.kind === "text";
+      const edited = ownDisk ? t !== await baseText(s, p, person) : !!worker2 || version3?.kind === "text";
       const out = [`${p} as ${person} sees it (${lines2(t)} lines${edited ? ", uncommitted edits" : ", unchanged"} on their base ${baseFor(s, person).slice(0, 10)})${note}`];
       const who2 = manifestChangers(s.room, p).filter((x) => x !== person && !sameCheckoutSession(s, x));
       if (who2.length) out.push(`! also changed (uncommitted) by: ${who2.join(", ")} \u2014 room_read with person= to see theirs`);
@@ -45706,8 +45785,8 @@ ${s.graph.contractCoverageNote}` : ""}`;
         const uncertainOverlap = /* @__PURE__ */ new Set();
         const overlaps = async (person) => {
           const session = await rooms.holding(person, caller);
-          const worker = session.room.acceptedWorkerViewOf(person);
-          if (worker?.lead === caller.me.name && worker.status === "running") return true;
+          const worker2 = session.room.acceptedWorkerViewOf(person);
+          if (worker2?.lead === caller.me.name && worker2.status === "running") return true;
           const theirs = manifestPaths(session.room, checkoutPublisherName(session.room, person) ?? person);
           try {
             const mineBase = baseFor(caller, caller.me.name), theirBase = baseFor(session, person);
@@ -45968,8 +46047,8 @@ async function gitTreeModes(dir, ref) {
     return [rel, parseInt(meta2.split(" ")[0], 8) & 511];
   }));
 }
-function addCarriedUntrackedModes(modes, worker) {
-  for (const entry of worker.carriedUntracked ?? []) if (entry.mode !== void 0) modes.set(entry.path, entry.mode);
+function addCarriedUntrackedModes(modes, worker2) {
+  for (const entry of worker2.carriedUntracked ?? []) if (entry.mode !== void 0) modes.set(entry.path, entry.mode);
   return modes;
 }
 function mergedFileMode(rel, initialMode, participants) {
@@ -47058,9 +47137,9 @@ function inheritWorkerRefs(commonDir2, owner, retry) {
   const commands = sources.map((ref, index) => values.has(ref) ? `update ${targets[index]} ${values.get(ref)}` : `delete ${targets[index]}`);
   boundedGitSync(commonDir2, ["--git-dir", commonDir2, "update-ref", "--stdin"], { input: Buffer.from(commands.join("\n") + "\n") });
 }
-function removeWorkerRefs(commonDir2, worker) {
+function removeWorkerRefs(commonDir2, worker2) {
   boundedGitSync(commonDir2, ["--git-dir", commonDir2, "update-ref", "--stdin"], {
-    input: Buffer.from(privateWorkerRefs(worker).map((ref) => `delete ${ref}
+    input: Buffer.from(privateWorkerRefs(worker2).map((ref) => `delete ${ref}
 `).join(""))
   });
 }
@@ -47377,10 +47456,14 @@ async function prepareWorktreeAttempt(repoDir, tag, leadName, options, retry) {
 async function cleanupWorker(leadDir, w, options = {}) {
   return withDirectoryAdmission(leadDir, "retire", async () => {
     const { collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = [], preservation } = options;
+    const lifecycle = async () => {
+      if (options.registry) return options.registry;
+      const { registryForDir: registryForDir2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
+      return registryForDir2(leadDir);
+    };
     const available = async () => {
       if (!w.id) return true;
-      const { registryForDir: registryForDir2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
-      const registry2 = await registryForDir2(leadDir);
+      const registry2 = await lifecycle();
       const record2 = await registry2.read(w.id);
       if (!record2) return w.branch === `room/${w.tag}` && requireWorkerInventory(await registry2.list()).every((peer) => path57.resolve(peer.dir) !== path57.resolve(w.dir) || peer.tag === w.tag);
       return !record2.sharedWith && !await registry2.worktreeOwner(record2) && requireWorkerEvidence(await registry2.checkoutUsers(record2)).length === 0;
@@ -47406,8 +47489,7 @@ async function cleanupWorker(leadDir, w, options = {}) {
       if (!await available()) return false;
       let retainedOwner = false;
       if (!discarded && w.id) {
-        const { registryForDir: registryForDir2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
-        const owner = await (await registryForDir2(leadDir)).read(w.id);
+        const owner = await (await lifecycle()).read(w.id);
         retainedOwner = owner?.phase === "retired" && !!owner.keptWorktree && !!owner.archive?.keptReason?.startsWith("shared checkout: ");
       }
       if (retainedOwner) {
@@ -48095,6 +48177,23 @@ var init_worker_file_store = __esm({
         return requireWorkerInventory(this.#list()).find((record2) => record2.name === tagOrName && this.#reserved(record2.tag)?.id === record2.id);
       }
       /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
+      /** This store's own facts for cleanup rechecks during its replays (never a second store over the same files). */
+      cleanupRegistry() {
+        return {
+          read: async (id3) => this.#read(id3),
+          list: async () => this.#list(),
+          worktreeOwner: async (record2) => this.#worktreeOwner(record2),
+          checkoutUsers: async (owner) => {
+            const inventory = this.#list();
+            if (inventory.blockers.length) return { reason: "blocked", blockers: inventory.blockers };
+            return inventory.records.flatMap((record2) => {
+              if (record2.id === owner.id || ["retiring", "retired", "abandoned"].includes(record2.phase) || path58.resolve(record2.dir) !== path58.resolve(owner.dir)) return [];
+              const status = this.#status(record2.id);
+              return status ? [{ record: record2, status }] : [];
+            });
+          }
+        };
+      }
       #worktreeOwner(record2) {
         if (record2.sharedWith) return this.#read(record2.sharedWith);
         if (path58.basename(record2.dir) === record2.tag && record2.branch === `room/${record2.tag}`) return void 0;
@@ -48130,11 +48229,11 @@ var init_worker_file_store = __esm({
           const workers = requireWorkerInventory(this.#list()).flatMap((record2) => {
             const state = this.#status(record2.id);
             if (!state) return [];
-            const worker = realStateInput(record2, state);
+            const worker2 = realStateInput(record2, state);
             try {
-              return [{ ...worker, dir: fs58.realpathSync(worker.dir) }];
+              return [{ ...worker2, dir: fs58.realpathSync(worker2.dir) }];
             } catch {
-              return [worker];
+              return [worker2];
             }
           });
           let leadDir;
@@ -48175,24 +48274,24 @@ var init_worker_file_store = __esm({
         }
         const status = this.#status(record2.id);
         if (!status) return void 0;
-        const worker = { ...realStateInput(record2, status), name: `${lead.participant}+${record2.tag}`, lead: lead.participant };
-        if (!await isOwnedWorkerWorktree(leadDir, worker, lead.participant)) return void 0;
+        const worker2 = { ...realStateInput(record2, status), name: `${lead.participant}+${record2.tag}`, lead: lead.participant };
+        if (!await isOwnedWorkerWorktree(leadDir, worker2, lead.participant)) return void 0;
         const file = this.adoptionFile(record2.id);
-        createExclusive(file, { participant: lead.participant, room: lead.room, name: worker.name });
+        createExclusive(file, { participant: lead.participant, room: lead.room, name: worker2.name });
         let adopted;
         try {
           adopted = readJson2(file);
         } catch {
           return void 0;
         }
-        if (adopted?.participant !== lead.participant || adopted.room !== lead.room || adopted.name !== worker.name) return void 0;
+        if (adopted?.participant !== lead.participant || adopted.room !== lead.room || adopted.name !== worker2.name) return void 0;
         return guarded3(this.workerFile(record2.id), () => {
           const current2 = this.#read(record2.id);
           if (!current2) return void 0;
           if (!current2.legacy?.unowned) return current2;
           const next = {
             ...current2,
-            name: worker.name,
+            name: worker2.name,
             room: lead.room,
             lead: { ...current2.lead, participant: lead.participant, room: lead.room },
             legacy: { ...current2.legacy, unowned: false },
@@ -49008,7 +49107,7 @@ var init_worker_file_store = __esm({
             }
             if (!record2.discard.steps.cleanup) {
               if (owned) {
-                if (!await cleanupWorker(leadDir, own2, { collected: true, discarded: true, leadName: record2.lead.participant, workers })) return;
+                if (!await cleanupWorker(leadDir, own2, { collected: true, discarded: true, leadName: record2.lead.participant, workers, registry: this.cleanupRegistry() })) return;
               } else if (!borrowed) {
                 await pruneMissingWorkerWorktree(leadDir, own2);
                 cleanupWorkerLogs(leadDir, own2);
@@ -49385,7 +49484,7 @@ var init_idle_claims = __esm({
           heldClaims: claims.length,
           hasScope
         })) return false;
-        const pending = await guarded4(file, () => {
+        const pending2 = await guarded4(file, () => {
           if (!ownsNow()) return false;
           let journal = readJson3(file);
           if (journal?.state === "done") return false;
@@ -49403,20 +49502,20 @@ var init_idle_claims = __esm({
             };
             writeAtomic(file, journal);
           }
-          const pending2 = journal;
+          const pending3 = journal;
           doc.doc.transact(() => {
-            for (const claimId of pending2.claimIds) {
+            for (const claimId of pending3.claimIds) {
               const current2 = doc.claims.get(claimId);
               if (current2?.by === participant && current2.byKind !== "human") doc.removeClaim(claimId);
             }
-            if (pending2.hadScope && (pending2.scopeAt === void 0 || doc.scope(participant)?.at === pending2.scopeAt)) doc.clearScope(participant);
+            if (pending3.hadScope && (pending3.scopeAt === void 0 || doc.scope(participant)?.at === pending3.scopeAt)) doc.clearScope(participant);
           });
-          return pending2;
+          return pending3;
         });
-        if (!pending) return false;
-        const noticeId3 = `idle-claims:${pending.sessionId ?? action.sessionId}:${pending.idleEpoch ?? action.idleEpoch}`;
-        const names = pending.claimNames.length ? `released claims ${pending.claimNames.join(", ")}` : "released no claims";
-        const posted = await action.postNotice(noticeId3, `${participant} ${names}${pending.hadScope ? " and cleared its scope" : ""} after 8 h idle`);
+        if (!pending2) return false;
+        const noticeId3 = `idle-claims:${pending2.sessionId ?? action.sessionId}:${pending2.idleEpoch ?? action.idleEpoch}`;
+        const names = pending2.claimNames.length ? `released claims ${pending2.claimNames.join(", ")}` : "released no claims";
+        const posted = await action.postNotice(noticeId3, `${participant} ${names}${pending2.hadScope ? " and cleared its scope" : ""} after 8 h idle`);
         if (posted?.ok === false) return false;
         return guarded4(file, () => {
           const current2 = readJson3(file);
@@ -49452,15 +49551,15 @@ import path60 from "node:path";
 import { randomBytes as randomBytes9 } from "node:crypto";
 async function closeRegistryForDir(dir) {
   const common = commonGitDirFromDotGit(dir);
-  const pending = registries.get(common);
+  const pending2 = registries.get(common);
   registries.delete(common);
-  (await pending?.catch(() => void 0))?.close();
+  (await pending2?.catch(() => void 0))?.close();
 }
 async function registryForDir(dir, sessionId) {
   const common = await gitCommonDir(dir);
   if (!fs60.existsSync(path60.join(common, "HEAD"))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`);
-  let pending = registries.get(common);
-  if (!pending) {
+  let pending2 = registries.get(common);
+  if (!pending2) {
     if (registries.size >= MAX_PROCESS_REGISTRIES) {
       const oldest = registries.keys().next().value;
       if (oldest) {
@@ -49478,16 +49577,16 @@ async function registryForDir(dir, sessionId) {
       sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? "unknown"}`,
       nonce: randomBytes9(16).toString("hex")
     };
-    pending = WorkerRegistry.open(common, { identity: identity4, watch: !process.env.VITEST });
-    registries.set(common, pending);
-    void pending.catch(() => {
-      if (registries.get(common) === pending) registries.delete(common);
+    pending2 = WorkerRegistry.open(common, { identity: identity4, watch: !process.env.VITEST });
+    registries.set(common, pending2);
+    void pending2.catch(() => {
+      if (registries.get(common) === pending2) registries.delete(common);
     });
   } else {
     registries.delete(common);
-    registries.set(common, pending);
+    registries.set(common, pending2);
   }
-  return pending;
+  return pending2;
 }
 async function openWorkerReader(dir) {
   const common = commonGitDirFromDotGit(dir);
@@ -54956,13 +55055,13 @@ var recordProcessor = (schema, ctx, _json, params2) => {
         ...params2,
         path: [...params2.path, "propertyNames"]
       });
-      let pending = pendingRecords.get(ctx);
-      if (!pending) {
-        pending = [];
-        pendingRecords.set(ctx, pending);
+      let pending2 = pendingRecords.get(ctx);
+      if (!pending2) {
+        pending2 = [];
+        pendingRecords.set(ctx, pending2);
         ctx.deferred.push(() => rewriteKeyNames(ctx));
       }
-      pending.push(schema);
+      pending2.push(schema);
     }
     json.additionalProperties = process2(def.valueType, ctx, {
       ...params2,
@@ -60176,7 +60275,7 @@ var ConflictSet = class _ConflictSet {
     const mine = snapshotMetadata(room, this.owner, views), theirs = snapshotMetadata(room, other, views);
     const claims = room.openClaims().filter((c) => c.by === this.owner || c.by === other);
     const graph = room.graphs.get(other);
-    const worker = room.workerViewOf(other);
+    const worker2 = room.workerViewOf(other);
     const contracts = !!graph?.observed?.length;
     const own2 = carriedOf(this.owner);
     const carried = own2?.lead === other ? own2.baseline : void 0;
@@ -60226,7 +60325,7 @@ var ConflictSet = class _ConflictSet {
       entries(mine),
       entries(theirs),
       graphFacts,
-      worker ? [worker.id, worker.lead, worker.status, worker.run] : void 0,
+      worker2 ? [worker2.id, worker2.lead, worker2.status, worker2.run] : void 0,
       contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : void 0,
       carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : void 0,
       carriedOf(other)?.baseline.sha
@@ -60376,10 +60475,10 @@ var ConflictSet = class _ConflictSet {
           return { kind: "text", text: resolved.text, entry: projectedEntry };
         }
       }
-      const worker = await trustedWorker(this.notices, this.owner).catch(() => void 0);
-      if (worker && worker.id === snap.head.projectedFrom) {
+      const worker2 = await trustedWorker(this.notices, this.owner).catch(() => void 0);
+      if (worker2 && worker2.id === snap.head.projectedFrom) {
         try {
-          const text2 = await workerText(worker.dir, path79);
+          const text2 = await workerText(worker2.dir, path79);
           if (text2 !== null && gitBlobHash(text2, projectedEntry.hash.length === 64 ? "sha256" : "sha1") === projectedEntry.hash)
             return { kind: "text", text: text2, entry: projectedEntry };
         } catch {
@@ -60708,23 +60807,23 @@ var ConflictSet = class _ConflictSet {
     for (const [name, claims] of groups) {
       const holder = JSON.stringify(participantRecord(room, name)?.holder);
       if (!holder) continue;
-      const worker = await this.localWorker(name);
-      if (worker?.status !== "done" || !worker.run || !claims.length) continue;
-      const initial = await this.workerState(worker.id);
-      if (!initial || initial.id !== worker.id || initial.name && initial.name !== name || initial.lead && initial.lead !== this.owner || initial.dir && !samePath(initial.dir, worker.dir) || initial.run !== worker.run || initial.seq !== worker.seq || initial.busy || JSON.stringify(participantRecord(room, name)?.holder) !== holder) continue;
+      const worker2 = await this.localWorker(name);
+      if (worker2?.status !== "done" || !worker2.run || !claims.length) continue;
+      const initial = await this.workerState(worker2.id);
+      if (!initial || initial.id !== worker2.id || initial.name && initial.name !== name || initial.lead && initial.lead !== this.owner || initial.dir && !samePath(initial.dir, worker2.dir) || initial.run !== worker2.run || initial.seq !== worker2.seq || initial.busy || JSON.stringify(participantRecord(room, name)?.holder) !== holder) continue;
       const currentClaims = () => room.openClaims().filter((claim2) => claim2.by === name).sort((a, b) => a.id.localeCompare(b.id));
       const claimSnapshot = JSON.stringify(currentClaims());
       if (claimSnapshot !== JSON.stringify([...claims].sort((a, b) => a.id.localeCompare(b.id)))) continue;
       let landed = true;
       for (const claim2 of claims) {
         try {
-          const paths = claim2.path.endsWith("/") ? new Set((await Promise.all([this.team.dir, worker.dir].map((dir) => git(dir, ["ls-files", "-co", "--exclude-standard", "--", claim2.path])))).flatMap((output) => output.split("\n").filter(Boolean))) : /* @__PURE__ */ new Set([claim2.path]);
+          const paths = claim2.path.endsWith("/") ? new Set((await Promise.all([this.team.dir, worker2.dir].map((dir) => git(dir, ["ls-files", "-co", "--exclude-standard", "--", claim2.path])))).flatMap((output) => output.split("\n").filter(Boolean))) : /* @__PURE__ */ new Set([claim2.path]);
           if (paths.size > 2e3) {
             landed = false;
             break;
           }
           for (const path79 of paths) {
-            const [leadText, finalText] = await Promise.all([this.claimText(this.team.dir, path79), this.claimText(worker.dir, path79)]);
+            const [leadText, finalText] = await Promise.all([this.claimText(this.team.dir, path79), this.claimText(worker2.dir, path79)]);
             if (leadText !== finalText) {
               landed = false;
               break;
@@ -60737,7 +60836,7 @@ var ConflictSet = class _ConflictSet {
         }
       }
       if (!landed) continue;
-      const latest = await this.workerState(worker.id);
+      const latest = await this.workerState(worker2.id);
       if (this.team.lease?.fence() !== leaseFence || !latest || latest.busy || JSON.stringify(latest) !== JSON.stringify(initial) || JSON.stringify(participantRecord(room, name)?.holder) !== holder || JSON.stringify(currentClaims()) !== claimSnapshot) return;
       room.doc.transact(() => {
         for (const claim2 of claims) room.removeClaim(claim2.id);
@@ -61860,9 +61959,9 @@ function handlers4(state) {
           } else if (created && !outside) {
             if (carryFailed && carryError) out.push(`note: carry failed: ${carryError}`);
             const chosen = a.carry === false && !carryFailed;
-            const pending = chosen && headStartExplained.has(lead) ? 0 : await uncommittedCount(lead.dir).catch(() => 0);
-            if (pending) {
-              const missing = `${pending} uncommitted change${pending === 1 ? "" : "s"} in your clone ${pending === 1 ? "is" : "are"} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ""}.`;
+            const pending2 = chosen && headStartExplained.has(lead) ? 0 : await uncommittedCount(lead.dir).catch(() => 0);
+            if (pending2) {
+              const missing = `${pending2} uncommitted change${pending2 === 1 ? "" : "s"} in your clone ${pending2 === 1 ? "is" : "are"} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ""}.`;
               out.push(chosen ? `note: carry=false: ${missing}` : `note: ${missing} Commit them (locally is enough) first if the task builds on them.`);
               if (chosen) headStartExplained.add(lead);
             } else if (carryFailed) out.push(`note: could not carry your uncommitted changes${carryError ? ` (${carryError})` : ""}; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ""}.`);
@@ -62190,11 +62289,11 @@ function formatDeliveryHealth(h) {
   const mode2 = status ? `${status.mode}; ${status.transport} ${status.availability}` : "transport unobserved";
   const state = h.state ? `; last state ${h.state.kind} (${h.state.source}${h.state.reason ? `: ${h.state.reason}` : ""})` : "";
   const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1e3))}s ago${h.attempt.fallback ? ` (${h.attempt.fallback})` : ""}` : "none observed";
-  const pending = `${h.pendingAddressed}${h.oldestPendingMs === void 0 ? "" : ` (oldest ${Math.floor(h.oldestPendingMs / 1e3)}s)`}`;
+  const pending2 = `${h.pendingAddressed}${h.oldestPendingMs === void 0 ? "" : ` (oldest ${Math.floor(h.oldestPendingMs / 1e3)}s)`}`;
   const limitation = h.host === "claude" ? "socket/channel writes do not confirm acceptance; inbound hold/refuse may prevent receipt" : "exec/--no-daemon and disconnected apps may need tool/hook handoff; no tool interruption";
   return [
     `${h.degraded || status?.availability === "unavailable" ? "WARN" : "INFO"}  delivery: ${h.host}; ${mode2}${state}${h.degraded ? `; ${h.degraded}` : ""}`,
-    `INFO  delivery evidence: retained addressed ${h.retainedAddressed}${h.sampled ? " (sample capped at 1000 entries)" : ""}; pending ${pending}; retained wake records: submitted ${h.wakeRecorded}, uncertain ${h.uncertainWakeRecorded} (pruned after handoff); content handed to host ${h.handedToHost}; answers from requested recipients ${h.answersRecorded}; last wake attempt ${attempt}`,
+    `INFO  delivery evidence: retained addressed ${h.retainedAddressed}${h.sampled ? " (sample capped at 1000 entries)" : ""}; pending ${pending2}; retained wake records: submitted ${h.wakeRecorded}, uncertain ${h.uncertainWakeRecorded} (pruned after handoff); content handed to host ${h.handedToHost}; answers from requested recipients ${h.answersRecorded}; last wake attempt ${attempt}`,
     `INFO  delivery limits: ${limitation}; wakes and handoffs do not prove reading or action`
   ].join("\n");
 }
@@ -62675,9 +62774,9 @@ var WorkerActivityTracker = class {
   }
 };
 var workerActivity = new WorkerActivityTracker();
-function liveWorkerActivity(sessionDir, worker, processGone, now = Date.now()) {
-  if (worker.status !== "running" || processGone) return void 0;
-  return workerActivity.poll(path67.join(sessionDir, ".room", "workers", `${worker.tag}.log`), worker.host, worker.dir, now, worker.startedAt, { workerId: worker.id ?? worker.tag, run: worker.run ?? 0 });
+function liveWorkerActivity(sessionDir, worker2, processGone, now = Date.now()) {
+  if (worker2.status !== "running" || processGone) return void 0;
+  return workerActivity.poll(path67.join(sessionDir, ".room", "workers", `${worker2.tag}.log`), worker2.host, worker2.dir, now, worker2.startedAt, { workerId: worker2.id ?? worker2.tag, run: worker2.run ?? 0 });
 }
 
 // packages/room-mcp/src/tools/scope.ts
@@ -62707,15 +62806,15 @@ var defs5 = [
     inputSchema: { type: "object", properties: { all: { type: "boolean" }, path: str2("file ownership"), from: int2("first line"), to: int2("last line"), link: { type: "boolean" }, check: { type: "boolean", description: "setup check (room doctor)" } } }
   }
 ];
-async function workerChangedCount(s, worker, processGone) {
-  const overlayCount = manifestPaths(s.room, worker.name).length;
-  const trusted = await trustedWorker(s, worker.name);
+async function workerChangedCount(s, worker2, processGone) {
+  const overlayCount = manifestPaths(s.room, worker2.name).length;
+  const trusted = await trustedWorker(s, worker2.name);
   if (!trusted) return overlayCount;
   if (!processGone && trusted.status === "running" && overlayCount > 0) return overlayCount;
   try {
     return (await workerChangedPaths(trusted)).length;
   } catch (error2) {
-    if (error2 instanceof Error && error2.message.includes("timed out")) throw new Error(`worker ${worker.tag} changed-file count unavailable: ${error2.message}`);
+    if (error2 instanceof Error && error2.message.includes("timed out")) throw new Error(`worker ${worker2.tag} changed-file count unavailable: ${error2.message}`);
     return overlayCount;
   }
 }
@@ -62885,7 +62984,7 @@ ${url}`;
         claims: s.room.openClaims(),
         now: now()
       });
-      const retiredNames = new Set(s.room.retiredWorkers().map((worker) => worker.name));
+      const retiredNames = new Set(s.room.retiredWorkers().map((worker2) => worker2.name));
       const everyone = [s.me.name, ...nb.names().filter((name) => !retiredNames.has(name) || s.room.acceptedWorkerViewOf(name))].sort();
       const names = everyone.filter(inView);
       const hidden = everyone.filter((n) => !inView(n));
@@ -62895,11 +62994,11 @@ ${url}`;
       out.push(`participants${all2 ? "" : " overlapping your work"} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? "" : "s"}` : ""}):`);
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
-        const worker = s.room.acceptedWorkerViewOf(n);
-        const own2 = worker && (await myWorkers(s)).find((w) => w.id === worker.id);
-        const idle = p && !worker ? idleLabel(p.idleMin, s.room.openClaims().filter((c) => c.by === n).length) : void 0;
-        const ago2 = idle ?? (p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own2 && !state.workerAlive(s, own2) }) : "offline");
-        const who2 = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
+        const worker2 = s.room.acceptedWorkerViewOf(n);
+        const own2 = worker2 && (await myWorkers(s)).find((w) => w.id === worker2.id);
+        const idle = p && !worker2 ? idleLabel(p.idleMin, s.room.openClaims().filter((c) => c.by === n).length) : void 0;
+        const ago2 = idle ?? (p || worker2 ? activityLabel(p?.lastActive, now(), { worker: worker2, processGone: !!own2 && !state.workerAlive(s, own2) }) : "offline");
+        const who2 = participantIdentityLine(ps, n, worker2, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n);
           out.push(`  - ${who2}: another session in this checkout${n === checkoutPublisher(s) ? "; publishes this checkout" : ""}${declaredScope ? `; scope ${scopeLine2(declaredScope)}` : ""} \xB7 ${ago2}`);
@@ -62924,8 +63023,8 @@ ${url}`;
         if (projected.length) {
           out.push("workers elsewhere:");
           for (const name of projected) {
-            const worker = s.room.acceptedWorkerViewOf(name);
-            out.push(`  - ${participantIdentityLine(ps, name, worker)} \xB7 via ${worker.lead} (${worker.status})`);
+            const worker2 = s.room.acceptedWorkerViewOf(name);
+            out.push(`  - ${participantIdentityLine(ps, name, worker2)} \xB7 via ${worker2.lead} (${worker2.status})`);
           }
         }
         if (offline.length) out.push(`  ${offline.length} offline elsewhere: ${offline.map(label).join(", ")} (all:true for detail)`);
@@ -62993,26 +63092,26 @@ ${url}`;
       if (cut) out.push("  (long messages cut to one line; room_state all=true shows them in full)");
       if (history) out.push(`  (migrated Room 0.16 history: ${history} message${history === 1 ? "" : "s"}, room_state all=true shows them)`);
       out.push(...prLines(s));
-      out.push(...await (await openWorkerReader(s.dir)).validatedRead(async () => workerLines(await Promise.all((await Promise.all((await myWorkers(s)).map(async (worker) => {
-        const view = await localWorkerView(s, worker.id);
-        return view ? [{ worker, view }] : [];
-      }))).flat().map(async ({ worker, view }) => {
-        const processGone = worker.status === "running" && !state.workerAlive(s, worker);
-        return { worker: view, dir: worker.dir, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), activity: liveWorkerActivity(s.dir, worker, processGone, now()), last: (() => {
-          const message2 = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
+      out.push(...await (await openWorkerReader(s.dir)).validatedRead(async () => workerLines(await Promise.all((await Promise.all((await myWorkers(s)).map(async (worker2) => {
+        const view = await localWorkerView(s, worker2.id);
+        return view ? [{ worker: worker2, view }] : [];
+      }))).flat().map(async ({ worker: worker2, view }) => {
+        const processGone = worker2.status === "running" && !state.workerAlive(s, worker2);
+        return { worker: view, dir: worker2.dir, lastActive: presences(s).filter((p) => p.user.name === worker2.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker2.startedAt), processGone, changedCount: await workerChangedCount(s, worker2, processGone), activity: liveWorkerActivity(s.dir, worker2, processGone, now()), last: (() => {
+          const message2 = s.room.messages().filter((x) => x.from === worker2.name).slice(-1)[0];
           return message2 ? formatRoomMessage(s, message2) : void 0;
         })(), now: now() };
       })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter((w) => w.lead === s.me.name) })));
       const ws = wsRoom;
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`);
-        out.push(...await (await openWorkerReader(ws.dir)).validatedRead(async () => workerLines(await Promise.all((await Promise.all((await myWorkers(ws)).map(async (worker) => {
-          const view = await localWorkerView(ws, worker.id);
-          return view ? [{ worker, view }] : [];
-        }))).flat().map(async ({ worker, view }) => {
-          const processGone = worker.status === "running" && !state.workerAlive(ws, worker);
-          return { worker: view, dir: worker.dir, processGone, changedCount: await workerChangedCount(ws, worker, processGone), activity: liveWorkerActivity(ws.dir, worker, processGone, now()), last: (() => {
-            const message2 = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
+        out.push(...await (await openWorkerReader(ws.dir)).validatedRead(async () => workerLines(await Promise.all((await Promise.all((await myWorkers(ws)).map(async (worker2) => {
+          const view = await localWorkerView(ws, worker2.id);
+          return view ? [{ worker: worker2, view }] : [];
+        }))).flat().map(async ({ worker: worker2, view }) => {
+          const processGone = worker2.status === "running" && !state.workerAlive(ws, worker2);
+          return { worker: view, dir: worker2.dir, processGone, changedCount: await workerChangedCount(ws, worker2, processGone), activity: liveWorkerActivity(ws.dir, worker2, processGone, now()), last: (() => {
+            const message2 = ws.room.messages().filter((x) => x.from === worker2.name).slice(-1)[0];
             return message2 ? formatRoomMessage(ws, message2) : void 0;
           })(), now: now() };
         })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter((w) => w.lead === ws.me.name) })));
@@ -63308,9 +63407,9 @@ function handlers6(state) {
       const server = serverOf(a, config2.server);
       if (server === LOCAL) return LOCAL_LOGIN;
       const store = config2.credentialsPath;
-      const savePending = async (pending2) => {
+      const savePending = async (pending3) => {
         await primePrivateDirectory(dirname5(store));
-        setPending(store, server, pending2);
+        setPending(store, server, pending3);
       };
       if (a.action === "logout") {
         await savePending(void 0);
@@ -63323,11 +63422,11 @@ function handlers6(state) {
       const provider = a.provider === "github" || a.provider === "oidc" ? a.provider : void 0;
       if (provider && !cfg.providers.includes(provider)) return `${server} does not offer ${provider} login (available: ${cfg.providers.join(", ")})`;
       const cred = getCredential(store, server);
-      const pending = getPending(store, server);
-      if (cred && !pending) return `already logged in to ${server} as ${cred.login}; room_login action=logout to switch accounts`;
-      if (pending && (!provider || provider === pending.provider)) {
+      const pending2 = getPending(store, server);
+      if (cred && !pending2) return `already logged in to ${server} as ${cred.login}; room_login action=logout to switch accounts`;
+      if (pending2 && (!provider || provider === pending2.provider)) {
         const wait = Math.min(600, Math.max(5, typeof a.wait === "number" ? a.wait : 90));
-        const r = await pollLogin(store, server, pending, { maxMs: wait * 1e3 });
+        const r = await pollLogin(store, server, pending2, { maxMs: wait * 1e3 });
         if ("login" in r) {
           await savePending(void 0);
           return `logged in to ${server} as ${r.login}. ${ctx.getSession() ? "" : "Next: room_join (or room_create if nobody has opened this repo)."}`.trim();
@@ -63336,7 +63435,7 @@ function handlers6(state) {
           await savePending(void 0);
           return `login failed: ${r.error}. Call room_login to start again.`;
         }
-        return `still waiting: ${codeLine(pending)}`;
+        return `still waiting: ${codeLine(pending2)}`;
       }
       const p = await startLogin(server, provider, log2);
       await savePending({ ...p, startedAt: Date.now() });
@@ -64167,21 +64266,21 @@ function handlers8(state) {
     const rawView = own2 ? void 0 : s.room.workerViewOf(name);
     const view = own2 ? void 0 : s.room.acceptedWorkerViewOf(name);
     if (rawView && !view) return { text: `${name}'s worker view is stale; its current status is updating`, terminal: false };
-    const worker = own2 ?? view;
-    const retired = !worker && s.room.retiredWorkers().filter((w) => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0];
+    const worker2 = own2 ?? view;
+    const retired = !worker2 && s.room.retiredWorkers().filter((w) => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0];
     const exited = own2 ? own2.exitCode !== void 0 || (s.local ? !workerAlive(s, own2) : own2.status !== "running" && !present) : view ? view.exitCode !== void 0 || !workerLive(view.status) && !present : false;
     const terminal = own2 ? own2.status !== "running" : view ? !workerLive(view.status) : false;
     if (retired || exited || terminal) {
-      const record2 = retired || worker;
+      const record2 = retired || worker2;
       const finished = record2.finishedAt;
       const ago2 = finished === void 0 ? "" : ` ${Math.max(0, Math.floor((now() - finished) / 6e4))}m ago`;
       const summary = record2.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
-      const verb = retired || exited ? "finished" : `reported ${worker.status}`;
+      const verb = retired || exited ? "finished" : `reported ${worker2.status}`;
       const resumable2 = !!own2 && own2.status === "done" && !!own2.hostSessionId && fs69.existsSync(own2.dir) && !retired;
-      return { text: resumable2 ? `${name} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : `${name} ${verb}${ago2} and will not answer; its summary: ${summary}${!own2 && !retired && worker?.status === "done" ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ""}`, terminal: true };
+      return { text: resumable2 ? `${name} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : `${name} ${verb}${ago2} and will not answer; its summary: ${summary}${!own2 && !retired && worker2?.status === "done" ? ` Ask its lead ${worker2.lead} to resume it if follow-up is needed.` : ""}`, terminal: true };
     }
     if (presences(s).some((p) => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false };
-    if (present || worker) return void 0;
+    if (present || worker2) return void 0;
     const roomNames = known(s);
     if (roomNames.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false };
     if (offline(s)) return void 0;
@@ -64222,8 +64321,8 @@ function handlers8(state) {
         if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(", ")}`;
         const requestedTo = resolvedDisplay?.name ?? requestedToRaw;
         const wsr = rooms.workers();
-        const workerMatches = requestedTo ? (await Promise.all(rooms.all().map(async (room) => (await myWorkers(room)).filter((w) => w.tag === requestedTo || w.name === requestedTo).map((worker) => ({ room, worker }))))).flat() : [];
-        const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap((room) => room.room.retiredWorkers().filter((w) => (w.tag === requestedTo || w.name === requestedTo) && w.lead === room.me.name).map((worker) => ({ room, worker }))) : [];
+        const workerMatches = requestedTo ? (await Promise.all(rooms.all().map(async (room) => (await myWorkers(room)).filter((w) => w.tag === requestedTo || w.name === requestedTo).map((worker2) => ({ room, worker: worker2 }))))).flat() : [];
+        const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap((room) => room.room.retiredWorkers().filter((w) => (w.tag === requestedTo || w.name === requestedTo) && w.lead === room.me.name).map((worker2) => ({ room, worker: worker2 }))) : [];
         const matches2 = workerMatches.length ? workerMatches : retiredMatches;
         if (matches2.length > 1 && new Set(matches2.map((x) => x.room)).size > 1) {
           const names2 = [...new Set(matches2.map((x) => x.worker.name))].sort();
@@ -64436,8 +64535,8 @@ ${lines2.join("\n")}` };
       }
     }
     if (questionId) {
-      const pending = unavailableQuestion(qRoom, questionId);
-      const notice = pending instanceof Promise ? await pending : pending;
+      const pending2 = unavailableQuestion(qRoom, questionId);
+      const notice = pending2 instanceof Promise ? await pending2 : pending2;
       if (notice) return notice;
     }
     const ends = (x) => (m) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom: x !== s }) || m.priority === "interrupt" && forMe(x, m);
@@ -64446,8 +64545,8 @@ ${lines2.join("\n")}` };
       if (!messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) return `${workersRoom ? "workers room: " : ""}${formatMsg(m)}`;
       if (m.type === "answer") return `answered: ${formatMsg(m)}`;
       if (m.type === "done") return mapReady(myWorkers(x), (workers) => {
-        const worker = workers.find((w) => w.tag === m.tag);
-        const ready = !worker || !workerAlive(x, worker);
+        const worker2 = workers.find((w) => w.tag === m.tag);
+        const ready = !worker2 || !workerAlive(x, worker2);
         return `${ready ? "worker done, ready to collect" : "worker reported done; its process is still exiting (room_collect waits up to 15 s for it)"}: ${formatMsg(m)}`;
       });
       if (m.type === "merge-conflict") return formatMsg(m);
@@ -64497,11 +64596,11 @@ ${lines2.join("\n")}` };
       const onAbort = () => finish("error: tool call cancelled");
       const onRecipient = () => {
         if (!questionId || finished) return;
-        const pending = unavailableQuestion(qRoom, questionId);
-        if (pending instanceof Promise) void pending.then((notice) => {
+        const pending2 = unavailableQuestion(qRoom, questionId);
+        if (pending2 instanceof Promise) void pending2.then((notice) => {
           if (notice) finish(notice);
         }).catch((error2) => state.log(`wait recipient status unavailable: ${String(error2)}`));
-        else if (pending) finish(pending);
+        else if (pending2) finish(pending2);
       };
       timer = setTimeout(async () => {
         try {
@@ -64521,11 +64620,11 @@ ${lines2.join("\n")}` };
       };
       const onBus = () => {
         if (finished) return;
-        const pending = take();
-        if (pending instanceof Promise) void pending.then((ended) => {
+        const pending2 = take();
+        if (pending2 instanceof Promise) void pending2.then((ended) => {
           if (ended) finish(ended);
         }).catch((error2) => state.log(`wait message status unavailable: ${String(error2)}`));
-        else if (pending) finish(pending);
+        else if (pending2) finish(pending2);
       };
       s.room.claims.observe(onClaims);
       s.room.bus.observe(onBus);
@@ -66078,8 +66177,8 @@ function createHandlerState(ctx) {
   };
   const readText = async (s, path79, person) => {
     if (person === s.me.name) return await workerText(s.dir, path79);
-    const worker = await trustedWorker(s, person);
-    if (worker) return await workerText(worker.dir, path79);
+    const worker2 = await trustedWorker(s, person);
+    if (worker2) return await workerText(worker2.dir, path79);
     const version3 = await readVersion(s, path79, person);
     if (version3.kind === "text") return version3.text;
     if (version3.kind === "deleted") return null;
@@ -66219,14 +66318,14 @@ function createHandlerState(ctx) {
       }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async (r) => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter((r) => r.action === "stop");
       const cancellation = new AbortController();
-      const pending = new Set(running.map((r) => r.w.tag));
+      const pending2 = new Set(running.map((r) => r.w.tag));
       const stops = running.map(async (r) => {
         try {
           await state.dismissWorker(r.s, r.w, "the lead's session ended", "lead-session-ended", cancellation.signal);
         } catch (e) {
           log2(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
-          pending.delete(r.w.tag);
+          pending2.delete(r.w.tag);
         }
       });
       if (stops.length) {
@@ -66238,7 +66337,7 @@ function createHandlerState(ctx) {
         if (timer) clearTimeout(timer);
         if (!completed) {
           cancellation.abort();
-          for (const tag of pending) log2(`shutdown dismissal timed out for ${tag}; worker record kept for restart`);
+          for (const tag of pending2) log2(`shutdown dismissal timed out for ${tag}; worker record kept for restart`);
         }
       }
       await state.closeWorkersRoom(true).catch(() => {
@@ -67206,9 +67305,9 @@ repeat with force=true to delete them`;
           continue;
         }
         let archived;
-        let pending;
+        let pending2;
         const finishOne = async () => {
-          if (pending) await registry2.deferCollectCleanup(w.id, pending);
+          if (pending2) await registry2.deferCollectCleanup(w.id, pending2);
           else if (archived) {
             await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {});
             const note = await cleanRetiredSharedOwner(s, w);
@@ -67240,13 +67339,13 @@ repeat with force=true to delete them`;
         };
         const unconfirmed = await uncleanExit(s, w);
         if (unconfirmed) {
-          pending = unconfirmed;
+          pending2 = unconfirmed;
           out.push(`kept ${w.tag}: changes collected; clean exit not confirmed (${unconfirmed}); cleaned up by a later room_collect or the automatic sweep once its process is gone`);
           await finishOne();
           continue;
         }
         const keepLive = (reason) => {
-          pending = reason;
+          pending2 = reason;
           out.push(`${w.tag}'s record stays live with its worktree; a later room_collect or the automatic sweep finishes cleanup once that is resolved, or discard=true removes it`);
         };
         if (w.exitCode !== 0) w = { ...w, exitCode: 0 };
@@ -68034,14 +68133,14 @@ async function startArbitration(o) {
     }
     if (!selection && ("selectionId" in req || "protocol" in req || "incarnation" in req)) return { ok: false, reason: "invalid" };
     if (req.op === "confirm") {
-      const pending = typeof req.batch === "string" ? batches.get(req.batch) : void 0;
-      if (pending && pending.selectionId === selection?.id) {
-        batches.delete(pending.batch.id);
-        if (o.binding.bound()?.id === pending.sessionId && o.canSelect?.() !== false) {
-          o.ledger.commit(pending.batch);
+      const pending2 = typeof req.batch === "string" ? batches.get(req.batch) : void 0;
+      if (pending2 && pending2.selectionId === selection?.id) {
+        batches.delete(pending2.batch.id);
+        if (o.binding.bound()?.id === pending2.sessionId && o.canSelect?.() !== false) {
+          o.ledger.commit(pending2.batch);
           return { ok: true };
         }
-        o.ledger.release(pending.batch);
+        o.ledger.release(pending2.batch);
       }
       return { ok: false };
     }
@@ -68100,7 +68199,7 @@ async function startArbitration(o) {
   let written, writtenWorker;
   const publish2 = () => {
     const dir = o.binding.dir();
-    const worker = o.worker?.(), workerKey = worker ? JSON.stringify(worker) : void 0;
+    const worker2 = o.worker?.(), workerKey = worker2 ? JSON.stringify(worker2) : void 0;
     const same = dir === (written && path76.dirname(written));
     if (same && workerKey === writtenWorker) return;
     if (written && !same) {
@@ -68111,7 +68210,7 @@ async function startArbitration(o) {
     try {
       privateStateDirectory(dir);
       const file = path76.join(dir, "mcp.json");
-      writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "", executable: self?.executable ?? "", runtime: "daemon-client", ...worker ? { worker } : {}, hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: plugin_default.version });
+      writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "", executable: self?.executable ?? "", runtime: "daemon-client", ...worker2 ? { worker: worker2 } : {}, hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: plugin_default.version });
       fs76.chmodSync(file, 384);
       written = file;
       writtenWorker = workerKey;
@@ -68353,7 +68452,7 @@ async function releaseIdleHeld(s, idleEpoch, idleMs, monotonicMs, pendingOnly = 
 }
 function attachingParentReader(probe = probeProcess, ppid = process.ppid, asyncProbe = process.platform === "win32" && probe === probeProcess ? probeProcessAsync : void 0) {
   let parent;
-  let pending = false;
+  let pending2 = false;
   const remember2 = (info) => {
     if (!parent && info?.startTime && info.executable) parent = { pid: ppid, startTime: info.startTime, executable: info.executable };
   };
@@ -68361,11 +68460,11 @@ function attachingParentReader(probe = probeProcess, ppid = process.ppid, asyncP
     if (!parent && ppid > 1) {
       const info = probe(ppid);
       remember2(info);
-      if (!parent && info && asyncProbe && !pending) {
-        pending = true;
+      if (!parent && info && asyncProbe && !pending2) {
+        pending2 = true;
         void Promise.resolve().then(() => asyncProbe(ppid)).then(remember2).catch(() => {
         }).finally(() => {
-          pending = false;
+          pending2 = false;
         });
       }
     }
