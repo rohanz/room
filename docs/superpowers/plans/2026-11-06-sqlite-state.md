@@ -182,4 +182,11 @@ Each worker claims its files/symbols, asks the returned owning peer directly for
 3. Set baseline-derived responsiveness/throughput tolerances and confirm actual-host qualification access for Claude/Codex on each advertised platform. The adapter choice is made here; whether measured behavior meets shipping budgets is unresolved evidence, not a discretionary test waiver.
 4. Assign compatibility and activation release IDs and schedule the operator stopped-writer window. Pair it with an unfinished daemon cutover if practical; otherwise perform a new storage drain. Confirm old installations/reconnect loops can be kept stopped. Only the human can make that operational authorization; this plan grants no migration of live state.
 
+**Maintainer decisions, 2026-11-06 (Rohan):**
+
+1. Accepted: the daemon owns the database (online daemon ownership with a bounded DB thread, offline CLI for migration/DDL), with the amendments above.
+2. Accepted: first qualification is local single-host filesystems only — APFS, ext4 and NTFS. Network, sync and unknown filesystems are refused until tested.
+3. Accepted: hooks must be no slower than the measured baseline; worker lifecycle and other operations may be at most 20% slower than baseline. The purpose of the change is correctness under concurrency, not speed.
+4. Deferred: the activation migration window is scheduled when slice 4 exists. The runtime prerequisite is met: this maintainer machine runs official Node 22.23.4 (checked 2026-11-06; `node:sqlite` loads with an ExperimentalWarning that slice 2 must keep out of hook output and logs).
+
 Runtime floor, first-domain scope, dependency-free hooks, five-minute daemon idle policy, backup minimum, whole-operation drain and no fallback are already decided. Do not reopen them as routine implementation questions. No source, release assets or live state are changed by this plan.
