@@ -43154,6 +43154,7 @@ var init_registry = __esm({
       retiring = /* @__PURE__ */ new Map();
       /** Background registry work started for tracked sessions; shutdown settles it before storage admissions close. */
       background = /* @__PURE__ */ new Set();
+      closed = false;
       /** Each tracked session's writer of its workers' views and retirement cleanup (registry §13). */
       projectors = /* @__PURE__ */ new Map();
       probe(pid) {
@@ -43186,7 +43187,18 @@ var init_registry = __esm({
         return this.all().find((s) => s.roomName === roomName);
       }
       /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
+      /** Shutdown has begun: from now on no session is added or tracked, so nothing starts producers or opens registries. */
+      close() {
+        this.closed = true;
+      }
+      get isClosed() {
+        return this.closed;
+      }
       add(s, role, lead) {
+        if (this.closed) {
+          this.o.late?.(s);
+          return;
+        }
         if (role === "primary" && this.primary() !== s) this.o.setPrimary(s);
         this.track(s);
         const cur = this.entries.get(s);
@@ -43200,7 +43212,7 @@ var init_registry = __esm({
       }
       /** The worker projector and auto-retirement only (a session the host set without joining through the tools, e.g. in tests). */
       track(s) {
-        if (this.tracked.has(s)) return;
+        if (this.closed || this.tracked.has(s)) return;
         this.tracked.add(s);
         this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then((registry2) => {
           if (!this.tracked.has(s) || this.projectors.has(s)) return;
@@ -62455,6 +62467,7 @@ function createWorkerRuntime(deps) {
     if (have) return have;
     const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log: log2 });
     rooms.add(ws, "workers", lead);
+    if (rooms.isClosed) throw new Error("this Room session is shutting down; the workers room was left again");
     log2(`workers room: ${ws.roomName} (${ws.local?.url ?? "local"}), bridged to ${lead.roomName}`);
     return ws;
   };
@@ -64031,6 +64044,7 @@ function handlers6(state) {
       }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning;
       rooms.add(s, "primary");
+      if (rooms.isClosed) return `not joined: this Room session is shutting down; ${s.roomName} was left again.`;
       adoptLocalReplica(cur?.localReplica, s.localReplica);
       const stale = cleanupMine(s, "stale from an earlier session");
       if (stale || s.room.scope(s.me.name)) log2(`cleared ${stale} stale claim(s) and scope from an earlier session`);
@@ -66589,7 +66603,18 @@ function createHandlerState(ctx) {
       project: () => bridge?.sync() ?? Promise.resolve()
     };
   };
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), attach, log: log2, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses });
+  const rooms = new Rooms({
+    primary: () => ctx.getSession(),
+    setPrimary: (s) => ctx.setSession(s),
+    attach,
+    log: log2,
+    probe: ctx.probe,
+    listCwdProcesses: ctx.listCwdProcesses,
+    late: (s) => {
+      log2(`leaving ${s.roomName}: joined after shutdown began`);
+      void doLeave(s).catch((error2) => log2(`late session leave failed: ${error2 instanceof Error ? error2.message : String(error2)}`));
+    }
+  });
   const S = () => {
     const s = ctx.getSession();
     if (!s) throw new NotJoined();
@@ -66747,6 +66772,7 @@ function createHandlerState(ctx) {
     attachHooks: (s) => rooms.add(s, "primary"),
     clearStale: (s) => state.cleanupMine(s, "stale from an earlier session"),
     async shutdown() {
+      rooms.close();
       preserveBridgeFacts = true;
       wakes.stop();
       for (const joined of rooms.all()) {
@@ -68003,7 +68029,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       if (name === "room_preview_merge" || name.startsWith("room_pr_")) await state.rooms.autoRetire();
       const s2 = ctx.getSession();
       if (s2 && s2 !== s) s2.refreshRuntime?.();
-      if (s2 && autoJoin && (name === "room_join" || name === "room_create")) autoJoin.retarget(s2);
+      if (s2 && autoJoin && !state.rooms.isClosed && (name === "room_join" || name === "room_create")) autoJoin.retarget(s2);
       if (WORKER_OPS.has(name) || process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts();
       const unread = s2 && name !== "room_join" && name !== "room_create" ? state.inbox(s2, batch) : "";
       if (s2) await offerTeamSharingDisclosure(s2, ledger2);
