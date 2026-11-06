@@ -789,20 +789,27 @@ var init_protocol = __esm({
 import fs6 from "node:fs";
 import os from "node:os";
 import { execFile as execFile3 } from "node:child_process";
-async function windowsDriveOnce(drive) {
-  const root = `${drive}\\`;
-  const key = `${drive}:${(await fs6.promises.stat(root)).dev}`;
-  let answer = driveAnswers.get(key);
-  if (!answer) {
-    answer = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS);
-    driveAnswers.set(key, answer);
-    answer.catch(() => {
-      if (driveAnswers.get(key) === answer) driveAnswers.delete(key);
-    });
-  }
-  return answer;
+function windowsDriveMemo(query, volume = (root) => fs6.promises.stat(root).then((stat) => stat.dev)) {
+  const answers = /* @__PURE__ */ new Map();
+  return async (drive) => {
+    const root = `${drive}\\`;
+    const key = `${drive}:${await volume(root)}`;
+    let answer = answers.get(key);
+    if (!answer) {
+      const pending2 = query(root);
+      answer = pending2;
+      answers.set(key, pending2);
+      const forget = () => {
+        if (answers.get(key) === pending2) answers.delete(key);
+      };
+      pending2.then((text) => {
+        if (text.trim().split(/\s+/).length < 2) forget();
+      }, forget);
+    }
+    return answer;
+  };
 }
-var COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, driveAnswers, systemFilesystemReaders;
+var COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, windowsDriveOnce, systemFilesystemReaders;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
@@ -818,7 +825,7 @@ var init_filesystem = __esm({
       );
     });
     WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
-    driveAnswers = /* @__PURE__ */ new Map();
+    windowsDriveOnce = windowsDriveMemo((root) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS));
     systemFilesystemReaders = {
       platform: process.platform,
       realpath: (file) => fs6.promises.realpath(file),

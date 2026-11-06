@@ -1661,18 +1661,25 @@ import fs6 from "node:fs";
 import os from "node:os";
 import path7 from "node:path";
 import { execFile as execFile3 } from "node:child_process";
-async function windowsDriveOnce(drive) {
-  const root = `${drive}\\`;
-  const key2 = `${drive}:${(await fs6.promises.stat(root)).dev}`;
-  let answer = driveAnswers.get(key2);
-  if (!answer) {
-    answer = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS);
-    driveAnswers.set(key2, answer);
-    answer.catch(() => {
-      if (driveAnswers.get(key2) === answer) driveAnswers.delete(key2);
-    });
-  }
-  return answer;
+function windowsDriveMemo(query2, volume = (root) => fs6.promises.stat(root).then((stat4) => stat4.dev)) {
+  const answers = /* @__PURE__ */ new Map();
+  return async (drive) => {
+    const root = `${drive}\\`;
+    const key2 = `${drive}:${await volume(root)}`;
+    let answer = answers.get(key2);
+    if (!answer) {
+      const pending2 = query2(root);
+      answer = pending2;
+      answers.set(key2, pending2);
+      const forget = () => {
+        if (answers.get(key2) === pending2) answers.delete(key2);
+      };
+      pending2.then((text2) => {
+        if (text2.trim().split(/\s+/).length < 2) forget();
+      }, forget);
+    }
+    return answer;
+  };
 }
 function synchronizedRoot(file, readers) {
   const home = readers.home(), paths = readers.platform === "win32" ? path7.win32 : path7.posix;
@@ -1758,7 +1765,7 @@ async function detectFilesystem(target, readers = systemFilesystemReaders) {
   }
   return result("unknown", `${statfs}; unsupported platform ${readers.platform}`, file);
 }
-var QUALIFIED, COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, driveAnswers, systemFilesystemReaders, result, LINUX_NETWORK, LINUX_LOCAL;
+var QUALIFIED, COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, windowsDriveOnce, systemFilesystemReaders, result, LINUX_NETWORK, LINUX_LOCAL;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
@@ -1775,7 +1782,7 @@ var init_filesystem = __esm({
       );
     });
     WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
-    driveAnswers = /* @__PURE__ */ new Map();
+    windowsDriveOnce = windowsDriveMemo((root) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS));
     systemFilesystemReaders = {
       platform: process.platform,
       realpath: (file) => fs6.promises.realpath(file),
