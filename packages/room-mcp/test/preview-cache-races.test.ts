@@ -143,8 +143,10 @@ it('keeps an older direct-key worktree separate from the shared entry', async ()
   expect(path.dirname(entry)).toBe(`${key}.slots`)
   const result = await runInMergedTree({ dir: root } as Session, head, new Map(), 'echo "1 passed"')
   expect(result.passed, result.text).toBe(true)
-  expect(fs.existsSync(key)).toBe(true)
-  expect(fs.existsSync(entry)).toBe(true)
+  // Cache maintenance runs detached from the reply: assert on its settled outcome, not a moment within it.
+  await waitForPreviewSweepForTests()
+  expect(fs.existsSync(key), result.text).toBe(true)
+  expect(fs.existsSync(entry), result.text).toBe(true)
 }, 30_000)
 
 it('keeps a finished check result if cache cleanup fails', async () => {
