@@ -69,6 +69,8 @@ export interface RoomsOptions {
   setPrimary(s: Session | null): void
   /** Full attachments for a session that was joined through the tools or adopted at startup. */
   attach(s: Session, role: Role, lead?: Session): Attachment
+  /** A session that arrives after close() (a join or rebind that finished during shutdown): leave it, never attach it. */
+  late?(s: Session): void
   log?: (line: string) => void
 }
 
@@ -98,6 +100,7 @@ export class Rooms {
   private retiring = new Map<Session, Promise<void>>()
   /** Background registry work started for tracked sessions; shutdown settles it before storage admissions close. */
   private background = new Set<Promise<unknown>>()
+  private closed = false
   /** Each tracked session's writer of its workers' views and retirement cleanup (registry §13). */
   private projectors = new Map<Session, WorkerProjector>()
 
@@ -124,7 +127,11 @@ export class Rooms {
   byName(roomName: string): Session | undefined { return this.all().find(s => s.roomName === roomName) }
 
   /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
+  /** Shutdown has begun: from now on no session is added or tracked, so nothing starts producers or opens registries. */
+  close(): void { this.closed = true }
+  get isClosed(): boolean { return this.closed }
   add(s: Session, role: Role, lead?: Session): void {
+    if (this.closed) { this.o.late?.(s); return }
     if (role === 'primary' && this.primary() !== s) this.o.setPrimary(s)
     this.track(s)
     const cur = this.entries.get(s)
@@ -135,7 +142,7 @@ export class Rooms {
   }
   /** The worker projector and auto-retirement only (a session the host set without joining through the tools, e.g. in tests). */
   track(s: Session): void {
-    if (this.tracked.has(s)) return
+    if (this.closed || this.tracked.has(s)) return
     this.tracked.add(s)
     this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then(registry => {
       if (!this.tracked.has(s) || this.projectors.has(s)) return

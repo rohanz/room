@@ -290,6 +290,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       rooms.add(s, 'primary')
+      if (rooms.isClosed) return `not joined: this Room session is shutting down; ${s.roomName} was left again.`
       adoptLocalReplica(cur?.localReplica, s.localReplica)
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)

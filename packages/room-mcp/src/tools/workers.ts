@@ -415,6 +415,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       if (have) return have
       const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log })
       rooms.add(ws, 'workers', lead)
+      if (rooms.isClosed) throw new Error('this Room session is shutting down; the workers room was left again')
       log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
       return ws
     }

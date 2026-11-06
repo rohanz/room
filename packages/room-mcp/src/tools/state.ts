@@ -87,7 +87,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       project: () => bridge?.sync() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses,
+    late: s => { log(`leaving ${s.roomName}: joined after shutdown began`); void doLeave(s).catch(error => log(`late session leave failed: ${error instanceof Error ? error.message : String(error)}`)) } })
 
   const S = (): Session => {
     const s = ctx.getSession()
@@ -213,6 +214,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown() {
+      // First: a join, rebind or replacement finishing during shutdown is left, not attached.
+      rooms.close()
       preserveBridgeFacts = true
       wakes.stop()
       // Withdraw every joined session while its transport is still up. Worker cleanup can

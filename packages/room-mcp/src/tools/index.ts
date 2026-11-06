@@ -167,7 +167,8 @@ export function createTools(ctx: ToolCtx): Tools {
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.autoRetire()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
-        if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
+        // A join that finished after shutdown began was left, not attached: never re-arm reconnection for it.
+        if (s2 && autoJoin && !state.rooms.isClosed && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
         if (WORKER_OPS.has(name) || process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts()
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2, batch) : ''
         if (s2) await offerTeamSharingDisclosure(s2, ledger)

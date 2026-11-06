@@ -135,3 +135,23 @@ it('an evicted registry shuts down for good: a later generation change never res
   await withAdmission(common, 'reconcile', () => evicted.snapshot())
   expect(storeOf(evicted).watchers).toEqual([])
 }, 60_000)
+
+it('after shutdown begins, a session that joins late (room_join, rebind or replacement) is left, never attached or tracked', async () => {
+  const dir = gitRepo()
+  const sessionFor = () => {
+    const room = new RoomDoc()
+    return { room, awareness: new Awareness(room.doc), me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: '', shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true } as never, daemon: { touch() {}, async stop() {} } as never } as Session
+  }
+  let current: Session | null = null
+  const left: Session[] = []
+  const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir, leave: async s => { left.push(s); return undefined } })
+  await tools.shutdown()
+  const primary = sessionFor(), workers = sessionFor()
+  tools.attachHooks(primary)
+  tools.attachWorkersRoom(workers, primary)
+  expect(current).toBeNull() // never adopted as the primary
+  await vi.waitFor(() => expect(left).toEqual([primary, workers]))
+  await closeStorageAdmissions()
+  // Nothing was tracked, so no registry opened and nothing registered.
+  expect((await storageGate(join(dir, '.git')).status()).registrations).toBe(0)
+})
