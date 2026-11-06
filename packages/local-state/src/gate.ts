@@ -21,6 +21,8 @@ const MAX_NOTE = 512
 const NONCE = /^[0-9a-f-]{8,64}$/
 const TICKET_ID = /^[0-9a-f]{32}$/
 const TICKET_FILE = /^([0-9a-f-]{8,64})\.([0-9a-f]{32})\.json$/
+const EVIDENCE_NAMES = new Set([path.basename(STORAGE_PATHS.database), `${path.basename(STORAGE_PATHS.database)}-wal`,
+  `${path.basename(STORAGE_PATHS.database)}-shm`, path.basename(STORAGE_PATHS.activationMarker)])
 const REMEDY = 'run `node <plugin>/server/room-state.mjs status --common-dir <git common dir>` for details'
 
 export interface GateOptions {
@@ -105,6 +107,8 @@ class FileStorageGate implements StorageGate {
   private readonly ticketDir: string
   private readonly resolutionDir: string
   private readonly limits: { registrations: number; tickets: number; scanBatch: number }
+  /** Last observation, keyed by the gate file's identity. Every publication renames a new file into place. */
+  private observed?: { key: string; value: ReadValidation }
 
   constructor(readonly commonDir: string, options: GateOptions) {
     this.now = options.now ?? Date.now
@@ -152,11 +156,12 @@ class FileStorageGate implements StorageGate {
     return gate
   }
 
+  /** One directory read: every evidence path lives directly in room/. Unreadable counts as evidence. */
   private activationEvidence(): boolean {
-    const db = path.join(this.commonDir, STORAGE_PATHS.database)
-    return [db, `${db}-wal`, `${db}-shm`, path.join(this.commonDir, STORAGE_PATHS.activationMarker)].some(file => {
-      try { fs.lstatSync(file); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
-    })
+    let names: string[]
+    try { names = fs.readdirSync(path.join(this.commonDir, 'room')) }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+    return names.some(name => EVIDENCE_NAMES.has(name))
   }
 
   private names(dir: string): string[] {
@@ -432,8 +437,18 @@ class FileStorageGate implements StorageGate {
   }
 
   async observe(): Promise<ReadValidation> {
-    const gate = this.readGate()
-    if (gate) return { generation: gate.generation, phase: gate.phase }
+    let stat: fs.BigIntStats | undefined
+    try { stat = fs.lstatSync(this.gateFile, { bigint: true }) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new StorageRefused('unavailable', bounded(`storage gate unreadable: ${(error as NodeJS.ErrnoException).code ?? error}`), REMEDY) }
+    const key = stat && `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`
+    if (key && this.observed?.key === key) return this.observed.value
+    this.observed = undefined
+    const gate = stat ? this.readGate() : undefined
+    if (gate) {
+      const value = { generation: gate.generation, phase: gate.phase }
+      if (key) this.observed = { key, value }
+      return value
+    }
     // Before the first registration the clone is legacy at generation 0; initialization moves it to 1, so a read
     // spanning initialization sees a change. Activation evidence without a gate is never legacy.
     if (this.activationEvidence()) throw new StorageRefused('unavailable', 'storage activation evidence exists without a storage gate', REMEDY)

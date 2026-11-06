@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openStorageGate, type GateOptions } from '../src/gate.js'
 import { createExclusive, type InstanceToken, type Liveness } from '../src/leases.js'
 import { STORAGE_PATHS, StorageRefused, type GateOwner, type StorageGate } from '../src/protocol.js'
@@ -258,5 +258,32 @@ describe('operator listing', () => {
     expect(fs.readdirSync(path.join(dir, STORAGE_PATHS.tickets)).sort()).toEqual(before)
     fs.writeFileSync(path.join(dir, STORAGE_PATHS.tickets, `${reg.instance.nonce}.${'0'.repeat(32)}.json`), '{')
     expect((await gate.listTickets(1)).tickets[0]).toMatchObject({ id: '0'.repeat(32), holderState: 'unreadable' })
+  })
+})
+
+describe('observation cost', () => {
+  it('observes an unchanged gate with one stat, and sees every publication', async () => {
+    const dir = commonDir(), gate = openStorageGate(dir, world())
+    await gate.register({ instance: token(), kind: 'mcp', release: 'x' })
+    expect(await gate.observe()).toEqual({ generation: 1, phase: 'legacy' })
+    const reads = vi.spyOn(fs, 'readFileSync'), stats = vi.spyOn(fs, 'lstatSync')
+    for (let i = 0; i < 5; i++) expect(await gate.observe()).toEqual({ generation: 1, phase: 'legacy' })
+    expect(reads).not.toHaveBeenCalled()
+    expect(stats).toHaveBeenCalledTimes(5)
+    reads.mockRestore(); stats.mockRestore()
+    const owner = await maintenance(gate, dir)
+    await gate.drain(owner)
+    expect(await gate.observe()).toEqual({ generation: 2, phase: 'draining' })
+    await gate.reopen(owner)
+    expect(await gate.observe()).toEqual({ generation: 2, phase: 'legacy' })
+  })
+
+  it('observes an absent gate with one stat and one directory read', async () => {
+    const dir = commonDir(), gate = openStorageGate(dir, world())
+    fs.mkdirSync(path.join(dir, 'room'))
+    const calls = [vi.spyOn(fs, 'lstatSync'), vi.spyOn(fs, 'readdirSync'), vi.spyOn(fs, 'readFileSync')]
+    expect(await gate.observe()).toEqual({ generation: 0, phase: 'legacy' })
+    expect(calls.map(spy => spy.mock.calls.length)).toEqual([1, 1, 0])
+    for (const spy of calls) spy.mockRestore()
   })
 })
