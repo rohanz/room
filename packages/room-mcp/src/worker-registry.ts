@@ -21,28 +21,26 @@ export type { WorkerSnapshot, WorkerCommand, WorkerFreshness, WorkerStore } from
 const registries = new Map<string, Promise<WorkerRegistry>>()
 const MAX_PROCESS_REGISTRIES = 24
 /**
- * The process's registry lifetime. Every registry registryForDir opens is owned here from the call's entry until it
- * has shut down for good, whether it is cached, evicted or closed. Shutdown fences new opens synchronously and
- * rechecks after the asynchronous Git lookup; an MCP process begins one lifecycle when it creates its tools.
+ * Registry lifetime. Every registry registryForDir opens is tracked from the call's entry until it has shut down for
+ * good, whether it is cached, evicted or closed. A shutdown advances the epoch: a call made while it runs is refused,
+ * and a call that began before it is refused (and anything it opened retired) when it resumes, so no open started
+ * under an ended lifecycle can leave watchers behind. Tools instances hold counted leases on the lifecycle.
  */
-let fenced = false
+let epoch = 0, shuttingDown = 0
 const calls = new Set<Promise<unknown>>()
 const live = new Set<WorkerRegistry>()
 const retiring = new Map<WorkerRegistry, Promise<void>>()
-const shuttingDown = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no worker registry opens')
+const shutdownRefusal = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no worker registry opens')
 let holders = 0
-// A test run models one process per test: vitest.setup.ts restarts process lifecycles before each test.
-if (process.env.VITEST) (globalThis as { [key: symbol]: Set<() => void> | undefined })[Symbol.for('room.test.lifecycleResets')]?.add(() => { fenced = false; holders = 0 })
 /**
  * Hold this process's registry lifecycle (each tools instance holds one; a production MCP process has exactly one).
  * The returned end fences and shuts every registry down once the last holder ends; holding again begins a new one.
  */
 export function beginWorkerRegistries(): () => Promise<void> {
   holders++
-  fenced = false
   let ended = false
   return async () => {
-    if (ended || holders === 0) return
+    if (ended) return
     ended = true
     if (--holders === 0) await shutdownWorkerRegistries()
   }
@@ -64,27 +62,30 @@ export async function closeRegistryForDir(dir: string): Promise<void> {
   if (registry) await retire(registry)
 }
 /**
- * Process shutdown: fence new opens, wait for opens already under way, then stop every registry this process opened
+ * Process shutdown: end the epoch, wait for opens already under way, then stop every registry this process opened
  * (cached or evicted) for good and wait for passes already running, so no background reconcile admits after storage
  * admissions close. The caller bounds the wait.
  */
 export async function shutdownWorkerRegistries(): Promise<void> {
-  fenced = true
-  await Promise.allSettled([...calls])
-  registries.clear()
-  await Promise.all([...live].map(retire))
+  epoch++
+  shuttingDown++
+  try {
+    await Promise.allSettled([...calls])
+    registries.clear()
+    await Promise.all([...live].map(retire))
+  } finally { shuttingDown-- }
 }
 /** One token and watcher per common dir for this MCP process. */
 export function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
-  if (fenced) return Promise.reject(shuttingDown())
-  const call = openRegistry(dir, sessionId)
+  if (shuttingDown) return Promise.reject(shutdownRefusal())
+  const call = openRegistry(dir, sessionId, epoch)
   const tracked = call.catch(() => {}).finally(() => calls.delete(tracked))
   calls.add(tracked)
   return call
 }
-async function openRegistry(dir: string, sessionId?: string): Promise<WorkerRegistry> {
+async function openRegistry(dir: string, sessionId: string | undefined, started: number): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
-  if (fenced) throw shuttingDown()
+  if (epoch !== started) throw shutdownRefusal()
   // The registry writes under <common>/room; a Git directory always holds HEAD. Anything else (a
   // resolution that landed on the working tree) must not be written to.
   if (!fs.existsSync(path.join(common, 'HEAD'))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`)
@@ -106,7 +107,7 @@ async function openRegistry(dir: string, sessionId?: string): Promise<WorkerRegi
     const opened = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST }).then(registry => {
       live.add(registry)
       // Opened across a shutdown that no longer waits for it: stop it now rather than leave it watching.
-      if (fenced) { void retire(registry); throw shuttingDown() }
+      if (epoch !== started) { void retire(registry); throw shutdownRefusal() }
       return registry
     })
     pending = opened

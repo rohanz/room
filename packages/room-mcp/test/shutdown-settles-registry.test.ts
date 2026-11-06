@@ -100,14 +100,16 @@ function gitRepo(): string {
 }
 const storeOf = (registry: WorkerRegistry) => (registry as unknown as { file: { watchers: unknown[]; shut: boolean } }).file
 
-it('fences registry opens when shutdown begins, including one still resolving its Git directory', async () => {
+it('refuses opens during shutdown and an open that began before it, even one still resolving its Git directory', async () => {
   const dir = gitRepo()
   const late = registryForDir(dir) // resolving the common dir through Git when shutdown begins
   const shutdown = shutdownWorkerRegistries()
+  const during = registryForDir(dir) // made while the shutdown runs
   await expect(late).rejects.toMatchObject({ reason: 'unavailable' })
+  await expect(during).rejects.toMatchObject({ reason: 'unavailable' })
   await shutdown
-  await expect(registryForDir(dir)).rejects.toMatchObject({ reason: 'unavailable' })
   await closeStorageAdmissions()
+  // Neither left a registration or a watching registry behind.
   expect((await storageGate(join(dir, '.git')).status()).registrations).toBe(0)
 })
 
