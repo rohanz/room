@@ -40256,6 +40256,11 @@ var init_worker_projector = __esm({
         this.s.room.mail.unobserve(this.onReferenceDelete);
         this.s.room.outcomes.unobserve(this.onReferenceDelete);
       }
+      /** Resolves once a pass running at stop() has finished; stop() starts no new pass. */
+      async settled() {
+        while (this.running) await this.running.catch(() => {
+        });
+      }
       /** A request waits for a pass started after that request; concurrent requests share the next pass. */
       project() {
         if (this.stopped) return Promise.resolve();
@@ -40431,6 +40436,8 @@ var init_bridge = __esm({
       facts;
       storageEpoch = 0;
       running = Promise.resolve();
+      /** Attach and timer-started passes, so a stopped bridge can be awaited before admissions close. */
+      inFlight = /* @__PURE__ */ new Set();
       /** This lead's `local` workers that are not retiring, from the registry (never the room). */
       workers() {
         return (this.facts?.available ? this.facts.workers.map((fact) => fact.record) : []).filter((r) => r.lead.participant === this.local.me.name && r.room === this.local.roomName && !["retiring", "retired", "abandoned"].includes(r.phase));
@@ -40530,8 +40537,21 @@ var init_bridge = __esm({
           for (const c of l.openClaims()) this.mirrorClaim(c.id);
           this.schedule();
         });
-        if (this.registry) void withoutAdmission(() => attach(this.registry)).catch((e) => this.o.log?.(`bridge: no worker registry: ${String(e)}`));
-        else void withoutAdmission(() => registryForDir(this.local.dir).then(attach)).catch((e) => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`));
+        if (this.registry) this.background(withoutAdmission(() => attach(this.registry)).catch((e) => this.o.log?.(`bridge: no worker registry: ${String(e)}`)));
+        else this.background(withoutAdmission(() => registryForDir(this.local.dir).then(attach)).catch((e) => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`)));
+      }
+      background(work) {
+        const settled = work.catch(() => {
+        }).finally(() => this.inFlight.delete(settled));
+        this.inFlight.add(settled);
+      }
+      /** Resolves once work started before stop() has finished: attach, sync passes, claim relays and projection. */
+      async settled() {
+        while (this.inFlight.size) await Promise.allSettled([...this.inFlight]);
+        await this.relaying.catch(() => {
+        });
+        await this.running.catch(() => {
+        });
       }
       /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
       stop(preserveFacts = false) {
@@ -40565,13 +40585,13 @@ var init_bridge = __esm({
         if (this.stopped) return;
         const ms2 = this.o.debounceMs ?? 300;
         if (ms2 === 0) {
-          void withoutAdmission(() => this.sync()).catch((e) => this.o.log?.(`bridge: ${String(e)}`));
+          this.background(withoutAdmission(() => this.sync()).catch((e) => this.o.log?.(`bridge: ${String(e)}`)));
           return;
         }
         if (this.timer) clearTimeout(this.timer);
         this.timer = setTimeout(() => {
           this.timer = null;
-          void withoutAdmission(() => this.sync()).catch((e) => this.o.log?.(`bridge: ${String(e)}`));
+          this.background(withoutAdmission(() => this.sync()).catch((e) => this.o.log?.(`bridge: ${String(e)}`)));
         }, ms2);
         this.timer.unref?.();
       }
@@ -43100,6 +43120,8 @@ var init_registry = __esm({
       exitWaiters = /* @__PURE__ */ new Map();
       autoRetireTimers = /* @__PURE__ */ new Map();
       retiring = /* @__PURE__ */ new Map();
+      /** Background registry work started for tracked sessions; shutdown settles it before storage admissions close. */
+      background = /* @__PURE__ */ new Set();
       /** Each tracked session's writer of its workers' views and retirement cleanup (registry §13). */
       projectors = /* @__PURE__ */ new Map();
       probe(pid) {
@@ -43138,7 +43160,7 @@ var init_registry = __esm({
         const cur = this.entries.get(s);
         if (cur?.attachment) return;
         for (const [other, e] of this.entries) if (other !== s && e.role === role) {
-          e.attachment?.stop();
+          this.stopAttachment(e.attachment);
           this.stopRetirement(other);
           this.entries.delete(other);
         }
@@ -43148,16 +43170,14 @@ var init_registry = __esm({
       track(s) {
         if (this.tracked.has(s)) return;
         this.tracked.add(s);
-        void withoutAdmission(() => registryForDir(s.dir)).then((registry2) => {
+        this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then((registry2) => {
           if (!this.tracked.has(s) || this.projectors.has(s)) return;
           const projector = new WorkerProjector(s, registry2, this.o.log);
           this.projectors.set(s, projector);
           projector.start();
-        }).catch(() => {
-        });
+        }));
         const timer = setInterval(() => {
-          void withoutAdmission(() => this.autoRetire(s)).catch(() => {
-          });
+          this.inBackground(withoutAdmission(() => this.autoRetire(s)));
         }, 6e4);
         timer.unref();
         this.autoRetireTimers.set(s, timer);
@@ -43166,7 +43186,7 @@ var init_registry = __esm({
       remove(s) {
         this.stopRetirement(s);
         const e = this.entries.get(s);
-        e?.attachment?.stop();
+        this.stopAttachment(e?.attachment);
         this.entries.delete(s);
         for (const [id3, h] of Array.from(this.handles)) if (h.session === s) this.handles.delete(id3);
         if (this.primary() === s) this.o.setPrimary(null);
@@ -43174,11 +43194,26 @@ var init_registry = __esm({
       async flush() {
         for (const e of this.entries.values()) await e.attachment?.flush?.();
       }
+      /** Wait for background work already started (the tracked open, retirement and projector passes, stopped attachments). */
+      async settle() {
+        await Promise.allSettled([...this.background]);
+      }
+      stopAttachment(attachment) {
+        attachment?.stop();
+        if (attachment?.settled) this.inBackground(attachment.settled());
+      }
+      inBackground(work) {
+        const settled = work.catch(() => {
+        }).finally(() => this.background.delete(settled));
+        this.background.add(settled);
+      }
       stopRetirement(s) {
         readDiffCache.clear(s);
         clearInterval(this.autoRetireTimers.get(s));
         this.autoRetireTimers.delete(s);
-        this.projectors.get(s)?.stop();
+        const projector = this.projectors.get(s);
+        projector?.stop();
+        if (projector) this.inBackground(projector.settled());
         this.projectors.delete(s);
         this.tracked.delete(s);
       }
@@ -60664,6 +60699,11 @@ var ConflictSet = class _ConflictSet {
     if (this.timer) clearTimeout(this.timer);
     if (this.tick) clearTimeout(this.tick);
   }
+  /** Resolves once a reconcile running at stop() has finished. */
+  async settled() {
+    while (this.running) await this.running.catch(() => {
+    });
+  }
   schedulePeriodic() {
     if (!this.started || this.stopped) return;
     this.tick = setTimeout(() => {
@@ -66426,6 +66466,9 @@ function createHandlerState(ctx) {
           if (roomBridge === bridge) roomBridge = null;
         }
       },
+      settled: async () => {
+        await Promise.all([bridge?.settled(), watcher?.settled()]);
+      },
       flush: () => watcher?.flush() ?? Promise.resolve(),
       project: () => bridge?.sync() ?? Promise.resolve()
     };
@@ -66605,6 +66648,7 @@ function createHandlerState(ctx) {
       if (!s) {
         await state.closeWorkersRoom(true).catch(() => {
         });
+        await rooms.settle();
         return;
       }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async (r) => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter((r) => r.action === "stop");
@@ -66635,6 +66679,7 @@ function createHandlerState(ctx) {
       });
       rooms.remove(s);
       await doLeave(s);
+      await rooms.settle();
     },
     async drop(s, reason) {
       log2(`leaving ${s.roomName}: ${reason}`);
