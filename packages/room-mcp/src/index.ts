@@ -18,6 +18,7 @@ import { resolveConfig } from './config.js'
 import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
 import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
+import { HostRebind } from './host-rebind.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
 import { admitCodexThread } from './session.js'
@@ -116,8 +117,8 @@ async function main() {
       LOG_FILE = startup.logFile
       const sessionBinding = createSessionBinding(dir)
       roomLogDir = () => sessionBinding.commonDir()
-      let rebinding: Promise<void> | undefined
-      let rebindHost: (sessionId: string) => Promise<void> = async () => {}
+      let hostRebind: HostRebind | undefined
+      const rebindHost = (sessionId: string): Promise<void> => hostRebind?.rebind(sessionId) ?? Promise.resolve()
       // Content-free wakes: Codex active-turn output or idle queue; Claude inbox or channel.
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
@@ -133,14 +134,14 @@ async function main() {
       }, completionReady: async () => {
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
-        else if (rebinding) await rebinding
+        else if (hostRebind?.pending) await hostRebind.pending
       }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log })
       // A replica the server refused after a compacting restart is replaced inside the auto-join (compacted.ts).
       const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (s, why) => tools.drop(s, why),
         attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead), credentialsPath: startup.credentialsPath, log })
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
-        canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
+        canSelect: () => !hostRebind?.pending && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
         onContact: () => presence?.activity(), log, worker: admittedWorker })
       const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
@@ -176,26 +177,16 @@ async function main() {
         publishIdle: minutes => { for (const joined of tools.joinedSessions()) try { joined.awareness.setLocalStateField('idleMin', minutes) } catch { /* leaving */ } },
         log,
       })
-      rebindHost = async nextId => {
-        if (rebinding) return rebinding
-        const joined = tools.joinedSessions()
-        const primary = joined[0]
-        if (!primary || primary.lease?.sessionId === nextId) return
-        rebinding = (async () => {
-          log(`host session changed from ${primary.lease?.sessionId ?? '?'} to ${nextId}; rebinding room leases`)
-          const reuse = new Map(joined.map(old => [old, detachCheckout(old)]))
-          try {
-            for (const old of [...joined].reverse()) await tools.drop(old, 'host session rebound')
-            const fresh = await joinSession({ ...rejoinOptions(primary, startup.credentialsPath), reuse: reuse.get(primary), sessionId: nextId, log })
-            await adopt(fresh, false)
-            for (const old of joined.slice(1)) {
-              const secondary = await joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse: reuse.get(old), sessionId: nextId, log })
-              tools.attachWorkersRoom(secondary, fresh)
-            }
-          } finally { await Promise.all([...reuse.values()].map(value => value.watcher?.dispose())) }
-        })().finally(() => { rebinding = undefined })
-        return rebinding
-      }
+      hostRebind = new HostRebind({
+        joined: () => tools.joinedSessions(),
+        detach: detachCheckout,
+        drop: (old, reason) => tools.drop(old, reason),
+        join: (old, reuse, sessionId) => joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse, sessionId, log }),
+        adopt: fresh => adopt(fresh, false),
+        attachSecondary: (secondary, primary) => tools.attachWorkersRoom(secondary, primary),
+        dispose: async late => { const unsaved = await leaveSession(late, { preserveReplica: true }); if (unsaved) log(`WARN: ${unsaved}`) },
+        log,
+      })
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
         // Completion bypasses lease rebinding, but must retain a thread discovered since admission.
         if (req.params.name === 'room_done' && process.env.ROOM_WORKER_ID) {
@@ -207,7 +198,7 @@ async function main() {
         }
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
-        else if (rebinding) await rebinding
+        else if (hostRebind?.pending) await hostRebind.pending
         const away = presence!.hasLeft
         const idle = presence!.activity()
         await (currentToolTiming()?.phase('settle', () => autoJoin.settle()) ?? autoJoin.settle()) // a join in progress decides which session the reply is about
@@ -269,6 +260,8 @@ async function main() {
 
       const runtime = { call, shutdown: async (signal?: boolean) => {
         presence.stop(); autoJoin.cancel({ explicitLeave: false })
+        // No rebind starts or adopts a session once shutdown begins; a normal shutdown also waits for one in flight.
+        await hostRebind?.close(!signal)
         if (!signal) await autoJoin.settle()
         await tools.shutdown()
         await arbitration.close()
