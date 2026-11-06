@@ -10692,8 +10692,8 @@ function revisions(doc) {
     const holder = participants.get(`${name}\0holder`);
     if (holder && Number.isSafeInteger(holder.epoch)) see({ name, epoch: holder.epoch, semRev: -1, rev: -1 });
     const head = heads.get(name);
-    const epoch = head && Number(head.fence);
-    if (head && epoch !== void 0 && Number.isSafeInteger(epoch)) see({ name, epoch, semRev: head.semRev, rev: head.rev });
+    const epoch2 = head && Number(head.fence);
+    if (head && epoch2 !== void 0 && Number.isSafeInteger(epoch2)) see({ name, epoch: epoch2, semRev: head.semRev, rev: head.rev });
   }
   return latest;
 }
@@ -24440,8 +24440,8 @@ var init_src4 = __esm({
         }
         if (this.watcher && this.trackedPoll) return false;
         if (Date.now() < this.checkoutRetryAt) return false;
-        const epoch = this.checkoutEpoch;
-        const valid = () => !this.stopped && this.inputs.policy.publisher && epoch === this.checkoutEpoch;
+        const epoch2 = this.checkoutEpoch;
+        const valid = () => !this.stopped && this.inputs.policy.publisher && epoch2 === this.checkoutEpoch;
         await this.checkoutClosing;
         if (!valid()) return false;
         try {
@@ -24843,9 +24843,9 @@ var init_src4 = __esm({
           this.base = head;
           this.branch = branch;
           if (publishing) {
-            const epoch = this.checkoutEpoch;
+            const epoch2 = this.checkoutEpoch;
             const tracked = await gitTracked(this.dir);
-            if (this.inputs.policy.publisher && epoch === this.checkoutEpoch && !this.stopped) this.tracked = tracked.paths;
+            if (this.inputs.policy.publisher && epoch2 === this.checkoutEpoch && !this.stopped) this.tracked = tracked.paths;
           }
           if (this.fence !== fence) throw new Error("the name lease changed during the HEAD transition");
         }
@@ -25376,10 +25376,10 @@ var init_src4 = __esm({
       }
       async onDiskChange(relpath, isNew) {
         if (this.stopped || !this.inputs.policy.publisher) return;
-        const epoch = this.checkoutEpoch;
+        const epoch2 = this.checkoutEpoch;
         const pruned = this.inIgnoredDir(relpath);
         const ignored = pruned || await gitIgnored(this.dir, relpath);
-        if (this.stopped || !this.inputs.policy.publisher || epoch !== this.checkoutEpoch) return;
+        if (this.stopped || !this.inputs.policy.publisher || epoch2 !== this.checkoutEpoch) return;
         if (ignored) {
           if (this.tracked.delete(relpath) || this.publisher.pathsToReconcile().has(relpath)) await this.publisher.reconcile("all", this.publicationComplete());
           const parent = relpath.slice(0, relpath.lastIndexOf("/") + 1);
@@ -25402,13 +25402,13 @@ var init_src4 = __esm({
       refreshIgnoredDirs() {
         if (this.stopped || !this.inputs.policy.publisher) return Promise.resolve();
         this.ignoredDirsRefresh ??= (async () => {
-          const epoch = this.checkoutEpoch;
+          const epoch2 = this.checkoutEpoch;
           this.ignoredDirsStale = false;
           try {
             const next = await gitIgnoredDirs(this.dir);
             this.ignoredDirsAt = Date.now();
             this.ignoredDirsFailure = void 0;
-            if (!this.stopped && this.inputs.policy.publisher && epoch === this.checkoutEpoch) this.applyIgnoredDirs(next);
+            if (!this.stopped && this.inputs.policy.publisher && epoch2 === this.checkoutEpoch) this.applyIgnoredDirs(next);
           } catch (error2) {
             this.ignoredDirsStale = true;
             const text2 = errMsg(error2);
@@ -25448,12 +25448,12 @@ var init_src4 = __esm({
       async refreshTracked() {
         if (this.stopped || !this.inputs.policy.publisher) return;
         if (this.roomIgnoreProblem !== void 0) this.reloadRoomIgnore();
-        const epoch = this.checkoutEpoch;
+        const epoch2 = this.checkoutEpoch;
         const [next] = await Promise.all([
           gitTracked(this.dir),
           this.ignoredDirsStale || Date.now() - this.ignoredDirsAt >= IGNORED_DIRS_REFRESH_MS ? this.refreshIgnoredDirs() : void 0
         ]);
-        if (this.stopped || !this.inputs.policy.publisher || epoch !== this.checkoutEpoch) return;
+        if (this.stopped || !this.inputs.policy.publisher || epoch2 !== this.checkoutEpoch) return;
         const added = Array.from(next.paths).filter((relpath) => !this.tracked.has(relpath));
         const promoted = Array.from(next.indexed).filter((relpath) => !this.indexed.has(relpath));
         const demoted = Array.from(this.indexed).filter((relpath) => !next.indexed.has(relpath) && next.paths.has(relpath));
@@ -38978,10 +38978,10 @@ var init_hub_client = __esm({
           t0 = this.mono();
           w0 = this.wall();
         });
-        const epoch = Number(reply.epoch);
-        this.leases.set(name, { epoch, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
+        const epoch2 = Number(reply.epoch);
+        this.leases.set(name, { epoch: epoch2, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
         this.lostLeases.delete(name);
-        return epoch;
+        return epoch2;
       }
       /**
        * A lead's reservation of its worker's name (registry §15 row 3): granted like any acquire, but neither kept nor
@@ -39563,8 +39563,8 @@ async function acquireName(options) {
     }
     if (!options.hub) return { ...candidate, file, passed, ownWorktree };
     try {
-      const epoch = await options.hub.acquire(candidate.name, options.holder, options.supersedes);
-      return { ...candidate, file, epoch, passed, ownWorktree };
+      const epoch2 = await options.hub.acquire(candidate.name, options.holder, options.supersedes);
+      return { ...candidate, file, epoch: epoch2, passed, ownWorktree };
     } catch (e) {
       if (e instanceof HubError && (e.reason === "held" || e.reason === "not-yours")) {
         await releaseLocalName(file, options.token);
@@ -39722,13 +39722,13 @@ var init_names = __esm({
         if (this.reacquiring) return;
         this.reacquiring = (async () => {
           try {
-            const epoch = await this.options.hub.acquire(this.name, this.options.holder);
+            const epoch2 = await this.options.hub.acquire(this.name, this.options.holder);
             if (this.stateValue !== "lapsed") {
               await this.options.hub.release(this.name).catch(() => {
               });
               return;
             }
-            this.epochValue = epoch;
+            this.epochValue = epoch2;
             this.stateValue = "held";
           } catch (e) {
             if (e instanceof HubError && (e.reason === "held" || e.reason === "not-yours") && this.stateValue === "lapsed") {
@@ -40724,10 +40724,10 @@ var init_bridge = __esm({
         const facts = await this.registry.snapshot();
         if (this.stopped || !facts.available || facts.blockers.length) return;
         this.facts = facts;
-        const epoch = this.storageEpoch;
+        const epoch2 = this.storageEpoch;
         const fresh = async () => {
           const latest = await this.registry.snapshot();
-          if (this.stopped || !latest.available || latest.blockers.length || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false;
+          if (this.stopped || !latest.available || latest.blockers.length || latest.revision !== facts.revision || epoch2 !== this.storageEpoch) return false;
           this.facts = latest;
           return true;
         };
@@ -40753,7 +40753,7 @@ var init_bridge = __esm({
             const current2 = this.facts ? snapshotRead(this.facts, record2.id) : void 0;
             const latestSource = this.local.room.manifestHead.get(record2.name);
             const latestLead = participantRecord(team, lead)?.git;
-            return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id && this.team.daemon.fence === fence && latestLead?.base === B && latestLead?.fence === leadGit.fence && !sourceChanged && (!sourceHead || this.local.room.manifest.get(manifestKey(record2.name, sourceHead.fence)) === sourceMap) && JSON.stringify(participantRecord(this.local.room, record2.name)?.holder) === JSON.stringify(sourceHolder) && latestSource?.semRev === sourceHead?.semRev && latestSource?.fence === sourceHead?.fence && (!sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record2.name) === sourceHead.fence) && epoch === this.storageEpoch && current2?.id === record2.id && current2.seq === record2.seq && current2.phase === record2.phase && !["retiring", "retired", "abandoned"].includes(current2.phase);
+            return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id && this.team.daemon.fence === fence && latestLead?.base === B && latestLead?.fence === leadGit.fence && !sourceChanged && (!sourceHead || this.local.room.manifest.get(manifestKey(record2.name, sourceHead.fence)) === sourceMap) && JSON.stringify(participantRecord(this.local.room, record2.name)?.holder) === JSON.stringify(sourceHolder) && latestSource?.semRev === sourceHead?.semRev && latestSource?.fence === sourceHead?.fence && (!sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record2.name) === sourceHead.fence) && epoch2 === this.storageEpoch && current2?.id === record2.id && current2.seq === record2.seq && current2.phase === record2.phase && !["retiring", "retired", "abandoned"].includes(current2.phase);
           };
           const coverage = !policy.publisher ? { kind: "none", reason: "not-publisher" } : policy.level === "intent" ? { kind: "none", reason: "unprojectable" } : !sourceHead || sourceHead.base !== C || sourceRecord?.git?.base !== void 0 && sourceRecord.git.base !== C || !sourceFenceValid || !sourceHead.complete ? { kind: "none", reason: "starting" } : sourceHead.coverage.kind === "none" ? { kind: "none", reason: sourceHead.coverage.reason === "not-publisher" ? "not-publisher" : sourceHead.coverage.reason === "intent" ? "intent" : "starting" } : sourceHead.excluded.length ? { kind: "none", reason: "unprojectable" } : { kind: "all" };
           const entries = /* @__PURE__ */ new Map();
@@ -41564,7 +41564,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       if (error2 instanceof HubError && error2.reason === "version") throw new RoomdError(error2.message, 2);
       return false;
     });
-    const epoch = Number(process.env.ROOM_NAME_EPOCH);
+    const epoch2 = Number(process.env.ROOM_NAME_EPOCH);
     const commonDir2 = await gitCommonDir(options.dir);
     chosen = await timed("name", () => inPhase("name", () => chooseName({
       dir: options.dir,
@@ -41579,7 +41579,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       holder,
       workerId,
       takeover: options.takeover,
-      ...workerId && Number.isSafeInteger(epoch) ? { supersedes: epoch } : {},
+      ...workerId && Number.isSafeInteger(epoch2) ? { supersedes: epoch2 } : {},
       log: options.log ?? console.error
     })));
   } catch (e) {
@@ -49907,10 +49907,9 @@ import path60 from "node:path";
 import { randomBytes as randomBytes9 } from "node:crypto";
 function beginWorkerRegistries() {
   holders++;
-  fenced = false;
   let ended = false;
   return async () => {
-    if (ended || holders === 0) return;
+    if (ended) return;
     ended = true;
     if (--holders === 0) await shutdownWorkerRegistries();
   };
@@ -49935,22 +49934,27 @@ async function closeRegistryForDir(dir) {
   if (registry2) await retire(registry2);
 }
 async function shutdownWorkerRegistries() {
-  fenced = true;
-  await Promise.allSettled([...calls]);
-  registries.clear();
-  await Promise.all([...live].map(retire));
+  epoch++;
+  shuttingDown++;
+  try {
+    await Promise.allSettled([...calls]);
+    registries.clear();
+    await Promise.all([...live].map(retire));
+  } finally {
+    shuttingDown--;
+  }
 }
 function registryForDir(dir, sessionId) {
-  if (fenced) return Promise.reject(shuttingDown());
-  const call = openRegistry(dir, sessionId);
+  if (shuttingDown) return Promise.reject(shutdownRefusal());
+  const call = openRegistry(dir, sessionId, epoch);
   const tracked = call.catch(() => {
   }).finally(() => calls.delete(tracked));
   calls.add(tracked);
   return call;
 }
-async function openRegistry(dir, sessionId) {
+async function openRegistry(dir, sessionId, started) {
   const common = await gitCommonDir(dir);
-  if (fenced) throw shuttingDown();
+  if (epoch !== started) throw shutdownRefusal();
   if (!fs61.existsSync(path60.join(common, "HEAD"))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`);
   let pending2 = registries.get(common);
   if (!pending2) {
@@ -49973,9 +49977,9 @@ async function openRegistry(dir, sessionId) {
     };
     const opened = WorkerRegistry.open(common, { identity: identity4, watch: !process.env.VITEST }).then((registry2) => {
       live.add(registry2);
-      if (fenced) {
+      if (epoch !== started) {
         void retire(registry2);
-        throw shuttingDown();
+        throw shutdownRefusal();
       }
       return registry2;
     });
@@ -50095,7 +50099,7 @@ async function workerCarried(dir, env = process.env) {
   if (!id3 || !safeId(id3)) return void 0;
   return (await openWorkerReader(dir)).read(id3);
 }
-var registries, MAX_PROCESS_REGISTRIES, fenced, calls, live, retiring, shuttingDown, holders, admitted, WorkerRegistry;
+var registries, MAX_PROCESS_REGISTRIES, epoch, shuttingDown, calls, live, retiring, shutdownRefusal, holders, admitted, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
@@ -50112,16 +50116,13 @@ var init_worker_registry = __esm({
     init_worker_file_store();
     registries = /* @__PURE__ */ new Map();
     MAX_PROCESS_REGISTRIES = 24;
-    fenced = false;
+    epoch = 0;
+    shuttingDown = 0;
     calls = /* @__PURE__ */ new Set();
     live = /* @__PURE__ */ new Set();
     retiring = /* @__PURE__ */ new Map();
-    shuttingDown = () => new StorageRefused("unavailable", "this Room MCP is shutting down; no worker registry opens");
+    shutdownRefusal = () => new StorageRefused("unavailable", "this Room MCP is shutting down; no worker registry opens");
     holders = 0;
-    if (process.env.VITEST) globalThis[/* @__PURE__ */ Symbol.for("room.test.lifecycleResets")]?.add(() => {
-      fenced = false;
-      holders = 0;
-    });
     WorkerRegistry = class _WorkerRegistry {
       constructor(store, file) {
         this.store = store;
@@ -60221,7 +60222,7 @@ var mergeTurns = (result3, prev) => {
 };
 var hash = (value5) => createHash21("sha256").update(value5).digest("hex");
 var slotKey = (owner, kind, other, path79, subject = "") => [owner, kind, other, path79, subject].join("\0");
-var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
+var noticeId = (key2, epoch2, episode) => `cf:${hash(key2)}:${epoch2}${episode ? `:${episode}` : ""}`;
 var peerMerge = (slot) => slot.kind === "merge" && slot.path !== "*";
 var openInEpisode = (slot) => slot.settled === "conflict";
 var clearedInEpisode = (slot) => slot.settled === "clean" && slot.clearedFrom === "conflict";
@@ -60300,7 +60301,7 @@ var ConflictSlots = class {
     if (result3.status === "unknown" && prev?.status === "unknown" && prev.inputs === result3.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev;
     if (prev?.inputs === result3.inputs && prev.status === result3.status && prev.factId === result3.factId && prev.fence === fence && result3.status !== "unknown") return prev;
     const changedFact = result3.status === "conflict" || result3.status === "possible" ? prev?.settled !== result3.status || prev.factId !== result3.factId : false;
-    const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0);
+    const epoch2 = (prev?.epoch ?? 0) + (changedFact ? 1 : 0);
     const settled = result3.status === "unknown" ? prev?.settled ?? "none" : result3.status;
     const episode = result3.kind === "edit-in-claim" ? this.joinPossibleEpisode(key2, result3, settled, prev) : {};
     const unknownCount = result3.status === "unknown" ? Math.min(3, prev?.status === "unknown" ? Math.max(0, retryMinutes.findIndex((m) => (prev.retryAt ?? 0) - prev.checkedAt <= m * 6e4)) + 1 : 0) : 0;
@@ -60308,7 +60309,7 @@ var ConflictSlots = class {
       ...result3,
       ...result3.status === "unknown" && prev ? { factId: prev.factId } : {},
       settled,
-      epoch,
+      epoch: epoch2,
       fence,
       checkedAt: now,
       ...episode,
@@ -69052,14 +69053,14 @@ var PresenceEnd = class {
     }
     if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return;
     const decide = async () => {
-      const epoch = this.epoch;
+      const epoch2 = this.epoch;
       let leadsWorkers = true;
       try {
         leadsWorkers = await this.options.leadsWorkers();
       } catch (error2) {
         this.options.log?.(`worker state unavailable: ${String(error2)}`);
       }
-      if (!this.stopped && epoch === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
+      if (!this.stopped && epoch2 === this.epoch && this.idleMs() >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !leadsWorkers && !this.options.waiting()) {
         this.left = true;
         this.options.log?.(`idle ${Math.floor(idle / MINUTE)} min with nothing held: leaving presence (idle lease)`);
         try {
@@ -69245,8 +69246,8 @@ async function main() {
         leave: async (idle) => {
           for (const joined2 of [...tools.joinedSessions()].reverse()) await tools.drop(joined2, `idle ${Math.floor(idle / 6e4)} min with nothing held (idle lease)`);
         },
-        releaseHeld: async (idle, epoch) => {
-          for (const joined2 of tools.joinedSessions()) await releaseIdleHeld(joined2, epoch, idle, presence.mono);
+        releaseHeld: async (idle, epoch2) => {
+          for (const joined2 of tools.joinedSessions()) await releaseIdleHeld(joined2, epoch2, idle, presence.mono);
         },
         replayPending: async () => {
           for (const joined2 of tools.joinedSessions()) await releaseIdleHeld(joined2, "replay", presence.idleMs(), presence.mono, true);
