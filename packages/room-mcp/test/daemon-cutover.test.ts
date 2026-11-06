@@ -350,6 +350,18 @@ describe('drained daemon cutover', () => {
     owner(common, 200)
     await expect(requireDaemonRuntime(common, options)).rejects.toThrow(/pid 200, port 4402/)
   })
+  it.each([['pending', { pending: true }], ['unreadable', {}]] as const)('never blocks itself when its own identity probe is %s', async (_label, self) => {
+    const { common } = fixture()
+    // This process (pid 100) is the current session's MCP and the admitted worker's MCP; its own probe is uncertain.
+    write(path.join(common, 'room/sessions/current/session.json'), { session_id: 'current-thread', worker_id: 'w_current', host: 'codex', hostPid: 200, chain: [identity(200)] })
+    write(path.join(common, 'room/sessions/current/mcp.json'), { pid: 100, runtime: 'daemon-client' }) // incomplete self marker
+    write(path.join(common, 'room/registry/workers/current.json'), { id: 'w_current', name: 'Ada+current', host: 'codex',
+      phase: 'active', runs: [{ n: 1, launch: { outcome: 'launched', pid: 200, process: identity(200) } }] })
+    const options = { ...inspectOptions, currentPid: 100, currentSessionId: 'current-thread', currentWorkerId: 'w_current',
+      probe: (pid: number) => pid === 100 ? self : probe(pid) }
+    expect((await inspectDaemonCutover(common, options)).blocked).toBe(false)
+    await expect(requireDaemonRuntime(common, options)).resolves.toBeUndefined()
+  })
   it('does not exempt other live legacy workers when the current worker is admitted', async () => {
     const { common } = fixture()
     write(path.join(common, 'room/registry/workers/legacy.json'), { id: 'w_legacy', name: 'Ada+legacy', host: 'codex',

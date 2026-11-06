@@ -18216,14 +18216,10 @@ async function startLocalDaemon(opts) {
     });
     const port = previous?.port ?? deterministicPort(commonDir);
     phase("listen");
-    try {
-      relay = await open(port);
-    } catch (error) {
-      if (error.code !== "EADDRINUSE") throw error;
+    relay = await openPreferred(port, open, async () => {
       const occupant = await relayIdentity(port, key);
-      if (occupant?.health.local === true && occupant.health.clone === cloneId(commonDir)) throw new Error(`local Room owner still answers on port ${port}; drain it before starting the daemon`);
-      relay = await open(0);
-    }
+      return occupant?.health.local === true && occupant.health.clone === cloneId(commonDir);
+    });
     phase("listening");
     relay.setDraining(true);
     phase("lease recovery");
@@ -18246,6 +18242,16 @@ async function startLocalDaemon(opts) {
       await relay.abortUnpublished();
     } else lock.release();
     throw error;
+  }
+}
+async function openPreferred(port, open, ownerAnswers) {
+  try {
+    return await open(port);
+  } catch (error) {
+    const code = error.code;
+    if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
+    if (await ownerAnswers()) throw new Error(`local Room owner still answers on port ${port}; drain it before starting the daemon`);
+    return open(0);
   }
 }
 async function stopLocalDaemon(commonDir, timeoutMs = 15e3, expectedNonce) {

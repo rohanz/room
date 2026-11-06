@@ -127,13 +127,10 @@ export async function startLocalDaemon(opts: {
       } } })
     const port = previous?.port ?? deterministicPort(commonDir)
     phase('listen')
-    try { relay = await open(port) }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error
+    relay = await openPreferred(port, open, async () => {
       const occupant = await relayIdentity(port, key)
-      if (occupant?.health.local === true && occupant.health.clone === cloneId(commonDir)) throw new Error(`local Room owner still answers on port ${port}; drain it before starting the daemon`)
-      relay = await open(0)
-    }
+      return occupant?.health.local === true && occupant.health.clone === cloneId(commonDir)
+    })
     phase('listening')
     relay.setDraining(true) // unpublished listeners cannot attach clients
     phase('lease recovery')
@@ -162,6 +159,21 @@ export async function startLocalDaemon(opts: {
 // A native ACL check can use its full 20 s subprocess bound; allow dispatch overhead before declaring a
 // phase stalled. Only newly observed phase lines extend this window; no process can extend the hard cap.
 const STARTUP_PHASE_WAIT_MS = 25_000
+/**
+ * Listen on the clone's preferred port, else on any free port. The preferred port can be taken (EADDRINUSE) or, on
+ * Windows, inside a range the system reserves for Hyper-V and similar features (EACCES on a loopback port). Either
+ * way a free port serves, unless this clone's own Room owner still answers there.
+ */
+export async function openPreferred<T>(port: number, open: (port: number) => Promise<T>, ownerAnswers: () => Promise<boolean>): Promise<T> {
+  try { return await open(port) }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EADDRINUSE' && code !== 'EACCES') throw error
+    if (await ownerAnswers()) throw new Error(`local Room owner still answers on port ${port}; drain it before starting the daemon`)
+    return open(0)
+  }
+}
+
 const STARTUP_HARD_CAP_MS = 60_000
 const STARTUP_LOG_BYTES = 1024
 function startupLog(commonDir: string): string {

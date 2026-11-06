@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Codex workers no longer block every later join after the daemon cutover.** A running Codex worker on the daemon was counted as a live legacy client, so each new worker in the clone was refused with "drain required; drain record present". The cutover learned that a worker had moved to the daemon only from a hook-written session record, and Codex workers have none. Once a worker's MCP is admitted, its daemon-client marker names the worker and the host identity admission recorded; the cutover counts the worker as upgraded only when the marker's writer is alive by full identity and that host is exactly the worker's recorded launch or reported host. A refused re-admission withdraws the claim. Workers already running on 0.17.38 or 0.17.39 keep blocking until they finish or restart on this release.
+- **The local daemon starts when Windows reserves its preferred port.** The daemon listens on a port derived from the clone and fell back to any free port only when that port was in use. Windows reserves port ranges for Hyper-V and similar features, where listening is refused with `EACCES`, and the daemon then failed to start. A refused or occupied preferred port now falls back to a free port, unless this clone's own Room owner still answers there.
 
 ## 0.17.39
 
