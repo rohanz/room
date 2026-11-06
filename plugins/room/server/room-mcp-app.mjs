@@ -1661,6 +1661,19 @@ import fs6 from "node:fs";
 import os from "node:os";
 import path7 from "node:path";
 import { execFile as execFile3 } from "node:child_process";
+async function windowsDriveOnce(drive) {
+  const root = `${drive}\\`;
+  const key2 = `${drive}:${(await fs6.promises.stat(root)).dev}`;
+  let answer = driveAnswers.get(key2);
+  if (!answer) {
+    answer = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS);
+    driveAnswers.set(key2, answer);
+    answer.catch(() => {
+      if (driveAnswers.get(key2) === answer) driveAnswers.delete(key2);
+    });
+  }
+  return answer;
+}
 function synchronizedRoot(file, readers) {
   const home = readers.home(), paths = readers.platform === "win32" ? path7.win32 : path7.posix;
   const roots = [
@@ -1745,7 +1758,7 @@ async function detectFilesystem(target, readers = systemFilesystemReaders) {
   }
   return result("unknown", `${statfs}; unsupported platform ${readers.platform}`, file);
 }
-var QUALIFIED, COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders, result, LINUX_NETWORK, LINUX_LOCAL;
+var QUALIFIED, COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, driveAnswers, systemFilesystemReaders, result, LINUX_NETWORK, LINUX_LOCAL;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
@@ -1762,13 +1775,14 @@ var init_filesystem = __esm({
       );
     });
     WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
+    driveAnswers = /* @__PURE__ */ new Map();
     systemFilesystemReaders = {
       platform: process.platform,
       realpath: (file) => fs6.promises.realpath(file),
       statfsType: (file) => fs6.promises.statfs(file).then((stat4) => stat4.type, () => void 0),
       macMounts: () => run("/sbin/mount", []),
       linuxMountinfo: () => fs6.promises.readFile("/proc/self/mountinfo", "utf8"),
-      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
+      windowsDrive: (drive) => windowsDriveOnce(drive),
       home: () => os.homedir(),
       env: process.env
     };
@@ -26804,6 +26818,15 @@ async function assertLegacyReady(commonDir2, gate = storageGate(commonDir2)) {
   if (legacyImportRequired(gate.commonDir, status.legacyImport, status.gate))
     throw new StorageRefused("maintenance", "offline legacy import required", legacyImportRemedy(gate.commonDir));
 }
+function mcpRuntimeCheck() {
+  const check = runtimeCheck ??= preflight("mcp");
+  void check.then((result3) => {
+    if (!result3.ok && runtimeCheck === check) runtimeCheck = void 0;
+  }, () => {
+    if (runtimeCheck === check) runtimeCheck = void 0;
+  });
+  return check;
+}
 async function storageRegistration(commonDir2) {
   const gate = storageGate(commonDir2), common = gate.commonDir;
   let pending2 = registrations.get(common);
@@ -26814,7 +26837,7 @@ async function storageRegistration(commonDir2) {
   const timedOut = () => expired || performance.now() >= deadline;
   let timer;
   const work = async () => {
-    const evidence = await preflight("mcp", { commonDir: common });
+    const evidence = await mcpRuntimeCheck();
     if (!evidence.ok) throw new StorageRefused("unavailable", evidence.detail, evidence.remedy);
     if (timedOut()) throw new StorageRefused("unavailable", "storage startup check exceeded 10 s");
     const status = await gate.status();
@@ -27021,7 +27044,7 @@ async function admitStorageHelper(pid) {
     await finishAdmission(gate, ticket);
   };
 }
-var lifecycleEnded, registrations, startups, ambient, reads, gates, drainingSweep, drainRequested, drainWatch, outstanding, settleOutstanding;
+var lifecycleEnded, registrations, startups, ambient, reads, gates, runtimeCheck, drainingSweep, drainRequested, drainWatch, outstanding, settleOutstanding;
 var init_storage_admission = __esm({
   "packages/room-mcp/src/storage-admission.ts"() {
     "use strict";

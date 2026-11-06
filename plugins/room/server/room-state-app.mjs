@@ -789,7 +789,20 @@ var init_protocol = __esm({
 import fs6 from "node:fs";
 import os from "node:os";
 import { execFile as execFile3 } from "node:child_process";
-var COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders;
+async function windowsDriveOnce(drive) {
+  const root = `${drive}\\`;
+  const key = `${drive}:${(await fs6.promises.stat(root)).dev}`;
+  let answer = driveAnswers.get(key);
+  if (!answer) {
+    answer = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS);
+    driveAnswers.set(key, answer);
+    answer.catch(() => {
+      if (driveAnswers.get(key) === answer) driveAnswers.delete(key);
+    });
+  }
+  return answer;
+}
+var COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, driveAnswers, systemFilesystemReaders;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
@@ -805,13 +818,14 @@ var init_filesystem = __esm({
       );
     });
     WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
+    driveAnswers = /* @__PURE__ */ new Map();
     systemFilesystemReaders = {
       platform: process.platform,
       realpath: (file) => fs6.promises.realpath(file),
       statfsType: (file) => fs6.promises.statfs(file).then((stat) => stat.type, () => void 0),
       macMounts: () => run("/sbin/mount", []),
       linuxMountinfo: () => fs6.promises.readFile("/proc/self/mountinfo", "utf8"),
-      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
+      windowsDrive: (drive) => windowsDriveOnce(drive),
       home: () => os.homedir(),
       env: process.env
     };

@@ -67,13 +67,27 @@ var run = (command, args, env, timeout = COMMAND_TIMEOUT_MS) => new Promise((res
   );
 });
 var WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
+var driveAnswers = /* @__PURE__ */ new Map();
+async function windowsDriveOnce(drive) {
+  const root = `${drive}\\`;
+  const key = `${drive}:${(await fs.promises.stat(root)).dev}`;
+  let answer = driveAnswers.get(key);
+  if (!answer) {
+    answer = run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS);
+    driveAnswers.set(key, answer);
+    answer.catch(() => {
+      if (driveAnswers.get(key) === answer) driveAnswers.delete(key);
+    });
+  }
+  return answer;
+}
 var systemFilesystemReaders = {
   platform: process.platform,
   realpath: (file) => fs.promises.realpath(file),
   statfsType: (file) => fs.promises.statfs(file).then((stat) => stat.type, () => void 0),
   macMounts: () => run("/sbin/mount", []),
   linuxMountinfo: () => fs.promises.readFile("/proc/self/mountinfo", "utf8"),
-  windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
+  windowsDrive: (drive) => windowsDriveOnce(drive),
   home: () => os.homedir(),
   env: process.env
 };
