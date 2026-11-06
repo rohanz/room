@@ -36,3 +36,18 @@ Hooks, real-host launch, event-loop/queue delay, SQLite contention and WAL behav
 | 500 | admission | 115.3 | 3290 |
 
 A first slice-1 build regressed status to 3,116 / 31,016 calls by building full facts per worker; status now reads record-only snapshots with precomputed liveness, and a regression test bounds its call count.
+
+## Linux (node:22-trixie container, same harness, three samples)
+
+The pre-facade script (commit 51994705) on main 0.17.35 and the current script on slice 1, in one container:
+
+| Workers | Phase | main fs calls | slice 1 fs calls |
+|---|---|---|---|
+| 50 | startup | 2575 | 2657 |
+| 50 | status | 302 | 304 |
+| 50 | admission | 513 | 515 |
+| 500 | startup | 6789 | 6839 |
+| 500 | status | 3002 | 3004 |
+| 500 | admission | 3213 | 3215 |
+
+Startup carries about 2,000 more module-loading calls on Linux than on macOS, so the regression test bounds each phase's per-worker cost (startup 11.0 macOS / 9.3 Linux; status and admission 6.0 on both) rather than absolute startup counts.

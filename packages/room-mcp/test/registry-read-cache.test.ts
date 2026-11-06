@@ -126,12 +126,21 @@ describe('worker registry read cache', () => {
     for (const row of summaries) {
       expect(row.successfulSamples).toBe(1)
       expect(row.failedSamples).toBe(0)
-      // Startup baseline: 11N + 33; status: 6N + 2; admission: 6N + 290. Allow
-      // constant boundary overhead, but no repeated run inventories/quarantine scans on open,
-      // or per-worker run/report/exit inventory when the record decides occupancy.
       expect(row.fsCalls).toHaveLength(1)
-      expect(row.fsCalls[0]).toBeLessThanOrEqual(row.phase === 'startup' ? 11 * row.workers + 50
-        : 6 * row.workers + (row.phase === 'status' ? 10 : 300))
+    }
+    // Per-worker cost, measured between 50 and 500 workers so the fixed module-loading cost (about 2,000 calls
+    // on Linux, under 100 on macOS) drops out. Pre-facade baselines: startup 11.0 per worker on macOS and 9.3 on
+    // Linux; status and admission 6.0 on both. These bounds catch repeated run inventories or quarantine scans
+    // on open, and per-worker run/report/exit reads when the record alone decides occupancy.
+    const calls = (phase: string, workers: number) => summaries.find(row => row.phase === phase && row.workers === workers)!.fsCalls[0] as number
+    const perWorker = (phase: string) => (calls(phase, 500) - calls(phase, 50)) / 450
+    expect(perWorker('startup')).toBeLessThanOrEqual(11.5)
+    expect(perWorker('status')).toBeLessThanOrEqual(6.2)
+    expect(perWorker('admission')).toBeLessThanOrEqual(6.2)
+    // Status and admission have no platform-dependent fixed cost, so their absolute budgets hold everywhere.
+    for (const workers of [50, 500]) {
+      expect(calls('status', workers)).toBeLessThanOrEqual(6 * workers + 10)
+      expect(calls('admission', workers)).toBeLessThanOrEqual(6 * workers + 300)
     }
   })
 
