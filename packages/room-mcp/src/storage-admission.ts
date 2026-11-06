@@ -60,8 +60,7 @@ async function acquire(context: Admission, commonDir: string): Promise<Ticket> {
   if (context.acquiring && context.commonDir === common) return context.acquiring
   context.commonDir = common
   context.acquiring = (async () => {
-    const { gate, registration } = await storageRegistration(common)
-    const ticket = await admitTracked(gate, registration, context.kind)
+    const { gate, ticket } = await admitTracked(common, context.kind)
     if (!context.active) { await finishAdmission(gate, ticket); throw new StorageRefused('unavailable', 'operation ended before admission') }
     context.gate = gate
     context.ticket = ticket
@@ -131,13 +130,10 @@ function unregisterDraining(): Promise<void> {
   drainingSweep = (async () => {
     do {
       drainRequested = false
-      for (const [common, pending] of registrations) {
+      for (const [common, pending] of [...registrations]) {
         const state = await pending.catch(() => undefined)
         if (!state || outstanding.has(common) || (await state.gate.observe()).phase !== 'draining') continue
-        try {
-          await state.gate.unregister(state.registration)
-          if (registrations.get(common) === pending) registrations.delete(common)
-        } catch (error) { if (!(error instanceof StorageRefused && error.reason === 'busy')) throw error }
+        await retireRegistration(common, pending, state)
       }
     } while (drainRequested)
   })().finally(() => { drainingSweep = undefined })
@@ -158,10 +154,29 @@ const settleOutstanding = (common: string, delta: number) => {
   const next = (outstanding.get(common) ?? 0) + delta
   if (next > 0) outstanding.set(common, next); else outstanding.delete(common)
 }
-async function admitTracked(gate: StorageGate, registration: Registration, kind: OperationKind, options?: AdmitOptions): Promise<Ticket> {
-  settleOutstanding(gate.commonDir, 1)
-  try { return await gate.admit(registration, kind, options) }
-  catch (error) { settleOutstanding(gate.commonDir, -1); throw error }
+/**
+ * Counted before the registration is read: a sweep or close that rechecks the count after its last await either sees
+ * this admission and keeps the registration, or has already retired it from the cache so this one registers afresh.
+ */
+async function admitTracked(common: string, kind: OperationKind, options?: AdmitOptions): Promise<{ gate: StorageGate; ticket: Ticket }> {
+  settleOutstanding(common, 1)
+  try {
+    const { gate, registration } = await storageRegistration(common)
+    return { gate, ticket: await gate.admit(registration, kind, options) }
+  } catch (error) { settleOutstanding(common, -1); throw error }
+}
+/**
+ * Acknowledge by unregistering, unless an admission started meanwhile. The count is rechecked and the cache entry
+ * retired synchronously, with no await in between, before the unregister RPC; a refusal or failure restores it.
+ */
+async function retireRegistration(common: string, pending: Promise<ProcessRegistration>, state: ProcessRegistration): Promise<void> {
+  if (outstanding.has(common) || registrations.get(common) !== pending) return
+  registrations.delete(common)
+  try { await state.gate.unregister(state.registration) }
+  catch (error) {
+    if (!registrations.has(common)) registrations.set(common, pending)
+    if (!(error instanceof StorageRefused && error.reason === 'busy')) throw error
+  }
 }
 async function finishAdmission(gate: StorageGate, ticket: Ticket): Promise<void> {
   try { await gate.finish(ticket) }
@@ -172,16 +187,14 @@ async function finishAdmission(gate: StorageGate, ticket: Ticket): Promise<void>
 export async function closeStorageAdmissions(): Promise<void> {
   await Promise.allSettled([...startups])
   await drainingSweep
-  for (const [common, pending] of registrations) {
+  for (const [common, pending] of [...registrations]) {
     const state = await pending.catch(() => undefined)
     if (!state) continue
     // A clone deleted by its owner has no registration left to release. Never
     // recreate its Git directory merely to take an unregister guard.
     if (!fs.existsSync(common)) { registrations.delete(common); continue }
     // Work still running keeps its registration; the process exiting leaves it as recovery evidence.
-    if (outstanding.has(common)) continue
-    try { await state.gate.unregister(state.registration); registrations.delete(common) }
-    catch (error) { if (!(error instanceof StorageRefused && error.reason === 'busy')) throw error }
+    await retireRegistration(common, pending, state)
   }
   if (!registrations.size) { await closeStorageGates(); gates.clear() }
 }
@@ -192,8 +205,7 @@ export async function withAdmission<T>(commonDir: string, kind: OperationKind, f
   const common = storageGate(commonDir).commonDir, enclosing = ambient.getStore()
   // Nested work reuses the enclosing operation's ticket, acquiring a lazy scope's ticket at this first authority use.
   if (enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)) return fn(await acquire(enclosing, common))
-  const { gate, registration } = await storageRegistration(common)
-  const ticket = await admitTracked(gate, registration, kind)
+  const { gate, ticket } = await admitTracked(common, kind)
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
   try { return await ambient.run(context, () => fn(ticket)) }
   finally { context.active = false; await finishAdmission(gate, ticket) }
@@ -206,8 +218,7 @@ export async function detachedAdmission(commonDir: string, kind: OperationKind):
   const common = storageGate(commonDir).commonDir, enclosing = ambient.getStore()
   const parent = enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)
     ? await acquire(enclosing, common) : undefined
-  const { gate, registration } = await storageRegistration(common)
-  const ticket = await admitTracked(gate, registration, kind, { parent })
+  const { gate, ticket } = await admitTracked(common, kind, { parent })
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
   let started = false
   const finish = async () => { if (context.active) { context.active = false; await finishAdmission(gate, ticket) } }
@@ -283,8 +294,7 @@ export async function admitStorageHelper(pid: number): Promise<(() => Promise<vo
   if (!identity?.startTime || !identity.executable) throw new StorageRefused('unavailable', 'preview helper identity is unreadable')
   // The helper's ticket hangs off this operation's registration but carries the helper's own identity, so drain
   // keeps waiting while the helper lives even if this MCP has exited.
-  const { gate, registration } = await storageRegistration(common)
-  const ticket = await admitTracked(gate, registration, 'preview', { parent,
+  const { gate, ticket } = await admitTracked(common, 'preview', { parent,
     identity: { pid, startTime: identity.startTime, executable: identity.executable } })
   let done = false
   return async () => {

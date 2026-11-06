@@ -41,12 +41,16 @@ it('bounds the shutdown settle: hung background work is reported, not awaited fo
   execFileSync('git', ['-C', dir, 'init', '-q'])
   const room = new RoomDoc()
   const s = { room, dir } as Session
-  let stopped = false
-  const rooms = new Rooms({ primary: () => null, setPrimary: () => {}, log: () => {}, attach: () => ({ stop() { stopped = true }, settled: () => new Promise<void>(() => {}) }) })
+  let stopped = false, release!: () => void
+  const hung = new Promise<void>(resolve => { release = resolve })
+  const rooms = new Rooms({ primary: () => null, setPrimary: () => {}, log: () => {}, attach: () => ({ stop() { stopped = true }, settled: () => hung }) })
   rooms.add(s, 'primary')
   rooms.remove(s)
   expect(stopped).toBe(true)
   const started = performance.now()
   expect(await rooms.settle(100)).toBe(false)
   expect(performance.now() - started).toBeLessThan(2000)
+  // Once the hung work ends, the same settle completes, the tracked registry open included.
+  release()
+  expect(await rooms.settle(30_000)).toBe(true)
 })

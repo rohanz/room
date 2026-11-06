@@ -419,3 +419,38 @@ it('a production preview helper keeps drain blocked after its MCP is killed, unt
     if (helperPid) { try { process.kill(-helperPid, 'SIGKILL') } catch { /* gone */ } }
   }
 }, 60_000)
+
+it('a draining sweep never retires the registration that an admission started meanwhile will use', async () => {
+  const { common } = fixture()
+  await withAdmission(common, 'reconcile', async () => {}) // registered and idle
+  const gate = storageGate(common)
+  // Pause the sweep right after it reads `draining`, before it decides to acknowledge.
+  const observe = gate.observe.bind(gate), observed = deferred(), resume = deferred()
+  let paused = false
+  vi.spyOn(gate, 'observe').mockImplementation(async () => {
+    const value = await observe()
+    if (!paused && value.phase === 'draining') { paused = true; observed.resolve(); await resume.promise }
+    return value
+  })
+  const unregister = vi.spyOn(gate, 'unregister')
+  // Hold the new admission's RPC until any unregister the sweep issued has completed.
+  const admit = gate.admit.bind(gate), admitting = deferred(), proceed = deferred()
+  vi.spyOn(gate, 'admit').mockImplementation(async (...args: Parameters<typeof admit>) => {
+    admitting.resolve(); await proceed.promise
+    await Promise.allSettled(unregister.mock.results.map(result => result.value))
+    return admit(...args)
+  })
+  const m = await maintenance(common)
+  try {
+    await m.gate.drain(m.owner)
+    await observed.promise // the 1 s idle sweep is paused inside its phase read
+    await m.gate.reopen(m.owner)
+    const operation = withAdmission(common, 'reconcile', async () => 'ran')
+    await admitting.promise // counted and registration read; its admit RPC is held
+    resume.resolve()
+    for (let n = 0; n < 5; n++) await new Promise(resolve => setImmediate(resolve))
+    proceed.resolve()
+    await expect(operation).resolves.toBe('ran')
+    expect(unregister).not.toHaveBeenCalled()
+  } finally { resume.resolve(); proceed.resolve(); await m.close() }
+})
