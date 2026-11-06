@@ -265,37 +265,64 @@ export class FileStorageGate implements StorageGate {
     return result
   }
 
+  /**
+   * Lock-free admission against the guarded drain transition. The ticket is published atomically, then the gate is
+   * read again: a drain publishes its generation under the guard before scanning tickets, so either that scan sees
+   * this ticket, or this re-read sees the drain and the ticket is withdrawn before anything can act on it.
+   */
   async admit(registration: Registration, kind: OperationKind, options: AdmitOptions = {}): Promise<Ticket> {
     const holder = registration.instance.nonce
-    return this.guarded(() => {
-      const gate = this.requireGate()
-      const current = this.readRegistration(holder)
-      if (!current) throw new StorageRefused('unavailable', 'this process is not registered with the storage gate')
+    const current = this.readRegistrationOrRefuse(holder)
+    const parent = options.parent
+    const permitted = (gate: StorageGateRecord): number => {
       this.compatibility(gate, current.build)
-      let generation = gate.generation
-      const parent = options.parent
-      if (parent) {
-        // A detached child inherits its live parent's generation, so a drain waits for it too.
-        if (!fs.existsSync(this.ticketFile(parent.holder, parent.id)))
-          throw new StorageRefused('maintenance', 'parent operation already finished')
-        generation = parent.generation
-      }
+      // A detached child inherits its live parent's generation, so a drain waits for it too.
+      if (parent && !fs.existsSync(this.ticketFile(parent.holder, parent.id)))
+        throw new StorageRefused('maintenance', 'parent operation already finished')
       if (gate.phase !== 'legacy') {
         const predecessor = gate.phase === 'draining' && parent && parent.generation <= (gate.drainingFrom ?? 0)
         if (!predecessor) throw new StorageRefused(gate.phase === 'active' ? 'incompatible' : 'maintenance',
           `Room storage maintenance in progress (generation ${gate.generation}, ${gate.phase})`, REMEDY)
       }
-      if (this.ticketNames().length >= this.limits.tickets)
+      return parent ? parent.generation : gate.generation
+    }
+    const capacity = () => {
+      if (this.ticketNames().length > this.limits.tickets)
         throw new StorageRefused('capacity', `${this.limits.tickets} operations are in progress for this clone`, 'retry after current operations finish')
-      // One durable marker per registration, before any non-durable ticket can authorize effects.
-      // It survives ticket loss and prevents dead-holder pruning from skipping lifecycle recovery.
-      if (!current.hasHeldTickets) writeAtomic(this.registrationFile(holder), { ...current, hasHeldTickets: true })
-      const ticket: Ticket = { v: 1, id: randomBytes(16).toString('hex'), holder, identity: {
-        pid: registration.instance.pid, startTime: registration.instance.startTime, executable: registration.instance.executable },
-        kind, generation, ...(parent ? { parent: parent.id } : {}), admittedAt: this.now() }
-      if (!createExclusive(this.ticketFile(holder, ticket.id), ticket, { durable: false })) throw new StorageRefused('unavailable', 'ticket id collision')
-      return ticket
-    })
+    }
+    const before = this.requireGate()
+    const generation = permitted(before)
+    if (this.ticketNames().length >= this.limits.tickets)
+      throw new StorageRefused('capacity', `${this.limits.tickets} operations are in progress for this clone`, 'retry after current operations finish')
+    // One durable marker per registration, before any non-durable ticket can authorize effects.
+    // It survives ticket loss and prevents dead-holder pruning from skipping lifecycle recovery.
+    if (!current.hasHeldTickets) writeAtomic(this.registrationFile(holder), { ...current, hasHeldTickets: true })
+    const ticket: Ticket = { v: 1, id: randomBytes(16).toString('hex'), holder, identity: {
+      pid: registration.instance.pid, startTime: registration.instance.startTime, executable: registration.instance.executable },
+      kind, generation, ...(parent ? { parent: parent.id } : {}), admittedAt: this.now() }
+    const file = this.ticketFile(holder, ticket.id)
+    if (!createExclusive(file, ticket, { durable: false })) throw new StorageRefused('unavailable', 'ticket id collision')
+    try {
+      const after = this.requireGate()
+      if (after.generation !== before.generation || after.phase !== before.phase) {
+        // Any maintenance between the two reads invalidates decisions made under the first.
+        if (!parent) throw new StorageRefused('maintenance', `Room storage maintenance in progress (generation ${after.generation}, ${after.phase})`, REMEDY)
+        permitted(after)
+      }
+      capacity()
+    } catch (error) {
+      try { fs.unlinkSync(file) } catch (unlinkError) { if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError }
+      throw error
+    }
+    return ticket
+  }
+
+  private readRegistrationOrRefuse(holder: string): Registration {
+    let current: Registration | undefined
+    try { current = this.readRegistration(holder) }
+    catch (error) { throw new StorageRefused('unavailable', bounded(`storage registration unreadable: ${(error as Error).message}`)) }
+    if (!current) throw new StorageRefused('unavailable', 'this process is not registered with the storage gate')
+    return current
   }
 
   async finish(ticket: Ticket): Promise<void> {

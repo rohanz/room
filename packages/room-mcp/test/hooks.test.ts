@@ -1,3 +1,4 @@
+import { closeStorageAdmissions } from '../src/storage-admission.js'
 import { deleteFixture, publishFixture } from './fixtures/manifest.js'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -41,7 +42,10 @@ beforeAll(() => {
   writeFileSync(join(dir, 'api/tax.py'), 'x = 1\n')
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
-beforeEach(() => {
+beforeEach(async () => {
+  // Every test reuses this clone and starts from empty Room state: release this process's storage registration
+  // through the product's teardown before deleting the files it refers to.
+  await closeStorageAdmissions()
   vi.stubEnv('ROOM_HOST', '')
   vi.stubEnv('ROOM_WORKER_HOST', '')
   vi.stubEnv('ROOM_WORKER_ID', undefined)

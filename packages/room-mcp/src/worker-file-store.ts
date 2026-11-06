@@ -160,6 +160,8 @@ function failedByHost(record: WorkerRecord, status: WorkerStatusResult): WorkerS
 
 const GUARD_WAIT_MS = 30_000
 const GUARD_POLL_MS = 25
+/** Quiet period before a watched registry change triggers a background reconcile. */
+const WATCH_SETTLE_MS = 100
 const guardBusy = (error: unknown): boolean => error instanceof Error && error.message.startsWith('lease guard busy: ')
 const pauseForGuard = async (deadline: number, error: unknown): Promise<void> => {
   if (!guardBusy(error)) throw error
@@ -192,7 +194,9 @@ export class FileWorkerStore {
   private readonly watchers: fs.FSWatcher[] = []
   private readonly heldOperations = new Map<string, { op: string; callToken: string }>()
   private timer?: ReturnType<typeof setInterval>
-  private watchQueued = false
+  private watchSettle?: ReturnType<typeof setTimeout>
+  private backgroundRun?: Promise<void>
+  private backgroundAgain = false
   private backgroundClosed = true
   private generation = 0
   private reopening?: Promise<void>
@@ -239,25 +243,35 @@ export class FileWorkerStore {
   static async openReader(commonDir: string, options: RegistryOptions = {}): Promise<FileWorkerStore> {
     return new FileWorkerStore(storageGate(commonDir).commonDir, { ...options, migrate: false, watch: false }, true)
   }
-  close(): void { this.backgroundClosed = true; clearInterval(this.timer); this.timer = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
+  close(): void { this.backgroundClosed = true; clearInterval(this.timer); this.timer = undefined; clearTimeout(this.watchSettle); this.watchSettle = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
+  /**
+   * Watch/timer reconciliation is single-flight: one run at a time, and changes observed during a run request exactly
+   * one more run after it. Admission makes each run asynchronous from its first step, so microtask coalescing alone
+   * would start a full registry scan per filesystem event.
+   */
   private backgroundReconcile(): void {
-    void withoutAdmission(async () => {
-      if (this.backgroundClosed || (await storageGate(this.commonDir).observe()).phase !== 'legacy' || this.backgroundClosed) return
-      await this.reconcile()
-    }).catch(e => { if (!(e instanceof StorageRefused && e.reason === 'maintenance')) process.stderr.write(`[room] registry reconcile: ${e}\n`) })
+    if (this.backgroundRun) { this.backgroundAgain = true; return }
+    this.backgroundRun = (async () => {
+      do {
+        this.backgroundAgain = false
+        await withoutAdmission(async () => {
+          if (this.backgroundClosed || (await storageGate(this.commonDir).observe()).phase !== 'legacy' || this.backgroundClosed) return
+          await this.reconcile()
+        }).catch(e => { if (!(e instanceof StorageRefused && e.reason === 'maintenance')) process.stderr.write(`[room] registry reconcile: ${e}\n`) })
+      } while (this.backgroundAgain && !this.backgroundClosed)
+    })().finally(() => { this.backgroundRun = undefined })
   }
   private watch(): void {
     this.backgroundClosed = false
     for (const dir of [this.root, path.join(this.root, 'runs')]) {
       privateStateDirectory(dir)
       try {
+        // A burst of registry writes (often this process's own, already announced through changed()) settles into
+        // one scan once the directory has been quiet briefly, rather than racing the next call.
         const watcher = fs.watch(dir, { persistent: false }, () => {
-          if (this.watchQueued) return
-          this.watchQueued = true
-          queueMicrotask(() => {
-            this.watchQueued = false
-            this.backgroundReconcile()
-          })
+          clearTimeout(this.watchSettle)
+          this.watchSettle = setTimeout(() => { this.watchSettle = undefined; this.backgroundReconcile() }, WATCH_SETTLE_MS)
+          this.watchSettle.unref()
         })
         watcher.on('error', e => { watcher.close(); process.stderr.write(`[room] registry watch: ${e}; polling remains active\n`) })
         watcher.unref()

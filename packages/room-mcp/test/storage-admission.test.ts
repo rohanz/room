@@ -16,6 +16,7 @@ import { admitStorageHelper, closeStorageAdmissions, currentAdmission, detachedA
 import * as runtime from '@room/local-state/preflight'
 import * as gateModule from '@room/local-state/gate'
 import { previewProcessGate } from '../src/tools/files.js'
+import { openAdmittedStore } from './fixtures/storage-admission.js'
 
 const roots: string[] = []
 function fixture() {
@@ -332,4 +333,24 @@ it.each(['done', 'kept'] as const)('keeps delayed %s publication admitted after 
     expect((await m.gate.drain(m.owner)).complete).toBe(true)
     await m.gate.reopen(m.owner)
   } finally { release.resolve(); await m.close(); room.doc.destroy() }
+})
+
+it('coalesces a burst of background reconcile triggers into one run plus one rerun', async () => {
+  const { common } = fixture()
+  const { FileWorkerStore } = await import('../src/worker-file-store.js')
+  const store = await openAdmittedStore(common, () => FileWorkerStore.open(common, { watch: false }))
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let runs = 0
+  const reconcile = vi.spyOn(FileWorkerStore.prototype, 'reconcile').mockImplementation(async () => { runs++; await gate })
+  try {
+    const background = store as unknown as { backgroundReconcile(): void; backgroundClosed: boolean; backgroundRun?: Promise<void> }
+    background.backgroundClosed = false
+    for (let n = 0; n < 6; n++) background.backgroundReconcile()
+    await vi.waitFor(() => expect(runs).toBe(1))
+    for (let n = 0; n < 6; n++) background.backgroundReconcile()
+    release()
+    await background.backgroundRun
+    expect(runs).toBe(2)
+  } finally { reconcile.mockRestore() }
 })

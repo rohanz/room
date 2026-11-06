@@ -448,3 +448,31 @@ it('retains dead tickets and registration evidence when durable recovery auditin
   await gate.resolveDead(owner, id, 'holder reconciled')
   expect((await gate.drain(owner)).complete).toBe(true)
 })
+
+describe('lock-free admission', () => {
+  it('withdraws a ticket when a drain publishes between the ticket write and the re-read', async () => {
+    const dir = commonDir(), gate = openStorageGate(dir, world())
+    const reg = await gate.register({ instance: token(), kind: 'mcp', release: 'x' })
+    const owner = await maintenance(gate, dir)
+    const link = fs.linkSync.bind(fs)
+    let drained = false
+    const spy = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+      link(from, to)
+      // The ticket is now visible; a drain lands before the admitter re-reads the gate.
+      if (!drained && String(to).includes(`${path.sep}tickets${path.sep}`)) {
+        drained = true
+        const record = gateRecord(dir)
+        fs.writeFileSync(path.join(dir, STORAGE_PATHS.gate), JSON.stringify({ ...record, generation: record.generation + 1, phase: 'draining', drainingFrom: record.generation, owner }))
+      }
+    })
+    try {
+      await expect(gate.admit(reg, 'collect')).rejects.toMatchObject({ reason: 'maintenance' })
+    } finally { spy.mockRestore() }
+    expect(drained).toBe(true)
+    expect(fs.readdirSync(path.join(dir, STORAGE_PATHS.tickets))).toEqual([])
+    // The withdrawn admission left no ticket; its marked registration still blocks until the MCP unregisters.
+    expect((await gate.drain(owner)).complete).toBe(false)
+    await gate.unregister(reg)
+    expect((await gate.drain(owner)).complete).toBe(true)
+  })
+})
