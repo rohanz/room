@@ -249,7 +249,8 @@ export interface GateStatus {
 /**
  * The whole-operation admission barrier for one canonical common directory (`openStorageGate(commonDir)` in gate.ts
  * canonicalizes it and requires HEAD before returning). Every call holds the guard only for short synchronous file
- * work and never waits while holding it. Admission and drain transition serialize on the same guard.
+ * work and never waits while holding it. Phase/generation transitions take the guard; admission publishes its
+ * ticket and re-reads the gate (lock-free), so a drain either sees the ticket or the admitter withdraws it.
  */
 export interface StorageGate {
   readonly commonDir: string
