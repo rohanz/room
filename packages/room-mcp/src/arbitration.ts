@@ -13,6 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { privateStateDirectory } from '@room/relay'
 import { writeAtomic } from './leases.js'
 import { probeOwnProcess } from './worker-process.js'
+import { probeProcess } from '@room/relay/process'
 import type { SessionBinding } from './binding.js'
 import { HOOK_LEASE_MS, type Batch, type Ledger } from './ledger.js'
 import type { HookItem } from './tools/index.js'
@@ -35,6 +36,9 @@ export interface ArbitrationOptions {
   rebindMs?: number
   /** The hook lease the ledger applies, reported to the hook. */
   hookLeaseMs?: number
+  /** The Room worker this MCP serves, if any. The daemon cutover matches it to the worker's launched host by this
+   *  process's parent identity, since a Codex worker has no hook-written session record to name its worker. */
+  workerId?: string
 }
 
 export interface Arbitration { readonly port: number; close(): Promise<void> }
@@ -112,6 +116,10 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve() }) })
   const port = (server.address() as net.AddressInfo).port
   const self = probeOwnProcess()
+  // The parent is the host that started this MCP; it does not change while this process lives.
+  const parentInfo = o.workerId && process.ppid > 1 ? probeProcess(process.ppid) : undefined
+  const worker = o.workerId && parentInfo?.startTime && parentInfo.executable
+    ? { id: o.workerId, host: { pid: process.ppid, startTime: parentInfo.startTime, executable: parentInfo.executable } } : undefined
   let written: string | undefined
   const publish = () => {
     const dir = o.binding.dir()
@@ -122,7 +130,7 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
     try {
       privateStateDirectory(dir)
       const file = path.join(dir, 'mcp.json')
-      writeAtomic(file, { port, key, pid: process.pid, startTime: self?.startTime ?? '', executable: self?.executable ?? '', runtime: 'daemon-client', hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: pluginManifest.version })
+      writeAtomic(file, { port, key, pid: process.pid, startTime: self?.startTime ?? '', executable: self?.executable ?? '', runtime: 'daemon-client', ...(worker ? { worker } : {}), hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: pluginManifest.version })
       fs.chmodSync(file, 0o600)
       written = file
     } catch (e) { o.log?.(`arbitration: could not publish its endpoint: ${e instanceof Error ? e.message : String(e)}`) }

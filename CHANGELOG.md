@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Codex workers no longer block every later join after the daemon cutover.** A running Codex worker on the daemon was counted as a live legacy client, so each new worker in the clone was refused with "drain required; drain record present". The cutover learned that a worker had moved to the daemon only from a hook-written session record, and Codex workers have none. A worker's MCP now names its worker and the host process that started it in its daemon-client marker; the cutover counts the worker as upgraded only when that marker is alive and its host is exactly the worker's recorded launch process. Workers already running on 0.17.38 or 0.17.39 keep blocking until they finish or restart on this release.
+
 ## 0.17.39
 
 - **`room_state check=true` stays readable on a used clone.** The cutover section listed every recorded session, MCP and worker, one row each (about 95,000 characters on a clone with 290 records, more than an agent's tool output allows). It now shows each record that blocks or that a person resolved, and one count line per kind for the rest. What the cutover inspects and records is unchanged.

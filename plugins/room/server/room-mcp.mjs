@@ -33457,6 +33457,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   const upgradedWorkers = /* @__PURE__ */ new Set();
   if (options.currentWorkerId) upgradedWorkers.add(options.currentWorkerId);
   const workerProcesses = /* @__PURE__ */ new Map();
+  const workerHosts = /* @__PURE__ */ new Map();
   const sessions = path30.join(room, "sessions");
   for (const entry of sessionEntries(sessions, commonDir2)) {
     if (entry.kind === "issue") {
@@ -33468,6 +33469,8 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     const runtime = mcp?.pid === currentPid || mcp?.runtime === "daemon-client" && alive(identityOf(mcp)) === "alive" ? "daemon-client" : "legacy";
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId || !!options.currentWorkerId && session.worker_id === options.currentWorkerId);
     if ((runtime === "daemon-client" || currentBinding) && typeof session?.worker_id === "string") upgradedWorkers.add(session.worker_id);
+    const served = runtime === "daemon-client" && object4(mcp?.worker) && typeof mcp.worker.id === "string" ? identityOf(mcp.worker.host) : void 0;
+    if (served?.startTime && served.executable) workerHosts.set(mcp.worker.id, [...workerHosts.get(mcp.worker.id) ?? [], served]);
     const host2 = typeof session?.host === "string" ? session.host : void 0;
     const cwd = typeof session?.cwd === "string" ? session.cwd : void 0;
     if (mcp) add2({ kind: "mcp", source: path30.join(dir, "mcp.json"), label: String(session?.session_id ?? sid), cwd, host: host2, runtime }, identityOf(mcp));
@@ -33487,7 +33490,9 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     const processClaim = has(launch, "pid") || has(launch, "process") || report?.hostProcess != null || launch != null && (!object4(launch) || !["never", "imported"].includes(launch.outcome));
     if (!processClaim && (launch?.outcome === "never" || ["retired", "abandoned"].includes(worker.phase))) continue;
     const identity4 = identityOf(launch?.process) ?? identityOf(report?.hostProcess) ?? identityOf({ pid: launch?.pid });
-    const runtime = upgradedWorkers.has(worker.id) ? "daemon-client" : "legacy";
+    const launched = [identityOf(launch?.process), identityOf(report?.hostProcess)].filter((v) => !!v?.startTime);
+    const servedHost = (workerHosts.get(worker.id) ?? []).some((host2) => launched.some((v) => v.pid === host2.pid && sameStartTime(v.startTime, host2.startTime) && v.executable === host2.executable));
+    const runtime = upgradedWorkers.has(worker.id) || servedHost ? "daemon-client" : "legacy";
     workerProcesses.set(worker.id, { identity: identity4, runtime, processClaim });
     const full = [
       ...has(launch, "process") ? [identityOf(launch.process)] : [],
@@ -66446,6 +66451,7 @@ init_plugin();
 init_src3();
 init_leases2();
 init_worker_process();
+init_process();
 import fs72 from "node:fs";
 import net2 from "node:net";
 import path71 from "node:path";
@@ -66547,6 +66553,8 @@ async function startArbitration(o) {
   });
   const port = server.address().port;
   const self = probeOwnProcess();
+  const parentInfo = o.workerId && process.ppid > 1 ? probeProcess(process.ppid) : void 0;
+  const worker = o.workerId && parentInfo?.startTime && parentInfo.executable ? { id: o.workerId, host: { pid: process.ppid, startTime: parentInfo.startTime, executable: parentInfo.executable } } : void 0;
   let written;
   const publish2 = () => {
     const dir = o.binding.dir();
@@ -66557,7 +66565,7 @@ async function startArbitration(o) {
     try {
       privateStateDirectory(dir);
       const file = path71.join(dir, "mcp.json");
-      writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "", executable: self?.executable ?? "", runtime: "daemon-client", hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: plugin_default.version });
+      writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "", executable: self?.executable ?? "", runtime: "daemon-client", ...worker ? { worker } : {}, hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: plugin_default.version });
       fs72.chmodSync(file, 384);
       written = file;
     } catch (e) {
@@ -67093,7 +67101,8 @@ async function main() {
         select: () => tools.hookSelect(),
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
         onContact: () => presence?.activity(),
-        log
+        log,
+        workerId: process.env.ROOM_WORKER_ID
       });
       const adopt = async (s, clearStale = true) => {
         await offerTeamSharingDisclosure(s, tools.ledger);

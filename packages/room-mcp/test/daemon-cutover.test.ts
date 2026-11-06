@@ -447,6 +447,29 @@ describe('historical host and ambiguous launch evidence', () => {
   })
 })
 describe('cutover rows', () => {
+  it('recognizes a running Codex worker on the daemon by its MCP marker, matched to the launched host', async () => {
+    const { common } = fixture()
+    owner(common, 300, 'daemon')
+    const host = { ...identity(100), executable: 'codex' }
+    write(path.join(common, 'room/registry/workers/w.json'), { id: 'w', host: 'codex', phase: 'active',
+      runs: [{ n: 1, mode: 'fresh', launch: { outcome: 'launched', pid: 100, process: host } }] })
+    const live = (pid: number) => pid === 100 ? host : pid === 200 ? identity(200) : undefined
+    const options = { ...inspectOptions, probe: live }
+    // No marker: a live worker host with no evidence of the daemon is a legacy client and blocks.
+    expect((await inspectDaemonCutover(common, options)).blocked).toBe(true)
+    // The worker's MCP (pid 200, a child of host 100) publishes a daemon-client marker naming its worker and host.
+    const marker = path.join(common, 'room/sessions/thread/mcp.json')
+    write(marker, { ...identity(200), runtime: 'daemon-client', worker: { id: 'w', host } })
+    const upgraded = await inspectDaemonCutover(common, options)
+    expect(upgraded.clients.find(c => c.kind === 'worker')).toMatchObject({ runtime: 'daemon-client' })
+    expect(upgraded.blocked).toBe(false)
+    // A marker whose recorded host is another process does not vouch for this worker.
+    write(marker, { ...identity(200), runtime: 'daemon-client', worker: { id: 'w', host: { ...host, startTime: 'other-birth' } } })
+    expect((await inspectDaemonCutover(common, options)).blocked).toBe(true)
+    // A dead marker vouches for nothing.
+    write(marker, { ...identity(400), runtime: 'daemon-client', worker: { id: 'w', host } })
+    expect((await inspectDaemonCutover(common, options)).blocked).toBe(true)
+  })
   it('lists blocking and operator-resolved records, and counts the rest by kind', async () => {
     const { common } = fixture()
     for (let i = 0; i < 300; i++) write(path.join(common, `room/sessions/s${i}/mcp.json`), identity(1000 + i))

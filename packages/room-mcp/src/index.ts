@@ -137,7 +137,7 @@ async function main() {
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
-        onContact: () => presence?.activity(), log })
+        onContact: () => presence?.activity(), log, workerId: process.env.ROOM_WORKER_ID })
       const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)

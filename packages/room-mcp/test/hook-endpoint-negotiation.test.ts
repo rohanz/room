@@ -63,3 +63,19 @@ it('a foreign-session hello cannot switch to legacy operations on the same conne
   expect(f.request({ op: 'select', sessionId: 'session' }).ok).toBe(false)
   expect(f.select).not.toHaveBeenCalled()
 })
+
+it('a worker MCP names its worker and the host that started it in its daemon-client marker', async () => {
+  const { probeProcess } = await import('@room/relay/process')
+  const dir = mkdtempSync(join(tmpdir(), 'hook-endpoint-worker-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
+  const endpoint = await startArbitration({ binding: { dir: () => dir, bound: () => ({ id: 'thread', host: 'codex' }) } as any,
+    ledger: { } as any, select: (() => ({ batch: {}, items: [], notices: [], more: 0 })) as any, workerId: 'w_1' })
+  cleanup.push(() => endpoint.close())
+  const published = JSON.parse(readFileSync(join(dir, 'mcp.json'), 'utf8'))
+  const parent = probeProcess(process.ppid)
+  expect(published).toMatchObject({ runtime: 'daemon-client', worker: { id: 'w_1', host: { pid: process.ppid, startTime: parent?.startTime, executable: parent?.executable } } })
+  const plain = mkdtempSync(join(tmpdir(), 'hook-endpoint-lead-')); cleanup.push(() => rmSync(plain, { recursive: true, force: true }))
+  const lead = await startArbitration({ binding: { dir: () => plain, bound: () => ({ id: 's', host: 'claude' }) } as any,
+    ledger: { } as any, select: (() => ({ batch: {}, items: [], notices: [], more: 0 })) as any })
+  cleanup.push(() => lead.close())
+  expect(JSON.parse(readFileSync(join(plain, 'mcp.json'), 'utf8')).worker).toBeUndefined()
+})

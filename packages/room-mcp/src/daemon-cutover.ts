@@ -169,6 +169,9 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
   const upgradedWorkers = new Set<string>()
   if (options.currentWorkerId) upgradedWorkers.add(options.currentWorkerId)
   const workerProcesses = new Map<string, { identity?: ProcessIdentity; runtime: CutoverClient['runtime']; processClaim: boolean }>()
+  // A live daemon-client MCP names the worker it serves and the host that started it (a Codex worker writes no
+  // session record). The worker counts as upgraded only when that host is exactly its recorded launch process.
+  const workerHosts = new Map<string, ProcessIdentity[]>()
   const sessions = path.join(room, 'sessions')
   for (const entry of sessionEntries(sessions, commonDir)) {
     if (entry.kind === 'issue') { state.issues.push(entry.message); continue }
@@ -180,6 +183,8 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId
       || !!options.currentWorkerId && session.worker_id === options.currentWorkerId)
     if ((runtime === 'daemon-client' || currentBinding) && typeof session?.worker_id === 'string') upgradedWorkers.add(session.worker_id)
+    const served = runtime === 'daemon-client' && object(mcp?.worker) && typeof mcp.worker.id === 'string' ? identityOf(mcp.worker.host) : undefined
+    if (served?.startTime && served.executable) workerHosts.set(mcp!.worker.id, [...(workerHosts.get(mcp!.worker.id) ?? []), served])
     const host = typeof session?.host === 'string' ? session.host : undefined
     const cwd = typeof session?.cwd === 'string' ? session.cwd : undefined
     if (mcp) add({ kind: 'mcp', source: path.join(dir, 'mcp.json'), label: String(session?.session_id ?? sid), cwd, host, runtime }, identityOf(mcp))
@@ -204,7 +209,10 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
       || launch != null && (!object(launch) || !['never', 'imported'].includes(launch.outcome))
     if (!processClaim && (launch?.outcome === 'never' || ['retired', 'abandoned'].includes(worker.phase))) continue
     const identity = identityOf(launch?.process) ?? identityOf(report?.hostProcess) ?? identityOf({ pid: launch?.pid })
-    const runtime = upgradedWorkers.has(worker.id) ? 'daemon-client' : 'legacy'
+    const launched = [identityOf(launch?.process), identityOf(report?.hostProcess)].filter((v): v is ProcessIdentity => !!v?.startTime)
+    const servedHost = (workerHosts.get(worker.id) ?? []).some(host => launched.some(v => v.pid === host.pid
+      && sameStartTime(v.startTime, host.startTime) && v.executable === host.executable))
+    const runtime = upgradedWorkers.has(worker.id) || servedHost ? 'daemon-client' : 'legacy'
     workerProcesses.set(worker.id, { identity, runtime, processClaim })
     const full = [
       ...(has(launch, 'process') ? [identityOf(launch.process)] : []),
