@@ -16062,13 +16062,13 @@ function syncDirectory(dir) {
     if (fd !== void 0) fs6.closeSync(fd);
   }
 }
-function ensureDurableDirectory(dir, holdsFile, boundary) {
+function ensureDurableDirectory(dir, holdsFile, boundary, durable = true) {
   const parent = path7.dirname(dir);
   if (parent === dir || dir === boundary) {
     if (!fs6.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
   }
-  ensureDurableDirectory(parent, false, boundary);
+  ensureDurableDirectory(parent, false, boundary, durable);
   try {
     if (process.platform === "win32" && !holdsFile) fs6.mkdirSync(dir);
     else if (!fs6.existsSync(dir)) privateStateDirectory(dir);
@@ -16076,11 +16076,11 @@ function ensureDurableDirectory(dir, holdsFile, boundary) {
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
   }
-  syncDirectory(parent);
+  if (durable) syncDirectory(parent);
 }
 var startMarker = (startTime) => createHash("sha256").update(startTime).digest("hex").slice(0, 24);
 var tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
-function cleanupOrphanTemps(dir, probe = probeProcess) {
+function cleanupOrphanTemps(dir, probe = probeProcess, durable = true) {
   let removed = 0;
   for (const name of fs6.readdirSync(dir)) {
     const match = tempPattern.exec(name);
@@ -16096,31 +16096,31 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
       if (e.code !== "ENOENT") throw e;
     }
   }
-  if (removed) syncDirectory(dir);
+  if (removed && durable) syncDirectory(dir);
   return removed;
 }
-function writeTemp(file, content) {
+function writeTemp(file, content, durable) {
   const dir = path7.resolve(path7.dirname(file));
   const namespace = privateDirectoryPath(dir);
-  ensureDurableDirectory(dir, true, namespace.inState ? path7.dirname(namespace.root) : void 0);
-  cleanupOrphanTemps(dir);
+  ensureDurableDirectory(dir, true, namespace.inState ? path7.dirname(namespace.root) : void 0, durable);
+  cleanupOrphanTemps(dir, probeProcess, durable);
   const start = probeOwnProcess()?.startTime;
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
   const fd = fs6.openSync(temp, "wx", 384);
   try {
     fs6.writeFileSync(fd, JSON.stringify(content) + "\n");
-    fs6.fsyncSync(fd);
+    if (durable) fs6.fsyncSync(fd);
   } catch (e) {
     fs6.closeSync(fd);
     fs6.rmSync(temp, { force: true });
-    syncDirectory(dir);
+    if (durable) syncDirectory(dir);
     throw e;
   }
   fs6.closeSync(fd);
   return temp;
 }
-function createExclusive(file, content) {
-  const temp = writeTemp(file, content);
+function createExclusive(file, content, { durable = true } = {}) {
+  const temp = writeTemp(file, content, durable);
   try {
     try {
       fs6.linkSync(temp, file);
@@ -16128,21 +16128,21 @@ function createExclusive(file, content) {
       if (e.code === "EEXIST") return false;
       throw e;
     }
-    syncDirectory(path7.dirname(file));
+    if (durable) syncDirectory(path7.dirname(file));
     return true;
   } finally {
     fs6.rmSync(temp, { force: true });
-    syncDirectory(path7.dirname(file));
+    if (durable) syncDirectory(path7.dirname(file));
   }
 }
-function writeAtomic(file, content) {
-  const temp = writeTemp(file, content);
+function writeAtomic(file, content, { durable = true } = {}) {
+  const temp = writeTemp(file, content, durable);
   try {
     renameAtomic(temp, file);
-    syncDirectory(path7.dirname(file));
+    if (durable) syncDirectory(path7.dirname(file));
   } finally {
     fs6.rmSync(temp, { force: true });
-    syncDirectory(path7.dirname(file));
+    if (durable) syncDirectory(path7.dirname(file));
   }
 }
 function renameAtomic(temp, file) {
@@ -16177,43 +16177,43 @@ function ownToken() {
   const current = probeOwnProcess();
   return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
 }
-function acquireGuard(file, probe, depth = 0) {
+function acquireGuard(file, probe, depth = 0, durable = true) {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
   const token = ownToken();
-  if (createExclusive(file, token)) return token;
+  if (createExclusive(file, token, { durable })) return token;
   const previous = read(file);
   const previousHolder = previous && leaseToken(previous);
   if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
-  const outer = acquireGuard(`${file}.guard`, probe, depth + 1);
+  const outer = acquireGuard(`${file}.guard`, probe, depth + 1, durable);
   try {
     const latest = read(file);
     const latestHolder = latest && leaseToken(latest);
     if (latestHolder && liveness(latestHolder, probe) === "dead") {
       fs6.unlinkSync(file);
-      syncDirectory(path7.dirname(file));
+      if (durable) syncDirectory(path7.dirname(file));
     }
   } finally {
-    releaseGuard(`${file}.guard`, outer);
+    releaseGuard(`${file}.guard`, outer, durable);
   }
-  if (createExclusive(file, token)) return token;
+  if (createExclusive(file, token, { durable })) return token;
   throw new Error(`lease guard busy: ${file}`);
 }
-function releaseGuard(file, token) {
+function releaseGuard(file, token, durable) {
   const current = read(file);
   if (current && leaseToken(current)?.nonce === token.nonce) {
     fs6.unlinkSync(file);
-    syncDirectory(path7.dirname(file));
+    if (durable) syncDirectory(path7.dirname(file));
   }
 }
-function withGuard(file, fn, probe = probeProcess) {
+function withGuard(file, fn, probe = probeProcess, { durable = true } = {}) {
   const guard = `${file}.guard`;
-  const token = acquireGuard(guard, probe);
+  const token = acquireGuard(guard, probe, 0, durable);
   try {
     const result2 = fn();
     if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
     return result2;
   } finally {
-    releaseGuard(guard, token);
+    releaseGuard(guard, token, durable);
   }
 }
 function compareAndRelease(file, token) {

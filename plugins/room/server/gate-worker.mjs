@@ -480,13 +480,13 @@ function syncDirectory(dir) {
     if (fd !== void 0) fs4.closeSync(fd);
   }
 }
-function ensureDurableDirectory(dir, holdsFile, boundary) {
+function ensureDurableDirectory(dir, holdsFile, boundary, durable = true) {
   const parent = path5.dirname(dir);
   if (parent === dir || dir === boundary) {
     if (!fs4.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
   }
-  ensureDurableDirectory(parent, false, boundary);
+  ensureDurableDirectory(parent, false, boundary, durable);
   try {
     if (process.platform === "win32" && !holdsFile) fs4.mkdirSync(dir);
     else if (!fs4.existsSync(dir)) privateStateDirectory(dir);
@@ -494,11 +494,11 @@ function ensureDurableDirectory(dir, holdsFile, boundary) {
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
   }
-  syncDirectory(parent);
+  if (durable) syncDirectory(parent);
 }
 var startMarker = (startTime) => createHash("sha256").update(startTime).digest("hex").slice(0, 24);
 var tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
-function cleanupOrphanTemps(dir, probe = probeProcess) {
+function cleanupOrphanTemps(dir, probe = probeProcess, durable = true) {
   let removed = 0;
   for (const name of fs4.readdirSync(dir)) {
     const match = tempPattern.exec(name);
@@ -514,31 +514,31 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
       if (e.code !== "ENOENT") throw e;
     }
   }
-  if (removed) syncDirectory(dir);
+  if (removed && durable) syncDirectory(dir);
   return removed;
 }
-function writeTemp(file, content) {
+function writeTemp(file, content, durable) {
   const dir = path5.resolve(path5.dirname(file));
   const namespace = privateDirectoryPath(dir);
-  ensureDurableDirectory(dir, true, namespace.inState ? path5.dirname(namespace.root) : void 0);
-  cleanupOrphanTemps(dir);
+  ensureDurableDirectory(dir, true, namespace.inState ? path5.dirname(namespace.root) : void 0, durable);
+  cleanupOrphanTemps(dir, probeProcess, durable);
   const start = probeOwnProcess()?.startTime;
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
   const fd = fs4.openSync(temp, "wx", 384);
   try {
     fs4.writeFileSync(fd, JSON.stringify(content) + "\n");
-    fs4.fsyncSync(fd);
+    if (durable) fs4.fsyncSync(fd);
   } catch (e) {
     fs4.closeSync(fd);
     fs4.rmSync(temp, { force: true });
-    syncDirectory(dir);
+    if (durable) syncDirectory(dir);
     throw e;
   }
   fs4.closeSync(fd);
   return temp;
 }
-function createExclusive(file, content) {
-  const temp = writeTemp(file, content);
+function createExclusive(file, content, { durable = true } = {}) {
+  const temp = writeTemp(file, content, durable);
   try {
     try {
       fs4.linkSync(temp, file);
@@ -546,21 +546,21 @@ function createExclusive(file, content) {
       if (e.code === "EEXIST") return false;
       throw e;
     }
-    syncDirectory(path5.dirname(file));
+    if (durable) syncDirectory(path5.dirname(file));
     return true;
   } finally {
     fs4.rmSync(temp, { force: true });
-    syncDirectory(path5.dirname(file));
+    if (durable) syncDirectory(path5.dirname(file));
   }
 }
-function writeAtomic(file, content) {
-  const temp = writeTemp(file, content);
+function writeAtomic(file, content, { durable = true } = {}) {
+  const temp = writeTemp(file, content, durable);
   try {
     renameAtomic(temp, file);
-    syncDirectory(path5.dirname(file));
+    if (durable) syncDirectory(path5.dirname(file));
   } finally {
     fs4.rmSync(temp, { force: true });
-    syncDirectory(path5.dirname(file));
+    if (durable) syncDirectory(path5.dirname(file));
   }
 }
 function renameAtomic(temp, file) {
@@ -595,43 +595,43 @@ function ownToken() {
   const current = probeOwnProcess();
   return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
 }
-function acquireGuard(file, probe, depth = 0) {
+function acquireGuard(file, probe, depth = 0, durable = true) {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
   const token = ownToken();
-  if (createExclusive(file, token)) return token;
+  if (createExclusive(file, token, { durable })) return token;
   const previous = read(file);
   const previousHolder = previous && leaseToken(previous);
   if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
-  const outer = acquireGuard(`${file}.guard`, probe, depth + 1);
+  const outer = acquireGuard(`${file}.guard`, probe, depth + 1, durable);
   try {
     const latest = read(file);
     const latestHolder = latest && leaseToken(latest);
     if (latestHolder && liveness(latestHolder, probe) === "dead") {
       fs4.unlinkSync(file);
-      syncDirectory(path5.dirname(file));
+      if (durable) syncDirectory(path5.dirname(file));
     }
   } finally {
-    releaseGuard(`${file}.guard`, outer);
+    releaseGuard(`${file}.guard`, outer, durable);
   }
-  if (createExclusive(file, token)) return token;
+  if (createExclusive(file, token, { durable })) return token;
   throw new Error(`lease guard busy: ${file}`);
 }
-function releaseGuard(file, token) {
+function releaseGuard(file, token, durable) {
   const current = read(file);
   if (current && leaseToken(current)?.nonce === token.nonce) {
     fs4.unlinkSync(file);
-    syncDirectory(path5.dirname(file));
+    if (durable) syncDirectory(path5.dirname(file));
   }
 }
-function withGuard(file, fn, probe = probeProcess) {
+function withGuard(file, fn, probe = probeProcess, { durable = true } = {}) {
   const guard = `${file}.guard`;
-  const token = acquireGuard(guard, probe);
+  const token = acquireGuard(guard, probe, 0, durable);
   try {
     const result = fn();
     if (result && typeof result.then === "function") throw new TypeError("lease guard callback must be synchronous");
     return result;
   } finally {
-    releaseGuard(guard, token);
+    releaseGuard(guard, token, durable);
   }
 }
 
@@ -688,12 +688,13 @@ var StorageRefused = class extends Error {
 
 // packages/local-state/src/gate.ts
 var PHASES = ["legacy", "draining", "staging", "db-complete", "active"];
-var KINDS = ["mcp", "helper", "daemon", "maintenance"];
+var KINDS = ["mcp", "daemon", "maintenance"];
 var MAX_GATE_BYTES = 64 * 1024;
 var MAX_RECORD_BYTES = 8 * 1024;
 var MAX_NOTE = 512;
 var NONCE = /^[0-9a-f-]{8,64}$/;
 var TICKET_ID = /^[0-9a-f]{32}$/;
+var REGISTRATION_ID = /^registration:([0-9a-f-]{8,64})$/;
 var TICKET_FILE = /^([0-9a-f-]{8,64})\.([0-9a-f]{32})\.json$/;
 var EVIDENCE_NAMES = /* @__PURE__ */ new Set([
   path6.basename(STORAGE_PATHS.database),
@@ -736,7 +737,7 @@ function parseGate(value) {
   return value;
 }
 function parseRegistration(value, nonce) {
-  if (!object(value) || value.v !== 1 || !tokenShape(value.instance) || value.instance.nonce !== nonce || !KINDS.includes(value.kind) || !positive(value.build) || typeof value.release !== "string" || !positive(value.generation) || typeof value.registeredAt !== "number")
+  if (!object(value) || value.v !== 1 || !tokenShape(value.instance) || value.instance.nonce !== nonce || !KINDS.includes(value.kind) || !positive(value.build) || typeof value.release !== "string" || !positive(value.generation) || typeof value.registeredAt !== "number" || value.hasHeldTickets !== void 0 && value.hasHeldTickets !== true)
     throw new Error("invalid storage registration");
   return value;
 }
@@ -775,7 +776,7 @@ var FileStorageGate = class {
     const deadline = performance.now() + GATE_LIMITS.guardWaitMs;
     for (let attempt = 0; ; attempt++) {
       try {
-        return withGuard(this.gateFile, fn);
+        return withGuard(this.gateFile, fn, void 0, { durable: false });
       } catch (error) {
         if (error instanceof StorageRefused) throw error;
         if (!guardBusy(error)) throw new StorageRefused("unavailable", bounded(`storage gate I/O failed: ${error.message ?? error}`), REMEDY);
@@ -914,20 +915,21 @@ var FileStorageGate = class {
     if (result === "full") throw new StorageRefused("capacity", `${this.limits.registrations} processes are registered for this clone`, REMEDY);
     return result;
   }
+  /**
+   * Lock-free admission against the guarded drain transition. The ticket is published atomically, then the gate is
+   * read again: a drain publishes its generation under the guard before scanning tickets, so either that scan sees
+   * this ticket, or this re-read sees the drain and the ticket is withdrawn before anything can act on it.
+   */
   async admit(registration, kind, options = {}) {
     const holder = registration.instance.nonce;
-    return this.guarded(() => {
-      const gate = this.requireGate();
-      const current = this.readRegistration(holder);
-      if (!current) throw new StorageRefused("unavailable", "this process is not registered with the storage gate");
+    const parent = options.parent;
+    if (options.identity && !(parent && identityShape(options.identity)))
+      throw new StorageRefused("unavailable", "a ticket for another process must be a child of the operation that started it");
+    const current = this.readRegistrationOrRefuse(holder);
+    const permitted = (gate) => {
       this.compatibility(gate, current.build);
-      let generation = gate.generation;
-      const parent = options.parent;
-      if (parent) {
-        if (!fs5.existsSync(this.ticketFile(parent.holder, parent.id)))
-          throw new StorageRefused("maintenance", "parent operation already finished");
-        generation = parent.generation;
-      }
+      if (parent && !fs5.existsSync(this.ticketFile(parent.holder, parent.id)))
+        throw new StorageRefused("maintenance", "parent operation already finished");
       if (gate.phase !== "legacy") {
         const predecessor = gate.phase === "draining" && parent && parent.generation <= (gate.drainingFrom ?? 0);
         if (!predecessor) throw new StorageRefused(
@@ -936,25 +938,60 @@ var FileStorageGate = class {
           REMEDY
         );
       }
-      if (this.ticketNames().length >= this.limits.tickets)
+      return parent ? parent.generation : gate.generation;
+    };
+    const capacity = () => {
+      if (this.ticketNames().length > this.limits.tickets)
         throw new StorageRefused("capacity", `${this.limits.tickets} operations are in progress for this clone`, "retry after current operations finish");
-      const ticket = {
-        v: 1,
-        id: randomBytes(16).toString("hex"),
-        holder,
-        identity: {
-          pid: registration.instance.pid,
-          startTime: registration.instance.startTime,
-          executable: registration.instance.executable
-        },
-        kind,
-        generation,
-        ...parent ? { parent: parent.id } : {},
-        admittedAt: this.now()
-      };
-      if (!createExclusive(this.ticketFile(holder, ticket.id), ticket)) throw new StorageRefused("unavailable", "ticket id collision");
-      return ticket;
-    });
+    };
+    const before = this.requireGate();
+    const generation = permitted(before);
+    if (this.ticketNames().length >= this.limits.tickets)
+      throw new StorageRefused("capacity", `${this.limits.tickets} operations are in progress for this clone`, "retry after current operations finish");
+    if (!current.hasHeldTickets) writeAtomic(this.registrationFile(holder), { ...current, hasHeldTickets: true });
+    const effectOwner = options.identity ?? {
+      pid: registration.instance.pid,
+      startTime: registration.instance.startTime,
+      executable: registration.instance.executable
+    };
+    const ticket = {
+      v: 1,
+      id: randomBytes(16).toString("hex"),
+      holder,
+      identity: effectOwner,
+      kind,
+      generation,
+      ...parent ? { parent: parent.id } : {},
+      admittedAt: this.now()
+    };
+    const file = this.ticketFile(holder, ticket.id);
+    if (!createExclusive(file, ticket, { durable: false })) throw new StorageRefused("unavailable", "ticket id collision");
+    try {
+      const after = this.requireGate();
+      if (after.generation !== before.generation || after.phase !== before.phase) {
+        if (!parent) throw new StorageRefused("maintenance", `Room storage maintenance in progress (generation ${after.generation}, ${after.phase})`, REMEDY);
+        permitted(after);
+      }
+      capacity();
+    } catch (error) {
+      try {
+        fs5.unlinkSync(file);
+      } catch (unlinkError) {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      }
+      throw error;
+    }
+    return ticket;
+  }
+  readRegistrationOrRefuse(holder) {
+    let current;
+    try {
+      current = this.readRegistration(holder);
+    } catch (error) {
+      throw new StorageRefused("unavailable", bounded(`storage registration unreadable: ${error.message}`));
+    }
+    if (!current) throw new StorageRefused("unavailable", "this process is not registered with the storage gate");
+    return current;
   }
   async finish(ticket) {
     const file = this.ticketFile(ticket.holder, ticket.id);
@@ -964,18 +1001,19 @@ var FileStorageGate = class {
       if (error.code === "ENOENT") return;
       throw new StorageRefused("unavailable", bounded(`ticket release failed: ${error.code ?? error}`));
     }
-    syncDirectoryQuietly(this.ticketDir);
   }
   async unregister(registration) {
     const nonce = registration.instance.nonce;
-    if (this.ticketNames().some((name) => name.startsWith(`${nonce}.`)))
-      throw new StorageRefused("busy", "this process still holds storage tickets");
-    try {
-      fs5.unlinkSync(this.registrationFile(nonce));
-      syncDirectoryQuietly(this.registrationDir);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
+    await this.guarded(() => {
+      if (this.ticketNames().some((name) => name.startsWith(`${nonce}.`)))
+        throw new StorageRefused("busy", "this process still holds storage tickets");
+      try {
+        fs5.unlinkSync(this.registrationFile(nonce));
+        syncDirectoryQuietly(this.registrationDir);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    });
   }
   async drain(owner) {
     const gate = await this.guarded(() => {
@@ -1003,6 +1041,44 @@ var FileStorageGate = class {
       return this.publish({ ...gate2, generation: gate2.generation + 1, owner });
     });
     return this.progress(gate);
+  }
+  /** Registration evidence is separate from volatile tickets. Never interpret lifecycle leases here. */
+  async registrationEvidence(ticketNames) {
+    const holders = new Set(ticketNames.map((name) => name.split(".")[0]));
+    const names = this.registrationNames(), evidence = [];
+    for (let start = 0; start < names.length; start += this.limits.scanBatch) {
+      for (const name of names.slice(start, start + this.limits.scanBatch)) {
+        const holder = name.slice(0, -5);
+        if (holders.has(holder)) continue;
+        let registration;
+        try {
+          registration = this.readRegistration(holder);
+        } catch {
+          evidence.push({
+            id: `registration:${holder}`,
+            holder,
+            kind: "reconcile",
+            generation: 0,
+            pid: 0,
+            admittedAt: 0,
+            holderState: "unreadable"
+          });
+          continue;
+        }
+        if (!registration?.hasHeldTickets) continue;
+        evidence.push({
+          id: `registration:${holder}`,
+          holder,
+          kind: "reconcile",
+          generation: registration.generation,
+          pid: registration.instance.pid,
+          admittedAt: registration.registeredAt,
+          holderState: this.alive(registration.instance)
+        });
+      }
+      await yieldTurn();
+    }
+    return evidence;
   }
   async progress(gate) {
     const live = [], unknown = [], dead = [];
@@ -1033,8 +1109,20 @@ var FileStorageGate = class {
       }
       await yieldTurn();
     }
+    for (const { holderState, ...view } of await this.registrationEvidence(names)) {
+      ;
+      (holderState === "alive" ? live : holderState === "dead" ? dead : unknown).push(view);
+    }
     if (!names.length) await this.pruneDeadRegistrations();
-    return { generation: gate.generation, phase: gate.phase, complete: names.length === 0, live, unknown, dead, pending: 0 };
+    return {
+      generation: gate.generation,
+      phase: gate.phase,
+      complete: names.length === 0 && !live.length && !dead.length && !unknown.length,
+      live,
+      unknown,
+      dead,
+      pending: 0
+    };
   }
   async pruneDeadRegistrations() {
     const names = this.registrationNames();
@@ -1049,7 +1137,7 @@ var FileStorageGate = class {
         } catch {
           continue;
         }
-        if (!registration || this.alive(registration.instance) !== "dead") continue;
+        if (!registration || registration.hasHeldTickets || this.alive(registration.instance) !== "dead") continue;
         try {
           fs5.unlinkSync(this.registrationFile(nonce));
         } catch (error) {
@@ -1061,6 +1149,34 @@ var FileStorageGate = class {
     syncDirectoryQuietly(this.registrationDir);
   }
   async resolveDead(owner, ticketId, note) {
+    const registrationId = REGISTRATION_ID.exec(ticketId);
+    if (registrationId) {
+      const holder2 = registrationId[1], registration = this.readRegistration(holder2);
+      if (!registration?.hasHeldTickets) throw new StorageRefused("unavailable", "no such registration evidence");
+      if (this.alive(registration.instance) !== "dead")
+        throw new StorageRefused("blocked", "the registration holder is alive or its identity cannot be verified");
+      await this.guarded(() => {
+        const gate = this.requireGate();
+        if (gate.phase !== "draining") throw new StorageRefused("maintenance", "dead holders are resolved only while draining");
+        this.requireOwner(owner, gate);
+        if (!this.readRegistration(holder2)?.hasHeldTickets) return;
+        if (this.ticketNames().some((name2) => name2.startsWith(`${holder2}.`)))
+          throw new StorageRefused("busy", "resolve remaining holder tickets before registration evidence");
+        writeAtomic(path6.join(this.resolutionDir, `registration-${holder2}.json`), {
+          v: 1,
+          registration,
+          note: bounded(note),
+          owner: owner.instance.nonce,
+          generation: gate.generation,
+          liveness: "dead",
+          at: this.now(),
+          id: randomUUID2()
+        });
+        fs5.unlinkSync(this.registrationFile(holder2));
+        syncDirectoryQuietly(this.registrationDir);
+      });
+      return;
+    }
     if (!TICKET_ID.test(ticketId)) throw new StorageRefused("unavailable", "invalid ticket id");
     const name = this.ticketNames().find((candidate) => candidate.endsWith(`.${ticketId}.json`));
     if (!name) throw new StorageRefused("unavailable", "no such ticket");
@@ -1171,7 +1287,10 @@ var FileStorageGate = class {
         tickets.push({ id, kind: "reconcile", generation: 0, holder, pid: 0, admittedAt: 0, holderState: "unreadable" });
       }
     }
-    return { tickets, total: names.length, truncated: names.length > bound };
+    const evidence = await this.registrationEvidence(names);
+    tickets.push(...evidence.slice(0, Math.max(0, bound - tickets.length)));
+    const total = names.length + evidence.length;
+    return { tickets, total, truncated: total > bound };
   }
   async observe() {
     let stat;
