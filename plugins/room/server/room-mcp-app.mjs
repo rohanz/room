@@ -43181,7 +43181,6 @@ var init_registry = __esm({
       byName(roomName) {
         return this.all().find((s) => s.roomName === roomName);
       }
-      /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
       /** Shutdown has begun: from now on no session is added or tracked, so nothing starts producers or opens registries. */
       close() {
         this.closed = true;
@@ -43189,11 +43188,19 @@ var init_registry = __esm({
       get isClosed() {
         return this.closed;
       }
+      /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
       add(s, role, lead) {
         if (this.closed) {
           this.o.late?.(s);
           return;
         }
+        this.inScope(() => this.addInScope(s, role, lead));
+      }
+      inScope(fn) {
+        if (this.o.scope) this.o.scope(fn);
+        else fn();
+      }
+      addInScope(s, role, lead) {
         if (role === "primary" && this.primary() !== s) this.o.setPrimary(s);
         this.track(s);
         const cur = this.entries.get(s);
@@ -43209,6 +43216,9 @@ var init_registry = __esm({
       track(s) {
         if (this.closed || this.tracked.has(s)) return;
         this.tracked.add(s);
+        this.inScope(() => this.trackInScope(s));
+      }
+      trackInScope(s) {
         this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then((registry2) => {
           if (!this.tracked.has(s) || this.projectors.has(s)) return;
           const projector = new WorkerProjector(s, registry2, this.o.log);
@@ -43263,10 +43273,11 @@ var init_registry = __esm({
       /** Auto-retirement (registry §12, decideRetire's rules): after exits, before previews and PR tools, and every minute. */
       async autoRetire(session) {
         for (const s of session ? [session] : this.all()) {
+          if (this.closed) return;
           const pending2 = this.retiring.get(s);
           if (pending2) {
             await pending2;
-            await this.autoRetire(s);
+            if (!this.closed && this.tracked.has(s)) await this.autoRetire(s);
             continue;
           }
           const run3 = autoRetire(s, this);
@@ -66619,6 +66630,7 @@ function createHandlerState(ctx) {
     log: log2,
     probe: ctx.probe,
     listCwdProcesses: ctx.listCwdProcesses,
+    scope: (fn) => registryLease.run(fn),
     late: (s) => {
       log2(`leaving ${s.roomName}: joined after shutdown began`);
       void doLeave(s).catch((error2) => log2(`late session leave failed: ${error2 instanceof Error ? error2.message : String(error2)}`));
