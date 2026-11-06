@@ -33364,13 +33364,19 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   const sessions = path29.join(room, "sessions");
   for (const sid of entries(sessions)) {
     const dir = path29.join(sessions, sid);
-    let directory = false;
+    let entry;
     try {
-      directory = fs28.lstatSync(dir).isDirectory();
+      entry = fs28.lstatSync(dir);
     } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
+      if (error2.code === "ENOENT") continue;
+      state.issues.push(`Cannot inspect ${dir}: ${error2.code ?? String(error2)}`);
+      continue;
     }
-    if (!directory) continue;
+    if (entry.isFile()) continue;
+    if (!entry.isDirectory()) {
+      state.issues.push(`Session entry ${dir} is a ${entry.isSymbolicLink() ? "symlink" : "special file"}; inspect it before cutover (Room never follows links in its state)`);
+      continue;
+    }
     const session = read2(path29.join(dir, "session.json")), mcp = read2(path29.join(dir, "mcp.json"));
     const runtime = mcp?.pid === currentPid || mcp?.runtime === "daemon-client" && alive(identityOf(mcp)) === "alive" ? "daemon-client" : "legacy";
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId || !!options.currentWorkerId && session.worker_id === options.currentWorkerId);
