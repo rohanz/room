@@ -26844,6 +26844,8 @@ async function admitTracked(common, kind, options) {
     return { gate, ticket: await gate.admit(registration, kind, options) };
   } catch (error2) {
     settleOutstanding(common, -1);
+    if (error2 instanceof StorageRefused && error2.reason === "maintenance" && !outstanding.has(common)) void unregisterDraining().catch(() => {
+    });
     throw error2;
   }
 }
