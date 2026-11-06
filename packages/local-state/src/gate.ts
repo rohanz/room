@@ -470,4 +470,3 @@ function syncDirectoryQuietly(dir: string): void {
   catch (error) { if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error }
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
-
