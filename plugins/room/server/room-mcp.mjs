@@ -31072,12 +31072,12 @@ function workerAdapter(host2, env = process.env) {
   return adapters[host2].worker(env);
 }
 function createLogDecoder(host2, context2) {
-  return logDecoders[host2](context2);
+  return adapters[host2].createLogDecoder(context2);
 }
 function logDecoderKey(host2, context2) {
   return JSON.stringify([host2, logDecoderRevision, context2.workerId, context2.run, context2.logStart, context2.dir, context2.scope]);
 }
-var adapters, logDecoderRevision, logHosts, logDecoders;
+var adapters, logDecoderRevision, logHosts;
 var init_hosts = __esm({
   "packages/room-mcp/src/hosts/index.ts"() {
     "use strict";
@@ -31088,12 +31088,19 @@ var init_hosts = __esm({
     init_claude_log();
     init_codex_log();
     adapters = {
-      claude: { preBinding: claudePreBinding, worker: createClaudeWorker },
-      codex: { preBinding: codexPreBinding, worker: createCodexWorker }
+      claude: {
+        preBinding: claudePreBinding,
+        worker: createClaudeWorker,
+        createLogDecoder: createClaudeLogDecoder
+      },
+      codex: {
+        preBinding: codexPreBinding,
+        worker: createCodexWorker,
+        createLogDecoder: createCodexLogDecoder
+      }
     };
     logDecoderRevision = "1";
     logHosts = ["claude", "codex"];
-    logDecoders = { claude: createClaudeLogDecoder, codex: createCodexLogDecoder };
   }
 });
 

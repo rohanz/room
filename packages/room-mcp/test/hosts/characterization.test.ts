@@ -9,6 +9,7 @@ import { createWakeSender, createMidTurnSender } from '../../src/wake-path.js'
 import { evaluateDoctor } from '../../src/doctor.js'
 import * as claude from '../../src/hosts/claude.js'
 import * as codex from '../../src/hosts/codex.js'
+import { createLogDecoder } from '../../src/hosts/index.js'
 import { followUpAnswer, resumeAccepted, missingClaudeSession } from '../../src/worker-process.js'
 import { sessionDirectory } from '../../src/session.js'
 import { argvFixtures, hookEnvelopes, toolEnvelopes, portExamples, sessionId } from './fixtures.js'
@@ -179,6 +180,22 @@ describe('current wake outcomes never imply a receipt', () => {
 })
 
 describe('log acceptance/final facts and typed evidence', () => {
+  it.each(['claude', 'codex'] as const)('%s emits normalized final facts through the adapter facet', host => {
+    const decoder = createLogDecoder(host, { ...portExamples.context, scope: 'whole-run' })
+    const event = host === 'claude'
+      ? { type: 'result', result: 'done' }
+      : { type: 'item.completed', item: { type: 'agent_message', text: 'done' } }
+    expect(decoder.push(event)).toEqual(portExamples.logs.filter(f => f.kind === 'final' && f.slot === 'preferred'))
+    expect(decoder.acceptsLine(JSON.stringify(event))).toBe(true)
+    expect(decoder.backgroundTasks).toBe(host === 'claude' ? 'observed' : 'unknown')
+  })
+  it('represents failure resets and result boundaries without obsolete required fields', () => {
+    const decoder = createLogDecoder('claude', portExamples.context)
+    expect(decoder.push({ type: 'result', is_error: false })).toEqual([
+      ...portExamples.logs.filter(f => f.kind === 'failure' && f.failure === undefined),
+      ...portExamples.logs.filter(f => f.kind === 'background' && f.state === 'result-boundary'),
+    ])
+  })
   it('pins Claude assistant acceptance, zero-turn missing session and final-result precedence', () => {
     const file = path.join(temp(), 'run.jsonl')
     fs.writeFileSync(file, JSON.stringify({ type: 'result', session_id: sessionId, subtype: 'error_during_execution', is_error: true, num_turns: 0 }) + '\n')

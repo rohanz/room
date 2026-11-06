@@ -71,13 +71,6 @@ export type HookEvent = {
     input: unknown; // retain original payload until equivalent typed normalization is proven
   };
 };
-export type LogFact =
-  | { kind: 'session'; id: string }
-  | { kind: 'resume-accepted' | 'session-missing'; id: string }
-  | { kind: 'final'; text: string }
-  | { kind: 'activity'; text: string; eventTimeMs?: number }
-  | { kind: 'failure'; category: string; message?: string }
-  | { kind: 'background'; id: string; state: 'open' | 'closed' | 'result-boundary' };
 export type InstallEvidence = {
   cli: 'present' | 'absent' | 'unknown'; version?: string;
   listing: 'ok' | 'unknown'; plugin: 'present' | 'absent' | 'unknown';
@@ -124,7 +117,7 @@ export interface HostAdapter {
     context(event: HookEvent['event'], text: string): unknown;
     matchesHostProcess(process: ProcessIdentity): boolean;
   };
-  createLogDecoder?(context: LogContext): { push(raw: unknown): readonly LogFact[] };
+  createLogDecoder?(context: LogContext): HostLogDecoder;
   inspectInstall(): Promise<InstallEvidence>;
   dispose(): void;
 }
@@ -147,7 +140,7 @@ export type WorkerShellIsolation = {
   shellWarnings(written: { warning?: string }, version?: () => Promise<string | undefined>): Promise<string[]>;
 };
 
-/** Step-5 evidence supplements LogFact without changing the earlier extraction contract. */
+/** Host-normalized evidence shared by every log decoder and scanner consumer. */
 export type NormalizedHostFailure = { text: string; transient?: 'model capacity' | 'rate limit' }
 export type NormalizedLogFact =
   | { kind: 'session' | 'resume-accepted' | 'session-missing'; id: string }
