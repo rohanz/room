@@ -1,5 +1,5 @@
 /** Built-ins only: run locally or in CI against the committed plugin bundle.
- * node scripts/sqlite-evidence.mjs [--output <file>] [--expect-refusal node-version]
+ * node scripts/sqlite-evidence.mjs [--output <file>] [--expect-refusal node-version] [--scratch-parent <directory>]
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -8,16 +8,19 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const args = process.argv.slice(2)
-let output, expectedRefusal
+let output, expectedRefusal, scratchParent = os.tmpdir()
 while (args.length) {
   const flag = args.shift(), value = args.shift()
-  if (!value || !['--output', '--expect-refusal'].includes(flag)) throw new Error('usage: sqlite-evidence.mjs [--output <file>] [--expect-refusal node-version]')
+  if (!value || !['--output', '--expect-refusal', '--scratch-parent'].includes(flag)) throw new Error('usage: sqlite-evidence.mjs [--output <file>] [--expect-refusal node-version] [--scratch-parent <directory>]')
   if (flag === '--output') output = value
+  else if (flag === '--scratch-parent') scratchParent = path.resolve(value)
   else if (value === 'node-version') expectedRefusal = value
   else throw new Error('only node-version refusal evidence is supported')
 }
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-sqlite-evidence-'))
+const root = fs.mkdtempSync(path.join(scratchParent, 'room-sqlite-evidence-'))
+const expectedFilesystem = { darwin: 'apfs', linux: 'ext4', win32: 'ntfs' }[process.platform]
 const evidence = {
+  expectedFilesystem, scratchParent,
   kind: 'sqlite-runtime', at: new Date().toISOString(), executable: fs.realpathSync(process.execPath),
   node: process.version, release: process.release, platform: process.platform, arch: process.arch,
   os: { type: os.type(), release: os.release(), version: os.version() },
@@ -40,7 +43,9 @@ try {
   evidence.preflight.result = result
   evidence.passed = !run.error && (expectedRefusal
     ? run.status === 1 && result.ok === false && result.failure === expectedRefusal && !evidence.roomStateCreated
-    : run.status === 0 && result.ok === true && !!result.evidence?.filesystem)
+    : run.status === 0 && result.ok === true && result.storage === 'qualified'
+      && !!expectedFilesystem && result.evidence?.filesystem?.kind === expectedFilesystem
+      && result.evidence.filesystem.journal === 'wal')
   if (!evidence.passed) process.exitCode = 1
 } catch (error) {
   evidence.passed = false

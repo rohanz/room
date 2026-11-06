@@ -278,8 +278,10 @@ export interface StorageGate {
    * whose recorded owner is verified dead. Publishes generation+1 so the old owner's token/generation is stale.
    */
   takeOver(owner: GateOwner): Promise<DrainProgress>
-  /** Offline owner only: draining -> legacy after legacy-only maintenance; generation unchanged. Never automatic. */
-  reopen(owner: GateOwner): Promise<StorageGateRecord>
+  /** Offline owner only: draining -> legacy after legacy-only maintenance; generation unchanged. Never automatic.
+   * Optional epoch-ms notAfter is checked under the guard immediately before publishing; expiry leaves draining.
+   */
+  reopen(owner: GateOwner, options?: { notAfter?: number }): Promise<StorageGateRecord>
   /** Read-only; never initializes, takes no guard and writes nothing. */
   status(): Promise<GateStatus>
   /** Read-only: at most `limit` (default and maximum GATE_LIMITS.scanBatch) tickets with holder liveness, for operators. */

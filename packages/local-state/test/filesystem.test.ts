@@ -1,4 +1,8 @@
 /** Classification from OS-reported mount data. Mocked mounts test parsing only; they qualify nothing. */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { expect, it } from 'vitest'
 import { detectFilesystem, type FilesystemReaders } from '../src/filesystem.js'
 
@@ -76,4 +80,54 @@ it('classifies this machine\'s temporary directory without throwing', async () =
   const os = await import('node:os')
   const result = await detectFilesystem(os.tmpdir())
   expect(['apfs', 'ext4', 'ntfs', 'other-local', 'network', 'synchronized', 'unknown']).toContain(result.kind)
+})
+
+// Representative native runner mount/volume reports. CI separately probes the actual temp AND
+// workspace mounts; these fixtures catch parsing regressions and cannot qualify a runner by themselves.
+it.each(['/home/runner/work/_temp/probe', '/home/runner/work/room/room/.git'])('resolves Ubuntu runner path %s on ext4', async file => {
+  const readers = base({ statfsType: () => 0xef53, linuxMountinfo: () => mountinfo([['/', 'ext4'], ['/mnt', 'ext4'], ['/tmp', 'tmpfs']]) })
+  expect(await detectFilesystem(file, readers)).toMatchObject({ kind: 'ext4', journal: 'wal' })
+})
+
+it.each(['/private/var/folders/xy/temp/probe', '/Users/runner/work/room/room/.git'])('resolves macOS runner path %s on APFS', async file => {
+  const readers = base({ platform: 'darwin', statfsType: () => 0x1a, macMounts: () =>
+    '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse)' })
+  expect(await detectFilesystem(file, readers)).toMatchObject({ kind: 'apfs', journal: 'wal' })
+})
+
+it.each(['D:\\a\\_temp\\probe', 'D:\\a\\room\\room\\.git'])('resolves Windows runner path %s on NTFS', async file => {
+  const readers = base({ platform: 'win32', windowsDriveType: () => 'D: - Fixed Drive', windowsVolumeInfo: () => 'File System Name : NTFS' })
+  expect(await detectFilesystem(file, readers)).toMatchObject({ kind: 'ntfs', journal: 'wal' })
+})
+
+it('refuses a temp mount that differs from the qualified workspace mount', async () => {
+  const readers = base({ linuxMountinfo: () => mountinfo([['/', 'ext4'], ['/home/runner/work/_temp', 'tmpfs']]) })
+  expect(await detectFilesystem('/home/runner/work/_temp/probe', readers)).toMatchObject({ kind: 'other-local', journal: 'refuse' })
+  expect(await detectFilesystem('/home/runner/work/room/room/.git', readers)).toMatchObject({ kind: 'ext4', journal: 'wal' })
+})
+
+it('native evidence rejects unqualified, missing-WAL and wrong-filesystem results', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-evidence-contract-'))
+  try {
+    fs.mkdirSync(path.join(root, 'scripts'))
+    fs.mkdirSync(path.join(root, 'plugins', 'room', 'server'), { recursive: true })
+    const script = path.join(root, 'scripts', 'sqlite-evidence.mjs')
+    fs.copyFileSync(new URL('../../../scripts/sqlite-evidence.mjs', import.meta.url), script)
+    const bundle = path.join(root, 'plugins', 'room', 'server', 'room-state.mjs')
+    const kind = { darwin: 'apfs', linux: 'ext4', win32: 'ntfs' }[process.platform]!
+    for (const [storage, filesystem, passed] of [
+      ['qualified', { kind, journal: 'wal' }, true],
+      ['unqualified', { kind: 'unknown', journal: 'refuse' }, false],
+      ['unqualified', { kind: 'other-local', journal: 'refuse' }, false],
+      ['qualified', { kind, journal: 'refuse' }, false],
+      ['unqualified', { kind, journal: 'wal' }, false],
+      ['qualified', { kind: kind === 'apfs' ? 'ext4' : 'apfs', journal: 'wal' }, false],
+    ] as const) {
+      fs.writeFileSync(bundle, `process.stdout.write(${JSON.stringify(JSON.stringify({ ok: true, storage, evidence: { filesystem } }))})`)
+      const child = spawnSync(process.execPath, [script, '--scratch-parent', root], { encoding: 'utf8', timeout: 10_000 })
+      expect(child.error).toBeUndefined()
+      expect(child.status).toBe(passed ? 0 : 1)
+      expect(JSON.parse(child.stdout).passed).toBe(passed)
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

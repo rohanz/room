@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { randomBytes } from 'node:crypto'
 import { detectFilesystem, systemFilesystemReaders, type FilesystemReaders } from './filesystem.js'
 import { primePrivateState, privateStateDirectory } from './private-state.js'
@@ -14,15 +15,13 @@ import {
   type FilesystemResult, type PreflightEvidence, type PreflightFailure, type PreflightResult, type PreflightSurface,
 } from './protocol.js'
 
-type Sqlite = typeof import('node:sqlite')
-type Database = InstanceType<Sqlite['DatabaseSync']>
-
 export interface PreflightOptions {
   /** Canonical Git common directory whose filesystem is probed. Omit for runtime-only preflight (MCP entry). */
   commonDir?: string
   /** Test seams; production uses the running process. */
   runtime?: { execPath?: string; version?: string; release?: NodeJS.ProcessRelease; sharedSqlite?: boolean; platform?: NodeJS.Platform; arch?: string }
-  importSqlite?: () => Promise<Sqlite>
+  /** Self-contained JS async function source, evaluated only in the isolated probe worker (tests only). */
+  importSqlite?: string
   filesystem?: FilesystemReaders
   timeoutMs?: number
 }
@@ -36,68 +35,101 @@ function compareVersions(a: string, b: string): number {
   return 0
 }
 
-/** Filter exactly node:sqlite's ExperimentalWarning while the module loads; every other warning passes. */
-export async function importSqliteQuietly(): Promise<Sqlite> {
-  const original = process.emitWarning
-  process.emitWarning = function (this: unknown, warning: string | Error, ...rest: unknown[]) {
-    const text = typeof warning === 'string' ? warning : warning?.message
-    const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] as { type?: string } | undefined)?.type ?? (warning instanceof Error ? warning.name : undefined)
-    if (type === 'ExperimentalWarning' && /\bSQLite\b/i.test(text ?? '')) return
-    return (original as (...args: unknown[]) => void).call(process, warning, ...rest)
-  } as typeof process.emitWarning
-  try { return await import('node:sqlite') }
-  finally { process.emitWarning = original }
-}
-
-function verifyPragmas(db: Database): string | undefined {
-  db.exec('PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;')
-  const value = (pragma: string) => Object.values(db.prepare(`PRAGMA ${pragma}`).get() ?? {})[0]
-  if (Number(value('foreign_keys')) !== 1) return 'foreign_keys could not be enabled'
-  if (Number(value('trusted_schema')) !== 0) return 'trusted_schema could not be disabled'
-  try { db.loadExtension(path.join(path.sep, 'room-preflight-no-such-extension')); return 'extension loading is enabled' }
-  catch (error) { if (!/not allowed|disabled|ERR_LOAD_SQLITE_EXTENSION|ERR_INVALID_STATE/i.test(`${(error as NodeJS.ErrnoException).code ?? ''} ${(error as Error).message}`)) return `extension loading check failed: ${(error as Error).message}` }
-  return undefined
-}
-
 /**
- * Two WAL connections on the target filesystem: commit, cross-connection read, close, reopen, verify.
- * Runs only on a filesystem already proven local and qualified. The Windows ACL boundary is primed
- * asynchronously first, so the remaining privacy and SQLite work is short and synchronous; the preflight
- * deadline cannot preempt a synchronous call, and nothing slow remains in one.
+ * Self-contained worker source so bundled bootstrap wrappers need no adjacent worker asset or loader.
+ * All SQLite calls (including construction and close) run off the bootstrap thread. A native call
+ * may finish after termination is requested; check the absolute deadline around EVERY synchronous
+ * step so it can never advance to another probe/scratch operation or publish late success.
+ * Keep this source covered by the emitted-wrapper dependency audit.
  */
-async function walProbe(sqlite: Sqlite, commonDir: string): Promise<string | undefined> {
-  await primePrivateState(commonDir)
-  const scratchRoot = path.join(commonDir, STORAGE_PATHS.preflightScratch)
-  privateStateDirectory(scratchRoot)
-  const dir = path.join(scratchRoot, randomBytes(8).toString('hex'))
-  privateStateDirectory(dir)
-  const file = path.join(dir, 'probe.sqlite')
-  const open: Database[] = []
-  const connect = () => { const db = new sqlite.DatabaseSync(file, { enableForeignKeyConstraints: true, allowExtension: false, timeout: 0 } as ConstructorParameters<Sqlite['DatabaseSync']>[1]); open.push(db); return db }
+const SQLITE_PROBE_SOURCE = String.raw`
+const { parentPort, workerData } = require('node:worker_threads');
+const fs = require('node:fs');
+const path = require('node:path');
+const expired = () => performance.now() >= workerData.deadline;
+const check = () => { if (expired()) throw Object.assign(new Error('preflight deadline expired'), { failure: 'timeout' }); };
+const step = fn => { check(); const value = fn(); check(); return value; };
+let sqlite;
+function fail(failure, detail) { return { failure, detail }; }
+async function runtimeProbe() {
+  const original = process.emitWarning;
+  process.emitWarning = function(warning, ...rest) {
+    const text = typeof warning === 'string' ? warning : warning?.message;
+    const type = typeof rest[0] === 'string' ? rest[0] : rest[0]?.type ?? (warning instanceof Error ? warning.name : undefined);
+    if (type === 'ExperimentalWarning' && /\bSQLite\b/i.test(text ?? '')) return;
+    return original.call(process, warning, ...rest);
+  };
   try {
-    const a = connect()
-    const mode = Object.values(a.prepare('PRAGMA journal_mode = WAL').get() ?? {})[0]
-    if (String(mode).toLowerCase() !== 'wal') return `journal_mode is ${String(mode)}, not wal`
-    a.exec('PRAGMA synchronous = FULL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE probe (n INTEGER PRIMARY KEY) STRICT;')
-    a.exec('BEGIN IMMEDIATE; INSERT INTO probe (n) VALUES (1); COMMIT;')
-    const b = connect()
-    if (Number(Object.values(b.prepare('SELECT count(*) AS c FROM probe').get() ?? {})[0]) !== 1) return 'second connection did not see the committed row'
-    b.close(); a.close(); open.length = 0
-    const c = connect()
-    const reopened = Object.values(c.prepare('PRAGMA journal_mode').get() ?? {})[0]
-    if (String(reopened).toLowerCase() !== 'wal') return `journal_mode after reopen is ${String(reopened)}`
-    if (Number(Object.values(c.prepare('SELECT count(*) AS c FROM probe').get() ?? {})[0]) !== 1) return 'row missing after reopen'
-    return undefined
+    check();
+    sqlite = await (workerData.importSqlite ? (0, eval)('(' + workerData.importSqlite + ')')() : import('node:sqlite'));
+    check();
+  } catch (error) { return fail(error.failure ?? 'sqlite-import', error.message); }
+  finally { process.emitWarning = original; }
+  if (typeof sqlite?.DatabaseSync !== 'function') return fail('sqlite-api', 'node:sqlite has no DatabaseSync');
+  let db;
+  try {
+    db = step(() => new sqlite.DatabaseSync(':memory:', { enableForeignKeyConstraints: true, allowExtension: false }));
+    for (const method of ['exec', 'prepare', 'close', 'loadExtension'])
+      if (typeof db[method] !== 'function') return fail('sqlite-api', 'DatabaseSync.' + method + ' missing');
+    const get = sql => { const statement = step(() => db.prepare(sql)); return step(() => Object.values(statement.get() ?? {})[0]); };
+    const version = String(get('SELECT sqlite_version() AS v'));
+    const parts = version.split('.').map(Number), floor = workerData.sqliteFloor.split('.').map(Number);
+    const comparison = parts[0] - floor[0] || parts[1] - floor[1] || parts[2] - floor[2];
+    if (comparison < 0) return { ...fail('sqlite-version', 'SQLite ' + version + ' is below the minimum ' + workerData.sqliteFloor), sqlite: version };
+    step(() => db.exec('PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;'));
+    if (Number(get('PRAGMA foreign_keys')) !== 1) return fail('pragma', 'foreign_keys could not be enabled');
+    if (Number(get('PRAGMA trusted_schema')) !== 0) return fail('pragma', 'trusted_schema could not be disabled');
+    try { step(() => db.loadExtension(path.join(path.sep, 'room-preflight-no-such-extension'))); return fail('pragma', 'extension loading is enabled'); }
+    catch (error) {
+      check();
+      if (!/not allowed|disabled|ERR_LOAD_SQLITE_EXTENSION|ERR_INVALID_STATE/i.test((error.code ?? '') + ' ' + error.message))
+        return fail('pragma', 'extension loading check failed: ' + error.message);
+    }
+    return { sqlite: version };
+  } catch (error) { return fail(error.failure ?? 'sqlite-api', 'SQLite probe failed: ' + error.message); }
+  finally { if (db && !expired()) step(() => db.close()); }
+}
+function walProbe(dir) {
+  check();
+  const file = path.join(dir, 'probe.sqlite'), open = new Set();
+  const connect = () => { const db = step(() => new sqlite.DatabaseSync(file, { enableForeignKeyConstraints: true, allowExtension: false, timeout: 0 })); open.add(db); return db; };
+  const close = db => { step(() => db.close()); open.delete(db); };
+  const get = (db, sql) => { const statement = step(() => db.prepare(sql)); return step(() => Object.values(statement.get() ?? {})[0]); };
+  try {
+    const a = connect();
+    const mode = get(a, 'PRAGMA journal_mode = WAL');
+    if (String(mode).toLowerCase() !== 'wal') return fail('journal', 'journal_mode is ' + mode + ', not wal');
+    step(() => a.exec('PRAGMA synchronous = FULL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE probe (n INTEGER PRIMARY KEY) STRICT;'));
+    step(() => a.exec('BEGIN IMMEDIATE; INSERT INTO probe (n) VALUES (1); COMMIT;'));
+    const b = connect();
+    if (Number(get(b, 'SELECT count(*) AS c FROM probe')) !== 1) return fail('journal', 'second connection did not see the committed row');
+    close(b); close(a);
+    const c = connect();
+    if (String(get(c, 'PRAGMA journal_mode')).toLowerCase() !== 'wal') return fail('journal', 'journal_mode changed after reopen');
+    if (Number(get(c, 'SELECT count(*) AS c FROM probe')) !== 1) return fail('journal', 'row missing after reopen');
+    return {};
   } finally {
-    for (const db of open) { try { db.close() } catch { /* already closed */ } }
-    // Only this probe's files, after every connection is closed.
-    for (const name of ['probe.sqlite', 'probe.sqlite-wal', 'probe.sqlite-shm']) fs.rmSync(path.join(dir, name), { force: true })
-    try { fs.rmdirSync(dir) } catch { /* leave a non-empty directory for inspection */ }
+    // On timeout termination owns connection teardown; leave scratch for inspection, never do late I/O.
+    if (!expired()) {
+      for (const db of open) close(db);
+      for (const name of ['probe.sqlite', 'probe.sqlite-wal', 'probe.sqlite-shm']) step(() => fs.rmSync(path.join(dir, name), { force: true }));
+      step(() => fs.rmdirSync(dir));
+    }
   }
 }
+parentPort.on('message', async message => {
+  let result;
+  try { check(); result = message.kind === 'runtime' ? await runtimeProbe() : walProbe(message.dir); check(); }
+  catch (error) { result = fail(error.failure ?? 'journal', error.message); }
+  parentPort.postMessage(result);
+});
+`
+
+type ProbeResult = { sqlite?: string; failure?: PreflightFailure; detail?: string }
 
 export async function preflight(surface: PreflightSurface, options: PreflightOptions = {}): Promise<PreflightResult> {
   const started = performance.now()
+  const deadlineAt = started + (options.timeoutMs ?? GATE_LIMITS.preflightMs)
   const runtime = options.runtime ?? {}
   const release = runtime.release ?? process.release
   let executable = runtime.execPath ?? process.execPath
@@ -113,60 +145,88 @@ export async function preflight(surface: PreflightSurface, options: PreflightOpt
   const fail = (failure: PreflightFailure, detail: string): PreflightResult =>
     ({ ok: false, failure, evidence: { ...evidence, elapsedMs: Math.round(performance.now() - started) }, detail: detail.replace(/[\r\n]/g, ' ').slice(0, MAX_DETAIL), remedy: REMEDY })
 
+  let worker: Worker | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let timedOut = false
+  const timeout = () => fail('timeout', `preflight exceeded ${options.timeoutMs ?? GATE_LIMITS.preflightMs} ms`)
+  const check = () => { if (timedOut || performance.now() >= deadlineAt) throw new Error('preflight deadline expired') }
+  const probe = (message: { kind: 'runtime' | 'wal'; dir?: string }): Promise<ProbeResult> => new Promise((resolve, reject) => {
+    const done = (result: ProbeResult) => { cleanup(); resolve(result) }
+    const error = (error: Error) => { cleanup(); reject(error) }
+    const exited = (code: number) => error(new Error(`probe worker exited (${code})`))
+    const cleanup = () => { worker!.off('message', done); worker!.off('error', error); worker!.off('exit', exited) }
+    worker!.once('message', done); worker!.once('error', error); worker!.once('exit', exited)
+    worker!.postMessage(message)
+  })
   const work = async (): Promise<PreflightResult> => {
     const version = evidence.node
     if (Number(version.split('.')[0]) !== NODE_MAJOR) return fail('node-version', `Node ${version} is not the qualified ${NODE_MAJOR}.x line`)
     if (compareVersions(version, NODE_FLOOR) < 0) return fail('node-version', `Node ${version} is below the minimum ${NODE_FLOOR}`)
-    // Official nodejs.org distributions bundle SQLite. A build linked to a system SQLite (common in distribution
-    // and package-manager builds) is unqualified. Other rebuilds that keep the bundled library and the official
-    // release metadata cannot be told apart here.
+    // Official distributions identify nodejs.org and bundle SQLite. Reject distinguishable vendor
+    // metadata. A rebuild preserving the official release name/source URL and bundled SQLite is
+    // indistinguishable here; this metadata check is not binary provenance/attestation.
     const shared = runtime.sharedSqlite ?? (process.config.variables as Record<string, unknown>).node_shared_sqlite === true
-    if (release.name !== 'node' || shared) return fail('node-vendor', release.name !== 'node' ? `runtime ${release.name} is not Node.js` : 'this Node.js build uses a system SQLite library, not the bundled one; it is not an official nodejs.org binary')
-    let sqlite: Sqlite
-    try { sqlite = await (options.importSqlite ?? importSqliteQuietly)() }
-    catch (error) { return fail('sqlite-import', `import('node:sqlite') failed: ${(error as Error).message}`) }
-    if (typeof sqlite?.DatabaseSync !== 'function') return fail('sqlite-api', 'node:sqlite has no DatabaseSync')
-    let db: Database
-    try { db = new sqlite.DatabaseSync(':memory:', { enableForeignKeyConstraints: true, allowExtension: false } as ConstructorParameters<Sqlite['DatabaseSync']>[1]) }
-    catch (error) { return fail('sqlite-api', `DatabaseSync failed: ${(error as Error).message}`) }
-    try {
-      for (const method of ['exec', 'prepare', 'close', 'loadExtension'] as const) if (typeof db[method] !== 'function') return fail('sqlite-api', `DatabaseSync.${method} missing`)
-      const sqliteVersion = String(Object.values(db.prepare('SELECT sqlite_version() AS v').get() ?? {})[0])
-      evidence.sqlite = sqliteVersion
-      if (compareVersions(sqliteVersion, SQLITE_FLOOR) < 0) return fail('sqlite-version', `SQLite ${sqliteVersion} is below the minimum ${SQLITE_FLOOR}`)
-      const pragma = verifyPragmas(db)
-      if (pragma) return fail('pragma', pragma)
-    } catch (error) { return fail('sqlite-api', `SQLite probe failed: ${(error as Error).message}`) }
-    finally { try { db.close() } catch { /* closed */ } }
+    if (release.name !== 'node' || source !== 'nodejs.org' || shared)
+      return fail('node-vendor', 'runtime must identify nodejs.org Node.js with bundled SQLite (no shared/system SQLite)')
+    check()
+    worker = new Worker(SQLITE_PROBE_SOURCE, { eval: true, execArgv: [],
+      workerData: { deadline: deadlineAt, sqliteFloor: SQLITE_FLOOR, importSqlite: options.importSqlite } })
+    const runtimeResult = await probe({ kind: 'runtime' })
+    check()
+    if (runtimeResult.sqlite) evidence.sqlite = runtimeResult.sqlite
+    if (runtimeResult.failure) return fail(runtimeResult.failure, runtimeResult.detail ?? 'runtime probe failed')
 
     let storage: 'qualified' | 'unqualified' = 'unqualified'
     if (options.commonDir) {
       const filesystem: FilesystemResult = await detectFilesystem(options.commonDir, options.filesystem ?? systemFilesystemReaders)
+      check()
       evidence.filesystem = filesystem
       if (filesystem.journal === 'wal') {
-        // Never open WAL on a path not proven local; a qualified filesystem must pass the real probe.
-        let journal: string | undefined
-        try { journal = await walProbe(sqlite, options.commonDir) }
-        catch (error) {
+        // Do not create scratch after a late filesystem/privacy response, even after the caller timed out.
+        try {
+          await primePrivateState(options.commonDir)
+          check()
+          const scratchRoot = path.join(options.commonDir, STORAGE_PATHS.preflightScratch)
+          privateStateDirectory(scratchRoot)
+          check()
+          const dir = path.join(scratchRoot, randomBytes(8).toString('hex'))
+          privateStateDirectory(dir)
+          check()
+          const journal = await probe({ kind: 'wal', dir })
+          check()
+          if (journal.failure) return fail(journal.failure, journal.detail ?? 'WAL probe failed')
+        } catch (error) {
+          check()
           const code = (error as NodeJS.ErrnoException).code
           if (code === 'EACCES' || code === 'EPERM' || /private|permission|ownership|symlink/i.test((error as Error).message)) return fail('permission', `private preflight scratch unavailable: ${(error as Error).message}`)
           return fail('journal', `WAL probe failed: ${(error as Error).message}`)
         }
-        if (journal) return fail('journal', journal)
         storage = 'qualified'
       }
     }
+    check()
     return { ok: true, storage, evidence: { ...evidence, elapsedMs: Math.round(performance.now() - started) } }
   }
 
-  let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<PreflightResult>(resolve => {
-    // Referenced on purpose: a hung import must end in this typed timeout, not an unsettled-await exit.
-    // The finally below clears it, so it never outlives the preflight.
-    timer = setTimeout(() => resolve(fail('timeout', `preflight exceeded ${options.timeoutMs ?? GATE_LIMITS.preflightMs} ms`)), options.timeoutMs ?? GATE_LIMITS.preflightMs)
+    // Referenced: even an import that never settles must produce a typed timeout.
+    timer = setTimeout(() => {
+      timedOut = true
+      // A stuck native call may defer thread teardown. Deadline checks in the worker fence subsequent
+      // steps; termination is requested immediately and never blocks this bounded diagnostic.
+      void worker?.terminate().catch(() => {})
+      resolve(timeout())
+    }, Math.max(0, deadlineAt - performance.now()))
   })
-  try { return await Promise.race([work(), deadline]) }
-  finally { clearTimeout(timer) }
+  try {
+    const result = await Promise.race([work(), deadline])
+    return timedOut || performance.now() >= deadlineAt ? timeout() : result
+  } catch (error) {
+    return timedOut || performance.now() >= deadlineAt ? timeout() : fail('sqlite-api', `probe worker failed: ${(error as Error).message}`)
+  } finally {
+    clearTimeout(timer)
+    void worker?.terminate().catch(() => {})
+  }
 }
 
 /** One bounded stderr line for a refusal; MCP stdout stays clean. */

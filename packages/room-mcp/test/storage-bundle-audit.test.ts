@@ -6,8 +6,8 @@ import { expect, it } from 'vitest'
 import { EXECUTABLE_BUNDLES, verifyBundleDigests } from '../src/hosts/codex-install.js'
 
 const plugin = fileURLToPath(new URL('../../../plugins/room/', import.meta.url))
-function imports(file: string) {
-  const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+function imports(file: string, code = fs.readFileSync(file, 'utf8')) {
+  const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const result: { specifier: string; dynamic: boolean; position: number }[] = []
   function visit(node: ts.Node) {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier))
@@ -27,10 +27,22 @@ it.each(['room-mcp', 'room-daemon', 'room-state'])('%s wrapper has only built-in
   const file = path.join(plugin, 'server', `${name}.mjs`)
   const dependencies = imports(file)
   expect(dependencies.filter(d => !d.dynamic).every(d => d.specifier.startsWith('node:') && d.specifier !== 'node:sqlite')).toBe(true)
-  expect(dependencies.filter(d => d.dynamic).map(d => d.specifier).sort()).toEqual([`./${name}-app.mjs`, 'node:sqlite'].sort())
+  expect(dependencies.filter(d => d.dynamic).map(d => d.specifier).sort()).toEqual([`./${name}-app.mjs`])
   const code = fs.readFileSync(file, 'utf8')
   expect(code).toContain('await bootstrap(')
   const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  // The isolated probe is embedded, not an adjacent asset: audit its dependency graph too.
+  const worker = source.statements.filter(ts.isVariableStatement).flatMap(node => [...node.declarationList.declarations])
+    .find(node => node.name.getText(source) === 'SQLITE_PROBE_SOURCE')?.initializer
+  expect(worker && ts.isTaggedTemplateExpression(worker)).toBe(true)
+  if (!worker || !ts.isTaggedTemplateExpression(worker)) throw new Error('missing embedded preflight worker')
+  expect(worker.tag.getText(source)).toBe('String.raw')
+  expect(ts.isNoSubstitutionTemplateLiteral(worker.template)).toBe(true)
+  const workerCode = worker.template.getText(source).slice(1, -1)
+  const workerImports = imports('preflight-worker.js', workerCode)
+  expect(workerImports.filter(d => !d.dynamic).map(d => d.specifier).sort()).toEqual(['node:fs', 'node:path', 'node:worker_threads'])
+  expect(workerImports.filter(d => d.dynamic).map(d => d.specifier)).toEqual(['node:sqlite'])
+  expect(code).toMatch(/new Worker\(SQLITE_PROBE_SOURCE/)
   const barrier = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === 'bootstrap')
   expect(barrier?.body).toBeDefined()
   // esbuild may rename the load parameter to avoid another bootstrap-local binding.

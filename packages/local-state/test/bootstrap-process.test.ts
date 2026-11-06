@@ -21,7 +21,7 @@ beforeAll(async () => {
         // Only this test build honors the environment seam. Production wrappers cannot bypass preflight.
         b.onLoad({ filter: /[/\\]preflight\.ts$/ }, async args => ({ loader: 'ts', contents: fs.readFileSync(args.path, 'utf8')
           .replace('const runtime = options.runtime ?? {}', `const runtime = process.env.ROOM_TEST_PREFLIGHT === 'old' ? { version: '22.14.0' } : options.runtime ?? {}`)
-          .replace('options.importSqlite ?? importSqliteQuietly', `options.importSqlite ?? (process.env.ROOM_TEST_PREFLIGHT === 'import' ? async () => { throw new Error('No such built-in module: node:sqlite') } : importSqliteQuietly)`) }))
+          .replace('importSqlite: options.importSqlite', `importSqlite: process.env.ROOM_TEST_PREFLIGHT === 'import' ? "async () => { throw new Error('No such built-in module: node:sqlite') }" : options.importSqlite`) }))
         b.onResolve({ filter: /\.\/(?:index|daemon-app|room-state)\.js$/ }, args => {
           if (args.kind === 'dynamic-import') return { path: 'application', namespace: 'test-app' }
         })

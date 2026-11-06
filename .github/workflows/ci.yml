@@ -40,7 +40,11 @@ jobs:
         run: git config --global user.name 'CI' && git config --global user.email 'ci@example.com'
       - name: Record actual runtime and committed bundle preflight
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: node scripts/sqlite-evidence.mjs --output "$RUNNER_TEMP/room-sqlite-runtime.json"
+        # Both locations must pass the actual two-connection commit/reopen WAL probe on
+        # the expected native filesystem: Linux ext4, macOS APFS, Windows NTFS.
+        run: |
+          node scripts/sqlite-evidence.mjs --scratch-parent "$RUNNER_TEMP" --output "$RUNNER_TEMP/room-sqlite-runtime.json"
+          node scripts/sqlite-evidence.mjs --scratch-parent "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/room-sqlite-workspace.json"
       - name: Local storage gate, bootstrap and privacy
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$RUNNER_TEMP/room-sqlite-local-state.json"

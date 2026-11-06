@@ -193,20 +193,60 @@ it.runIf(process.platform === 'win32')('surfaces Windows create denial below an 
   } finally { execFileSync('icacls', [parent, '/remove:d', `*${user}`], { stdio: 'pipe' }) }
 }, 30_000)
 
-it('syncs ancestors once per directory identity and walks again after the directory is replaced', () => {
-  const dir = setup(), nested = path.join(dir, 'a', 'b'), file = path.join(nested, 'record.json')
-  const fsync = vi.spyOn(fs, 'fsyncSync')
+// Observe actual fsync calls without replacing their durability effect.
+function syncedDirectories(): string[] {
+  const opened = new Map<number, string>(), synced: string[] = []
+  const open = fs.openSync.bind(fs), sync = fs.fsyncSync.bind(fs), close = fs.closeSync.bind(fs)
+  vi.spyOn(fs, 'openSync').mockImplementation((target, flags, mode) => {
+    const fd = open(target, flags, mode)
+    if (fs.fstatSync(fd).isDirectory()) opened.set(fd, String(target))
+    return fd
+  })
+  vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => { if (opened.has(fd)) synced.push(opened.get(fd)!); sync(fd) })
+  vi.spyOn(fs, 'closeSync').mockImplementation(fd => { opened.delete(fd); close(fd) })
+  return synced
+}
+
+// Native Windows rejects opening directories for fsync; POSIX tests assert the actual calls.
+it.skipIf(process.platform === 'win32').each(['replace-ancestor', 'replace-root', 'reinsert', 'inode-reuse'])('syncs the current namespace after %s', mutation => {
+  const dir = setup(), state = path.join(dir, 'room'), ancestor = path.join(state, 'a'), leaf = path.join(ancestor, 'b'), file = path.join(leaf, 'record.json')
   writeAtomic(file, { n: 1 })
-  const first = fsync.mock.calls.length
-  fsync.mockClear()
+  const original = fs.statSync(leaf, { bigint: true })
+  if (mutation === 'replace-ancestor') {
+    fs.renameSync(ancestor, path.join(dir, 'old-a'))
+    fs.mkdirSync(ancestor)
+    fs.renameSync(path.join(dir, 'old-a', 'b'), leaf)
+    expect(fs.statSync(leaf, { bigint: true }).ino).toBe(original.ino)
+  } else if (mutation === 'replace-root') {
+    fs.renameSync(state, path.join(dir, 'old-room'))
+    fs.mkdirSync(state)
+    fs.renameSync(path.join(dir, 'old-room', 'a'), ancestor)
+    expect(fs.statSync(leaf, { bigint: true }).ino).toBe(original.ino)
+  } else if (mutation === 'reinsert') {
+    fs.renameSync(leaf, path.join(dir, 'aside'))
+    fs.renameSync(path.join(dir, 'aside'), leaf)
+    expect(fs.statSync(leaf, { bigint: true }).ino).toBe(original.ino)
+  } else {
+    fs.rmSync(ancestor, { recursive: true })
+    fs.mkdirSync(leaf, { recursive: true })
+    // Deterministic inode reuse: a leaf-identity cache must not bless these new namespace entries.
+    const stat = fs.statSync.bind(fs)
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options: any) =>
+      String(target) === leaf && options?.bigint ? original : stat(target, options)) as typeof fs.statSync)
+  }
+  const synced = syncedDirectories()
   writeAtomic(file, { n: 2 })
-  const repeat = fsync.mock.calls.length
-  expect(repeat).toBeLessThan(first)
-  // A replaced directory has a new identity: the walk recreates it and makes its entry durable again.
-  fs.rmSync(path.join(dir, 'a'), { recursive: true })
-  fsync.mockClear()
+  expect(synced).toContain(dir) // room's entry
+  expect(synced).toContain(state) // a's entry
+  expect(synced).not.toContain(path.dirname(dir)) // repository location is outside Room ownership
+  expect(synced).toContain(ancestor) // b's entry
+  expect(synced).toContain(leaf) // record's entry
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ n: 2 })
+  synced.length = 0
   writeAtomic(file, { n: 3 })
-  expect(fsync.mock.calls.length).toBeGreaterThan(repeat)
-  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ n: 3 })
-  if (process.platform !== 'win32') expect(fs.statSync(path.join(dir, 'a')).mode & 0o777).toBe(0o700)
+  // Even unchanged leaf identity cannot exclude namespace mutation by another process.
+  expect(synced).toContain(dir)
+  expect(synced).toContain(state)
+  expect(synced).not.toContain(path.dirname(dir))
+  expect(synced).toContain(ancestor)
 })

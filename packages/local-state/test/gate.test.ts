@@ -4,6 +4,7 @@ import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openStorageGate, type GateOptions } from '../src/gate.js'
+import * as leases from '../src/leases.js'
 import { createExclusive, type InstanceToken, type Liveness } from '../src/leases.js'
 import { STORAGE_PATHS, StorageRefused, type GateOwner, type StorageGate } from '../src/protocol.js'
 
@@ -298,4 +299,66 @@ describe('pre-registry import decision', () => {
     await second.register({ instance: token(), kind: 'mcp', release: 'x' })
     expect(gateRecord(other).preRegistryImport).toBe('required')
   })
+})
+
+describe('reader compatibility', () => {
+  it.each([{ minReader: 999 }, { minWriter: 999 }, { phase: 'active' }])('refuses fresh and previously cached reads after %j', async changed => {
+    const dir = commonDir(), gate = openStorageGate(dir, world())
+    await gate.register({ instance: token(), kind: 'mcp', release: 'test' })
+    expect(await gate.observe()).toEqual({ generation: 1, phase: 'legacy' })
+    expect(await gate.observe()).toEqual({ generation: 1, phase: 'legacy' }) // cached compatible read
+    const owner = { instance: token(), token: 'owner' }
+    fs.writeFileSync(path.join(dir, STORAGE_PATHS.gate), JSON.stringify({ ...gateRecord(dir), owner, ...changed }))
+    // The old instance must invalidate its compatible cache. A refusal must never cache a permissive value.
+    for (const reader of [gate, openStorageGate(dir, world())]) {
+      await expect(reader.observe()).rejects.toMatchObject({ reason: 'incompatible' })
+      await expect(reader.observe()).rejects.toMatchObject({ reason: 'incompatible' })
+    }
+  })
+})
+
+it('256 interrupted maintenance owners cannot exhaust registration or erase takeover evidence', async () => {
+  const options = world(), dir = commonDir(), gate = openStorageGate(dir, options)
+  const first = await maintenance(gate, dir)
+  await gate.drain(first)
+  options.states.set(first.instance.pid, 'dead')
+  // Seed the on-disk crash state directly; 255 full durable registrations would obscure this pruning test.
+  const registrationDir = path.join(dir, STORAGE_PATHS.registrations)
+  for (let n = 1; n < 256; n++) {
+    const instance = token()
+    options.states.set(instance.pid, 'dead')
+    fs.writeFileSync(path.join(registrationDir, `${instance.nonce}.json`), JSON.stringify({
+      v: 1, instance, kind: 'maintenance', build: 1, release: 'test', generation: 2, registeredAt: 0,
+    }))
+  }
+  expect(fs.readdirSync(registrationDir)).toHaveLength(256)
+  const next = { instance: token(), token: 'successor' }
+  await gate.register({ instance: next.instance, kind: 'maintenance', release: 'test' })
+  expect(fs.readdirSync(registrationDir)).toEqual([`${next.instance.nonce}.json`])
+  expect(gateRecord(dir).owner).toEqual(first)
+  fs.rmSync(path.join(dir, STORAGE_PATHS.migrationLock))
+  takeLock(dir, next.instance)
+  expect(await gate.takeOver(next)).toMatchObject({ generation: 3, phase: 'draining', complete: true })
+  expect(gateRecord(dir).owner).toEqual(next)
+})
+
+it('keeps admission closed when the reopen deadline passes while waiting for the guard', async () => {
+  let now = 100
+  const dir = commonDir(), gate = openStorageGate(dir, { ...world(), now: () => now })
+  const owner = await maintenance(gate, dir)
+  await gate.drain(owner)
+  const before = gateRecord(dir)
+  // Simulate a contending guard holder advancing the injected clock while this caller waits.
+  const guard = vi.spyOn(leases, 'withGuard').mockImplementationOnce(() => {
+    now = 200
+    throw new Error('lease guard busy: simulated holder')
+  })
+  try {
+    await expect(gate.reopen(owner, { notAfter: 200 })).rejects.toMatchObject({
+      reason: 'maintenance', detail: 'import attempt deadline passed; admission stays closed',
+    })
+    expect(guard).toHaveBeenCalledTimes(2) // refused inside the acquired guard, not before the wait
+    expect(gateRecord(dir)).toEqual(before)
+    expect(await gate.reopen(owner, { notAfter: 201 })).toMatchObject({ phase: 'legacy', generation: before.generation })
+  } finally { guard.mockRestore() }
 })

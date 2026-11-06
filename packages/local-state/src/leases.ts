@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { privateStateDirectory } from './private-state.js'
+import { privateDirectoryPath } from './private-core.js'
 import { pidAlive, probeOwnProcess, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
@@ -39,35 +40,22 @@ function syncDirectory(dir: string): void {
 }
 
 /**
- * Directories whose entry this process has made durable (parent fsynced after observing them), by identity.
- * A replaced directory has a new dev/ino, so it is walked again; the map is bounded and only an optimization.
+ * Rewalk the current namespace on every publication. A leaf dev/ino memo cannot prove that its
+ * ancestors' entries are durable: another process may rename an ancestor, replace it and reinsert
+ * the original leaf (or reuse a removed inode). Even a surviving leaf must sync every parent.
+ * We do not own/exclude namespace changes, so there is no sound cross-publication memo here.
+ * For Room state the owned namespace starts at room/: sync its entry in the existing common
+ * directory, but not the user's repository location above it. Other writers retain the root walk.
  */
-const durableDirectories = new Map<string, string>()
-const DURABLE_DIRECTORY_CACHE = 1024
-function directoryIdentity(dir: string): string | undefined {
-  try { const stat = fs.statSync(dir, { bigint: true }); return stat.isDirectory() ? `${stat.dev}:${stat.ino}` : undefined }
-  catch { return undefined }
-}
-
-function durableDirectory(dir: string, holdsFile = true): void {
-  const known = durableDirectories.get(dir)
-  if (known !== undefined && known === directoryIdentity(dir)) return
-  ensureDurableDirectory(dir, holdsFile)
-  const identity = directoryIdentity(dir)
-  if (identity === undefined) return
-  if (durableDirectories.size >= DURABLE_DIRECTORY_CACHE) durableDirectories.clear()
-  durableDirectories.set(dir, identity)
-}
-
-function ensureDurableDirectory(dir: string, holdsFile: boolean): void {
+function ensureDurableDirectory(dir: string, holdsFile: boolean, boundary?: string): void {
   const parent = path.dirname(dir)
   // A drive/share root already exists; Windows rejects mkdir on it with EPERM.
-  // Stop only here: existing descendants still need their parent synced below.
-  if (parent === dir) {
+  // The existing common directory is also a boundary; Room never creates or publishes it.
+  if (parent === dir || dir === boundary) {
     if (!fs.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
     return
   }
-  durableDirectory(parent, false)
+  ensureDurableDirectory(parent, false, boundary)
   try {
     // Every atomic writer uses the same creation/Windows ACL policy as daemon startup.
     if (process.platform === 'win32' && !holdsFile) fs.mkdirSync(dir) // ancestors hold no private files
@@ -102,8 +90,9 @@ export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProce
 }
 
 function writeTemp(file: string, content: object): string {
-  const dir = path.dirname(file)
-  durableDirectory(dir)
+  const dir = path.resolve(path.dirname(file))
+  const namespace = privateDirectoryPath(dir)
+  ensureDurableDirectory(dir, true, namespace.inState ? path.dirname(namespace.root) : undefined)
   cleanupOrphanTemps(dir)
   const start = probeOwnProcess()?.startTime
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : 'u'}-n${randomUUID()}.tmp`

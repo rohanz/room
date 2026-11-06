@@ -108,7 +108,7 @@ class FileStorageGate implements StorageGate {
   private readonly resolutionDir: string
   private readonly limits: { registrations: number; tickets: number; scanBatch: number }
   /** Last observation, keyed by the gate file's identity. Every publication renames a new file into place. */
-  private observed?: { key: string; value: ReadValidation }
+  private observed?: { key: string; value: ReadValidation; gate: StorageGateRecord }
 
   constructor(readonly commonDir: string, options: GateOptions) {
     this.now = options.now ?? Date.now
@@ -348,7 +348,8 @@ class FileStorageGate implements StorageGate {
         if (holders.has(nonce)) continue
         let registration: Registration | undefined
         try { registration = this.readRegistration(nonce) } catch { continue } // damaged: keep as evidence
-        if (!registration || registration.kind === 'maintenance' || this.alive(registration.instance) !== 'dead') continue
+        // Owner identity survives in gate.owner; takeover never needs the dead registration file.
+        if (!registration || this.alive(registration.instance) !== 'dead') continue
         try { fs.unlinkSync(this.registrationFile(nonce)) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       }
       await yieldTurn()
@@ -378,12 +379,14 @@ class FileStorageGate implements StorageGate {
     })
   }
 
-  async reopen(owner: GateOwner): Promise<StorageGateRecord> {
+  async reopen(owner: GateOwner, options: { notAfter?: number } = {}): Promise<StorageGateRecord> {
     return this.guarded(() => {
       const gate = this.requireGate()
       if (gate.phase !== 'draining') throw new StorageRefused('maintenance', `storage gate is ${gate.phase}, not draining`)
       this.requireOwner(owner, gate)
       const { owner: _owner, drainingFrom: _from, ...rest } = gate
+      if (options.notAfter !== undefined && (!Number.isFinite(options.notAfter) || this.now() >= options.notAfter))
+        throw new StorageRefused('maintenance', 'import attempt deadline passed; admission stays closed')
       return this.publish({ ...rest, phase: 'legacy' })
     })
   }
@@ -441,12 +444,17 @@ class FileStorageGate implements StorageGate {
     try { stat = fs.lstatSync(this.gateFile, { bigint: true }) }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new StorageRefused('unavailable', bounded(`storage gate unreadable: ${(error as NodeJS.ErrnoException).code ?? error}`), REMEDY) }
     const key = stat && `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`
-    if (key && this.observed?.key === key) return this.observed.value
+    if (key && this.observed?.key === key) {
+      this.compatibility(this.observed.gate, STORAGE_BUILD)
+      return this.observed.value
+    }
     this.observed = undefined
     const gate = stat ? this.readGate() : undefined
     if (gate) {
+      // Both fresh observations and cache hits enforce this build's reader/writer capability.
+      this.compatibility(gate, STORAGE_BUILD)
       const value = { generation: gate.generation, phase: gate.phase }
-      if (key) this.observed = { key, value }
+      if (key) this.observed = { key, value, gate }
       return value
     }
     // Before the first registration the clone is legacy at generation 0; initialization moves it to 1, so a read
