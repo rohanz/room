@@ -7,10 +7,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
-import type { FilesystemKind, FilesystemResult } from './protocol.js'
+import { GATE_LIMITS, type FilesystemKind, type FilesystemResult } from './protocol.js'
 
 const QUALIFIED: ReadonlySet<FilesystemKind> = new Set(['apfs', 'ext4', 'ntfs'])
+/** Native tools (mount) answer at once. PowerShell's cold start on Windows takes seconds, so its query is bounded only
+ * by the preflight deadline that already wraps detection, never by a shorter bound that would misreport NTFS as unknown. */
 const COMMAND_TIMEOUT_MS = 3_000
+const POWERSHELL_TIMEOUT_MS = GATE_LIMITS.preflightMs
 
 type Maybe<T> = T | Promise<T>
 /** Injectable OS readers; tests use them to simulate platforms. Production readers never block the event loop. */
@@ -28,8 +31,8 @@ export interface FilesystemReaders {
   env: NodeJS.ProcessEnv
 }
 
-const run = (command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> => new Promise((resolve, reject) => {
-  execFile(command, args, { encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...(env ? { env } : {}) },
+const run = (command: string, args: string[], env?: NodeJS.ProcessEnv, timeout = COMMAND_TIMEOUT_MS): Promise<string> => new Promise((resolve, reject) => {
+  execFile(command, args, { encoding: 'utf8', timeout, windowsHide: true, maxBuffer: 1024 * 1024, ...(env ? { env } : {}) },
     (error, stdout) => error ? reject(error) : resolve(stdout))
 })
 /**
@@ -45,7 +48,7 @@ export const systemFilesystemReaders: FilesystemReaders = {
   statfsType: file => fs.promises.statfs(file).then(stat => stat.type, () => undefined),
   macMounts: () => run('/sbin/mount', []),
   linuxMountinfo: () => fs.promises.readFile('/proc/self/mountinfo', 'utf8'),
-  windowsDrive: drive => run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
+  windowsDrive: drive => run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
   home: () => os.homedir(),
   env: process.env,
 }

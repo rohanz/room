@@ -32,7 +32,10 @@ function captureWorkers(prelude = '', workerData?: unknown) {
   })
 }
 
-it('keeps the caller responsive through a 300 ms fsync stall in durable production writes', async () => {
+// A caller blocked by the stall would see one gap at least as long as the stall and almost no ticks; a responsive one
+// sees scheduling jitter only (over 100 ms on loaded CI runners). A long stall keeps those outcomes far apart.
+const STALL_MS = 1_000
+it('keeps the caller responsive through a 1 s fsync stall in durable production writes', async () => {
   const stall = new Int32Array(new SharedArrayBuffer(8))
   const constructors = captureWorkers(`
     import fs from 'node:fs';
@@ -41,7 +44,7 @@ it('keeps the caller responsive through a 300 ms fsync stall in durable producti
     const sync = fs.fsyncSync;
     fs.fsyncSync = fd => {
       if (Atomics.exchange(stall, 0, 0)) {
-        const until = performance.now() + 300;
+        const until = performance.now() + ${STALL_MS};
         while (performance.now() < until) {}
         Atomics.add(stall, 1, 1);
       }
@@ -66,8 +69,8 @@ it('keeps the caller responsive through a 300 ms fsync stall in durable producti
       const result = await operation()
       maximum = Math.max(maximum, performance.now() - last)
       expect(Atomics.load(stall, 1)).toBe(before + 1)
-      expect(ticks).toBeGreaterThan(5)
-      expect(maximum).toBeLessThan(50)
+      expect(ticks).toBeGreaterThan(STALL_MS / 50)
+      expect(maximum).toBeLessThan(STALL_MS / 2)
       return result
     } finally { clearInterval(timer) }
   }
