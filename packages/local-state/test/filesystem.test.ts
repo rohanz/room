@@ -3,8 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { expect, it } from 'vitest'
-import { detectFilesystem, type FilesystemReaders } from '../src/filesystem.js'
+import { expect, it, vi } from 'vitest'
+import { detectFilesystem, windowsDriveMemo, type FilesystemReaders } from '../src/filesystem.js'
 
 const base = (overrides: Partial<FilesystemReaders>): FilesystemReaders => ({
   platform: 'linux', realpath: file => file, statfsType: () => undefined, macMounts: () => '', linuxMountinfo: () => '',
@@ -131,4 +131,22 @@ it('native evidence rejects unqualified, missing-WAL and wrong-filesystem result
       expect(JSON.parse(child.stdout).passed).toBe(passed)
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+it('remembers a complete Windows drive answer per volume, and asks again after a failed or partial one or a remount', async () => {
+  const answers = ['Fixed ', 'Fixed NTFS']
+  let serial = 1n, failNext = true
+  const query = vi.fn(async () => {
+    if (failNext) { failNext = false; throw new Error('powershell cold start timed out') }
+    return answers.shift() ?? 'Fixed NTFS'
+  })
+  const drive = windowsDriveMemo(query, async () => serial)
+  await expect(drive('D:')).rejects.toThrow('timed out')
+  expect(await drive('D:')).toBe('Fixed ') // partial: the file system name was unreadable
+  expect(await drive('D:')).toBe('Fixed NTFS') // asked again
+  expect(await drive('D:')).toBe('Fixed NTFS')
+  expect(query).toHaveBeenCalledTimes(3) // the complete answer is kept
+  serial = 2n // another volume mounted under the same letter
+  expect(await drive('D:')).toBe('Fixed NTFS')
+  expect(query).toHaveBeenCalledTimes(4)
 })

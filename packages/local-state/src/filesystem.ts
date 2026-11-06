@@ -43,21 +43,28 @@ const WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; tr
 
 
 /**
- * One PowerShell query per volume per process: a volume's type and file system do not change while its serial number
- * (`stat().dev` on Windows) stays the same, so a remount under the same letter is queried again. Failures are not kept.
+ * One drive query per volume per process: a volume's type and file system do not change while its serial number
+ * (`stat().dev` on Windows) stays the same, so a remount under the same letter is queried again. Only a complete answer
+ * (type and file system) is kept; a failed or partial query is asked again next time.
  */
-const driveAnswers = new Map<string, Promise<string>>()
-async function windowsDriveOnce(drive: string): Promise<string> {
-  const root = `${drive}\\`
-  const key = `${drive}:${(await fs.promises.stat(root)).dev}`
-  let answer = driveAnswers.get(key)
-  if (!answer) {
-    answer = run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS)
-    driveAnswers.set(key, answer)
-    answer.catch(() => { if (driveAnswers.get(key) === answer) driveAnswers.delete(key) })
+export function windowsDriveMemo(query: (root: string) => Promise<string>,
+  volume: (root: string) => Promise<bigint | number> = root => fs.promises.stat(root).then(stat => stat.dev)): (drive: string) => Promise<string> {
+  const answers = new Map<string, Promise<string>>()
+  return async drive => {
+    const root = `${drive}\\`
+    const key = `${drive}:${await volume(root)}`
+    let answer = answers.get(key)
+    if (!answer) {
+      const pending = query(root)
+      answer = pending
+      answers.set(key, pending)
+      const forget = () => { if (answers.get(key) === pending) answers.delete(key) }
+      pending.then(text => { if (text.trim().split(/\s+/).length < 2) forget() }, forget)
+    }
+    return answer
   }
-  return answer
 }
+const windowsDriveOnce = windowsDriveMemo(root => run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS))
 
 export const systemFilesystemReaders: FilesystemReaders = {
   platform: process.platform,
