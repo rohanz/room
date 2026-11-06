@@ -198,6 +198,8 @@ export class WorkerProjector {
     this.s.room.mail.unobserve(this.onReferenceDelete)
     this.s.room.outcomes.unobserve(this.onReferenceDelete)
   }
+  /** Resolves once a pass running at stop() has finished; stop() starts no new pass. */
+  async settled(): Promise<void> { while (this.running) await this.running.catch(() => {}) }
 
   /** A request waits for a pass started after that request; concurrent requests share the next pass. */
   project(): Promise<void> {

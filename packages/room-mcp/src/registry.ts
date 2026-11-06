@@ -53,6 +53,8 @@ export const currentToolSignal = (): AbortSignal | undefined => toolSignal.getSt
 export interface Attachment {
   /** Stop everything this attachment started. */
   stop(): void
+  /** Resolves once work started before stop() has finished. */
+  settled?(): Promise<void>
   /** Run any pending automatic conflict checks now (tests). */
   flush?(): Promise<void>
   /** Write this attachment's worker facts now (the bridge's team projection). */
@@ -86,6 +88,8 @@ export class Rooms {
   private exitWaiters = new Map<string, Set<() => void>>()
   private autoRetireTimers = new Map<Session, ReturnType<typeof setInterval>>()
   private retiring = new Map<Session, Promise<void>>()
+  /** Background registry work started for tracked sessions; shutdown settles it before storage admissions close. */
+  private background = new Set<Promise<unknown>>()
   /** Each tracked session's writer of its workers' views and retirement cleanup (registry §13). */
   private projectors = new Map<Session, WorkerProjector>()
 
@@ -118,20 +122,20 @@ export class Rooms {
     const cur = this.entries.get(s)
     if (cur?.attachment) return
     // One primary and one workers room at a time: an older session in the same role is detached first.
-    for (const [other, e] of this.entries) if (other !== s && e.role === role) { e.attachment?.stop(); this.stopRetirement(other); this.entries.delete(other) }
+    for (const [other, e] of this.entries) if (other !== s && e.role === role) { this.stopAttachment(e.attachment); this.stopRetirement(other); this.entries.delete(other) }
     this.entries.set(s, { role, attachment: this.o.attach(s, role, lead) })
   }
   /** The worker projector and auto-retirement only (a session the host set without joining through the tools, e.g. in tests). */
   track(s: Session): void {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
-    void withoutAdmission(() => registryForDir(s.dir)).then(registry => {
+    this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then(registry => {
       if (!this.tracked.has(s) || this.projectors.has(s)) return
       const projector = new WorkerProjector(s, registry, this.o.log)
       this.projectors.set(s, projector)
       projector.start()
-    }).catch(() => {})
-    const timer = setInterval(() => { void withoutAdmission(() => this.autoRetire(s)).catch(() => {}) }, 60_000)
+    }))
+    const timer = setInterval(() => { this.inBackground(withoutAdmission(() => this.autoRetire(s))) }, 60_000)
     timer.unref()
     this.autoRetireTimers.set(s, timer)
   }
@@ -139,18 +143,30 @@ export class Rooms {
   remove(s: Session): void {
     this.stopRetirement(s)
     const e = this.entries.get(s)
-    e?.attachment?.stop()
+    this.stopAttachment(e?.attachment)
     this.entries.delete(s)
     for (const [id, h] of Array.from(this.handles)) if (h.session === s) this.handles.delete(id)
     if (this.primary() === s) this.o.setPrimary(null)
   }
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
+  /** Wait for background work already started (the tracked open, retirement and projector passes, stopped attachments). */
+  async settle(): Promise<void> { await Promise.allSettled([...this.background]) }
+  private stopAttachment(attachment: Attachment | undefined): void {
+    attachment?.stop()
+    if (attachment?.settled) this.inBackground(attachment.settled())
+  }
+  private inBackground(work: Promise<unknown>): void {
+    const settled = work.catch(() => {}).finally(() => this.background.delete(settled))
+    this.background.add(settled)
+  }
 
   private stopRetirement(s: Session): void {
     readDiffCache.clear(s)
     clearInterval(this.autoRetireTimers.get(s))
     this.autoRetireTimers.delete(s)
-    this.projectors.get(s)?.stop()
+    const projector = this.projectors.get(s)
+    projector?.stop()
+    if (projector) this.inBackground(projector.settled())
     this.projectors.delete(s)
     this.tracked.delete(s)
   }

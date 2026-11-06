@@ -77,6 +77,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }
       },
+      settled: async () => { await Promise.all([bridge?.settled(), watcher?.settled()]) },
       flush: () => watcher?.flush() ?? Promise.resolve(),
       project: () => bridge?.sync() ?? Promise.resolve(),
     }
@@ -216,7 +217,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         try { joined.awareness.setLocalState(null) } catch { /* already disconnected */ }
       }
       const s = ctx.getSession()
-      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); return }
+      // Registry work these sessions started finishes its admission before the caller closes storage admissions.
+      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await rooms.settle(); return }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
       const cancellation = new AbortController()
       const pending = new Set(running.map(r => r.w.tag))
@@ -240,6 +242,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       await state.closeWorkersRoom(true).catch(() => {})
       rooms.remove(s)
       await doLeave(s)
+      await rooms.settle()
     },
     async drop(s: Session, reason: string) {
       log(`leaving ${s.roomName}: ${reason}`)

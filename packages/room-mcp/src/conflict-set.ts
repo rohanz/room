@@ -625,6 +625,8 @@ export class ConflictSet {
     if (this.timer) clearTimeout(this.timer)
     if (this.tick) clearTimeout(this.tick)
   }
+  /** Resolves once a reconcile running at stop() has finished. */
+  async settled(): Promise<void> { while (this.running) await this.running.catch(() => {}) }
   private schedulePeriodic(): void {
     if (!this.started || this.stopped) return
     this.tick = setTimeout(() => { this.tick = undefined; this.schedule(0) }, 60_000)

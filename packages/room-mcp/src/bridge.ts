@@ -114,6 +114,8 @@ export class Bridge {
   private facts?: WorkerSnapshot
   private storageEpoch = 0
   private running: Promise<void> = Promise.resolve()
+  /** Attach and timer-started passes, so a stopped bridge can be awaited before admissions close. */
+  private inFlight = new Set<Promise<unknown>>()
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {
     this.registry = o.registry
@@ -211,8 +213,19 @@ export class Bridge {
       for (const c of l.openClaims()) this.mirrorClaim(c.id)
       this.schedule()
     })
-    if (this.registry) void withoutAdmission(() => attach(this.registry!)).catch(e => this.o.log?.(`bridge: no worker registry: ${String(e)}`))
-    else void withoutAdmission(() => registryForDir(this.local.dir).then(attach)).catch(e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`))
+    if (this.registry) this.background(withoutAdmission(() => attach(this.registry!)).catch(e => this.o.log?.(`bridge: no worker registry: ${String(e)}`)))
+    else this.background(withoutAdmission(() => registryForDir(this.local.dir).then(attach)).catch(e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`)))
+  }
+
+  private background(work: Promise<unknown>): void {
+    const settled = work.catch(() => {}).finally(() => this.inFlight.delete(settled))
+    this.inFlight.add(settled)
+  }
+  /** Resolves once work started before stop() has finished: attach, sync passes, claim relays and projection. */
+  async settled(): Promise<void> {
+    while (this.inFlight.size) await Promise.allSettled([...this.inFlight])
+    await this.relaying.catch(() => {})
+    await this.running.catch(() => {})
   }
 
   /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
@@ -248,9 +261,9 @@ export class Bridge {
   private schedule(): void {
     if (this.stopped) return
     const ms = this.o.debounceMs ?? 300
-    if (ms === 0) { void withoutAdmission(() => this.sync()).catch(e => this.o.log?.(`bridge: ${String(e)}`)); return }
+    if (ms === 0) { this.background(withoutAdmission(() => this.sync()).catch(e => this.o.log?.(`bridge: ${String(e)}`))); return }
     if (this.timer) clearTimeout(this.timer)
-    this.timer = setTimeout(() => { this.timer = null; void withoutAdmission(() => this.sync()).catch(e => this.o.log?.(`bridge: ${String(e)}`)) }, ms)
+    this.timer = setTimeout(() => { this.timer = null; this.background(withoutAdmission(() => this.sync()).catch(e => this.o.log?.(`bridge: ${String(e)}`))) }, ms)
     this.timer.unref?.()
   }
 
