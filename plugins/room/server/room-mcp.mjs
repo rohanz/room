@@ -33364,6 +33364,13 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   const sessions = path29.join(room, "sessions");
   for (const sid of entries(sessions)) {
     const dir = path29.join(sessions, sid);
+    let directory = false;
+    try {
+      directory = fs28.lstatSync(dir).isDirectory();
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    if (!directory) continue;
     const session = read2(path29.join(dir, "session.json")), mcp = read2(path29.join(dir, "mcp.json"));
     const runtime = mcp?.pid === currentPid || mcp?.runtime === "daemon-client" && alive(identityOf(mcp)) === "alive" ? "daemon-client" : "legacy";
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId || !!options.currentWorkerId && session.worker_id === options.currentWorkerId);

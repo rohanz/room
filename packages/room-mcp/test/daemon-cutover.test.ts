@@ -102,6 +102,19 @@ describe('drained daemon cutover', () => {
     await expect(requireDaemonRuntime(common, options)).rejects.toThrow(/unknown owner: pid 100, port 4402/)
     expect(fs.existsSync(path.join(common, 'room/daemon-cutover.json'))).toBe(false)
   })
+  it('completes cutover when sessions/ holds clone-wide files such as the idle-episode counter', async () => {
+    // Regression (0.17.34-0.17.37): every sessions/ entry was read as a session directory, so the durable
+    // idle-episode counter at sessions/idle-episode.json failed with ENOTDIR and blocked every real clone.
+    const { common } = fixture(), room = path.join(common, 'room')
+    write(path.join(room, 'sessions', 'idle-episode.json'), { max: 3 })
+    write(path.join(room, 'sessions', 'old-session', 'session.json'), { session_id: 'old-session' })
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.issues.filter(issue => /idle-episode/.test(issue))).toEqual([])
+    expect(state.clients.map(client => client.source)).not.toContain(path.join(room, 'sessions', 'idle-episode.json', 'session.json'))
+    await requireDaemonRuntime(common, inspectOptions)
+    expect(fs.existsSync(path.join(room, 'daemon-cutover.json'))).toBe(true)
+    expect(JSON.parse(fs.readFileSync(path.join(room, 'sessions', 'idle-episode.json'), 'utf8'))).toEqual({ max: 3 })
+  })
   it('accepts a proven daemon and daemon-capable recorded clients', async () => {
     const { common } = fixture(); owner(common, 100, 'daemon')
     write(path.join(common, 'room/sessions/new/mcp.json'), { ...identity(200), runtime: 'daemon-client' })
