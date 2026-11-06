@@ -1,4 +1,5 @@
 import { withDirectoryAdmission, withValidatedRead } from './storage-admission.js'
+import { StorageRefused } from '@room/local-state/protocol'
 /** Async lifecycle facade. A display snapshot never grants operation authority. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,24 +20,71 @@ export { workerLogFile, backgroundAtExit } from './worker-file-store.js'
 export type { WorkerSnapshot, WorkerCommand, WorkerFreshness, WorkerStore } from './worker-store.js'
 const registries = new Map<string, Promise<WorkerRegistry>>()
 const MAX_PROCESS_REGISTRIES = 24
+/**
+ * The process's registry lifetime. Every registry registryForDir opens is owned here from the call's entry until it
+ * has shut down for good, whether it is cached, evicted or closed. Shutdown fences new opens synchronously and
+ * rechecks after the asynchronous Git lookup; an MCP process begins one lifecycle when it creates its tools.
+ */
+let fenced = false
+const calls = new Set<Promise<unknown>>()
+const live = new Set<WorkerRegistry>()
+const retiring = new Map<WorkerRegistry, Promise<void>>()
+const shuttingDown = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no worker registry opens')
+let holders = 0
+// A test run models one process per test: vitest.setup.ts restarts process lifecycles before each test.
+if (process.env.VITEST) (globalThis as { [key: symbol]: Set<() => void> | undefined })[Symbol.for('room.test.lifecycleResets')]?.add(() => { fenced = false; holders = 0 })
+/**
+ * Hold this process's registry lifecycle (each tools instance holds one; a production MCP process has exactly one).
+ * The returned end fences and shuts every registry down once the last holder ends; holding again begins a new one.
+ */
+export function beginWorkerRegistries(): () => Promise<void> {
+  holders++
+  fenced = false
+  let ended = false
+  return async () => {
+    if (ended || holders === 0) return
+    ended = true
+    if (--holders === 0) await shutdownWorkerRegistries()
+  }
+}
+/** Stop a registry's watchers and timer for good; resolves once a pass already running has finished. */
+function retire(registry: WorkerRegistry): Promise<void> {
+  let done = retiring.get(registry)
+  if (!done) {
+    done = registry.shutdown().catch(() => {}).finally(() => { live.delete(registry); retiring.delete(registry) })
+    retiring.set(registry, done)
+  }
+  return done
+}
 export async function closeRegistryForDir(dir: string): Promise<void> {
   const common = commonGitDirFromDotGit(dir)
   const pending = registries.get(common)
   registries.delete(common)
-  ;(await pending?.catch(() => undefined))?.close()
+  const registry = await pending?.catch(() => undefined)
+  if (registry) await retire(registry)
 }
 /**
- * MCP shutdown: stop every cached registry's watchers and poll timer for good and wait for passes already running, so
- * no background reconcile admits after storage admissions close. A later registryForDir opens a fresh registry.
+ * Process shutdown: fence new opens, wait for opens already under way, then stop every registry this process opened
+ * (cached or evicted) for good and wait for passes already running, so no background reconcile admits after storage
+ * admissions close. The caller bounds the wait.
  */
 export async function shutdownWorkerRegistries(): Promise<void> {
-  const pending = [...registries.values()]
+  fenced = true
+  await Promise.allSettled([...calls])
   registries.clear()
-  await Promise.all(pending.map(async entry => { await (await entry.catch(() => undefined))?.shutdown() }))
+  await Promise.all([...live].map(retire))
 }
 /** One token and watcher per common dir for this MCP process. */
-export async function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
+export function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
+  if (fenced) return Promise.reject(shuttingDown())
+  const call = openRegistry(dir, sessionId)
+  const tracked = call.catch(() => {}).finally(() => calls.delete(tracked))
+  calls.add(tracked)
+  return call
+}
+async function openRegistry(dir: string, sessionId?: string): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
+  if (fenced) throw shuttingDown()
   // The registry writes under <common>/room; a Git directory always holds HEAD. Anything else (a
   // resolution that landed on the working tree) must not be written to.
   if (!fs.existsSync(path.join(common, 'HEAD'))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`)
@@ -47,16 +95,23 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
       if (oldest) {
         const previous = registries.get(oldest)
         registries.delete(oldest)
-        void previous?.then(registry => registry.close()).catch(() => {})
+        // An evicted registry may still be held (a projector): it shuts down for good, never reopening its watchers.
+        void previous?.then(retire).catch(() => {})
       }
     }
     const processInfo = probeOwnProcess()
     const identity: InstanceToken = { pid: process.pid, startTime: processInfo?.startTime ?? '',
       executable: processInfo?.executable ?? '', sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? 'unknown'}`,
       nonce: randomBytes(16).toString('hex') }
-    pending = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST })
+    const opened = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST }).then(registry => {
+      live.add(registry)
+      // Opened across a shutdown that no longer waits for it: stop it now rather than leave it watching.
+      if (fenced) { void retire(registry); throw shuttingDown() }
+      return registry
+    })
+    pending = opened
     registries.set(common, pending)
-    void pending.catch(() => { if (registries.get(common) === pending) registries.delete(common) })
+    void pending.catch(() => { if (registries.get(common) === opened) registries.delete(common) })
   } else {
     // Move this checkout to the end of the bounded cache.
     registries.delete(common)

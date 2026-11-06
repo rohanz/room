@@ -1,5 +1,5 @@
 import { withoutAdmission } from '../storage-admission.js'
-import { openWorkerReader, shutdownWorkerRegistries } from '../worker-registry.js'
+import { openWorkerReader, beginWorkerRegistries } from '../worker-registry.js'
 import { snapshotStatus, type WorkerSnapshot } from '../worker-store.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
 import { createWorkerRuntime, registryRunningWorkers } from './workers.js'
@@ -29,6 +29,8 @@ import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.
 const SHUTDOWN_SETTLE_MS = 2000
 
 export function createHandlerState(ctx: ToolCtx): HandlerState {
+  // This tools instance holds the process's worker-registry lifecycle until its shutdown.
+  const endRegistries = beginWorkerRegistries()
   const now = ctx.now ?? (() => Date.now())
   const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
   const doJoin = ctx.join ?? joinSession
@@ -221,12 +223,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       }
       const s = ctx.getSession()
       // Registry work these sessions started finishes its admission before the caller closes storage admissions.
-      // Then every cached registry stops watching and polling for good, so nothing reconciles after admissions close.
+      // Then this instance ends its registry lifecycle: with no other holder, every registry the process opened stops
+      // watching and polling for good, so nothing reconciles after admissions close.
       const settle = async () => {
         const started = performance.now()
         const remaining = () => Math.max(0, SHUTDOWN_SETTLE_MS - (performance.now() - started))
         const quiet = await rooms.settle(remaining())
-        const stopped = await within(shutdownWorkerRegistries(), remaining())
+        const stopped = await within(endRegistries(), remaining())
         if (!quiet || !stopped) log(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`)
       }
       if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await settle(); return }

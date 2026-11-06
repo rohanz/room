@@ -18,3 +18,9 @@ const watchdog = startWatchdog({ describe: () => {
   return [file, state.currentTestName].filter(Boolean).join(' > ')
 } })
 beforeEach(watchdog.beat)
+
+// Process-wide lifecycles (such as room-mcp's worker-registry fence) register a reset here when VITEST is set: each
+// test starts as a fresh process, even if an earlier test in the same file shut its tools down.
+const lifecycleResets = new Set<() => void>()
+;(globalThis as { [key: symbol]: Set<() => void> })[Symbol.for('room.test.lifecycleResets')] = lifecycleResets
+beforeEach(() => { for (const reset of lifecycleResets) reset() })

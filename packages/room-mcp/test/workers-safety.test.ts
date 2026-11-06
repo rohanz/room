@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '../src/session.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { parsePsLstartUtc, probeProcess, workerProcessOwnership, type SpawnSpec } from '../src/worker-process.js'
-import { registryForDir } from '../src/worker-registry.js'
+import { openWorkerReader, registryForDir } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { finishFixtureProcess, fixtureLiveness, fixtureProcess } from './fixtures/process-liveness.js'
 import { workspaceRepo } from './fixtures/workspace-repo.js'
@@ -80,7 +80,8 @@ describe('worker safety', () => {
     expect(t.killed).toEqual([1])
     // §9: the durable stop is mirrored even though the note failed; §6 row 8 keeps it running.
     expect((await workerByTag(dir, 'erroring'))).toEqual({ ...before, stopReason: 'lead-session-ended' })
-    expect((await (await registryForDir(dir)).read(before.id!))?.stop?.reason).toBe('lead-session-ended')
+    // After shutdown this process opens no registry; inspect through a read-only reader.
+    expect((await (await openWorkerReader(dir)).read(before.id!))?.stop?.reason).toBe('lead-session-ended')
   })
 
   it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {
@@ -103,7 +104,7 @@ describe('worker safety', () => {
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
     expect((await workerByTag(dir, 'unknown'))?.status).toBe('running')
-    expect((requireWorkerInventory(await (await registryForDir(dir)).list())).find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
+    expect((requireWorkerInventory(await (await openWorkerReader(dir)).list())).find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
     expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify unknown's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
   })
 
