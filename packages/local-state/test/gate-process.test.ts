@@ -111,8 +111,8 @@ it('admission racing a drain never succeeds in the successor generation, and dra
   const dir = commonDir(), gate = openStorageGate(dir), stop = path.join(dir, 'stop')
   await gate.register({ instance: self(), kind: 'mcp', release: 'test' }) // initialize first
   const admitters = [child('admitter', dir, stop), child('admitter', dir, stop), child('admitter', dir, stop)]
-  await Promise.all(admitters.map(admitter => admitter.next()))
-  await new Promise(resolve => setTimeout(resolve, 300))
+  await Promise.all(admitters.map(admitter => admitter.next())) // registered
+  expect(await Promise.all(admitters.map(admitter => admitter.next()))).toEqual(admitters.map(() => ({ firstAdmitted: true })))
   const me = self()
   expect(createExclusive(lock(dir), me)).toBe(true)
   await gate.register({ instance: me, kind: 'maintenance', release: 'test' })
@@ -121,7 +121,8 @@ it('admission racing a drain never succeeds in the successor generation, and dra
   expect(first.generation).toBe(2)
   // Every ticket still present was admitted under generation 1 and is visible to the drain.
   for (const view of [...first.live, ...first.unknown, ...first.dead]) expect(view.generation).toBe(1)
-  await new Promise(resolve => setTimeout(resolve, 300))
+  // Every admitter has now been refused at least once in the successor generation.
+  expect(await Promise.all(admitters.map(admitter => admitter.next()))).toEqual(admitters.map(() => ({ firstRefused: true })))
   fs.writeFileSync(stop, '')
   const results = await Promise.all(admitters.map(admitter => admitter.next()))
   for (const result of results) {

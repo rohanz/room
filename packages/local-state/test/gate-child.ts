@@ -49,9 +49,17 @@ if (mode === 'init') {
   const registration = await gate.register({ instance, kind: 'mcp', release: 'child' })
   const admitted: number[] = [], refused: string[] = []
   await send({ ready: true })
+  // Report the first admission and the first refusal, so the parent drains and stops on real boundaries, not sleeps.
   while (!fs.existsSync(stop)) {
-    try { const ticket = await gate.admit(registration, 'collect'); admitted.push(ticket.generation); await gate.finish(ticket) }
-    catch (error) { if (!(error instanceof StorageRefused)) throw error; refused.push(error.reason); await new Promise(resolve => setTimeout(resolve, 1)) }
+    try {
+      const ticket = await gate.admit(registration, 'collect'); admitted.push(ticket.generation); await gate.finish(ticket)
+      if (admitted.length === 1) await send({ firstAdmitted: true })
+    } catch (error) {
+      if (!(error instanceof StorageRefused)) throw error
+      refused.push(error.reason)
+      if (refused.length === 1) await send({ firstRefused: true })
+      await new Promise(resolve => setTimeout(resolve, 1))
+    }
   }
   await gate.unregister(registration)
   await send({ admitted, refused })
