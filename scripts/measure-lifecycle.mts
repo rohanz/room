@@ -285,12 +285,15 @@ async function toolsSample(root: string): Promise<Record<string, Measurement>> {
     await timed('room_done', () => tools.call('room_done', { summary: 'measurement' }))
     const collected = await timed('collect', () => tools.call('room_collect', { tag: 'finished', keep: true }))
     if (!fs.existsSync(path.join(root, 'result.txt'))) throw new Error(`collect did not apply fixture: ${collected}`)
-    const spawn = async () => {
+    const spawn = (n: number) => async () => {
       await registry.snapshot()
-      await registry.writeIntent(record(common, 2), 3)
-      await registry.finishOperation(record(common, 2).id)
+      await registry.writeIntent(record(common, n), n + 1)
+      await registry.finishOperation(record(common, n).id)
     }
-    await timed('spawnAdmission', () => admission ? admission.withDirectoryAdmission(root, 'spawn', spawn) : spawn())
+    // The first admitted operation in a process also pays one-time registration evidence; report it separately
+    // from a steady-state spawn so per-process setup is not presented as per-operation cost.
+    await timed('spawnAdmissionFirst', () => admission ? admission.withDirectoryAdmission(root, 'spawn', spawn(2)) : spawn(2)())
+    await timed('spawnAdmission', () => admission ? admission.withDirectoryAdmission(root, 'spawn', spawn(3)) : spawn(3)())
     return result
   } finally {
     await tools.shutdown(); await closeRegistryForDir(root); await admission?.closeStorageAdmissions()
