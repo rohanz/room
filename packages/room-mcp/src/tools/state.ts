@@ -30,7 +30,7 @@ const SHUTDOWN_SETTLE_MS = 2000
 
 export function createHandlerState(ctx: ToolCtx): HandlerState {
   // This tools instance holds the process's worker-registry lifecycle until its shutdown.
-  const endRegistries = beginWorkerRegistries()
+  const registryLease = beginWorkerRegistries()
   const now = ctx.now ?? (() => Date.now())
   const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
   const doJoin = ctx.join ?? joinSession
@@ -212,10 +212,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     scheduleInboxWrite,
     upgraded,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
+    registryLease,
     clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown() {
-      // First: a join, rebind or replacement finishing during shutdown is left, not attached.
+      // First: a join, rebind or replacement finishing during shutdown is left, not attached, and a tool call still
+      // running opens no registry when it resumes.
       rooms.close()
+      registryLease.fence()
       preserveBridgeFacts = true
       wakes.stop()
       // Withdraw every joined session while its transport is still up. Worker cleanup can
@@ -232,7 +235,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         const started = performance.now()
         const remaining = () => Math.max(0, SHUTDOWN_SETTLE_MS - (performance.now() - started))
         const quiet = await rooms.settle(remaining())
-        const stopped = await within(endRegistries(), remaining())
+        const stopped = await within(registryLease.end(), remaining())
         if (!quiet || !stopped) log(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`)
       }
       if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await settle(); return }

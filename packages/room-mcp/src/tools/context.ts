@@ -1,3 +1,4 @@
+import type { RegistryLease } from '../worker-registry.js'
 import { withDirectoryAdmission } from '../storage-admission.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -154,6 +155,8 @@ export interface HandlerState {
   scheduleInboxWrite: () => void
   upgraded: Set<string>
   attachHooks: (s: Session) => void
+  /** This instance's hold on the worker-registry lifecycle; tool calls run in its scope. */
+  registryLease: RegistryLease
   clearStale: (s: Session) => number
   shutdown: () => Promise<void>
   drop: (s: Session, reason: string) => Promise<void>

@@ -8,7 +8,7 @@ import { RoomDoc } from '@room/shared'
 import { closeStorageAdmissions, storageGate, storageInstance, withAdmission } from '../src/storage-admission.js'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
-import { beginWorkerRegistries, registryForDir, shutdownWorkerRegistries, type WorkerRegistry } from '../src/worker-registry.js'
+import { beginWorkerRegistries, registryForDir, shutdownWorkerRegistries, type RegistryLease, type WorkerRegistry } from '../src/worker-registry.js'
 import { openStorageGate } from '@room/local-state/gate'
 import { createExclusive, compareAndRelease } from '@room/local-state/leases'
 import type { Session } from '../src/session.js'
@@ -16,9 +16,9 @@ import { testPolicyStore } from './policy-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 
 const dirs: string[] = []
-let endRegistries: () => Promise<void>
-beforeEach(() => { endRegistries = beginWorkerRegistries() })
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await endRegistries(); await shutdownWorkerRegistries(); await closeStorageAdmissions(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+let fileLease: RegistryLease
+beforeEach(() => { fileLease = beginWorkerRegistries() })
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await fileLease.end(); await shutdownWorkerRegistries(); await closeStorageAdmissions(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 it('shutdown settles the tracked session registry open, so closing admissions leaves nothing registered', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'room-shutdown-settle-'))
@@ -154,4 +154,22 @@ it('after shutdown begins, a session that joins late (room_join, rebind or repla
   await closeStorageAdmissions()
   // Nothing was tracked, so no registry opened and nothing registered.
   expect((await storageGate(join(dir, '.git')).status()).registrations).toBe(0)
+})
+
+it('a tool call still running when shutdown began opens no registry when it resumes', async () => {
+  const dir = gitRepo()
+  const lease = beginWorkerRegistries()
+  let resume!: () => void
+  const paused = new Promise<void>(done => { resume = done })
+  // As a room_spawn paused before its direct registryForDir call, inside the tools instance's call scope.
+  const late = lease.run(async () => { await paused; return registryForDir(dir) })
+  lease.fence()
+  await lease.end()
+  resume()
+  await expect(late).rejects.toMatchObject({ reason: 'unavailable' })
+  await closeStorageAdmissions()
+  expect((await storageGate(join(dir, '.git')).status()).registrations).toBe(0)
+  // Outside any ended lease (a new lifecycle, fixtures), registries still open.
+  const fresh = await registryForDir(dir)
+  expect(fresh).toBeDefined()
 })

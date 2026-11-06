@@ -1,5 +1,6 @@
 import { withDirectoryAdmission, withValidatedRead } from './storage-admission.js'
 import { StorageRefused } from '@room/local-state/protocol'
+import { AsyncLocalStorage } from 'node:async_hooks'
 /** Async lifecycle facade. A display snapshot never grants operation authority. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -32,18 +33,36 @@ const live = new Set<WorkerRegistry>()
 const retiring = new Map<WorkerRegistry, Promise<void>>()
 const shutdownRefusal = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no worker registry opens')
 let holders = 0
+/** A tools instance's hold on the registry lifecycle; its calls run in `run`, so their registry opens carry it. */
+export interface RegistryLease {
+  readonly ended: boolean
+  /** Shutdown has begun: opens made in this lease's scope (its tool calls and what they started) are refused. */
+  fence(): void
+  /** Fence and release; the last holder's end shuts every registry down. */
+  end(): Promise<void>
+  run<T>(fn: () => T): T
+}
+const leaseScope = new AsyncLocalStorage<RegistryLease>()
 /**
  * Hold this process's registry lifecycle (each tools instance holds one; a production MCP process has exactly one).
- * The returned end fences and shuts every registry down once the last holder ends; holding again begins a new one.
+ * A fenced lease refuses opens from its own scope, so a tool call still running when shutdown began cannot open a
+ * registry when it resumes; shutdown's own work runs outside any call scope. The last end shuts registries down.
  */
-export function beginWorkerRegistries(): () => Promise<void> {
+export function beginWorkerRegistries(): RegistryLease {
   holders++
-  let ended = false
-  return async () => {
-    if (ended) return
-    ended = true
-    if (--holders === 0) await shutdownWorkerRegistries()
+  let ended = false, released = false
+  const lease: RegistryLease = {
+    get ended() { return ended },
+    fence() { ended = true },
+    async end() {
+      ended = true
+      if (released) return
+      released = true
+      if (--holders === 0) await shutdownWorkerRegistries()
+    },
+    run: fn => leaseScope.run(lease, fn),
   }
+  return lease
 }
 /** Stop a registry's watchers and timer for good; resolves once a pass already running has finished. */
 function retire(registry: WorkerRegistry): Promise<void> {
@@ -77,15 +96,16 @@ export async function shutdownWorkerRegistries(): Promise<void> {
 }
 /** One token and watcher per common dir for this MCP process. */
 export function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
-  if (shuttingDown) return Promise.reject(shutdownRefusal())
-  const call = openRegistry(dir, sessionId, epoch)
+  const lease = leaseScope.getStore()
+  if (shuttingDown || lease?.ended) return Promise.reject(shutdownRefusal())
+  const call = openRegistry(dir, sessionId, epoch, lease)
   const tracked = call.catch(() => {}).finally(() => calls.delete(tracked))
   calls.add(tracked)
   return call
 }
-async function openRegistry(dir: string, sessionId: string | undefined, started: number): Promise<WorkerRegistry> {
+async function openRegistry(dir: string, sessionId: string | undefined, started: number, lease: RegistryLease | undefined): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
-  if (epoch !== started) throw shutdownRefusal()
+  if (epoch !== started || lease?.ended) throw shutdownRefusal()
   // The registry writes under <common>/room; a Git directory always holds HEAD. Anything else (a
   // resolution that landed on the working tree) must not be written to.
   if (!fs.existsSync(path.join(common, 'HEAD'))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`)
@@ -107,7 +127,7 @@ async function openRegistry(dir: string, sessionId: string | undefined, started:
     const opened = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST }).then(registry => {
       live.add(registry)
       // Opened across a shutdown that no longer waits for it: stop it now rather than leave it watching.
-      if (epoch !== started) { void retire(registry); throw shutdownRefusal() }
+      if (epoch !== started || lease?.ended) { void retire(registry); throw shutdownRefusal() }
       return registry
     })
     pending = opened

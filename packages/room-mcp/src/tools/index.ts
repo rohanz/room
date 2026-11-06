@@ -220,51 +220,52 @@ export function createTools(ctx: ToolCtx): Tools {
       const items: HookItem[] = chosen.map(c => ({ id: c.m.id, priority: c.m.priority, line: line(c) }))
       return { batch, items, notices, more }
     },
-    async call(name, args, signal, handoff) {
-      // Setup checks must work while auto-join, rebinding, or room sync is stuck.
-      // They do not reserve inbox messages or touch the current room.
-      if (name === 'room_state' && args?.check === true) return handlers.room_state(args)
-      let release: (() => void) | undefined
-      if (CHOOSES_ROOM.has(name)) {
-        pendingMoves++
-        const previous = moves
-        const mine = new Promise<void>(resolve => { release = () => { pendingMoves--; resolve() } })
-        moves = previous.then(() => mine)
-        const wait = untilAborted(signal)
-        const cancelled = await Promise.race([previous.then(async () => { while (workerOps.size) await Promise.all([...workerOps]) }).then(() => false), wait.aborted])
-        wait.done()
-        if (cancelled) { release!(); return 'error: tool call cancelled' }
-      } else if (WORKER_OPS.has(name)) {
-        const wait = untilAborted(signal)
-        while (pendingMoves) {
-          if (await Promise.race([moves.then(() => false), wait.aborted])) { wait.done(); return 'error: tool call cancelled' }
-        }
-        wait.done()
-        const done = new Promise<void>(resolve => { release = resolve })
-        workerOps.add(done)
-        void done.then(() => workerOps.delete(done))
+    call(name, args, signal, handoff) { return state.registryLease.run(() => callTool(name, args, signal, handoff)) },
+  }
+  async function callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal, handoff?: (settle: Settle) => void): Promise<string> {
+    // Setup checks must work while auto-join, rebinding, or room sync is stuck.
+    // They do not reserve inbox messages or touch the current room.
+    if (name === 'room_state' && args?.check === true) return handlers.room_state(args)
+    let release: (() => void) | undefined
+    if (CHOOSES_ROOM.has(name)) {
+      pendingMoves++
+      const previous = moves
+      const mine = new Promise<void>(resolve => { release = () => { pendingMoves--; resolve() } })
+      moves = previous.then(() => mine)
+      const wait = untilAborted(signal)
+      const cancelled = await Promise.race([previous.then(async () => { while (workerOps.size) await Promise.all([...workerOps]) }).then(() => false), wait.aborted])
+      wait.done()
+      if (cancelled) { release!(); return 'error: tool call cancelled' }
+    } else if (WORKER_OPS.has(name)) {
+      const wait = untilAborted(signal)
+      while (pendingMoves) {
+        if (await Promise.race([moves.then(() => false), wait.aborted])) { wait.done(); return 'error: tool call cancelled' }
       }
+      wait.done()
+      const done = new Promise<void>(resolve => { release = resolve })
+      workerOps.add(done)
+      void done.then(() => workerOps.delete(done))
+    }
+    try {
+    if (name === 'room_spawn') currentToolTiming()?.endQueue()
+    const operation: OperationKind = name === 'room_spawn' ? 'spawn' : name === 'room_collect' ? (args?.discard ? 'discard' : 'collect')
+      : name === 'room_done' ? 'report' : name === 'room_send' ? 'message' : name === 'room_preview_merge' ? 'preview' : 'reconcile'
+    return await withDirectoryAdmission(ctx.getSession()?.dir ?? ctx.cwd, operation, async () => {
+      const batch = ledger.open('reply')
       try {
-      if (name === 'room_spawn') currentToolTiming()?.endQueue()
-      const operation: OperationKind = name === 'room_spawn' ? 'spawn' : name === 'room_collect' ? (args?.discard ? 'discard' : 'collect')
-        : name === 'room_done' ? 'report' : name === 'room_send' ? 'message' : name === 'room_preview_merge' ? 'preview' : 'reconcile'
-      return await withDirectoryAdmission(ctx.getSession()?.dir ?? ctx.cwd, operation, async () => {
-        const batch = ledger.open('reply')
-        try {
-          const body = await run(name, args, signal, batch)
-          const rejected = ctx.getSession()?.rejected
-          const result = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
-          const warning = name === 'room_state' ? staleVersionWarning() : undefined
-          const text = warning ? `${warning}\n${result}` : result
-          // A cancelled call's reply is never written: its selections stay owed.
-          if (signal?.aborted) ledger.release(batch)
-          else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
-          else ledger.commit(batch)
-          return text
-        } catch (e) { ledger.release(batch); throw e }
-      })
-      } finally { release?.() }
-    },
+        const body = await run(name, args, signal, batch)
+        const rejected = ctx.getSession()?.rejected
+        const result = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
+        const warning = name === 'room_state' ? staleVersionWarning() : undefined
+        const text = warning ? `${warning}\n${result}` : result
+        // A cancelled call's reply is never written: its selections stay owed.
+        if (signal?.aborted) ledger.release(batch)
+        else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
+        else ledger.commit(batch)
+        return text
+      } catch (e) { ledger.release(batch); throw e }
+    })
+    } finally { release?.() }
   }
 }
 
