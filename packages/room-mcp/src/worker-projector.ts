@@ -13,8 +13,9 @@ import { requireWorkerEvidence, workerEvidence, snapshotRead } from './worker-st
 import { statusOf, workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
 import { postWorkerMessage } from './post.js'
-import { followUpAnswer, missingClaudeSession, resumeAccepted } from './worker-process.js'
-import { scanRunLog } from './run-log-facts.js'
+import { followUpAnswer, resumeAccepted } from './worker-process.js'
+import { scanRunLog, runLogIdentity } from './run-log-facts.js'
+import { retainedSessionMissing } from './hosts/lifecycle.js'
 
 /** Which of the lead's workers a writer in `roomKey` owns: those that joined it, or those projected into it. */
 export type ProjectorRole = 'joined' | 'projected'
@@ -57,7 +58,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       const ownsName = s.room.workerOwnsName(record.id, record.name)
       const logFile = path.join(s.dir, '.room', 'workers', `${record.tag}.log`)
       if (ended && ownsName && s.daemon.fence === fence && run?.mode === 'resume' && run.promptMsgIds.length && record.hostSessionId
-        && resumeAccepted(logFile, record.host, record.hostSessionId, run.logStart)) {
+        && resumeAccepted(logFile, record.host, record.hostSessionId, run.logStart, runLogIdentity(record, run))) {
         const retained = run.promptMsgIds.filter(id => s.room.message(id) || s.room.outcomes.has(id))
         s.room.markSeen(record.name, retained, { s: record.hostSessionId, via: 'prompt' })
       }
@@ -65,8 +66,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       // projector of an ended worker's current incarnation may clean up its ledger.
       if (ended && ownsName) s.room.pruneSeen(record.name,
         () => s.daemon.fence === fence && s.room.workerOwnsName(record.id, record.name))
-      const missing = ended && record.host === 'claude' && run?.mode === 'resume' && record.hostSessionId
-        && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
+      const missing = ended && run && retainedSessionMissing(record, run, logFile)
       const shown = missing ? { ...status, note: `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed` } : status
       const view = workerView(record, shown, fence)
       if (JSON.stringify(s.room.workerViews.get(record.id)) !== JSON.stringify(view)) s.room.workerViews.set(record.id, view)
@@ -108,7 +108,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       })
       else if (terminal.status === 'done' && run.mode === 'resume' && exit?.witnessed && exit.code === 0
         && (await registry.reports(record.id)).some(value => value.run < run.n && value.done) && !run.posted) {
-        const answer = followUpAnswer(logFile, record.host, run.logStart)
+        const answer = followUpAnswer(logFile, record.host, run.logStart, runLogIdentity(record, run))
         const background = backgroundAtExit(record, run)
         const summary = answer || terminal.summary
         const message = completionMessage(record, run, { ...terminal,
@@ -143,7 +143,7 @@ async function warmRunLogs(s: Session, records: WorkerRecord[]): Promise<void> {
   for (const record of records) {
     const run = record.runs.at(-1)
     if (run?.mode !== 'resume') continue
-    await scanRunLog(path.join(s.dir, '.room', 'workers', `${record.tag}.log`), run.logStart)
+    await scanRunLog(path.join(s.dir, '.room', 'workers', `${record.tag}.log`), run.logStart, runLogIdentity(record, run))
   }
 }
 

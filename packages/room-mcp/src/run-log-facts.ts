@@ -11,30 +11,19 @@
  * them; the synchronous accessors read whatever the cache lacks without yielding.
  */
 import fs from 'node:fs'
+import path from 'node:path'
+import { stripVTControlCharacters } from 'node:util'
+import { createLogDecoder, logDecoderKey, logHosts } from './hosts/index.js'
+import type { HostId, HostLogDecoder, LogContext, NormalizedHostFailure, NormalizedLogFact } from './hosts/types.js'
 
-export interface HostEvent {
-  type?: string; subtype?: string; session_id?: string; thread_id?: string
-  result?: unknown; message?: { content?: unknown } | string; item?: { type?: string; text?: unknown }
-  /** Codex: `{ message }` on turn.failed (null on tool items). Claude: an assistant message's API error category. */
-  error?: { message?: unknown } | string | null; is_error?: boolean
-  is_api_error_message?: boolean; api_error_status?: unknown; errors?: unknown
-  num_turns?: number
-  task_id?: unknown; task_type?: unknown; is_backgrounded?: unknown; patch?: { status?: unknown }
-  tool_use_result?: { backgroundTaskId?: unknown }
-}
-
-/** Host-independent facts; the accessors in worker-process.ts select by host and session. */
-export interface RunLogFacts {
-  /** Claude sessions with model activity (an assistant event) in this run. */
-  assistantSessions: Set<string>
-  /** Claude sessions whose resume failed before any turn (result error_during_execution, zero turns). */
+/** Host-neutral evidence, partitioned by adapter so identical session ids never cross hosts. */
+interface RunLogEvidence {
+  acceptedSessions: Set<string>
   missingSessions: Set<string>
-  /** Codex threads that started a turn in this run. */
-  codexTurns: Set<string>
-  claudeAssistant: string
-  claudeResult: string
-  codexAnswer: string
+  preferredText: string
+  fallbackText: string
 }
+export type RunLogFacts = ReadonlyMap<HostId, RunLogEvidence>
 
 interface Entry {
   file: string; start: number
@@ -43,7 +32,7 @@ interface Entry {
   offset: number; pending: string
   /** The first and last consumed bytes (up to VERIFY each), compared before an incremental read. */
   head: Buffer; tail: Buffer
-  codexThread?: string
+  decoders: Map<HostId, HostLogDecoder>
   facts: RunLogFacts
 }
 
@@ -54,34 +43,36 @@ const ID_CAP = 64
 const CACHE_ENTRIES = 256
 const VERIFY = 4096
 const cache = new Map<string, Entry>()
-const keyOf = (file: string, start: number) => `${start}\0${file}`
+export type RunLogIdentity = Pick<LogContext, 'workerId' | 'run' | 'dir'>
+export const runLogIdentity = (record: { id?: string; dir: string }, run: { n?: number; logStart: number }): RunLogIdentity =>
+  ({ workerId: record.id ?? record.dir, run: run.n ?? 0, dir: record.dir })
+/** Compatibility calls have no durable record: file/start remain their identity, with run zero unknown. */
+const contextOf = (file: string, start: number, scope: LogContext['scope'], identity?: RunLogIdentity): LogContext =>
+  ({ workerId: file, run: 0, dir: path.dirname(file), ...identity, logStart: start, scope })
+/** The old two-argument scans still warm both independent adapters for synchronous status accessors. */
+const keyOf = (file: string, start: number, identity?: RunLogIdentity) =>
+  JSON.stringify([file, start, ...logHosts.map(host => logDecoderKey(host, contextOf(file, start, 'whole-run', identity)))])
 
 function emptyFacts(): RunLogFacts {
-  return { assistantSessions: new Set(), missingSessions: new Set(), codexTurns: new Set(), claudeAssistant: '', claudeResult: '', codexAnswer: '' }
+  return new Map(logHosts.map(host => [host, { acceptedSessions: new Set<string>(), missingSessions: new Set<string>(), preferredText: '', fallbackText: '' }]))
 }
 
-export function assistantText(event: HostEvent): string {
-  const content = typeof event.message === 'object' ? event.message?.content : undefined
-  if (!Array.isArray(content)) return ''
-  return content.filter((part): part is { type: string; text: string } => part?.type === 'text' && typeof part.text === 'string')
-    .map(part => part.text).join('\n').trim()
+/** Shared framing only; event fields and activity prefilters belong to the selected decoder. */
+export function decodeLogLine(decoder: HostLogDecoder, line: string): readonly NormalizedLogFact[] {
+  if (!decoder.acceptsLine(line)) return []
+  try { return decoder.push(JSON.parse(line)) } catch { return [] }
 }
 
-const remember = (set: Set<string>, id: unknown) => { if (typeof id === 'string' && set.size < ID_CAP) set.add(id) }
-
-function apply(entry: Entry, event: HostEvent): void {
-  const facts = entry.facts
-  if (event.type === 'assistant') {
-    remember(facts.assistantSessions, event.session_id)
-    facts.claudeAssistant = assistantText(event) || facts.claudeAssistant
+const remember = (set: Set<string>, id: string) => { if (set.size < ID_CAP) set.add(id) }
+function apply(facts: RunLogEvidence, decoded: readonly NormalizedLogFact[]): void {
+  for (const fact of decoded) {
+    if (fact.kind === 'resume-accepted') remember(facts.acceptedSessions, fact.id)
+    else if (fact.kind === 'session-missing') remember(facts.missingSessions, fact.id)
+    else if (fact.kind === 'final') {
+      if (fact.slot === 'preferred') facts.preferredText = fact.text
+      else facts.fallbackText = fact.text
+    }
   }
-  if (event.type === 'result') {
-    if (typeof event.result === 'string') facts.claudeResult = event.result.trim()
-    if (event.subtype === 'error_during_execution' && event.is_error === true && event.num_turns === 0) remember(facts.missingSessions, event.session_id)
-  }
-  if (event.type === 'thread.started') entry.codexThread = event.thread_id
-  if (event.type === 'turn.started') remember(facts.codexTurns, event.thread_id ?? entry.codexThread)
-  if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') facts.codexAnswer = event.item.text.trim()
 }
 
 function consume(entry: Entry, text: string): void {
@@ -90,7 +81,11 @@ function consume(entry: Entry, text: string): void {
     const line = pending.slice(0, end).trim()
     pending = pending.slice(end + 1)
     if (!line.startsWith('{')) continue
-    try { apply(entry, JSON.parse(line) as HostEvent) } catch { /* stderr or a partial line */ }
+    let raw: unknown
+    try { raw = JSON.parse(line) } catch { continue }
+    for (const [host, decoder] of entry.decoders) {
+      try { apply(entry.facts.get(host)!, decoder.push(raw)) } catch { /* malformed host event */ }
+    }
   }
   entry.pending = pending.length > PENDING_CAP ? '' : pending
 }
@@ -108,8 +103,8 @@ function prefixIntact(entry: Entry, fd: number): boolean {
 }
 
 /** The cached entry when its log is the same file and has not shrunk or been rewritten; else a fresh one. */
-function current(file: string, start: number, stat: fs.Stats, fd: number): Entry {
-  const key = keyOf(file, start)
+function current(file: string, start: number, stat: fs.Stats, fd: number, identity?: RunLogIdentity): Entry {
+  const key = keyOf(file, start, identity)
   const cached = cache.get(key)
   const sameFile = cached && cached.dev === stat.dev && cached.ino === stat.ino
   const unchanged = sameFile && stat.size === cached.size && stat.mtimeMs === cached.mtimeMs
@@ -118,7 +113,8 @@ function current(file: string, start: number, stat: fs.Stats, fd: number): Entry
     cache.delete(key); cache.set(key, cached) // least recently used goes first
     return cached
   }
-  const entry: Entry = { file, start, dev: stat.dev, ino: stat.ino, size: 0, mtimeMs: 0, offset: Math.min(start, stat.size), pending: '', head: Buffer.alloc(0), tail: Buffer.alloc(0), facts: emptyFacts() }
+  const entry: Entry = { file, start, dev: stat.dev, ino: stat.ino, size: 0, mtimeMs: 0, offset: Math.min(start, stat.size), pending: '', head: Buffer.alloc(0), tail: Buffer.alloc(0), facts: emptyFacts(),
+    decoders: new Map(logHosts.map(host => [host, createLogDecoder(host, contextOf(file, start, 'whole-run', identity))])) }
   cache.delete(key)
   cache.set(key, entry)
   while (cache.size > CACHE_ENTRIES) cache.delete(cache.keys().next().value as string)
@@ -142,12 +138,12 @@ function step(entry: Entry, fd: number, stat: fs.Stats, chunk: Buffer): boolean 
 }
 
 /** Brings the run's cached facts up to date without blocking the event loop for more than one chunk. */
-export async function scanRunLog(file: string, start: number): Promise<RunLogFacts> {
+export async function scanRunLog(file: string, start: number, identity?: RunLogIdentity): Promise<RunLogFacts> {
   let fd: number | undefined
   try {
     fd = fs.openSync(file, 'r')
     const stat = fs.fstatSync(fd)
-    const entry = current(file, start, stat, fd)
+    const entry = current(file, start, stat, fd, identity)
     const chunk = Buffer.alloc(CHUNK)
     while (step(entry, fd, stat, chunk)) await new Promise<void>(resolve => setImmediate(resolve))
     return entry.facts
@@ -156,10 +152,10 @@ export async function scanRunLog(file: string, start: number): Promise<RunLogFac
 }
 
 /** The same facts for synchronous callers: a cache hit reads nothing, an append reads only the new bytes. */
-export function runLogFacts(file: string, start: number): RunLogFacts {
+export function runLogFacts(file: string, start: number, identity?: RunLogIdentity): RunLogFacts {
   let stat: fs.Stats
   try { stat = fs.statSync(file) } catch { return emptyFacts() }
-  const key = keyOf(file, start), cached = cache.get(key)
+  const key = keyOf(file, start, identity), cached = cache.get(key)
   if (cached && cached.dev === stat.dev && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs && cached.offset >= stat.size) {
     cache.delete(key); cache.set(key, cached)
     return cached.facts
@@ -168,7 +164,7 @@ export function runLogFacts(file: string, start: number): RunLogFacts {
   try {
     fd = fs.openSync(file, 'r')
     const opened = fs.fstatSync(fd)
-    const entry = current(file, start, opened, fd)
+    const entry = current(file, start, opened, fd, identity)
     const chunk = Buffer.alloc(CHUNK)
     while (step(entry, fd, opened, chunk)) { /* read the rest */ }
     return entry.facts
@@ -177,3 +173,90 @@ export function runLogFacts(file: string, start: number): RunLogFacts {
 }
 
 export function clearRunLogFactsForTests(): void { cache.clear() }
+
+/** The run's last 64 KB at most, ANSI-free, even for multi-GB logs; throws when the log is unreadable. */
+export function runLogSuffix(logFile: string, logStart: number): string[] {
+  const fd = fs.openSync(logFile, 'r')
+  try {
+    const size = fs.fstatSync(fd).size, start = Math.max(Math.min(size, logStart), size - 64 * 1024, 0)
+    const buffer = Buffer.alloc(size - start)
+    fs.readSync(fd, buffer, 0, buffer.length, start)
+    return stripVTControlCharacters(buffer.toString('utf8')).split(/\r?\n|\r/)
+  } finally { fs.closeSync(fd) }
+}
+
+/** Read complete JSON lines from one run, starting at its byte offset in the shared log. */
+function* completeLogLines(file: string, start = 0): Generator<string> {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(file, 'r')
+    const size = fs.fstatSync(fd).size
+    let offset = Math.max(0, Math.min(start, size)), pending = ''
+    const chunk = Buffer.alloc(64 * 1024)
+    while (offset < size) {
+      const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - offset), offset)
+      if (!count) break
+      offset += count
+      pending += chunk.toString('utf8', 0, count)
+      let end: number
+      while ((end = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, end).trim()
+        pending = pending.slice(end + 1)
+        if (!line.startsWith('{')) continue
+        yield line
+      }
+      if (pending.length > 1024 * 1024) pending = ''
+    }
+  } catch { /* unavailable logs provide no acceptance evidence */ }
+  finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+
+/** New decoder state for each diagnostic suffix: whole-run facts never fill missing suffix history. */
+function diagnosticDecoders(file: string, start: number, hosts: readonly HostId[], identity?: RunLogIdentity): HostLogDecoder[] {
+  return hosts.map(host => createLogDecoder(host, contextOf(file, start, 'diagnostic-suffix', identity)))
+}
+
+export function readLogTail(file: string, start: number, identity?: RunLogIdentity): string {
+  try {
+    const decoders = diagnosticDecoders(file, start, logHosts, identity)
+    return runLogSuffix(file, start).flatMap(raw => {
+      const line = raw.trim()
+      if (!line.startsWith('{')) return []
+      return decoders.flatMap(decoder => decodeLogLine(decoder, line))
+        .flatMap(fact => fact.kind === 'final' ? [fact.text] : [])
+    }).map(text => stripVTControlCharacters(text)).filter(Boolean).slice(-5).join('\n').slice(-600)
+  } catch { return '' }
+}
+
+export function readLogFailure(file: string, host: HostId, start: number, identity?: RunLogIdentity): NormalizedHostFailure | undefined {
+  try {
+    const [decoder] = diagnosticDecoders(file, start, [host], identity)
+    let failure: NormalizedHostFailure | undefined
+    for (const raw of runLogSuffix(file, start)) {
+      const line = raw.trim()
+      if (!line.startsWith('{')) continue
+      for (const fact of decodeLogLine(decoder, line)) if (fact.kind === 'failure') failure = fact.failure
+    }
+    return failure
+  } catch { return undefined }
+}
+
+export function readBackgroundTasks(file: string, start: number, host: HostId, identity?: RunLogIdentity): { kind: 'observed'; count: number } | { kind: 'unknown' } {
+  const [decoder] = diagnosticDecoders(file, start, [host], identity)
+  if (decoder.backgroundTasks === 'unknown') return { kind: 'unknown' }
+  let size: number
+  try { size = fs.statSync(file).size } catch { return { kind: 'observed', count: 0 } }
+  const shells = new Map<string, boolean>(), backgrounded = new Set<string>(), open = new Set<string>()
+  let atResult: Set<string> | undefined
+  for (const line of completeLogLines(file, Math.max(start, size - 16 * 1024 * 1024))) {
+    for (const fact of decodeLogLine(decoder, line)) {
+      if (fact.kind !== 'background') continue
+      if (fact.state === 'result-boundary') atResult = new Set(open)
+      else if (fact.state === 'backgrounded') backgrounded.add(fact.id)
+      else if (fact.state === 'closed') open.delete(fact.id)
+      else if (fact.state === 'open') { shells.set(fact.id, fact.shell); open.add(fact.id) }
+    }
+  }
+  const killed = new Set([...atResult ?? [], ...open])
+  return { kind: 'observed', count: [...killed].filter(id => backgrounded.has(id) && shells.get(id) === true).length }
+}

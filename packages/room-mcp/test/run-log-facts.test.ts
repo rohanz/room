@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { clearRunLogFactsForTests, runLogFacts, scanRunLog } from '../src/run-log-facts.js'
+import { clearRunLogFactsForTests, runLogFacts, scanRunLog, runLogIdentity } from '../src/run-log-facts.js'
+import { retainedSessionMissing } from '../src/hosts/lifecycle.js'
 import { followUpAnswer, missingClaudeSession, resumeAccepted } from '../src/worker-process.js'
 
 let dir: string
@@ -81,9 +82,9 @@ it('starts over when the log is rewritten in place with longer content', async (
   // The asynchronous scan applies the same check; same tail, different head.
   const tail = noise(16 * 1024)
   fs.writeFileSync(file, assistant('A', 'a') + tail)
-  expect([...(await scanRunLog(file, 0)).assistantSessions]).toEqual(['A'])
+  expect([...(await scanRunLog(file, 0)).get('claude')!.acceptedSessions]).toEqual(['A'])
   fs.writeFileSync(file, assistant('B', 'b') + tail + assistant('B', 'more'))
-  expect([...(await scanRunLog(file, 0)).assistantSessions]).toEqual(['B'])
+  expect([...(await scanRunLog(file, 0)).get('claude')!.acceptedSessions]).toEqual(['B'])
 })
 
 it('the asynchronous scan yields to the event loop between chunks and fills the cache', async () => {
@@ -97,7 +98,7 @@ it('the asynchronous scan yields to the event loop between chunks and fills the 
     while (!done) { await new Promise<void>(resolve => setImmediate(resolve)); interleaved++ }
     return { facts: await pending, interleaved }
   })()
-  expect(ran.facts.assistantSessions.has('S')).toBe(true)
+  expect(ran.facts.get('claude')!.acceptedSessions.has('S')).toBe(true)
   expect(ran.interleaved).toBeGreaterThan(10)
   const reads = vi.spyOn(fs, 'readSync')
   expect(resumeAccepted(file, 'claude', 'S', 0)).toBe(true)
@@ -106,5 +107,53 @@ it('the asynchronous scan yields to the event loop between chunks and fills the 
 
 it('an unreadable log yields no evidence', async () => {
   expect(resumeAccepted(path.join(dir, 'missing.log'), 'claude', 'S', 0)).toBe(false)
-  expect((await scanRunLog(path.join(dir, 'missing.log'), 0)).assistantSessions.size).toBe(0)
+  expect((await scanRunLog(path.join(dir, 'missing.log'), 0)).get('claude')!.acceptedSessions.size).toBe(0)
+})
+
+it('keeps decoder state across partial appends, partitioned by host and run offset', async () => {
+  const file = path.join(dir, 'partial.log')
+  const announced = line({ type: 'thread.started', thread_id: 'same-id' })
+  fs.writeFileSync(file, announced)
+  await scanRunLog(file, 0)
+  fs.appendFileSync(file, '{"type":"turn.started"')
+  expect(resumeAccepted(file, 'codex', 'same-id', 0)).toBe(false)
+  fs.appendFileSync(file, '}\n')
+  expect(resumeAccepted(file, 'codex', 'same-id', 0)).toBe(true)
+  expect(resumeAccepted(file, 'claude', 'same-id', 0)).toBe(false)
+  expect(resumeAccepted(file, 'codex', 'same-id', Buffer.byteLength(announced))).toBe(false)
+  fs.appendFileSync(file, assistant('same-id', 'model response'))
+  expect(resumeAccepted(file, 'claude', 'same-id', 0)).toBe(true)
+  expect(followUpAnswer(file, 'codex', 0)).toBe('')
+  expect(followUpAnswer(file, 'claude', 0)).toBe('model response')
+})
+
+it('resets decoder state after replacement and bounds remembered session ids per host', () => {
+  const file = path.join(dir, 'bounded.log')
+  fs.writeFileSync(file, line({ type: 'thread.started', thread_id: 'old' }))
+  runLogFacts(file, 0)
+  const replacement = path.join(dir, 'replace.log')
+  fs.writeFileSync(replacement, line({ type: 'turn.started' }))
+  fs.renameSync(replacement, file)
+  expect(resumeAccepted(file, 'codex', 'old', 0)).toBe(false)
+  fs.writeFileSync(file, Array.from({ length: 70 }, (_, i) => assistant(`s${i}`, '')
+    + line({ type: 'turn.started', thread_id: `t${i}` })).join(''))
+  const facts = runLogFacts(file, 0)
+  expect(facts.get('claude')!.acceptedSessions.size).toBe(64)
+  expect(facts.get('codex')!.acceptedSessions.size).toBe(64)
+  expect(resumeAccepted(file, 'claude', 's69', 0)).toBe(false)
+  expect(resumeAccepted(file, 'codex', 't69', 0)).toBe(false)
+})
+
+it('warms the exact durable worker/run cache used by status and compatibility accessors', async () => {
+  const file = path.join(dir, 'status.log')
+  const record = { id: 'w1', dir, host: 'claude' as const, hostSessionId: 'S' }
+  const run = { n: 3, mode: 'resume' as const, logStart: 0 }
+  const identity = runLogIdentity(record, run)
+  fs.writeFileSync(file, assistant('S', 'answer'))
+  await scanRunLog(file, 0, identity)
+  const reads = vi.spyOn(fs, 'readSync')
+  expect(resumeAccepted(file, record.host, 'S', 0, identity)).toBe(true)
+  expect(followUpAnswer(file, record.host, 0, identity)).toBe('answer')
+  expect(retainedSessionMissing(record, run, file)).toBe(false)
+  expect(reads).not.toHaveBeenCalled()
 })

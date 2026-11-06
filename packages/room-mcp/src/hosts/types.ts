@@ -146,3 +146,21 @@ export type WorkerShellIsolation = {
   shellEnv(file?: string): Record<string, string>;
   shellWarnings(written: { warning?: string }, version?: () => Promise<string | undefined>): Promise<string[]>;
 };
+
+/** Step-5 evidence supplements LogFact without changing the earlier extraction contract. */
+export type NormalizedHostFailure = { text: string; transient?: 'model capacity' | 'rate limit' }
+export type NormalizedLogFact =
+  | { kind: 'session' | 'resume-accepted' | 'session-missing'; id: string }
+  /** Preferred text can be cleared by an empty result; fallback retains non-empty model text. */
+  | { kind: 'final'; slot: 'preferred' | 'fallback'; text: string }
+  | { kind: 'activity'; text: string; eventTimeMs?: number }
+  /** Snapshot after host-specific precedence; undefined explicitly clears the previous error. */
+  | { kind: 'failure'; failure: NormalizedHostFailure | undefined }
+  | { kind: 'background'; state: 'result-boundary' }
+  | { kind: 'background'; id: string; state: 'backgrounded' | 'closed' }
+  | { kind: 'background'; id: string; state: 'open'; shell: boolean }
+export interface HostLogDecoder {
+  readonly backgroundTasks: 'observed' | 'unknown'
+  acceptsLine(line: string): boolean
+  push(raw: unknown): readonly NormalizedLogFact[]
+}

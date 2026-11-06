@@ -48,36 +48,6 @@
       "text": "* A worker's latest tool or file activity, read from its host's stream log (Claude stream-json, Codex"
     },
     {
-      "path": "packages/room-mcp/src/worker-activity.ts",
-      "line": 86,
-      "text": "function claudeTool(name: string, input: Record<string, unknown>, dir: string): string | undefined {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-activity.ts",
-      "line": 99,
-      "text": "function codexItem(item: Record<string, unknown>, dir: string): string | undefined {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-activity.ts",
-      "line": 123,
-      "text": "if (host === 'claude' ? !line.includes('\"tool_use\"') : !line.includes('\"item.')) return undefined"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-activity.ts",
-      "line": 132,
-      "text": "if (host === 'claude') {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-activity.ts",
-      "line": 138,
-      "text": "label = claudeTool(part.name, input, dir) ?? label"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-activity.ts",
-      "line": 143,
-      "text": "return codexItem(e.item as Record<string, unknown>, dir)"
-    },
-    {
       "path": "packages/room-mcp/src/solo.ts",
       "line": 3,
       "text": "* the host's path, or the before-edit / SessionStart hook inbox) only while someone else is here. Everything"
@@ -411,21 +381,6 @@
       "path": "packages/room-mcp/src/session.ts",
       "line": 914,
       "text": "// makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex)."
-    },
-    {
-      "path": "packages/room-mcp/src/worker-projector.ts",
-      "line": 14,
-      "text": "import { followUpAnswer, missingClaudeSession, resumeAccepted } from './worker-process.js'"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-projector.ts",
-      "line": 55,
-      "text": "const missing = ended && record.host === 'claude' && run?.mode === 'resume' && record.hostSessionId"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-projector.ts",
-      "line": 56,
-      "text": "&& missingClaudeSession(logFile, record.hostSessionId, run.logStart)"
     },
     {
       "path": "plugins/room/hooks/claude.json",
@@ -1224,16 +1179,6 @@
     },
     {
       "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 66,
-      "text": "export function resumeAccepted(file: string, host: 'claude' | 'codex', hostSessionId: string, logStart: number): boolean {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 68,
-      "text": "return (host === 'claude' ? facts.assistantSessions : facts.codexTurns).has(hostSessionId)"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
       "line": 71,
       "text": "export function missingClaudeSession(file: string, hostSessionId: string, logStart: number): boolean {"
     },
@@ -1241,16 +1186,6 @@
       "path": "packages/room-mcp/src/worker-process.ts",
       "line": 76,
       "text": "/** Final answer from this run; Claude result wins over interim assistant text. */"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 77,
-      "text": "export function followUpAnswer(file: string, host: 'claude' | 'codex', logStart: number): string {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 79,
-      "text": "return host === 'claude' ? facts.claudeResult || facts.claudeAssistant : facts.codexAnswer"
     },
     {
       "path": "packages/room-mcp/src/worker-process.ts",
@@ -1264,23 +1199,8 @@
     },
     {
       "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 135,
-      "text": "// Codex: \"Selected model is at capacity\"; Claude: 529 overloaded, \"experiencing high load\" (errors.md)."
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
       "line": 149,
       "text": "* The run's last host error: Codex `turn.failed` (else its last `error` event), Claude's `is_error` result"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 152,
-      "text": "export function hostFailure(logFile: string, host: 'claude' | 'codex', logStart = 0): HostFailure | undefined {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 161,
-      "text": "if (host === 'codex') {"
     },
     {
       "path": "packages/room-mcp/src/worker-process.ts",
@@ -1296,16 +1216,6 @@
       "path": "packages/room-mcp/src/worker-process.ts",
       "line": 198,
       "text": "* stopped before the result do not. Reads at most the last 16 MB of the run. Codex logs carry no"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 201,
-      "text": "export function unawaitedBackgroundTasks(logFile: string, logStart: number, host: 'claude' | 'codex'): number {"
-    },
-    {
-      "path": "packages/room-mcp/src/worker-process.ts",
-      "line": 202,
-      "text": "if (host !== 'claude') return 0"
     },
     {
       "path": "packages/room-mcp/src/prompt.ts",
@@ -1696,81 +1606,6 @@
       "path": "packages/room-mcp/src/tools/context.ts",
       "line": 152,
       "text": "scheduleInboxWrite: () => void"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 18,
-      "text": "/** Codex: `{ message }` on turn.failed (null on tool items). Claude: an assistant message's API error category. */"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 28,
-      "text": "/** Claude sessions with model activity (an assistant event) in this run. */"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 30,
-      "text": "/** Claude sessions whose resume failed before any turn (result error_during_execution, zero turns). */"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 32,
-      "text": "/** Codex threads that started a turn in this run. */"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 33,
-      "text": "codexTurns: Set<string>"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 34,
-      "text": "claudeAssistant: string"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 35,
-      "text": "claudeResult: string"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 36,
-      "text": "codexAnswer: string"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 46,
-      "text": "codexThread?: string"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 60,
-      "text": "return { assistantSessions: new Set(), missingSessions: new Set(), codexTurns: new Set(), claudeAssistant: '', claudeResult: '', codexAnswer: '' }"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 76,
-      "text": "facts.claudeAssistant = assistantText(event) || facts.claudeAssistant"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 79,
-      "text": "if (typeof event.result === 'string') facts.claudeResult = event.result.trim()"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 82,
-      "text": "if (event.type === 'thread.started') entry.codexThread = event.thread_id"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 83,
-      "text": "if (event.type === 'turn.started') remember(facts.codexTurns, event.thread_id ?? entry.codexThread)"
-    },
-    {
-      "path": "packages/room-mcp/src/run-log-facts.ts",
-      "line": 84,
-      "text": "if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') facts.codexAnswer = event.item.text.trim()"
     },
     {
       "path": "packages/room-mcp/src/hooks-bridge.ts",

@@ -10,7 +10,7 @@ import { performance } from 'node:perf_hooks'
 import * as Y from 'yjs'
 import { completionId, completionMessage, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
-import { scanRunLog } from './run-log-facts.js'
+import { scanRunLog, runLogIdentity } from './run-log-facts.js'
 import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
@@ -118,7 +118,7 @@ export function workerLogFile(record: Pick<WorkerRecord, 'dir' | 'tag' | 'logFil
 
 /** " — background work was still running (…)" when the run's exit killed background shell tasks, else ''. */
 export function backgroundAtExit(record: Pick<WorkerRecord, 'dir' | 'tag' | 'host' | 'logFile'>, run: Pick<Run, 'logStart'>): string {
-  const killed = unawaitedBackgroundTasks(workerLogFile(record), run.logStart, record.host)
+  const killed = unawaitedBackgroundTasks(workerLogFile(record), run.logStart, record.host, runLogIdentity(record, run))
   return killed ? ` — background work was still running (${killed} background task(s) killed at exit)` : ''
 }
 
@@ -135,7 +135,7 @@ function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): Worke
   const background = backgroundAtExit(record, run)
   if (status.noReport) {
     // This summary is published to the room: only structured facts, the log path and the model's own parsed text.
-    const said = workerLogTail(logFile, run.logStart)
+    const said = workerLogTail(logFile, run.logStart, runLogIdentity(record, run))
     return { ...status, summary: `ended without a report${background}; log: ${logFile}${said ? `; its last words: ${said}` : ''}` }
   }
   return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
@@ -158,7 +158,7 @@ const resumable = (record: WorkerRecord): boolean => record.capabilities.resume 
 function failedByHost(record: WorkerRecord, status: WorkerStatusResult): WorkerStatusResult {
   const run = status.run
   if (status.status !== 'failed' || status.summary || run?.launch?.outcome !== 'launched') return status
-  const failure = hostFailure(workerLogFile(record), record.host, run.logStart)
+  const failure = hostFailure(workerLogFile(record), record.host, run.logStart, runLogIdentity(record, run))
   return failure ? { ...status, summary: hostFailureLine(failure, record.host, resumable(record)) } : status
 }
 
@@ -446,7 +446,7 @@ export class FileWorkerStore {
     // A follow-up that ended without its own room_done is "done" by the earlier report; its exit may still have killed work.
     const logFile = workerLogFile(record)
     const background = backgroundAtExit(record, run)
-    return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart),
+    return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart, runLogIdentity(record, run)),
       ...(background ? { note: `follow-up ended without room_done${background}` } : {}) }
   }
   /** No room view or remote presence can turn into a local worktree capability. */
@@ -706,7 +706,7 @@ export class FileWorkerStore {
   async enrichedStatus(fact: import('./worker-store.js').WorkerFacts): Promise<WorkerStatusResult> {
     const { record, reports, exits } = fact
     const latest = record.runs.at(-1)
-    if (latest) await scanRunLog(workerLogFile(record), latest.logStart)
+    if (latest) await scanRunLog(workerLogFile(record), latest.logStart, runLogIdentity(record, latest))
     const probes = this.#statusLiveness(record)
     const status = failedByHost(record, hostEnded(record, unreportedExit(record,
       statusOf(record, record.runs, reports, exits, identity => probes.find(probe => probe.identity === identity)?.state ?? 'unknown', this.now()))))
@@ -715,7 +715,7 @@ export class FileWorkerStore {
       || reports.some(report => report.run === run.n && report.done)
       || !exits.some(exit => exit.run === run.n && exit.witnessed && exit.code === 0)) return status
     const background = backgroundAtExit(record, run)
-    return { ...status, followUp: followUpAnswer(workerLogFile(record), record.host, run.logStart),
+    return { ...status, followUp: followUpAnswer(workerLogFile(record), record.host, run.logStart, runLogIdentity(record, run)),
       ...(background ? { note: `follow-up ended without room_done${background}` } : {}) }
   }
 
@@ -873,7 +873,7 @@ export class FileWorkerStore {
   async postObservedFailure(id: string, n: number, post: (message: NonNullable<ReturnType<typeof completionMessage>>) => Promise<void>): Promise<boolean> {
     // Bring this run's log facts up to date in yielding chunks before reading any state the decision depends on.
     const scanned = this.#read(id), scannedRun = scanned?.runs.find(value => value.n === n)
-    if (scanned && scannedRun?.mode === 'resume') await scanRunLog(workerLogFile(scanned), scannedRun.logStart)
+    if (scanned && scannedRun?.mode === 'resume') await scanRunLog(workerLogFile(scanned), scannedRun.logStart, runLogIdentity(scanned, scannedRun))
     const record = this.#read(id), run = record?.runs.find(value => value.n === n)
     const exit = requireWorkerInventory(this.#exits(id)).find(value => value.run === n)
     const report = requireWorkerInventory(this.#reports(id)).find(value => value.run === n)
@@ -887,8 +887,8 @@ export class FileWorkerStore {
     const missing = retainedSessionMissing(record, run, logFile)
     // Only facts Room can vouch for: the exit reason, the host's own error event or follow-up answer, and the
     // log's path. Raw log lines are never quoted: a killed worker's tail is whatever its last command printed.
-    const failure = missing ? undefined : hostFailure(logFile, record.host, run.logStart)
-    const answer = run.mode === 'resume' && !failure ? followUpAnswer(logFile, record.host, run.logStart) : ''
+    const failure = missing ? undefined : hostFailure(logFile, record.host, run.logStart, runLogIdentity(record, run))
+    const answer = run.mode === 'resume' && !failure ? followUpAnswer(logFile, record.host, run.logStart, runLogIdentity(record, run)) : ''
     const reason = status.note ?? 'exited before reporting done'
     const detail = missing
       ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`

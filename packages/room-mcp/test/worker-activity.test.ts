@@ -136,6 +136,17 @@ describe('activityFromEvent: malformed input and bounds', () => {
 })
 
 describe('WorkerActivityTracker', () => {
+  it('keeps host and directory decoder windows separate for the same log', () => {
+    const file = path.join(tmp, 'context.log')
+    fs.writeFileSync(file, claudeTool('Read', { file_path: `${wt}/a.ts` }) + '\n'
+      + codexItem({ type: 'file_change', changes: [{ path: `${wt}/b.ts` }] }) + '\n')
+    const tracker = new WorkerActivityTracker()
+    expect(tracker.poll(file, 'claude', wt)?.label).toBe('reading a.ts')
+    expect(tracker.poll(file, 'codex', wt)?.label).toBe('editing b.ts')
+    expect(tracker.poll(file, 'claude', '/repo')?.label).toBe('reading .room/workers/tax/a.ts')
+    expect(tracker.poll(file, 'claude', wt)?.label).toBe('reading a.ts')
+  })
+
   it('reads only bytes appended since the last poll and keeps the latest activity', () => {
     const file = path.join(tmp, 'inc.log')
     fs.writeFileSync(file, claudeTool('Read', { file_path: `${wt}/a.ts` }) + '\n')

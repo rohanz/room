@@ -2,10 +2,11 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { stripVTControlCharacters } from 'node:util'
 import type { LocalWorker } from './worker-status.js'
-import { workerEnv } from './worker-config.js'
-import { assistantText, runLogFacts, type HostEvent } from './run-log-facts.js'
+import { workerEnv, type WorkerHost } from './worker-config.js'
+import { readBackgroundTasks, readLogFailure, readLogTail, runLogFacts, runLogSuffix, type RunLogIdentity } from './run-log-facts.js'
+import { missingClaudeLogSession as missingLogSession } from './hosts/lifecycle.js'
+import type { NormalizedHostFailure } from './hosts/types.js'
 
 export interface SpawnSpec {
   cmd: string
@@ -36,58 +37,20 @@ export interface SpawnedProcess {
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 
-/** Read complete JSON lines from one run, starting at its byte offset in the shared log. */
-function* hostEvents(file: string, start = 0): Generator<HostEvent> {
-  let fd: number | undefined
-  try {
-    fd = fs.openSync(file, 'r')
-    const size = fs.fstatSync(fd).size
-    let offset = Math.max(0, Math.min(start, size)), pending = ''
-    const chunk = Buffer.alloc(64 * 1024)
-    while (offset < size) {
-      const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - offset), offset)
-      if (!count) break
-      offset += count
-      pending += chunk.toString('utf8', 0, count)
-      let end: number
-      while ((end = pending.indexOf('\n')) >= 0) {
-        const line = pending.slice(0, end).trim()
-        pending = pending.slice(end + 1)
-        if (!line.startsWith('{')) continue
-        try { yield JSON.parse(line) as HostEvent } catch { /* stderr or a partial line */ }
-      }
-      if (pending.length > 1024 * 1024) pending = ''
-    }
-  } catch { /* unavailable logs provide no acceptance evidence */ }
-  finally { if (fd !== undefined) fs.closeSync(fd) }
-}
-
 /** A prompt receipt requires model activity in this retained session's resume run. */
-export function resumeAccepted(file: string, host: 'claude' | 'codex', hostSessionId: string, logStart: number): boolean {
-  const facts = runLogFacts(file, logStart)
-  return (host === 'claude' ? facts.assistantSessions : facts.codexTurns).has(hostSessionId)
+export function resumeAccepted(file: string, host: WorkerHost, hostSessionId: string, logStart: number, identity?: RunLogIdentity): boolean {
+  const facts = runLogFacts(file, logStart, identity)
+  return facts.get(host)!.acceptedSessions.has(hostSessionId)
 }
 
 export function missingClaudeSession(file: string, hostSessionId: string, logStart: number): boolean {
-  const facts = runLogFacts(file, logStart)
-  return facts.missingSessions.has(hostSessionId) && !facts.assistantSessions.has(hostSessionId)
+  return missingLogSession(file, hostSessionId, logStart)
 }
 
 /** Final answer from this run; Claude result wins over interim assistant text. */
-export function followUpAnswer(file: string, host: 'claude' | 'codex', logStart: number): string {
-  const facts = runLogFacts(file, logStart)
-  return host === 'claude' ? facts.claudeResult || facts.claudeAssistant : facts.codexAnswer
-}
-
-/** The run's last 64 KB at most, ANSI-free, even for multi-GB logs; throws when the log is unreadable. */
-function runLogSuffix(logFile: string, logStart: number): string[] {
-  const fd = fs.openSync(logFile, 'r')
-  try {
-    const size = fs.fstatSync(fd).size, start = Math.max(Math.min(size, logStart), size - 64 * 1024, 0)
-    const buffer = Buffer.alloc(size - start)
-    fs.readSync(fd, buffer, 0, buffer.length, start)
-    return stripVTControlCharacters(buffer.toString('utf8')).split(/\r?\n|\r/)
-  } finally { fs.closeSync(fd) }
+export function followUpAnswer(file: string, host: WorkerHost, logStart: number, identity?: RunLogIdentity): string {
+  const facts = runLogFacts(file, logStart, identity).get(host)!
+  return facts.preferredText || facts.fallbackText
 }
 
 /**
@@ -104,78 +67,25 @@ export function mcpStopReason(mcpLogFile: string, since: number): string | undef
   return undefined
 }
 
-const errorMessage = (event: HostEvent): string | undefined =>
-  event.error && typeof event.error === 'object' && typeof event.error.message === 'string' ? event.error.message : undefined
-
 /**
  * The model's last words in this run: up to five non-empty texts from parsed host events (Claude `assistant` and
  * `result`, Codex `agent_message` items), capped at 600 characters. Plain lines are never returned: the log also
  * holds stderr and command output, and this text can reach room messages through a no-report summary.
  * '' when the run has no such event or the log cannot be read.
  */
-export function workerLogTail(logFile: string, logStart = 0): string {
-  try {
-    return runLogSuffix(logFile, logStart).map(l => {
-      const line = l.trim()
-      if (!line.startsWith('{')) return ''
-      try {
-        const event = JSON.parse(line) as HostEvent
-        if (event.type === 'assistant') return assistantText(event)
-        if (event.type === 'result') return typeof event.result === 'string' ? event.result.trim() : ''
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') return event.item.text.trim()
-        return ''
-      } catch { return '' }
-    }).map(text => stripVTControlCharacters(text)).filter(Boolean).slice(-5).join('\n').slice(-600)
-  } catch { return '' }
+export function workerLogTail(logFile: string, logStart = 0, identity?: RunLogIdentity): string {
+  return readLogTail(logFile, logStart, identity)
 }
 
 /** The host's own account of why a run failed; `transient` when a retry later can succeed. */
-export interface HostFailure { text: string; transient?: 'model capacity' | 'rate limit' }
-
-// Codex: "Selected model is at capacity"; Claude: 529 overloaded, "experiencing high load" (errors.md).
-const CAPACITY = /at capacity|overloaded|\b529\b|high load/i
-const RATE_LIMIT = /rate.?limit|\b429\b|too many requests|temporarily limiting/i
-// A spend or plan limit also arrives as a 429 but does not clear on a retry.
-const LIMIT_REACHED = /spend limit|usage limit|credit balance|hit your .*limit|insufficient.?quota/i
-
-function transience(text: string, status: unknown, category: unknown): HostFailure['transient'] {
-  if (LIMIT_REACHED.test(text)) return undefined
-  if (category === 'overloaded' || status === 529 || CAPACITY.test(text)) return 'model capacity'
-  if (category === 'rate_limit' || status === 429 || RATE_LIMIT.test(text)) return 'rate limit'
-  return undefined
-}
+export type HostFailure = NormalizedHostFailure
 
 /**
  * The run's last host error: Codex `turn.failed` (else its last `error` event), Claude's `is_error` result
  * (else its last API error message). Undefined when the host reported none; stderr lines are never read as one.
  */
-export function hostFailure(logFile: string, host: 'claude' | 'codex', logStart = 0): HostFailure | undefined {
-  let lines: string[]
-  try { lines = runLogSuffix(logFile, logStart) } catch { return undefined }
-  let failed: string | undefined, error: string | undefined, status: unknown, category: unknown
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (!line.startsWith('{')) continue
-    let event: HostEvent
-    try { event = JSON.parse(line) as HostEvent } catch { continue }
-    if (host === 'codex') {
-      if (event.type === 'turn.failed' && errorMessage(event)) failed = errorMessage(event)
-      else if (event.type === 'error' && typeof event.message === 'string') error = event.message
-      else if (event.type === 'turn.completed') failed = error = undefined
-    } else if (event.type === 'assistant' && (event.is_api_error_message === true || typeof event.error === 'string')) {
-      error = assistantText(event) || (typeof event.error === 'string' ? event.error : undefined)
-      category = event.error
-    } else if (event.type === 'result') {
-      if (event.is_error !== true) { failed = error = undefined; continue }
-      const errors = Array.isArray(event.errors) ? event.errors.filter((e): e is string => typeof e === 'string' && !!e.trim()) : []
-      failed = (typeof event.result === 'string' && event.result.trim()) || errors.join('; ') || event.subtype || 'error result'
-      status = event.api_error_status
-    }
-  }
-  const text = (failed ?? error)?.replace(/\s+/g, ' ').trim()
-  if (!text) return undefined
-  const transient = transience(text, status, category)
-  return transient ? { text, transient } : { text }
+export function hostFailure(logFile: string, host: WorkerHost, logStart = 0, identity?: RunLogIdentity): HostFailure | undefined {
+  return readLogFailure(logFile, host, logStart, identity)
 }
 
 const FAILURE_TEXT_MAX = 300
@@ -189,8 +99,6 @@ export function hostFailureLine(failure: HostFailure, host: 'claude' | 'codex', 
   return `${host}: ${clipped} (transient ${failure.transient}: ${retry})`
 }
 
-const UNFINISHED_TASK_STATUSES = new Set(['running', 'pending'])
-
 /**
  * Background shell tasks this run started and never awaited: `claude -p` kills them when the turn
  * ends. A backgrounded `local_bash` task counts when it had no terminal event before the run's last
@@ -198,30 +106,9 @@ const UNFINISHED_TASK_STATUSES = new Set(['running', 'pending'])
  * stopped before the result do not. Reads at most the last 16 MB of the run. Codex logs carry no
  * task events, so they count nothing.
  */
-export function unawaitedBackgroundTasks(logFile: string, logStart: number, host: 'claude' | 'codex'): number {
-  if (host !== 'claude') return 0
-  let size: number
-  try { size = fs.statSync(logFile).size } catch { return 0 }
-  const kinds = new Map<string, unknown>(), backgrounded = new Set<string>(), open = new Set<string>()
-  let atResult: Set<string> | undefined
-  for (const event of hostEvents(logFile, Math.max(logStart, size - 16 * 1024 * 1024))) {
-    const id = typeof event.task_id === 'string' ? event.task_id : undefined
-    if (event.type === 'result') atResult = new Set(open)
-    else if (event.type === 'user' && typeof event.tool_use_result?.backgroundTaskId === 'string') {
-      backgrounded.add(event.tool_use_result.backgroundTaskId)
-    } else if (event.type === 'system' && id) {
-      if (event.subtype === 'task_started') {
-        kinds.set(id, event.task_type)
-        if (event.is_backgrounded === true) backgrounded.add(id)
-        open.add(id)
-      } else if (event.subtype === 'task_notification'
-        || event.subtype === 'task_updated' && typeof event.patch?.status === 'string' && !UNFINISHED_TASK_STATUSES.has(event.patch.status)) {
-        open.delete(id)
-      }
-    }
-  }
-  const killed = new Set([...atResult ?? [], ...open])
-  return [...killed].filter(id => backgrounded.has(id) && kinds.get(id) === 'local_bash').length
+export function unawaitedBackgroundTasks(logFile: string, logStart: number, host: WorkerHost, identity?: RunLogIdentity): number {
+  const evidence = readBackgroundTasks(logFile, logStart, host, identity)
+  return evidence.kind === 'observed' ? evidence.count : 0
 }
 
 /**

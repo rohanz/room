@@ -1,5 +1,5 @@
 /** Host-specific lifecycle evidence. Storage callers consume these decisions without interpreting hosts. */
-import { runLogFacts } from '../run-log-facts.js'
+import { runLogFacts, runLogIdentity } from '../run-log-facts.js'
 import type { Run, WorkerRecord } from '../worker-status.js'
 import type { HostId } from './types.js'
 
@@ -10,9 +10,16 @@ export function resumeHostOptions(config?: { claudeChannel?: string }): { claude
   return { claudeChannel: config?.claudeChannel }
 }
 
-export function retainedSessionMissing(record: Pick<WorkerRecord, 'host' | 'hostSessionId'>,
-  run: Pick<Run, 'mode' | 'logStart'>, file: string): boolean {
+export function retainedSessionMissing(record: Pick<WorkerRecord, 'host' | 'hostSessionId'> & Partial<Pick<WorkerRecord, 'id' | 'dir'>>,
+  run: Pick<Run, 'mode' | 'logStart'> & Partial<Pick<Run, 'n'>>, file: string): boolean {
   if (record.host !== 'claude' || run.mode !== 'resume' || !record.hostSessionId) return false
-  const facts = runLogFacts(file, run.logStart)
-  return facts.missingSessions.has(record.hostSessionId) && !facts.assistantSessions.has(record.hostSessionId)
+  const identity = record.dir ? runLogIdentity({ ...record, dir: record.dir }, run) : undefined
+  const facts = runLogFacts(file, run.logStart, identity).get(record.host)!
+  return facts.missingSessions.has(record.hostSessionId) && !facts.acceptedSessions.has(record.hostSessionId)
+}
+
+/** Compatibility entry point for the former Claude-only accessor. */
+export function missingClaudeLogSession(file: string, hostSessionId: string, start: number): boolean {
+  const facts = runLogFacts(file, start).get('claude')!
+  return facts.missingSessions.has(hostSessionId) && !facts.acceptedSessions.has(hostSessionId)
 }
