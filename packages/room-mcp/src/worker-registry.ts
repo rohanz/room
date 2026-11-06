@@ -1,6 +1,7 @@
 import { withDirectoryAdmission, withValidatedRead } from './storage-admission.js'
 import { StorageRefused } from '@room/local-state/protocol'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { holdProcessLifecycle, processLifecycleEnded } from './process-lifecycle.js'
 /** Async lifecycle facade. A display snapshot never grants operation authority. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -32,7 +33,6 @@ const calls = new Set<Promise<unknown>>()
 const live = new Set<WorkerRegistry>()
 const retiring = new Map<WorkerRegistry, Promise<void>>()
 const shutdownRefusal = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no worker registry opens')
-let holders = 0
 /** A tools instance's hold on the registry lifecycle; its calls run in `run`, so their registry opens carry it. */
 export interface RegistryLease {
   readonly ended: boolean
@@ -49,16 +49,14 @@ const leaseScope = new AsyncLocalStorage<RegistryLease>()
  * registry when it resumes; shutdown's own work runs outside any call scope. The last end shuts registries down.
  */
 export function beginWorkerRegistries(): RegistryLease {
-  holders++
-  let ended = false, released = false
+  const release = holdProcessLifecycle()
+  let ended = false
   const lease: RegistryLease = {
     get ended() { return ended },
     fence() { ended = true },
     async end() {
       ended = true
-      if (released) return
-      released = true
-      if (--holders === 0) await shutdownWorkerRegistries()
+      if (release()) await shutdownWorkerRegistries()
     },
     run: fn => leaseScope.run(lease, fn),
   }
@@ -97,7 +95,7 @@ export async function shutdownWorkerRegistries(): Promise<void> {
 /** One token and watcher per common dir for this MCP process. */
 export function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
   const lease = leaseScope.getStore()
-  if (shuttingDown || lease?.ended) return Promise.reject(shutdownRefusal())
+  if (shuttingDown || lease?.ended || processLifecycleEnded()) return Promise.reject(shutdownRefusal())
   const call = openRegistry(dir, sessionId, epoch, lease)
   const tracked = call.catch(() => {}).finally(() => calls.delete(tracked))
   calls.add(tracked)
@@ -105,7 +103,7 @@ export function registryForDir(dir: string, sessionId?: string): Promise<WorkerR
 }
 async function openRegistry(dir: string, sessionId: string | undefined, started: number, lease: RegistryLease | undefined): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
-  if (epoch !== started || lease?.ended) throw shutdownRefusal()
+  if (epoch !== started || lease?.ended || processLifecycleEnded()) throw shutdownRefusal()
   // The registry writes under <common>/room; a Git directory always holds HEAD. Anything else (a
   // resolution that landed on the working tree) must not be written to.
   if (!fs.existsSync(path.join(common, 'HEAD'))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`)
@@ -127,7 +125,7 @@ async function openRegistry(dir: string, sessionId: string | undefined, started:
     const opened = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST }).then(registry => {
       live.add(registry)
       // Opened across a shutdown that no longer waits for it: stop it now rather than leave it watching.
-      if (epoch !== started || lease?.ended) { void retire(registry); throw shutdownRefusal() }
+      if (epoch !== started || lease?.ended || processLifecycleEnded()) { void retire(registry); throw shutdownRefusal() }
       return registry
     })
     pending = opened

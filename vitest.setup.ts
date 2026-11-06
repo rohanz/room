@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterAll, beforeEach, expect } from 'vitest'
 import { isolateTestEnv } from './packages/shared/src/test-env.js'
 import { startWatchdog } from './packages/shared/src/test-watchdog.js'
+import { resetProcessLifecycle } from './packages/room-mcp/src/process-lifecycle.js'
 
 // Host, Room, git and server state must not leak into tests or the child processes they spawn.
 const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'room-test-config-'))
@@ -18,3 +19,7 @@ const watchdog = startWatchdog({ describe: () => {
   return [file, state.currentTestName].filter(Boolean).join(' > ')
 } })
 beforeEach(watchdog.beat)
+
+// Each test models a fresh process: an earlier test's tools shutdown ends room-mcp's process lifecycle, which then
+// refuses registry opens and storage admissions until a new holder begins one.
+beforeEach(resetProcessLifecycle)

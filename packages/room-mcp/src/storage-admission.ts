@@ -17,6 +17,7 @@ import { preflight } from '@room/local-state/preflight'
 import { GATE_LIMITS, StorageRefused, type AdmitOptions, type OperationKind, type PreflightResult, type ReadValidation, type Registration, type StorageGate, type Ticket } from '@room/local-state/protocol'
 import { legacyImportRequired, legacyImportRemedy, preRegistryImportRequired } from './offline/legacy-import.js'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
+import { processLifecycleEnded } from './process-lifecycle.js'
 
 interface ProcessRegistration { gate: StorageGate; registration: Registration; preflight: PreflightResult }
 interface Admission {
@@ -25,6 +26,7 @@ interface Admission {
   dir?: string
   commonDir?: string; ticket?: Ticket; gate?: StorageGate; acquiring?: Promise<Ticket>
 }
+const lifecycleEnded = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no new storage admission')
 const registrations = new Map<string, Promise<ProcessRegistration>>()
 const startups = new Set<Promise<ProcessRegistration>>()
 const ambient = new AsyncLocalStorage<Admission>()
@@ -89,6 +91,7 @@ export async function storageRegistration(commonDir: string): Promise<ProcessReg
   const gate = storageGate(commonDir), common = gate.commonDir
   let pending = registrations.get(common)
   if (pending) return pending
+  if (processLifecycleEnded()) throw lifecycleEnded()
   let expired = false
   const deadline = performance.now() + GATE_LIMITS.startupMs
   const timedOut = () => expired || performance.now() >= deadline
@@ -99,6 +102,7 @@ export async function storageRegistration(commonDir: string): Promise<ProcessReg
     if (timedOut()) throw new StorageRefused('unavailable', 'storage startup check exceeded 10 s')
     const status = await gate.status()
     const preRegistryImport = status.gate?.preRegistryImport ?? (preRegistryImportRequired(common) ? 'required' : 'not-needed')
+    if (processLifecycleEnded()) throw lifecycleEnded()
     const registration = await gate.register({ instance: storageInstance(), kind: 'mcp', release: manifest.version, preRegistryImport })
     try {
       if (timedOut()) throw new StorageRefused('unavailable', 'storage startup check exceeded 10 s')
@@ -159,9 +163,12 @@ const settleOutstanding = (common: string, delta: number) => {
  * this admission and keeps the registration, or has already retired it from the cache so this one registers afresh.
  */
 async function admitTracked(common: string, kind: OperationKind, options?: AdmitOptions): Promise<{ gate: StorageGate; ticket: Ticket }> {
+  // An ended process lifecycle admits nothing more: late work cannot reopen storage after the MCP acknowledged.
+  if (processLifecycleEnded()) throw lifecycleEnded()
   settleOutstanding(common, 1)
   try {
     const { gate, registration } = await storageRegistration(common)
+    if (processLifecycleEnded()) throw lifecycleEnded()
     return { gate, ticket: await gate.admit(registration, kind, options) }
   } catch (error) {
     settleOutstanding(common, -1)

@@ -157,6 +157,20 @@ it('after shutdown begins, a session that joins late (room_join, rebind or repla
   expect((await storageGate(join(dir, '.git')).status()).registrations).toBe(0)
 })
 
+it('once the last lifecycle holder ends, late work from any context (callbacks, Git continuations) neither opens a registry nor admits', async () => {
+  const dir = gitRepo(), common = join(dir, '.git')
+  await registryForDir(dir) // a live lifecycle opens and registers normally
+  const lease = beginWorkerRegistries()
+  await fileLease.end()
+  await lease.end() // the last holder: the process lifecycle has ended
+  await closeStorageAdmissions()
+  expect((await storageGate(common).status()).registrations).toBe(0)
+  // As a conflict-set pass resumed from a Y.js callback, or the presence tick after its Git lookup: no lease scope.
+  await expect(registryForDir(dir)).rejects.toMatchObject({ reason: 'unavailable' })
+  await expect(withAdmission(common, 'idle-release', async () => 'ran')).rejects.toMatchObject({ reason: 'unavailable' })
+  expect((await storageGate(common).status()).registrations).toBe(0)
+})
+
 it('a tool call still running when shutdown began opens no registry when it resumes', async () => {
   const dir = gitRepo()
   const lease = beginWorkerRegistries()
