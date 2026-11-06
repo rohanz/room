@@ -5459,5 +5459,69 @@
     "p99Ms": 44.30441700000006
    }
   ]
+ },
+ "roomDoneBreakdown": {
+  "method": "A diagnostic copy of the harness's tools fixture (60 fresh processes each, same warm-up: room_state twice, room_send), timing the lead's room_done with the gate facade's admit/finish/observe wrapped, every synchronous fs call timed, GC from a PerformanceObserver and the main-thread block from monitorEventLoopDelay. 'first': room_done is the process's first admission, as in the harness. 'premarked': one empty admission runs first, so room_done's admit no longer writes the registration's durable hasHeldTickets marker.",
+  "summaryMs": {
+   "first": {
+    "total": {
+     "p50": 13.74,
+     "p95": 18.63,
+     "max": 24.39
+    },
+    "admit": {
+     "p50": 1.0,
+     "p95": 1.75,
+     "max": 9.82
+    },
+    "finish": {
+     "p50": 0.16,
+     "p95": 0.23,
+     "max": 3.32
+    },
+    "syncFs": {
+     "p50": 1.23,
+     "p95": 1.47,
+     "max": 2.24
+    },
+    "mainThreadBlockMax": {
+     "p50": 13.03,
+     "p95": 17.02,
+     "max": 17.73
+    },
+    "gcEvents": 0,
+    "samples": 60
+   },
+   "premarked": {
+    "total": {
+     "p50": 13.48,
+     "p95": 16.5,
+     "max": 18.27
+    },
+    "admit": {
+     "p50": 0.77,
+     "p95": 1.06,
+     "max": 1.13
+    },
+    "finish": {
+     "p50": 0.15,
+     "p95": 0.23,
+     "max": 0.29
+    },
+    "syncFs": {
+     "p50": 1.23,
+     "p95": 1.5,
+     "max": 1.78
+    },
+    "mainThreadBlockMax": {
+     "p50": 12.8,
+     "p95": 15.41,
+     "max": 16.6
+    },
+    "gcEvents": 0,
+    "samples": 60
+   }
+  },
+  "finding": "room_done's own main-thread synchronous work is ~13 ms on both revisions (no GC, ~1.2 ms synchronous fs). The slice-2 cost is the admission: admit ~1.0 ms and finish ~0.15 ms at p50. Its tail (admit up to 9.8 ms) is the first admission's durable hasHeldTickets marker (registration rewrite with fsync in the gate worker); with the marker already written, admit stays within 1.13 ms. That fsync is required by the cheap-ticket design (the marker must be durable before the first unsynced ticket is published) and is paid once per MCP process, on its first admitted operation."
  }
 }
