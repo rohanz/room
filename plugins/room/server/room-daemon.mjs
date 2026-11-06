@@ -206,6 +206,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
   return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
+    function Gone($path) { -not ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
     function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
     function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
@@ -235,17 +236,22 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
     }).Count -gt 0;` : ""}
-    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree.
+    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree. Other Room
+    # processes create and remove entries meanwhile: an entry (or directory) that is gone needs no verification;
+    # any other failure still refuses.
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
-      foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
-        if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-        $attributes=[IO.File]::GetAttributes($child);
-        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
-        $children.Add($child);
-        if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
-      }
+      $dir=$pending.Pop();
+      try {
+        foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
+          if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
+          try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Gone $child) { continue }; throw };
+          if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+          $children.Add($child);
+          if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
+        }
+      } catch { if (($dir -ne $p) -and (Gone $dir)) { continue }; throw }
     };` : ""}
     ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
       WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
@@ -257,6 +263,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
     $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
     foreach ($child in $children) {
+      try {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
         # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
@@ -272,6 +279,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
             @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
+      } catch { if (Gone $child) { continue }; throw }
     };` : ""}
     # SIDs and booleans only, so the report is built without ConvertTo-Json.
     $bool={ param($v) if ($v) { 'true' } else { 'false' } };

@@ -126,6 +126,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
   return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
+    function Gone($path) { -not ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
     function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
     function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
@@ -155,17 +156,22 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
     }).Count -gt 0;` : ""}
-    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree.
+    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree. Other Room
+    # processes create and remove entries meanwhile: an entry (or directory) that is gone needs no verification;
+    # any other failure still refuses.
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
-      foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
-        if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-        $attributes=[IO.File]::GetAttributes($child);
-        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
-        $children.Add($child);
-        if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
-      }
+      $dir=$pending.Pop();
+      try {
+        foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
+          if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
+          try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Gone $child) { continue }; throw };
+          if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+          $children.Add($child);
+          if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
+        }
+      } catch { if (($dir -ne $p) -and (Gone $dir)) { continue }; throw }
     };` : ""}
     ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
       WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
@@ -177,6 +183,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
     $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
     foreach ($child in $children) {
+      try {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
         # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
@@ -192,6 +199,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
             @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
+      } catch { if (Gone $child) { continue }; throw }
     };` : ""}
     # SIDs and booleans only, so the report is built without ConvertTo-Json.
     $bool={ param($v) if ($v) { 'true' } else { 'false' } };
@@ -1357,9 +1365,13 @@ var init_gate = __esm({
         });
         return this.progress(gate);
       }
-      /** Registration evidence is separate from volatile tickets. Never interpret lifecycle leases here. */
-      async registrationEvidence(ticketNames) {
-        const holders2 = new Set(ticketNames.map((name) => name.split(".")[0]));
+      /**
+       * Registration evidence is separate from volatile tickets. Never interpret lifecycle leases here. A ticket name
+       * whose record was read and found gone (Windows lists a delete-pending name until its last handle closes) does not
+       * cover its holder, so that holder's registration evidence is still reported.
+       */
+      async registrationEvidence(ticketNames, gone = /* @__PURE__ */ new Set()) {
+        const holders2 = new Set(ticketNames.filter((name) => !gone.has(name)).map((name) => name.split(".")[0]));
         const names = this.registrationNames(), evidence = [];
         for (let start = 0; start < names.length; start += this.limits.scanBatch) {
           for (const name of names.slice(start, start + this.limits.scanBatch)) {
@@ -1397,14 +1409,18 @@ var init_gate = __esm({
       }
       async progress(gate) {
         const live2 = [], unknown2 = [], dead = [];
-        const names = this.ticketNames();
+        const names = this.ticketNames(), gone = /* @__PURE__ */ new Set();
         for (let start = 0; start < names.length; start += this.limits.scanBatch) {
           for (const name of names.slice(start, start + this.limits.scanBatch)) {
             const [, holder, id3] = TICKET_FILE.exec(name);
             let ticket;
             try {
               const raw = readRecord(path6.join(this.ticketDir, name), MAX_RECORD_BYTES);
-              if (raw === void 0) continue;
+              if (raw === void 0) {
+                gone.add(name);
+                continue;
+              }
+              ;
               ticket = parseTicket(raw, holder, id3);
             } catch {
               unknown2.push({ id: id3, kind: "reconcile", generation: 0, holder, pid: 0, admittedAt: 0 });
@@ -1424,7 +1440,7 @@ var init_gate = __esm({
           }
           await yieldTurn();
         }
-        for (const { holderState, ...view } of await this.registrationEvidence(names)) {
+        for (const { holderState, ...view } of await this.registrationEvidence(names, gone)) {
           ;
           (holderState === "alive" ? live2 : holderState === "dead" ? dead : unknown2).push(view);
         }
@@ -1581,12 +1597,15 @@ var init_gate = __esm({
       async listTickets(limit = this.limits.scanBatch) {
         const names = this.ticketNames().sort();
         const bound = Math.max(0, Math.min(limit, this.limits.scanBatch));
-        const tickets = [];
+        const tickets = [], gone = /* @__PURE__ */ new Set();
         for (const name of names.slice(0, bound)) {
           const [, holder, id3] = TICKET_FILE.exec(name);
           try {
             const raw = readRecord(path6.join(this.ticketDir, name), MAX_RECORD_BYTES);
-            if (raw === void 0) continue;
+            if (raw === void 0) {
+              gone.add(name);
+              continue;
+            }
             const ticket = parseTicket(raw, holder, id3);
             tickets.push({
               id: id3,
@@ -1602,7 +1621,7 @@ var init_gate = __esm({
             tickets.push({ id: id3, kind: "reconcile", generation: 0, holder, pid: 0, admittedAt: 0, holderState: "unreadable" });
           }
         }
-        const evidence = await this.registrationEvidence(names);
+        const evidence = await this.registrationEvidence(names, gone);
         tickets.push(...evidence.slice(0, Math.max(0, bound - tickets.length)));
         const total = names.length + evidence.length;
         return { tickets, total, truncated: total > bound };
