@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Codex workers no longer block every later join after the daemon cutover.** A running Codex worker on the daemon was counted as a live legacy client, so each new worker in the clone was refused with "drain required; drain record present". The cutover learned that a worker had moved to the daemon only from a hook-written session record, and Codex workers have none. A worker's MCP now names its worker and the host process that started it in its daemon-client marker; the cutover counts the worker as upgraded only when that marker is alive and its host is exactly the worker's recorded launch process. Workers already running on 0.17.38 or 0.17.39 keep blocking until they finish or restart on this release.
+- **Codex workers no longer block every later join after the daemon cutover.** A running Codex worker on the daemon was counted as a live legacy client, so each new worker in the clone was refused with "drain required; drain record present". The cutover learned that a worker had moved to the daemon only from a hook-written session record, and Codex workers have none. Once a worker's MCP is admitted, its daemon-client marker names the worker and the host identity admission recorded; the cutover counts the worker as upgraded only when the marker's writer is alive by full identity and that host is exactly the worker's recorded launch or reported host. A refused re-admission withdraws the claim. Workers already running on 0.17.38 or 0.17.39 keep blocking until they finish or restart on this release.
 
 ## 0.17.39
 

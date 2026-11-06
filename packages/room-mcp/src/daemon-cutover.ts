@@ -183,7 +183,9 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId
       || !!options.currentWorkerId && session.worker_id === options.currentWorkerId)
     if ((runtime === 'daemon-client' || currentBinding) && typeof session?.worker_id === 'string') upgradedWorkers.add(session.worker_id)
-    const served = runtime === 'daemon-client' && object(mcp?.worker) && typeof mcp.worker.id === 'string' ? identityOf(mcp.worker.host) : undefined
+    // Only a marker whose own writer is alive by full identity can vouch for a worker; the current-pid shortcut cannot.
+    const markerLive = mcp?.runtime === 'daemon-client' && !!identityOf(mcp)?.startTime && alive(identityOf(mcp)) === 'alive'
+    const served = markerLive && object(mcp?.worker) && typeof mcp.worker.id === 'string' ? identityOf(mcp.worker.host) : undefined
     if (served?.startTime && served.executable) workerHosts.set(mcp!.worker.id, [...(workerHosts.get(mcp!.worker.id) ?? []), served])
     const host = typeof session?.host === 'string' ? session.host : undefined
     const cwd = typeof session?.cwd === 'string' ? session.cwd : undefined

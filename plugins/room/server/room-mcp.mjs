@@ -33469,7 +33469,8 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     const runtime = mcp?.pid === currentPid || mcp?.runtime === "daemon-client" && alive(identityOf(mcp)) === "alive" ? "daemon-client" : "legacy";
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId || !!options.currentWorkerId && session.worker_id === options.currentWorkerId);
     if ((runtime === "daemon-client" || currentBinding) && typeof session?.worker_id === "string") upgradedWorkers.add(session.worker_id);
-    const served = runtime === "daemon-client" && object4(mcp?.worker) && typeof mcp.worker.id === "string" ? identityOf(mcp.worker.host) : void 0;
+    const markerLive = mcp?.runtime === "daemon-client" && !!identityOf(mcp)?.startTime && alive(identityOf(mcp)) === "alive";
+    const served = markerLive && object4(mcp?.worker) && typeof mcp.worker.id === "string" ? identityOf(mcp.worker.host) : void 0;
     if (served?.startTime && served.executable) workerHosts.set(mcp.worker.id, [...workerHosts.get(mcp.worker.id) ?? [], served]);
     const host2 = typeof session?.host === "string" ? session.host : void 0;
     const cwd = typeof session?.cwd === "string" ? session.cwd : void 0;
@@ -47990,6 +47991,7 @@ var worker_registry_exports = {};
 __export(worker_registry_exports, {
   WorkerRegistry: () => WorkerRegistry,
   admitWorkerEnvironment: () => admitWorkerEnvironment,
+  admittedWorker: () => admittedWorker,
   backgroundAtExit: () => backgroundAtExit,
   carriedFrom: () => carriedFrom,
   carriedSourceToken: () => carriedSourceToken,
@@ -48048,7 +48050,18 @@ async function openWorkerReader(dir) {
   const common = commonGitDirFromDotGit(dir);
   return WorkerRegistry.openReader(common);
 }
+function admittedWorker() {
+  return admitted;
+}
 async function admitWorkerEnvironment(dir, env = process.env, bound) {
+  try {
+    await admitOnce(dir, env, bound);
+  } catch (error2) {
+    admitted = void 0;
+    throw error2;
+  }
+}
+async function admitOnce(dir, env = process.env, bound) {
   const id3 = env.ROOM_WORKER_ID;
   if (!id3) return;
   const room = env.ROOM_ROOM ?? "";
@@ -48080,6 +48093,7 @@ async function admitWorkerEnvironment(dir, env = process.env, bound) {
   } catch {
     throw new Error("this worker run was collected, discarded or superseded");
   }
+  if (chain[1]?.startTime && chain[1].executable) admitted = { id: id3, host: chain[1] };
 }
 async function localWorkerBaseline(dir, participant) {
   const plus = participant.lastIndexOf("+");
@@ -48129,7 +48143,7 @@ async function workerCarried(dir, env = process.env) {
   if (!id3 || !safeId(id3)) return void 0;
   return (await openWorkerReader(dir)).read(id3);
 }
-var registries, MAX_PROCESS_REGISTRIES, WorkerRegistry;
+var registries, MAX_PROCESS_REGISTRIES, admitted, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
@@ -58013,8 +58027,8 @@ function mode(env) {
 function channelAdmitted(env, parentArgs, channel) {
   const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL;
   if (!entry) return false;
-  const admitted = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
-  return admitted.some((m) => m[1].split(",").includes(entry));
+  const admitted2 = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
+  return admitted2.some((m) => m[1].split(",").includes(entry));
 }
 function claudeWakeAvailable(o) {
   if (o.host !== "claude") return false;
@@ -58089,15 +58103,15 @@ function createWakeSender(o) {
     const selected = mode(env);
     if (selected === "off") return void 0;
     if (target.host === "codex") return attempt("queue", () => (o.queue ?? codexQueue)(target.id, text2));
-    const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
+    const admitted2 = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
     const channel = () => attempt("channel", () => sendChannelNotification(text2, o.notify));
     if (selected === "channels") return o.channel === "" ? void 0 : channel();
     const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
-    if (!socket) return selected === "auto" && admitted() ? channel() : void 0;
+    if (!socket) return selected === "auto" && admitted2() ? channel() : void 0;
     try {
       return await attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text2));
     } catch (error2) {
-      if (selected === "auto" && admitted()) {
+      if (selected === "auto" && admitted2()) {
         try {
           return await channel();
         } finally {
@@ -66451,7 +66465,6 @@ init_plugin();
 init_src3();
 init_leases2();
 init_worker_process();
-init_process();
 import fs72 from "node:fs";
 import net2 from "node:net";
 import path71 from "node:path";
@@ -66553,14 +66566,16 @@ async function startArbitration(o) {
   });
   const port = server.address().port;
   const self = probeOwnProcess();
-  const parentInfo = o.workerId && process.ppid > 1 ? probeProcess(process.ppid) : void 0;
-  const worker = o.workerId && parentInfo?.startTime && parentInfo.executable ? { id: o.workerId, host: { pid: process.ppid, startTime: parentInfo.startTime, executable: parentInfo.executable } } : void 0;
-  let written;
+  let written, writtenWorker;
   const publish2 = () => {
     const dir = o.binding.dir();
-    if (dir === (written && path71.dirname(written))) return;
-    if (written) removeOwn(written, key2);
-    written = void 0;
+    const worker = o.worker?.(), workerKey = worker ? JSON.stringify(worker) : void 0;
+    const same = dir === (written && path71.dirname(written));
+    if (same && workerKey === writtenWorker) return;
+    if (written && !same) {
+      removeOwn(written, key2);
+      written = void 0;
+    }
     if (!dir) return;
     try {
       privateStateDirectory(dir);
@@ -66568,6 +66583,7 @@ async function startArbitration(o) {
       writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self?.startTime ?? "", executable: self?.executable ?? "", runtime: "daemon-client", ...worker ? { worker } : {}, hookCompat: { bootstrap: 1, min: 1, max: 1 }, incarnation, build: plugin_default.version });
       fs72.chmodSync(file, 384);
       written = file;
+      writtenWorker = workerKey;
     } catch (e) {
       o.log?.(`arbitration: could not publish its endpoint: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -67102,7 +67118,7 @@ async function main() {
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
         onContact: () => presence?.activity(),
         log,
-        workerId: process.env.ROOM_WORKER_ID
+        worker: admittedWorker
       });
       const adopt = async (s, clearStale = true) => {
         await offerTeamSharingDisclosure(s, tools.ledger);

@@ -7,7 +7,7 @@ import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/
 import { FileWorkerStore, type RegistryOptions } from './worker-file-store.js'
 import { probeOwnProcess, probeProcessNow } from './worker-process.js'
 import { statusOf, realStateInput, type LocalWorker, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
-import type { InstanceToken } from './leases.js'
+import type { InstanceToken, ProcessIdentity } from './leases.js'
 import type { RetiredWorker } from '@room/shared'
 import { safeId, safeTag } from './worker-codecs.js'
 import { requireWorkerInventory, type WorkerInventory, requireWorkerEvidence, workerEvidence, type BlockedWorkerEvidence, recordStatus, snapshotRead, snapshotReserved, snapshotFreshness, type WorkerQuery, type WorkerStore, type WorkerSnapshot, type AvailableWorkerSnapshot, type WorkerFacts, type WorkerCommand, type WorkerFreshness } from './worker-store.js'
@@ -65,7 +65,18 @@ export async function openWorkerReader(dir: string): Promise<WorkerReader> {
 }
 
 /** Called before roomd publishes a worker's identity or files. */
+/** The worker this process was admitted as, with the host identity admission recorded; undefined until then. */
+let admitted: { id: string; host: ProcessIdentity } | undefined
+export function admittedWorker(): { id: string; host: ProcessIdentity } | undefined { return admitted }
+
+/** Admit this process as its environment's worker run. A refused admission withdraws any earlier one, so a
+ *  collected or superseded run no longer vouches for its worker in the daemon-client marker. */
 export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv = process.env,
+  bound?: { id: string; host: 'claude' | 'codex' }): Promise<void> {
+  try { await admitOnce(dir, env, bound) } catch (error) { admitted = undefined; throw error }
+}
+
+async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
   bound?: { id: string; host: 'claude' | 'codex' }): Promise<void> {
   const id = env.ROOM_WORKER_ID
   if (!id) return
@@ -87,6 +98,7 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
   try { await registry.admit({ id, run, nonce, dir, chain, hostProcess: chain[1] ?? null,
     hostSessionId }) }
   catch { throw new Error('this worker run was collected, discarded or superseded') }
+  if (chain[1]?.startTime && chain[1].executable) admitted = { id, host: chain[1] }
 }
 /**
  * This clone's current worker under a participant name, as a carried-baseline source with its lead: a local

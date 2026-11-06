@@ -26,7 +26,7 @@ import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWo
 import { PresenceEnd, attachingParentReader, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
-import { admitWorkerEnvironment } from './worker-registry.js'
+import { admitWorkerEnvironment, admittedWorker } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
 import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
@@ -137,7 +137,7 @@ async function main() {
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
-        onContact: () => presence?.activity(), log, workerId: process.env.ROOM_WORKER_ID })
+        onContact: () => presence?.activity(), log, worker: admittedWorker })
       const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)
