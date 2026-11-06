@@ -74,7 +74,7 @@ it('refuses a missing DatabaseSync API', async () => {
 it('never opens WAL on an unqualified filesystem: reports unqualified and writes nothing', async () => {
   const dir = commonDir()
   const network: FilesystemReaders = { platform: 'linux', realpath: () => '/srv/repo/.git', statfsType: () => 0x6969, macMounts: () => '',
-    linuxMountinfo: () => `36 25 0:32 / / rw - nfs4 server:/export rw\n`, windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {} }
+    linuxMountinfo: () => `36 25 0:32 / / rw - nfs4 server:/export rw\n`, windowsDrive: () => '', home: () => '/home/u', env: {} }
   const result = await preflight('offline', { commonDir: dir, filesystem: network })
   expect(result).toMatchObject({ ok: true, storage: 'unqualified', evidence: { filesystem: { kind: 'network', journal: 'refuse' } } })
   expect(fs.existsSync(path.join(dir, 'room'))).toBe(false)
@@ -102,7 +102,7 @@ it('keeps node:sqlite\'s ExperimentalWarning off stderr while other warnings sti
 it('enforces the deadline while filesystem detection is still waiting on the OS', async () => {
   const dir = commonDir()
   const hanging: FilesystemReaders = { platform: 'linux', realpath: () => '/srv/repo/.git', statfsType: () => undefined, macMounts: () => '',
-    linuxMountinfo: () => new Promise<string>(() => {}), windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {} }
+    linuxMountinfo: () => new Promise<string>(() => {}), windowsDrive: () => '', home: () => '/home/u', env: {} }
   const started = performance.now()
   const result = await preflight('offline', { commonDir: dir, filesystem: hanging, timeoutMs: 100 })
   expect(result).toMatchObject({ ok: false, failure: 'timeout' })
@@ -133,7 +133,7 @@ it('ends a hung SQLite import with the typed timeout, not an unsettled-await exi
 // Explicit ext4 input exercises probe control flow, not host filesystem qualification.
 const local: FilesystemReaders = { platform: 'linux', realpath: () => '/srv/repo/.git', statfsType: () => 0xef53,
   linuxMountinfo: () => '36 25 0:32 / / rw - ext4 /dev/test rw', macMounts: () => '',
-  windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {} }
+  windowsDrive: () => '', home: () => '/home/u', env: {} }
 
 it.each(['constructor', 'pragma', 'wal-commit', 'wal-close', 'wal-reopen'])('enforces a deadline while %s blocks synchronously', async stage => {
   const dir = commonDir(), reached = path.join(dir, 'reached')

@@ -8,7 +8,7 @@ import { detectFilesystem, type FilesystemReaders } from '../src/filesystem.js'
 
 const base = (overrides: Partial<FilesystemReaders>): FilesystemReaders => ({
   platform: 'linux', realpath: file => file, statfsType: () => undefined, macMounts: () => '', linuxMountinfo: () => '',
-  windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {}, ...overrides,
+  windowsDrive: () => '', home: () => '/home/u', env: {}, ...overrides,
 })
 const mountinfo = (lines: [string, string][]) => lines.map(([point, type], n) => `${20 + n} 1 0:${n} / ${point} rw,relatime shared:1 - ${type} src rw`).join('\n')
 
@@ -53,19 +53,20 @@ it('refuses synchronized folders even on a qualified local filesystem', async ()
 })
 
 it.each([
-  ['\\\\server\\share\\r\\.git', 'Fixed Drive', 'NTFS', 'network'],
-  ['\\\\?\\UNC\\server\\share\\r', 'Fixed Drive', 'NTFS', 'network'],
-  ['C:\\Users\\u\\r\\.git', 'C: - Fixed Drive', 'File System Name : NTFS', 'ntfs'],
-  ['D:\\r\\.git', 'D: - Remote/Network Drive', '', 'network'],
-  ['E:\\r\\.git', 'E: - Fixed Drive', 'File System Name : ReFS', 'other-local'],
-  ['F:\\r\\.git', 'F: - Removable Drive', '', 'unknown'],
-] as const)('windows %s', async (file, type, volume, kind) => {
-  const readers = base({ platform: 'win32', windowsDriveType: () => type, windowsVolumeInfo: () => volume, home: () => 'C:\\Users\\u' })
+  ['\\\\server\\share\\r\\.git', 'Fixed NTFS', 'network'],
+  ['\\\\?\\UNC\\server\\share\\r', 'Fixed NTFS', 'network'],
+  ['C:\\Users\\u\\r\\.git', 'Fixed NTFS', 'ntfs'],
+  ['D:\\r\\.git', 'Network ', 'network'],
+  ['E:\\r\\.git', 'Fixed ReFS', 'other-local'],
+  ['F:\\r\\.git', 'Removable FAT32', 'unknown'],
+  ['G:\\r\\.git', 'Fixed ', 'unknown'],
+] as const)('windows %s', async (file, drive, kind) => {
+  const readers = base({ platform: 'win32', windowsDrive: () => drive, home: () => 'C:\\Users\\u' })
   expect((await detectFilesystem(file, readers)).kind).toBe(kind)
 })
 
 it('windows OneDrive folders are synchronized', async () => {
-  const readers = base({ platform: 'win32', windowsDriveType: () => 'Fixed Drive', windowsVolumeInfo: () => 'File System Name : NTFS',
+  const readers = base({ platform: 'win32', windowsDrive: () => 'Fixed NTFS',
     home: () => 'C:\\Users\\u', env: { OneDrive: 'C:\\Users\\u\\OneDrive' } })
   expect((await detectFilesystem('C:\\Users\\u\\OneDrive\\r\\.git', readers)).kind).toBe('synchronized')
 })
@@ -96,7 +97,7 @@ it.each(['/private/var/folders/xy/temp/probe', '/Users/runner/work/room/room/.gi
 })
 
 it.each(['D:\\a\\_temp\\probe', 'D:\\a\\room\\room\\.git'])('resolves Windows runner path %s on NTFS', async file => {
-  const readers = base({ platform: 'win32', windowsDriveType: () => 'D: - Fixed Drive', windowsVolumeInfo: () => 'File System Name : NTFS' })
+  const readers = base({ platform: 'win32', windowsDrive: () => 'Fixed NTFS' })
   expect(await detectFilesystem(file, readers)).toMatchObject({ kind: 'ntfs', journal: 'wal' })
 })
 

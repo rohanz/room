@@ -22,17 +22,22 @@ export interface FilesystemReaders {
   macMounts(): Maybe<string>
   /** Linux /proc/self/mountinfo. */
   linuxMountinfo(): Maybe<string>
-  /** Windows `fsutil fsinfo drivetype X:` and `fsutil fsinfo volumeinfo X:\` outputs. */
-  windowsDriveType(drive: string): Maybe<string>
-  windowsVolumeInfo(drive: string): Maybe<string>
+  /** Windows `<DriveType> <file system name>` for `X:`, such as `Fixed NTFS` (the name is empty when unreadable). */
+  windowsDrive(drive: string): Maybe<string>
   home(): string
   env: NodeJS.ProcessEnv
 }
 
-const run = (command: string, args: string[]): Promise<string> => new Promise((resolve, reject) => {
-  execFile(command, args, { encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
+const run = (command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> => new Promise((resolve, reject) => {
+  execFile(command, args, { encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...(env ? { env } : {}) },
     (error, stdout) => error ? reject(error) : resolve(stdout))
 })
+/**
+ * GetDriveType and GetVolumeInformation through .NET's DriveInfo: no elevation needed (`fsutil fsinfo volumeinfo` fails
+ * without it), and .NET types only, so PowerShell loads no modules. The drive travels through the environment.
+ */
+const WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f"
+
 
 export const systemFilesystemReaders: FilesystemReaders = {
   platform: process.platform,
@@ -40,8 +45,7 @@ export const systemFilesystemReaders: FilesystemReaders = {
   statfsType: file => fs.promises.statfs(file).then(stat => stat.type, () => undefined),
   macMounts: () => run('/sbin/mount', []),
   linuxMountinfo: () => fs.promises.readFile('/proc/self/mountinfo', 'utf8'),
-  windowsDriveType: drive => run('fsutil', ['fsinfo', 'drivetype', drive]),
-  windowsVolumeInfo: drive => run('fsutil', ['fsinfo', 'volumeinfo', `${drive}\\`]),
+  windowsDrive: drive => run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
   home: () => os.homedir(),
   env: process.env,
 }
@@ -107,14 +111,13 @@ async function classifyWindows(file: string, readers: FilesystemReaders): Promis
   if (/^\\\\(\?\\UNC\\|[^?.])/i.test(file)) return result('network', 'UNC path', file)
   const drive = /^(?:\\\\\?\\)?([A-Za-z]:)/.exec(file)?.[1]
   if (!drive) return result('unknown', 'no drive letter', file)
-  let type: string, volume: string
-  try { type = await readers.windowsDriveType(drive) } catch (error) { return result('unknown', `drive type unavailable: ${(error as Error).message}`, file) }
-  if (/remote|network/i.test(type)) return result('network', type.trim(), file)
-  if (!/fixed/i.test(type)) return result('unknown', type.trim(), file)
-  try { volume = await readers.windowsVolumeInfo(drive) } catch (error) { return result('unknown', `volume information unavailable: ${(error as Error).message}`, file) }
-  const name = /File System Name\s*:\s*(\S+)/i.exec(volume)?.[1]
-  if (!name) return result('unknown', 'file system name missing', file)
-  return result(name.toUpperCase() === 'NTFS' ? 'ntfs' : 'other-local', `${type.trim()}; ${name}`, file)
+  let info: string
+  try { info = (await readers.windowsDrive(drive)).trim() } catch (error) { return result('unknown', `drive information unavailable: ${(error as Error).message}`, file) }
+  const [type = '', name = ''] = info.split(/\s+/)
+  if (/^network$/i.test(type)) return result('network', `${drive} ${info}`, file)
+  if (!/^fixed$/i.test(type)) return result('unknown', `${drive} ${info || 'drive type unknown'}`, file)
+  if (!name) return result('unknown', `${drive} ${type}: file system name missing`, file)
+  return result(name.toUpperCase() === 'NTFS' ? 'ntfs' : 'other-local', `${drive} ${type}; ${name}`, file)
 }
 
 /** Classify the filesystem holding `target` (an existing path). Never rejects: failures are `unknown`. */
