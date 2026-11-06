@@ -1745,17 +1745,19 @@ async function detectFilesystem(target, readers = systemFilesystemReaders) {
   }
   return result("unknown", `${statfs}; unsupported platform ${readers.platform}`, file);
 }
-var QUALIFIED, COMMAND_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders, result, LINUX_NETWORK, LINUX_LOCAL;
+var QUALIFIED, COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders, result, LINUX_NETWORK, LINUX_LOCAL;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
+    init_protocol();
     QUALIFIED = /* @__PURE__ */ new Set(["apfs", "ext4", "ntfs"]);
     COMMAND_TIMEOUT_MS = 3e3;
-    run = (command3, args2, env) => new Promise((resolve6, reject) => {
+    POWERSHELL_TIMEOUT_MS = GATE_LIMITS.preflightMs;
+    run = (command3, args2, env, timeout = COMMAND_TIMEOUT_MS) => new Promise((resolve6, reject) => {
       execFile3(
         command3,
         args2,
-        { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
+        { encoding: "utf8", timeout, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
         (error2, stdout) => error2 ? reject(error2) : resolve6(stdout)
       );
     });
@@ -1766,7 +1768,7 @@ var init_filesystem = __esm({
       statfsType: (file) => fs6.promises.statfs(file).then((stat4) => stat4.type, () => void 0),
       macMounts: () => run("/sbin/mount", []),
       linuxMountinfo: () => fs6.promises.readFile("/proc/self/mountinfo", "utf8"),
-      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
+      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
       home: () => os.homedir(),
       env: process.env
     };

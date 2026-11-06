@@ -789,16 +789,18 @@ var init_protocol = __esm({
 import fs6 from "node:fs";
 import os from "node:os";
 import { execFile as execFile3 } from "node:child_process";
-var COMMAND_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders;
+var COMMAND_TIMEOUT_MS, POWERSHELL_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
+    init_protocol();
     COMMAND_TIMEOUT_MS = 3e3;
-    run = (command, args2, env) => new Promise((resolve, reject) => {
+    POWERSHELL_TIMEOUT_MS = GATE_LIMITS.preflightMs;
+    run = (command, args2, env, timeout = COMMAND_TIMEOUT_MS) => new Promise((resolve, reject) => {
       execFile3(
         command,
         args2,
-        { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
+        { encoding: "utf8", timeout, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
         (error, stdout) => error ? reject(error) : resolve(stdout)
       );
     });
@@ -809,7 +811,7 @@ var init_filesystem = __esm({
       statfsType: (file) => fs6.promises.statfs(file).then((stat) => stat.type, () => void 0),
       macMounts: () => run("/sbin/mount", []),
       linuxMountinfo: () => fs6.promises.readFile("/proc/self/mountinfo", "utf8"),
-      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
+      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
       home: () => os.homedir(),
       env: process.env
     };

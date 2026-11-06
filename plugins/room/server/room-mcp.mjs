@@ -12,13 +12,57 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
+
+// packages/local-state/src/protocol.ts
+var NODE_FLOOR = "22.22.3";
+var SQLITE_FLOOR = "3.51.3";
+var NODE_MAJOR = 22;
+var GATE_LIMITS = {
+  /** Registered processes (MCPs, helpers, daemon, maintenance) per clone; the cap refuses, never evicts. */
+  registrations: 256,
+  /** Concurrent admission tickets per clone; the cap refuses admission, never drops a ticket. */
+  tickets: 4096,
+  /** Records examined per yielded drain/status pass. */
+  scanBatch: 200,
+  /** Wait for the short gate guard before `unavailable` (decided, not in spec). */
+  guardWaitMs: 2e3,
+  /** Explicit migration drain. Timeout leaves the gate draining; it never reopens automatically. */
+  drainMs: 12e4,
+  /** MCP/daemon startup maintenance check, including preflight; refuses rather than waits longer. */
+  startupMs: 1e4,
+  /** Runtime/filesystem preflight, including asynchronous BUSY retries. */
+  preflightMs: 1e4,
+  /** migration.lock ownership wait (existing 30 s rule). */
+  migrationLockWaitMs: 3e4
+};
+var STORAGE_PATHS = {
+  /** Gate record. Initialization, registration and phase/generation transitions serialize on `${gate}.guard`; admission is lock-free against them. */
+  gate: "room/storage-gate.json",
+  /** One private file per registration, named `<instance nonce>.json`. */
+  registrations: "room/storage-gate/registrations",
+  /** One private file per live ticket, named `<holder nonce>.<ticket id>.json`; finish removes it. */
+  tickets: "room/storage-gate/tickets",
+  /** Append-only bounded audit of dead-ticket resolutions (decided, not in spec). */
+  resolutions: "room/storage-gate/resolutions",
+  /** Existing exclusive migration ownership and stable pre-registry assignments; never moved. */
+  migrationLock: "room/registry/migration.lock",
+  migrationMap: "room/registry/migration.json",
+  /** Activation evidence. Any of these without a readable gate refuses operation; slice 2 never creates them. */
+  database: "room/state.sqlite",
+  activationMarker: "room/state.active.json",
+  /** Private preflight scratch; each probe uses and removes only its own `<nonce>` subdirectory. */
+  preflightScratch: "room/preflight"
+};
+
+// packages/local-state/src/filesystem.ts
 var QUALIFIED = /* @__PURE__ */ new Set(["apfs", "ext4", "ntfs"]);
 var COMMAND_TIMEOUT_MS = 3e3;
-var run = (command, args, env) => new Promise((resolve, reject) => {
+var POWERSHELL_TIMEOUT_MS = GATE_LIMITS.preflightMs;
+var run = (command, args, env, timeout = COMMAND_TIMEOUT_MS) => new Promise((resolve, reject) => {
   execFile(
     command,
     args,
-    { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
+    { encoding: "utf8", timeout, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
     (error, stdout) => error ? reject(error) : resolve(stdout)
   );
 });
@@ -29,7 +73,7 @@ var systemFilesystemReaders = {
   statfsType: (file) => fs.promises.statfs(file).then((stat) => stat.type, () => void 0),
   macMounts: () => run("/sbin/mount", []),
   linuxMountinfo: () => fs.promises.readFile("/proc/self/mountinfo", "utf8"),
-  windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
+  windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
   home: () => os.homedir(),
   env: process.env
 };
@@ -355,47 +399,6 @@ function privateStateDirectory(dir) {
     } else initializePrivateDirectory(directory, inState);
   }
 }
-
-// packages/local-state/src/protocol.ts
-var NODE_FLOOR = "22.22.3";
-var SQLITE_FLOOR = "3.51.3";
-var NODE_MAJOR = 22;
-var GATE_LIMITS = {
-  /** Registered processes (MCPs, helpers, daemon, maintenance) per clone; the cap refuses, never evicts. */
-  registrations: 256,
-  /** Concurrent admission tickets per clone; the cap refuses admission, never drops a ticket. */
-  tickets: 4096,
-  /** Records examined per yielded drain/status pass. */
-  scanBatch: 200,
-  /** Wait for the short gate guard before `unavailable` (decided, not in spec). */
-  guardWaitMs: 2e3,
-  /** Explicit migration drain. Timeout leaves the gate draining; it never reopens automatically. */
-  drainMs: 12e4,
-  /** MCP/daemon startup maintenance check, including preflight; refuses rather than waits longer. */
-  startupMs: 1e4,
-  /** Runtime/filesystem preflight, including asynchronous BUSY retries. */
-  preflightMs: 1e4,
-  /** migration.lock ownership wait (existing 30 s rule). */
-  migrationLockWaitMs: 3e4
-};
-var STORAGE_PATHS = {
-  /** Gate record. Initialization, registration and phase/generation transitions serialize on `${gate}.guard`; admission is lock-free against them. */
-  gate: "room/storage-gate.json",
-  /** One private file per registration, named `<instance nonce>.json`. */
-  registrations: "room/storage-gate/registrations",
-  /** One private file per live ticket, named `<holder nonce>.<ticket id>.json`; finish removes it. */
-  tickets: "room/storage-gate/tickets",
-  /** Append-only bounded audit of dead-ticket resolutions (decided, not in spec). */
-  resolutions: "room/storage-gate/resolutions",
-  /** Existing exclusive migration ownership and stable pre-registry assignments; never moved. */
-  migrationLock: "room/registry/migration.lock",
-  migrationMap: "room/registry/migration.json",
-  /** Activation evidence. Any of these without a readable gate refuses operation; slice 2 never creates them. */
-  database: "room/state.sqlite",
-  activationMarker: "room/state.active.json",
-  /** Private preflight scratch; each probe uses and removes only its own `<nonce>` subdirectory. */
-  preflightScratch: "room/preflight"
-};
 
 // packages/local-state/src/preflight.ts
 var REMEDY = "install the official Node.js 22 (22.22.3 or later) from nodejs.org, put its bin directory (Windows: the folder containing node.exe) first on the PATH the host is launched with, fully stop the host and any MCP-launching daemon, restart, then rerun `node <plugin>/server/room-state.mjs preflight`";
