@@ -534,30 +534,13 @@ function syncDirectory(dir) {
     if (fd !== void 0) fs4.closeSync(fd);
   }
 }
-function directoryIdentity(dir) {
-  try {
-    const stat = fs4.statSync(dir, { bigint: true });
-    return stat.isDirectory() ? `${stat.dev}:${stat.ino}` : void 0;
-  } catch {
-    return void 0;
-  }
-}
-function durableDirectory(dir, holdsFile = true) {
-  const known = durableDirectories.get(dir);
-  if (known !== void 0 && known === directoryIdentity(dir)) return;
-  ensureDurableDirectory(dir, holdsFile);
-  const identity = directoryIdentity(dir);
-  if (identity === void 0) return;
-  if (durableDirectories.size >= DURABLE_DIRECTORY_CACHE) durableDirectories.clear();
-  durableDirectories.set(dir, identity);
-}
-function ensureDurableDirectory(dir, holdsFile) {
+function ensureDurableDirectory(dir, holdsFile, boundary) {
   const parent = path5.dirname(dir);
-  if (parent === dir) {
+  if (parent === dir || dir === boundary) {
     if (!fs4.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
   }
-  durableDirectory(parent, false);
+  ensureDurableDirectory(parent, false, boundary);
   try {
     if (process.platform === "win32" && !holdsFile) fs4.mkdirSync(dir);
     else if (!fs4.existsSync(dir)) privateStateDirectory(dir);
@@ -587,8 +570,9 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
   return removed;
 }
 function writeTemp(file, content) {
-  const dir = path5.dirname(file);
-  durableDirectory(dir);
+  const dir = path5.resolve(path5.dirname(file));
+  const namespace = privateDirectoryPath(dir);
+  ensureDurableDirectory(dir, true, namespace.inState ? path5.dirname(namespace.root) : void 0);
   cleanupOrphanTemps(dir);
   const start = probeOwnProcess()?.startTime;
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
@@ -721,14 +705,13 @@ function recover(file, orphan, probe = probeProcess) {
     return true;
   });
 }
-var durableDirectories, DURABLE_DIRECTORY_CACHE, startMarker, tempPattern;
+var startMarker, tempPattern;
 var init_leases = __esm({
   "packages/local-state/src/leases.ts"() {
     "use strict";
     init_private_state();
+    init_private_core();
     init_process();
-    durableDirectories = /* @__PURE__ */ new Map();
-    DURABLE_DIRECTORY_CACHE = 1024;
     startMarker = (startTime) => createHash("sha256").update(startTime).digest("hex").slice(0, 24);
     tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
   }
@@ -823,12 +806,95 @@ var init_filesystem = __esm({
 });
 
 // packages/local-state/src/preflight.ts
+var SQLITE_PROBE_SOURCE;
 var init_preflight = __esm({
   "packages/local-state/src/preflight.ts"() {
     "use strict";
     init_filesystem();
     init_private_state();
     init_protocol();
+    SQLITE_PROBE_SOURCE = String.raw`
+const { parentPort, workerData } = require('node:worker_threads');
+const fs = require('node:fs');
+const path = require('node:path');
+const expired = () => performance.now() >= workerData.deadline;
+const check = () => { if (expired()) throw Object.assign(new Error('preflight deadline expired'), { failure: 'timeout' }); };
+const step = fn => { check(); const value = fn(); check(); return value; };
+let sqlite;
+function fail(failure, detail) { return { failure, detail }; }
+async function runtimeProbe() {
+  const original = process.emitWarning;
+  process.emitWarning = function(warning, ...rest) {
+    const text = typeof warning === 'string' ? warning : warning?.message;
+    const type = typeof rest[0] === 'string' ? rest[0] : rest[0]?.type ?? (warning instanceof Error ? warning.name : undefined);
+    if (type === 'ExperimentalWarning' && /\bSQLite\b/i.test(text ?? '')) return;
+    return original.call(process, warning, ...rest);
+  };
+  try {
+    check();
+    sqlite = await (workerData.importSqlite ? (0, eval)('(' + workerData.importSqlite + ')')() : import('node:sqlite'));
+    check();
+  } catch (error) { return fail(error.failure ?? 'sqlite-import', error.message); }
+  finally { process.emitWarning = original; }
+  if (typeof sqlite?.DatabaseSync !== 'function') return fail('sqlite-api', 'node:sqlite has no DatabaseSync');
+  let db;
+  try {
+    db = step(() => new sqlite.DatabaseSync(':memory:', { enableForeignKeyConstraints: true, allowExtension: false }));
+    for (const method of ['exec', 'prepare', 'close', 'loadExtension'])
+      if (typeof db[method] !== 'function') return fail('sqlite-api', 'DatabaseSync.' + method + ' missing');
+    const get = sql => { const statement = step(() => db.prepare(sql)); return step(() => Object.values(statement.get() ?? {})[0]); };
+    const version = String(get('SELECT sqlite_version() AS v'));
+    const parts = version.split('.').map(Number), floor = workerData.sqliteFloor.split('.').map(Number);
+    const comparison = parts[0] - floor[0] || parts[1] - floor[1] || parts[2] - floor[2];
+    if (comparison < 0) return { ...fail('sqlite-version', 'SQLite ' + version + ' is below the minimum ' + workerData.sqliteFloor), sqlite: version };
+    step(() => db.exec('PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;'));
+    if (Number(get('PRAGMA foreign_keys')) !== 1) return fail('pragma', 'foreign_keys could not be enabled');
+    if (Number(get('PRAGMA trusted_schema')) !== 0) return fail('pragma', 'trusted_schema could not be disabled');
+    try { step(() => db.loadExtension(path.join(path.sep, 'room-preflight-no-such-extension'))); return fail('pragma', 'extension loading is enabled'); }
+    catch (error) {
+      check();
+      if (!/not allowed|disabled|ERR_LOAD_SQLITE_EXTENSION|ERR_INVALID_STATE/i.test((error.code ?? '') + ' ' + error.message))
+        return fail('pragma', 'extension loading check failed: ' + error.message);
+    }
+    return { sqlite: version };
+  } catch (error) { return fail(error.failure ?? 'sqlite-api', 'SQLite probe failed: ' + error.message); }
+  finally { if (db && !expired()) step(() => db.close()); }
+}
+function walProbe(dir) {
+  check();
+  const file = path.join(dir, 'probe.sqlite'), open = new Set();
+  const connect = () => { const db = step(() => new sqlite.DatabaseSync(file, { enableForeignKeyConstraints: true, allowExtension: false, timeout: 0 })); open.add(db); return db; };
+  const close = db => { step(() => db.close()); open.delete(db); };
+  const get = (db, sql) => { const statement = step(() => db.prepare(sql)); return step(() => Object.values(statement.get() ?? {})[0]); };
+  try {
+    const a = connect();
+    const mode = get(a, 'PRAGMA journal_mode = WAL');
+    if (String(mode).toLowerCase() !== 'wal') return fail('journal', 'journal_mode is ' + mode + ', not wal');
+    step(() => a.exec('PRAGMA synchronous = FULL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE probe (n INTEGER PRIMARY KEY) STRICT;'));
+    step(() => a.exec('BEGIN IMMEDIATE; INSERT INTO probe (n) VALUES (1); COMMIT;'));
+    const b = connect();
+    if (Number(get(b, 'SELECT count(*) AS c FROM probe')) !== 1) return fail('journal', 'second connection did not see the committed row');
+    close(b); close(a);
+    const c = connect();
+    if (String(get(c, 'PRAGMA journal_mode')).toLowerCase() !== 'wal') return fail('journal', 'journal_mode changed after reopen');
+    if (Number(get(c, 'SELECT count(*) AS c FROM probe')) !== 1) return fail('journal', 'row missing after reopen');
+    return {};
+  } finally {
+    // On timeout termination owns connection teardown; leave scratch for inspection, never do late I/O.
+    if (!expired()) {
+      for (const db of open) close(db);
+      for (const name of ['probe.sqlite', 'probe.sqlite-wal', 'probe.sqlite-shm']) step(() => fs.rmSync(path.join(dir, name), { force: true }));
+      step(() => fs.rmdirSync(dir));
+    }
+  }
+}
+parentPort.on('message', async message => {
+  let result;
+  try { check(); result = message.kind === 'runtime' ? await runtimeProbe() : walProbe(message.dir); check(); }
+  catch (error) { result = fail(error.failure ?? 'journal', error.message); }
+  parentPort.postMessage(result);
+});
+`;
   }
 });
 
@@ -14878,7 +14944,7 @@ var FileStorageGate = class {
     writeAtomic(this.gateFile, next);
     return next;
   }
-  initialize() {
+  initialize(preRegistryImport) {
     if (this.activationEvidence()) throw new StorageRefused("unavailable", "storage activation evidence exists without a storage gate", "preserve room/state.sqlite and the activation marker; repair the gate with the offline command");
     privateStateDirectory(path6.join(this.commonDir, "room"));
     const gate = {
@@ -14889,6 +14955,7 @@ var FileStorageGate = class {
       phase: "legacy",
       minReader: 1,
       minWriter: 1,
+      preRegistryImport,
       updatedAt: this.now()
     };
     if (!createExclusive(this.gateFile, gate)) return this.requireGate();
@@ -14920,7 +14987,7 @@ var FileStorageGate = class {
     if (!KINDS.includes(input.kind)) throw new StorageRefused("unavailable", "invalid registration kind");
     const build = input.build ?? STORAGE_BUILD;
     const attempt = () => this.guarded(() => {
-      const gate = this.readGate() ?? this.initialize();
+      const gate = this.readGate() ?? this.initialize(input.preRegistryImport ?? "required");
       this.compatibility(gate, build);
       const existing = this.readRegistration(input.instance.nonce);
       if (existing) return existing;
@@ -15080,7 +15147,7 @@ var FileStorageGate = class {
         } catch {
           continue;
         }
-        if (!registration || registration.kind === "maintenance" || this.alive(registration.instance) !== "dead") continue;
+        if (!registration || this.alive(registration.instance) !== "dead") continue;
         try {
           fs5.unlinkSync(this.registrationFile(nonce));
         } catch (error) {
@@ -15119,12 +15186,14 @@ var FileStorageGate = class {
       syncDirectoryQuietly(this.ticketDir);
     });
   }
-  async reopen(owner) {
+  async reopen(owner, options = {}) {
     return this.guarded(() => {
       const gate = this.requireGate();
       if (gate.phase !== "draining") throw new StorageRefused("maintenance", `storage gate is ${gate.phase}, not draining`);
       this.requireOwner(owner, gate);
       const { owner: _owner, drainingFrom: _from, ...rest } = gate;
+      if (options.notAfter !== void 0 && (!Number.isFinite(options.notAfter) || this.now() >= options.notAfter))
+        throw new StorageRefused("maintenance", "import attempt deadline passed; admission stays closed");
       return this.publish({ ...rest, phase: "legacy" });
     });
   }
@@ -15210,12 +15279,16 @@ var FileStorageGate = class {
       if (error.code !== "ENOENT") throw new StorageRefused("unavailable", bounded(`storage gate unreadable: ${error.code ?? error}`), REMEDY);
     }
     const key = stat && `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
-    if (key && this.observed?.key === key) return this.observed.value;
+    if (key && this.observed?.key === key) {
+      this.compatibility(this.observed.gate, STORAGE_BUILD);
+      return this.observed.value;
+    }
     this.observed = void 0;
     const gate = stat ? this.readGate() : void 0;
     if (gate) {
+      this.compatibility(gate, STORAGE_BUILD);
       const value = { generation: gate.generation, phase: gate.phase };
-      if (key) this.observed = { key, value };
+      if (key) this.observed = { key, value, gate };
       return value;
     }
     if (this.activationEvidence()) throw new StorageRefused("unavailable", "storage activation evidence exists without a storage gate", REMEDY);
@@ -15408,22 +15481,27 @@ var files = (dir, suffix) => {
     throw e;
   }
 };
-function commitExists(commonDir, oid) {
+function commitExists(commonDir, oid, budget) {
   if (typeof oid !== "string" || !/^[0-9a-f]{40,64}$/.test(oid)) return false;
   try {
-    execFileSync3("git", ["--git-dir", commonDir, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
+    execFileSync3("git", ["--git-dir", commonDir, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore", timeout: budget.gitTimeout(), killSignal: "SIGKILL" });
+    budget.check();
     return true;
-  } catch {
+  } catch (error) {
+    budget.check();
+    if (error.code === "ETIMEDOUT") throw new StorageRefused("unavailable", "legacy Git probe timed out");
     return false;
   }
 }
-function legacySession(dir, oldId, host) {
+function legacySession(dir, oldId, host, budget) {
   if (!oldId) return void 0;
   try {
-    const gitDir = execFileSync3("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    const gitDir = execFileSync3("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8", timeout: budget.gitTimeout(), killSignal: "SIGKILL" }).trim();
     const local = readJson(path10.join(gitDir, "room-session.json"));
     return local?.worker_id === oldId && local.host === host && typeof local.session_id === "string" ? local.session_id : void 0;
-  } catch {
+  } catch (error) {
+    budget.check();
+    if (error.code === "ETIMEDOUT") throw new StorageRefused("unavailable", "legacy Git probe timed out");
     return void 0;
   }
 }
@@ -15474,13 +15552,15 @@ function legacyDisplay(commonDir) {
   }
   return found;
 }
-function discoverLegacyWorktrees(commonDir) {
+function discoverLegacyWorktrees(commonDir, budget = importBudget()) {
+  budget.check();
   let output;
   try {
-    output = execFileSync3("git", ["--git-dir", commonDir, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+    output = execFileSync3("git", ["--git-dir", commonDir, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: budget.gitTimeout(), killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 });
   } catch {
     throw new StorageRefused("unavailable", "legacy worktree inventory failed");
   }
+  budget.check();
   const registered = new Set([...output.matchAll(/^worktree (.+)$/gm)].map((match) => {
     try {
       return fs7.realpathSync(match[1]);
@@ -15500,7 +15580,7 @@ function discoverLegacyWorktrees(commonDir) {
     try {
       canonical = fs7.realpathSync(dir);
     } catch {
-      continue;
+      throw new StorageRefused("unavailable", "legacy worktree path is unreadable; inventory is incomplete");
     }
     const ownerCheckout = path10.dirname(path10.dirname(path10.dirname(canonical)));
     if (!registered.has(ownerCheckout) || !roomWorkerPathMatchesBranch(ownerCheckout, canonical, branch)) continue;
@@ -15516,20 +15596,23 @@ function discoverLegacyWorktrees(commonDir) {
   }
   return out;
 }
-function importLegacy(commonDir, identity, now, source, workerId) {
+async function importLegacy(commonDir, identity, now, source, workerId, budget, verify) {
   const file = path10.join(commonDir, "room/registry/workers", `${workerId}.json`);
   const carryFile = path10.join(commonDir, "room-carry", `${source.tag}.json`);
   const migratedCarryFile = `${carryFile}.migrated`;
   if (fs7.existsSync(file)) {
-    if (fs7.existsSync(carryFile) && !fs7.existsSync(migratedCarryFile)) fs7.renameSync(carryFile, migratedCarryFile);
+    if (fs7.existsSync(carryFile) && !fs7.existsSync(migratedCarryFile)) {
+      await verify();
+      fs7.renameSync(carryFile, migratedCarryFile);
+    }
     return;
   }
   const token = identity;
   const carryRecord = readJson(carryFile);
-  const base = commitExists(commonDir, carryRecord?.base) ? carryRecord.base : void 0;
-  const carriedBase = commitExists(commonDir, carryRecord?.carriedBase) ? carryRecord.carriedBase : void 0;
+  const base = commitExists(commonDir, carryRecord?.base, budget) ? carryRecord.base : void 0;
+  const carriedBase = commitExists(commonDir, carryRecord?.carriedBase, budget) ? carryRecord.carriedBase : void 0;
   const carry = base && (!carryRecord?.carriedBase || carriedBase) ? "delta" : "copy";
-  const hostSessionId = legacySession(source.dir, source.oldId, source.host);
+  const hostSessionId = legacySession(source.dir, source.oldId, source.host, budget);
   const record = {
     v: 1,
     id: workerId,
@@ -15559,16 +15642,31 @@ function importLegacy(commonDir, identity, now, source, workerId) {
     createdAt: now(),
     seq: 1
   };
+  await verify();
   createExclusive(path10.join(commonDir, "room/registry/tags", `${source.tag}.json`), { id: workerId, holder: token, at: now() });
+  await verify();
   createExclusive(file, record);
-  if (fs7.existsSync(carryFile) && !fs7.existsSync(migratedCarryFile)) fs7.renameSync(carryFile, migratedCarryFile);
+  if (fs7.existsSync(carryFile) && !fs7.existsSync(migratedCarryFile)) {
+    await verify();
+    fs7.renameSync(carryFile, migratedCarryFile);
+  }
 }
 var legacyImportRemedy = (commonDir) => `node <plugin>/server/room-state.mjs import-legacy --common-dir ${JSON.stringify(commonDir)}`;
-function legacyImportRequired(commonDir, status) {
+function legacyImportRequired(commonDir, status, gate) {
   if (status === "done") return false;
   if (status !== "absent") return true;
+  if (gate) return gate.preRegistryImport !== "not-needed";
+  return preRegistryImportRequired(commonDir);
+}
+function preRegistryImportRequired(commonDir) {
   try {
     if (files(path10.join(commonDir, "room-local"), ".ydoc").length || files(path10.join(commonDir, "room-carry"), ".json").length) return true;
+    const output = execFileSync3("git", ["--git-dir", commonDir, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 3e3, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 });
+    const candidates = output.split(/\n\s*\n/).flatMap((block) => {
+      const dir = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(room\/.+)$/m.exec(block)?.[1];
+      return dir && branch && dir.includes(`${path10.sep}.room${path10.sep}workers${path10.sep}`) && path10.basename(dir) === branch.slice(5) ? [path10.resolve(dir)] : [];
+    });
+    if (!candidates.length) return false;
     const records = files(path10.join(commonDir, "room/registry/workers"), ".json").map((file) => {
       try {
         const value = readJson(file);
@@ -15577,36 +15675,53 @@ function legacyImportRequired(commonDir, status) {
         return void 0;
       }
     });
-    const output = execFileSync3("git", ["--git-dir", commonDir, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 3e3, maxBuffer: 4 * 1024 * 1024 });
-    return output.split(/\n\s*\n/).some((block) => {
-      const dir = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(room\/.+)$/m.exec(block)?.[1];
-      return !!dir && !!branch && dir.includes(`${path10.sep}.room${path10.sep}workers${path10.sep}`) && path10.basename(dir) === branch.slice(5) && !records.some((record) => record && path10.resolve(record.dir) === path10.resolve(dir));
-    });
+    return candidates.some((dir) => !records.some((record) => record && path10.resolve(record.dir) === dir));
   } catch {
     return true;
   }
 }
+function importBudget(mono = () => performance.now(), deadline = mono() + 10 * 6e4) {
+  const notAfter = Date.now() + Math.max(0, deadline - mono());
+  const check = () => {
+    if (mono() >= deadline || Date.now() >= notAfter) throw new StorageRefused("maintenance", "legacy import attempt exceeded 10 minutes; gate remains draining");
+  };
+  return { check, notAfter, gitTimeout() {
+    check();
+    return Math.max(1, Math.min(3e3, Math.ceil(deadline - mono())));
+  } };
+}
 async function importLegacyWorkers(commonDir, identity, options) {
+  const budget = options.budget ?? importBudget();
+  const verify = async () => {
+    budget.check();
+    await options.verify();
+    budget.check();
+  };
+  await verify();
   const file = path10.join(commonDir, "room/registry/migration.json");
   const map = readJson(file) ?? { v: 1, sources: {}, done: false };
   if (map.v !== 1 || typeof map.done !== "boolean" || !map.sources || typeof map.sources !== "object" || Object.values(map.sources).some((value) => !value || typeof value.id !== "string" || !/^w_[A-Za-z0-9_-]+$/.test(value.id) || !["assigned", "imported"].includes(value.state)))
     throw new StorageRefused("unavailable", "legacy assignment map is unreadable", legacyImportRemedy(commonDir));
   if (map.done) return;
-  const sources = (options.sources ?? discoverLegacyWorktrees)(commonDir);
+  const sources = options.sources ? options.sources(commonDir) : discoverLegacyWorktrees(commonDir, budget);
+  budget.check();
   for (const source of sources) {
     if (!safeTag(source.tag)) throw new StorageRefused("unavailable", "invalid legacy worker tag");
-    await options.verify();
+    await verify();
     if (!map.sources[source.key]) {
       map.sources[source.key] = { id: `w_${randomBytes3(16).toString("hex")}`, state: "assigned" };
       writeAtomic(file, map);
     }
     const target = map.sources[source.key];
     if (target.state === "imported") continue;
-    importLegacy(commonDir, identity, options.now ?? Date.now, source, target.id);
+    await importLegacy(commonDir, identity, options.now ?? Date.now, source, target.id, budget, verify);
+    await verify();
     target.state = "imported";
     writeAtomic(file, map);
   }
-  await options.verify();
+  if (Object.values(map.sources).some((source) => source.state !== "imported"))
+    throw new StorageRefused("unavailable", "legacy assignments remain unresolved; inventory is incomplete");
+  await verify();
   map.done = true;
   writeAtomic(file, map);
 }
@@ -15646,7 +15761,7 @@ process.on("beforeExit", () => {
 var pause2 = () => new Promise((resolve) => setTimeout(resolve, 25));
 async function legacyStatus(commonDir) {
   const gate = openStorageGate(commonDir), status = await gate.status();
-  const required = legacyImportRequired(gate.commonDir, status.legacyImport);
+  const required = legacyImportRequired(gate.commonDir, status.legacyImport, status.gate);
   return {
     ...status,
     maintenanceRequired: status.maintenanceRequired || required,
@@ -15673,7 +15788,9 @@ async function withMaintenance(commonDir, fn) {
   if (!acquired) throw new StorageRefused("maintenance", "migration ownership wait exceeded 30 s; existing owner retained");
   let registration;
   try {
-    registration = await gate.register({ instance, kind: "maintenance", release: plugin_default.version });
+    const before = await gate.status();
+    const preRegistryImport = before.gate?.preRegistryImport ?? (preRegistryImportRequired(gate.commonDir) ? "required" : "not-needed");
+    registration = await gate.register({ instance, kind: "maintenance", release: plugin_default.version, preRegistryImport });
     const owner = { instance, token: randomBytes5(16).toString("hex") };
     const status = await gate.status();
     if (status.gate?.phase === "draining") await gate.takeOver(owner);
@@ -15704,18 +15821,21 @@ async function withMaintenance(commonDir, fn) {
   }
 }
 async function runLegacyImport(commonDir, options = {}) {
+  const budget = importBudget(options.mono);
   await withMaintenance(commonDir, async (gate, owner) => {
     const deadline = performance.now() + GATE_LIMITS.drainMs;
     for (; ; ) {
+      budget.check();
       const progress = await gate.drain(owner);
       if (progress.complete) break;
       if (performance.now() >= deadline) throw new StorageRefused("maintenance", "drain timed out; gate remains draining; reconcile outstanding tickets before retrying");
       await pause2();
     }
-    await importLegacyWorkers(gate.commonDir, owner.instance, { ...options, verify: async () => {
+    await importLegacyWorkers(gate.commonDir, owner.instance, { ...options, budget, verify: async () => {
       if (!(await gate.drain(owner)).complete) throw new StorageRefused("maintenance", "legacy import requires a complete drain");
     } });
-    await gate.reopen(owner);
+    budget.check();
+    await gate.reopen(owner, { notAfter: budget.notAfter });
   });
 }
 async function main(argv) {
@@ -15752,7 +15872,8 @@ ${status.ticketListing.tickets.map((ticket) => `ticket ${ticket.id}: ${ticket.ki
       await withMaintenance(common, async (gate, owner) => {
         if (command === "resolve-ticket") await gate.resolveDead(owner, ticket, note);
         else {
-          if (legacyImportRequired(gate.commonDir, (await gate.status()).legacyImport))
+          const status = await gate.status();
+          if (legacyImportRequired(gate.commonDir, status.legacyImport, status.gate))
             throw new StorageRefused("maintenance", "offline legacy import still required", legacyImportRemedy(gate.commonDir));
           await gate.reopen(owner);
         }

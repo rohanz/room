@@ -620,30 +620,13 @@ function syncDirectory(dir) {
     if (fd !== void 0) fs4.closeSync(fd);
   }
 }
-function directoryIdentity(dir) {
-  try {
-    const stat4 = fs4.statSync(dir, { bigint: true });
-    return stat4.isDirectory() ? `${stat4.dev}:${stat4.ino}` : void 0;
-  } catch {
-    return void 0;
-  }
-}
-function durableDirectory(dir, holdsFile = true) {
-  const known = durableDirectories.get(dir);
-  if (known !== void 0 && known === directoryIdentity(dir)) return;
-  ensureDurableDirectory(dir, holdsFile);
-  const identity4 = directoryIdentity(dir);
-  if (identity4 === void 0) return;
-  if (durableDirectories.size >= DURABLE_DIRECTORY_CACHE) durableDirectories.clear();
-  durableDirectories.set(dir, identity4);
-}
-function ensureDurableDirectory(dir, holdsFile) {
+function ensureDurableDirectory(dir, holdsFile, boundary) {
   const parent = path5.dirname(dir);
-  if (parent === dir) {
+  if (parent === dir || dir === boundary) {
     if (!fs4.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
     return;
   }
-  durableDirectory(parent, false);
+  ensureDurableDirectory(parent, false, boundary);
   try {
     if (process.platform === "win32" && !holdsFile) fs4.mkdirSync(dir);
     else if (!fs4.existsSync(dir)) privateStateDirectory(dir);
@@ -673,8 +656,9 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
   return removed;
 }
 function writeTemp(file, content) {
-  const dir = path5.dirname(file);
-  durableDirectory(dir);
+  const dir = path5.resolve(path5.dirname(file));
+  const namespace = privateDirectoryPath(dir);
+  ensureDurableDirectory(dir, true, namespace.inState ? path5.dirname(namespace.root) : void 0);
   cleanupOrphanTemps(dir);
   const start = probeOwnProcess()?.startTime;
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
@@ -815,14 +799,13 @@ function recover(file, orphan, probe = probeProcess) {
     return true;
   });
 }
-var durableDirectories, DURABLE_DIRECTORY_CACHE, startMarker, tempPattern;
+var startMarker, tempPattern;
 var init_leases = __esm({
   "packages/local-state/src/leases.ts"() {
     "use strict";
     init_private_state();
+    init_private_core();
     init_process();
-    durableDirectories = /* @__PURE__ */ new Map();
-    DURABLE_DIRECTORY_CACHE = 1024;
     startMarker = (startTime) => createHash("sha256").update(startTime).digest("hex").slice(0, 24);
     tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
   }
@@ -1083,7 +1066,7 @@ var init_gate = __esm({
         writeAtomic(this.gateFile, next);
         return next;
       }
-      initialize() {
+      initialize(preRegistryImport) {
         if (this.activationEvidence()) throw new StorageRefused("unavailable", "storage activation evidence exists without a storage gate", "preserve room/state.sqlite and the activation marker; repair the gate with the offline command");
         privateStateDirectory(path6.join(this.commonDir, "room"));
         const gate = {
@@ -1094,6 +1077,7 @@ var init_gate = __esm({
           phase: "legacy",
           minReader: 1,
           minWriter: 1,
+          preRegistryImport,
           updatedAt: this.now()
         };
         if (!createExclusive(this.gateFile, gate)) return this.requireGate();
@@ -1125,7 +1109,7 @@ var init_gate = __esm({
         if (!KINDS.includes(input.kind)) throw new StorageRefused("unavailable", "invalid registration kind");
         const build = input.build ?? STORAGE_BUILD;
         const attempt = () => this.guarded(() => {
-          const gate = this.readGate() ?? this.initialize();
+          const gate = this.readGate() ?? this.initialize(input.preRegistryImport ?? "required");
           this.compatibility(gate, build);
           const existing = this.readRegistration(input.instance.nonce);
           if (existing) return existing;
@@ -1285,7 +1269,7 @@ var init_gate = __esm({
             } catch {
               continue;
             }
-            if (!registration || registration.kind === "maintenance" || this.alive(registration.instance) !== "dead") continue;
+            if (!registration || this.alive(registration.instance) !== "dead") continue;
             try {
               fs5.unlinkSync(this.registrationFile(nonce));
             } catch (error2) {
@@ -1324,12 +1308,14 @@ var init_gate = __esm({
           syncDirectoryQuietly(this.ticketDir);
         });
       }
-      async reopen(owner) {
+      async reopen(owner, options = {}) {
         return this.guarded(() => {
           const gate = this.requireGate();
           if (gate.phase !== "draining") throw new StorageRefused("maintenance", `storage gate is ${gate.phase}, not draining`);
           this.requireOwner(owner, gate);
           const { owner: _owner, drainingFrom: _from, ...rest } = gate;
+          if (options.notAfter !== void 0 && (!Number.isFinite(options.notAfter) || this.now() >= options.notAfter))
+            throw new StorageRefused("maintenance", "import attempt deadline passed; admission stays closed");
           return this.publish({ ...rest, phase: "legacy" });
         });
       }
@@ -1415,12 +1401,16 @@ var init_gate = __esm({
           if (error2.code !== "ENOENT") throw new StorageRefused("unavailable", bounded(`storage gate unreadable: ${error2.code ?? error2}`), REMEDY);
         }
         const key2 = stat4 && `${stat4.dev}:${stat4.ino}:${stat4.mtimeNs}:${stat4.ctimeNs}:${stat4.size}`;
-        if (key2 && this.observed?.key === key2) return this.observed.value;
+        if (key2 && this.observed?.key === key2) {
+          this.compatibility(this.observed.gate, STORAGE_BUILD);
+          return this.observed.value;
+        }
         this.observed = void 0;
         const gate = stat4 ? this.readGate() : void 0;
         if (gate) {
+          this.compatibility(gate, STORAGE_BUILD);
           const value5 = { generation: gate.generation, phase: gate.phase };
-          if (key2) this.observed = { key: key2, value: value5 };
+          if (key2) this.observed = { key: key2, value: value5, gate };
           return value5;
         }
         if (this.activationEvidence()) throw new StorageRefused("unavailable", "storage activation evidence exists without a storage gate", REMEDY);
@@ -1558,84 +1548,16 @@ var init_filesystem = __esm({
 // packages/local-state/src/preflight.ts
 import fs7 from "node:fs";
 import path8 from "node:path";
+import { Worker } from "node:worker_threads";
 import { randomBytes as randomBytes2 } from "node:crypto";
 function compareVersions(a, b) {
   const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
   for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
   return 0;
 }
-async function importSqliteQuietly() {
-  const original = process.emitWarning;
-  process.emitWarning = function(warning, ...rest) {
-    const text2 = typeof warning === "string" ? warning : warning?.message;
-    const type = typeof rest[0] === "string" ? rest[0] : rest[0]?.type ?? (warning instanceof Error ? warning.name : void 0);
-    if (type === "ExperimentalWarning" && /\bSQLite\b/i.test(text2 ?? "")) return;
-    return original.call(process, warning, ...rest);
-  };
-  try {
-    return await import("node:sqlite");
-  } finally {
-    process.emitWarning = original;
-  }
-}
-function verifyPragmas(db) {
-  db.exec("PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;");
-  const value5 = (pragma) => Object.values(db.prepare(`PRAGMA ${pragma}`).get() ?? {})[0];
-  if (Number(value5("foreign_keys")) !== 1) return "foreign_keys could not be enabled";
-  if (Number(value5("trusted_schema")) !== 0) return "trusted_schema could not be disabled";
-  try {
-    db.loadExtension(path8.join(path8.sep, "room-preflight-no-such-extension"));
-    return "extension loading is enabled";
-  } catch (error2) {
-    if (!/not allowed|disabled|ERR_LOAD_SQLITE_EXTENSION|ERR_INVALID_STATE/i.test(`${error2.code ?? ""} ${error2.message}`)) return `extension loading check failed: ${error2.message}`;
-  }
-  return void 0;
-}
-async function walProbe(sqlite, commonDir2) {
-  await primePrivateState(commonDir2);
-  const scratchRoot = path8.join(commonDir2, STORAGE_PATHS.preflightScratch);
-  privateStateDirectory(scratchRoot);
-  const dir = path8.join(scratchRoot, randomBytes2(8).toString("hex"));
-  privateStateDirectory(dir);
-  const file = path8.join(dir, "probe.sqlite");
-  const open3 = [];
-  const connect = () => {
-    const db = new sqlite.DatabaseSync(file, { enableForeignKeyConstraints: true, allowExtension: false, timeout: 0 });
-    open3.push(db);
-    return db;
-  };
-  try {
-    const a = connect();
-    const mode2 = Object.values(a.prepare("PRAGMA journal_mode = WAL").get() ?? {})[0];
-    if (String(mode2).toLowerCase() !== "wal") return `journal_mode is ${String(mode2)}, not wal`;
-    a.exec("PRAGMA synchronous = FULL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE probe (n INTEGER PRIMARY KEY) STRICT;");
-    a.exec("BEGIN IMMEDIATE; INSERT INTO probe (n) VALUES (1); COMMIT;");
-    const b = connect();
-    if (Number(Object.values(b.prepare("SELECT count(*) AS c FROM probe").get() ?? {})[0]) !== 1) return "second connection did not see the committed row";
-    b.close();
-    a.close();
-    open3.length = 0;
-    const c = connect();
-    const reopened = Object.values(c.prepare("PRAGMA journal_mode").get() ?? {})[0];
-    if (String(reopened).toLowerCase() !== "wal") return `journal_mode after reopen is ${String(reopened)}`;
-    if (Number(Object.values(c.prepare("SELECT count(*) AS c FROM probe").get() ?? {})[0]) !== 1) return "row missing after reopen";
-    return void 0;
-  } finally {
-    for (const db of open3) {
-      try {
-        db.close();
-      } catch {
-      }
-    }
-    for (const name of ["probe.sqlite", "probe.sqlite-wal", "probe.sqlite-shm"]) fs7.rmSync(path8.join(dir, name), { force: true });
-    try {
-      fs7.rmdirSync(dir);
-    } catch {
-    }
-  }
-}
 async function preflight(surface, options = {}) {
   const started = performance.now();
+  const deadlineAt = started + (options.timeoutMs ?? GATE_LIMITS.preflightMs);
   const runtime = options.runtime ?? {};
   const release = runtime.release ?? process.release;
   let executable2 = runtime.execPath ?? process.execPath;
@@ -1662,74 +1584,104 @@ async function preflight(surface, options = {}) {
     elapsedMs: 0
   };
   const fail = (failure, detail) => ({ ok: false, failure, evidence: { ...evidence, elapsedMs: Math.round(performance.now() - started) }, detail: detail.replace(/[\r\n]/g, " ").slice(0, MAX_DETAIL), remedy: REMEDY2 });
+  let worker;
+  let timer;
+  let timedOut = false;
+  const timeout = () => fail("timeout", `preflight exceeded ${options.timeoutMs ?? GATE_LIMITS.preflightMs} ms`);
+  const check = () => {
+    if (timedOut || performance.now() >= deadlineAt) throw new Error("preflight deadline expired");
+  };
+  const probe = (message2) => new Promise((resolve6, reject) => {
+    const done = (result3) => {
+      cleanup();
+      resolve6(result3);
+    };
+    const error2 = (error3) => {
+      cleanup();
+      reject(error3);
+    };
+    const exited = (code) => error2(new Error(`probe worker exited (${code})`));
+    const cleanup = () => {
+      worker.off("message", done);
+      worker.off("error", error2);
+      worker.off("exit", exited);
+    };
+    worker.once("message", done);
+    worker.once("error", error2);
+    worker.once("exit", exited);
+    worker.postMessage(message2);
+  });
   const work = async () => {
     const version3 = evidence.node;
     if (Number(version3.split(".")[0]) !== NODE_MAJOR) return fail("node-version", `Node ${version3} is not the qualified ${NODE_MAJOR}.x line`);
     if (compareVersions(version3, NODE_FLOOR) < 0) return fail("node-version", `Node ${version3} is below the minimum ${NODE_FLOOR}`);
     const shared = runtime.sharedSqlite ?? process.config.variables.node_shared_sqlite === true;
-    if (release.name !== "node" || shared) return fail("node-vendor", release.name !== "node" ? `runtime ${release.name} is not Node.js` : "this Node.js build uses a system SQLite library, not the bundled one; it is not an official nodejs.org binary");
-    let sqlite;
-    try {
-      sqlite = await (options.importSqlite ?? importSqliteQuietly)();
-    } catch (error2) {
-      return fail("sqlite-import", `import('node:sqlite') failed: ${error2.message}`);
-    }
-    if (typeof sqlite?.DatabaseSync !== "function") return fail("sqlite-api", "node:sqlite has no DatabaseSync");
-    let db;
-    try {
-      db = new sqlite.DatabaseSync(":memory:", { enableForeignKeyConstraints: true, allowExtension: false });
-    } catch (error2) {
-      return fail("sqlite-api", `DatabaseSync failed: ${error2.message}`);
-    }
-    try {
-      for (const method of ["exec", "prepare", "close", "loadExtension"]) if (typeof db[method] !== "function") return fail("sqlite-api", `DatabaseSync.${method} missing`);
-      const sqliteVersion = String(Object.values(db.prepare("SELECT sqlite_version() AS v").get() ?? {})[0]);
-      evidence.sqlite = sqliteVersion;
-      if (compareVersions(sqliteVersion, SQLITE_FLOOR) < 0) return fail("sqlite-version", `SQLite ${sqliteVersion} is below the minimum ${SQLITE_FLOOR}`);
-      const pragma = verifyPragmas(db);
-      if (pragma) return fail("pragma", pragma);
-    } catch (error2) {
-      return fail("sqlite-api", `SQLite probe failed: ${error2.message}`);
-    } finally {
-      try {
-        db.close();
-      } catch {
-      }
-    }
+    if (release.name !== "node" || source !== "nodejs.org" || shared)
+      return fail("node-vendor", "runtime must identify nodejs.org Node.js with bundled SQLite (no shared/system SQLite)");
+    check();
+    worker = new Worker(SQLITE_PROBE_SOURCE, {
+      eval: true,
+      execArgv: [],
+      workerData: { deadline: deadlineAt, sqliteFloor: SQLITE_FLOOR, importSqlite: options.importSqlite }
+    });
+    const runtimeResult = await probe({ kind: "runtime" });
+    check();
+    if (runtimeResult.sqlite) evidence.sqlite = runtimeResult.sqlite;
+    if (runtimeResult.failure) return fail(runtimeResult.failure, runtimeResult.detail ?? "runtime probe failed");
     let storage = "unqualified";
     if (options.commonDir) {
       const filesystem = await detectFilesystem(options.commonDir, options.filesystem ?? systemFilesystemReaders);
+      check();
       evidence.filesystem = filesystem;
       if (filesystem.journal === "wal") {
-        let journal;
         try {
-          journal = await walProbe(sqlite, options.commonDir);
+          await primePrivateState(options.commonDir);
+          check();
+          const scratchRoot = path8.join(options.commonDir, STORAGE_PATHS.preflightScratch);
+          privateStateDirectory(scratchRoot);
+          check();
+          const dir = path8.join(scratchRoot, randomBytes2(8).toString("hex"));
+          privateStateDirectory(dir);
+          check();
+          const journal = await probe({ kind: "wal", dir });
+          check();
+          if (journal.failure) return fail(journal.failure, journal.detail ?? "WAL probe failed");
         } catch (error2) {
+          check();
           const code = error2.code;
           if (code === "EACCES" || code === "EPERM" || /private|permission|ownership|symlink/i.test(error2.message)) return fail("permission", `private preflight scratch unavailable: ${error2.message}`);
           return fail("journal", `WAL probe failed: ${error2.message}`);
         }
-        if (journal) return fail("journal", journal);
         storage = "qualified";
       }
     }
+    check();
     return { ok: true, storage, evidence: { ...evidence, elapsedMs: Math.round(performance.now() - started) } };
   };
-  let timer;
   const deadline = new Promise((resolve6) => {
-    timer = setTimeout(() => resolve6(fail("timeout", `preflight exceeded ${options.timeoutMs ?? GATE_LIMITS.preflightMs} ms`)), options.timeoutMs ?? GATE_LIMITS.preflightMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      void worker?.terminate().catch(() => {
+      });
+      resolve6(timeout());
+    }, Math.max(0, deadlineAt - performance.now()));
   });
   try {
-    return await Promise.race([work(), deadline]);
+    const result3 = await Promise.race([work(), deadline]);
+    return timedOut || performance.now() >= deadlineAt ? timeout() : result3;
+  } catch (error2) {
+    return timedOut || performance.now() >= deadlineAt ? timeout() : fail("sqlite-api", `probe worker failed: ${error2.message}`);
   } finally {
     clearTimeout(timer);
+    void worker?.terminate().catch(() => {
+    });
   }
 }
 function preflightDiagnostic(result3) {
   const { evidence } = result3;
   return `Room cannot start (${evidence.surface}): ${result3.failure}: ${result3.detail}. Runtime: ${evidence.executable}, Node ${evidence.node}, SQLite ${evidence.sqlite ?? "unavailable"}. Remedy: ${result3.remedy}.`.replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, 2048);
 }
-var REMEDY2, MAX_DETAIL;
+var REMEDY2, MAX_DETAIL, SQLITE_PROBE_SOURCE;
 var init_preflight = __esm({
   "packages/local-state/src/preflight.ts"() {
     "use strict";
@@ -1738,6 +1690,88 @@ var init_preflight = __esm({
     init_protocol();
     REMEDY2 = "install the official Node.js 22 (22.22.3 or later) from nodejs.org, put its bin directory (Windows: the folder containing node.exe) first on the PATH the host is launched with, fully stop the host and any MCP-launching daemon, restart, then rerun `node <plugin>/server/room-state.mjs preflight`";
     MAX_DETAIL = 512;
+    SQLITE_PROBE_SOURCE = String.raw`
+const { parentPort, workerData } = require('node:worker_threads');
+const fs = require('node:fs');
+const path = require('node:path');
+const expired = () => performance.now() >= workerData.deadline;
+const check = () => { if (expired()) throw Object.assign(new Error('preflight deadline expired'), { failure: 'timeout' }); };
+const step = fn => { check(); const value = fn(); check(); return value; };
+let sqlite;
+function fail(failure, detail) { return { failure, detail }; }
+async function runtimeProbe() {
+  const original = process.emitWarning;
+  process.emitWarning = function(warning, ...rest) {
+    const text = typeof warning === 'string' ? warning : warning?.message;
+    const type = typeof rest[0] === 'string' ? rest[0] : rest[0]?.type ?? (warning instanceof Error ? warning.name : undefined);
+    if (type === 'ExperimentalWarning' && /\bSQLite\b/i.test(text ?? '')) return;
+    return original.call(process, warning, ...rest);
+  };
+  try {
+    check();
+    sqlite = await (workerData.importSqlite ? (0, eval)('(' + workerData.importSqlite + ')')() : import('node:sqlite'));
+    check();
+  } catch (error) { return fail(error.failure ?? 'sqlite-import', error.message); }
+  finally { process.emitWarning = original; }
+  if (typeof sqlite?.DatabaseSync !== 'function') return fail('sqlite-api', 'node:sqlite has no DatabaseSync');
+  let db;
+  try {
+    db = step(() => new sqlite.DatabaseSync(':memory:', { enableForeignKeyConstraints: true, allowExtension: false }));
+    for (const method of ['exec', 'prepare', 'close', 'loadExtension'])
+      if (typeof db[method] !== 'function') return fail('sqlite-api', 'DatabaseSync.' + method + ' missing');
+    const get = sql => { const statement = step(() => db.prepare(sql)); return step(() => Object.values(statement.get() ?? {})[0]); };
+    const version = String(get('SELECT sqlite_version() AS v'));
+    const parts = version.split('.').map(Number), floor = workerData.sqliteFloor.split('.').map(Number);
+    const comparison = parts[0] - floor[0] || parts[1] - floor[1] || parts[2] - floor[2];
+    if (comparison < 0) return { ...fail('sqlite-version', 'SQLite ' + version + ' is below the minimum ' + workerData.sqliteFloor), sqlite: version };
+    step(() => db.exec('PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF;'));
+    if (Number(get('PRAGMA foreign_keys')) !== 1) return fail('pragma', 'foreign_keys could not be enabled');
+    if (Number(get('PRAGMA trusted_schema')) !== 0) return fail('pragma', 'trusted_schema could not be disabled');
+    try { step(() => db.loadExtension(path.join(path.sep, 'room-preflight-no-such-extension'))); return fail('pragma', 'extension loading is enabled'); }
+    catch (error) {
+      check();
+      if (!/not allowed|disabled|ERR_LOAD_SQLITE_EXTENSION|ERR_INVALID_STATE/i.test((error.code ?? '') + ' ' + error.message))
+        return fail('pragma', 'extension loading check failed: ' + error.message);
+    }
+    return { sqlite: version };
+  } catch (error) { return fail(error.failure ?? 'sqlite-api', 'SQLite probe failed: ' + error.message); }
+  finally { if (db && !expired()) step(() => db.close()); }
+}
+function walProbe(dir) {
+  check();
+  const file = path.join(dir, 'probe.sqlite'), open = new Set();
+  const connect = () => { const db = step(() => new sqlite.DatabaseSync(file, { enableForeignKeyConstraints: true, allowExtension: false, timeout: 0 })); open.add(db); return db; };
+  const close = db => { step(() => db.close()); open.delete(db); };
+  const get = (db, sql) => { const statement = step(() => db.prepare(sql)); return step(() => Object.values(statement.get() ?? {})[0]); };
+  try {
+    const a = connect();
+    const mode = get(a, 'PRAGMA journal_mode = WAL');
+    if (String(mode).toLowerCase() !== 'wal') return fail('journal', 'journal_mode is ' + mode + ', not wal');
+    step(() => a.exec('PRAGMA synchronous = FULL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE probe (n INTEGER PRIMARY KEY) STRICT;'));
+    step(() => a.exec('BEGIN IMMEDIATE; INSERT INTO probe (n) VALUES (1); COMMIT;'));
+    const b = connect();
+    if (Number(get(b, 'SELECT count(*) AS c FROM probe')) !== 1) return fail('journal', 'second connection did not see the committed row');
+    close(b); close(a);
+    const c = connect();
+    if (String(get(c, 'PRAGMA journal_mode')).toLowerCase() !== 'wal') return fail('journal', 'journal_mode changed after reopen');
+    if (Number(get(c, 'SELECT count(*) AS c FROM probe')) !== 1) return fail('journal', 'row missing after reopen');
+    return {};
+  } finally {
+    // On timeout termination owns connection teardown; leave scratch for inspection, never do late I/O.
+    if (!expired()) {
+      for (const db of open) close(db);
+      for (const name of ['probe.sqlite', 'probe.sqlite-wal', 'probe.sqlite-shm']) step(() => fs.rmSync(path.join(dir, name), { force: true }));
+      step(() => fs.rmdirSync(dir));
+    }
+  }
+}
+parentPort.on('message', async message => {
+  let result;
+  try { check(); result = message.kind === 'runtime' ? await runtimeProbe() : walProbe(message.dir); check(); }
+  catch (error) { result = fail(error.failure ?? 'journal', error.message); }
+  parentPort.postMessage(result);
+});
+`;
   }
 });
 
@@ -26389,11 +26423,21 @@ var init_worker_codecs = __esm({
 import fs30 from "node:fs";
 import path31 from "node:path";
 import { execFileSync as execFileSync7 } from "node:child_process";
-function legacyImportRequired(commonDir2, status) {
+function legacyImportRequired(commonDir2, status, gate) {
   if (status === "done") return false;
   if (status !== "absent") return true;
+  if (gate) return gate.preRegistryImport !== "not-needed";
+  return preRegistryImportRequired(commonDir2);
+}
+function preRegistryImportRequired(commonDir2) {
   try {
     if (files(path31.join(commonDir2, "room-local"), ".ydoc").length || files(path31.join(commonDir2, "room-carry"), ".json").length) return true;
+    const output = execFileSync7("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 3e3, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 });
+    const candidates = output.split(/\n\s*\n/).flatMap((block) => {
+      const dir = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(room\/.+)$/m.exec(block)?.[1];
+      return dir && branch && dir.includes(`${path31.sep}.room${path31.sep}workers${path31.sep}`) && path31.basename(dir) === branch.slice(5) ? [path31.resolve(dir)] : [];
+    });
+    if (!candidates.length) return false;
     const records = files(path31.join(commonDir2, "room/registry/workers"), ".json").map((file) => {
       try {
         const value5 = readJson(file);
@@ -26402,11 +26446,7 @@ function legacyImportRequired(commonDir2, status) {
         return void 0;
       }
     });
-    const output = execFileSync7("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 3e3, maxBuffer: 4 * 1024 * 1024 });
-    return output.split(/\n\s*\n/).some((block) => {
-      const dir = /^worktree (.+)$/m.exec(block)?.[1], branch = /^branch refs\/heads\/(room\/.+)$/m.exec(block)?.[1];
-      return !!dir && !!branch && dir.includes(`${path31.sep}.room${path31.sep}workers${path31.sep}`) && path31.basename(dir) === branch.slice(5) && !records.some((record2) => record2 && path31.resolve(record2.dir) === path31.resolve(dir));
-    });
+    return candidates.some((dir) => !records.some((record2) => record2 && path31.resolve(record2.dir) === dir));
   } catch {
     return true;
   }
@@ -26467,12 +26507,46 @@ function storageInstance() {
 }
 function currentAdmission(commonDir2) {
   const context2 = ambient.getStore();
-  return context2?.active && context2.commonDir === storageGate(commonDir2).commonDir ? context2.ticket : void 0;
+  return context2?.active && context2.ticket && context2.commonDir === storageGate(commonDir2).commonDir ? context2.ticket : void 0;
+}
+async function acquire(context2, commonDir2) {
+  const common = storageGate(commonDir2).commonDir;
+  if (context2.ticket && context2.commonDir === common) return context2.ticket;
+  if (context2.acquiring && context2.commonDir === common) return context2.acquiring;
+  context2.commonDir = common;
+  context2.acquiring = (async () => {
+    const { gate, registration } = await storageRegistration(common);
+    const ticket = await gate.admit(registration, context2.kind);
+    if (context2.observed !== void 0 && context2.observed !== ticket.generation) {
+      await gate.finish(ticket);
+      throw new StorageRefused("maintenance", "storage changed during this operation; nothing was changed, retry it");
+    }
+    if (!context2.active) {
+      await gate.finish(ticket);
+      throw new StorageRefused("unavailable", "operation ended before admission");
+    }
+    context2.gate = gate;
+    context2.ticket = ticket;
+    return ticket;
+  })();
+  try {
+    return await context2.acquiring;
+  } catch (error2) {
+    context2.acquiring = void 0;
+    context2.commonDir = void 0;
+    throw error2;
+  }
+}
+async function requireAdmission(commonDir2) {
+  const context2 = ambient.getStore();
+  const common = storageGate(commonDir2).commonDir;
+  if (context2?.active && (!context2.commonDir || context2.commonDir === common)) return acquire(context2, common);
+  throw new StorageRefused("unavailable", "worker effects require an admission ticket");
 }
 async function assertLegacyReady(commonDir2, gate = storageGate(commonDir2)) {
   const status = await gate.status();
   if (status.refusal) throw new StorageRefused(status.refusal.reason, status.refusal.detail, status.refusal.remedy);
-  if (legacyImportRequired(gate.commonDir, status.legacyImport))
+  if (legacyImportRequired(gate.commonDir, status.legacyImport, status.gate))
     throw new StorageRefused("maintenance", "offline legacy import required", legacyImportRemedy(gate.commonDir));
 }
 async function storageRegistration(commonDir2) {
@@ -26487,7 +26561,9 @@ async function storageRegistration(commonDir2) {
     const evidence = await preflight("mcp", { commonDir: common });
     if (!evidence.ok) throw new StorageRefused("unavailable", evidence.detail, evidence.remedy);
     if (timedOut()) throw new StorageRefused("unavailable", "storage startup check exceeded 10 s");
-    const registration = await gate.register({ instance: storageInstance(), kind: "mcp", release: plugin_default.version });
+    const status = await gate.status();
+    const preRegistryImport = status.gate?.preRegistryImport ?? (preRegistryImportRequired(common) ? "required" : "not-needed");
+    const registration = await gate.register({ instance: storageInstance(), kind: "mcp", release: plugin_default.version, preRegistryImport });
     try {
       if (timedOut()) throw new StorageRefused("unavailable", "storage startup check exceeded 10 s");
       await assertLegacyReady(common, gate);
@@ -26525,11 +26601,11 @@ async function closeStorageAdmissions() {
   }
 }
 async function withAdmission(commonDir2, kind, fn) {
-  const common = storageGate(commonDir2).commonDir, parent = currentAdmission(common);
-  if (parent) return fn(parent);
+  const common = storageGate(commonDir2).commonDir, enclosing = ambient.getStore();
+  if (enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)) return fn(await acquire(enclosing, common));
   const { gate, registration } = await storageRegistration(common);
   const ticket = await gate.admit(registration, kind);
-  const context2 = { commonDir: common, ticket, active: true };
+  const context2 = { kind, commonDir: common, ticket, gate, active: true };
   try {
     return await ambient.run(context2, () => fn(ticket));
   } finally {
@@ -26538,10 +26614,11 @@ async function withAdmission(commonDir2, kind, fn) {
   }
 }
 async function detachedAdmission(commonDir2, kind) {
-  const common = storageGate(commonDir2).commonDir, parent = currentAdmission(common);
+  const common = storageGate(commonDir2).commonDir, enclosing = ambient.getStore();
+  const parent = enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common) ? await acquire(enclosing, common) : void 0;
   const { gate, registration } = await storageRegistration(common);
   const ticket = await gate.admit(registration, kind, { parent });
-  const context2 = { commonDir: common, ticket, active: true };
+  const context2 = { kind, commonDir: common, ticket, gate, active: true };
   let started = false;
   const finish = async () => {
     if (context2.active) {
@@ -26562,11 +26639,20 @@ async function detachedAdmission(commonDir2, kind) {
 async function withValidatedRead(commonDir2, fn) {
   if (currentAdmission(commonDir2)) return fn();
   const gate = storageGate(commonDir2);
+  const scope = ambient.getStore();
+  const remember2 = (generation) => {
+    if (!scope?.active || scope.ticket || scope.commonDir && scope.commonDir !== gate.commonDir) return;
+    if (scope.observed !== void 0 && scope.observed !== generation)
+      throw new StorageRefused("maintenance", "storage changed during this operation; nothing was changed, retry it");
+    scope.commonDir = gate.commonDir;
+    scope.observed = generation;
+  };
   const enclosing = reads.getStore();
   if (enclosing?.active && enclosing.commonDir === gate.commonDir) return fn();
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await gate.observe();
     if (before.phase !== "legacy") throw new StorageRefused("maintenance", "storage is under maintenance");
+    remember2(before.generation);
     const context2 = { commonDir: gate.commonDir, active: true };
     let value5;
     try {
@@ -26576,13 +26662,37 @@ async function withValidatedRead(commonDir2, fn) {
     }
     const after = await gate.observe();
     if (after.phase !== "legacy") throw new StorageRefused("maintenance", "storage is under maintenance");
-    if (before.generation === after.generation) return value5;
+    if (before.generation === after.generation) {
+      remember2(after.generation);
+      return value5;
+    }
   }
   throw new StorageRefused("maintenance", "storage changed during the read; retry after maintenance");
 }
 async function withDirectoryAdmission(dir, kind, fn) {
+  const enclosing = ambient.getStore();
+  if (enclosing?.active) return fn();
+  const context2 = { kind, dir, active: true };
+  try {
+    return await ambient.run(context2, fn);
+  } finally {
+    context2.active = false;
+    const pending = context2.acquiring;
+    if (pending) {
+      const ticket = await pending.catch(() => void 0);
+      if (ticket) await context2.gate.finish(ticket);
+    }
+  }
+}
+async function scopeCommonDir(context2) {
+  if (context2.commonDir) return context2.commonDir;
+  if (!context2.dir) return void 0;
   const { commonGitDirFromDotGit: commonGitDirFromDotGit2 } = await Promise.resolve().then(() => (init_src4(), src_exports));
-  return withAdmission(commonGitDirFromDotGit2(dir), kind, fn);
+  try {
+    return storageGate(commonGitDirFromDotGit2(context2.dir)).commonDir;
+  } catch {
+    return void 0;
+  }
 }
 function withoutAdmission(fn) {
   return ambient.exit(() => reads.exit(fn));
@@ -26590,10 +26700,13 @@ function withoutAdmission(fn) {
 async function admitStorageHelper(pid) {
   const context2 = ambient.getStore();
   if (!context2?.active) return void 0;
+  const common = await scopeCommonDir(context2);
+  if (!common) return void 0;
+  const parent = await acquire(context2, common);
   const { probeProcessNow: probeProcessNow3 } = await Promise.resolve().then(() => (init_process(), process_exports));
   const identity4 = probeProcessNow3(pid);
   if (!identity4?.startTime || !identity4.executable) throw new StorageRefused("unavailable", "preview helper identity is unreadable");
-  const gate = storageGate(context2.commonDir);
+  const gate = storageGate(common);
   const instance = {
     pid,
     startTime: identity4.startTime,
@@ -26604,7 +26717,7 @@ async function admitStorageHelper(pid) {
   const registration = await gate.register({ instance, kind: "helper", release: plugin_default.version });
   let ticket;
   try {
-    ticket = await gate.admit(registration, "preview", { parent: context2.ticket });
+    ticket = await gate.admit(registration, "preview", { parent });
   } catch (error2) {
     await gate.unregister(registration);
     throw error2;
@@ -35108,7 +35221,7 @@ var init_client_compat = __esm({
 });
 
 // packages/room-mcp/src/parse/client.ts
-import { Worker } from "node:worker_threads";
+import { Worker as Worker2 } from "node:worker_threads";
 function acquireParseWorker() {
   let stopped = false;
   const pending = /* @__PURE__ */ new Set();
@@ -35197,7 +35310,7 @@ var init_client = __esm({
         const entry = new URL(import.meta.url.endsWith(".mjs") ? "./parse-worker.mjs" : source ? "./worker.ts" : "./worker.js", import.meta.url);
         let worker;
         try {
-          worker = this.options.createWorker?.() ?? (source ? new Worker(`import { register } from 'tsx/esm/api'; register(); await import(${JSON.stringify(entry.href)})`, { eval: true }) : new Worker(entry));
+          worker = this.options.createWorker?.() ?? (source ? new Worker2(`import { register } from 'tsx/esm/api'; register(); await import(${JSON.stringify(entry.href)})`, { eval: true }) : new Worker2(entry));
         } catch (error2) {
           const failure = error2 instanceof Error ? error2 : new Error(String(error2));
           this.recordCrash(failure);
@@ -39705,7 +39818,8 @@ var init_timing = __esm({
 // packages/room-mcp/src/worker-projector.ts
 import path45 from "node:path";
 async function projectWorkers(s, registry2, lead, role, origin, active = () => true) {
-  return withDirectoryAdmission(s.dir, "project", async () => {
+  if (!s.daemon.fence || !active()) return void 0;
+  return withAdmission(registry2.commonDir, "project", async () => {
     const roomKey2 = s.roomName, fence = s.daemon.fence;
     const current2 = () => active() && s.daemon.fence === fence;
     if (!fence || !current2()) return void 0;
@@ -45352,6 +45466,7 @@ __export(files_exports, {
   materializeMergedFile: () => materializeMergedFile,
   mergedFileMode: () => mergedFileMode,
   previewCachePath: () => previewCachePath,
+  previewProcessGate: () => previewProcessGate,
   removePreviewCache: () => removePreviewCache,
   runInMergedTree: () => runInMergedTree,
   setPreviewCheckLimitsForTests: () => setPreviewCheckLimitsForTests,
@@ -45712,13 +45827,7 @@ ${text2}--- end ${p} ---`);
                 let modeCount = 0;
                 for (const p of merged.keys()) {
                   if (modeCount++ % 32 === 0) await new Promise((resolve6) => setImmediate(resolve6));
-                  let leadMode = 420;
-                  try {
-                    const stat4 = fs56.lstatSync(path56.join(caller.dir, p));
-                    if (stat4.isFile()) leadMode = stat4.mode & 511;
-                  } catch (e) {
-                    if (e.code !== "ENOENT") throw e;
-                  }
+                  const leadMode = previewDiskMode(path56.join(caller.dir, p));
                   modes.set(p, mergedFileMode(p, leadMode, modeParticipants));
                 }
                 if (!await result3.isCurrent()) {
@@ -45954,6 +46063,15 @@ function setPreviewCheckLimitsForTests(limits) {
 }
 function execFileLimit(err, limits) {
   return err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? outputCap(limits.maxBuffer) : err?.killed ? timeLimit(limits.timeoutMs) : void 0;
+}
+function previewDiskMode(file) {
+  try {
+    const stat4 = fs56.lstatSync(file);
+    if (stat4.isFile()) return stat4.mode & 511;
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  return 420;
 }
 function setPreviewCleanupForTests(options = {}) {
   cleanupForTests = options;
@@ -46816,7 +46934,7 @@ var init_files = __esm({
       out = "";
     };
     previewProcesses = new AsyncLocalStorage4();
-    previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"';
+    previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; "$@"; status=$?; exit "$status"';
     CLEANUP_GRACE_MS = 1e4;
     KILL_AFTER_MS = 2e3;
     cleanupForTests = {};
@@ -47666,6 +47784,7 @@ var init_worker_file_store = __esm({
     init_worker_codecs();
     init_worker_store();
     init_process();
+    init_legacy_import();
     readJson2 = (file) => {
       try {
         return JSON.parse(fs58.readFileSync(file, "utf8"));
@@ -47758,8 +47877,7 @@ var init_worker_file_store = __esm({
       }
       /** Reopen disposable file caches/watchers before a successor generation can use them. */
       async ensureGeneration() {
-        const ticket = currentAdmission(this.commonDir);
-        if (!ticket) throw new StorageRefused("unavailable", "worker effects require an admission ticket");
+        const ticket = await requireAdmission(this.commonDir);
         if (this.readOnly) throw new StorageRefused("unavailable", "display reader cannot authorize worker effects");
         if (this.reopening && this.reopeningTicket !== ticket.id) return this.reopening;
         if (this.generation === ticket.generation) return;
@@ -48636,7 +48754,8 @@ var init_worker_file_store = __esm({
       async pruneRetired(maxAgeMs) {
         return withAdmission(this.commonDir, "prune", async () => {
           await this.ensureGeneration();
-          if (!readJson2(path58.join(this.root, "migration.json"))?.done) return [];
+          const status = await storageGate(this.commonDir).status();
+          if (legacyImportRequired(this.commonDir, status.legacyImport, status.gate)) return [];
           const ended = (record2) => record2.phase === "retired" || record2.phase === "abandoned";
           const borrowers = (records2) => new Set(records2.filter((record2) => !ended(record2)).flatMap((record2) => [record2.sharedWith, this.#worktreeOwner(record2)?.id]).filter(Boolean));
           const expiredAt = (record2, borrowed) => {
@@ -49044,6 +49163,10 @@ var init_worker_file_store = __esm({
             if (op && this.alive(op.holder) === "dead") {
               yielded = true;
               await leaseRetry(() => recover(this.opFile(record2.id), () => true));
+            }
+            if (op && this.alive(op.holder) !== "dead") {
+              const ticket = currentAdmission(this.commonDir);
+              if (op.holder.nonce !== this.identity.nonce || op.callToken !== ticket.id || op.generation !== ticket.generation) continue;
             }
             const currentReports = () => yielded ? requireWorkerInventory(this.#reports(record2.id)) : reports;
             const report = currentReports().find((value5) => value5.run === run3.n && value5.nonce === run3.nonce);
@@ -61955,7 +62078,7 @@ init_storage_admission();
 init_legacy_import();
 async function legacyStatus(commonDir2) {
   const gate = openStorageGate(commonDir2), status = await gate.status();
-  const required2 = legacyImportRequired(gate.commonDir, status.legacyImport);
+  const required2 = legacyImportRequired(gate.commonDir, status.legacyImport, status.gate);
   return {
     ...status,
     maintenanceRequired: status.maintenanceRequired || required2,
@@ -68139,6 +68262,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 }
 
 // packages/room-mcp/src/presence-end.ts
+init_storage_admission();
 init_session_host();
 init_src4();
 init_leases2();
@@ -68288,7 +68412,7 @@ var PresenceEnd = class {
     this.last = this.mono();
     if (options.tickMs !== 0) {
       this.timer = setInterval(() => {
-        void this.tick();
+        void withoutAdmission(() => this.tick()).catch((error2) => options.log?.(`presence check will retry: ${error2 instanceof Error ? error2.message : String(error2)}`));
       }, options.tickMs ?? PRESENCE_TICK_MS);
       this.timer.unref?.();
     }
@@ -68391,8 +68515,12 @@ var PresenceEnd = class {
         }
       }
     };
-    if (this.options.withWorkersAdmission) await this.options.withWorkersAdmission(decide);
-    else await decide();
+    try {
+      if (this.options.withWorkersAdmission) await this.options.withWorkersAdmission(decide);
+      else await decide();
+    } catch (error2) {
+      this.options.log?.(`worker admission unavailable; presence retained: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    }
   }
 };
 
@@ -68484,10 +68612,9 @@ async function main() {
     logFallback: () => log("call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback"),
     logFailure: (error2) => log(`workspace initialization failed: ${error2 instanceof Error ? error2.message : String(error2)}`),
     initialize: async (dir, signal) => {
-      const common = await gitCommonDir(dir);
-      await storageRegistration(common);
+      if (!await repositoryProblem(dir)) await storageRegistration(await gitCommonDir(dir));
       let session = null;
-      const privacy = gitCommonDir(dir).catch(() => void 0).then((common2) => common2 ? primePrivateState(common2) : void 0);
+      const privacy = gitCommonDir(dir).catch(() => void 0).then((common) => common ? primePrivateState(common) : void 0);
       const [startup] = await Promise.all([resolveConfig({ dir, env: process.env }), privacy]);
       if (signal.aborted) throw new Error("Room is shutting down");
       LOG_FILE = startup.logFile;
@@ -68555,7 +68682,7 @@ async function main() {
         hostAlive: () => hostSessionAlive(dir, attachingParent()),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
-        withWorkersAdmission: (work) => withDirectoryAdmission(dir, "idle-release", work),
+        withWorkersAdmission: async (work) => withAdmission(await gitCommonDir(dir), "idle-release", work),
         waiting: () => tools.waiting(),
         hostEnded: (reason) => {
           void bye(reason);
