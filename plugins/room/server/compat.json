@@ -34,7 +34,7 @@
   "workerRecordSchema": 1,
   "bundleSha256": {
     "room-mcp.mjs": "76f7412283064d4458e2e1ab14dca5cab7a04132c6a1d077956dae8bd0cc3621",
-    "room-mcp-app.mjs": "b9799813d91c398ca492a9dee5dd4f038ebfb131a46efea78cb928ec6aac245d",
+    "room-mcp-app.mjs": "11b5444eccd773e8648f7cfd07422569beee588b75082236637507a5cc6f7311",
     "room-daemon.mjs": "026b75c4a037d432d488fe43e4c5a053a8eda44ad5590b670b035f1c1feb69d6",
     "room-daemon-app.mjs": "a7090e44d789d73d920295d4d02109bfd617b13e3ed2f084fafaf04cf7e9dc72",
     "room-state.mjs": "65f660b924a6af4bbe8f1734a445dd6778853818c2bffdc45a38ab46e64ce449",
