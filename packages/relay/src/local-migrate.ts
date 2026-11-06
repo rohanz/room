@@ -1,12 +1,12 @@
 /** Insert-only catch-up from the previous local relay generation. The old relay may
  * still write its snapshots, so copy new IDs on every observed change until it exits. */
-import { privateStateDirectory } from './private-state.js'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { ROOM_DOC_MAX_BYTES, RoomDoc, isLegacyBranchNotice, isRoomNotice, type Claim, type Msg, type Scope } from '@room/shared'
-import { probeProcess, sameStartTime, type ProcessProbe } from './process.js'
+import { probeProcess, sameStartTime, type ProcessProbe } from '@room/local-state/process'
 import { saveMemory } from './memory.js'
 
 interface Ledger { messages: string[]; claims: string[]; scopes: string[]; scopeSnapshots: Record<string, string>; sources: Record<string, number>; messageSources: Record<string, string>; identities: Record<string, string[]>; complete: boolean }

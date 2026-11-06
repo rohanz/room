@@ -22,6 +22,7 @@ import { visiblePeer } from './fixtures/visible.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { closeStorageAdmissions } from '../src/storage-admission.js'
 
 const SID = 'solo-session'
 const room = { name: 'room', kind: 'bot' as const }
@@ -33,7 +34,7 @@ beforeEach(() => {
   rmSync(join(dir, '.git/room'), { recursive: true, force: true })
   for (const name of ['ROOM_HOST', 'ROOM_WORKER_ID', 'ROOM_WAKE', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_SESSION_ID']) vi.stubEnv(name, undefined)
 })
-afterEach(async () => { vi.unstubAllEnvs(); await closeRegistryForDir(dir) })
+afterEach(async () => { vi.unstubAllEnvs(); await closeRegistryForDir(dir); await closeStorageAdmissions() })
 
 async function mcp() {
   const texts: string[] = []

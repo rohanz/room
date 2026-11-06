@@ -25,7 +25,7 @@ const ROOM = 'git/example/repo/main'
 const dirs: string[] = []
 beforeEach(() => { for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) vi.stubEnv(key, undefined) })
 afterEach(() => { vi.unstubAllEnvs(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
-const tmp = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix)); dirs.push(d); return d }
+const tmp = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix)); dirs.push(d); execFileSync('git', ['init', '-q', d]); return d }
 
 /** stdout whose write callback reports success a moment later. */
 const pipe = () => new Writable({ highWaterMark: 1 << 20, write(_chunk, _enc, callback) { setTimeout(() => callback(null), 5) } })

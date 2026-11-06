@@ -1,3 +1,5 @@
+import { openAdmittedStore } from './fixtures/storage-admission.js'
+import { execFileSync } from 'node:child_process'
 import { snapshotRead, snapshotReserved, workerEvidence, requireWorkerEvidence } from '../src/worker-store.js'
 /** Storage parity contract: observable results, not file-store implementation details. Socket-free. */
 import fs from 'node:fs'
@@ -31,8 +33,9 @@ afterEach(() => {
 // Exactly the same assertions exercise the async facade and its current file adapter.
 describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as const)('%s lifecycle storage observable contract', (_name, implementation) => {
   async function open(common?: string) {
-    if (!common) { common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-lifecycle-parity-')); roots.push(common) }
-    const registry = await implementation.open(common, { migrate: false, watch: false, identity: token, liveness: () => 'alive' })
+    if (!common) { common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-lifecycle-parity-')); roots.push(common); execFileSync('git', ['init', '--bare', '-q', common]) }
+    const directory = common
+    const registry = await openAdmittedStore(directory, () => implementation.open(directory, { migrate: false, watch: false, identity: token, liveness: () => 'alive' }))
     opened.push(registry)
     return registry
   }
@@ -162,7 +165,10 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     await registry.writeExit(first.id, { run: 1, code: null, at: 3, witnessed: false })
     await registry.writeExit(first.id, { run: 1, code: 7, at: 4, witnessed: true })
     await registry.writeExit(first.id, { run: 1, code: null, at: 5, witnessed: false })
+    const before = snapshotRead(await registry.snapshot(), first.id)!
+    // Another call in the same MCP must leave the still-held spawn lane alone.
     const restarted = await open(registry.commonDir)
+    expect(snapshotRead(await restarted.snapshot(), first.id)?.seq).toBe(before.seq)
     expect(requireWorkerEvidence(workerEvidence(await restarted.snapshot())).workers.find(fact => fact.record.id === first.id)!.reports).toMatchObject([{ chain: input.chain, hostSessionId: input.hostSessionId,
       done: { summary: 'finished', changed: ['output.ts'] }, posted: `wk:${first.id}:1` }])
     expect(requireWorkerEvidence(workerEvidence(await restarted.snapshot())).workers.find(fact => fact.record.id === first.id)!.exits).toEqual([{ run: 1, code: 7, at: 4, witnessed: true }])

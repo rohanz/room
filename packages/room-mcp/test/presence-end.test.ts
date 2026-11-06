@@ -1,3 +1,4 @@
+import { StorageRefused } from '@room/local-state/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { idleLabel, RoomDoc } from '@room/shared'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -5,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, joinedPresenceWorkers, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
-import type { ProcessInfo } from '@room/relay/process'
+import type { ProcessInfo } from '@room/local-state/process'
 import { writeSessionRecord, type Session } from '../src/session.js'
 
 import { closeRegistryForDir, WorkerRegistry } from '../src/worker-registry.js'
@@ -307,4 +308,24 @@ it('reports unknown, not dead, when a record carries no host evidence', () => {
   const chain = [{ pid: 3, startTime: 'shell', executable: 'zsh' }]
   expect(hostRecordAlive({ host: 'claude', chain } as unknown as Parameters<typeof hostRecordAlive>[0], undefined,
     () => undefined, 1, () => false)).toEqual({ alive: undefined })
+})
+
+
+it.each(['maintenance', 'capacity', 'unavailable'] as const)('retains idle presence and retries after %s admission refusal', async reason => {
+  vi.useFakeTimers()
+  const admission = vi.fn(async (work: () => Promise<void>) => { await work() })
+    .mockRejectedValueOnce(new StorageRefused(reason, 'refused'))
+  const log = vi.fn()
+  const { presence, events } = fixture('shared-app-server', {
+    idleLeaseMs: 1, tickMs: 1, mono: () => Date.now(), withWorkersAdmission: admission, log,
+  })
+  try {
+    await vi.advanceTimersByTimeAsync(1)
+    expect(presence.hasLeft).toBe(false)
+    expect(events).toEqual([])
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('presence retained'))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(presence.hasLeft).toBe(true)
+    expect(events).toHaveLength(1)
+  } finally { presence.stop(); vi.useRealTimers() }
 })

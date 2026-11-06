@@ -1,8 +1,11 @@
+import { storageDoctorRows } from './storage-doctor.js'
 import { daemonCutoverRows, inspectDaemonCutover } from './daemon-cutover.js'
 import fs from 'node:fs'
 import { compatibilityFromHealth } from './client-compat.js'
 import { createSessionBinding } from './binding.js'
 import path from 'node:path'
+import { preflight, preflightDiagnostic } from '@room/local-state/preflight'
+import { NODE_FLOOR, NODE_MAJOR, type PreflightResult } from '@room/local-state/protocol'
 import { createClaudeInstall, claudePlugin as adapterClaudePlugin } from './hosts/claude-install.js'
 import { createCodexInstall, codexPlugin as adapterCodexPlugin, codexHooksRoot as adapterCodexHooksRoot, codexRoomHookTrustStatus as adapterCodexRoomHookTrustStatus, codexRoomHooksTrusted as adapterCodexRoomHooksTrusted } from './hosts/codex-install.js'
 import { hookVersion as adapterHookVersion, installCommand as command, type InstalledPlugin } from './hosts/install-io.js'
@@ -23,6 +26,7 @@ type Result = { level: 'PASS' | 'INFO' | 'WARN' | 'FAIL'; name: string; finding:
 /** `cached`: Claude loads this plugin from the install record's cache path (not a directory marketplace). */
 type Plugin = InstalledPlugin
 export interface DoctorFacts {
+  preflight?: PreflightResult; daemonPreflight?: PreflightResult; daemonPresent?: boolean
   node?: string; git?: string; repo: boolean; claudeCli: boolean; codexCli: boolean
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
@@ -75,7 +79,16 @@ export function codexRoomHookTrustStatus(toml?: string): 'trusted' | 'modified' 
 export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Result[] {
   const rows: Result[] = []
   const add = (level: Result['level'], name: string, finding: string, fix?: string) => rows.push({ level, name, finding, fix })
-  add(atLeast(f.node, [22, 0, 0]) ? 'PASS' : 'FAIL', 'Node', f.node ? `${f.node} (need 22+)` : 'not found', 'Install Node 22 or newer')
+  add(triple(f.node)?.[0] === NODE_MAJOR && atLeast(f.node, NODE_FLOOR.split('.').map(Number)) ? 'PASS' : 'FAIL', 'Node', f.node ? `${f.node} (need official ${NODE_MAJOR}.x >= ${NODE_FLOOR})` : 'not found', `Install official Node ${NODE_MAJOR}.x >= ${NODE_FLOOR} on the host launch PATH and restart the host and MCP-launching daemon`)
+  for (const [name, result] of [['MCP runtime', f.preflight], ['daemon runtime', f.daemonPreflight]] as const) {
+    if (!result) {
+      if (name === 'daemon runtime' && f.daemonPresent) add('WARN', name, 'preflight evidence unavailable; existing daemon remains usable for legacy transport', 'Drain and restart the daemon with the qualified Node runtime before storage activation')
+      continue
+    }
+    const e = result.evidence
+    if (!result.ok) add('FAIL', name, preflightDiagnostic(result), result.remedy)
+    else add('PASS', name, `${e.executable}; Node ${e.node}; SQLite ${e.sqlite ?? 'unavailable'}; storage ${result.storage}${e.filesystem ? ` (${e.filesystem.kind}, ${e.filesystem.journal})` : ' (filesystem not probed)'}${name === 'daemon runtime' && f.preflight && e.executable !== f.preflight.evidence.executable ? '; different executable from MCP' : ''}`)
+  }
   add(atLeast(f.git, minimumGit) ? 'PASS' : 'FAIL', 'Git', f.git ? `${f.git} (need 2.31+)` : 'not found', 'Install Git 2.31 or newer')
   add(f.repo ? 'PASS' : 'FAIL', 'repository', f.repo ? 'Git checkout with a commit' : 'not a Git checkout with a commit', 'Run this from a committed Git checkout')
   const installed = [f.claude, f.codex].filter((p): p is Plugin => !!p)
@@ -213,6 +226,7 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
   ])
   const claude = claudeInstall.record, codex = codexInstall.record
   const f: DoctorFacts = {
+    preflight: await preflight('mcp'),
     node: process.version, git: gitVersion, repo: !!head, claudeCli: claudeInstall.cli !== 'absent', codexCli: codexInstall.cli !== 'absent',
     claudeListOk: claudeInstall.listing === 'ok', codexListOk: codexInstall.listing === 'ok',
     claude, codex, claudeVersion: claudeInstall.version, inSession, wakeSession: inSession && process.env.ROOM_HOST === 'claude',
@@ -256,6 +270,10 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
       if (info) f.relayHealth = (await probeHealth(`http://127.0.0.1:${info.port}/health`)).ok
       const port = deterministicPort(common)
       const identity = await relayIdentity(port, info?.key ?? '')
+      if (identity?.proven && identity.health.runtime === 'daemon') {
+        f.daemonPresent = true
+        f.daemonPreflight = identity.health.preflight as PreflightResult | undefined
+      }
       if (identity && !(identity.proven && identity.health.clone === cloneId(common) && identity.health.schema === 2))
         f.canonicalRelayWarning = canonicalRelayWarning(port, common, identity, info).warning
     }
@@ -277,7 +295,7 @@ export async function runDoctor(dir: string, { inSession = false, selected, sess
   const facts = await collectDoctorFacts(dir, inSession, selected)
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning
   if (inSession && sessionBound !== undefined) facts.sessionBound = sessionBound
-  const report = formatDoctor(evaluateDoctor(facts))
+  const report = [formatDoctor(evaluateDoctor(facts)), ...(facts.repo ? await storageDoctorRows(dir) : [])].join('\n')
   if (!inSession && facts.repo && !facts.server) {
     try { return [report, ...daemonCutoverRows(await inspectDaemonCutover(await gitCommonDir(dir)))].join('\n') }
     catch (error) { return `${report}\nFAIL  local daemon cutover: ${error instanceof Error ? error.message : String(error)}` }

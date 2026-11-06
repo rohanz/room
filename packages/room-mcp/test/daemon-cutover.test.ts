@@ -3,8 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { cloneId, privateStateDirectory } from '@room/relay'
-import { probeProcessNow } from '@room/relay/process'
+import { cloneId } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
+import { probeProcessNow } from '@room/local-state/process'
 import { inspectDaemonCutover, requireDaemonRuntime, daemonCutoverRows, resolveDaemonCutover, cutoverResolveCommand } from '../src/daemon-cutover.js'
 import * as cutover from '../src/daemon-cutover.js'
 import * as doctor from '../src/doctor.js'
@@ -645,4 +646,12 @@ it.each([
   write(path.join(common, 'room/registry/runs/w/1.report.json'), { hostProcess: identity(Number(reportPid)) })
   const state = await inspectDaemonCutover(common, { ...inspectOptions, probe: pid => pid === 400 ? {} : probe(pid) })
   expect(state.clients[0].liveness).toBe(expected)
+})
+
+it('reports read-only gate inventory without initializing the storage gate', async () => {
+  const { common } = fixture()
+  const state = await inspectDaemonCutover(common, inspectOptions)
+  expect(state.storageGate).toMatchObject({ state: 'absent', registrations: 0, tickets: 0 })
+  expect(daemonCutoverRows(state).join('\n')).toContain('storage gate inventory: absent; phase none; generation none; 0 registration(s); 0 ticket(s)')
+  expect(fs.existsSync(path.join(common, 'room/storage-gate.json'))).toBe(false)
 })

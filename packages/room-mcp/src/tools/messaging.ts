@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from '../storage-admission.js'
 import { requireWorkerEvidence } from '../worker-store.js'
 import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
@@ -113,6 +114,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   }
   const handlers: Record<string, Handler> = {
     async room_send(a) {
+  return withDirectoryAdmission(S().dir, 'message', async () => {
       const lead = S()
       let byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
       const replied = typeof a.inReplyTo === 'string' ? byQuestion?.room.message(a.inReplyTo) : undefined
@@ -308,7 +310,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()
       return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
-    },
+
+  })
+},
     async room_wait(a) {
       const signal = (a as Record<PropertyKey, unknown>)[WAIT_SIGNAL] as AbortSignal | undefined
       // Standalone handler callers (no tool wrapper) hand off when the handler returns.

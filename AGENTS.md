@@ -70,6 +70,9 @@ packages/server/         y-websocket server: GitHub device login + OIDC (auth.ts
                          audit, LevelDB docs + File/Pg store (store.ts)
 packages/hub-core/       the hub shared by server and relay: name leases, bus order, trim, expiry (hub.ts),
                          hub protocol frames (protocol.ts), the live document size cap (doc-cap.ts)
+packages/local-state/    clone-local durable state below relay and room-mcp: process-owned lease files (leases.ts),
+                         process identity (process.ts), POSIX/Windows privacy (private-state.ts, private-core.ts),
+                         storage contracts (protocol.ts), the storage gate, runtime/filesystem preflight, bootstrap
 packages/relay/          loopback relay for local rooms: discovery file + key, /health, encrypted websockets;
                          serves no page (the plugin ships a file viewer, plugins/room/web/viewer.html)
 packages/roomd/          push-only daemon run inside a session: clone -> my overlay; base tracking; share

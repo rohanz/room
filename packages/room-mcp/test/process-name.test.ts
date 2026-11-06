@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { linuxProcessName, type ProcessReaders } from '@room/relay/process'
+import { linuxProcessName, type ProcessReaders } from '@room/local-state/process'
 import { probeProcess, workerProcessOwnership } from '../src/worker-process.js'
 import { boundSession, writeSessionRecord } from '../src/session.js'
 

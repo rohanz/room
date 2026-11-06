@@ -1,3 +1,5 @@
+import type { RegistryLease } from '../worker-registry.js'
+import { withDirectoryAdmission } from '../storage-admission.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Version } from '@room/shared'
@@ -153,6 +155,8 @@ export interface HandlerState {
   scheduleInboxWrite: () => void
   upgraded: Set<string>
   attachHooks: (s: Session) => void
+  /** This instance's hold on the worker-registry lifecycle; tool calls run in its scope. */
+  registryLease: RegistryLease
   clearStale: (s: Session) => number
   shutdown: () => Promise<void>
   drop: (s: Session, reason: string) => Promise<void>
@@ -186,11 +190,14 @@ export class NeedFetch extends Error { constructor(public person: string, public
 
 /** Local worktree reads require a registry capability; replicated worker fields grant none. */
 export async function trustedWorker(s: Session, person: string): Promise<LocalWorker | undefined> {
+  return withDirectoryAdmission(s.dir, 'reconcile', async () => {
   const worker = (await localWorkers(s.dir, record => record.name === person && record.lead.participant === s.me.name))[0]
   if (!worker?.id) return undefined
   const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag)
   if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return undefined
   return { ...realStateInput(trusted.record, trusted.status), dir: fs.realpathSync(trusted.record.dir) }
+
+  })
 }
 export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)"
 

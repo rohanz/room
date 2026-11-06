@@ -1,3 +1,4 @@
+import { openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -34,6 +35,8 @@ function fixture() {
   git('init', '-q'); git('config', 'user.name', 'Lead'); git('config', 'user.email', 'lead@example.test')
   fs.writeFileSync(path.join(root, 'base.txt'), 'base\n')
   git('add', '.'); git('commit', '-qm', 'base')
+  fs.mkdirSync(path.join(root, '.git/room/registry'), { recursive: true })
+  fs.writeFileSync(path.join(root, '.git/room/registry/migration.json'), JSON.stringify({ v: 1, done: true, sources: {} }))
   const dir = path.join(root, '.room/workers/tests')
   const record = (id: string): WorkerRecord => ({
     v: 1, id, tag: 'tests', name: 'lead+tests', mode: 'local', room: 'local/repo',
@@ -46,7 +49,7 @@ function fixture() {
   })
   return { root, dir, git, record }
 }
-const open = (root: string) => WorkerRegistry.open(root, { identity: token, migrate: false, watch: false })
+const open = (root: string) => openAdmittedRegistry(fs.existsSync(path.join(root, 'HEAD')) ? root : path.join(root, '.git'), { identity: token, migrate: false, watch: false })
 
 describe('reviewed worker write failures', () => {
   for (const mode of ['fresh', 'resume'] as const) it(`owns and stops a ${mode} child when the launch fact write fails (M8)`, async () => {
@@ -145,7 +148,7 @@ describe('reviewed worker write failures', () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' })
     children.push(child)
     let live = true
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await openAdmittedRegistry(path.join(root, '.git'), { identity: token, migrate: false, watch: false,
       liveness: () => live ? 'alive' : 'dead' })
     signal.handler = (pid, worker) => {
       if (pid !== child.pid || (worker as { processStartTime?: string }).processStartTime !== 'child-born') return false
@@ -180,7 +183,7 @@ describe('reviewed worker write failures', () => {
       const child = pid === host.pid ? host : pid === mcp.pid ? mcp : undefined
       return child?.kill('SIGTERM') ?? false
     }
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await openAdmittedRegistry(path.join(root, '.git'), { identity: token, migrate: false, watch: false,
       liveness: p => alive.has(p.pid) ? 'alive' : 'dead' })
     await store.writeIntent(record('w_chain'))
     await mutateWorkerFixture(store, 'w_chain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
@@ -203,7 +206,7 @@ describe('reviewed worker write failures', () => {
   it('keeps the worktree and stop step pending when the admitted host cannot be verified (N2)', async () => {
     const { root, dir, git, record } = fixture()
     git('worktree', 'add', '-qb', 'room/tests', dir)
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await openAdmittedRegistry(path.join(root, '.git'), { identity: token, migrate: false, watch: false,
       liveness: p => p.pid === 4243 ? 'unknown' : 'dead' })
     await store.writeIntent(record('w_uncertain'))
     await mutateWorkerFixture(store, 'w_uncertain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
@@ -226,7 +229,7 @@ describe('reviewed worker write failures', () => {
     await mutateWorkerFixture(store, 'w_06', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'never', error: 'host missing' } }], seq: old.seq + 1 }))
     await store.beginDiscard('w_06', true, [])
-    const scratch = path.join(root, 'room/registry/patches/w_06.0123456789abcdef.tmp')
+    const scratch = path.join(root, '.git/room/registry/patches/w_06.0123456789abcdef.tmp')
     fs.mkdirSync(path.dirname(scratch), { recursive: true })
     fs.writeFileSync(scratch, 'abandoned scratch')
     await store.replayDiscard('w_06')

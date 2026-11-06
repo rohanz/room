@@ -1,3 +1,4 @@
+import { closeStorageAdmissions } from '../src/storage-admission.js'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -27,7 +28,7 @@ const money = (status: LocalWorker['status'], exitCode?: number): LocalWorker =>
   budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' })
 
 const cleanups: (() => void)[] = []
-afterEach(() => { cleanups.splice(0).forEach(f => f()); vi.useRealTimers() })
+afterEach(async () => { cleanups.splice(0).forEach(f => f()); vi.useRealTimers(); await closeStorageAdmissions() })
 
 function fixture() {
   const sessions: Session[] = []

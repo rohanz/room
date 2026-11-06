@@ -1,4 +1,4 @@
-// packages/relay/src/windows-process-core.ts
+// packages/local-state/src/windows-process-core.ts
 import path from "node:path";
 function windowsProcessName(name) {
   return path.win32.basename(name).toLowerCase().replace(/\.exe$/, "");

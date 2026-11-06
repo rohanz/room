@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, withoutAdmission } from '../src/storage-admission.js'
 import { base, git, httpxWorkers, lead, put, setup, worker } from './collect-fixture.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -190,10 +191,12 @@ describe('room_collect', () => {
     const registry = await registryForDir(lead)
     const owner = (await registry.read('w_port-fix'))!, status = (await registry.status(owner.id))!
     const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+    await withDirectoryAdmission(lead, 'collect', async () => {
     await registry.beginOperation(owner.id, 'collect')
     try {
       expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, { collected: true, leadName: 'lead', workers: [owner], preservation })).toBe(false)
     } finally { await registry.finishOperation(owner.id) }
+    })
     expect(preservation).toEqual({ ignored: [], uncollected: ['late.txt'] })
     expect(fs.readFileSync(path.join(worker, 'late.txt'), 'utf8')).toBe('new borrower work')
   })
@@ -213,10 +216,12 @@ describe('room_collect', () => {
     const registry = await registryForDir(lead)
     const owner = (await registry.read('w_port-fix'))!, status = (await registry.status(owner.id))!
     const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+    await withDirectoryAdmission(lead, 'collect', async () => {
     await registry.beginOperation(owner.id, 'collect')
     try {
       expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, { collected: true, leadName: 'lead', workers: [owner], preservation })).toBe(false)
     } finally { await registry.finishOperation(owner.id) }
+    })
     expect(preservation.uncollected).toEqual(['file.txt'])
     if (state === 'committed') expect(preservation.commitsAfterCollection?.paths).toEqual(['file.txt', 'renamed.txt'])
     expect(fs.existsSync(worker)).toBe(true)
@@ -249,13 +254,17 @@ describe('room_collect', () => {
     await t.sync()
     const registry = await registryForDir(lead)
     expect((await registry.status('w_port-bools'))?.status).toBe('done')
+    await withDirectoryAdmission(lead, 'collect', async () => {
     await registry.beginOperation('w_port-fix', 'collect')
     try {
-      await expect(registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 }))
+      await expect(withoutAdmission(() => registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 })))
         .rejects.toThrow('worker operation lease held')
     } finally { await registry.finishOperation('w_port-fix') }
-    await registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 })
-    await registry.finishOperation('w_port-bools')
+    })
+    await withDirectoryAdmission(lead, 'resume', async () => {
+      await registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 })
+      await registry.finishOperation('w_port-bools')
+    })
     put(worker, 'new.txt', 'shared output')
     const result = await t.call({ tag: 'port-fix' })
     expect(result).toContain("kept port-fix's worktree: port-bools is still running in it")
@@ -269,14 +278,18 @@ describe('room_collect', () => {
     const prior = (await registry.read('w_port-bools'))!
     const late = { ...prior, id: 'w_late', tag: 'late', name: 'lead+late', phase: 'intent' as const,
       prep: { step: 'plan' as const }, runs: [{ ...prior.runs[0], launch: undefined }], seq: 1 }
+    await withDirectoryAdmission(lead, 'collect', async () => {
     await registry.beginOperation('w_port-fix', 'collect')
     try {
-      await expect(registry.writeIntent(late)).rejects.toThrow('worker operation lease held')
+      await expect(withoutAdmission(() => registry.writeIntent(late))).rejects.toThrow('worker operation lease held')
       expect((await registry.read('w_late'))).toBeUndefined()
     } finally { await registry.finishOperation('w_port-fix') }
-    await registry.writeIntent(late)
-    expect((await registry.read('w_late'))?.sharedWith).toBe('w_port-fix')
-    await registry.finishOperation('w_late')
+    })
+    await withDirectoryAdmission(lead, 'spawn', async () => {
+      await registry.writeIntent(late)
+      expect((await registry.read('w_late'))?.sharedWith).toBe('w_port-fix')
+      await registry.finishOperation('w_late')
+    })
   })
 
   it('replays an owner discard by retiring its finished borrower first', async () => {

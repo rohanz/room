@@ -6,7 +6,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import http from 'node:http'
 import { startLocalDaemon, type StartedLocalDaemon } from '../src/daemon.js'
-import { AuthorityLock, deterministicPort, localProofHeader, privateStateDirectory, relayFile, relayHealth } from '../src/index.js'
+import { AuthorityLock, deterministicPort, localProofHeader, relayFile, relayHealth } from '../src/index.js'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import { holder } from '../../hub-core/test/contract.js'
 
 const dirs: string[] = [], daemons: StartedLocalDaemon[] = []

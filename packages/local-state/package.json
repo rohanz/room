@@ -1,0 +1,20 @@
+{
+  "name": "@room/local-state",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/protocol.ts",
+  "types": "./src/protocol.ts",
+  "exports": {
+    "./protocol": "./src/protocol.ts",
+    "./gate": "./src/gate.ts",
+    "./preflight": "./src/preflight.ts",
+    "./filesystem": "./src/filesystem.ts",
+    "./bootstrap": "./src/bootstrap.ts",
+    "./leases": "./src/leases.ts",
+    "./process": "./src/process.ts",
+    "./private-state": "./src/private-state.ts",
+    "./private-core": "./src/private-core.ts",
+    "./windows-process-core": "./src/windows-process-core.ts"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

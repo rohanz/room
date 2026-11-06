@@ -1,3 +1,7 @@
+import { withDirectoryAdmission, withValidatedRead } from './storage-admission.js'
+import { StorageRefused } from '@room/local-state/protocol'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { holdProcessLifecycle, processLifecycleEnded } from './process-lifecycle.js'
 /** Async lifecycle facade. A display snapshot never grants operation authority. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -18,15 +22,88 @@ export { workerLogFile, backgroundAtExit } from './worker-file-store.js'
 export type { WorkerSnapshot, WorkerCommand, WorkerFreshness, WorkerStore } from './worker-store.js'
 const registries = new Map<string, Promise<WorkerRegistry>>()
 const MAX_PROCESS_REGISTRIES = 24
+/**
+ * Registry lifetime. Every registry registryForDir opens is tracked from the call's entry until it has shut down for
+ * good, whether it is cached, evicted or closed. A shutdown advances the epoch: a call made while it runs is refused,
+ * and a call that began before it is refused (and anything it opened retired) when it resumes, so no open started
+ * under an ended lifecycle can leave watchers behind. Tools instances hold counted leases on the lifecycle.
+ */
+let epoch = 0, shuttingDown = 0
+const calls = new Set<Promise<unknown>>()
+const live = new Set<WorkerRegistry>()
+const retiring = new Map<WorkerRegistry, Promise<void>>()
+const shutdownRefusal = () => new StorageRefused('unavailable', 'this Room MCP is shutting down; no worker registry opens')
+/** A tools instance's hold on the registry lifecycle; its calls run in `run`, so their registry opens carry it. */
+export interface RegistryLease {
+  readonly ended: boolean
+  /** Shutdown has begun: opens made in this lease's scope (its tool calls and what they started) are refused. */
+  fence(): void
+  /** Fence and release; the last holder's end shuts every registry down. */
+  end(): Promise<void>
+  run<T>(fn: () => T): T
+}
+const leaseScope = new AsyncLocalStorage<RegistryLease>()
+/**
+ * Hold this process's registry lifecycle (each tools instance holds one; a production MCP process has exactly one).
+ * A fenced lease refuses opens from its own scope, so a tool call still running when shutdown began cannot open a
+ * registry when it resumes; shutdown's own work runs outside any call scope. The last end shuts registries down.
+ */
+export function beginWorkerRegistries(): RegistryLease {
+  const release = holdProcessLifecycle()
+  let ended = false
+  const lease: RegistryLease = {
+    get ended() { return ended },
+    fence() { ended = true },
+    async end() {
+      ended = true
+      if (release()) await shutdownWorkerRegistries()
+    },
+    run: fn => leaseScope.run(lease, fn),
+  }
+  return lease
+}
+/** Stop a registry's watchers and timer for good; resolves once a pass already running has finished. */
+function retire(registry: WorkerRegistry): Promise<void> {
+  let done = retiring.get(registry)
+  if (!done) {
+    done = registry.shutdown().catch(() => {}).finally(() => { live.delete(registry); retiring.delete(registry) })
+    retiring.set(registry, done)
+  }
+  return done
+}
 export async function closeRegistryForDir(dir: string): Promise<void> {
   const common = commonGitDirFromDotGit(dir)
   const pending = registries.get(common)
   registries.delete(common)
-  ;(await pending?.catch(() => undefined))?.close()
+  const registry = await pending?.catch(() => undefined)
+  if (registry) await retire(registry)
+}
+/**
+ * Process shutdown: end the epoch, wait for opens already under way, then stop every registry this process opened
+ * (cached or evicted) for good and wait for passes already running, so no background reconcile admits after storage
+ * admissions close. The caller bounds the wait.
+ */
+export async function shutdownWorkerRegistries(): Promise<void> {
+  epoch++
+  shuttingDown++
+  try {
+    await Promise.allSettled([...calls])
+    registries.clear()
+    await Promise.all([...live].map(retire))
+  } finally { shuttingDown-- }
 }
 /** One token and watcher per common dir for this MCP process. */
-export async function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
+export function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
+  const lease = leaseScope.getStore()
+  if (shuttingDown || lease?.ended || processLifecycleEnded()) return Promise.reject(shutdownRefusal())
+  const call = openRegistry(dir, sessionId, epoch, lease)
+  const tracked = call.catch(() => {}).finally(() => calls.delete(tracked))
+  calls.add(tracked)
+  return call
+}
+async function openRegistry(dir: string, sessionId: string | undefined, started: number, lease: RegistryLease | undefined): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
+  if (epoch !== started || lease?.ended || processLifecycleEnded()) throw shutdownRefusal()
   // The registry writes under <common>/room; a Git directory always holds HEAD. Anything else (a
   // resolution that landed on the working tree) must not be written to.
   if (!fs.existsSync(path.join(common, 'HEAD'))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`)
@@ -37,16 +114,23 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
       if (oldest) {
         const previous = registries.get(oldest)
         registries.delete(oldest)
-        void previous?.then(registry => registry.close()).catch(() => {})
+        // An evicted registry may still be held (a projector): it shuts down for good, never reopening its watchers.
+        void previous?.then(retire).catch(() => {})
       }
     }
     const processInfo = probeOwnProcess()
     const identity: InstanceToken = { pid: process.pid, startTime: processInfo?.startTime ?? '',
       executable: processInfo?.executable ?? '', sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? 'unknown'}`,
       nonce: randomBytes(16).toString('hex') }
-    pending = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST })
+    const opened = WorkerRegistry.open(common, { identity, watch: !process.env.VITEST }).then(registry => {
+      live.add(registry)
+      // Opened across a shutdown that no longer waits for it: stop it now rather than leave it watching.
+      if (epoch !== started || lease?.ended || processLifecycleEnded()) { void retire(registry); throw shutdownRefusal() }
+      return registry
+    })
+    pending = opened
     registries.set(common, pending)
-    void pending.catch(() => { if (registries.get(common) === pending) registries.delete(common) })
+    void pending.catch(() => { if (registries.get(common) === opened) registries.delete(common) })
   } else {
     // Move this checkout to the end of the bounded cache.
     registries.delete(common)
@@ -56,7 +140,7 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
 }
 
 /** A read-only view has no mutation or lease methods, even at runtime. */
-export type WorkerReader = Pick<WorkerRegistry, 'root' | 'commonDir' | 'close' | 'snapshot' | 'read' | 'list' | 'reserved'
+export type WorkerReader = Pick<WorkerRegistry, 'root' | 'commonDir' | 'close' | 'validatedRead' | 'snapshot' | 'read' | 'list' | 'reserved'
   | 'reservedByTagOrName' | 'sourceToken' | 'worktreeOwner' | 'checkoutUsers' | 'status' | 'operationInProgress'
   | 'freshness' | 'statusFromSnapshot' | 'reports' | 'exits' | 'occupancy' | 'projectable' | 'archiveOf'>
 export async function openWorkerReader(dir: string): Promise<WorkerReader> {
@@ -82,6 +166,7 @@ async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
   if (!id) return
   const room = env.ROOM_ROOM ?? ''
   if (!id.startsWith('w_')) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: update the Room plugin for the lead\'s host')
+  return withDirectoryAdmission(dir, 'admit-worker', async () => {
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)
@@ -99,6 +184,7 @@ async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
     hostSessionId }) }
   catch { throw new Error('this worker run was collected, discarded or superseded') }
   if (chain[1]?.startTime && chain[1].executable) admitted = { id, host: chain[1] }
+  })
 }
 /**
  * This clone's current worker under a participant name, as a carried-baseline source with its lead: a local
@@ -124,14 +210,22 @@ export async function ownWorkerNames(dir: string, lead: string): Promise<Set<str
 /** This clone's workers that are not retiring, as the lifecycle helpers' input (registry §1: local facts only). */
 export async function localWorkers(dir: string, keep: (record: WorkerRecord) => boolean = () => true): Promise<LocalWorker[]> {
   const registry = await openWorkerReader(dir)
-  const records = requireWorkerInventory(await registry.list())
-  const workers: LocalWorker[] = []
-  for (const record of records) {
-    if (['retiring', 'retired', 'abandoned'].includes(record.phase) || !keep(record)) continue
-    const status = await registry.status(record.id)
-    if (status) workers.push(realStateInput(record, status))
+  return registry.validatedRead(async () => {
+  // Enrich one inventory, then validate it as a whole. A list followed by status(id)
+  // rebuilt three snapshots per worker and could combine a stale record with new status.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const snapshot = requireWorkerEvidence(workerEvidence(await registry.snapshot()))
+    const workers: LocalWorker[] = []
+    for (const { record } of snapshot.workers) {
+      if (['retiring', 'retired', 'abandoned'].includes(record.phase) || !keep(record)) continue
+      const status = await registry.statusFromSnapshot(snapshot, record.id)
+      if (status) workers.push(realStateInput(record, status))
+    }
+    const fresh = requireWorkerEvidence(workerEvidence(await registry.snapshot()))
+    if (fresh.revision === snapshot.revision) return workers
   }
-  return workers
+  throw new Error('worker snapshot unavailable: facts changed during inventory enrichment')
+  })
 }
 
 /** A participant's carried baseline and its lead, when it is one of this clone's workers (ConflictSet's `carriedFrom`). */
@@ -168,7 +262,7 @@ export class WorkerRegistry {
     const registry = new WorkerRegistry(file, file)
     return {
       root: registry.root, commonDir: registry.commonDir,
-      close: () => registry.close(), snapshot: query => registry.snapshot(query),
+      close: () => registry.close(), validatedRead: fn => registry.validatedRead(fn), snapshot: query => registry.snapshot(query),
       read: id => registry.read(id), list: () => registry.list(), reserved: tag => registry.reserved(tag),
       reservedByTagOrName: name => registry.reservedByTagOrName(name), sourceToken: tag => registry.sourceToken(tag),
       worktreeOwner: record => registry.worktreeOwner(record), checkoutUsers: owner => registry.checkoutUsers(owner),
@@ -189,7 +283,13 @@ export class WorkerRegistry {
   get instance(): InstanceToken { return this.backend().instance }
   newId(): string { return this.backend().newId() }
   close(): void { this.file?.close() }
+  /** Stop background reconciliation for good and wait for a pass already running. */
+  async shutdown(): Promise<void> { await this.file?.shutdown() }
   onChange(listener: (id?: string) => void): () => void { return this.backend().onChange(listener) }
+  /** Validate the complete logical display, including nested status enrichment. */
+  validatedRead<T>(fn: () => Promise<T>): Promise<T> {
+    return this.file ? withValidatedRead(this.file.commonDir, fn) : fn()
+  }
   snapshot(query?: WorkerQuery): Promise<WorkerSnapshot> { return this.store.snapshot(query) }
   private async facts(query?: WorkerQuery): Promise<AvailableWorkerSnapshot> {
     return requireWorkerEvidence(workerEvidence(await this.snapshot(query)))
@@ -222,6 +322,7 @@ export class WorkerRegistry {
       : Promise.resolve(statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, () => 'unknown'))
   }
   async checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): Promise<{ record: WorkerRecord; status: WorkerStatusResult }[] | BlockedWorkerEvidence> {
+    return this.validatedRead(async () => {
     const snapshot = workerEvidence(await this.snapshot())
     if ('reason' in snapshot) return snapshot
     const users: { record: WorkerRecord; status: WorkerStatusResult }[] = []
@@ -231,13 +332,19 @@ export class WorkerRegistry {
         users.push({ record, status: await this.enrich(fact) })
     }
     return users
+
+    })
   }
   /** Enrich captured lifecycle facts without replacing their records/reports/exits with live reads. */
   async statusFromSnapshot(snapshot: WorkerSnapshot, id: string): Promise<WorkerStatusResult | undefined> {
+    return this.validatedRead(async () => {
     const fact = requireWorkerEvidence(workerEvidence(snapshot)).workers.find(fact => fact.record.id === id)
     return fact && this.enrich(fact)
+
+    })
   }
   async status(id: string): Promise<WorkerStatusResult | undefined> {
+    return this.validatedRead(async () => {
     const records = await this.facts({ workerId: id, recordOnly: true, captureLiveness: true })
     const record = records.workers.find(fact => fact.record.id === id)
     if (!record) return undefined
@@ -253,6 +360,8 @@ export class WorkerRegistry {
       snapshot = fresh
     }
     throw new Error('worker snapshot unavailable: facts changed during status enrichment')
+
+    })
   }
   async operationInProgress(id: string): Promise<boolean> {
     if (!safeId(id)) return true
@@ -273,11 +382,15 @@ export class WorkerRegistry {
     return snapshot.workers.find(fact => fact.record.id === id)?.exits ?? snapshot.orphanRuns?.[id]?.exits ?? []
   }
   async occupancy(): Promise<number> {
+    return this.validatedRead(async () => {
     let count = 0
     for (const fact of (await this.facts()).workers) if (['starting', 'running', 'unknown', 'ambiguous'].includes((await this.enrich(fact)).status)) count++
     return count
+
+    })
   }
   async projectable(lead: string, roomKey: string): Promise<{ write: { record: WorkerRecord; status: WorkerStatusResult }[]; retire: WorkerRecord[] } | BlockedWorkerEvidence> {
+    return this.validatedRead(async () => {
     const snapshot = workerEvidence(await this.snapshot())
     if ('reason' in snapshot) return snapshot
     const write: { record: WorkerRecord; status: WorkerStatusResult }[] = [], retire: WorkerRecord[] = []
@@ -289,6 +402,8 @@ export class WorkerRegistry {
       write.push({ record, status: await this.enrich(fact) })
     }
     return { write, retire }
+
+    })
   }
   async archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): Promise<RetiredWorker> { return this.backend().archiveOf(record, facts) }
   hasPendingIdleClaims(roomKey: string, sessionId: string, idleEpoch: string): boolean { return IdleClaimsJournal.open(this.commonDir).hasPendingIdleClaims(roomKey, sessionId, idleEpoch) }

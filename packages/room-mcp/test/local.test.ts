@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { stopTestDaemon } from './daemon-fixture.js'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, onTestFinished, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -118,6 +119,7 @@ describe('local mode (no server)', () => {
     await expect(joinSession({ dir: other, room, server: 'local', name: 'Ada', tag: 'w', leadClone: realpathSync(join(dir, '.git')), log: () => {} })).rejects.toThrow('another repository than its lead')
     expect(existsSync(join(other, '.git', 'room', 'relay.json'))).toBe(false)
     const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
+    await storageRegistration(join(dir, '.git'))
     git(dir, 'worktree', 'add', '-q', '-b', 'room/w', wt)
     const worker = await joinSession({ dir: wt, room, server: 'local', name: 'Ada', tag: 'w', log: () => {} }); sessions.push(worker)
     expect(worker.local?.owned).toBe(false)
@@ -132,6 +134,7 @@ describe('local mode (no server)', () => {
     const clone = repo('room-localjoin-dead-')
     const room = `local/${basename(clone)}`
     const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
+    await storageRegistration(join(clone, '.git'))
     execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'room/w', wt], { stdio: 'pipe' })
     const as = { dir: wt, room, server: 'local', name: 'Ada', tag: 'w', leadClone: realpathSync(join(clone, '.git')), log: () => {} }
     const worker = await joinSession(as); sessions.push(worker)
@@ -144,6 +147,7 @@ describe('local mode (no server)', () => {
     const clone = repo('room-localjoin-nested-')
     const room = `local/${basename(clone)}`
     const wt = join(clone, '.room', 'workers', 'w')
+    await storageRegistration(join(clone, '.git'))
     execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'room/w', wt], { stdio: 'pipe' })
     const as = { dir: wt, room, server: 'local', name: 'Ada', tag: 'w', log: () => {} }
     const nested = await joinSession(as); sessions.push(nested)

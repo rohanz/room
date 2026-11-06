@@ -9,7 +9,7 @@
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "knip": "knip",
-    "typecheck": "tsc -b packages/shared packages/hub-core packages/relay packages/server packages/roomd packages/room-mcp packages/agent && tsc -p packages/web",
+    "typecheck": "tsc -b packages/shared packages/hub-core packages/local-state packages/relay packages/server packages/roomd packages/room-mcp packages/agent && tsc -p packages/web",
     "server": "node packages/server/dist/server.mjs",
     "mcp": "tsx packages/room-mcp/src/index.ts",
     "web": "npm run dev -w @room/web",
@@ -30,6 +30,7 @@
     "vitest": "^5.0.0",
     "web-tree-sitter": "0.24.7",
     "ws": "^8.21.0",
+    "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.32"
   },

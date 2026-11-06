@@ -1,0 +1,209 @@
+{
+  "task": "SQLite slice 2 local-state fix round",
+  "findings": {
+    "2": "No directory memo; sync each current owned Room namespace through the common-directory room entry. Preserve full root walk outside Room state.",
+    "4": "Fresh and cached observe enforce STORAGE_BUILD reader/writer compatibility and active refusal.",
+    "6": "SQLite constructor, PRAGMA, WAL commit/close/reopen run in an isolated worker with termination and absolute deadline fences; late filesystem results cannot touch scratch.",
+    "8": "Reject non-node name, missing/non-nodejs.org source host, and shared SQLite. Official-metadata rebuilds remain undetectable.",
+    "9": "Prune verified-dead ticketless maintenance registrations; gate.owner retains takeover identity.",
+    "11": "Native evidence requires matching ext4/APFS/NTFS, qualified storage and WAL; CI probes both runner temp and workspace. Existing filesystem parser handles representative paths; no parser change required."
+  },
+  "additionalProtocol": "Lead-authorized reopen(owner, options?: { notAfter?: number }), epoch ms checked under guard before publish; expiry leaves draining.",
+  "measurement": {
+    "at": "2026-11-06T11:31:34.148Z",
+    "os": "darwin",
+    "arch": "arm64",
+    "node": "v22.23.4",
+    "cpus": "Apple M2 Max",
+    "location": "/private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-state-measure-sFlcFR",
+    "evidence": {
+      "surface": "offline",
+      "executable": "/usr/local/bin/node",
+      "node": "22.23.4",
+      "vendor": {
+        "name": "node",
+        "source": "nodejs.org",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "elapsedMs": 37,
+      "sqlite": "3.53.4",
+      "filesystem": {
+        "kind": "apfs",
+        "detail": "statfs 0x1a; mount apfs at / (sealed,local,read-only,journaled)",
+        "path": "/private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-state-measure-sFlcFR",
+        "journal": "wal"
+      }
+    },
+    "metrics": {
+      "preflight": {
+        "n": 10,
+        "p50": 34.370292000000006,
+        "p95": 110.307458,
+        "values": [
+          37.546667000000014,
+          34.370292000000006,
+          28.606042000000002,
+          110.307458,
+          35.39137499999998,
+          22.20712500000002,
+          30.730500000000006,
+          21.74529100000001,
+          35.26724999999999,
+          36.87587499999995
+        ]
+      },
+      "writeAtomic": {
+        "n": 10,
+        "p50": 18.063125000000014,
+        "p95": 28.05204200000003,
+        "values": [
+          14.744292000000087,
+          28.05204200000003,
+          18.063125000000014,
+          19.100165999999945,
+          24.768749999999955,
+          25.133166000000074,
+          11.009624999999915,
+          16.05574999999999,
+          27.899667000000022,
+          15.02816699999994
+        ]
+      },
+      "admitFinish": {
+        "n": 10,
+        "p50": 44.920083999999974,
+        "p95": 82.96120800000006,
+        "values": [
+          49.92091700000003,
+          72.081458,
+          82.96120800000006,
+          44.920083999999974,
+          51.03470799999991,
+          43.12795899999992,
+          44.93604200000004,
+          41.96745899999996,
+          39.106665999999905,
+          37.874958000000106
+        ]
+      }
+    }
+  },
+  "method": {
+    "runs": 10,
+    "sequence": "preflight offline including real two-connection WAL probe; warm writeAtomic under room/record/nested; gate admit collect + finish",
+    "percentiles": "nearest rank, p95 is maximum of 10 samples",
+    "fixture": "fresh private temp Git common directory with HEAD; one warm write before 10 samples; one registration before gate samples; gate test liveness injected alive",
+    "limitations": "local APFS workstation measurements, not native Linux/Windows qualification or full lifecycle latency; one preflight outlier retained"
+  },
+  "validation": [
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts --maxWorkers 1",
+      "passed": 144,
+      "skipped": 3,
+      "note": "Three native Windows durability tests skipped on macOS; completed before additive reopen deadline change."
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts test/gate.test.ts --maxWorkers 1",
+      "passed": 24,
+      "note": "After additive reopen deadline change; injected clock crosses deadline during simulated guard contention."
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/relay --config vitest.config.ts test/private-state-writers.test.ts --maxWorkers 1",
+      "passed": 4
+    },
+    {
+      "command": "npm run typecheck",
+      "exit": 0,
+      "note": "Final source tree, including reopen notAfter."
+    },
+    {
+      "command": "npm run build:plugin",
+      "exit": 0,
+      "note": "Full build, including web. Generated assets restored exactly to carried baseline per lead; integrated lead must rebuild."
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/room-mcp --config vitest.config.ts test/storage-bundle-audit.test.ts --maxWorkers 1",
+      "passed": 5,
+      "note": "On final locally rebuilt plugin before restoring generated outputs."
+    }
+  ],
+  "nativeEvidence": [
+    {
+      "location": "temp",
+      "passed": true,
+      "expectedFilesystem": "apfs",
+      "result": {
+        "ok": true,
+        "storage": "qualified",
+        "evidence": {
+          "surface": "offline",
+          "executable": "/usr/local/bin/node",
+          "node": "22.23.4",
+          "vendor": {
+            "name": "node",
+            "source": "nodejs.org",
+            "platform": "darwin",
+            "arch": "arm64"
+          },
+          "elapsedMs": 44,
+          "sqlite": "3.53.4",
+          "filesystem": {
+            "kind": "apfs",
+            "detail": "statfs 0x1a; mount apfs at / (sealed,local,read-only,journaled)",
+            "path": "/private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-sqlite-evidence-8ZeZVd/.git",
+            "journal": "wal"
+          }
+        }
+      },
+      "stderr": ""
+    },
+    {
+      "location": "workspace",
+      "passed": true,
+      "expectedFilesystem": "apfs",
+      "result": {
+        "ok": true,
+        "storage": "qualified",
+        "evidence": {
+          "surface": "offline",
+          "executable": "/usr/local/bin/node",
+          "node": "22.23.4",
+          "vendor": {
+            "name": "node",
+            "source": "nodejs.org",
+            "platform": "darwin",
+            "arch": "arm64"
+          },
+          "elapsedMs": 30,
+          "sqlite": "3.53.4",
+          "filesystem": {
+            "kind": "apfs",
+            "detail": "statfs 0x1a; mount apfs at / (sealed,local,read-only,journaled)",
+            "path": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/.room/workers/s2-fix-state/room-sqlite-evidence-wh5D7z/.git",
+            "journal": "wal"
+          }
+        }
+      },
+      "stderr": ""
+    }
+  ],
+  "preview": {
+    "people": [
+      "rohanz+s2-fix-mcp",
+      "rohanz+slice2-lead"
+    ],
+    "peerRevisions": [
+      16,
+      57
+    ],
+    "inputHash": "f70f00e760b8240771fb88a25825f534298a9c27f8dd5d1d7ebb05dde0f93c4e",
+    "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/room-mcp --config vitest.config.ts test/storage-admission.test.ts test/storage-offline.test.ts --maxWorkers 1 -t 'deadline|display|preflight|generation'",
+    "passed": 8,
+    "filteredOut": 17,
+    "conflicts": false,
+    "coverage": "PARTIAL: excluded generated application bundles and oversized historical wrapper text. Combined work is not fully verified."
+  },
+  "sandboxSkipped": [],
+  "remaining": "Integrated full checks and rebuild belong to lead; native Linux/Windows CI cells were not run here."
+}

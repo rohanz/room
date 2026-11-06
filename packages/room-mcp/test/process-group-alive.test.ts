@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { processAlive, processGroupAlive, readProcessGroupTable } from '../src/preview-cache.js'
 
 describe('process group liveness treats zombies as gone', () => {
@@ -33,4 +33,16 @@ describe('process group liveness treats zombies as gone', () => {
     expect(rows.length).toBeGreaterThan(0)
     expect(await processGroupAlive(process.pid)).toBe((() => { try { process.kill(-process.pid, 0); return true } catch { return false } })())
   })
+})
+
+it('treats only ESRCH as absence when the process table is unreadable', async () => {
+  const unreadable = async () => { throw new Error('ps unavailable') }
+  const kill = vi.spyOn(process, 'kill')
+  try {
+    for (const [code, alive] of [['EPERM', true], ['EINVAL', true], ['ESRCH', false]] as const) {
+      kill.mockImplementation(() => { throw Object.assign(new Error(code), { code }) })
+      expect(await processGroupAlive(424242, unreadable)).toBe(alive)
+      expect(await processAlive(424242, unreadable)).toBe(alive)
+    }
+  } finally { kill.mockRestore() }
 })

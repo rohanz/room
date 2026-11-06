@@ -1,9 +1,10 @@
+import { detachedAdmission } from './storage-admission.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { digestPath, manifestHeadOf, participantRecord, participantsView, snapshotMetadata, type ParticipantMetadataSnapshot } from '@room/shared'
 import { git, gitBlobInfoMany } from '@room/roomd/git'
-import { containedRepoPath, DISK_READ_PATH, validRepoPath } from '@room/roomd'
+import { commonGitDirFromDotGit, containedRepoPath, DISK_READ_PATH, validRepoPath } from '@room/roomd'
 import { readBoundedDiskText } from './tools/disk-text.js'
 import { checkoutPublisher } from './tools/share.js'
 import type { Session } from './session.js'
@@ -43,8 +44,9 @@ async function acknowledgeOnce(s: Session, previous: Publication | undefined, pa
   if (overflow || !s.daemon?.reconcileGitChanges || !s.daemon?.settle || !s.daemon.fence || (checkoutPublisher(s) ?? s.me.name) !== s.me.name) return pending
   let timer: NodeJS.Timeout | undefined
   try {
+    const admission = await detachedAdmission(commonGitDirFromDotGit(s.dir), 'project')
     return await Promise.race([
-      (async (): Promise<Publication> => {
+      admission.run(async (): Promise<Publication> => {
         const [format, expectedHead] = (await git(s.dir, ['rev-parse', '--show-object-format', 'HEAD'])).trim().split('\n')
         if (format !== 'sha1' && format !== 'sha256') return pending
         const hash = (bytes: Buffer) => createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
@@ -116,7 +118,7 @@ async function acknowledgeOnce(s: Session, previous: Publication | undefined, pa
         if (!current || current.fence !== head.fence || current.rev !== head.rev || holder?.sessionId !== record.holder.sessionId
           || s.room.roomSalt !== meta.roomSalt || !meta.roomSalt || !/^[a-f0-9]{64}$/i.test(meta.roomSalt)) return pending
         return { paths: pending.paths, pending: false, ack: { publisher, sessionId: record.holder.sessionId, fence: head.fence, rev: head.rev, roomSalt: meta.roomSalt } }
-      })(),
+      }),
       new Promise<Publication>(resolve => { timer = setTimeout(() => resolve(pending), timeoutMs) }),
     ])
   } catch { return pending }

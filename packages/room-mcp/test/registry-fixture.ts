@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from '../src/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
@@ -30,6 +31,7 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
     fs.writeFileSync(migration, JSON.stringify({ v: 1, sources: {}, done: true }))
   }
   const registry = await registryForDir(dir)
+  return withDirectoryAdmission(dir, 'spawn', async () => {
   const id = registry.newId(), now = Date.now()
   const record: WorkerRecord = {
     v: 1, id, tag, name: `lead+${tag}`, mode: 'local', room: 'local/test/main',
@@ -46,6 +48,8 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
     runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 0 } }], seq: old.seq + 1 }))
   await registry.finishOperation(id)
   return { registry, record: active }
+
+  })
 }
 
 /** A worker as tests describe it (the 0.16 tag-keyed shape); `registerWorkers` turns it into registry facts only. */
@@ -77,6 +81,7 @@ export const fixtureId = (w: Pick<FixtureWorker, 'id' | 'tag'>): string => w.id?
  */
 export async function registerWorkers(session: Session, workers: readonly FixtureWorker[]): Promise<WorkerRegistry> {
   const registry = await migrated(session.dir)
+  return withDirectoryAdmission(session.dir, 'spawn', async () => {
   for (const w of workers) {
     const id = fixtureId(w)
     let record = (await registry.read(id))
@@ -106,10 +111,13 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
   }
   await projectAll(session, registry)
   return registry
+
+  })
 }
 
 /** A fixture worker's run ends: its exit, a done report for `done`, a stop for `dismissed`. */
 export async function finishWorker(session: Session, tag: string, facts: Partial<Pick<FixtureWorker, 'status' | 'exitCode' | 'summary' | 'finishedAt' | 'stopReason'>> = {}): Promise<void> {
+  return withDirectoryAdmission(session.dir, 'report', async () => {
   const registry = await migrated(session.dir)
   const record = (requireWorkerInventory(await registry.list())).find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
   if (!record) throw new Error(`no fixture worker ${tag}`)
@@ -124,6 +132,8 @@ export async function finishWorker(session: Session, tag: string, facts: Partial
   // A dismissal without a stated reason is the lead's own discard (0.16's `dismissedAt`).
   if (status === 'dismissed' && !record.stop) await registry.beginStop(record.id, facts.stopReason ?? 'discarded')
   await projectAll(session, registry)
+
+  })
 }
 
 /** Every lead's views in `session`'s room, written as its projector would. */

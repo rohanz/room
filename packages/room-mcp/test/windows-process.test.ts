@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parseWindowsProcessTable, probeProcess } from '@room/relay/process'
+import { parseWindowsProcessTable, probeProcess } from '@room/local-state/process'
 import { quiesceWorktreeProcesses, signalWorker, workerProcessOwnership } from '../src/worker-process.js'
 
 const cwdFixture = vi.hoisted(() => ({ enabled: false }))
@@ -57,7 +57,7 @@ describe('Windows worker safety (offline fixtures)', () => {
       expect(hookParse(data)).toEqual(parseWindowsProcessTable(data))
     }
     const runtimeCalls: unknown[] = [], hookCalls: unknown[] = []
-    const { readWindowsProcessTable } = await import('@room/relay/process')
+    const { readWindowsProcessTable } = await import('@room/local-state/process')
     readWindowsProcessTable({ exec: (...args) => { runtimeCalls.push(args); return '[]' } }, 42)
     hookRead({ exec: (...args: unknown[]) => { hookCalls.push(args); return '[]' } }, 42)
     expect(hookCalls).toEqual(runtimeCalls)

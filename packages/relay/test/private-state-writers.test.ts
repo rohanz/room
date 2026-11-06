@@ -24,9 +24,9 @@ function files(dir: string): string[] { return fs.readdirSync(dir, { withFileTyp
 function directoryWriters(relative: string, source: string): string[] {
   const failures: string[] = []
   const allowances = new Map(Object.entries(nonState[relative] ?? {}).map(([args, count]) => [normalized(args), count]))
-  if (relative === 'relay/src/private-state.ts') allowances.set('windows config ancestors', 1)
-  if (relative === 'relay/src/private-core.ts' || relative === '../plugins/room/hooks/private-core.mjs') allowances.set('private initializer', 1)
-  if (relative === 'relay/src/leases.ts') { allowances.set('durable directory', 1); allowances.set('windows durable ancestor', 1) }
+  if (relative === 'local-state/src/private-state.ts') allowances.set('windows config ancestors', 1)
+  if (relative === 'local-state/src/private-core.ts' || relative === '../plugins/room/hooks/private-core.mjs') allowances.set('private initializer', 1)
+  if (relative === 'local-state/src/leases.ts') { allowances.set('durable directory', 1); allowances.set('windows durable ancestor', 1) }
   const tree = ts.createSourceFile(relative, source, ts.ScriptTarget.Latest, true)
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && /(?:^|\.)(?:mkdirSync|mkdir)$/.test(node.expression.getText(tree))) {
@@ -34,19 +34,19 @@ function directoryWriters(relative: string, source: string): string[] {
       const statement = node.parent, branch = statement.parent
       let owner: ts.Node | undefined = node.parent
       while (owner && !ts.isFunctionDeclaration(owner)) owner = owner.parent
-      const durableExisting = relative === 'relay/src/leases.ts' && args === 'dir, { mode: 0o700 }'
+      const durableExisting = relative === 'local-state/src/leases.ts' && args === 'dir, { mode: 0o700 }'
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'ensureDurableDirectory'
         && ts.isExpressionStatement(statement) && ts.isIfStatement(branch) && branch.elseStatement === statement
         && normalized(branch.expression.getText(tree)) === '!fs.existsSync(dir)'
         && normalized(branch.thenStatement.getText(tree)) === 'privateStateDirectory(dir)'
-      const durableAncestor = relative === 'relay/src/leases.ts' && args === 'dir'
+      const durableAncestor = relative === 'local-state/src/leases.ts' && args === 'dir'
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'ensureDurableDirectory'
         && ts.isExpressionStatement(statement) && ts.isIfStatement(branch) && branch.thenStatement === statement
         && normalized(branch.expression.getText(tree)) === "process.platform === 'win32' && !holdsFile"
-      const configAncestors = relative === 'relay/src/private-state.ts' && args === 'path.dirname(dir), { recursive: true }'
+      const configAncestors = relative === 'local-state/src/private-state.ts' && args === 'path.dirname(dir), { recursive: true }'
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'primePrivateDirectory'
       // The generated module is audited too: esbuild emits 0o700 as decimal 448.
-      const privateInitializer = (relative === 'relay/src/private-core.ts' && args === 'dir, { mode: 0o700 }'
+      const privateInitializer = (relative === 'local-state/src/private-core.ts' && args === 'dir, { mode: 0o700 }'
         || relative === '../plugins/room/hooks/private-core.mjs' && args === 'dir, { mode: 448 }')
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'initializePrivateDirectory'
       const key = privateInitializer ? 'private initializer' : durableExisting ? 'durable directory' : durableAncestor ? 'windows durable ancestor' : configAncestors ? 'windows config ancestors' : args
@@ -61,19 +61,19 @@ function directoryWriters(relative: string, source: string): string[] {
   return failures
 }
 it('all clone room-state directory creation uses the shared private initializer or its generated hook module', () => {
-  const failures = [...files(path.join(packages, 'relay/src')), ...files(path.join(packages, 'room-mcp/src')), ...files(path.join(packages, '../plugins/room/hooks'))]
+  const failures = [...files(path.join(packages, 'local-state/src')), ...files(path.join(packages, 'relay/src')), ...files(path.join(packages, 'room-mcp/src')), ...files(path.join(packages, '../plugins/room/hooks'))]
     .flatMap(file => directoryWriters(path.relative(packages, file).split(path.sep).join('/'), fs.readFileSync(file, 'utf8')))
   expect(failures).toEqual([])
 })
 
 it('does not exempt additional leases, core or hook mkdir calls', () => {
-  for (const relative of ['relay/src/leases.ts', 'relay/src/private-core.ts', '../plugins/room/hooks/private-core.mjs', '../plugins/room/hooks/common.mjs']) {
+  for (const relative of ['local-state/src/leases.ts', 'local-state/src/private-core.ts', '../plugins/room/hooks/private-core.mjs', '../plugins/room/hooks/common.mjs']) {
     const source = fs.readFileSync(path.join(packages, relative), 'utf8')
     expect(directoryWriters(relative, source + '\nfs.mkdirSync(unprotected, { recursive: true })')).toHaveLength(1)
     if (relative === '../plugins/room/hooks/common.mjs') continue // no creation allowance remains in the hook wrapper
-    const call = relative === 'relay/src/leases.ts'
+    const call = relative === 'local-state/src/leases.ts'
       ? 'if (!fs.existsSync(dir)) privateStateDirectory(dir)\n    else fs.mkdirSync(dir, { mode: 0o700 })'
-      : relative === 'relay/src/private-core.ts' ? 'fs.mkdirSync(dir, { mode: 0o700 })' : 'fs.mkdirSync(dir, { mode: 448 })'
+      : relative === 'local-state/src/private-core.ts' ? 'fs.mkdirSync(dir, { mode: 0o700 })' : 'fs.mkdirSync(dir, { mode: 448 })'
     expect(source).toContain(call)
     expect(directoryWriters(relative, source.replace(call, `${call};\n${call}`))).toHaveLength(1)
     expect(directoryWriters(relative, source.replace(call, 'void 0'))).toHaveLength(1)
@@ -91,9 +91,9 @@ it('counts every non-state exemption, rejecting duplicate matching calls and sta
 })
 
 it('limits the plain durable ancestor allowance to Windows directories that hold no file', () => {
-  const source = fs.readFileSync(path.join(packages, 'relay/src/leases.ts'), 'utf8')
+  const source = fs.readFileSync(path.join(packages, 'local-state/src/leases.ts'), 'utf8')
   const call = "if (process.platform === 'win32' && !holdsFile) fs.mkdirSync(dir)"
   expect(source).toContain(call)
-  expect(directoryWriters('relay/src/leases.ts', source.replace(call, `${call};\n${call}`))).toHaveLength(1)
-  expect(directoryWriters('relay/src/leases.ts', source.replace(' && !holdsFile', ''))).toHaveLength(2)
+  expect(directoryWriters('local-state/src/leases.ts', source.replace(call, `${call};\n${call}`))).toHaveLength(1)
+  expect(directoryWriters('local-state/src/leases.ts', source.replace(' && !holdsFile', ''))).toHaveLength(2)
 })

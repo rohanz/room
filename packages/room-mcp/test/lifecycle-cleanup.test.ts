@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
@@ -83,6 +84,7 @@ describe('worker lifecycle cleanup', () => {
       writeFileSync(join(root, 'a'), 'base')
       git('add', 'a')
       git('commit', '-qm', 'base')
+      await storageRegistration(join(root, '.git'))
       const dir = join(root, '.room', 'workers', 'a')
       git('worktree', 'add', '-qb', 'room/a', dir)
       const names: string[] = []

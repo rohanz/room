@@ -6,12 +6,11 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./leases": "./src/leases.ts",
-    "./process": "./src/process.ts",
     "./local-migrate": "./src/local-migrate.ts"
   },
   "dependencies": {
     "@room/hub-core": "*",
+    "@room/local-state": "*",
     "@room/shared": "*",
     "lib0": "^0.2.117",
     "ws": "^8.21.0",

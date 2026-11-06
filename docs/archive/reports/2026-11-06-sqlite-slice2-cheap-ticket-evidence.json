@@ -1,0 +1,200 @@
+{
+  "date": "2026-11-06",
+  "baselineCommit": "9e6e5694598349bc3175aab34186c02591525c4c",
+  "environment": {
+    "node": "v22.23.4",
+    "platform": "darwin",
+    "arch": "arm64",
+    "coldStartupExcluded": true,
+    "filesystemType": "1a"
+  },
+  "method": "Two source-module copies with separate lazy gate workers and temporary common directories; register once and complete one first-admission warmup per side, then 30 sequential pairs, alternating before/after order each pair. Time await admit followed by await finish with performance.now(). No parallel measurements or fsync mocking; host machine shared with other Room work. Quantiles use nearest-rank ceil(n*p).",
+  "finalSamples": [
+    {
+      "name": "before",
+      "firstAdmitFinishMs": 65.41845799999999,
+      "n": 30,
+      "p50": 75.74537499999997,
+      "p95": 101.90075000000013,
+      "samples": [
+        81.93887500000005,
+        69.15129100000001,
+        76.12012500000003,
+        65.77554099999998,
+        101.90075000000013,
+        66.91454099999987,
+        85.915708,
+        63.58012499999995,
+        66.79220899999996,
+        73.54091699999981,
+        57.49700000000007,
+        86.575875,
+        79.03700000000003,
+        64.10783300000003,
+        61.39916599999992,
+        82.72120799999993,
+        67.95679199999995,
+        73.56575000000021,
+        60.98758299999963,
+        74.3215839999998,
+        76.04304100000036,
+        79.81612499999983,
+        77.28591700000015,
+        99.57316600000013,
+        121.00216599999976,
+        101.07416599999988,
+        81.29174999999987,
+        75.74537499999997,
+        67.2222499999998,
+        89.753334
+      ]
+    },
+    {
+      "name": "after",
+      "firstAdmitFinishMs": 54.67866600000002,
+      "n": 30,
+      "p50": 10.658749999999827,
+      "p95": 20.27808300000015,
+      "samples": [
+        8.461209000000053,
+        5.0776670000000195,
+        19.20441699999992,
+        5.035708999999997,
+        12.823750000000018,
+        13.312541999999894,
+        18.05933300000015,
+        10.658749999999827,
+        19.21920799999998,
+        9.566417000000001,
+        8.532791999999972,
+        8.90908300000001,
+        11.401584000000184,
+        14.327166000000034,
+        10.95229100000006,
+        10.076166000000057,
+        9.946082999999817,
+        9.539416999999958,
+        11.451332999999977,
+        5.200041000000056,
+        8.740542000000005,
+        9.586457999999766,
+        20.27808300000015,
+        12.24462500000027,
+        10.806333999999879,
+        26.64816699999983,
+        18.47679100000005,
+        12.962708999999904,
+        8.442208000000392,
+        5.324791000000005
+      ]
+    }
+  ],
+  "firstRunBeforeMarkerImplementation": {
+    "before": {
+      "n": 30,
+      "p50Ms": 44.058750000000146,
+      "p95Ms": 57.98870899999997
+    },
+    "after": {
+      "n": 30,
+      "p50Ms": 4.356832999999824,
+      "p95Ms": 14.608249999999998
+    }
+  },
+  "interpretation": "Final warm admit+finish p50 improved 85.9%, p95 80.1%. Host load was not isolated; absolute latency varied between runs. The final run includes the durable first-admission marker design. First-admission timings are individual observations, not quantiles. These measurements do not qualify the end-to-end hook or lifecycle budgets.",
+  "baselineSourceSha256": {
+    "gate.ts": "86f912d43fc05a8091716f1cf9541388f598bc6ef8b4d1e2da12b577f40f3791",
+    "gate-thread.ts": "3bacdf1b073db84fdbc5a7b9dee7f4958f42abd7d048151ac7388b52ea03a017",
+    "leases.ts": "2233a74672d37583eb0ebbb20879dbd4dbe161ff1f337fd6d577066ba389e972",
+    "protocol.ts": "6c02e33e8177f8a3c3dc3601939eef2e6df78ec3a4c69f5f45bccc771bbb7000"
+  },
+  "candidateSourceSha256": {
+    "gate.ts": "b6a063c82b1cecf37169bb50d8227ccdc352110bd33db97f0846c9278e2ee595",
+    "gate-thread.ts": "213554ce5331b278bba26131000b4b02a862b0dfac2c6904b93bd15935ff0672",
+    "leases.ts": "98e1be4b231865294fd6589af8e65bcf94cd8c7c92074972ef007055c5124627",
+    "protocol.ts": "c169153edc554ea5d6143f1e1de6a62e3f512014146ee5831567e2c143eb0a61"
+  },
+  "design": "AtomicOptions defaults to durable true. Gate guards and per-call tickets use durable false; registrations, first-admission hasHeldTickets marker, gate transitions and recovery audits retain fsync. Marked ticketless registrations block drain until clean unregister or verified-dead audited registration:<nonce> recovery. closeStorageGates drains accepted RPCs, refuses racing calls and joins the worker; later calls may restart it.",
+  "validation": [
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts test/gate.test.ts --maxWorkers 1",
+      "passed": 27
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts test/gate-thread.test.ts --maxWorkers 1",
+      "passed": 4
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts test/gate-process.test.ts --maxWorkers 1",
+      "passed": 6
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts test/durable-directory.test.ts --maxWorkers 1",
+      "passed": 14,
+      "skippedNativeWindows": 3
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts test/atomic-visibility.test.ts --maxWorkers 1",
+      "passed": 3
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/relay --config vitest.config.ts test/private-state-writers.test.ts --maxWorkers 1",
+      "passed": 4
+    },
+    {
+      "command": "npm run typecheck",
+      "exitCode": 0
+    },
+    {
+      "command": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/room-mcp --config vitest.config.ts test/leases.test.ts --maxWorkers 1",
+      "passed": 12
+    }
+  ],
+  "failedRuns": [
+    "Initial gate-process run: old takeover test omitted unregister after finishing a touched registration; adjusted fixture lifecycle to finish/unregister and retain the complete=true assertion, then 6/6 passed.",
+    "Lead+peer preview was partial because the offline lead publication was stale; no anchor files applied and the test config was missing. Not combined-code validation.",
+    "Peer rev13 storage-admission preview: 15/16 passed; helper-finish test expected immediate complete but a touched parent registration remained. Sent to owning peer for retirement handshake correction. Hook-fixes preview at the same revision passed 6/6. Peer fixed helper finish to retire the idle parent; subsequent rev20 storage-admission passed 16/16."
+  ],
+  "remainingIntegration": "Lead must refresh stale/offline publication, rebuild bundles and run comprehensive integrated validation. Current peer-only previews validate MCP admission/close integration; no commit or push.",
+  "initialPreview": {
+    "peer": "rohanz+s2-chokepoint",
+    "revision": 9,
+    "inputHash": "984ab2db3e85f82602e8332aa5b668f2b65dc4b4ac30fbb2bd936a79b47fa0a2",
+    "test": "packages/room-mcp/test/storage-admission.test.ts",
+    "passed": 16,
+    "status": "interim snapshot; peer moved during check"
+  },
+  "previews": [
+    {
+      "peer": "rohanz+s2-chokepoint",
+      "revision": 20,
+      "inputHash": "c3618e1329e10f570b0a85b53165aee90d11f56cfe5a02ff5a0ff20aeb125bbd",
+      "test": "packages/room-mcp/test/storage-admission.test.ts",
+      "passed": 16,
+      "status": "complete; peer did not move during check"
+    },
+    {
+      "peer": "rohanz+s2-chokepoint",
+      "revision": 20,
+      "inputHash": "c3618e1329e10f570b0a85b53165aee90d11f56cfe5a02ff5a0ff20aeb125bbd",
+      "test": "packages/room-mcp/test/hook-fixes.test.ts",
+      "passed": 6,
+      "status": "complete; peer did not move during check"
+    },
+    {
+      "peer": "rohanz+s2-chokepoint",
+      "revision": 20,
+      "inputHash": "7781b9c422f2d8db0af9c18ceff282974d2dd441ee3c584441cfce99e415492b",
+      "test": "packages/room-mcp/test/wakes-audit.test.ts",
+      "passed": 24,
+      "status": "snapshot passed; only scripts/measure-lifecycle.mts moved during the run, which this test does not import or invoke"
+    }
+  ],
+  "finalSourcePreview": {
+    "peer": "rohanz+s2-chokepoint",
+    "revision": 22,
+    "conflicts": 0,
+    "testsRun": false,
+    "note": "Final current source preview includes subsequent peer measurement and tools/workers edits; the recorded integration test passes cover revision20, not a comprehensive latest-tree validation. Lead owns final integrated validation."
+  }
+}

@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from '../src/storage-admission.js'
 import { realRepo, setupLead } from './workers-fixture.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -134,6 +135,7 @@ describe('dir= retry of a failed carried worker', () => {
     const t = await failedCarry()
     const id = t.registry.newId()
     try {
+      await withDirectoryAdmission(t.repo, 'spawn', async () => {
       await t.registry.writeIntent({ ...t.retry, id, tag: 'aborted', name: 'rohanz+aborted', phase: 'intent',
         runs: [{ ...t.retry.runs[0], launch: undefined }], seq: 1 })
       expect(t.git('rev-parse', 'refs/room/carry/aborted')).toBe(t.owner.carriedBase)
@@ -142,6 +144,8 @@ describe('dir= retry of a failed carried worker', () => {
       expect(t.git('for-each-ref', '--format=%(refname)', 'refs/room/carry/aborted', 'refs/room/carry-untracked/aborted')).toBe('')
       expect(t.git('rev-parse', 'refs/room/carry/original')).toBe(t.owner.carriedBase)
       expect(fs.existsSync(t.owner.dir)).toBe(true)
-    } finally { await t.registry.finishOperation(id); await t.leadTools.shutdown() }
+      await t.registry.finishOperation(id)
+      })
+    } finally { await t.leadTools.shutdown() }
   })
 })

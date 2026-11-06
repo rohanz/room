@@ -1,3 +1,4 @@
+import { withoutAdmission } from './storage-admission.js'
 import { sessionHostIdentity } from './hosts/session-host.js'
 /**
  * Presence ends within a bounded time once the host session has finished, even when the MCP lives on
@@ -10,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { liveness, withGuard, writeAtomic, type ProcessIdentity } from './leases.js'
 import { pidAlive } from './worker-process.js'
-import { probeProcess, probeProcessAsync, type ProcessProbe } from '@room/relay/process'
+import { probeProcess, probeProcessAsync, type ProcessProbe } from '@room/local-state/process'
 import { boundSession, readSessionRecord, type Session } from './session.js'
 import { openWorkerReader } from './worker-registry.js'
 import { IdleClaimsJournal } from './idle-claims.js'
@@ -188,6 +189,8 @@ export interface PresenceEndOptions {
   holds(): boolean
   /** It leads a non-terminal worker (`projectable(me).write` is not empty). */
   leadsWorkers(): boolean | Promise<boolean>
+  /** Hold admission from lifecycle query through the resulting presence removal. */
+  withWorkersAdmission?(work: () => Promise<void>): Promise<void>
   /** A `room_wait` is in progress. */
   waiting(): boolean
   /** The host session ended: end presence everywhere and exit. */
@@ -227,7 +230,7 @@ export class PresenceEnd {
     this.episodeId = options.episodeId ?? 'interactive'
     this.last = this.mono()
     if (options.tickMs !== 0) {
-      this.timer = setInterval(() => { void this.tick() }, options.tickMs ?? PRESENCE_TICK_MS)
+      this.timer = setInterval(() => { void withoutAdmission(() => this.tick()).catch(error => options.log?.(`presence check will retry: ${error instanceof Error ? error.message : String(error)}`)) }, options.tickMs ?? PRESENCE_TICK_MS)
       this.timer.unref?.()
     }
   }
@@ -281,6 +284,7 @@ export class PresenceEnd {
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
     if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return
+    const decide = async () => {
     const epoch = this.epoch
     let leadsWorkers = true
     try { leadsWorkers = await this.options.leadsWorkers() }
@@ -293,6 +297,14 @@ export class PresenceEnd {
         this.left = false
         this.options.log?.(`idle presence leave will retry: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }
+    }
+    try {
+      if (this.options.withWorkersAdmission) await this.options.withWorkersAdmission(decide)
+      else await decide()
+    } catch (error) {
+      // Maintenance/capacity refusal gives us no authority to decide presence. Keep it and retry next tick.
+      this.options.log?.(`worker admission unavailable; presence retained: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 }

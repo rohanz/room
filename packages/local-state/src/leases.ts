@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { privateStateDirectory } from './private-state.js'
+import { privateDirectoryPath } from './private-core.js'
 import { pidAlive, probeOwnProcess, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
@@ -38,15 +39,23 @@ function syncDirectory(dir: string): void {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
-function ensureDurableDirectory(dir: string, holdsFile = true): void {
+/**
+ * Rewalk the current namespace on every publication. A leaf dev/ino memo cannot prove that its
+ * ancestors' entries are durable: another process may rename an ancestor, replace it and reinsert
+ * the original leaf (or reuse a removed inode). Even a surviving leaf must sync every parent.
+ * We do not own/exclude namespace changes, so there is no sound cross-publication memo here.
+ * For Room state the owned namespace starts at room/: sync its entry in the existing common
+ * directory, but not the user's repository location above it. Other writers retain the root walk.
+ */
+function ensureDurableDirectory(dir: string, holdsFile: boolean, boundary?: string, durable = true): void {
   const parent = path.dirname(dir)
   // A drive/share root already exists; Windows rejects mkdir on it with EPERM.
-  // Stop only here: existing descendants still need their parent synced below.
-  if (parent === dir) {
+  // The existing common directory is also a boundary; Room never creates or publishes it.
+  if (parent === dir || dir === boundary) {
     if (!fs.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
     return
   }
-  ensureDurableDirectory(parent, false)
+  ensureDurableDirectory(parent, false, boundary, durable)
   try {
     // Every atomic writer uses the same creation/Windows ACL policy as daemon startup.
     if (process.platform === 'win32' && !holdsFile) fs.mkdirSync(dir) // ancestors hold no private files
@@ -54,7 +63,7 @@ function ensureDurableDirectory(dir: string, holdsFile = true): void {
     else fs.mkdirSync(dir, { mode: 0o700 }) // EEXIST below; existing OS ancestors may be canonical aliases
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
   // EEXIST may mean another writer created this directory but has not fsynced its parent yet.
-  syncDirectory(parent)
+  if (durable) syncDirectory(parent)
 }
 
 const startMarker = (startTime: string): string => createHash('sha256').update(startTime).digest('hex').slice(0, 24)
@@ -62,7 +71,7 @@ const tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/
 
 /** Opportunistic maintenance: a pid must be gone before its temp is removed.
  * A failed or disagreeing identity probe alone cannot prove the writer exited. */
-export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProcess): number {
+export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProcess, durable = true): number {
   let removed = 0
   for (const name of fs.readdirSync(dir)) {
     const match = tempPattern.exec(name)
@@ -76,43 +85,48 @@ export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProce
     try { fs.unlinkSync(path.join(dir, name)); removed++ }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
   }
-  if (removed) syncDirectory(dir)
+  if (removed && durable) syncDirectory(dir)
   return removed
 }
 
-function writeTemp(file: string, content: object): string {
-  const dir = path.dirname(file)
-  ensureDurableDirectory(dir)
-  cleanupOrphanTemps(dir)
+/** Durability is the default. Use false only for live-process coordination whose recovery
+ * authority is held in separate durable records; publication is still complete and atomic. */
+export interface AtomicOptions { durable?: boolean }
+
+function writeTemp(file: string, content: object, durable: boolean): string {
+  const dir = path.resolve(path.dirname(file))
+  const namespace = privateDirectoryPath(dir)
+  ensureDurableDirectory(dir, true, namespace.inState ? path.dirname(namespace.root) : undefined, durable)
+  cleanupOrphanTemps(dir, probeProcess, durable)
   const start = probeOwnProcess()?.startTime
   const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : 'u'}-n${randomUUID()}.tmp`
   const fd = fs.openSync(temp, 'wx', 0o600)
-  try { fs.writeFileSync(fd, JSON.stringify(content) + '\n'); fs.fsyncSync(fd) }
-  catch (e) { fs.closeSync(fd); fs.rmSync(temp, { force: true }); syncDirectory(dir); throw e }
+  try { fs.writeFileSync(fd, JSON.stringify(content) + '\n'); if (durable) fs.fsyncSync(fd) }
+  catch (e) { fs.closeSync(fd); fs.rmSync(temp, { force: true }); if (durable) syncDirectory(dir); throw e }
   fs.closeSync(fd)
   return temp
 }
 
 /** Atomic exclusive create: link a fully written temp file so no reader sees a partial JSON value. */
-export function createExclusive(file: string, content: object): boolean {
-  const temp = writeTemp(file, content)
+export function createExclusive(file: string, content: object, { durable = true }: AtomicOptions = {}): boolean {
+  const temp = writeTemp(file, content, durable)
   try {
     try { fs.linkSync(temp, file) }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false; throw e }
-    syncDirectory(path.dirname(file))
+    if (durable) syncDirectory(path.dirname(file))
     return true
-  } finally { fs.rmSync(temp, { force: true }); syncDirectory(path.dirname(file)) }
+  } finally { fs.rmSync(temp, { force: true }); if (durable) syncDirectory(path.dirname(file)) }
 }
 
-/** Durable replacement for single-writer records or files held under a guard. */
-export function writeAtomic(file: string, content: object): void {
-  const temp = writeTemp(file, content)
-  try { renameAtomic(temp, file); syncDirectory(path.dirname(file)) }
-  finally { fs.rmSync(temp, { force: true }); syncDirectory(path.dirname(file)) }
+/** Atomic replacement for single-writer records or files held under a guard; durable by default. */
+export function writeAtomic(file: string, content: object, { durable = true }: AtomicOptions = {}): void {
+  const temp = writeTemp(file, content, durable)
+  try { renameAtomic(temp, file); if (durable) syncDirectory(path.dirname(file)) }
+  finally { fs.rmSync(temp, { force: true }); if (durable) syncDirectory(path.dirname(file)) }
 }
 
 /** Windows can temporarily deny replacement while another writer or scanner holds the destination.
- * Keep the fully synced temp and retry only those sharing/permission errors, bounded to two seconds. */
+ * Keep the fully written temp and retry only those sharing/permission errors, bounded to two seconds. */
 function renameAtomic(temp: string, file: string): void {
   const until = performance.now() + 2000
   let sleeper: Int32Array | undefined
@@ -147,43 +161,43 @@ function ownToken(): InstanceToken {
 }
 
 /** Guard acquisition recovers a dead guard through its own guard; a live or unreadable holder blocks. */
-function acquireGuard(file: string, probe: ProcessProbe, depth = 0): InstanceToken {
+function acquireGuard(file: string, probe: ProcessProbe, depth = 0, durable = true): InstanceToken {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`)
   const token = ownToken()
-  if (createExclusive(file, token)) return token
+  if (createExclusive(file, token, { durable })) return token
   const previous = read(file)
   const previousHolder = previous && leaseToken(previous)
   if (!previousHolder || liveness(previousHolder, probe) !== 'dead') throw new Error(`lease guard busy: ${file}`)
-  const outer = acquireGuard(`${file}.guard`, probe, depth + 1)
+  const outer = acquireGuard(`${file}.guard`, probe, depth + 1, durable)
   try {
     const latest = read(file)
     const latestHolder = latest && leaseToken(latest)
     if (latestHolder && liveness(latestHolder, probe) === 'dead') {
       fs.unlinkSync(file)
-      syncDirectory(path.dirname(file))
+      if (durable) syncDirectory(path.dirname(file))
     }
-  } finally { releaseGuard(`${file}.guard`, outer) }
-  if (createExclusive(file, token)) return token
+  } finally { releaseGuard(`${file}.guard`, outer, durable) }
+  if (createExclusive(file, token, { durable })) return token
   throw new Error(`lease guard busy: ${file}`)
 }
 
-function releaseGuard(file: string, token: InstanceToken): void {
+function releaseGuard(file: string, token: InstanceToken, durable: boolean): void {
   const current = read(file)
   if (current && leaseToken(current)?.nonce === token.nonce) {
     fs.unlinkSync(file)
-    syncDirectory(path.dirname(file))
+    if (durable) syncDirectory(path.dirname(file))
   }
 }
 
-export function withGuard<T>(file: string, fn: () => T extends PromiseLike<unknown> ? never : T, probe: ProcessProbe = probeProcess): T {
+export function withGuard<T>(file: string, fn: () => T extends PromiseLike<unknown> ? never : T, probe: ProcessProbe = probeProcess, { durable = true }: AtomicOptions = {}): T {
   const guard = `${file}.guard`
-  const token = acquireGuard(guard, probe)
+  const token = acquireGuard(guard, probe, 0, durable)
   try {
     const result = fn()
     if (result && typeof (result as { then?: unknown }).then === 'function') throw new TypeError('lease guard callback must be synchronous')
     return result
   }
-  finally { releaseGuard(guard, token) }
+  finally { releaseGuard(guard, token, durable) }
 }
 
 export function replace(file: string, expect: (content: Record<string, any>) => boolean, next: object): boolean {

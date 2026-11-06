@@ -2,7 +2,7 @@ import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
 import { manifestPaths, participantRecord, scopeLine, type Claim, type NoteMsg } from '@room/shared'
 import { dirname, resolve } from 'node:path'
-import { primePrivateDirectory } from '@room/relay'
+import { primePrivateDirectory } from '@room/local-state/private-state'
 import { gitCommonDir, realGitCommonDir } from '@room/roomd'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
@@ -290,6 +290,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       rooms.add(s, 'primary')
+      if (rooms.isClosed) return `not joined: this Room session is shutting down; ${s.roomName} was left again.`
       adoptLocalReplica(cur?.localReplica, s.localReplica)
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)

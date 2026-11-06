@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from '../storage-admission.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -98,6 +99,7 @@ export function previewSettler(state: HandlerState, participants: readonly Parti
 }
 
 export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number; settler?: ReturnType<typeof previewSettler> } = {}) {
+  return withDirectoryAdmission(caller.dir, 'preview', async () => {
   const settler = options.settler ?? previewSettler(state, participants)
   for (;;) {
     try {
@@ -108,6 +110,8 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
       if (!(error instanceof PreviewMoved) || !await settler.settle()) throw error
     }
   }
+
+  })
 }
 
 /** Compare two regular files in chunks without holding either whole; links and non-files never match. */

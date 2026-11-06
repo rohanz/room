@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Retirement keyed by worker ID (registry §12): the registry records it, each room's projector cleans up. */
@@ -20,12 +21,15 @@ import { git } from '@room/roomd/git'
  * cleaned now. A room we are not in stays pending until its projector runs (§12 step 3).
  */
 export async function retireWorker(rooms: Rooms, s: Session, id: string, archive: RetiredWorker, extra: Pick<WorkerRecord, 'keptWorktree'> = {}): Promise<void> {
+  return withDirectoryAdmission(s.dir, 'retire', async () => {
   const registry = await registryForDir(s.dir)
   const record = (await registry.read(id))
   if (!record) return
   if (fs.existsSync(path.join(record.dir, '.git'))) PolicyStore.retire(record.dir, record.room, record.name, new URL(s.roomUrl).origin)
   await registry.beginRetirement(id, archive, extra)
   await rooms.project()
+
+  })
 }
 
 export type CollectedProcesses = { alive: (w: LocalWorker) => boolean | Promise<boolean>; probe?: ProcessProbe; list?: CwdProcessLister }
@@ -46,6 +50,7 @@ export type RemoveCheckoutOptions = {
  * room_collect of a pending record, the sweep and legacy adoption, so every path keeps the same rules.
  */
 export async function removeCollectedCheckout(s: Session, record: WorkerRecord | undefined, w: LocalWorker, processes: CollectedProcesses, o: RemoveCheckoutOptions = {}): Promise<CleanupResult> {
+  return withDirectoryAdmission(s.dir, 'retire', async () => {
   const registry = await registryForDir(s.dir)
   const evidence = record ? await registry.checkoutUsers(record) : []
   if ('reason' in evidence) return { removed: false, reason: `worker evidence blocked: ${evidence.blockers.join('; ')}` }
@@ -79,6 +84,8 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
     }
   } catch (error) { return { removed: false, reason: 'cleanup incomplete: ' + (error instanceof Error ? error.message : String(error)).slice(0, 300) } }
   return { removed: true, terminated, ...(preservation.recoveryRef ? { recoveryRef: preservation.recoveryRef } : {}) }
+
+  })
 }
 
 /**
@@ -88,6 +95,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
  * reply says why. Shared by a later room_collect and the auto-retire sweep: a kept worktree never outlives its record.
  */
 export async function finishPendingCollect(s: Session, rooms: Rooms, id: string, processes: CollectedProcesses): Promise<string | undefined> {
+  return withDirectoryAdmission(s.dir, 'retire', async () => {
   const registry = await registryForDir(s.dir)
   const record = (await registry.read(id))
   const status = record?.collectPending && record.phase === 'active' ? (await registry.status(id)) : undefined
@@ -122,6 +130,8 @@ export async function finishPendingCollect(s: Session, rooms: Rooms, id: string,
     await retireWorker(rooms, s, id, (await archive(w.summary ?? '')))
     return `cleaned up ${w.tag}: temporary files, branch and logs` + (result.terminated.length ? `\nstopped processes from ${w.tag}: ${result.terminated.join(', ')}` : '')
   } finally { await registry.finishOperation(id) }
+
+  })
 }
 
 /** 0.17.30 retired a collected worker whose exit was unconfirmed while keeping its worktree (keptReason below). */
@@ -133,6 +143,7 @@ const LEGACY_UNCONFIRMED = 'clean exit not confirmed'
  * kept marker from the record and every room's retired entry. Anything else leaves it as it was, for discard.
  */
 async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, processes: CollectedProcesses): Promise<void> {
+  return withDirectoryAdmission(s.dir, 'retire', async () => {
   const registry = await registryForDir(s.dir)
   const status = (await registry.status(record.id))
   if (!status || !record.keptWorktree || !fs.existsSync(record.keptWorktree)) return
@@ -154,6 +165,8 @@ async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, p
       })
     }
   } finally { await registry.finishOperation(record.id) }
+
+  })
 }
 
 /**
@@ -161,6 +174,7 @@ async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, p
  * session stays addressable until an explicit collect or discard; a stopped worker waits for its lead.
  */
 export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
+  return withDirectoryAdmission(s.dir, 'retire', async () => {
   const registry = await registryForDir(s.dir)
   const probe = rooms.probe.bind(rooms)
   // Retired records otherwise accumulate for the clone's lifetime; the room's archive entry outlives them.
@@ -253,4 +267,6 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
       ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
     })))
   }
+
+  })
 }

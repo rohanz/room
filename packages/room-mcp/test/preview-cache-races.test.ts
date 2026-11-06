@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import { previewCachePath, removePreviewCache, runInMergedTree, setPreviewProcessProbeForTests, waitForPreviewSweepForTests } from '../src/tools/files.js'
 import type { Session } from '../src/session.js'
+import { storageGate } from '../src/storage-admission.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -143,8 +144,8 @@ it('keeps an older direct-key worktree separate from the shared entry', async ()
   expect(path.dirname(entry)).toBe(`${key}.slots`)
   const result = await runInMergedTree({ dir: root } as Session, head, new Map(), 'echo "1 passed"')
   expect(result.passed, result.text).toBe(true)
-  expect(fs.existsSync(key)).toBe(true)
-  expect(fs.existsSync(entry)).toBe(true)
+  expect(fs.existsSync(key), result.text).toBe(true)
+  expect(fs.existsSync(entry), result.text).toBe(true)
 }, 30_000)
 
 it('keeps a finished check result if cache cleanup fails', async () => {
@@ -165,4 +166,21 @@ it('keeps a finished check result if cache cleanup fails', async () => {
   expect(result.passed).toBe(false)
   expect(result.text).toContain('1 failed')
   expect(result.text).toContain('preview cache abandoned after the check')
+}, 30_000)
+
+it('uses the cache when the lock helper\'s storage admission outlasts the lock attempt deadline', async () => {
+  const { root, head } = fixture()
+  const gate = storageGate(path.join(root, '.git')), admit = gate.admit.bind(gate)
+  let delayed = false
+  // The lock helper is the first helper admitted; under load its identity probe and admission can take over a second.
+  vi.spyOn(gate, 'admit').mockImplementation(async (registration, kind, options) => {
+    if (options?.identity && !delayed) { delayed = true; await new Promise(resolve => setTimeout(resolve, 1_500)) }
+    return admit(registration, kind, options)
+  })
+  const entry = await previewCachePath(root)
+  const result = await runInMergedTree({ dir: root } as Session, head, new Map(), 'echo "1 passed"')
+  expect(result.passed, result.text).toBe(true)
+  expect(delayed).toBe(true)
+  // The 1 s bound covers the non-blocking lock attempt after GO, not the admission before it: the cache was used.
+  expect(fs.existsSync(entry), result.text).toBe(true)
 }, 30_000)

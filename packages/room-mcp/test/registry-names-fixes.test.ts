@@ -1,3 +1,4 @@
+import { openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -86,7 +87,8 @@ describe('whole redesign registry and names regressions', () => {
     const mcp = { pid: 200, startTime: 'mcp', executable: '/bin/room-mcp' }
     const host = { pid: 300, startTime: 'host', executable: '/bin/codex' }
     const alive = new Set([mcp.pid, host.pid])
-    const registry = await WorkerRegistry.open(dir, { migrate: false, watch: false,
+    execFileSync('git', ['init', '--bare', '-q', dir])
+    const registry = await openAdmittedRegistry(dir, { migrate: false, watch: false,
       liveness: identity => alive.has(identity.pid) ? 'alive' : 'dead' })
     const record: WorkerRecord = { v: 1, id: 'w_handoff', tag: 'handoff', name: 'lead+handoff', mode: 'local',
       room: 'local/x/main', lead: { participant: 'lead', room: 'local/x/main', instance: launcher }, host: 'codex',
@@ -117,7 +119,8 @@ describe('whole redesign registry and names regressions', () => {
 
   it('M8 gives a restarted MCP a fresh idle episode, including after a completed H1 release', async () => {
     const dir = temp()
-    const registry = await WorkerRegistry.open(dir, { migrate: false, watch: false })
+    execFileSync('git', ['init', '--bare', '-q', dir])
+    const registry = await openAdmittedRegistry(dir, { migrate: false, watch: false })
     const room = new RoomDoc()
     room.participants.set('ben\0holder', { sessionId: 'same-host', epoch: 22 })
     room.claims.set('first', { id: 'first', path: 'first.ts', from: 1, to: 2, by: 'ben', byKind: 'agent', intent: 'first', at: 1 })
@@ -151,7 +154,8 @@ describe('whole redesign registry and names regressions', () => {
 
   it('M8 replays a pending notice under its original ID before releasing a new idle episode', async () => {
     const dir = temp()
-    const registry = await WorkerRegistry.open(dir, { migrate: false, watch: false })
+    execFileSync('git', ['init', '--bare', '-q', dir])
+    const registry = await openAdmittedRegistry(dir, { migrate: false, watch: false })
     const room = new RoomDoc()
     room.participants.set('ben\0holder', { sessionId: 'same-host', epoch: 22 })
     room.claims.set('first', { id: 'first', path: 'first.ts', from: 1, to: 1, by: 'ben', byKind: 'agent', intent: 'first', at: 1 })

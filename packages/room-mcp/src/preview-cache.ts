@@ -1,3 +1,4 @@
+import { admitStorageHelper } from './storage-admission.js'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -46,11 +47,20 @@ export async function readProcessGroupTable(): Promise<{ pgid: number; stat: str
  * look alive forever and its cached tree could never be reclaimed. When the process table cannot be read, the signal
  * probe is the fallback.
  */
+/**
+ * Signal-0 fallback when the process table cannot be read. Only ESRCH proves absence: EPERM means the target exists
+ * but cannot be signalled, and any other failure is unknown, so both count as alive. Callers retain or wait (within
+ * their own bounds) rather than treat an unreadable process as gone.
+ */
+function signalProbeAlive(target: number): boolean {
+  try { process.kill(target, 0); return true }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
+}
 /** Whether one process is still running (a zombie has exited and only awaits reaping). Same fallback as the group check. */
 export async function processAlive(pid: number, table: () => Promise<{ pid: number; stat: string }[]> = readProcessTable): Promise<boolean> {
   let rows: { pid: number; stat: string }[]
   try { rows = await table() }
-  catch { try { process.kill(pid, 0); return true } catch { return false } }
+  catch { return signalProbeAlive(pid) }
   return rows.some(row => row.pid === pid && !row.stat.startsWith('Z'))
 }
 
@@ -61,10 +71,12 @@ async function readProcessTable(): Promise<{ pid: number; stat: string }[]> {
 export async function processGroupAlive(pgid: number, table: () => Promise<{ pgid: number; stat: string }[]> = readProcessGroupTable): Promise<boolean> {
   let rows: { pgid: number; stat: string }[]
   try { rows = await table() }
-  catch { try { process.kill(-pgid, 0); return true } catch { return false } }
+  catch { return signalProbeAlive(-pgid) }
   return rows.some(row => row.pgid === pgid && !row.stat.startsWith('Z'))
 }
 
+/** How long the non-blocking lockf/flock attempt may take to report READY once released by GO. */
+const LOCK_ATTEMPT_MS = 1000
 export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | undefined> {
   const file = `${entry}.lock`
   const command = lockUnavailableForTests ? undefined : process.platform === 'darwin' ? 'lockf' : process.platform === 'linux' ? 'flock' : undefined
@@ -77,7 +89,11 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     ? ['-t', '0', file, 'sh', '-c', helper]
     : ['-n', file, 'sh', '-c', helper]
   return new Promise(resolve => {
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'] })
+    // The shell stays the helper's identity while lockf/flock and tracked children run.
+    const child = spawn('sh', ['-c', 'read -r gate; [ "$gate" = GO ] || exit 1; "$@"; status=$?; exit "$status"', 'sh', command, ...args], { stdio: ['pipe', 'pipe', 'ignore'] })
+    let finishAdmission: (() => Promise<void>) | undefined
+    let closed = false
+    child.once('close', () => { closed = true; void finishAdmission?.().catch(() => {}) })
     let settled = false
     let timer: NodeJS.Timeout | undefined
     const finish = (release?: PreviewUnlock) => {
@@ -98,7 +114,15 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     })
     child.on('error', () => finish())
     child.on('close', () => finish())
-    timer = setTimeout(() => finish(), 1000)
+    // The deadline bounds the non-blocking lock attempt, so it starts at GO: the helper's storage admission before GO
+    // has its own bounds (identity probe, gate guard wait), and a refused admission kills the helper, settling it.
+    void (async () => {
+      if (!child.pid) return
+      finishAdmission = await admitStorageHelper(child.pid)
+      if (closed) { await finishAdmission?.(); return }
+      child.stdin.write('GO\n')
+      if (!settled) timer = setTimeout(() => finish(), LOCK_ATTEMPT_MS)
+    })().catch(() => { child.stdin.end(); child.kill() })
   })
 }
 
@@ -139,7 +163,10 @@ async function processCwds(since?: number): Promise<string[] | undefined> {
     const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
     return procCwds(pids.filter(name => /^\d+$/.test(name)), uid, {
       readCwd: pid => fs.promises.readlink(`/proc/${pid}/cwd`),
-      ownerOf: pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, () => undefined),
+      ownerOf: pid => fs.promises.stat(`/proc/${pid}`).then(st => st.uid, error => {
+        const code = (error as NodeJS.ErrnoException).code
+        return code === 'ENOENT' || code === 'ESRCH' ? 'gone' as const : undefined
+      }),
       startedAt: linuxProcessStart,
     }, since)
   }
@@ -161,14 +188,15 @@ export function lsofCwds(error: Error | null, stdout: string): string[] | undefi
 
 export type ProcReaders = {
   readCwd: (pid: string) => Promise<string>
-  ownerOf: (pid: string) => Promise<number | undefined>
+  /** The owning uid; 'gone' when the process provably exited; undefined when ownership cannot be established. */
+  ownerOf: (pid: string) => Promise<number | 'gone' | undefined>
   /** When the process started, ms since the epoch; undefined when unreadable. */
   startedAt: (pid: string) => Promise<number | undefined>
 }
 
 /**
- * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that another user owns
- * (EACCES/EPERM) is not ours to wait for; our own process with an unreadable working directory (non-dumpable:
+ * Linux: a /proc entry that vanished (ENOENT, ESRCH) is a process that exited; one that another user provably owns
+ * (EACCES/EPERM, with a readable foreign owner) is not ours to wait for; unknown ownership makes the listing incomplete; our own process with an unreadable working directory (non-dumpable:
  * setuid or setcap) is disregarded only when it provably started before the check (`since`), since it cannot be
  * that check's descendant; any other failure makes the listing incomplete.
  */
@@ -181,7 +209,10 @@ export async function procCwds(pids: string[], uid: number | undefined, read: Pr
       if (code === 'ENOENT' || code === 'ESRCH') continue
       if (code === 'EACCES' || code === 'EPERM') {
         const owner = await read.ownerOf(pid)
-        if (owner === undefined || owner !== uid) continue
+        if (owner === 'gone') continue
+        // Unknown ownership is not evidence the process is foreign: the listing is incomplete.
+        if (owner === undefined || uid === undefined) return undefined
+        if (owner !== uid) continue
         const started = since === undefined ? undefined : await read.startedAt(pid)
         if (started !== undefined && started < since!) continue
       }
@@ -214,12 +245,21 @@ export async function clearPreviewQuarantine(entry: string): Promise<boolean> {
   const marker = previewQuarantinePath(entry)
   const marked = await fs.promises.lstat(marker).then(() => true, error => (error as NodeJS.ErrnoException).code !== 'ENOENT')
   if (!marked) return true
-  const real = await fs.promises.realpath(entry).catch(() => path.resolve(entry))
   const since = await fs.promises.readFile(marker, 'utf8').then(text => { const v = (JSON.parse(text) as { since?: unknown }).since; return typeof v === 'number' ? v : undefined }, () => undefined)
-  const cwds = await processCwds(since)
-  if (!cwds || cwds.some(cwd => cwd === real || cwd.startsWith(`${real}${path.sep}`))) return false
+  if (await previewTreeInUse(entry, since)) return false
   await fs.promises.rm(marker, { force: true })
   return true
+}
+
+/**
+ * Whether any of this user's processes has its working directory inside a preview tree. Fails closed: an unreadable
+ * or partial listing counts as in use. `since` disregards an unreadable process that started before the work in
+ * question, as for a quarantine. A process that left both the tree and its process group is beyond this evidence.
+ */
+export async function previewTreeInUse(entry: string, since?: number): Promise<boolean> {
+  const real = await fs.promises.realpath(entry).catch(() => path.resolve(entry))
+  const cwds = await processCwds(since)
+  return !cwds || cwds.some(cwd => cwd === real || cwd.startsWith(`${real}${path.sep}`))
 }
 
 type PreviewMeta = { bytes: number; used: number }

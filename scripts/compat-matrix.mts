@@ -41,6 +41,7 @@ export function selectPairs(pins: Pin[], only?: string, platform: NodeJS.Platfor
 
 /** Socket-free preflight shared by every built implementation before its first pair. */
 export async function validateDescriptor(dir: string, pin?: Pin) {
+  const { verifyBundleDigests } = await import('../packages/room-mcp/src/hosts/codex-install.js')
   const version = JSON.parse(await fs.readFile(path.join(dir, 'plugins/room/.claude-plugin/plugin.json'), 'utf8')).version
   const implementation = await import(pathToFileURL(path.join(dir, '.compat-exports.bundle.mjs')).href)
   let raw: string
@@ -54,9 +55,9 @@ export async function validateDescriptor(dir: string, pin?: Pin) {
   }
   let descriptor: any
   try { descriptor = JSON.parse(raw) } catch { throw new Error('corrupt compat.json: invalid JSON') }
-  if (!descriptor || descriptor.v !== 1) throw new Error('corrupt compat.json: expected descriptor version 1')
+  if (!descriptor || ![1, 2].includes(descriptor.v)) throw new Error('corrupt compat.json: expected descriptor version 1 or 2')
   if (descriptor.release !== version) throw new Error(`compat.json release mismatch: expected ${version}`)
-  if (descriptor.bundleSha256 !== await digest(path.join(dir, 'plugins/room/server/room-mcp.mjs'))) throw new Error('compat.json bundle digest mismatch')
+  if (!verifyBundleDigests(path.join(dir, 'plugins/room/server'), descriptor)) throw new Error('compat.json bundle digest mismatch')
   if (!implementation.contracts.CURRENT_COMPAT || !isDeepStrictEqual(descriptor.compat, implementation.contracts.CURRENT_COMPAT)) throw new Error('compat.json advertisement mismatch with exercised implementation')
   if (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1
     || descriptor.workerRecordSchema !== implementation.workerRecords.WORKER_RECORD_SCHEMA) throw new Error('compat.json worker-record schema mismatch with exercised implementation')
@@ -83,12 +84,14 @@ async function build(dir: string, pin?: Pin) {
     const daemonSource = path.join(dir, 'packages/relay/src/daemon.ts')
     const hasDaemon = await fs.access(daemonSource).then(() => true, () => false)
     const hasClientCompat = await fs.access(path.join(dir, 'packages/room-mcp/src/client-compat.ts')).then(() => true, () => false)
+    // Process identity moved from relay to local-state after 0.17.39.
+    const processSource = await fs.access(path.join(dir, 'packages/local-state/src/process.ts')).then(() => './packages/local-state/src/process.ts', () => './packages/relay/src/process.ts')
     await fs.writeFile(entry, [
       ...(hasClientCompat ? ["export * as clientCompat from './packages/room-mcp/src/client-compat.ts'"] : []),
       ...(hasDaemon ? ["export * as daemon from './packages/relay/src/daemon.ts'"] : []),
       "export * as contracts from './packages/hub-core/src/protocol.ts'",
       "export * as workerRecords from './packages/shared/src/index.ts'",
-      "export * as processes from './packages/relay/src/process.ts'",
+      `export * as processes from '${processSource}'`,
       "export { WebSocket } from 'ws'",
       "export { startRelay, AuthorityLock, SecureSession } from './packages/relay/src/index.ts'",
       "export { HubClient, hubTransport } from './packages/room-mcp/src/hub-client.ts'",

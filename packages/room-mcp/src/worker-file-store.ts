@@ -1,14 +1,14 @@
-import { legacyWorkerHost, retainedSessionMissing } from './hosts/lifecycle.js'
-import type { HostId } from './hosts/types.js'
+import { currentAdmission, requireAdmission, storageGate, storageInstance, withoutAdmission, withAdmission, withValidatedRead, assertLegacyReady } from './storage-admission.js'
+import { StorageRefused } from '@room/local-state/protocol'
+import { retainedSessionMissing } from './hosts/lifecycle.js'
 /** The local source of truth for worker operations. No replicated document grants local authority. */
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
-import * as Y from 'yjs'
-import { completionId, completionMessage, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
+import { completionId, completionMessage } from '@room/shared'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
 import { scanRunLog, runLogIdentity } from './run-log-facts.js'
 import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
@@ -16,22 +16,19 @@ import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Ru
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput } from './worker-status.js'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch, type CleanupRegistry } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
-import { WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
-import { sameStartTime } from '@room/relay/process'
+import { WorkerEvidenceBlocked, requireWorkerEvidence, workerEvidence, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
+import { sameStartTime } from '@room/local-state/process'
 
-export interface LegacySource {
-  key: string; tag: string; dir: string; branch: string; host: HostId
-  oldId?: string; model?: string; task?: string; said?: string; keptWorktree?: string; share?: WorkerRecord['share']
-}
+export type { LegacySource } from './offline/legacy-import.js'
+import { legacyImportRequired, type LegacySource } from './offline/legacy-import.js'
 export interface RegistryOptions {
   liveness?: LivenessProbe; now?: () => number; identity?: InstanceToken
-  /** An import adapter can supply decoded 0.16 snapshots; default discovery scans owned git worktrees. */
+  /** @deprecated Offline import owns these options; the online store ignores them. */
   sources?: (commonDir: string) => LegacySource[]; migrate?: boolean; watch?: boolean
 }
-interface MigrationMap { v: 1; sources: Record<string, { id: string; state: 'assigned' | 'imported' }>; done: boolean }
 const readJson = <T>(file: string): T | undefined => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
   catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined; throw e }
@@ -110,7 +107,6 @@ function base32(value: bigint, length: number): string {
   return out
 }
 const id = (): string => `w_${base32(BigInt(Date.now()), 10)}${base32(BigInt(`0x${randomBytes(10).toString('hex')}`), 16)}`
-const synthetic = (): InstanceToken => ({ pid: process.pid, startTime: '', executable: '', sessionId: `mcp:${process.pid}`, nonce: randomBytes(16).toString('hex') })
 /** Where the host writes the worker's log; an older record's owned worktree sits beside it in `.room/workers`. */
 export function workerLogFile(record: Pick<WorkerRecord, 'dir' | 'tag' | 'logFile'>): string {
   return record.logFile ?? path.join(path.dirname(record.dir), `${record.tag}.log`)
@@ -162,9 +158,10 @@ function failedByHost(record: WorkerRecord, status: WorkerStatusResult): WorkerS
   return failure ? { ...status, summary: hostFailureLine(failure, record.host, resumable(record)) } : status
 }
 
-const missing = (file: string): boolean => !fs.existsSync(file)
 const GUARD_WAIT_MS = 30_000
 const GUARD_POLL_MS = 25
+/** Quiet period before a watched registry change triggers a background reconcile. */
+const WATCH_SETTLE_MS = 100
 const guardBusy = (error: unknown): boolean => error instanceof Error && error.message.startsWith('lease guard busy: ')
 const pauseForGuard = async (deadline: number, error: unknown): Promise<void> => {
   if (!guardBusy(error)) throw error
@@ -187,80 +184,6 @@ async function leaseRetry<T>(fn: () => T, deadline = performance.now() + GUARD_W
     catch (error) { await pauseForGuard(deadline, error) }
   }
 }
-function commitExists(commonDir: string, oid: unknown): oid is string {
-  if (typeof oid !== 'string' || !/^[0-9a-f]{40,64}$/.test(oid)) return false
-  try { execFileSync('git', ['--git-dir', commonDir, 'cat-file', '-e', `${oid}^{commit}`], { stdio: 'ignore' }); return true }
-  catch { return false }
-}
-function legacySession(dir: string, oldId: string | undefined, host: LegacySource['host']): string | undefined {
-  if (!oldId) return undefined
-  try {
-    const gitDir = execFileSync('git', ['-C', dir, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
-    const local = readJson<{ worker_id?: string; host?: string; session_id?: string }>(path.join(gitDir, 'room-session.json'))
-    return local?.worker_id === oldId && local.host === host && typeof local.session_id === 'string' ? local.session_id : undefined
-  } catch { return undefined }
-}
-
-class LegacySnapshotUnavailable extends Error {}
-/** The display fields of a 0.16 snapshot's tag-keyed `workers` entry. */
-interface LegacyWorkerEntry { id?: string; dir?: string; host: HostId; model?: string; task?: string; summary?: string }
-/** The old CRDT is display evidence only: it never supplies pid, session, base or capability. */
-function legacyDisplay(commonDir: string): Map<string, Pick<LegacySource, 'oldId' | 'host' | 'model' | 'task' | 'said' | 'keptWorktree'>> {
-  const found = new Map<string, Pick<LegacySource, 'oldId' | 'host' | 'model' | 'task' | 'said' | 'keptWorktree'>>()
-  const canonical = (dir: string): string => { try { return fs.realpathSync(dir) } catch { return path.resolve(dir) } }
-  for (const file of files(path.join(commonDir, 'room-local'), '.ydoc')) {
-    const doc = new Y.Doc()
-    try {
-      if (fs.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MiB`)
-      Y.applyUpdate(doc, fs.readFileSync(file))
-      const room = new RoomDoc(doc)
-      for (const worker of doc.getMap<LegacyWorkerEntry>('workers').values()) {
-        if (!worker.dir || !worker.id) continue
-        found.set(canonical(worker.dir), { oldId: worker.id, host: worker.host, model: worker.model,
-          task: worker.task, said: worker.summary })
-      }
-      for (const retired of room.retiredWorkers()) {
-        if (!retired.keptWorktree) continue
-        const prior = found.get(canonical(retired.keptWorktree))
-        found.set(canonical(retired.keptWorktree), { ...prior, host: retired.host, model: retired.model,
-          task: retired.task, said: retired.summary, keptWorktree: retired.keptWorktree })
-      }
-    } catch (error) {
-      process.stderr.write(`[room] cannot import legacy worktrees while ${file} is unreadable: ${error}\n`)
-      throw new LegacySnapshotUnavailable(`unreadable legacy snapshot: ${file}`)
-    }
-    finally { doc.destroy() }
-  }
-  return found
-}
-
-/** Conservative local discovery: only Git's own worktree list and canonical Room paths are imported. */
-function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
-  let output: string
-  try { output = execFileSync('git', ['--git-dir', commonDir, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }) }
-  catch { return [] }
-  const registered = new Set([...output.matchAll(/^worktree (.+)$/gm)].map(match => {
-    try { return fs.realpathSync(match[1]) } catch { return path.resolve(match[1]) }
-  }))
-  const display = legacyDisplay(commonDir)
-  const out: LegacySource[] = []
-  for (const block of output.split(/\n\s*\n/)) {
-    const dir = /^worktree (.+)$/m.exec(block)?.[1]
-    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]
-    if (!dir || !branch?.startsWith('room/')) continue
-    const tag = branch.slice(5)
-    if (path.basename(dir) !== tag || !dir.includes(`${path.sep}.room${path.sep}workers${path.sep}`)) continue
-    let canonical: string
-    try { canonical = fs.realpathSync(dir) } catch { continue }
-    const ownerCheckout = path.dirname(path.dirname(path.dirname(canonical)))
-    if (!registered.has(ownerCheckout) || !roomWorkerPathMatchesBranch(ownerCheckout, canonical, branch)) continue
-    const prior = display.get(canonical)
-    out.push({ key: `worktree:${canonical}`, tag, dir: canonical, branch,
-      host: legacyWorkerHost(prior?.host), ...(prior ?? {}) })
-  }
-  return out
-}
-
 export class FileWorkerStore {
   readonly root: string
   private readonly alive: LivenessProbe
@@ -269,40 +192,95 @@ export class FileWorkerStore {
   private readonly listeners = new Set<(id?: string) => void>()
   private observed = new Map<string, string>()
   private readonly watchers: fs.FSWatcher[] = []
-  private readonly heldOperations = new Map<string, string>()
+  private readonly heldOperations = new Map<string, { op: string; callToken: string }>()
   private timer?: ReturnType<typeof setInterval>
-  private watchQueued = false
+  private watchSettle?: ReturnType<typeof setTimeout>
+  private backgroundRun?: Promise<void>
+  private backgroundAgain = false
+  /** Set by shutdown(): no later reopen (ensureGeneration) restarts watchers or the poll timer. */
+  private shut = false
+  private backgroundClosed = true
+  private generation = 0
+  private reopening?: Promise<void>
+  private reopeningTicket?: string
   private constructor(readonly commonDir: string, private readonly options: RegistryOptions, private readonly readOnly = false) {
     this.root = path.join(commonDir, 'room', 'registry')
     this.alive = options.liveness ?? liveness
     this.now = options.now ?? Date.now
-    this.identity = options.identity ?? synthetic()
+    this.identity = options.identity ?? storageInstance()
   }
 
   static async open(commonDir: string, options: RegistryOptions = {}): Promise<FileWorkerStore> {
-    const registry = new FileWorkerStore(commonDir, options)
-    if (options.migrate !== false) await registry.migrate()
-    await registry.reconcile()
-    if (options.watch !== false) registry.watch()
-    return registry
+    return withAdmission(commonDir, 'reconcile', async ticket => {
+      await assertLegacyReady(commonDir)
+      const registry = new FileWorkerStore(storageGate(commonDir).commonDir, options)
+      privateStateDirectory(registry.root)
+      registry.generation = ticket.generation
+      await registry.reconcile()
+      if (options.watch !== false) registry.watch()
+      return registry
+    })
+  }
+
+  /** Reopen disposable file caches/watchers before a successor generation can use them. */
+  private async ensureGeneration(): Promise<void> {
+    const ticket = await requireAdmission(this.commonDir)
+    if (this.readOnly) throw new StorageRefused('unavailable', 'display reader cannot authorize worker effects')
+    if (this.reopening && this.reopeningTicket !== ticket.id) return this.reopening
+    if (this.generation === ticket.generation) return
+    this.reopeningTicket = ticket.id
+    this.reopening = (async () => {
+      this.close()
+      await assertLegacyReady(this.commonDir)
+      this.observed.clear()
+      readCache.clear()
+      this.generation = ticket.generation
+      await this.reconcile()
+      if (this.options.watch !== false) this.watch()
+    })()
+    try { await this.reopening } finally { this.reopening = undefined; this.reopeningTicket = undefined }
   }
 
   /** No lifecycle initialization, recovery, migration, or background work for display readers. */
   static async openReader(commonDir: string, options: RegistryOptions = {}): Promise<FileWorkerStore> {
-    return new FileWorkerStore(commonDir, { ...options, migrate: false, watch: false }, true)
+    return new FileWorkerStore(storageGate(commonDir).commonDir, { ...options, migrate: false, watch: false }, true)
   }
-  close(): void { clearInterval(this.timer); this.timer = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
+  close(): void { this.backgroundClosed = true; clearInterval(this.timer); this.timer = undefined; clearTimeout(this.watchSettle); this.watchSettle = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
+  /** Stop background reconciliation for good; resolves once a pass already running has finished. */
+  async shutdown(): Promise<void> {
+    this.shut = true
+    this.close()
+    await this.backgroundRun
+  }
+  /**
+   * Watch/timer reconciliation is single-flight: one run at a time, and changes observed during a run request exactly
+   * one more run after it. Admission makes each run asynchronous from its first step, so microtask coalescing alone
+   * would start a full registry scan per filesystem event.
+   */
+  private backgroundReconcile(): void {
+    if (this.backgroundRun) { this.backgroundAgain = true; return }
+    this.backgroundRun = (async () => {
+      do {
+        this.backgroundAgain = false
+        await withoutAdmission(async () => {
+          if (this.backgroundClosed || (await storageGate(this.commonDir).observe()).phase !== 'legacy' || this.backgroundClosed) return
+          await this.reconcile()
+        }).catch(e => { if (!(e instanceof StorageRefused && e.reason === 'maintenance')) process.stderr.write(`[room] registry reconcile: ${e}\n`) })
+      } while (this.backgroundAgain && !this.backgroundClosed)
+    })().finally(() => { this.backgroundRun = undefined })
+  }
   private watch(): void {
+    if (this.shut) return
+    this.backgroundClosed = false
     for (const dir of [this.root, path.join(this.root, 'runs')]) {
       privateStateDirectory(dir)
       try {
+        // A burst of registry writes (often this process's own, already announced through changed()) settles into
+        // one scan once the directory has been quiet briefly, rather than racing the next call.
         const watcher = fs.watch(dir, { persistent: false }, () => {
-          if (this.watchQueued) return
-          this.watchQueued = true
-          queueMicrotask(() => {
-            this.watchQueued = false
-            void this.reconcile().catch(e => { process.stderr.write(`[room] registry reconcile: ${e}\n`) })
-          })
+          clearTimeout(this.watchSettle)
+          this.watchSettle = setTimeout(() => { this.watchSettle = undefined; this.backgroundReconcile() }, WATCH_SETTLE_MS)
+          this.watchSettle.unref()
         })
         watcher.on('error', e => { watcher.close(); process.stderr.write(`[room] registry watch: ${e}; polling remains active\n`) })
         watcher.unref()
@@ -310,7 +288,7 @@ export class FileWorkerStore {
       } catch (e) { process.stderr.write(`[room] registry watch: ${e}; polling remains active\n`) }
     }
     this.timer = setInterval(() => {
-      void this.reconcile().catch(e => { process.stderr.write(`[room] registry reconcile: ${e}\n`) })
+      this.backgroundReconcile()
     }, 30_000)
     this.timer.unref()
   }
@@ -427,6 +405,24 @@ export class FileWorkerStore {
     return requireWorkerInventory(this.#list()).find(record => record.name === tagOrName && this.#reserved(record.tag)?.id === record.id)
   }
   /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
+  /** This store's own facts for cleanup rechecks during its replays (never a second store over the same files). */
+  private cleanupRegistry(): CleanupRegistry {
+    return {
+      read: async id => this.#read(id),
+      list: async () => this.#list(),
+      worktreeOwner: async record => this.#worktreeOwner(record),
+      checkoutUsers: async owner => {
+        const inventory = this.#list()
+        if (inventory.blockers.length) return { reason: 'blocked', blockers: inventory.blockers }
+        return inventory.records.flatMap(record => {
+          if (record.id === owner.id || ['retiring', 'retired', 'abandoned'].includes(record.phase) || path.resolve(record.dir) !== path.resolve(owner.dir)) return []
+          const status = this.#status(record.id)
+          return status ? [{ record, status }] : []
+        })
+      },
+    }
+  }
+
   #worktreeOwner(record: WorkerRecord): WorkerRecord | undefined {
     if (record.sharedWith) return this.#read(record.sharedWith)
     if (path.basename(record.dir) === record.tag && record.branch === `room/${record.tag}`) return undefined
@@ -451,6 +447,8 @@ export class FileWorkerStore {
   }
   /** No room view or remote presence can turn into a local worktree capability. */
   async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string, allowVanished = false): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     let candidate = this.#reservedByTagOrName(tagOrName)
     if (candidate?.legacy?.unowned) candidate = await this.adoptLegacy(candidate, lead)
     if (!candidate || candidate.lead.participant !== lead.participant || candidate.lead.room !== lead.room
@@ -480,6 +478,8 @@ export class FileWorkerStore {
       || worktreeRecord.sharedWith) return undefined
     if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return undefined
     return { record: candidate, status }
+
+    })
   }
   /** Any operation lease, including an unreadable one, blocks automatic claim release. */
   #operationInProgress(id: string): boolean {
@@ -541,6 +541,8 @@ export class FileWorkerStore {
 
   /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
   async writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY): Promise<void> {
+    return withAdmission(this.commonDir, 'spawn', async () => {
+      await this.ensureGeneration()
     if (!safeId(record.id) || !recordShape(record, record.id) || record.runs[0].launch) throw new Error('invalid worker intent')
     // A borrower joins the owner's operation lane before it becomes visible.
     // Collection holds this lane through its final cleanup decision.
@@ -574,13 +576,13 @@ export class FileWorkerStore {
             }
             if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record.tag}`)
           }
-          if (!createExclusive(this.opFile(record.id), { op: 'spawn', holder: record.runs[0].launcher, at: this.now() })) throw new Error('worker operation lease busy')
+          if (!createExclusive(this.opFile(record.id), { op: 'spawn', holder: record.runs[0].launcher, callToken: currentAdmission(this.commonDir)!.id, generation: currentAdmission(this.commonDir)!.generation, at: this.now() })) throw new Error('worker operation lease busy')
           if (!createExclusive(this.workerFile(record.id), record)) throw new Error(`worker already exists: ${record.id}`)
         }, deadline)
         break
       } catch (error) { await pauseForGuard(deadline, error) }
     }
-    this.heldOperations.set(record.id, 'spawn')
+    this.heldOperations.set(record.id, { op: 'spawn', callToken: currentAdmission(this.commonDir)!.id })
     if (record.sharedWith) {
       try { inheritWorkerRefs(this.commonDir, this.#read(record.sharedWith)!, record) }
       catch (error) {
@@ -591,18 +593,26 @@ export class FileWorkerStore {
     }
     this.changed(record.id)
     } finally { if (record.sharedWith) await this.finishOperation(record.sharedWith) }
+
+    })
   }
 
   /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
   async command(id: string, command: WorkerCommand, expectedSeq?: number): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => {
       if (expectedSeq !== undefined && old.seq !== expectedSeq) throw new Error('worker seq changed')
       return applyWorkerCommand(old, command)
+    })
+
     })
   }
 
   /** Read twice around decoding. Any cross-process file replacement invalidates the whole fact set. */
   async snapshot(query?: WorkerQuery): Promise<WorkerSnapshot> {
+    return withValidatedRead(this.commonDir, async () => {
+    if (!this.readOnly && currentAdmission(this.commonDir)) await this.ensureGeneration()
     if (query && !query.workerId && !query.tag && !query.recordOnly) query = undefined
     const previousReads = snapshotReads
     const previousBlockers = this.decodeBlockers
@@ -617,7 +627,7 @@ export class FileWorkerStore {
         const selectedId = query?.workerId ?? reservationId
         const selected = query?.workerId || query?.tag
         const records = selected ? selectedId && safeId(selectedId) ? [this.#read(selectedId)].filter((record): record is WorkerRecord => !!record) : [] : this.#list(!!query?.recordOnly).records
-        if (query?.tag && records.some(record => record.tag !== query.tag)) this.decodeBlockers.add(`tags/${query.tag}.json: record tag mismatch`)
+        if (query?.tag && records.some(record => record.tag !== query!.tag)) this.decodeBlockers.add(`tags/${query.tag}.json: record tag mismatch`)
         const workers = records.map(record => ({ record, reports: query?.recordOnly ? [] : this.#reports(record.id).records, exits: query?.recordOnly ? [] : this.#exits(record.id).records, busy: query?.recordOnly ? true : this.#operationInProgress(record.id),
           ...(query?.captureLiveness ? { liveness: this.#statusLiveness(record, query.recordOnly) } : {}) }))
         const reservations: Record<string, string> = Object.create(null)
@@ -654,6 +664,8 @@ export class FileWorkerStore {
       return { available: false, reason: 'unavailable', detail: 'worker facts changed during snapshot' }
     } catch (error) { return { available: false, reason: 'unavailable', detail: String(error) } }
     finally { snapshotReads = previousReads; this.decodeBlockers = previousBlockers }
+
+    })
   }
   #factRevision(query?: WorkerQuery): string {
     const hash = createHash('sha256').update(this.commonDir).update(JSON.stringify(query ?? {}))
@@ -739,8 +751,8 @@ export class FileWorkerStore {
     const priorOp = readJson<{ holder: InstanceToken }>(this.opFile(id))
     if (priorOp && priorOp.holder.nonce !== this.identity.nonce && this.alive(priorOp.holder) === 'dead') await leaseRetry(() => recover(this.opFile(id), () => true))
     const value = await guarded(this.opFile(id), () => {
-      const op = readJson<{ holder: InstanceToken }>(this.opFile(id))
-      if (op && op.holder.nonce !== this.identity.nonce) throw new Error(`worker operation lease held by another instance: ${id}`)
+      const op = readJson<{ holder: InstanceToken; callToken?: string }>(this.opFile(id))
+      if (op && (op.holder.nonce !== this.identity.nonce || op.callToken !== currentAdmission(this.commonDir)?.id)) throw new Error(`worker operation lease held by another instance: ${id}`)
       const old = this.#read(id)
       if (!old) throw new Error(`unknown worker ${id}`)
       const next = edit(old)
@@ -752,28 +764,44 @@ export class FileWorkerStore {
     return value
   }
   async finishOperation(id: string): Promise<boolean> {
-    const released = await leaseRetry(() => compareAndRelease(this.opFile(id), this.identity))
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
+    const released = await guarded(this.opFile(id), () => {
+      const lease = readJson<{ holder: InstanceToken; callToken?: string; generation?: number }>(this.opFile(id))
+      const ticket = currentAdmission(this.commonDir)!
+      if (!lease || lease.holder.nonce !== this.identity.nonce || lease.callToken !== ticket.id || lease.generation !== ticket.generation) return false
+      fs.unlinkSync(this.opFile(id))
+      return true
+    })
     if (released) this.heldOperations.delete(id)
     return released
+
+    })
   }
 
   async beginOperation(id: string, op: 'resume' | 'stop' | 'collect' | 'discard' | 'prune'): Promise<boolean> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     const file = this.opFile(id)
-    if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
-    const existing = this.#readFact(file, (value): value is { op: string; holder: InstanceToken; at: number } =>
+    if (createExclusive(file, { op, holder: this.identity, callToken: currentAdmission(this.commonDir)!.id, generation: currentAdmission(this.commonDir)!.generation, at: this.now() })) { this.heldOperations.set(id, { op, callToken: currentAdmission(this.commonDir)!.id }); return true }
+    const existing = this.#readFact(file, (value): value is { op: string; holder: InstanceToken; callToken?: string; generation?: number; at: number } =>
       object(value) && typeof value.op === 'string' && tokenShape(value.holder) && typeof value.at === 'number')
     if (existing?.holder.nonce === this.identity.nonce) {
-      if (existing.op === 'discard' && op === 'stop' && this.heldOperations.get(id) === 'discard') return false
+      if (existing.callToken === currentAdmission(this.commonDir)!.id && existing.generation === currentAdmission(this.commonDir)!.generation && existing.op === 'discard' && op === 'stop' && this.heldOperations.get(id)?.op === 'discard' && this.heldOperations.get(id)?.callToken === currentAdmission(this.commonDir)!.id) return false
       throw new Error(`worker operation lease held by another call: ${id}`)
     }
     if (existing && this.alive(existing.holder) === 'dead') {
       await leaseRetry(() => recover(file, () => true))
-      if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
+      if (createExclusive(file, { op, holder: this.identity, callToken: currentAdmission(this.commonDir)!.id, generation: currentAdmission(this.commonDir)!.generation, at: this.now() })) { this.heldOperations.set(id, { op, callToken: currentAdmission(this.commonDir)!.id }); return true }
     }
     throw new Error(`worker operation lease held by another instance: ${id}`)
+
+    })
   }
 
   async withCollectLease<T>(worktree: string, work: () => Promise<T>): Promise<T> {
+    return withAdmission(this.commonDir, 'collect', async () => {
+      await this.ensureGeneration()
     const canonical = fs.realpathSync(worktree)
     const key = createHash('sha256').update(canonical).digest('hex')
     const file = path.join(this.root, 'collect', `${key}.json`)
@@ -786,10 +814,14 @@ export class FileWorkerStore {
     }
     try { return await work() }
     finally { await leaseRetry(() => compareAndRelease(file, this.identity)) }
+
+    })
   }
 
   /** Append the next run while the same capacity guard used by fresh spawn is held. */
   async resume(id: string, capacity: number, input: { nonce: string; busFrontier: number; promptMsgIds?: string[]; logStart: number; logFile?: string }): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'resume', async () => {
+      await this.ensureGeneration()
     const candidate = this.#read(id)
     const owner = candidate && this.#worktreeOwner(candidate)
     if (owner) await this.beginOperation(owner.id, 'resume')
@@ -815,11 +847,15 @@ export class FileWorkerStore {
       return next
     } catch (error) { await this.finishOperation(id); throw error }
     } finally { if (owner) await this.finishOperation(owner.id) }
+
+    })
   }
 
   /** The child proves the launch nonce and its checkout before it receives report authority. */
   async admit(input: { id: string; run: number; nonce: string; dir: string;
     chain: RunReport['chain']; hostProcess?: RunReport['hostProcess']; hostSessionId?: string }): Promise<RunReport> {
+    return withAdmission(this.commonDir, 'admit-worker', async () => {
+      await this.ensureGeneration()
     const record = this.#read(input.id)
     const run = record?.runs.at(-1)
     let actual: string, expected: string
@@ -841,9 +877,13 @@ export class FileWorkerStore {
       return { ...old, hostSessionId: old.hostSessionId ?? persisted.hostSessionId, seq: old.seq + 1 }
     })
     return persisted
+
+    })
   }
 
   async reportDone(id: string, n: number, summary: string, changed: string[]): Promise<RunReport> {
+    return withAdmission(this.commonDir, 'report', async () => {
+      await this.ensureGeneration()
     const record = this.#read(id), run = record?.runs.at(-1)
     const prior = requireWorkerInventory(this.#reports(id)).find(report => report.run === n)
     if (!run || run.n !== n || !prior) throw new Error('worker run not admitted')
@@ -851,26 +891,41 @@ export class FileWorkerStore {
     const k = !prior.done ? 1 : (prior.done.k ?? 1) + (prior.posted === completionId(id, n, prior.done.k) ? 1 : 0)
     await this.writeReport(id, { ...prior, done: { at: this.now(), summary, changed, ...k > 1 ? { k } : {} } })
     return requireWorkerInventory(this.#reports(id)).find(report => report.run === n)!
+
+    })
   }
 
   /** The post callback must use the deterministic id with RoomDoc.post. */
   /** `post` resolves once the hub took the message (a refusal throws), so `posted` is recorded only for a message that exists. */
   async postCompletion(id: string, n: number, post: (id: string, record: WorkerRecord, report: RunReport) => Promise<void>): Promise<boolean> {
+    return withAdmission(this.commonDir, 'report', async () => {
+      await this.ensureGeneration()
     const record = this.#read(id), run = record?.runs.find(value => value.n === n)
     const report = requireWorkerInventory(this.#reports(id)).find(value => value.run === n)
     if (!record || !run || !report?.done) throw new Error('worker completion not reported')
     // A clean exit may have produced a no-report notice. The late real report has its
     // own deterministic ID and supersedes that fallback in the registry projection.
     const messageId = completionId(id, n, report.done.k)
-    if (report.posted === messageId || run.posted && !run.posted.endsWith(':no-report')) return false
+    if (run.posted && !run.posted.endsWith(':no-report')) return false
+    if (report.posted === messageId) {
+      // A concurrent projector may have acknowledged the report while the record
+      // was still active. Retirement must retain that acknowledgement on the run.
+      if (!['prepared', 'active'].includes(record.phase)) await this.update(id, old => ({ ...old,
+        runs: old.runs.map(value => value.n === n ? { ...value, posted: messageId } : value), seq: old.seq + 1 }))
+      return false
+    }
     await post(messageId, record, report)
     // A retiring record admits no report write; its run carries the posted id, so retirement can complete.
     if (['prepared', 'active'].includes(record.phase)) await this.writeReport(id, { ...report, posted: messageId })
     else await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: messageId } : value), seq: old.seq + 1 }))
     return true
+
+    })
   }
 
   async postObservedFailure(id: string, n: number, post: (message: NonNullable<ReturnType<typeof completionMessage>>) => Promise<void>): Promise<boolean> {
+    return withAdmission(this.commonDir, 'report', async () => {
+      await this.ensureGeneration()
     // Bring this run's log facts up to date in yielding chunks before reading any state the decision depends on.
     const scanned = this.#read(id), scannedRun = scanned?.runs.find(value => value.n === n)
     if (scanned && scannedRun?.mode === 'resume') await scanRunLog(workerLogFile(scanned), scannedRun.logStart, runLogIdentity(scanned, scannedRun))
@@ -900,22 +955,40 @@ export class FileWorkerStore {
     await post(posted)
     await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: posted.id } : value), seq: old.seq + 1 }))
     return true
+
+    })
   }
 
   async beginStop(id: string, reason: NonNullable<WorkerRecord['stop']>['reason']): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1)!.n }, seq: old.seq + 1 }))
+
+    })
   }
 
   async beginCollect(id: string): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, phase: 'collecting', interrupted: undefined, seq: old.seq + 1 }))
+
+    })
   }
   /** A collection that did not finish returns the worker to `active`; a finished one retires it (beginRetirement). */
   async abortCollect(id: string): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, phase: 'active', seq: old.seq + 1 }))
+
+    })
   }
   /** Output was applied but the host's clean exit is unconfirmed: stay live, never retired, until cleanup finishes. */
   async deferCollectCleanup(id: string, reason: string): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, phase: 'active', collectPending: { at: old.collectPending?.at ?? this.now(), reason }, seq: old.seq + 1 }))
+
+    })
   }
 
   /**
@@ -923,19 +996,26 @@ export class FileWorkerStore {
    * into, and the archive entry each room's projector appends. From here no projector writes the worker.
    */
   async beginRetirement(id: string, archive: RetiredWorker, extra: Pick<WorkerRecord, 'keptWorktree'> = {}): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, ...extra, phase: 'retiring', archive: { ...archive, id },
       cleanup: Object.fromEntries([old.room, ...(old.projectedInto ? [old.projectedInto] : [])].map(room => [room, 'pending' as const])),
       seq: old.seq + 1 }))
+
+    })
   }
 
   /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
-  archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): RetiredWorker {
-    requireWorkerInventory(this.#list())
-    const status = this.#status(record.id), at = this.now()
+  async archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): Promise<RetiredWorker> {
+    return withValidatedRead(this.commonDir, async () => {
+    const snapshot = requireWorkerEvidence(workerEvidence(await this.snapshot()))
+    const fact = snapshot.workers.find(fact => fact.record.id === record.id)
+    const status = fact ? await this.enrichedStatus(fact) : undefined, at = this.now()
     return { id: record.id, name: record.name, tag: record.tag, lead: record.lead.participant, host: record.host,
       ...(record.model ? { model: record.model } : {}), task: record.task, files: [], fileCount: 0,
       startedAt: record.createdAt, finishedAt: status?.finishedAt ?? at, retiredAt: at, outcome: 'dismissed',
       ...(record.stop && record.stop.reason !== 'discarded' ? { stopReason: record.stop.reason } : {}), ...facts }
+    })
   }
 
   /**
@@ -944,7 +1024,10 @@ export class FileWorkerStore {
    * worktree still exists, or whose checkout a live record borrows, stays. Nothing is removed before migration ends.
    */
   async pruneRetired(maxAgeMs: number): Promise<WorkerRecord[]> {
-    if (!readJson<MigrationMap>(path.join(this.root, 'migration.json'))?.done) return []
+    return withAdmission(this.commonDir, 'prune', async () => {
+      await this.ensureGeneration()
+    const status = await storageGate(this.commonDir).status()
+    if (legacyImportRequired(this.commonDir, status.legacyImport, status.gate)) return []
     const ended = (record: WorkerRecord) => record.phase === 'retired' || record.phase === 'abandoned'
     const borrowers = (records: WorkerRecord[]) => new Set(records.filter(record => !ended(record))
       .flatMap(record => [record.sharedWith, this.#worktreeOwner(record)?.id]).filter(Boolean))
@@ -993,10 +1076,14 @@ export class FileWorkerStore {
     }
     if (removed.length) this.changed()
     return removed
+
+    })
   }
 
   /** Retirement step 4: a room's projector finished its cleanup; the last room makes the record `retired`. */
   async finishCleanup(id: string, roomKey: string): Promise<WorkerRecord | undefined> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     const current = this.#read(id)
     if (current?.phase !== 'retiring' || current.cleanup?.[roomKey] !== 'pending') return current
     return this.update(id, old => {
@@ -1004,25 +1091,41 @@ export class FileWorkerStore {
       if (old.sharedWith && Object.values(cleanup).every(state => state === 'done')) removeWorkerRefs(this.commonDir, old)
       return { ...old, cleanup, ...(Object.values(cleanup).every(state => state === 'done') ? { phase: 'retired' as const } : {}), seq: old.seq + 1 }
     })
+
+    })
   }
 
   async beginDiscard(id: string, force: boolean, children: string[]): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, phase: 'discarding',
       discard: { force, children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
+
+    })
   }
   async markDiscardStep(id: string, step: keyof NonNullable<WorkerRecord['discard']>['steps']): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => {
       if (!old.discard) throw new Error('discard plan missing')
       return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 }
     })
+
+    })
   }
   async interruptDiscard(id: string, detail: string): Promise<WorkerRecord> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     return this.update(id, old => ({ ...old, phase: 'active',
       interrupted: { op: 'discard', at: this.now(), detail }, seq: old.seq + 1 }))
+
+    })
   }
 
   /** Store the hash before linking a stable patch; replay validates the published bytes. */
   async recordDiscardPatch(id: string, bytes: Buffer): Promise<string> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     const file = path.join(this.root, 'patches', `${id}.patch`)
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     const record = this.#read(id)
@@ -1048,15 +1151,19 @@ export class FileWorkerStore {
       try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
       return file
     } finally { fs.rmSync(scratch, { force: true }) }
+
+    })
   }
 
   /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
   async replayDiscard(id: string, publishPatch: (workerId: string, bytes: Buffer) => Promise<string> = (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)): Promise<void> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     requireWorkerInventory(this.#list())
     let record = this.#read(id)
     if (record?.phase !== 'discarding' || !record.discard) return
     let acquired = false
-    if (!this.heldOperations.has(id)) {
+    if (this.heldOperations.get(id)?.callToken !== currentAdmission(this.commonDir)!.id) {
       try { await this.beginOperation(id, 'discard'); acquired = true }
       catch { return }
     }
@@ -1162,7 +1269,7 @@ export class FileWorkerStore {
     }
     if (!record.discard!.steps.cleanup) {
       if (owned) {
-        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers })) return
+        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers, registry: this.cleanupRegistry() })) return
       } else if (!borrowed) {
         await pruneMissingWorkerWorktree(leadDir, own)
         cleanupWorkerLogs(leadDir, own)
@@ -1170,12 +1277,16 @@ export class FileWorkerStore {
       await this.markDiscardStep(id, 'cleanup')
     }
     await this.markDiscardStep(id, 'prune')
-    await this.beginRetirement(id, this.archiveOf(this.#read(id)!, { summary: borrowed ? 'detached' : 'discarded', disposition: 'discarded' }))
+    await this.beginRetirement(id, await this.archiveOf(this.#read(id)!, { summary: borrowed ? 'detached' : 'discarded', disposition: 'discarded' }))
     } finally { if (acquired) await this.finishOperation(id) }
+
+    })
   }
 
   /** Admission is evidence of launch only when a run writer proves the matching nonce. */
   async writeReport(id: string, report: RunReport): Promise<void> {
+    return withAdmission(this.commonDir, 'report', async () => {
+      await this.ensureGeneration()
     const record = this.#read(id)
     const run = record?.runs.at(-1)
     if (!run || run.n !== report.run || run.nonce !== report.nonce || !['prepared', 'active'].includes(record!.phase)) throw new Error('run not admitted')
@@ -1201,16 +1312,22 @@ export class FileWorkerStore {
         done, posted: posted ?? previous.posted ?? report.posted } : report)
     })
     this.changed(id)
+
+    })
   }
 
   /** A witnessed child-close observation is never replaced by a later unwitnessed poll. */
   async writeExit(id: string, observation: ExitObservation): Promise<void> {
+    return withAdmission(this.commonDir, 'exit', async () => {
+      await this.ensureGeneration()
     const file = this.exitFile(id, observation.run)
     await guarded(file, () => {
       const old = this.#readFact(file, exitShape)
       if (!old || (!old.witnessed && observation.witnessed)) writeAtomic(file, observation)
     })
     this.changed(id)
+
+    })
   }
 
   private rollbackPreparation(record: WorkerRecord): void {
@@ -1251,13 +1368,19 @@ export class FileWorkerStore {
   }
 
   async abandonPreparation(id: string): Promise<void> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     const record = this.#read(id)
     if (!record || record.runs.at(-1)?.launch) return
     if (record.sharedWith || record.phase === 'preparing' || record.phase === 'prepared') this.rollbackPreparation(record)
     await this.update(id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
+
+    })
   }
 
   async reconcile(): Promise<void> {
+    return withAdmission(this.commonDir, 'reconcile', async () => {
+      await this.ensureGeneration()
     // Only this writer-owned pass may rename invalid facts, after its read-only inventory.
     const candidates = new Map<string, { key?: string; text?: string; why: unknown }>()
     this.quarantineCandidates = candidates
@@ -1285,11 +1408,17 @@ export class FileWorkerStore {
       if (!run) continue
       // The operation lease itself is deliberately not treated as launch evidence.
       const hadOp = fs.existsSync(this.opFile(record.id))
-      const op = this.#readFact(this.opFile(record.id), (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
+      const op = this.#readFact(this.opFile(record.id), (value): value is { holder: InstanceToken; callToken?: string; generation?: number } => object(value) && tokenShape(value.holder))
       if (hadOp && !op) continue
       if (op && this.alive(op.holder) === 'dead') {
         yielded = true
         await leaseRetry(() => recover(this.opFile(record.id), () => true))
+      }
+      if (op && this.alive(op.holder) !== 'dead') {
+        const ticket = currentAdmission(this.commonDir)!
+        // Reconciliation is a separate call too. A shared MCP identity does not let it update a live
+        // spawn/collect/discard lane owned by another ticket; leave that record for a later pass.
+        if (op.holder.nonce !== this.identity.nonce || op.callToken !== ticket.id || op.generation !== ticket.generation) continue
       }
       // An earlier recovery await may have let another call publish or corrupt run
       // evidence. Recheck the deciding scope rather than trusting the preflight copy.
@@ -1370,80 +1499,8 @@ export class FileWorkerStore {
     const externalChange = next.size !== this.observed.size || [...next].some(([key, value]) => this.observed.get(key) !== value)
     this.observed = next
     if (externalChange) this.changed()
+
+    })
   }
 
-  private async migrate(): Promise<void> {
-    const file = path.join(this.root, 'migration.json')
-    if (readJson<MigrationMap>(file)?.done) return
-    const lock = path.join(this.root, 'migration.lock')
-    let acquired = false
-    const deadline = performance.now() + GUARD_WAIT_MS
-    while (performance.now() < deadline) {
-      if (createExclusive(lock, this.identity)) { acquired = true; break }
-      if (readJson<MigrationMap>(file)?.done) return
-      if (await leaseRetry(() => recover(lock, () => true), deadline)) continue
-      // Migration is a startup barrier. A second MCP process waits for the
-      // first to finish; an unreadable/live holder is never stolen on an elapsed-time guess.
-      await new Promise<void>(resolve => setTimeout(resolve, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance.now()))))
-    }
-    if (!acquired) throw new Error('registry migration in progress')
-    try {
-      const map = readJson<MigrationMap>(file) ?? { v: 1 as const, sources: {}, done: false }
-      if (map.done) return
-      let sources: LegacySource[]
-      try { sources = (this.options.sources ?? discoverLegacyWorktrees)(this.commonDir) }
-      catch (error) {
-        // Do not mark migration done: a repaired snapshot must still supply its retirements.
-        if (error instanceof LegacySnapshotUnavailable) return
-        throw error
-      }
-      for (const source of sources) {
-        if (!map.sources[source.key]) {
-          map.sources[source.key] = { id: id(), state: 'assigned' }
-          writeAtomic(file, map)
-        }
-        const target = map.sources[source.key]
-        if (target.state === 'imported') continue
-        this.importLegacy(source, target.id)
-        target.state = 'imported'
-        writeAtomic(file, map)
-      }
-      map.done = true
-      writeAtomic(file, map)
-    } finally {
-      // compare-and-release normalizes bare token files as well as holder envelopes.
-      await leaseRetry(() => compareAndRelease(lock, this.identity))
-    }
-  }
-
-  private importLegacy(source: LegacySource, workerId: string): void {
-    const file = this.workerFile(workerId)
-    const carryFile = path.join(this.commonDir, 'room-carry', `${source.tag}.json`)
-    const migratedCarryFile = `${carryFile}.migrated`
-    if (!missing(file)) {
-      if (fs.existsSync(carryFile) && !fs.existsSync(migratedCarryFile)) fs.renameSync(carryFile, migratedCarryFile)
-      return
-    }
-    const token = this.identity
-    const carryRecord = readJson<{ base?: unknown; carriedBase?: unknown }>(carryFile)
-    const base = commitExists(this.commonDir, carryRecord?.base) ? carryRecord.base : undefined
-    const carriedBase = commitExists(this.commonDir, carryRecord?.carriedBase) ? carryRecord.carriedBase : undefined
-    const carry = base && (!carryRecord?.carriedBase || carriedBase) ? 'delta' : 'copy'
-    const hostSessionId = legacySession(source.dir, source.oldId, source.host)
-    const record: WorkerRecord = {
-      v: 1, id: workerId, tag: source.tag, name: '', mode: 'local', room: '',
-      lead: { participant: '', room: '', instance: token }, host: source.host, model: source.model,
-      budget: { threads: 1, memGb: 1, nice: 10 }, share: source.share ?? 'intent', task: source.task ?? 'legacy worker',
-      dir: source.dir, outside: false, branch: source.branch, prep: { step: 'prepared' }, base,
-      carriedBase, hostSessionId,
-      capabilities: { resume: !!hostSessionId, signal: false, collect: carry },
-      phase: source.keptWorktree ? 'retired' : 'active', keptWorktree: source.keptWorktree,
-      cleanup: source.keptWorktree ? { legacy: 'done' } : undefined,
-      runs: [{ n: 1, mode: 'fresh', intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: 0, promptMsgIds: [], launcher: token, launch: { outcome: 'imported' }, logStart: 0 }],
-      legacy: { id: source.key, source: source.dir, said: source.said, unowned: true }, createdAt: this.now(), seq: 1,
-    }
-    createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() })
-    createExclusive(file, record)
-    if (fs.existsSync(carryFile) && !fs.existsSync(migratedCarryFile)) fs.renameSync(carryFile, migratedCarryFile)
-  }
 }

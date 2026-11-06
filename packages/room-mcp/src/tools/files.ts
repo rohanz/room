@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, detachedAdmission, admitStorageHelper } from '../storage-admission.js'
 import { asyncFilter } from '../async-filter.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
 import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
@@ -26,8 +27,8 @@ import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
-import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
-import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
+import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, previewTreeInUse, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
+import { parsePsLstartUtc, pidAlive } from '@room/local-state/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { leadsCheckout } from '../checkout-lead.js'
 
@@ -231,6 +232,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     },
     async room_preview_merge(a) {
+  return withDirectoryAdmission(S().dir, 'preview', async () => {
       const caller = S()
       const generation = (previewGenerations.get(caller) ?? 0) + 1
       previewGenerations.set(caller, generation)
@@ -385,8 +387,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             let modeCount = 0
             for (const p of merged.keys()) {
               if (modeCount++ % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve))
-              let leadMode = 0o644
-              try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+              const leadMode = previewDiskMode(path.join(caller.dir, p))
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
             }
             // Metadata/mode reads can outlast this build's currency. Settle before paying
@@ -430,7 +431,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         recordPreview({ clean: false, complete: false })
         return `preview failed: ${message.replace(/ failed: timed out/, ' timed out')}; combined code was NOT checked`
       }
-    }
+
+  })
+}
   }
   return handlers
 }
@@ -656,8 +659,17 @@ class PreviewCleanupIncomplete extends Error {
   out = ''
   constructor(readonly graceMs: number, readonly reason?: Error) { super(`process cleanup did not finish within ${graceMs}ms`) }
 }
-const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal }>()
-const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
+/** `tree` is the preview tree this attempt works in, once chosen, and when the attempt started. */
+const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal; tree?: PreviewTree }>()
+type PreviewTree = { dir: string; since: number }
+// Keep the registered shell alive with the same executable while its child performs the effect.
+export const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; "$@"; status=$?; exit "$status"'
+
+function previewDiskMode(file: string): number {
+  try { const stat = fs.lstatSync(file); if (stat.isFile()) return stat.mode & 0o777 }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  return 0o644
+}
 
 /** After a stop or an exit, how long group termination and pipe closure may take before the result is incomplete. */
 const CLEANUP_GRACE_MS = 10_000
@@ -679,14 +691,20 @@ interface TrackedProcessOptions {
   lock?: PreviewUnlock
   env?: NodeJS.ProcessEnv
   signal?: AbortSignal
+  /** The preview tree the process works in; defaults to the attempt's tree. */
+  tree?: PreviewTree
 }
 
-function runTrackedProcess(file: string, args: string[], options: TrackedProcessOptions): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
+async function runTrackedProcess(file: string, args: string[], options: TrackedProcessOptions): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
   const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options
+  const tree = options.tree ?? previewProcesses.getStore()?.tree
   const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS
-  return new Promise((resolve, reject) => {
+  let admission: Promise<(() => Promise<void>) | undefined> | undefined
+  let retainTicket = false, groupPid: number | undefined
+  try { return await new Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }>((resolve, reject) => {
     if (signal?.aborted) { reject(new PreviewCancelled()); return }
     const child = spawn('sh', ['-c', previewProcessGate, 'sh', file, ...args], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    groupPid = child.pid
     const out: Buffer[] = [], err: Buffer[] = []
     const output = () => Buffer.concat(out).toString() + Buffer.concat(err).toString()
     let bytes = 0, failed: Error | undefined, settled = false
@@ -711,6 +729,7 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
     // One bound for termination and pipe closure, armed by the first stop or exit.
     const armGrace = () => {
       graceTimer ??= setTimeout(() => settle(() => {
+        retainTicket = true
         child.stdout.destroy(); child.stderr.destroy()
         const incomplete = new PreviewCleanupIncomplete(graceMs, failed)
         incomplete.out = output()
@@ -764,9 +783,57 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
         settle(() => failed ? fail() : resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped }))
       })().catch(error => settle(() => reject(error)))
     })
-    if (child.pid && lock) void lock.trackProcess(child.pid).then(() => child.stdin.end('GO\n'), stop)
-    else if (child.pid) child.stdin.end('GO\n')
-  })
+    if (child.pid) {
+      admission = admitStorageHelper(child.pid)
+      void admission.then(async () => {
+        if (settled) { child.stdin.end(); return }
+        if (lock) await lock.trackProcess(child.pid!)
+        child.stdin.end('GO\n')
+      }).catch(stop)
+    }
+  }) } finally {
+    // A cleanup-incomplete result retains the helper ticket for explicit reconciliation, even if its
+    // original group leader exited. A surviving descendant must never disappear from the drain report.
+    const finish = await admission?.catch(() => undefined)
+    if (!retainTicket) await finish?.()
+    else if (finish && groupPid) releaseWhenHelperGone(groupPid, file, tree, finish)
+  }
+}
+
+/**
+ * A cleanup-incomplete preview keeps its helper ticket while any process in its group survives and, when it ran in a
+ * preview tree, while any process (an escaped descendant included) still works inside that tree, then releases it, so
+ * drain reports the survivors and this MCP can still acknowledge once they are gone. Both probes fail closed. A
+ * descendant that left both the group and the tree is beyond this evidence, as it is for the tree's quarantine. If an
+ * operator resolves the ticket first, the later release finds it absent. Polls without holding the process open.
+ */
+const RETAINED_HELPER_POLL_MS = 1000
+/** Each retained helper's poll, single-flight: resolves true once its ticket is released. */
+const retainedHelpers = new Set<() => Promise<boolean>>()
+function releaseWhenHelperGone(pid: number, file: string, tree: PreviewTree | undefined, release: () => Promise<void>): void {
+  let inFlight: Promise<boolean> | undefined
+  const attempt = async (): Promise<boolean> => {
+    if (!retainedHelpers.has(poll)) return true
+    try {
+      if (await previewGroupAlive(pid, file) || (tree && await previewTreeInUse(tree.dir, tree.since))) return false
+      await release()
+      retainedHelpers.delete(poll)
+      return true
+    } catch (error) {
+      console.warn(`room preview: retained helper ${pid}: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+  const poll = () => inFlight ??= attempt().finally(() => { inFlight = undefined })
+  const schedule = () => { setTimeout(() => void poll().then(released => { if (!released) schedule() }), RETAINED_HELPER_POLL_MS).unref() }
+  retainedHelpers.add(poll)
+  schedule()
+}
+
+/** Test seam: run every retained helper's release poll once, as its timer does; returns how many remain retained. */
+export async function pollRetainedHelpersForTests(): Promise<number> {
+  await Promise.all([...retainedHelpers].map(poll => poll()))
+  return retainedHelpers.size
 }
 
 const gitSetup = (dir: string, args: string[]) => {
@@ -1116,8 +1183,9 @@ async function reclaimOrphanEntries(repoDir: string): Promise<void> {
 }
 
 /** Queue background preview-cache maintenance; waitForPreviewSweepForTests awaits it. */
-function previewMaintenance(work: Promise<void>, label: string, into = previewMigrations): void {
-  const task = work.catch(error => console.warn(`${label}:`, error))
+async function previewMaintenance(dir: string, work: () => Promise<void>, label: string, into = previewMigrations): Promise<void> {
+  const child = await detachedAdmission(await gitCommonDir(dir), 'preview')
+  const task = child.run(work).catch(error => console.warn(`${label}:`, error))
   into.add(task)
   void task.finally(() => into.delete(task))
 }
@@ -1127,12 +1195,12 @@ function previewMaintenance(work: Promise<void>, label: string, into = previewMi
  * entries, lock files and folder go, and orphans are reclaimed, without waiting on them.
  */
 export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
-  previewMaintenance(migrateLegacySlots(cloneDir, repoDir), 'room preview migration')
-  previewMaintenance((async () => {
+  await previewMaintenance(repoDir, () => migrateLegacySlots(cloneDir, repoDir), 'room preview migration')
+  await previewMaintenance(repoDir, async () => {
     const key = await previewKeyPath(cloneDir, repoDir)
     for (const folder of [key, `${key}.slots`]) await removeCloneEntries(repoDir, folder, true)
     await reclaimOrphanEntries(repoDir)
-  })(), 'room preview cleanup')
+  }, 'room preview cleanup')
 }
 
 export async function waitForPreviewSweepForTests(): Promise<void> {
@@ -1235,16 +1303,22 @@ export interface MergedTreeOptions {
 }
 
 export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, options: MergedTreeOptions = {}): Promise<TestResult> {
+  return withDirectoryAdmission(s.dir, 'preview', async () => {
   const modes = options.modes ?? new Map<string, number>()
   const key = previewCheckKey(ancestor, merged, cmd, modes)
   const repeated = !options.allowSlow ? stoppedPreviewReply(s, key, cmd) : undefined
   if (repeated) return repeated
   return previewProcesses.run({ signal: options.signal }, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, { modes, observe: options.observe, historyKey: key, signal: options.signal }))
+
+  })
 }
 
 async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string,
   options: { modes: ReadonlyMap<string, number>; observe?: PreviewObserver; historyKey: string; signal?: AbortSignal }): Promise<TestResult> {
   const { modes, observe, historyKey, signal } = options
+  // A process that was already running when this attempt began cannot be one of its descendants.
+  const attemptStartedAt = Date.now()
+  const useTree = (tree: string) => { previewProcesses.getStore()!.tree = { dir: tree, since: attemptStartedAt } }
   let dir: string | undefined
   // Processes outlived the cleanup deadline: leave the tree in place and its lock held until they exit.
   let survivors = false
@@ -1290,6 +1364,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       cached = !!release
       if (cached) {
         dir = cache!
+        useTree(dir)
         try {
           await preparePreviewEntry(s.dir, dir)
           reused = await preparePreviewCache(s.dir, dir, ancestor, source!, observe)
@@ -1305,6 +1380,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       if (!cached) {
         dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-merge-'))
         dir = await fs.promises.realpath(dir)
+        useTree(dir)
         observe?.baseMaterialized?.()
         await materializeGitTree(s.dir, ancestor, dir)
       }
@@ -1401,10 +1477,11 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       if (survivors) { if (!cached || quarantined) void release?.().catch(() => undefined) }
       else await release?.()
       if (release) previewProcesses.getStore()!.lock = undefined
+      previewProcesses.getStore()!.tree = undefined
       // Maintenance never delays the preview reply and is bounded per pass.
       const evict = cached || previewCapBytes() === 0
       const key = await previewKeyPath(s.dir).catch(() => undefined)
-      if (key) previewMaintenance((async () => {
+      if (key) await previewMaintenance(s.dir, async () => {
         await reclaimOrphanEntries(s.dir)
         if (evict) {
           await evictPreviewLru(path.dirname(key), previewCapBytes(), async (entry, used) => {
@@ -1423,7 +1500,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
             finally { await unlock() }
           })
         }
-      })(), 'room preview eviction', previewEvictions)
+      }, 'room preview eviction', previewEvictions)
     }
   }
 }

@@ -1,3 +1,5 @@
+import { detachedAdmission } from './storage-admission.js'
+import { commonGitDirFromDotGit } from '@room/roomd'
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
 import { setImmediate as yieldTurn, setTimeout as pause } from 'node:timers/promises'
@@ -100,6 +102,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
   let proc: SpawnedProcess | undefined
   let exited = false
   let watching = false
+  let exitAdmission: Awaited<ReturnType<typeof detachedAdmission>> | undefined
   let releaseReservation = true
   try {
     try { reservation = reserveWorkerPort(id, policy.usedPorts ?? [], undefined, policy.preferredPort) }
@@ -139,6 +142,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const priority = workerPriority({ cmd: plan.cmd, args: plan.args }, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')
+    exitAdmission = await detachedAdmission(commonGitDirFromDotGit(s.dir), 'exit')
     try { proc = (policy.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args,
       cwd: policy.dir, env, logFile }) }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
@@ -148,7 +152,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     releaseReservation = false
     if (proc.pid > 0) host.setHandle(id, proc)
     bindWorkerPortReservation(proc, reservation)
-    host.watch(id, proc, (code, signal) => { exited = true; return onExit(code, signal).catch(error => policy.log(`worker exit: ${error}`)) })
+    host.watch(id, proc, (code, signal) => { exited = true; return exitAdmission!.run(() => onExit(code, signal)).catch(error => policy.log(`worker exit: ${error}`)) })
     watching = true
     if (proc.pid > 0) await onLaunched(proc.pid)
     try { await proc.started }
@@ -189,6 +193,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid, stopped) : e
     throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e), delivered, proc?.pid, stopped)
   } finally {
+    if (!watching) await exitAdmission?.finish()
     if (!passed && releaseReservation) reservation?.release()
   }
 }

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { primePrivateState, privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
+import { primePrivateState, privateStateDirectory, verifyPrivatePath } from '@room/local-state/private-state'
 import { stopLocalDaemon } from '../src/daemon.js'
 
 const roots: string[] = []
@@ -182,4 +182,15 @@ it.runIf(process.platform === 'win32')('refuses a Windows Room descendant owned 
   fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '{}')
   execFileSync('icacls', [file, '/setowner', '*S-1-5-18'], { stdio: 'pipe' })
   await expect(primePrivateState(root)).rejects.toThrow(/owned by S-1-5-18/)
+})
+
+it.runIf(process.platform === 'win32')('refuses a Windows Room descendant it cannot inspect instead of treating it as removed', async () => {
+  const { root, room } = fixture(), hidden = path.join(room, 'sessions', 'hidden')
+  fs.mkdirSync(path.join(hidden, 'inner'), { recursive: true })
+  const { user } = inspectWindows(room)
+  // Deny listing and reading this directory's attributes and ACL: its contents cannot be verified.
+  execFileSync('icacls', [hidden, '/deny', `*${user}:(RD,RA,REA,RC)`], { stdio: 'pipe' })
+  try {
+    await expect(primePrivateState(root)).rejects.toThrow(/Cannot verify the Windows owner\/DACL|not private|denied/i)
+  } finally { execFileSync('icacls', [hidden, '/remove:d', `*${user}`], { stdio: 'pipe' }) }
 })

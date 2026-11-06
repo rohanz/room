@@ -2,13 +2,12 @@
 import { RoomMemory, finalSave, memoryFile } from './memory.js'
 import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
 export { legacyRelayRunning } from './local-migrate.js'
-import type { ProcessIdentity } from './leases.js'
+import type { ProcessIdentity } from '@room/local-state/leases'
 export { ensureLocalDaemon, startLocalDaemon, stopLocalDaemon, LOCAL_DAEMON_IDLE_MS } from './daemon.js'
 export type { LocalDaemon, LocalDaemonOptions, StartedLocalDaemon } from './daemon.js'
 import { AuthorityLock, holderDeadCheck, incarnationFile, relayLeaseFile } from './hub.js'
 export { RoomMemory, memoryFile, loadMemory, saveMemory, FinalSaveError } from './memory.js'
 export { AuthorityLock } from './hub.js'
-export { privateStateDirectory, primePrivateState, primePrivateDirectory, verifyPrivatePath } from './private-state.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -467,7 +466,7 @@ export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOpt
 }
 
 /** Historical session relays used `lead: true`; daemon discovery records its process birth identity. */
-export interface LocalRelayInfo { discovery?: number; compat?: unknown; runtime?: string; nonce?: string; schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true | ProcessIdentity }
+export interface LocalRelayInfo { preflight?: import('@room/local-state/protocol').PreflightResult; discovery?: number; compat?: unknown; runtime?: string; nonce?: string; schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true | ProcessIdentity }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */

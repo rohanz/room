@@ -2,7 +2,7 @@ import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
 import { setGitObserver } from '@room/roomd/git'
-import { handlers as fileHandlers } from '../src/tools/files.js'
+import { handlers as fileHandlers, waitForPreviewSweepForTests } from '../src/tools/files.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { editLine, juceRepo, juceSession, put, type JuceRepo } from './fixtures/juce-repo.js'
 
@@ -36,6 +36,8 @@ async function preview(shape: { ignored: number; untracked: number }, args: Reco
   const opens = vi.spyOn(fs.promises, 'open')
   if (args.run) maintenanceRepos.add(repo)
   const result = await fileHandlers(state).room_preview_merge({ people: ['lead+w1', 'lead+w2'], ...args })
+  // Cache maintenance runs detached from the reply; count its Git calls in every run, not only when it wins the race.
+  await waitForPreviewSweepForTests()
   const counts = { gitCalls, opens: opens.mock.calls.length }
   setGitObserver(undefined)
   opens.mockRestore()

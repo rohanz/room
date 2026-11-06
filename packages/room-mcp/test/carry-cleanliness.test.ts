@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { patchPublisher } from './registry-fixture.js'
@@ -29,7 +30,7 @@ let originalPath: string | undefined
 let originalTimeout: string | undefined
 const run = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
 let startsPreviewMaintenance = false
-beforeEach(() => {
+beforeEach(async () => {
   startsPreviewMaintenance = false
   originalPath = process.env.PATH
   originalTimeout = process.env.ROOM_GIT_TIMEOUT_MS
@@ -40,6 +41,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(root, 'base.txt'), 'base\n')
   run(root, 'add', '.')
   run(root, 'commit', '-qm', 'base')
+  await storageRegistration(path.join(root, '.git'))
 })
 afterEach(async () => {
   process.env.PATH = originalPath

@@ -4,8 +4,8 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 
 const fresh = vi.hoisted(() => ({ reads: 0 }))
-vi.mock('@room/relay/process', async importOriginal => {
-  const actual = await importOriginal<typeof import('@room/relay/process')>()
+vi.mock('@room/local-state/process', async importOriginal => {
+  const actual = await importOriginal<typeof import('@room/local-state/process')>()
   // The cached reader still holds the exited worker's identity for this pid.
   return { ...actual, probeProcess: () => ({ startTime: 'darwin:1:100', executable: 'claude' }),
     probeProcessNow: (pid: number) => { fresh.reads++; return actual.probeProcessNow(pid) },
@@ -28,7 +28,7 @@ it('confirms "not ours" from the cached probe with a fresh read', async () => {
   const { workerProcessOwnership } = await import('../src/worker-process.js')
   child = spawn('sleep', ['30'], { stdio: 'ignore' })
   await new Promise(resolve => child!.once('spawn', resolve))
-  const { probeProcessNow } = await import('@room/relay/process')
+  const { probeProcessNow } = await import('@room/local-state/process')
   const live = probeProcessNow(child.pid!)!
   // The cached reader still says darwin:1:100; the live process is the recorded one.
   expect(workerProcessOwnership(child.pid!, { processStartTime: live.startTime, host: 'sleep' as never })).toBe('ours')
