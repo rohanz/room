@@ -75,6 +75,8 @@ export async function processGroupAlive(pgid: number, table: () => Promise<{ pgi
   return rows.some(row => row.pgid === pgid && !row.stat.startsWith('Z'))
 }
 
+/** How long the non-blocking lockf/flock attempt may take to report READY once released by GO. */
+const LOCK_ATTEMPT_MS = 1000
 export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | undefined> {
   const file = `${entry}.lock`
   const command = lockUnavailableForTests ? undefined : process.platform === 'darwin' ? 'lockf' : process.platform === 'linux' ? 'flock' : undefined
@@ -92,12 +94,6 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     let finishAdmission: (() => Promise<void>) | undefined
     let closed = false
     child.once('close', () => { closed = true; void finishAdmission?.().catch(() => {}) })
-    void (async () => {
-      if (!child.pid) return
-      finishAdmission = await admitStorageHelper(child.pid)
-      if (closed) { await finishAdmission?.(); return }
-      child.stdin.write('GO\n')
-    })().catch(() => { child.stdin.end(); child.kill() })
     let settled = false
     let timer: NodeJS.Timeout | undefined
     const finish = (release?: PreviewUnlock) => {
@@ -118,7 +114,15 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     })
     child.on('error', () => finish())
     child.on('close', () => finish())
-    timer = setTimeout(() => finish(), 1000)
+    // The deadline bounds the non-blocking lock attempt, so it starts at GO: the helper's storage admission before GO
+    // has its own bounds (identity probe, gate guard wait), and a refused admission kills the helper, settling it.
+    void (async () => {
+      if (!child.pid) return
+      finishAdmission = await admitStorageHelper(child.pid)
+      if (closed) { await finishAdmission?.(); return }
+      child.stdin.write('GO\n')
+      if (!settled) timer = setTimeout(() => finish(), LOCK_ATTEMPT_MS)
+    })().catch(() => { child.stdin.end(); child.kill() })
   })
 }
 
