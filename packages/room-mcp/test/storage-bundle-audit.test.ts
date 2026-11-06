@@ -98,7 +98,7 @@ it('ships a self-contained gate worker that executes durable operations without 
     return message.value
   }
   try {
-    const registration = await call('register', { instance: { pid: process.pid, startTime: '', executable: '', sessionId: 'bundle-test', nonce: randomUUID() }, kind: 'helper', release: 'test' })
+    const registration = await call('register', { instance: { pid: process.pid, startTime: '', executable: '', sessionId: 'bundle-test', nonce: randomUUID() }, kind: 'mcp', release: 'test' })
     const ticket = await call('admit', registration, 'preview')
     await call('finish', ticket)
     await call('unregister', registration)

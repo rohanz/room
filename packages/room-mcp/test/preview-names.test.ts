@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
@@ -279,6 +280,8 @@ it('does not endorse a passing check on the caller tree when no peer path was ap
 
 it('keeps a newer refusal after an older preview succeeds', async () => {
   const { session, state, add } = fixture()
+  // As at MCP startup (index.ts), register storage for the clone before racing previews.
+  await storageRegistration(path.join(root!, '.git'))
   add('ben', 'shared', 'ben changed\n')
   const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
   const preview = previewFor(state)
@@ -294,6 +297,8 @@ it('keeps a newer refusal after an older preview succeeds', async () => {
 
 it('keeps a newer success after an older preview fails late', async () => {
   const { session, state, add } = fixture()
+  // As at MCP startup (index.ts), register storage for the clone before racing previews.
+  await storageRegistration(path.join(root!, '.git'))
   add('ben', 'shared', 'ben changed\n')
   const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
   const preview = previewFor(state)

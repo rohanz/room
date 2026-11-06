@@ -122,7 +122,8 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     const own = t.team.a.addClaim({ path: 'api/auth.py', from: 1, to: 1, by: lead.name, byKind: 'agent', intent: 'mine' })
     publishFixture(t.local.b, workerId.name, 'app.py', 'x = 2\n')
     t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
-    expect(t.team.b.openClaims().map(c => c.intent).sort()).toEqual(['[money] bump', 'mine'])
+    // Mirroring derives from worker lifecycle facts, so it runs as an admitted operation and lands asynchronously.
+    await vi.waitFor(() => expect(t.team.b.openClaims().map(c => c.intent).sort()).toEqual(['[money] bump', 'mine']))
     const out = await asWorker(undefined, () => t.leadTools.call('room_done', { summary: 'auth landed' }))
     expect(out).toContain('released 1 claim(s) (kept 1 mirroring running workers)')
     const left = t.team.b.openClaims()

@@ -197,6 +197,9 @@ it('keeps an actual preview helper visible to drain after its parent call return
     expect((await m.gate.status()).tickets).toBe(1)
     process.kill(-child.pid!, 'SIGTERM'); await exited
     await finish!(); finish = undefined
+    // The helper's ticket is gone; this MCP's own registration still blocks until it unregisters, as any MCP's must.
+    expect((await m.gate.drain(m.owner)).live.map(view => view.id)).toEqual([expect.stringMatching(/^registration:/)])
+    await closeStorageAdmissions()
     expect((await m.gate.drain(m.owner)).complete).toBe(true)
     await m.gate.reopen(m.owner)
   } finally {

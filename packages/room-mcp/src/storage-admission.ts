@@ -263,19 +263,15 @@ export async function admitStorageHelper(pid: number): Promise<(() => Promise<vo
   const { probeProcessAsync } = await import('@room/local-state/process')
   const identity = await probeProcessAsync(pid)
   if (!identity?.startTime || !identity.executable) throw new StorageRefused('unavailable', 'preview helper identity is unreadable')
-  const gate = storageGate(common)
-  const instance = { pid, startTime: identity.startTime, executable: identity.executable,
-    sessionId: `preview:${pid}`, nonce: randomBytes(16).toString('hex') }
-  const registration = await gate.register({ instance, kind: 'helper', release: manifest.version })
-  let ticket: Ticket
-  try { ticket = await gate.admit(registration, 'preview', { parent }) }
-  catch (error) { await gate.unregister(registration); throw error }
+  // The helper's ticket hangs off this operation's registration but carries the helper's own identity, so drain
+  // keeps waiting while the helper lives even if this MCP has exited.
+  const { gate, registration } = await storageRegistration(common)
+  const ticket = await gate.admit(registration, 'preview', { parent,
+    identity: { pid, startTime: identity.startTime, executable: identity.executable } })
   let done = false
   return async () => {
     if (done) return
     await gate.finish(ticket)
-    await gate.unregister(registration)
-    await unregisterDraining()
     done = true
   }
 }

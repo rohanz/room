@@ -122,8 +122,8 @@ export interface StorageCloseAck { generation: number; daemon: InstanceToken; da
 // Registrations and tickets
 // ---------------------------------------------------------------------------------------------------------------
 
-/** `helper` = an independently running process (e.g. a preview helper) that outlives its parent's call. */
-export type RegistrationKind = 'mcp' | 'helper' | 'daemon' | 'maintenance'
+/** Processes that hold storage registrations. A helper the caller starts is a parented ticket (AdmitOptions.identity), not a registration. */
+export type RegistrationKind = 'mcp' | 'daemon' | 'maintenance'
 
 export interface Registration {
   v: 1
@@ -205,6 +205,12 @@ export interface AdmitOptions {
    * (generation <= drainingFrom); refused once the parent finished. The child must finish on its own.
    */
   parent?: Ticket
+  /**
+   * The process that performs this ticket's effects when it is not the registered caller, e.g. a preview helper the
+   * caller started. Requires `parent`. Drain judges the ticket by this identity's liveness, so a helper that outlives
+   * its MCP keeps blocking maintenance; it needs no registration of its own.
+   */
+  identity?: ProcessIdentity
 }
 
 export interface DrainProgress {

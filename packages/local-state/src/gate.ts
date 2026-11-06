@@ -16,7 +16,7 @@ import {
 } from './protocol.js'
 
 const PHASES: readonly GatePhase[] = ['legacy', 'draining', 'staging', 'db-complete', 'active']
-const KINDS: readonly RegistrationKind[] = ['mcp', 'helper', 'daemon', 'maintenance']
+const KINDS: readonly RegistrationKind[] = ['mcp', 'daemon', 'maintenance']
 const MAX_GATE_BYTES = 64 * 1024
 const MAX_RECORD_BYTES = 8 * 1024
 const MAX_NOTE = 512
@@ -272,8 +272,10 @@ export class FileStorageGate implements StorageGate {
    */
   async admit(registration: Registration, kind: OperationKind, options: AdmitOptions = {}): Promise<Ticket> {
     const holder = registration.instance.nonce
-    const current = this.readRegistrationOrRefuse(holder)
     const parent = options.parent
+    if (options.identity && !(parent && identityShape(options.identity)))
+      throw new StorageRefused('unavailable', 'a ticket for another process must be a child of the operation that started it')
+    const current = this.readRegistrationOrRefuse(holder)
     const permitted = (gate: StorageGateRecord): number => {
       this.compatibility(gate, current.build)
       // A detached child inherits its live parent's generation, so a drain waits for it too.
@@ -297,8 +299,9 @@ export class FileStorageGate implements StorageGate {
     // One durable marker per registration, before any non-durable ticket can authorize effects.
     // It survives ticket loss and prevents dead-holder pruning from skipping lifecycle recovery.
     if (!current.hasHeldTickets) writeAtomic(this.registrationFile(holder), { ...current, hasHeldTickets: true })
-    const ticket: Ticket = { v: 1, id: randomBytes(16).toString('hex'), holder, identity: {
-      pid: registration.instance.pid, startTime: registration.instance.startTime, executable: registration.instance.executable },
+    const effectOwner = options.identity ?? {
+      pid: registration.instance.pid, startTime: registration.instance.startTime, executable: registration.instance.executable }
+    const ticket: Ticket = { v: 1, id: randomBytes(16).toString('hex'), holder, identity: effectOwner,
       kind, generation, ...(parent ? { parent: parent.id } : {}), admittedAt: this.now() }
     const file = this.ticketFile(holder, ticket.id)
     if (!createExclusive(file, ticket, { durable: false })) throw new StorageRefused('unavailable', 'ticket id collision')

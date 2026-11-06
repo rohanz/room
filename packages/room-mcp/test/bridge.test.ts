@@ -181,6 +181,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     t.team.a.setScope(own)
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
     await settle()
+    await t.bridge.sync() // coordination is an admitted operation; wait for it rather than for elapsed time
     expect(t.team.b.coordination.get(lead.name)).toMatchObject({ paths: ['api/models.py'], workers: [worker.name] })
     publishSource(t.local.b, { 'tests/test_money.py': { change: 'A', state: 'shared', hash: 'h', size: 2 } })
     await t.bridge.sync()
