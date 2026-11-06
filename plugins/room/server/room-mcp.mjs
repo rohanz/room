@@ -33466,10 +33466,10 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     }
     const dir = entry.path, sid = path30.basename(dir);
     const session = read2(path30.join(dir, "session.json")), mcp = read2(path30.join(dir, "mcp.json"));
-    const runtime = mcp?.pid === currentPid || mcp?.runtime === "daemon-client" && alive(identityOf(mcp)) === "alive" ? "daemon-client" : "legacy";
+    const markerLive = mcp?.runtime === "daemon-client" && !!identityOf(mcp)?.startTime && alive(identityOf(mcp)) === "alive";
+    const runtime = markerLive ? "daemon-client" : "legacy";
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId || !!options.currentWorkerId && session.worker_id === options.currentWorkerId);
     if ((runtime === "daemon-client" || currentBinding) && typeof session?.worker_id === "string") upgradedWorkers.add(session.worker_id);
-    const markerLive = mcp?.runtime === "daemon-client" && !!identityOf(mcp)?.startTime && alive(identityOf(mcp)) === "alive";
     const served = markerLive && object4(mcp?.worker) && typeof mcp.worker.id === "string" ? identityOf(mcp.worker.host) : void 0;
     if (served?.startTime && served.executable) workerHosts.set(mcp.worker.id, [...workerHosts.get(mcp.worker.id) ?? [], served]);
     const host2 = typeof session?.host === "string" ? session.host : void 0;

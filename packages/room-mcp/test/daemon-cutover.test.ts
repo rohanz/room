@@ -471,7 +471,11 @@ describe('cutover rows', () => {
     expect((await inspectDaemonCutover(common, options)).blocked).toBe(true)
     // Nor does a stale marker whose pid is now the inspecting process's own: its writer's birth differs.
     write(marker, { pid: 500, startTime: 'crashed-writer', executable: 'node', runtime: 'daemon-client', worker: { id: 'w', host } })
-    expect((await inspectDaemonCutover(common, { ...options, currentPid: 500, probe: (pid: number) => pid === 500 ? identity(500) : live(pid) })).blocked).toBe(true)
+    const reused = { ...options, currentPid: 500, probe: (pid: number) => pid === 500 ? identity(500) : live(pid) }
+    expect((await inspectDaemonCutover(common, reused)).blocked).toBe(true)
+    // ...even beside a session record naming the worker, the path a hook-written worker session takes.
+    write(path.join(common, 'room/sessions/thread/session.json'), { session_id: 'thread', host: 'claude', worker_id: 'w' })
+    expect((await inspectDaemonCutover(common, reused)).blocked).toBe(true)
   })
   it('lists blocking and operator-resolved records, and counts the rest by kind', async () => {
     const { common } = fixture()

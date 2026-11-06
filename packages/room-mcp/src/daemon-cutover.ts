@@ -169,7 +169,7 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
   const upgradedWorkers = new Set<string>()
   if (options.currentWorkerId) upgradedWorkers.add(options.currentWorkerId)
   const workerProcesses = new Map<string, { identity?: ProcessIdentity; runtime: CutoverClient['runtime']; processClaim: boolean }>()
-  // A live daemon-client MCP names the worker it serves and the host that started it (a Codex worker writes no
+  // A live daemon-client MCP names the worker it serves and the host that started it (some hosts write no worker
   // session record). The worker counts as upgraded only when that host is exactly its recorded launch process.
   const workerHosts = new Map<string, ProcessIdentity[]>()
   const sessions = path.join(room, 'sessions')
@@ -177,14 +177,15 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
     if (entry.kind === 'issue') { state.issues.push(entry.message); continue }
     const dir = entry.path, sid = path.basename(dir)
     const session = read(path.join(dir, 'session.json')), mcp = read(path.join(dir, 'mcp.json'))
-    const runtime = mcp?.pid === currentPid || mcp?.runtime === 'daemon-client' && alive(identityOf(mcp)) === 'alive' ? 'daemon-client' : 'legacy'
+    // A marker is daemon-client evidence only while its writer is alive by full identity (pid, birth, executable).
+    // A bare pid match, even with this process's own pid, can be a crashed writer's stale marker on a reused pid.
+    const markerLive = mcp?.runtime === 'daemon-client' && !!identityOf(mcp)?.startTime && alive(identityOf(mcp)) === 'alive'
+    const runtime = markerLive ? 'daemon-client' : 'legacy'
     // Binding can change (or remain unknown) between arbitration's two-second publications.
     // The caller knows its own running contract and admitted worker; disk is evidence for other MCPs.
     const currentBinding = !!session && (!!options.currentSessionId && session.session_id === options.currentSessionId
       || !!options.currentWorkerId && session.worker_id === options.currentWorkerId)
     if ((runtime === 'daemon-client' || currentBinding) && typeof session?.worker_id === 'string') upgradedWorkers.add(session.worker_id)
-    // Only a marker whose own writer is alive by full identity can vouch for a worker; the current-pid shortcut cannot.
-    const markerLive = mcp?.runtime === 'daemon-client' && !!identityOf(mcp)?.startTime && alive(identityOf(mcp)) === 'alive'
     const served = markerLive && object(mcp?.worker) && typeof mcp.worker.id === 'string' ? identityOf(mcp.worker.host) : undefined
     if (served?.startTime && served.executable) workerHosts.set(mcp!.worker.id, [...(workerHosts.get(mcp!.worker.id) ?? []), served])
     const host = typeof session?.host === 'string' ? session.host : undefined

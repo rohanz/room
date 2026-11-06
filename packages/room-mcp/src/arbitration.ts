@@ -36,7 +36,7 @@ export interface ArbitrationOptions {
   /** The hook lease the ledger applies, reported to the hook. */
   hookLeaseMs?: number
   /** The Room worker this MCP was admitted as, with the host identity admission recorded; undefined until admitted.
-   *  The daemon cutover matches it to the worker's recorded host, since a Codex worker has no hook-written session
+   *  The daemon cutover matches it to the worker's recorded host, since a host may write no hook session
    *  record to name its worker. Read on every publication, so a later admission is published too. */
   worker?: () => { id: string; host: { pid: number; startTime: string; executable: string } } | undefined
 }

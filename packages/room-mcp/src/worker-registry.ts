@@ -72,7 +72,7 @@ export function admittedWorker(): { id: string; host: ProcessIdentity } | undefi
 /** Admit this process as its environment's worker run. A refused admission withdraws any earlier one, so a
  *  collected or superseded run no longer vouches for its worker in the daemon-client marker. */
 export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv = process.env,
-  bound?: { id: string; host: 'claude' | 'codex' }): Promise<void> {
+  bound?: Parameters<typeof admitOnce>[2]): Promise<void> {
   try { await admitOnce(dir, env, bound) } catch (error) { admitted = undefined; throw error }
 }
 
