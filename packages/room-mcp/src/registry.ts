@@ -71,6 +71,11 @@ export interface RoomsOptions {
   attach(s: Session, role: Role, lead?: Session): Attachment
   /** A session that arrives after close() (a join or rebind that finished during shutdown): leave it, never attach it. */
   late?(s: Session): void
+  /**
+   * The owning tools instance's lifecycle scope. Attachments, tracking, retirement timers and projectors are born in
+   * add/track, so running those in this scope binds every producer (and what it schedules) to that lifecycle.
+   */
+  scope?<T>(fn: () => T): T
   log?: (line: string) => void
 }
 
@@ -126,12 +131,16 @@ export class Rooms {
   roleOf(s: Session): Role | undefined { return this.entries.get(s)?.role ?? (s === this.primary() ? 'primary' : undefined) }
   byName(roomName: string): Session | undefined { return this.all().find(s => s.roomName === roomName) }
 
-  /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
   /** Shutdown has begun: from now on no session is added or tracked, so nothing starts producers or opens registries. */
   close(): void { this.closed = true }
   get isClosed(): boolean { return this.closed }
+  /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
   add(s: Session, role: Role, lead?: Session): void {
     if (this.closed) { this.o.late?.(s); return }
+    this.inScope(() => this.addInScope(s, role, lead))
+  }
+  private inScope(fn: () => void): void { if (this.o.scope) this.o.scope(fn); else fn() }
+  private addInScope(s: Session, role: Role, lead?: Session): void {
     if (role === 'primary' && this.primary() !== s) this.o.setPrimary(s)
     this.track(s)
     const cur = this.entries.get(s)
@@ -144,6 +153,9 @@ export class Rooms {
   track(s: Session): void {
     if (this.closed || this.tracked.has(s)) return
     this.tracked.add(s)
+    this.inScope(() => this.trackInScope(s))
+  }
+  private trackInScope(s: Session): void {
     this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then(registry => {
       if (!this.tracked.has(s) || this.projectors.has(s)) return
       const projector = new WorkerProjector(s, registry, this.o.log)
@@ -193,8 +205,10 @@ export class Rooms {
   /** Auto-retirement (registry §12, decideRetire's rules): after exits, before previews and PR tools, and every minute. */
   async autoRetire(session?: Session): Promise<void> {
     for (const s of session ? [session] : this.all()) {
+      if (this.closed) return
       const pending = this.retiring.get(s)
-      if (pending) { await pending; await this.autoRetire(s); continue }
+      // A pass queued behind another runs only while the session is still tracked and Rooms is open.
+      if (pending) { await pending; if (!this.closed && this.tracked.has(s)) await this.autoRetire(s); continue }
       const run = autoRetire(s, this)
       this.retiring.set(s, run)
       try { await run } finally { this.retiring.delete(s) }

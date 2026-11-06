@@ -88,6 +88,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     }
   }
   const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses,
+    scope: fn => registryLease.run(fn),
     late: s => { log(`leaving ${s.roomName}: joined after shutdown began`); void doLeave(s).catch(error => log(`late session leave failed: ${error instanceof Error ? error.message : String(error)}`)) } })
 
   const S = (): Session => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { AsyncResource } from 'node:async_hooks'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -172,4 +173,33 @@ it('a tool call still running when shutdown began opens no registry when it resu
   // Outside any ended lease (a new lifecycle, fixtures), registries still open.
   const fresh = await registryForDir(dir)
   expect(fresh).toBeDefined()
+})
+
+it('a producer born at startup, outside any tool call, runs in the lifecycle scope: its retirement tick after shutdown opens nothing', async () => {
+  const dir = gitRepo(), common = join(dir, '.git')
+  const lease = beginWorkerRegistries()
+  // Capture the per-session retirement timer instead of waiting a minute for it.
+  let tick: (() => void) | undefined
+  const realSetInterval = globalThis.setInterval
+  const intervals = vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
+    if (ms === 60_000) tick = AsyncResource.bind(fn) // a timer runs in the async context it was created in
+    return realSetInterval(() => {}, 2 ** 30)
+  }) as typeof setInterval)
+  const room = new RoomDoc()
+  const s = { room, dir, me: { name: 'Rohan', kind: 'agent' }, roomName: 'r', ...hubSeam(room) } as unknown as Session
+  const rooms = new Rooms({ primary: () => null, setPrimary: () => {}, log: () => {}, attach: () => ({ stop() {} }), scope: fn => lease.run(fn) })
+  rooms.add(s, 'primary') // as startup auto-join does: not inside any tool call
+  intervals.mockRestore()
+  expect(tick).toBeDefined()
+  expect(await rooms.settle(30_000)).toBe(true)
+  // Shutdown fences the lifecycle and ends it; the session stays tracked here to model a pass that escaped clearing.
+  lease.fence()
+  await lease.end()
+  await shutdownWorkerRegistries()
+  await closeStorageAdmissions()
+  expect((await storageGate(common).status()).registrations).toBe(0)
+  tick!()
+  expect(await rooms.settle(30_000)).toBe(true)
+  // Checked before any cleanup: the tick's registry open was refused in the ended lifecycle, so nothing registered.
+  expect((await storageGate(common).status()).registrations).toBe(0)
 })
