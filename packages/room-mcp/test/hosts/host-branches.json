@@ -1654,11 +1654,6 @@
     },
     {
       "path": "plugins/room/hooks/common.mjs",
-      "line": 453,
-      "text": "// Both hook manifests include shell tools. Bash is Codex's documented canonical name;"
-    },
-    {
-      "path": "plugins/room/hooks/common.mjs",
       "line": 653,
       "text": "* Claude Code caps a hook's additionalContext at 10,000 characters; over it, the model sees a file path and"
     },
@@ -1681,16 +1676,6 @@
       "path": "plugins/room/hooks/before-edit.mjs",
       "line": 35,
       "text": "// session.json are the initial ones; a Claude transcript can reveal a later /model switch."
-    },
-    {
-      "path": "plugins/room/hooks/before-edit.mjs",
-      "line": 41,
-      "text": "if (session?.host === 'codex' && typeof ev.model === 'string' && ev.model.trim()) next.model = ev.model.trim().slice(0, 80)"
-    },
-    {
-      "path": "plugins/room/hooks/before-edit.mjs",
-      "line": 42,
-      "text": "if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {"
     },
     {
       "path": "plugins/room/hooks/before-edit.mjs",
@@ -2134,16 +2119,6 @@
     },
     {
       "path": "plugins/room/hooks/session-start.mjs",
-      "line": 15,
-      "text": "const host = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : 'codex'"
-    },
-    {
-      "path": "plugins/room/hooks/session-start.mjs",
-      "line": 34,
-      "text": "...(host === 'claude' && typeof ev.transcript_path === 'string' && ev.transcript_path ? { transcript_path: ev.transcript_path } : {}),"
-    },
-    {
-      "path": "plugins/room/hooks/session-start.mjs",
       "line": 46,
       "text": "lines.push(`[room inbox ${selected.items.length}]`)"
     },
@@ -2268,6 +2243,26 @@
       "path": "packages/room-mcp/src/worker-launch.ts",
       "text": "claudeChannel: policy.claudeChannel === undefined ? defaultChannel : policy.claudeChannel,",
       "reason": "Step-4 forwarding of the existing plugin reader and channel option; no host evidence parsing."
+    },
+    {
+      "path": "plugins/room/hooks/codecs.mjs",
+      "text": "import { claudeHookCodec } from './claude-hook-codec.mjs'",
+      "reason": "Step-6 hook-only registry and frozen no-flag startup invocation default; all field/protocol interpretation stays in host-owned standalone codecs."
+    },
+    {
+      "path": "plugins/room/hooks/codecs.mjs",
+      "text": "import { codexHookCodec, compatibilityHookCodec } from './codex-hook-codec.mjs'",
+      "reason": "Step-6 hook-only registry and frozen no-flag startup invocation default; all field/protocol interpretation stays in host-owned standalone codecs."
+    },
+    {
+      "path": "plugins/room/hooks/codecs.mjs",
+      "text": "export const hookCodecFor = host => host === 'claude' ? claudeHookCodec : host === 'codex' ? codexHookCodec : compatibilityHookCodec(host)",
+      "reason": "Step-6 hook-only registry and frozen no-flag startup invocation default; all field/protocol interpretation stays in host-owned standalone codecs."
+    },
+    {
+      "path": "plugins/room/hooks/codecs.mjs",
+      "text": "const host = flag >= 0 && argv[flag + 1] ? argv[flag + 1] : 'codex'",
+      "reason": "Step-6 hook-only registry and frozen no-flag startup invocation default; all field/protocol interpretation stays in host-owned standalone codecs."
     }
   ]
 }

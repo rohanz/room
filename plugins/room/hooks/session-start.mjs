@@ -6,34 +6,33 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { startupHookCodec } from './codecs.mjs'
 import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, selectReply, writeStdout, processChain, companyLine, CONTEXT_CAP, fitLines, joinedLength, STATE_MAX_BYTES } from './common.mjs'
 
-const ev = await readStdinJson()
+const raw = await readStdinJson()
+const { host, codec } = startupHookCodec(process.argv)
+const ev = codec.decode('start', raw, process.argv)
 const root = gitRoot(ev.cwd)
-const id = ev.session_id ?? ev.thread_id ?? ev.sessionId
-const flag = process.argv.indexOf('--host')
-const host = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : 'codex'
+const id = ev.sessionId
 if (!root || typeof id !== 'string' || !id) {
-  try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: no root/id; keys=${Object.keys(ev).join(',')} cwd=${ev.cwd}\n`) } catch { /* ignore */ }
+  try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: no root/id; keys=${Object.keys(raw).join(',')} cwd=${ev.cwd}\n`) } catch { /* ignore */ }
   process.exit(0)
 }
 const dir = sessionDir(root, id)
 const now = Date.now()
 let readError
 const chain = processChain(undefined, undefined, undefined, error => { readError = error?.code ?? error?.name ?? 'unknown' })
-const hostName = new RegExp(`^${host}(?:[.-]|$)`, 'i')
-const hostPid = chain.find(p => hostName.test(p.executable ?? ''))?.pid
+const hostPid = chain.find(p => codec.matchesHostProcess(p))?.pid
 if (hostPid === undefined) {
   try { fs.appendFileSync(path.join(os.tmpdir(), 'room-hook.log'), `${new Date().toISOString()} session-start: host could not be identified; host=${host} chain length=${chain.length} read error=${readError ?? 'none; no matching ancestor'}\n`) } catch { /* ignore */ }
 }
 writeJsonAtomic(path.join(dir, 'session.json'), {
   session_id: id, host, cwd: ev.cwd, at: now, chain,
   ...(hostPid === undefined ? {} : { hostPid }),
-  ...(typeof ev.source === 'string' ? { source: ev.source } : {}),
+  ...(ev.source !== undefined ? { source: ev.source } : {}),
   ...(process.env.ROOM_WORKER_ID ? { worker_id: process.env.ROOM_WORKER_ID } : {}),
-  ...(host === 'claude' && typeof ev.transcript_path === 'string' && ev.transcript_path ? { transcript_path: ev.transcript_path } : {}),
-  ...(typeof ev.model === 'string' && ev.model.trim() ? { model: ev.model.trim().slice(0, 80) } : {}),
-  ...(typeof ev.effort?.level === 'string' && ev.effort.level.trim() ? { effort: ev.effort.level.trim().slice(0, 80) } : {}),
+  ...(ev.transcriptPath ? { transcript_path: ev.transcriptPath } : {}),
+  ...ev.runtime,
 })
 
 const lines = []
@@ -58,7 +57,7 @@ writeJsonAtomic(path.join(dir, 'hook.json'), { ...readJson(path.join(dir, 'hook.
 if (joinedLength(lines) > CONTEXT_CAP) { lines.length = 0; confirm = undefined }
 if (announced) lines.push(...fitLines([companyLine(state)], CONTEXT_CAP - joinedLength(lines) - 1))
 if (lines.length) {
-  const written = await writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: lines.join('\n') } }))
+  const written = await writeStdout(JSON.stringify(codec.context('start', lines.join('\n'))))
   if (written && confirm) await mcp.request({ op: 'confirm', batch: confirm }, 1000)
 }
 mcp?.close()

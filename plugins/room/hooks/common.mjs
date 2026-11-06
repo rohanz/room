@@ -2,6 +2,7 @@
 import fs from 'node:fs'
 import { initializePrivateDirectory, privateDirectoryPath } from './private-core.mjs'
 import { parseWindowsProcessTable, windowsProcessCommand, windowsProcessName } from './windows-process-core.mjs'
+import { compatibilityCodec } from './codecs.mjs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -198,16 +199,20 @@ export function readJson(file, fallback, maxBytes = JSON_MAX_BYTES) {
   try { return JSON.parse(read.text) } catch { return fallback }
 }
 
-/** Newest real assistant model in a bounded JSONL transcript tail. */
-export function newestModelInTranscriptTail(tail, startsMidLine = false) {
-  const lines = tail.split('\n')
-  if (startsMidLine) lines.shift()
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let entry
-    try { entry = JSON.parse(lines[i]) } catch { continue }
-    const model = typeof entry?.message?.model === 'string' ? entry.message.model.trim() : ''
-    if (model && !model.startsWith('<')) return model
-  }
+/** Bounded transcript bytes and stat evidence. Interpretation belongs to the selected hook codec. */
+export function readTranscriptTail(file, cached) {
+  if (file === undefined) return undefined
+  let fd
+  try {
+    const stat = fs.statSync(file)
+    if (cached?.path === file && cached?.mtimeMs === stat.mtimeMs && cached?.size === stat.size) return undefined
+    fd = fs.openSync(file, 'r')
+    const start = Math.max(0, stat.size - 64 * 1024)
+    const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
+    const count = fs.readSync(fd, tail, 0, tail.length, start)
+    return { path: file, mtimeMs: stat.mtimeMs, size: stat.size, tail: tail.subarray(0, count).toString('utf8'), startsMidFile: start > 0 }
+  } catch { /* absent, unreadable or being rotated: retry next hook */ }
+  finally { if (fd !== undefined) { try { fs.closeSync(fd) } catch { /* best effort */ } } }
 }
 
 /** The clone's common git directory (shared by its worktrees), without spawning git. */
@@ -431,11 +436,8 @@ function processTable(readers, onReadError) {
   return table
 }
 
-// Both hook manifests include shell tools. Bash is Codex's documented canonical name;
-// the remaining aliases cover host/version differences (exec is also a display name).
-export function isShellTool(name) {
-  return /^(?:Bash|PowerShell|shell|local_shell|exec|exec_command|unified_exec)$/.test(name)
-}
+// Compatibility accessor for callers passing the original discriminator and payload.
+export const isShellTool = name => compatibilityCodec.tool(name).kind === 'shell'
 
 function* inputStrings(value) {
   if (typeof value === 'string') yield value
@@ -445,8 +447,7 @@ function* inputStrings(value) {
 
 // Advisory shell parser: recognize explicit write forms and their destinations.
 // Unknown commands stay silent. Quotes protect separators and spaces in path names.
-function shellCommands(input) {
-  const command = input?.command ?? input?.cmd ?? input
+function shellCommands(command) {
   const values = Array.isArray(command) && command.every(v => typeof v === 'string') ? [command.join(' ')] : inputStrings(command)
   const commands = []
   for (const value of values) {
@@ -476,15 +477,15 @@ function shellWords(command) {
   }).slice(0, 200)
 }
 
-function writeTargets(input, powerShell = false, root = '') {
+function writeTargets(commandInput, powerShell = false, root = '') {
   const targets = []
   let cwd = ''
   const add = value => targets.push(cwd && !/^(?:[a-z]:[\\/]|[\\/])/.test(value) ? `${cwd}/${value}` : value)
-  for (const raw of inputStrings(input?.command ?? input?.cmd ?? input)) {
+  for (const raw of inputStrings(commandInput)) {
     if (raw.length > 20_000 || !/(?:^|[;&|\n])\s*(?:[^\s/]+\/)?apply_patch(?:\s|$)/m.test(raw)) continue
     for (const match of raw.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) add((match[1] ?? match[2]).trim())
   }
-  for (const command of shellCommands(input)) {
+  for (const command of shellCommands(commandInput)) {
     const tokens = shellWords(command)
     const words = []
     for (let i = 0; i < tokens.length; i++) {
@@ -588,9 +589,9 @@ function writeTargets(input, powerShell = false, root = '') {
 }
 
 /** Repo-relative paths touched by an edit or shell tool. Shell commands are bounded above. */
-export function pathsOf(toolName, input, root) {
+export function pathsOf(toolName, input, root, codec = compatibilityCodec) {
   const out = new Set()
-  const shell = isShellTool(toolName)
+  const tool = codec.tool(toolName, input)
   const rel = p => {
     const windows = /^(?:[a-z]:[\\/]|\\\\)/i.test(root)
     const lib = windows ? path.win32 : path
@@ -599,18 +600,14 @@ export function pathsOf(toolName, input, root) {
     const r = lib.relative(root, abs)
     return r && r !== '..' && !r.startsWith('..' + lib.sep) ? r.split(lib.sep).join('/') : undefined
   }
-  if (shell) {
-    for (const token of writeTargets(input, toolName === 'PowerShell', root)) {
+  if (tool.kind === 'shell') {
+    for (const token of writeTargets(codec.command(input), tool.shellDialect === 'powershell', root)) {
       const r = rel(token)
       if (r && (fs.existsSync(path.join(root, r)) || /[/\\.]\w/.test(token))) out.add(r)
     }
     return Array.from(out)
   }
-  if (input && typeof input === 'object') {
-    for (const key of ['file_path', 'path', 'filePath']) if (typeof input[key] === 'string') {
-      const r = rel(input[key]); if (r) out.add(r)
-    }
-  }
+  for (const value of codec.pathFields(input)) { const r = rel(value); if (r) out.add(r) }
   for (const text of inputStrings(input)) {
     for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
     // Edit tool path fields may contain spaces; keep each value intact.

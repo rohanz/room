@@ -6,57 +6,42 @@
 // Everything local lives in room/sessions/<sid>/ of the clone's common git directory.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, inputIncomplete, gitRoot, gitCommonDir, sessionDir, readJson, readReceipt, receiptSessionId, writeHookReceipt, writeJsonAtomic, openMcp, selectReply, writeStdout, pathsOf, isShellTool, companyLine, coversPath, containsPath, newestModelInTranscriptTail, CONTEXT_CAP, fitLines, joinedLength, STATE_MAX_BYTES } from './common.mjs'
+import { compatibilityCodec, hookCodecFor } from './codecs.mjs'
+import { readStdinJson, inputIncomplete, gitRoot, gitCommonDir, sessionDir, readJson, readReceipt, receiptSessionId, writeHookReceipt, writeJsonAtomic, openMcp, selectReply, writeStdout, pathsOf, companyLine, coversPath, containsPath, readTranscriptTail, CONTEXT_CAP, fitLines, joinedLength, STATE_MAX_BYTES } from './common.mjs'
 
-const ev = await readStdinJson()
+const raw = await readStdinJson()
 // Over the cap or late, `ev` holds only the complete fields of the input's prefix (readStdinJson).
-const incomplete = inputIncomplete(ev)
+const incomplete = inputIncomplete(raw)
+const routing = compatibilityCodec.decode('before-tool', raw, process.argv, !!incomplete)
 const unchecked = `[room] Room could not read this whole tool call (${incomplete}), so it did not check it against claims or nearby work. Call room_state before editing files others may be working on.`
-const root = gitRoot(ev.cwd)
-if (!root || !receiptSessionId(ev.session_id)) {
+const root = gitRoot(routing.cwd)
+const id = routing.sessionId
+if (!root || !receiptSessionId(id)) {
   // Without a session id Room cannot tell whether this session is in a room; where Room has run, say so.
   if (incomplete && root && fs.existsSync(path.join(gitCommonDir(root), 'room'))) {
-    await writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unchecked } }))
+    await writeStdout(JSON.stringify(compatibilityCodec.context('before-tool', unchecked)))
   }
   process.exit(0)
 }
-const dir = sessionDir(root, ev.session_id)
+const dir = sessionDir(root, id)
 const now = Date.now()
 
 const activityFile = path.join(dir, 'hook-activity.json')
 let previous
 try { previous = readReceipt(activityFile) } catch { /* absent or invalid activity */ }
-if (previous?.session_id !== ev.session_id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
-  writeJsonAtomic(activityFile, { at: now, session_id: ev.session_id, event: 'PreToolUse' })
+if (previous?.session_id !== id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
+  writeJsonAtomic(activityFile, { at: now, session_id: id, event: 'PreToolUse' })
 }
-writeHookReceipt(path.join(gitCommonDir(root), 'room'), ev.session_id, now)
+writeHookReceipt(path.join(gitCommonDir(root), 'room'), id, now)
 
 // runtime.json: this hook is its single writer (ledger SF3). The session's SessionStart values in
 // session.json are the initial ones; a Claude transcript can reveal a later /model switch.
 const session = readJson(path.join(dir, 'session.json'), null)
+const codec = hookCodecFor(session?.host)
+const ev = codec.decode('before-tool', raw, process.argv, !!incomplete)
 const runtime = readJson(path.join(dir, 'runtime.json'), null) ?? {}
-const next = { ...runtime }
-const effort = typeof ev.effort?.level === 'string' && ev.effort.level.trim() ? ev.effort.level.trim().slice(0, 80) : undefined
-if (effort) next.effort = effort
-if (session?.host === 'codex' && typeof ev.model === 'string' && ev.model.trim()) next.model = ev.model.trim().slice(0, 80)
-if (session?.host === 'claude' && typeof ev.transcript_path === 'string') {
-  let fd
-  try {
-    const stat = fs.statSync(ev.transcript_path)
-    const cached = runtime.transcript
-    if (cached?.path !== ev.transcript_path || cached?.mtimeMs !== stat.mtimeMs || cached?.size !== stat.size) {
-      fd = fs.openSync(ev.transcript_path, 'r')
-      const start = Math.max(0, stat.size - 64 * 1024)
-      const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
-      const count = fs.readSync(fd, tail, 0, tail.length, start)
-      const model = newestModelInTranscriptTail(tail.subarray(0, count).toString('utf8'), start > 0)
-      // SessionStart's model is authoritative over the first (possibly lagging) transcript read.
-      if (model && !(typeof session.model === 'string' && session.model && !cached)) next.model = model
-      next.transcript = { path: ev.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size }
-    }
-  } catch { /* transcript absent, unreadable or being rotated: retry next hook */ }
-  finally { if (fd !== undefined) { try { fs.closeSync(fd) } catch { /* best effort */ } } }
-}
+const next = codec.reduceRuntime(ev, { sessionRecord: session, previousRuntime: runtime,
+  transcript: readTranscriptTail(ev.transcriptPath, runtime.transcript) })
 if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...runtime, at: 0 })) writeJsonAtomic(path.join(dir, 'runtime.json'), { ...next, at: now })
 
 const state = readJson(path.join(dir, 'state.json'), null, STATE_MAX_BYTES)
@@ -66,7 +51,7 @@ const stateFresh = stateAt !== undefined && now - stateAt < 60_000
 // hook selects and receipts nothing, and its claim and near lines do not count as the main one being told.
 // An incomplete input may have lost agent_id past its prefix: treat it like a subagent's, so nothing is
 // selected or recorded as told for the main conversation on uncertain identity.
-const subagent = (typeof ev.agent_id === 'string' && ev.agent_id !== '') || !!incomplete
+const subagent = ev.subagent
 // While alone with nothing owed, only the records above: no endpoint round trip, no scans. state.json is
 // rewritten only when something changes, so while this session's MCP is up its age means nothing; without
 // the MCP, a stale file is not trusted.
@@ -75,9 +60,9 @@ if (!stateFresh && !fs.existsSync(path.join(dir, 'mcp.json'))) process.exit(0)
 
 const inbox = []
 let confirm
-const mcp = await openMcp(dir, 700, undefined, ev.session_id)
-const selected = mcp && !subagent ? selectReply(await mcp.request({ op: 'select', sessionId: ev.session_id })) : undefined
-const live = selected?.ok === true || (!!mcp && subagent && (await mcp.request({ op: 'ping', sessionId: ev.session_id }))?.ok === true)
+const mcp = await openMcp(dir, 700, undefined, id)
+const selected = mcp && !subagent ? selectReply(await mcp.request({ op: 'select', sessionId: id })) : undefined
+const live = selected?.ok === true || (!!mcp && subagent && (await mcp.request({ op: 'ping', sessionId: id }))?.ok === true)
 const current = stateAt !== undefined && (stateFresh || live)
 const company = current && state.company === true
 let interrupt = false
@@ -106,8 +91,7 @@ const told = hook.companyTold === true
 let changed = false
 if (company) {
   if (!told && !subagent) addCoordination(companyLine(state), () => { hook.companyTold = true; changed = true })
-  const paths = (isShellTool(ev.tool_name) || /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
-    ? pathsOf(ev.tool_name, ev.tool_input, root) : []
+  const paths = ev.tool.kind !== 'other' ? pathsOf(ev.tool.originalName, ev.tool.input, root, codec) : []
   if (incomplete) addCoordination(paths.length
     ? `[room] Room read only the start of this tool call (${incomplete}): claims and nearby work were checked for ${paths.join(', ')} only; any other file it changes was not checked.`
     : unchecked)
@@ -159,7 +143,7 @@ const shownCoordination = fitLines(coordination, joinedLength(inbox) <= CONTEXT_
 const lines = joinedLength(inbox) <= CONTEXT_CAP ? [...inbox, ...shownCoordination] : shownCoordination
 if (joinedLength(inbox) > CONTEXT_CAP) confirm = undefined
 if (lines.length) {
-  const written = await writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: lines.join('\n') } }))
+  const written = await writeStdout(JSON.stringify(codec.context('before-tool', lines.join('\n'))))
   if (written && !subagent) {
     for (let i = 0; i < shownCoordination.length; i++) if (shownCoordination[i] === coordination[i]) receipts[i]?.()
     if (changed) writeJsonAtomic(hookFile, hook)

@@ -2,7 +2,7 @@
 // and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
 //
 // Run:        npm run build:plugin   (from the repository root; paths are cwd-relative). Needs `npm ci`.
-// Overwrites: plugins/room/server/{room-mcp,room-daemon,parse-worker}.mjs and hooks/private-core.mjs and hooks/windows-process-core.mjs;
+// Overwrites: plugins/room/server/{room-mcp,room-daemon,parse-worker}.mjs and hooks/{private-core,windows-process-core,*-hook-codec}.mjs;
 // replaces plugins/room/server/grammars/ and (via packages/web/dist) plugins/room/web/.
 // All generated plugin assets are committed; CI checks they are current.
 // --skip-web  rebuilds only the server bundle (for sandboxes that cannot build the web view): partial output, never commit it.
@@ -33,6 +33,11 @@ await build({ entryPoints: ['packages/relay/src/private-core.ts'], outfile: 'plu
 // One builtins-only Windows process table reader for hooks and the relay.
 await build({ entryPoints: ['packages/relay/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
+// Pure host hook codecs; shipped beside the frozen executable entry points, with no MCP dependency.
+for (const host of ['claude', 'codex']) {
+  await build({ entryPoints: [`packages/room-mcp/src/hosts/${host}-hook-codec.ts`], outfile: `plugins/room/hooks/${host}-hook-codec.mjs`,
+    bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
+}
 
 const grammarDir = 'plugins/room/server/grammars'
 fs.rmSync(grammarDir, { recursive: true, force: true })
