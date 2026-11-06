@@ -45657,15 +45657,18 @@ async function clearPreviewQuarantine(entry) {
   const marker = previewQuarantinePath(entry);
   const marked = await fs56.promises.lstat(marker).then(() => true, (error2) => error2.code !== "ENOENT");
   if (!marked) return true;
-  const real = await fs56.promises.realpath(entry).catch(() => path55.resolve(entry));
   const since = await fs56.promises.readFile(marker, "utf8").then((text2) => {
     const v = JSON.parse(text2).since;
     return typeof v === "number" ? v : void 0;
   }, () => void 0);
-  const cwds = await processCwds(since);
-  if (!cwds || cwds.some((cwd) => cwd === real || cwd.startsWith(`${real}${path55.sep}`))) return false;
+  if (await previewTreeInUse(entry, since)) return false;
   await fs56.promises.rm(marker, { force: true });
   return true;
+}
+async function previewTreeInUse(entry, since) {
+  const real = await fs56.promises.realpath(entry).catch(() => path55.resolve(entry));
+  const cwds = await processCwds(since);
+  return !cwds || cwds.some((cwd) => cwd === real || cwd.startsWith(`${real}${path55.sep}`));
 }
 async function measurePreview(entry, cap) {
   const du = await new Promise((resolve6) => {
@@ -46357,6 +46360,7 @@ function setPreviewCleanupForTests(options = {}) {
 }
 async function runTrackedProcess(file, args2, options) {
   const { cwd, timeout, maxBuffer, lock, env = process.env, signal } = options;
+  const tree = options.tree ?? previewProcesses.getStore()?.tree;
   const graceMs = cleanupForTests.graceMs ?? CLEANUP_GRACE_MS;
   let admission;
   let retainTicket = false, groupPid;
@@ -46471,13 +46475,14 @@ async function runTrackedProcess(file, args2, options) {
   } finally {
     const finish = await admission?.catch(() => void 0);
     if (!retainTicket) await finish?.();
-    else if (finish && groupPid) releaseWhenGroupGone(groupPid, file, finish);
+    else if (finish && groupPid) releaseWhenHelperGone(groupPid, file, tree, finish);
   }
 }
-function releaseWhenGroupGone(pid, file, release) {
+function releaseWhenHelperGone(pid, file, tree, release) {
   const check = async () => {
     try {
-      if (await previewGroupAlive(pid, file)) {
+      const inUse = await previewGroupAlive(pid, file) || !!tree && await previewTreeInUse(tree.dir, tree.since);
+      if (inUse) {
         setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref();
         return;
       }
@@ -46911,6 +46916,10 @@ async function runInMergedTree(s, ancestor, merged, cmd, options = {}) {
 }
 async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   const { modes, observe, historyKey, signal } = options;
+  const attemptStartedAt = Date.now();
+  const useTree = (tree) => {
+    previewProcesses.getStore().tree = { dir: tree, since: attemptStartedAt };
+  };
   let dir;
   let survivors = false;
   let quarantined = false;
@@ -46955,6 +46964,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
       cached3 = !!release;
       if (cached3) {
         dir = cache2;
+        useTree(dir);
         try {
           await preparePreviewEntry(s.dir, dir);
           reused = await preparePreviewCache(s.dir, dir, ancestor, source, observe);
@@ -46970,6 +46980,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
       if (!cached3) {
         dir = await fs57.promises.mkdtemp(path56.join(os13.tmpdir(), "room-merge-"));
         dir = await fs57.promises.realpath(dir);
+        useTree(dir);
         observe?.baseMaterialized?.();
         await materializeGitTree(s.dir, ancestor, dir);
       }
@@ -47093,6 +47104,7 @@ command completion: ${stage === "setup" ? "not run" : "incomplete"}` };
         if (!cached3 || quarantined) void release?.().catch(() => void 0);
       } else await release?.();
       if (release) previewProcesses.getStore().lock = void 0;
+      previewProcesses.getStore().tree = void 0;
       const evict = cached3 || previewCapBytes() === 0;
       const key2 = await previewKeyPath(s.dir).catch(() => void 0);
       if (key2) await previewMaintenance(s.dir, async () => {
