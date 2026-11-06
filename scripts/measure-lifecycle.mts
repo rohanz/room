@@ -250,7 +250,9 @@ async function toolsSample(root: string): Promise<Record<string, Measurement>> {
     const worker = { ...record(common, n), id: `w_${tag}`, tag, name: `baseline+${tag}`, phase: 'active', base: head,
       dir: path.join(root, '.room/workers', tag), branch: `room/${tag}`, collectedKeep: true,
       lead: { participant: 'baseline', room: 'local/baseline', instance },
-      runs: [{ ...record(common, n).runs[0], launch: { outcome: 'launched', pid: tag === 'finished' ? 4_000_000 : process.pid, process: { ...instance, pid: tag === 'finished' ? 4_000_000 : process.pid } } }] }
+      // The launcher is this live process with its real identity: a synthetic start time would read as a reused pid and
+      // force a synchronous ps confirmation on every liveness check, measuring the fixture instead of the operation.
+      runs: [{ ...record(common, n).runs[0], launcher: instance, launch: { outcome: 'launched', pid: tag === 'finished' ? 4_000_000 : process.pid, process: { ...instance, pid: tag === 'finished' ? 4_000_000 : process.pid } } }] }
     git('worktree', 'add', '-qb', worker.branch, worker.dir, head)
     fs.writeFileSync(path.join(common, 'room/registry/workers', `${worker.id}.json`), JSON.stringify(worker))
     fs.writeFileSync(path.join(common, 'room/registry/tags', `${tag}.json`), JSON.stringify({ id: worker.id, holder: instance, at: 1 }))
@@ -283,6 +285,9 @@ async function toolsSample(root: string): Promise<Record<string, Measurement>> {
     await timed('room_state', () => tools.call('room_state', {}))
     await timed('room_send', () => tools.call('room_send', { type: 'note', to: 'baseline+running', text: 'measurement' }))
     await timed('room_done', () => tools.call('room_done', { summary: 'measurement' }))
+    // Steady state: the same call again in this process. The first admitted operation of a process also writes the
+    // registration's durable first-admission marker once; the repeat measures the per-operation cost on both revisions.
+    await timed('room_doneRepeat', () => tools.call('room_done', { summary: 'measurement' }))
     const collected = await timed('collect', () => tools.call('room_collect', { tag: 'finished', keep: true }))
     if (!fs.existsSync(path.join(root, 'result.txt'))) throw new Error(`collect did not apply fixture: ${collected}`)
     const spawn = (n: number) => async () => {
