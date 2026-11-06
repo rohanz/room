@@ -90,7 +90,8 @@ function windowsAclScript(protectNew, createDirectory, repair) {
   return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
-    function Gone($path) { -not ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) };
+    # Only a definitive not-found proves an entry is gone: Exists() is also false when access is denied.
+    function NotFound($err) { $e=$err.Exception; while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; return $false };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
     function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
     function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
@@ -121,8 +122,8 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
     }).Count -gt 0;` : ""}
     ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree. Other Room
-    # processes create and remove entries meanwhile: an entry (or directory) that is gone needs no verification;
-    # any other failure still refuses.
+    # processes create and remove entries meanwhile: an entry (or directory) reported not found needs no verification;
+    # any other failure, access denied included, still refuses.
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
@@ -130,12 +131,12 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       try {
         foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
           if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-          try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Gone $child) { continue }; throw };
+          try { $attributes=[IO.File]::GetAttributes($child) } catch { if (NotFound $_) { continue }; throw };
           if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
           $children.Add($child);
           if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
         }
-      } catch { if (($dir -ne $p) -and (Gone $dir)) { continue }; throw }
+      } catch { if (($dir -ne $p) -and (NotFound $_)) { continue }; throw }
     };` : ""}
     ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
       WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
@@ -158,12 +159,14 @@ function windowsAclScript(protectNew, createDirectory, repair) {
           # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
           # read with its inherited entries would persist those entries as explicit ones.
           & $icacls $child /reset /q | Out-Null;
+          # 2/3: file/path not found (removed meanwhile); any other failure, access denied (5) included, refuses.
+          if ($LASTEXITCODE -eq 2 -or $LASTEXITCODE -eq 3) { continue };
           if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
           $childAcl=ReadAcl $child; $rules=Rules $childAcl
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
             @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
-      } catch { if (Gone $child) { continue }; throw }
+      } catch { if (NotFound $_) { continue }; throw }
     };` : ""}
     # SIDs and booleans only, so the report is built without ConvertTo-Json.
     $bool={ param($v) if ($v) { 'true' } else { 'false' } };

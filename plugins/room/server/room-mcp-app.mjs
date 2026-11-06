@@ -126,7 +126,8 @@ function windowsAclScript(protectNew, createDirectory, repair) {
   return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
-    function Gone($path) { -not ([IO.File]::Exists($path) -or [IO.Directory]::Exists($path)) };
+    # Only a definitive not-found proves an entry is gone: Exists() is also false when access is denied.
+    function NotFound($err) { $e=$err.Exception; while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; return $false };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
     function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
     function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
@@ -157,8 +158,8 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
     }).Count -gt 0;` : ""}
     ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree. Other Room
-    # processes create and remove entries meanwhile: an entry (or directory) that is gone needs no verification;
-    # any other failure still refuses.
+    # processes create and remove entries meanwhile: an entry (or directory) reported not found needs no verification;
+    # any other failure, access denied included, still refuses.
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
@@ -166,12 +167,12 @@ function windowsAclScript(protectNew, createDirectory, repair) {
       try {
         foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
           if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-          try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Gone $child) { continue }; throw };
+          try { $attributes=[IO.File]::GetAttributes($child) } catch { if (NotFound $_) { continue }; throw };
           if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
           $children.Add($child);
           if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
         }
-      } catch { if (($dir -ne $p) -and (Gone $dir)) { continue }; throw }
+      } catch { if (($dir -ne $p) -and (NotFound $_)) { continue }; throw }
     };` : ""}
     ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
       WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
@@ -194,12 +195,14 @@ function windowsAclScript(protectNew, createDirectory, repair) {
           # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
           # read with its inherited entries would persist those entries as explicit ones.
           & $icacls $child /reset /q | Out-Null;
+          # 2/3: file/path not found (removed meanwhile); any other failure, access denied (5) included, refuses.
+          if ($LASTEXITCODE -eq 2 -or $LASTEXITCODE -eq 3) { continue };
           if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
           $childAcl=ReadAcl $child; $rules=Rules $childAcl
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
             @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
-      } catch { if (Gone $child) { continue }; throw }
+      } catch { if (NotFound $_) { continue }; throw }
     };` : ""}
     # SIDs and booleans only, so the report is built without ConvertTo-Json.
     $bool={ param($v) if ($v) { 'true' } else { 'false' } };
@@ -68387,6 +68390,63 @@ init_src4();
 init_private_state();
 init_config();
 
+// packages/room-mcp/src/host-rebind.ts
+var HostRebind = class {
+  constructor(deps) {
+    this.deps = deps;
+  }
+  deps;
+  running;
+  closed = false;
+  get pending() {
+    return this.running;
+  }
+  rebind(sessionId) {
+    if (this.closed) return Promise.resolve();
+    if (this.running) return this.running;
+    const joined = this.deps.joined();
+    const primary = joined[0];
+    if (!primary || primary.lease?.sessionId === sessionId) return Promise.resolve();
+    const running = this.run(joined, primary, sessionId).finally(() => {
+      if (this.running === running) this.running = void 0;
+    });
+    this.running = running;
+    return running;
+  }
+  /** Shutdown: fence new rebinds and late adoption; `wait` also waits for one in flight. */
+  async close(wait) {
+    this.closed = true;
+    if (wait) await this.running?.catch(() => {
+    });
+  }
+  async run(joined, primary, sessionId) {
+    const { deps } = this;
+    deps.log(`host session changed from ${primary.lease?.sessionId ?? "?"} to ${sessionId}; rebinding room leases`);
+    const reuse = new Map(joined.map((old) => [old, deps.detach(old)]));
+    try {
+      for (const old of [...joined].reverse()) await deps.drop(old, "host session rebound");
+      if (this.closed) return;
+      const fresh = await deps.join(primary, reuse.get(primary), sessionId);
+      if (this.closed) {
+        await deps.dispose(fresh);
+        return;
+      }
+      await deps.adopt(fresh);
+      for (const old of joined.slice(1)) {
+        if (this.closed) return;
+        const secondary = await deps.join(old, reuse.get(old), sessionId);
+        if (this.closed) {
+          await deps.dispose(secondary);
+          return;
+        }
+        deps.attachSecondary(secondary, fresh);
+      }
+    } finally {
+      await Promise.all([...reuse.values()].map((value5) => value5.watcher?.dispose()));
+    }
+  }
+};
+
 // packages/room-mcp/src/transport.ts
 import process4 from "node:process";
 
@@ -69178,9 +69238,8 @@ async function main() {
       LOG_FILE = startup.logFile;
       const sessionBinding = createSessionBinding(dir);
       roomLogDir = () => sessionBinding.commonDir();
-      let rebinding;
-      let rebindHost = async () => {
-      };
+      let hostRebind;
+      const rebindHost = (sessionId) => hostRebind?.rebind(sessionId) ?? Promise.resolve();
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification) });
       let presence;
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION });
@@ -69195,7 +69254,7 @@ async function main() {
       }, completionReady: async () => {
         const bound = sessionBinding.bound();
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id);
-        else if (rebinding) await rebinding;
+        else if (hostRebind?.pending) await hostRebind.pending;
       }, getSession: () => session, setSession: (s) => {
         session = s;
         if (s) {
@@ -69214,7 +69273,7 @@ async function main() {
         binding: sessionBinding,
         ledger: tools.ledger,
         select: () => tools.hookSelect(),
-        canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
+        canSelect: () => !hostRebind?.pending && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
         onContact: () => presence?.activity(),
         log,
         worker: admittedWorker
@@ -69262,30 +69321,19 @@ async function main() {
         },
         log
       });
-      rebindHost = async (nextId) => {
-        if (rebinding) return rebinding;
-        const joined2 = tools.joinedSessions();
-        const primary = joined2[0];
-        if (!primary || primary.lease?.sessionId === nextId) return;
-        rebinding = (async () => {
-          log(`host session changed from ${primary.lease?.sessionId ?? "?"} to ${nextId}; rebinding room leases`);
-          const reuse = new Map(joined2.map((old) => [old, detachCheckout(old)]));
-          try {
-            for (const old of [...joined2].reverse()) await tools.drop(old, "host session rebound");
-            const fresh = await joinSession({ ...rejoinOptions(primary, startup.credentialsPath), reuse: reuse.get(primary), sessionId: nextId, log });
-            await adopt(fresh, false);
-            for (const old of joined2.slice(1)) {
-              const secondary = await joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse: reuse.get(old), sessionId: nextId, log });
-              tools.attachWorkersRoom(secondary, fresh);
-            }
-          } finally {
-            await Promise.all([...reuse.values()].map((value5) => value5.watcher?.dispose()));
-          }
-        })().finally(() => {
-          rebinding = void 0;
-        });
-        return rebinding;
-      };
+      hostRebind = new HostRebind({
+        joined: () => tools.joinedSessions(),
+        detach: detachCheckout,
+        drop: (old, reason) => tools.drop(old, reason),
+        join: (old, reuse, sessionId) => joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse, sessionId, log }),
+        adopt: (fresh) => adopt(fresh, false),
+        attachSecondary: (secondary, primary) => tools.attachWorkersRoom(secondary, primary),
+        dispose: async (late) => {
+          const unsaved = await leaveSession(late, { preserveReplica: true });
+          if (unsaved) log(`WARN: ${unsaved}`);
+        },
+        log
+      });
       const call = async (req, signal2, handoff2) => {
         if (req.params.name === "room_done" && process.env.ROOM_WORKER_ID) {
           await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound());
@@ -69296,7 +69344,7 @@ async function main() {
         }
         const bound = sessionBinding.bound();
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id);
-        else if (rebinding) await rebinding;
+        else if (hostRebind?.pending) await hostRebind.pending;
         const away = presence.hasLeft;
         const idle = presence.activity();
         await (currentToolTiming()?.phase("settle", () => autoJoin.settle()) ?? autoJoin.settle());
@@ -69365,6 +69413,7 @@ async function main() {
       const runtime = { call, shutdown: async (signal2) => {
         presence.stop();
         autoJoin.cancel({ explicitLeave: false });
+        await hostRebind?.close(!signal2);
         if (!signal2) await autoJoin.settle();
         await tools.shutdown();
         await arbitration.close();
