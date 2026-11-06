@@ -656,7 +656,7 @@ var GATE_LIMITS = {
   migrationLockWaitMs: 3e4
 };
 var STORAGE_PATHS = {
-  /** Gate record. All admission and phase transitions serialize on `${gate}.guard` (relay withGuard). */
+  /** Gate record. Initialization, registration and phase/generation transitions serialize on `${gate}.guard`; admission is lock-free against them. */
   gate: "room/storage-gate.json",
   /** One private file per registration, named `<instance nonce>.json`. */
   registrations: "room/storage-gate/registrations",

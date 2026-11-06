@@ -742,7 +742,7 @@ var init_protocol = __esm({
       migrationLockWaitMs: 3e4
     };
     STORAGE_PATHS = {
-      /** Gate record. All admission and phase transitions serialize on `${gate}.guard` (relay withGuard). */
+      /** Gate record. Initialization, registration and phase/generation transitions serialize on `${gate}.guard`; admission is lock-free against them. */
       gate: "room/storage-gate.json",
       /** One private file per registration, named `<instance nonce>.json`. */
       registrations: "room/storage-gate/registrations",
@@ -15963,7 +15963,7 @@ function unregisterDraining() {
       drainRequested = false;
       for (const [common, pending2] of registrations) {
         const state = await pending2.catch(() => void 0);
-        if (!state || (await state.gate.observe()).phase !== "draining") continue;
+        if (!state || outstanding.has(common) || (await state.gate.observe()).phase !== "draining") continue;
         try {
           await state.gate.unregister(state.registration);
           if (registrations.get(common) === pending2) registrations.delete(common);
@@ -15982,6 +15982,7 @@ var drainWatch = setInterval(() => {
   });
 }, 1e3);
 drainWatch.unref();
+var outstanding = /* @__PURE__ */ new Map();
 async function closeStorageAdmissions() {
   await Promise.allSettled([...startups]);
   await drainingSweep;
@@ -15992,6 +15993,7 @@ async function closeStorageAdmissions() {
       registrations.delete(common);
       continue;
     }
+    if (outstanding.has(common)) continue;
     try {
       await state.gate.unregister(state.registration);
       registrations.delete(common);

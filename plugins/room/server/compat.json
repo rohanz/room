@@ -33,13 +33,13 @@
   },
   "workerRecordSchema": 1,
   "bundleSha256": {
-    "room-mcp.mjs": "4e7ed03d1778021d926c39567ae08b594aa7ae1f519665f17a8657549e0b9988",
-    "room-mcp-app.mjs": "ccbe4c8fc3527c97967356ea96e06a32ae9f898c23ba3eb83a6365ffb863f8c6",
-    "room-daemon.mjs": "30bb06d39fce42113990d16118dea282304d1e0c80a581c72f9906a65466a2e0",
-    "room-daemon-app.mjs": "8318f76d7b2ec5b61543b955971bf771999f6051dfa9717083ca353625688fc0",
-    "room-state.mjs": "d3e949a41913236be0a8542ddd7eef0b38f10771db78e95d7bd55d565a5e61c8",
-    "room-state-app.mjs": "6d066b10b37f0b01ba7537636ef1d7cbd49ff251553ff90b148e8dda7d6d7230",
+    "room-mcp.mjs": "76f7412283064d4458e2e1ab14dca5cab7a04132c6a1d077956dae8bd0cc3621",
+    "room-mcp-app.mjs": "2ef769abe820e3913df468d331317e34e29069a805ecf07d4f4c75b3669b91b5",
+    "room-daemon.mjs": "026b75c4a037d432d488fe43e4c5a053a8eda44ad5590b670b035f1c1feb69d6",
+    "room-daemon-app.mjs": "a7090e44d789d73d920295d4d02109bfd617b13e3ed2f084fafaf04cf7e9dc72",
+    "room-state.mjs": "65f660b924a6af4bbe8f1734a445dd6778853818c2bffdc45a38ab46e64ce449",
+    "room-state-app.mjs": "cc3461bf43543e6a9c55e1445499f305ca91bf3f1a98fa1786157b215ed343db",
     "parse-worker.mjs": "4917110c2ffde900f3f283857445f8f4e25d0d51af1570e63997803579588faa",
-    "gate-worker.mjs": "0f50f74c35ee54183ab2e9ac8b7f16e7b90edb0ef18b5a1f2e10a0ae3b5da2ad"
+    "gate-worker.mjs": "88b3e60c65738009ad2104c761e51b5a4827ce188ac8d7e315fe42ff48b1ef77"
   }
 }

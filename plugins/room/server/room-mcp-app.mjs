@@ -839,7 +839,7 @@ var init_protocol = __esm({
       migrationLockWaitMs: 3e4
     };
     STORAGE_PATHS = {
-      /** Gate record. All admission and phase transitions serialize on `${gate}.guard` (relay withGuard). */
+      /** Gate record. Initialization, registration and phase/generation transitions serialize on `${gate}.guard`; admission is lock-free against them. */
       gate: "room/storage-gate.json",
       /** One private file per registration, named `<instance nonce>.json`. */
       registrations: "room/storage-gate/registrations",
@@ -26731,9 +26731,9 @@ async function acquire(context2, commonDir2) {
   context2.commonDir = common;
   context2.acquiring = (async () => {
     const { gate, registration } = await storageRegistration(common);
-    const ticket = await gate.admit(registration, context2.kind);
+    const ticket = await admitTracked(gate, registration, context2.kind);
     if (!context2.active) {
-      await gate.finish(ticket);
+      await finishAdmission(gate, ticket);
       throw new StorageRefused("unavailable", "operation ended before admission");
     }
     context2.gate = gate;
@@ -26810,7 +26810,7 @@ function unregisterDraining() {
       drainRequested = false;
       for (const [common, pending2] of registrations) {
         const state = await pending2.catch(() => void 0);
-        if (!state || (await state.gate.observe()).phase !== "draining") continue;
+        if (!state || outstanding.has(common) || (await state.gate.observe()).phase !== "draining") continue;
         try {
           await state.gate.unregister(state.registration);
           if (registrations.get(common) === pending2) registrations.delete(common);
@@ -26824,8 +26824,21 @@ function unregisterDraining() {
   });
   return drainingSweep;
 }
+async function admitTracked(gate, registration, kind, options) {
+  settleOutstanding(gate.commonDir, 1);
+  try {
+    return await gate.admit(registration, kind, options);
+  } catch (error2) {
+    settleOutstanding(gate.commonDir, -1);
+    throw error2;
+  }
+}
 async function finishAdmission(gate, ticket) {
-  await gate.finish(ticket);
+  try {
+    await gate.finish(ticket);
+  } finally {
+    settleOutstanding(gate.commonDir, -1);
+  }
   if ((await gate.observe()).phase === "draining") await unregisterDraining();
 }
 async function closeStorageAdmissions() {
@@ -26838,6 +26851,7 @@ async function closeStorageAdmissions() {
       registrations.delete(common);
       continue;
     }
+    if (outstanding.has(common)) continue;
     try {
       await state.gate.unregister(state.registration);
       registrations.delete(common);
@@ -26854,7 +26868,7 @@ async function withAdmission(commonDir2, kind, fn) {
   const common = storageGate(commonDir2).commonDir, enclosing = ambient.getStore();
   if (enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)) return fn(await acquire(enclosing, common));
   const { gate, registration } = await storageRegistration(common);
-  const ticket = await gate.admit(registration, kind);
+  const ticket = await admitTracked(gate, registration, kind);
   const context2 = { kind, commonDir: common, ticket, gate, active: true };
   try {
     return await ambient.run(context2, () => fn(ticket));
@@ -26867,7 +26881,7 @@ async function detachedAdmission(commonDir2, kind) {
   const common = storageGate(commonDir2).commonDir, enclosing = ambient.getStore();
   const parent = enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common) ? await acquire(enclosing, common) : void 0;
   const { gate, registration } = await storageRegistration(common);
-  const ticket = await gate.admit(registration, kind, { parent });
+  const ticket = await admitTracked(gate, registration, kind, { parent });
   const context2 = { kind, commonDir: common, ticket, gate, active: true };
   let started = false;
   const finish = async () => {
@@ -26949,18 +26963,18 @@ async function admitStorageHelper(pid) {
   const identity4 = await probeProcessAsync2(pid);
   if (!identity4?.startTime || !identity4.executable) throw new StorageRefused("unavailable", "preview helper identity is unreadable");
   const { gate, registration } = await storageRegistration(common);
-  const ticket = await gate.admit(registration, "preview", {
+  const ticket = await admitTracked(gate, registration, "preview", {
     parent,
     identity: { pid, startTime: identity4.startTime, executable: identity4.executable }
   });
   let done = false;
   return async () => {
     if (done) return;
-    await gate.finish(ticket);
     done = true;
+    await finishAdmission(gate, ticket);
   };
 }
-var registrations, startups, ambient, reads, gates, drainingSweep, drainRequested, drainWatch;
+var registrations, startups, ambient, reads, gates, drainingSweep, drainRequested, drainWatch, outstanding, settleOutstanding;
 var init_storage_admission = __esm({
   "packages/room-mcp/src/storage-admission.ts"() {
     "use strict";
@@ -26981,6 +26995,12 @@ var init_storage_admission = __esm({
       });
     }, 1e3);
     drainWatch.unref();
+    outstanding = /* @__PURE__ */ new Map();
+    settleOutstanding = (common, delta) => {
+      const next = (outstanding.get(common) ?? 0) + delta;
+      if (next > 0) outstanding.set(common, next);
+      else outstanding.delete(common);
+    };
     process.on("beforeExit", () => {
       void closeStorageAdmissions().catch(() => {
       });
