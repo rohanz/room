@@ -1,0 +1,5463 @@
+{
+ "date": "2026-11-07",
+ "candidateCommit": "24e2e11f",
+ "baselineCommit": "1d599fcd",
+ "method": "node --import tsx scripts/measure-lifecycle-interleaved.mts --baseline-root=<isolated 1d599fcd checkout with its own npm ci> --phase=tools|hooks --samples=N. Baseline and candidate alternate in AB/BA pairs on one machine with nothing else running (no test suite, no build); a fresh private Git clone and child process per observation; OS page cache not cleared. Tools: two workers, no host/model calls. Hooks: real arbitration with an in-memory session. p50/p95/p99 per operation from the harness's own summary records; every raw sample is included below.",
+ "requirement": "Lifecycle tools within 20% of 1d599fcd; hooks no slower.",
+ "runs": {
+  "tools-20": [
+   {
+    "kind": "environment",
+    "at": "2026-11-06T21:17:54.979Z",
+    "phase": "tools",
+    "samples": 20,
+    "baseline": "/tmp/room-s2-base",
+    "candidate": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/",
+    "node": "v22.23.4",
+    "executable": "/usr/local/bin/node",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M2 Max",
+    "memory": 34359738368,
+    "filesystem": 26,
+    "fixture": "fresh private Git clone and child per observation; alternating AB/BA pairs; OS page cache not cleared; one child at a time; hooks use real arbitration with in-memory session; tools use two workers, no host/model; collect applies one file with keep=true; spawn admission excludes checkout and host launch"
+   },
+   {
+    "kind": "sample",
+    "sample": 0,
+    "label": "baseline",
+    "room_state": {
+     "ms": 28.6327500000001
+    },
+    "room_send": {
+     "ms": 60.477667
+    },
+    "room_done": {
+     "ms": 11.877792
+    },
+    "collect": {
+     "ms": 442.42704200000003
+    },
+    "spawnAdmissionFirst": {
+     "ms": 90.72808299999997
+    },
+    "spawnAdmission": {
+     "ms": 89.0796670000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 0,
+    "label": "candidate",
+    "room_state": {
+     "ms": 28.221167000000037
+    },
+    "room_send": {
+     "ms": 64.42062500000009
+    },
+    "room_done": {
+     "ms": 13.706457999999998
+    },
+    "collect": {
+     "ms": 443.571958
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.49612499999989
+    },
+    "spawnAdmission": {
+     "ms": 115.24045799999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 1,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.854333999999994
+    },
+    "room_send": {
+     "ms": 62.06254200000001
+    },
+    "room_done": {
+     "ms": 13.752374999999915
+    },
+    "collect": {
+     "ms": 447.22850000000017
+    },
+    "spawnAdmissionFirst": {
+     "ms": 94.32725000000005
+    },
+    "spawnAdmission": {
+     "ms": 119.01175000000012
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 1,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.47437500000001
+    },
+    "room_send": {
+     "ms": 57.469875
+    },
+    "room_done": {
+     "ms": 11.872250000000008
+    },
+    "collect": {
+     "ms": 433.86579200000006
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.7394589999999
+    },
+    "spawnAdmission": {
+     "ms": 94.06437499999993
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 2,
+    "label": "baseline",
+    "room_state": {
+     "ms": 28.245584000000008
+    },
+    "room_send": {
+     "ms": 60.297874999999976
+    },
+    "room_done": {
+     "ms": 11.900499999999965
+    },
+    "collect": {
+     "ms": 457.337625
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.61024999999995
+    },
+    "spawnAdmission": {
+     "ms": 97.85387500000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 2,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.75766699999997
+    },
+    "room_send": {
+     "ms": 59.822958000000085
+    },
+    "room_done": {
+     "ms": 13.436292000000094
+    },
+    "collect": {
+     "ms": 465.9981670000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.76470900000004
+    },
+    "spawnAdmission": {
+     "ms": 115.93937500000015
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 3,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.262125000000083
+    },
+    "room_send": {
+     "ms": 59.724333
+    },
+    "room_done": {
+     "ms": 13.309375000000045
+    },
+    "collect": {
+     "ms": 438.75204199999996
+    },
+    "spawnAdmissionFirst": {
+     "ms": 89.66545800000017
+    },
+    "spawnAdmission": {
+     "ms": 102.93099999999981
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 3,
+    "label": "baseline",
+    "room_state": {
+     "ms": 28.120499999999993
+    },
+    "room_send": {
+     "ms": 59.646999999999935
+    },
+    "room_done": {
+     "ms": 12.364082999999937
+    },
+    "collect": {
+     "ms": 477.05266599999993
+    },
+    "spawnAdmissionFirst": {
+     "ms": 79.90066700000011
+    },
+    "spawnAdmission": {
+     "ms": 85.92995900000005
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 4,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.94962499999997
+    },
+    "room_send": {
+     "ms": 79.26462500000002
+    },
+    "room_done": {
+     "ms": 14.317542000000003
+    },
+    "collect": {
+     "ms": 512.3288750000002
+    },
+    "spawnAdmissionFirst": {
+     "ms": 84.64241700000002
+    },
+    "spawnAdmission": {
+     "ms": 94.9404169999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 4,
+    "label": "candidate",
+    "room_state": {
+     "ms": 37.97350000000006
+    },
+    "room_send": {
+     "ms": 77.16729199999997
+    },
+    "room_done": {
+     "ms": 14.523833999999965
+    },
+    "collect": {
+     "ms": 491.2393329999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 90.64562500000011
+    },
+    "spawnAdmission": {
+     "ms": 100.90575000000013
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 5,
+    "label": "candidate",
+    "room_state": {
+     "ms": 31.425749999999994
+    },
+    "room_send": {
+     "ms": 57.40141600000004
+    },
+    "room_done": {
+     "ms": 13.421541999999931
+    },
+    "collect": {
+     "ms": 429.86754199999984
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.61545799999999
+    },
+    "spawnAdmission": {
+     "ms": 112.81608299999994
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 5,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.60983299999998
+    },
+    "room_send": {
+     "ms": 55.969625000000065
+    },
+    "room_done": {
+     "ms": 11.496583999999984
+    },
+    "collect": {
+     "ms": 434.11825
+    },
+    "spawnAdmissionFirst": {
+     "ms": 81.64437500000008
+    },
+    "spawnAdmission": {
+     "ms": 107.83950000000004
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 6,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.980291999999963
+    },
+    "room_send": {
+     "ms": 57.104791999999975
+    },
+    "room_done": {
+     "ms": 11.589583000000061
+    },
+    "collect": {
+     "ms": 428.17391599999985
+    },
+    "spawnAdmissionFirst": {
+     "ms": 84.79329200000006
+    },
+    "spawnAdmission": {
+     "ms": 94.90175000000022
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 6,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.78645800000004
+    },
+    "room_send": {
+     "ms": 59.94129100000009
+    },
+    "room_done": {
+     "ms": 14.37504100000001
+    },
+    "collect": {
+     "ms": 456.935833
+    },
+    "spawnAdmissionFirst": {
+     "ms": 90.64816700000006
+    },
+    "spawnAdmission": {
+     "ms": 114.95137499999987
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 7,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.701041000000032
+    },
+    "room_send": {
+     "ms": 60.21854200000007
+    },
+    "room_done": {
+     "ms": 13.174792000000025
+    },
+    "collect": {
+     "ms": 462.23116600000014
+    },
+    "spawnAdmissionFirst": {
+     "ms": 97.49625000000015
+    },
+    "spawnAdmission": {
+     "ms": 110.214833
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 7,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.610457999999994
+    },
+    "room_send": {
+     "ms": 55.95108300000004
+    },
+    "room_done": {
+     "ms": 11.191584000000034
+    },
+    "collect": {
+     "ms": 452.889458
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.79537499999992
+    },
+    "spawnAdmission": {
+     "ms": 97.90933399999994
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 8,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.25191600000005
+    },
+    "room_send": {
+     "ms": 66.20512499999995
+    },
+    "room_done": {
+     "ms": 12.162832999999978
+    },
+    "collect": {
+     "ms": 438.37029100000007
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.71375000000012
+    },
+    "spawnAdmission": {
+     "ms": 102.72487500000011
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 8,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.92604099999994
+    },
+    "room_send": {
+     "ms": 59.32191599999999
+    },
+    "room_done": {
+     "ms": 13.202583000000004
+    },
+    "collect": {
+     "ms": 453.0572920000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.53933299999994
+    },
+    "spawnAdmission": {
+     "ms": 129.9398749999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 9,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.93241599999999
+    },
+    "room_send": {
+     "ms": 59.24387499999989
+    },
+    "room_done": {
+     "ms": 13.583458000000064
+    },
+    "collect": {
+     "ms": 453.23916599999995
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.5379170000001
+    },
+    "spawnAdmission": {
+     "ms": 123.960417
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 9,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.737957999999935
+    },
+    "room_send": {
+     "ms": 56.52220799999998
+    },
+    "room_done": {
+     "ms": 11.989374999999995
+    },
+    "collect": {
+     "ms": 435.5293750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.77233300000012
+    },
+    "spawnAdmission": {
+     "ms": 96.9046659999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 10,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.59333300000003
+    },
+    "room_send": {
+     "ms": 55.72141599999998
+    },
+    "room_done": {
+     "ms": 11.348250000000007
+    },
+    "collect": {
+     "ms": 432.45779200000004
+    },
+    "spawnAdmissionFirst": {
+     "ms": 84.83075000000008
+    },
+    "spawnAdmission": {
+     "ms": 97.84291600000006
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 10,
+    "label": "candidate",
+    "room_state": {
+     "ms": 27.749832999999967
+    },
+    "room_send": {
+     "ms": 60.17599999999993
+    },
+    "room_done": {
+     "ms": 13.47829200000001
+    },
+    "collect": {
+     "ms": 440.769083
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.49612500000012
+    },
+    "spawnAdmission": {
+     "ms": 121.16320900000005
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 11,
+    "label": "candidate",
+    "room_state": {
+     "ms": 33.594791999999984
+    },
+    "room_send": {
+     "ms": 80.14687500000002
+    },
+    "room_done": {
+     "ms": 19.60220800000002
+    },
+    "collect": {
+     "ms": 478.46875
+    },
+    "spawnAdmissionFirst": {
+     "ms": 89.67991699999993
+    },
+    "spawnAdmission": {
+     "ms": 101.07762500000013
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 11,
+    "label": "baseline",
+    "room_state": {
+     "ms": 30.36824999999999
+    },
+    "room_send": {
+     "ms": 62.79654199999993
+    },
+    "room_done": {
+     "ms": 12.254957999999988
+    },
+    "collect": {
+     "ms": 487.253458
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.74212499999999
+    },
+    "spawnAdmission": {
+     "ms": 91.982166
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 12,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.565375000000017
+    },
+    "room_send": {
+     "ms": 56.265750000000025
+    },
+    "room_done": {
+     "ms": 11.64162500000009
+    },
+    "collect": {
+     "ms": 435.54145800000003
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.75649999999996
+    },
+    "spawnAdmission": {
+     "ms": 96.78224999999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 12,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.496624999999995
+    },
+    "room_send": {
+     "ms": 60.91500000000008
+    },
+    "room_done": {
+     "ms": 13.509750000000054
+    },
+    "collect": {
+     "ms": 450.50825
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.39533299999994
+    },
+    "spawnAdmission": {
+     "ms": 108.1429999999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 13,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.96179200000006
+    },
+    "room_send": {
+     "ms": 59.39129199999991
+    },
+    "room_done": {
+     "ms": 13.051290999999992
+    },
+    "collect": {
+     "ms": 435.79104099999995
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.54500000000007
+    },
+    "spawnAdmission": {
+     "ms": 112.13333399999988
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 13,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.186333999999988
+    },
+    "room_send": {
+     "ms": 55.51495799999998
+    },
+    "room_done": {
+     "ms": 11.322209000000043
+    },
+    "collect": {
+     "ms": 435.6183750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.71862499999997
+    },
+    "spawnAdmission": {
+     "ms": 100.85604199999989
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 14,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.733749999999986
+    },
+    "room_send": {
+     "ms": 56.796291
+    },
+    "room_done": {
+     "ms": 11.611333999999943
+    },
+    "collect": {
+     "ms": 434.62804099999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 84.57608300000015
+    },
+    "spawnAdmission": {
+     "ms": 98.0144170000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 14,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.60666600000002
+    },
+    "room_send": {
+     "ms": 60.1931669999999
+    },
+    "room_done": {
+     "ms": 13.716999999999985
+    },
+    "collect": {
+     "ms": 433.1602079999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.820291
+    },
+    "spawnAdmission": {
+     "ms": 114.89216699999997
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 15,
+    "label": "candidate",
+    "room_state": {
+     "ms": 27.969249999999988
+    },
+    "room_send": {
+     "ms": 63.45370799999989
+    },
+    "room_done": {
+     "ms": 13.942583000000013
+    },
+    "collect": {
+     "ms": 454.9742500000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 99.10504200000014
+    },
+    "spawnAdmission": {
+     "ms": 107.3376659999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 15,
+    "label": "baseline",
+    "room_state": {
+     "ms": 23.96900000000005
+    },
+    "room_send": {
+     "ms": 54.6031660000001
+    },
+    "room_done": {
+     "ms": 11.445541999999932
+    },
+    "collect": {
+     "ms": 439.8318750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.6702499999999
+    },
+    "spawnAdmission": {
+     "ms": 95.80470799999989
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 16,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.705165999999963
+    },
+    "room_send": {
+     "ms": 56.87804200000005
+    },
+    "room_done": {
+     "ms": 11.763834000000088
+    },
+    "collect": {
+     "ms": 444.98241699999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.82645899999989
+    },
+    "spawnAdmission": {
+     "ms": 93.97620800000004
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 16,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.362582999999972
+    },
+    "room_send": {
+     "ms": 58.85170799999992
+    },
+    "room_done": {
+     "ms": 13.49754100000007
+    },
+    "collect": {
+     "ms": 438.59629200000006
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.41400000000021
+    },
+    "spawnAdmission": {
+     "ms": 114.03641700000003
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 17,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.195290999999997
+    },
+    "room_send": {
+     "ms": 66.351542
+    },
+    "room_done": {
+     "ms": 15.68587500000001
+    },
+    "collect": {
+     "ms": 448.254
+    },
+    "spawnAdmissionFirst": {
+     "ms": 98.67983400000003
+    },
+    "spawnAdmission": {
+     "ms": 109.74170800000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 17,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.87149999999997
+    },
+    "room_send": {
+     "ms": 56.331083000000035
+    },
+    "room_done": {
+     "ms": 11.443209000000024
+    },
+    "collect": {
+     "ms": 478.77212499999985
+    },
+    "spawnAdmissionFirst": {
+     "ms": 128.73758399999997
+    },
+    "spawnAdmission": {
+     "ms": 102.99391700000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 18,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.226084000000014
+    },
+    "room_send": {
+     "ms": 55.022749999999974
+    },
+    "room_done": {
+     "ms": 11.903667000000041
+    },
+    "collect": {
+     "ms": 444.1268749999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 97.64175
+    },
+    "spawnAdmission": {
+     "ms": 93.01266699999996
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 18,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.878000000000043
+    },
+    "room_send": {
+     "ms": 59.533833999999956
+    },
+    "room_done": {
+     "ms": 13.310457999999926
+    },
+    "collect": {
+     "ms": 430.9352919999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.58749999999986
+    },
+    "spawnAdmission": {
+     "ms": 101.03979200000003
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 19,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.379542000000015
+    },
+    "room_send": {
+     "ms": 59.077999999999975
+    },
+    "room_done": {
+     "ms": 13.223999999999933
+    },
+    "collect": {
+     "ms": 433.9102919999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.38300000000004
+    },
+    "spawnAdmission": {
+     "ms": 111.16283300000009
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 19,
+    "label": "baseline",
+    "room_state": {
+     "ms": 32.03704199999993
+    },
+    "room_send": {
+     "ms": 59.41658300000006
+    },
+    "room_done": {
+     "ms": 11.629415999999992
+    },
+    "collect": {
+     "ms": 429.0267080000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.56150000000002
+    },
+    "spawnAdmission": {
+     "ms": 96.05066699999998
+    }
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "room_state",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 24.733749999999986,
+    "p95Ms": 30.36824999999999,
+    "p99Ms": 32.03704199999993
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "room_send",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 56.796291,
+    "p95Ms": 66.20512499999995,
+    "p99Ms": 79.26462500000002
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "room_done",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 11.64162500000009,
+    "p95Ms": 12.364082999999937,
+    "p99Ms": 14.317542000000003
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "collect",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 438.37029100000007,
+    "p95Ms": 487.253458,
+    "p99Ms": 512.3288750000002
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "spawnAdmissionFirst",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 85.74212499999999,
+    "p95Ms": 97.64175,
+    "p99Ms": 128.73758399999997
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "spawnAdmission",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 96.05066699999998,
+    "p95Ms": 102.99391700000001,
+    "p99Ms": 107.83950000000004
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "room_state",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 26.262125000000083,
+    "p95Ms": 33.594791999999984,
+    "p99Ms": 37.97350000000006
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "room_send",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 59.94129100000009,
+    "p95Ms": 77.16729199999997,
+    "p99Ms": 80.14687500000002
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "room_done",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 13.49754100000007,
+    "p95Ms": 15.68587500000001,
+    "p99Ms": 19.60220800000002
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "collect",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 447.22850000000017,
+    "p95Ms": 478.46875,
+    "p99Ms": 491.2393329999999
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "spawnAdmissionFirst",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 92.39533299999994,
+    "p95Ms": 98.67983400000003,
+    "p99Ms": 99.10504200000014
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "spawnAdmission",
+    "successfulSamples": 20,
+    "failedSamples": 0,
+    "p50Ms": 112.13333399999988,
+    "p95Ms": 123.960417,
+    "p99Ms": 129.9398749999998
+   }
+  ],
+  "tools-40": [
+   {
+    "kind": "environment",
+    "at": "2026-11-06T21:19:21.185Z",
+    "phase": "tools",
+    "samples": 40,
+    "baseline": "/tmp/room-s2-base",
+    "candidate": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/",
+    "node": "v22.23.4",
+    "executable": "/usr/local/bin/node",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M2 Max",
+    "memory": 34359738368,
+    "filesystem": 26,
+    "fixture": "fresh private Git clone and child per observation; alternating AB/BA pairs; OS page cache not cleared; one child at a time; hooks use real arbitration with in-memory session; tools use two workers, no host/model; collect applies one file with keep=true; spawn admission excludes checkout and host launch"
+   },
+   {
+    "kind": "sample",
+    "sample": 0,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.197915999999964
+    },
+    "room_send": {
+     "ms": 55.51133400000003
+    },
+    "room_done": {
+     "ms": 11.330082999999945
+    },
+    "collect": {
+     "ms": 437.98699999999997
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.83245899999997
+    },
+    "spawnAdmission": {
+     "ms": 88.813042
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 0,
+    "label": "candidate",
+    "room_state": {
+     "ms": 31.97091599999999
+    },
+    "room_send": {
+     "ms": 57.50904200000002
+    },
+    "room_done": {
+     "ms": 13.262624999999957
+    },
+    "collect": {
+     "ms": 434.1294590000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 94.67212500000005
+    },
+    "spawnAdmission": {
+     "ms": 107.8682080000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 1,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.152917000000002
+    },
+    "room_send": {
+     "ms": 59.01658299999997
+    },
+    "room_done": {
+     "ms": 13.471208000000047
+    },
+    "collect": {
+     "ms": 437.9090420000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.36241599999994
+    },
+    "spawnAdmission": {
+     "ms": 107.02275000000009
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 1,
+    "label": "baseline",
+    "room_state": {
+     "ms": 23.906999999999925
+    },
+    "room_send": {
+     "ms": 54.960000000000036
+    },
+    "room_done": {
+     "ms": 10.825458000000026
+    },
+    "collect": {
+     "ms": 438.917958
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.84816699999988
+    },
+    "spawnAdmission": {
+     "ms": 103.92287499999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 2,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.295999999999935
+    },
+    "room_send": {
+     "ms": 57.57775000000004
+    },
+    "room_done": {
+     "ms": 11.667916999999989
+    },
+    "collect": {
+     "ms": 443.209875
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.70216699999992
+    },
+    "spawnAdmission": {
+     "ms": 92.88933399999996
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 2,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.883792000000085
+    },
+    "room_send": {
+     "ms": 56.18454200000008
+    },
+    "room_done": {
+     "ms": 13.183750000000032
+    },
+    "collect": {
+     "ms": 433.537459
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.90758400000004
+    },
+    "spawnAdmission": {
+     "ms": 102.71079200000008
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 3,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.417332999999985
+    },
+    "room_send": {
+     "ms": 58.762292
+    },
+    "room_done": {
+     "ms": 13.314082999999982
+    },
+    "collect": {
+     "ms": 438.49249999999995
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.70616599999994
+    },
+    "spawnAdmission": {
+     "ms": 102.96745800000008
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 3,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.887500000000045
+    },
+    "room_send": {
+     "ms": 60.08545800000002
+    },
+    "room_done": {
+     "ms": 12.484042000000045
+    },
+    "collect": {
+     "ms": 473.2438330000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 79.88716699999986
+    },
+    "spawnAdmission": {
+     "ms": 85.97437500000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 4,
+    "label": "baseline",
+    "room_state": {
+     "ms": 29.35687500000006
+    },
+    "room_send": {
+     "ms": 69.79291699999999
+    },
+    "room_done": {
+     "ms": 16.936916999999994
+    },
+    "collect": {
+     "ms": 534.4452089999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 101.58100000000013
+    },
+    "spawnAdmission": {
+     "ms": 90.96437500000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 4,
+    "label": "candidate",
+    "room_state": {
+     "ms": 29.975624999999923
+    },
+    "room_send": {
+     "ms": 69.56112500000006
+    },
+    "room_done": {
+     "ms": 15.966832999999951
+    },
+    "collect": {
+     "ms": 466.43108299999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.38454100000013
+    },
+    "spawnAdmission": {
+     "ms": 105.15020800000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 5,
+    "label": "candidate",
+    "room_state": {
+     "ms": 32.014542000000006
+    },
+    "room_send": {
+     "ms": 58.545124999999985
+    },
+    "room_done": {
+     "ms": 14.151875000000018
+    },
+    "collect": {
+     "ms": 464.2242920000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 89.53795800000012
+    },
+    "spawnAdmission": {
+     "ms": 111.96058300000004
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 5,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.436707999999953
+    },
+    "room_send": {
+     "ms": 56.870124999999916
+    },
+    "room_done": {
+     "ms": 11.386792000000014
+    },
+    "collect": {
+     "ms": 453.89275
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.77408300000002
+    },
+    "spawnAdmission": {
+     "ms": 101.84566599999994
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 6,
+    "label": "baseline",
+    "room_state": {
+     "ms": 28.11045899999999
+    },
+    "room_send": {
+     "ms": 65.93816700000002
+    },
+    "room_done": {
+     "ms": 12.174999999999955
+    },
+    "collect": {
+     "ms": 441.5255000000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.83079100000009
+    },
+    "spawnAdmission": {
+     "ms": 101.91254200000003
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 6,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.315166999999974
+    },
+    "room_send": {
+     "ms": 60.76350000000002
+    },
+    "room_done": {
+     "ms": 13.817750000000046
+    },
+    "collect": {
+     "ms": 440.22741700000006
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.77445899999998
+    },
+    "spawnAdmission": {
+     "ms": 115.19650000000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 7,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.38874999999996
+    },
+    "room_send": {
+     "ms": 59.61024999999995
+    },
+    "room_done": {
+     "ms": 13.285792000000015
+    },
+    "collect": {
+     "ms": 425.2884999999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.72283399999992
+    },
+    "spawnAdmission": {
+     "ms": 109.17262499999993
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 7,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.194124999999985
+    },
+    "room_send": {
+     "ms": 57.785709
+    },
+    "room_done": {
+     "ms": 12.017542000000049
+    },
+    "collect": {
+     "ms": 437.0307909999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.68049999999994
+    },
+    "spawnAdmission": {
+     "ms": 91.88983300000018
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 8,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.563125000000014
+    },
+    "room_send": {
+     "ms": 63.36308400000007
+    },
+    "room_done": {
+     "ms": 13.856999999999971
+    },
+    "collect": {
+     "ms": 452.7270420000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 124.00991599999998
+    },
+    "spawnAdmission": {
+     "ms": 115.01466699999992
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 8,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.71991700000001
+    },
+    "room_send": {
+     "ms": 59.77245800000003
+    },
+    "room_done": {
+     "ms": 14.350374999999985
+    },
+    "collect": {
+     "ms": 442.18050000000005
+    },
+    "spawnAdmissionFirst": {
+     "ms": 89.47912500000007
+    },
+    "spawnAdmission": {
+     "ms": 103.17037499999992
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 9,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.59720900000002
+    },
+    "room_send": {
+     "ms": 56.344625000000065
+    },
+    "room_done": {
+     "ms": 13.676916000000006
+    },
+    "collect": {
+     "ms": 464.37916699999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.18962499999998
+    },
+    "spawnAdmission": {
+     "ms": 110.24441700000011
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 9,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.437583000000018
+    },
+    "room_send": {
+     "ms": 57.29712500000005
+    },
+    "room_done": {
+     "ms": 11.202540999999997
+    },
+    "collect": {
+     "ms": 466.3878750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.38441699999998
+    },
+    "spawnAdmission": {
+     "ms": 108.12175000000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 10,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.46033299999999
+    },
+    "room_send": {
+     "ms": 54.927791999999954
+    },
+    "room_done": {
+     "ms": 11.31045800000004
+    },
+    "collect": {
+     "ms": 441.6584580000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 90.66716699999984
+    },
+    "spawnAdmission": {
+     "ms": 94.98908300000016
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 10,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.832416999999964
+    },
+    "room_send": {
+     "ms": 58.678709000000026
+    },
+    "room_done": {
+     "ms": 13.510875000000055
+    },
+    "collect": {
+     "ms": 451.794
+    },
+    "spawnAdmissionFirst": {
+     "ms": 96.36570899999992
+    },
+    "spawnAdmission": {
+     "ms": 106.1161669999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 11,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.09020899999996
+    },
+    "room_send": {
+     "ms": 60.92041700000004
+    },
+    "room_done": {
+     "ms": 19.455291999999986
+    },
+    "collect": {
+     "ms": 451.5815839999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.53999999999996
+    },
+    "spawnAdmission": {
+     "ms": 110.05533300000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 11,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.619790999999964
+    },
+    "room_send": {
+     "ms": 56.422916999999984
+    },
+    "room_done": {
+     "ms": 16.592208000000028
+    },
+    "collect": {
+     "ms": 444.28650000000005
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.74591699999996
+    },
+    "spawnAdmission": {
+     "ms": 99.81124999999997
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 12,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.495291000000066
+    },
+    "room_send": {
+     "ms": 55.31654200000003
+    },
+    "room_done": {
+     "ms": 11.641541999999959
+    },
+    "collect": {
+     "ms": 467.52695900000003
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.753917
+    },
+    "spawnAdmission": {
+     "ms": 96.779
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 12,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.812542000000008
+    },
+    "room_send": {
+     "ms": 68.23533299999997
+    },
+    "room_done": {
+     "ms": 14.946292000000085
+    },
+    "collect": {
+     "ms": 445.06074999999987
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.56491599999981
+    },
+    "spawnAdmission": {
+     "ms": 113.8347090000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 13,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.564166
+    },
+    "room_send": {
+     "ms": 63.547207999999955
+    },
+    "room_done": {
+     "ms": 13.704040999999961
+    },
+    "collect": {
+     "ms": 438.02816699999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 96.26041600000008
+    },
+    "spawnAdmission": {
+     "ms": 106.232166
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 13,
+    "label": "baseline",
+    "room_state": {
+     "ms": 27.66624999999999
+    },
+    "room_send": {
+     "ms": 57.74837500000001
+    },
+    "room_done": {
+     "ms": 11.606291000000056
+    },
+    "collect": {
+     "ms": 444.24354199999993
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.69837499999994
+    },
+    "spawnAdmission": {
+     "ms": 97.03508299999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 14,
+    "label": "baseline",
+    "room_state": {
+     "ms": 23.756541999999968
+    },
+    "room_send": {
+     "ms": 55.514999999999986
+    },
+    "room_done": {
+     "ms": 11.318750000000023
+    },
+    "collect": {
+     "ms": 436.22670800000003
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.77854199999979
+    },
+    "spawnAdmission": {
+     "ms": 91.81308399999989
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 14,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.830749999999966
+    },
+    "room_send": {
+     "ms": 58.07949999999994
+    },
+    "room_done": {
+     "ms": 13.032542000000035
+    },
+    "collect": {
+     "ms": 430.968125
+    },
+    "spawnAdmissionFirst": {
+     "ms": 89.627792
+    },
+    "spawnAdmission": {
+     "ms": 131.18141699999978
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 15,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.342249999999922
+    },
+    "room_send": {
+     "ms": 56.83024999999998
+    },
+    "room_done": {
+     "ms": 13.140416999999957
+    },
+    "collect": {
+     "ms": 446.771291
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.58854199999996
+    },
+    "spawnAdmission": {
+     "ms": 108.05083300000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 15,
+    "label": "baseline",
+    "room_state": {
+     "ms": 28.199291000000017
+    },
+    "room_send": {
+     "ms": 61.519957999999974
+    },
+    "room_done": {
+     "ms": 12.626542000000086
+    },
+    "collect": {
+     "ms": 452.500667
+    },
+    "spawnAdmissionFirst": {
+     "ms": 84.89141700000005
+    },
+    "spawnAdmission": {
+     "ms": 90.98820799999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 16,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.34029200000009
+    },
+    "room_send": {
+     "ms": 56.72391700000003
+    },
+    "room_done": {
+     "ms": 11.763667000000055
+    },
+    "collect": {
+     "ms": 441.46233299999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.55320800000004
+    },
+    "spawnAdmission": {
+     "ms": 99.92091699999992
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 16,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.86779200000001
+    },
+    "room_send": {
+     "ms": 57.73725000000002
+    },
+    "room_done": {
+     "ms": 13.494916999999987
+    },
+    "collect": {
+     "ms": 454.808
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.60412500000007
+    },
+    "spawnAdmission": {
+     "ms": 116.12954100000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 17,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.620083000000022
+    },
+    "room_send": {
+     "ms": 59.74087499999996
+    },
+    "room_done": {
+     "ms": 13.158124999999927
+    },
+    "collect": {
+     "ms": 427.41949999999997
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.56395799999996
+    },
+    "spawnAdmission": {
+     "ms": 110.21074999999996
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 17,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.206457999999998
+    },
+    "room_send": {
+     "ms": 54.71774999999991
+    },
+    "room_done": {
+     "ms": 11.75441699999999
+    },
+    "collect": {
+     "ms": 429.63866600000006
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.29037499999981
+    },
+    "spawnAdmission": {
+     "ms": 91.03079200000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 18,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.00191700000005
+    },
+    "room_send": {
+     "ms": 56.38470900000004
+    },
+    "room_done": {
+     "ms": 11.63575000000003
+    },
+    "collect": {
+     "ms": 445.0547919999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.41154200000005
+    },
+    "spawnAdmission": {
+     "ms": 106.06370900000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 18,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.613833
+    },
+    "room_send": {
+     "ms": 61.66229199999998
+    },
+    "room_done": {
+     "ms": 13.171207999999979
+    },
+    "collect": {
+     "ms": 446.4938750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.48408300000006
+    },
+    "spawnAdmission": {
+     "ms": 115.86254200000008
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 19,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.333708
+    },
+    "room_send": {
+     "ms": 58.747375000000034
+    },
+    "room_done": {
+     "ms": 13.593083999999976
+    },
+    "collect": {
+     "ms": 450.9715420000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 95.4202909999999
+    },
+    "spawnAdmission": {
+     "ms": 119.24929199999997
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 19,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.228291000000013
+    },
+    "room_send": {
+     "ms": 56.713499999999954
+    },
+    "room_done": {
+     "ms": 11.629541999999901
+    },
+    "collect": {
+     "ms": 437.87300000000016
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.75812499999984
+    },
+    "spawnAdmission": {
+     "ms": 102.82379199999991
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 20,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.753291999999988
+    },
+    "room_send": {
+     "ms": 57.75679200000002
+    },
+    "room_done": {
+     "ms": 11.896542000000068
+    },
+    "collect": {
+     "ms": 447.665209
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.26141700000016
+    },
+    "spawnAdmission": {
+     "ms": 97.03679199999988
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 20,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.148624999999925
+    },
+    "room_send": {
+     "ms": 66.59299999999996
+    },
+    "room_done": {
+     "ms": 15.10208399999999
+    },
+    "collect": {
+     "ms": 483.53320800000006
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.42254200000002
+    },
+    "spawnAdmission": {
+     "ms": 98.06208300000003
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 21,
+    "label": "candidate",
+    "room_state": {
+     "ms": 28.365792000000056
+    },
+    "room_send": {
+     "ms": 64.236584
+    },
+    "room_done": {
+     "ms": 13.932165999999938
+    },
+    "collect": {
+     "ms": 485.21020899999996
+    },
+    "spawnAdmissionFirst": {
+     "ms": 96.61325000000011
+    },
+    "spawnAdmission": {
+     "ms": 96.88550000000009
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 21,
+    "label": "baseline",
+    "room_state": {
+     "ms": 23.738083000000074
+    },
+    "room_send": {
+     "ms": 55.40491700000007
+    },
+    "room_done": {
+     "ms": 11.519999999999982
+    },
+    "collect": {
+     "ms": 441.4413749999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.938625
+    },
+    "spawnAdmission": {
+     "ms": 92.88541699999996
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 22,
+    "label": "baseline",
+    "room_state": {
+     "ms": 27.12358299999994
+    },
+    "room_send": {
+     "ms": 65.087625
+    },
+    "room_done": {
+     "ms": 14.035959000000048
+    },
+    "collect": {
+     "ms": 465.8889169999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 81.83162500000003
+    },
+    "spawnAdmission": {
+     "ms": 86.85204099999987
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 22,
+    "label": "candidate",
+    "room_state": {
+     "ms": 31.075917000000004
+    },
+    "room_send": {
+     "ms": 70.84275000000002
+    },
+    "room_done": {
+     "ms": 14.98316699999998
+    },
+    "collect": {
+     "ms": 493.1608749999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.79116699999986
+    },
+    "spawnAdmission": {
+     "ms": 100.8243329999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 23,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.904792000000043
+    },
+    "room_send": {
+     "ms": 70.05529100000001
+    },
+    "room_done": {
+     "ms": 16.04225000000008
+    },
+    "collect": {
+     "ms": 529.971292
+    },
+    "spawnAdmissionFirst": {
+     "ms": 128.47229100000004
+    },
+    "spawnAdmission": {
+     "ms": 100.0960419999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 23,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.470125000000053
+    },
+    "room_send": {
+     "ms": 57.676624999999945
+    },
+    "room_done": {
+     "ms": 12.612582999999972
+    },
+    "collect": {
+     "ms": 430.50750000000005
+    },
+    "spawnAdmissionFirst": {
+     "ms": 80.54587500000002
+    },
+    "spawnAdmission": {
+     "ms": 104.94950000000017
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 24,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.151292000000012
+    },
+    "room_send": {
+     "ms": 58.717457999999965
+    },
+    "room_done": {
+     "ms": 12.653792000000067
+    },
+    "collect": {
+     "ms": 438.0018339999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.33500000000004
+    },
+    "spawnAdmission": {
+     "ms": 78.00108399999999
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 24,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.486125000000015
+    },
+    "room_send": {
+     "ms": 59.22458300000005
+    },
+    "room_done": {
+     "ms": 13.502083000000084
+    },
+    "collect": {
+     "ms": 470.4069169999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 103.50462500000003
+    },
+    "spawnAdmission": {
+     "ms": 98.0402909999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 25,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.19779200000005
+    },
+    "room_send": {
+     "ms": 61.13487500000008
+    },
+    "room_done": {
+     "ms": 13.188332999999943
+    },
+    "collect": {
+     "ms": 448.95841700000005
+    },
+    "spawnAdmissionFirst": {
+     "ms": 96.10450000000014
+    },
+    "spawnAdmission": {
+     "ms": 97.96633400000019
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 25,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.237750000000005
+    },
+    "room_send": {
+     "ms": 54.29766700000005
+    },
+    "room_done": {
+     "ms": 11.875166000000036
+    },
+    "collect": {
+     "ms": 432.5844579999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 85.73645799999986
+    },
+    "spawnAdmission": {
+     "ms": 94.899541
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 26,
+    "label": "baseline",
+    "room_state": {
+     "ms": 36.72691700000007
+    },
+    "room_send": {
+     "ms": 59.688790999999924
+    },
+    "room_done": {
+     "ms": 11.927458999999999
+    },
+    "collect": {
+     "ms": 448.0324999999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.76358299999993
+    },
+    "spawnAdmission": {
+     "ms": 100.84420799999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 26,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.479791999999975
+    },
+    "room_send": {
+     "ms": 56.504040999999916
+    },
+    "room_done": {
+     "ms": 13.250291999999945
+    },
+    "collect": {
+     "ms": 435.70187499999986
+    },
+    "spawnAdmissionFirst": {
+     "ms": 88.47887500000002
+    },
+    "spawnAdmission": {
+     "ms": 104.03366600000004
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 27,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.558750000000032
+    },
+    "room_send": {
+     "ms": 73.2934580000001
+    },
+    "room_done": {
+     "ms": 24.619457999999895
+    },
+    "collect": {
+     "ms": 525.6074590000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 94.70083299999988
+    },
+    "spawnAdmission": {
+     "ms": 101.986042
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 27,
+    "label": "baseline",
+    "room_state": {
+     "ms": 42.211708000000044
+    },
+    "room_send": {
+     "ms": 66.04212500000006
+    },
+    "room_done": {
+     "ms": 13.137833999999998
+    },
+    "collect": {
+     "ms": 505.6283749999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 96.83204099999989
+    },
+    "spawnAdmission": {
+     "ms": 90.03229199999987
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 28,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.994916999999987
+    },
+    "room_send": {
+     "ms": 59.79724999999996
+    },
+    "room_done": {
+     "ms": 12.812209000000053
+    },
+    "collect": {
+     "ms": 517.262625
+    },
+    "spawnAdmissionFirst": {
+     "ms": 83.70354199999997
+    },
+    "spawnAdmission": {
+     "ms": 99.97795799999994
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 28,
+    "label": "candidate",
+    "room_state": {
+     "ms": 29.543916999999965
+    },
+    "room_send": {
+     "ms": 70.23466600000006
+    },
+    "room_done": {
+     "ms": 15.686667000000057
+    },
+    "collect": {
+     "ms": 519.096792
+    },
+    "spawnAdmissionFirst": {
+     "ms": 109.66570899999988
+    },
+    "spawnAdmission": {
+     "ms": 105.00462500000003
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 29,
+    "label": "candidate",
+    "room_state": {
+     "ms": 29.750792000000047
+    },
+    "room_send": {
+     "ms": 68.33116699999994
+    },
+    "room_done": {
+     "ms": 17.05454199999997
+    },
+    "collect": {
+     "ms": 489.0100000000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.4552090000002
+    },
+    "spawnAdmission": {
+     "ms": 108.10874999999987
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 29,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.822208000000046
+    },
+    "room_send": {
+     "ms": 56.384667000000036
+    },
+    "room_done": {
+     "ms": 11.918291000000067
+    },
+    "collect": {
+     "ms": 441.312375
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.4106670000001
+    },
+    "spawnAdmission": {
+     "ms": 90.90875000000005
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 30,
+    "label": "baseline",
+    "room_state": {
+     "ms": 26.24066700000003
+    },
+    "room_send": {
+     "ms": 55.93237499999998
+    },
+    "room_done": {
+     "ms": 11.627583999999956
+    },
+    "collect": {
+     "ms": 443.2198750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.76049999999987
+    },
+    "spawnAdmission": {
+     "ms": 101.87733300000014
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 30,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.95504200000005
+    },
+    "room_send": {
+     "ms": 81.30375000000004
+    },
+    "room_done": {
+     "ms": 13.11804200000006
+    },
+    "collect": {
+     "ms": 452.8592920000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.27512499999989
+    },
+    "spawnAdmission": {
+     "ms": 109.12079100000005
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 31,
+    "label": "candidate",
+    "room_state": {
+     "ms": 30.895250000000033
+    },
+    "room_send": {
+     "ms": 57.26637500000004
+    },
+    "room_done": {
+     "ms": 13.10512499999993
+    },
+    "collect": {
+     "ms": 426.5835420000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.52645899999993
+    },
+    "spawnAdmission": {
+     "ms": 112.26299999999992
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 31,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.088167
+    },
+    "room_send": {
+     "ms": 55.626082999999994
+    },
+    "room_done": {
+     "ms": 11.566500000000019
+    },
+    "collect": {
+     "ms": 442.73962499999993
+    },
+    "spawnAdmissionFirst": {
+     "ms": 77.89612499999998
+    },
+    "spawnAdmission": {
+     "ms": 96.93254200000001
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 32,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.748291999999992
+    },
+    "room_send": {
+     "ms": 56.861708999999905
+    },
+    "room_done": {
+     "ms": 11.918709000000035
+    },
+    "collect": {
+     "ms": 441.89141699999993
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.7634579999999
+    },
+    "spawnAdmission": {
+     "ms": 97.09283399999981
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 32,
+    "label": "candidate",
+    "room_state": {
+     "ms": 27.676874999999995
+    },
+    "room_send": {
+     "ms": 82.77220800000009
+    },
+    "room_done": {
+     "ms": 19.19329099999993
+    },
+    "collect": {
+     "ms": 464.63812499999995
+    },
+    "spawnAdmissionFirst": {
+     "ms": 90.60704100000021
+    },
+    "spawnAdmission": {
+     "ms": 113.14200000000005
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 33,
+    "label": "candidate",
+    "room_state": {
+     "ms": 32.11258299999997
+    },
+    "room_send": {
+     "ms": 59.284458000000086
+    },
+    "room_done": {
+     "ms": 14.361582999999996
+    },
+    "collect": {
+     "ms": 453.31674999999984
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.35699999999997
+    },
+    "spawnAdmission": {
+     "ms": 106.91937499999995
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 33,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.737250000000017
+    },
+    "room_send": {
+     "ms": 56.95875000000001
+    },
+    "room_done": {
+     "ms": 11.975791999999956
+    },
+    "collect": {
+     "ms": 429.4618750000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.96891699999992
+    },
+    "spawnAdmission": {
+     "ms": 94.93083300000012
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 34,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.62095899999997
+    },
+    "room_send": {
+     "ms": 55.78941699999996
+    },
+    "room_done": {
+     "ms": 11.531708999999978
+    },
+    "collect": {
+     "ms": 435.3405
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.7779579999999
+    },
+    "spawnAdmission": {
+     "ms": 101.74133299999994
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 34,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.822791000000052
+    },
+    "room_send": {
+     "ms": 58.96766600000001
+    },
+    "room_done": {
+     "ms": 13.50379200000009
+    },
+    "collect": {
+     "ms": 434.1446249999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.56062500000007
+    },
+    "spawnAdmission": {
+     "ms": 132.79441700000007
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 35,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.043999999999983
+    },
+    "room_send": {
+     "ms": 67.12512500000003
+    },
+    "room_done": {
+     "ms": 14.651958000000036
+    },
+    "collect": {
+     "ms": 446.6628330000001
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.58283300000016
+    },
+    "spawnAdmission": {
+     "ms": 112.91637500000002
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 35,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.312583000000018
+    },
+    "room_send": {
+     "ms": 55.11804100000006
+    },
+    "room_done": {
+     "ms": 11.601957999999968
+    },
+    "collect": {
+     "ms": 432.0599169999999
+    },
+    "spawnAdmissionFirst": {
+     "ms": 84.4304169999998
+    },
+    "spawnAdmission": {
+     "ms": 98.89170800000011
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 36,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.13433299999997
+    },
+    "room_send": {
+     "ms": 56.22604200000001
+    },
+    "room_done": {
+     "ms": 11.454207999999994
+    },
+    "collect": {
+     "ms": 430.61091699999986
+    },
+    "spawnAdmissionFirst": {
+     "ms": 87.64095799999996
+    },
+    "spawnAdmission": {
+     "ms": 126.91316700000016
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 36,
+    "label": "candidate",
+    "room_state": {
+     "ms": 25.909708000000023
+    },
+    "room_send": {
+     "ms": 60.940833
+    },
+    "room_done": {
+     "ms": 13.22687499999995
+    },
+    "collect": {
+     "ms": 440.983833
+    },
+    "spawnAdmissionFirst": {
+     "ms": 92.64049999999997
+    },
+    "spawnAdmission": {
+     "ms": 115.03704100000004
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 37,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.481750000000034
+    },
+    "room_send": {
+     "ms": 73.293
+    },
+    "room_done": {
+     "ms": 20.97483299999999
+    },
+    "collect": {
+     "ms": 482.613375
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.60037499999999
+    },
+    "spawnAdmission": {
+     "ms": 100.04666599999996
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 37,
+    "label": "baseline",
+    "room_state": {
+     "ms": 28.904250000000047
+    },
+    "room_send": {
+     "ms": 63.74549999999999
+    },
+    "room_done": {
+     "ms": 12.205291999999986
+    },
+    "collect": {
+     "ms": 473.49412499999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 79.9337079999998
+    },
+    "spawnAdmission": {
+     "ms": 86.94362499999988
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 38,
+    "label": "baseline",
+    "room_state": {
+     "ms": 25.102249999999913
+    },
+    "room_send": {
+     "ms": 56.88345800000002
+    },
+    "room_done": {
+     "ms": 12.122165999999993
+    },
+    "collect": {
+     "ms": 440.19654100000014
+    },
+    "spawnAdmissionFirst": {
+     "ms": 86.88037499999996
+    },
+    "spawnAdmission": {
+     "ms": 98.83050000000003
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 38,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.389499999999998
+    },
+    "room_send": {
+     "ms": 59.71250000000009
+    },
+    "room_done": {
+     "ms": 13.513374999999996
+    },
+    "collect": {
+     "ms": 467.03362500000003
+    },
+    "spawnAdmissionFirst": {
+     "ms": 91.40379099999996
+    },
+    "spawnAdmission": {
+     "ms": 110.00549999999998
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 39,
+    "label": "candidate",
+    "room_state": {
+     "ms": 26.31008399999996
+    },
+    "room_send": {
+     "ms": 59.089624999999955
+    },
+    "room_done": {
+     "ms": 13.319500000000062
+    },
+    "collect": {
+     "ms": 436.73741699999994
+    },
+    "spawnAdmissionFirst": {
+     "ms": 93.55591700000014
+    },
+    "spawnAdmission": {
+     "ms": 104.10379200000011
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 39,
+    "label": "baseline",
+    "room_state": {
+     "ms": 24.111041999999998
+    },
+    "room_send": {
+     "ms": 55.595290999999975
+    },
+    "room_done": {
+     "ms": 11.644000000000005
+    },
+    "collect": {
+     "ms": 435.77708299999995
+    },
+    "spawnAdmissionFirst": {
+     "ms": 81.72499999999991
+    },
+    "spawnAdmission": {
+     "ms": 93.90008399999988
+    }
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "room_state",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 25.00191700000005,
+    "p95Ms": 29.35687500000006,
+    "p99Ms": 42.211708000000044
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "room_send",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 56.861708999999905,
+    "p95Ms": 65.93816700000002,
+    "p99Ms": 69.79291699999999
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "room_done",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 11.763667000000055,
+    "p95Ms": 14.035959000000048,
+    "p99Ms": 16.936916999999994
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "collect",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 441.6584580000001,
+    "p95Ms": 505.6283749999999,
+    "p99Ms": 534.4452089999999
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "spawnAdmissionFirst",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 86.4106670000001,
+    "p95Ms": 96.83204099999989,
+    "p99Ms": 124.00991599999998
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "spawnAdmission",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 96.93254200000001,
+    "p95Ms": 108.12175000000002,
+    "p99Ms": 126.91316700000016
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "room_state",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 26.822791000000052,
+    "p95Ms": 31.97091599999999,
+    "p99Ms": 32.11258299999997
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "room_send",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 59.74087499999996,
+    "p95Ms": 73.2934580000001,
+    "p99Ms": 82.77220800000009
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "room_done",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 13.513374999999996,
+    "p95Ms": 19.455291999999986,
+    "p99Ms": 24.619457999999895
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "collect",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 448.95841700000005,
+    "p95Ms": 519.096792,
+    "p99Ms": 529.971292
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "spawnAdmissionFirst",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 92.53999999999996,
+    "p95Ms": 103.50462500000003,
+    "p99Ms": 128.47229100000004
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "spawnAdmission",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 107.8682080000001,
+    "p95Ms": 119.24929199999997,
+    "p99Ms": 132.79441700000007
+   }
+  ],
+  "hooks-40": [
+   {
+    "kind": "environment",
+    "at": "2026-11-06T21:22:03.567Z",
+    "phase": "hooks",
+    "samples": 40,
+    "baseline": "/tmp/room-s2-base",
+    "candidate": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/",
+    "node": "v22.23.4",
+    "executable": "/usr/local/bin/node",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M2 Max",
+    "memory": 34359738368,
+    "filesystem": 26,
+    "fixture": "fresh private Git clone and child per observation; alternating AB/BA pairs; OS page cache not cleared; one child at a time; hooks use real arbitration with in-memory session; tools use two workers, no host/model; collect applies one file with keep=true; spawn admission excludes checkout and host launch"
+   },
+   {
+    "kind": "sample",
+    "sample": 0,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 83.25166600000006,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.59450000000004,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 90.62083299999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.85908399999994,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 0,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 82.23045800000006,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.10812499999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 86.12187500000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 43.100874999999974,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 1,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 82.79454199999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.103791,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 85.05550000000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.350458,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 1,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 85.71891700000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.81570899999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 87.094833,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 40.57849999999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 2,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 85.85995899999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.27429200000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 83.91370800000004,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.94862499999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 2,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 88.3775,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.64412500000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 87.6747499999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 41.07133399999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 3,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 98.99370799999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.99437499999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 89.98933299999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.28591700000004,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 3,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 91.00020900000004,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 42.08512499999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 90.05254200000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 40.878333999999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 4,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 93.79220899999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.535708,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 94.71775000000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.172250000000076,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 4,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 81.54416700000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.10145800000009,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 107.816417,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.38424999999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 5,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 90.33554200000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.77162499999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 102.65687500000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 40.07499999999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 5,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 104.10983300000004,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.67516699999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 96.01237500000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.24933299999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 6,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 103.54429199999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.6250839999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 87.18225000000007,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.75416700000005,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 6,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 83.12050000000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 43.479499999999916,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 90.99241699999993,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.821207999999956,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 7,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.97387500000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.678042000000005,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 107.03258300000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 40.24025000000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 7,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 96.83241599999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 36.34666600000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 89.41000000000008,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.95629100000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 8,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 95.99650000000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.278458,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 90.52237500000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.36725000000001,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 8,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.734125,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.68554199999994,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 102.24391700000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.57066699999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 9,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.38491699999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.37966599999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 99.46958300000006,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.46341599999994,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 9,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 96.66454099999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.90704199999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 92.72941700000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.54112500000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 10,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 92.47920799999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.576041999999916,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 107.08875,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.578709,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 10,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.33979200000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.04950000000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 98.20491700000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.87270799999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 11,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 83.47012499999994,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 36.50625000000002,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 106.99820799999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.60754200000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 11,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 94.94287499999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.771124999999984,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 98.71174999999994,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.88591599999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 12,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 106.84824999999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.37287500000002,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 106.74195900000007,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.08962500000007,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 12,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 87.40791700000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.216499999999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 86.282375,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.79004199999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 13,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.81541700000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.72508299999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 84.58570799999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 43.26808300000005,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 13,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 86.25429199999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.01095899999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 85.08666700000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.486582999999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 14,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 86.77670900000004,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.68516599999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 93.43754100000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 40.51400000000001,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 14,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 89.45404199999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.282542000000035,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 88.48562500000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 44.30441700000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 15,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 92.50208299999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.049082999999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 110.99725000000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.39837499999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 15,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 101.32575000000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.21012500000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 108.19962499999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.42058300000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 16,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 102.20999999999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.013374999999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 84.95454199999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 43.79820899999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 16,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.69491699999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.91879199999994,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 88.97341699999993,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 40.99483400000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 17,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 90.44891600000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.68124999999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 87.0195,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.932249999999954,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 17,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 88.34966700000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.463791000000015,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 89.71875,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.97004100000004,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 18,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 88.07383299999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.47975000000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 105.05941700000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.71358399999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 18,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 83.680792,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.885208000000034,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 102.058625,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.899,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 19,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.30374999999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.987750000000005,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 100.64095899999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.15575000000001,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 19,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 101.56975000000006,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.28991599999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 82.17562499999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.498958000000016,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 20,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 106.92266699999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.633375,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 105.556375,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.043000000000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 20,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 81.60583300000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.999416999999994,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 105.46108300000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.31133299999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 21,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.37987500000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.83220799999992,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 94.95079200000009,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.363624999999956,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 21,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 110.84383400000007,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.014625000000024,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 109.77766699999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.63429199999996,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 22,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 103.96279100000004,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.953542000000084,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 103.23208299999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.552374999999984,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 22,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 93.73554200000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.90495800000008,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 99.93783299999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.83566599999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 23,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 82.00762500000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.84808399999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 114.52741700000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.398416,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 23,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 100.81404100000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 40.37037499999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 96.33895800000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.75737499999991,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 24,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 102.73016600000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.09699999999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 87.02462500000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 55.78279199999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 24,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 87.054125,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.49583300000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 83.063625,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.101084000000014,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 25,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.744959,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.23508299999992,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 103.95854199999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.32837500000005,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 25,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 100.29225000000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.66549999999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 92.25066700000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.61341700000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 26,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 98.01408299999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.23508400000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 103.62991699999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.183708000000024,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 26,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 83.287375,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.150458999999955,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 89.42254100000002,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.691875000000095,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 27,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 83.87104200000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.46791700000006,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 104.272292,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.731209000000035,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 27,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 95.573375,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.64549999999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 84.54399999999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.426333,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 28,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 101.37100000000004,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.43179199999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 95.66899999999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.35641599999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 28,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.03329199999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.85791700000004,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 105.957583,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 42.12129200000004,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 29,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 91.67983299999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.56745799999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 87.84570799999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.356457999999975,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 29,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 99.22349999999994,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.560084000000074,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 96.02645799999993,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.6362079999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 30,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 103.07279100000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 41.064167,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 94.472083,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.67295899999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 30,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 86.00858299999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.60370799999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 91.26233300000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.917166000000066,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 31,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.66375000000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.569458000000054,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 104.83254099999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.74383399999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 31,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 90.90025000000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.13658299999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 104.354334,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.15629100000001,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 32,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 106.49087499999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 42.38966700000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 105.32062499999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.249000000000024,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 32,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.000542,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.654292000000055,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 102.16108399999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.046959000000015,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 33,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 85.41162499999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.123334,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 108.71970799999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.99212499999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 33,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 105.66041700000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.72329100000002,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 88.00216699999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.78316700000005,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 34,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 103.62700000000007,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.92712499999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 101.22745799999996,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.74408299999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 34,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.85070900000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.158041000000026,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 104.38095800000008,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.20991600000002,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 35,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 86.66637500000007,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.36395900000002,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 110.534042,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.479625000000055,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 35,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 88.99579200000005,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.24008299999991,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 103.9274999999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.807957999999985,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 36,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 101.87716699999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.170875000000024,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 93.41075000000001,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.776457999999934,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 36,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 86.49345900000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.56183299999998,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 94.73029200000008,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.493375000000015,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 37,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.62754200000006,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.605040999999915,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 99.07129100000009,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 38.19999999999993,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 37,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 102.35854100000006,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.72195799999997,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 105.34312499999999,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.58104100000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 38,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 86.87474999999995,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.06683300000009,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 108.47033299999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 36.727667,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 38,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 89.17149999999998,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 38.89187500000003,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 102.02916700000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.11099999999999,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 39,
+    "label": "candidate",
+    "bound.codex.session-start": {
+     "ms": 84.12066599999997,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 37.44208299999991,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 103.862166,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 37.69200000000001,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "sample",
+    "sample": 39,
+    "label": "baseline",
+    "bound.codex.session-start": {
+     "ms": 100.793792,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.codex.before-edit": {
+     "ms": 39.40087500000004,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.session-start": {
+     "ms": 101.28975000000003,
+     "stdoutBytes": 106,
+     "stderr": "",
+     "ipcContacts": 1
+    },
+    "bound.claude.before-edit": {
+     "ms": 39.33904199999995,
+     "stdoutBytes": 0,
+     "stderr": "",
+     "ipcContacts": 1
+    }
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "bound.codex.session-start",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 99.22349999999994,
+    "p95Ms": 106.84824999999995,
+    "p99Ms": 110.84383400000007
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "bound.codex.before-edit",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 38.90704199999993,
+    "p95Ms": 41.27429200000006,
+    "p99Ms": 42.38966700000003
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "bound.claude.session-start",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 94.71775000000002,
+    "p95Ms": 108.19962499999997,
+    "p99Ms": 109.77766699999995
+   },
+   {
+    "kind": "summary",
+    "label": "baseline",
+    "operation": "bound.claude.before-edit",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 37.776457999999934,
+    "p95Ms": 40.878333999999995,
+    "p99Ms": 55.78279199999997
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "bound.codex.session-start",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 85.33979200000005,
+    "p95Ms": 92.50208299999997,
+    "p99Ms": 98.99370799999997
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "bound.codex.before-edit",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 38.678042000000005,
+    "p95Ms": 41.987750000000005,
+    "p99Ms": 43.479499999999916
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "bound.claude.session-start",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 99.93783299999996,
+    "p95Ms": 110.534042,
+    "p99Ms": 114.52741700000001
+   },
+   {
+    "kind": "summary",
+    "label": "candidate",
+    "operation": "bound.claude.before-edit",
+    "successfulSamples": 40,
+    "failedSamples": 0,
+    "p50Ms": 37.83566599999995,
+    "p95Ms": 43.100874999999974,
+    "p99Ms": 44.30441700000006
+   }
+  ]
+ }
+}

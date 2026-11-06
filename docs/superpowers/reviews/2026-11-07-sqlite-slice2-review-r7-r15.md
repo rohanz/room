@@ -1,4 +1,4 @@
-# SQLite slice 2: Codex gpt-6-astra reviews, rounds 7–14
+# SQLite slice 2: Codex gpt-6-astra reviews, rounds 7–15
 
 Reviewer: Codex gpt-6-astra (high effort, read-only), run through `codex:codex-rescue` in the lead's foreground. Each
 round reviewed the diff since the previous round in the context of `origin/main...HEAD`. Codex's session was read-only,
@@ -14,6 +14,7 @@ so the lead recorded each verdict and its resolution here. Every fix has a regre
 | 12 | `179fa5eb` | DO NOT MERGE | 1 MUST-FIX |
 | 13 | `cb805c4b` | DO NOT MERGE | 2 MUST-FIX |
 | 14 | `5f4cabb5` | **MERGE** | 0 |
+| 15 | `24e2e11f` | **MERGE** | 0 |
 
 Rounds 7–13 all concern one class of defect: work started before or during MCP shutdown that registers, admits or opens a
 worker registry after the process acknowledged its storage close. Rounds 7–12 closed individual producers. Round 13 led
@@ -104,3 +105,12 @@ then `closeStorageAdmissions()`. Nothing in that sequence needs a new admission 
 - Drain hid a holder's registration evidence while its deleted ticket's name was still listed (delete-pending).
 - `fsutil fsinfo volumeinfo` needs elevation, so NTFS classified `unknown` and refused the WAL journal. Classification
   now uses .NET `DriveInfo` (GetDriveType/GetVolumeInformation).
+
+## Round 15: MERGE (final head)
+
+Reviewed the only change after round 14. `tryPreviewLock`'s 1 s deadline now starts when GO is written, so it bounds
+the non-blocking lockf/flock attempt and not the helper's storage admission before it. Under full-suite load that
+admission could use up the window, and the check would silently skip the cache and run in a fresh tree: the round-14
+intermittent failure, now reproduced deterministically by a test that delays the first helper admission. 0 findings.
+Qualification recorded for slice 3: the gate worker RPC has no independent deadline, so a permanently stalled gate
+worker thread could leave an admission pending.
