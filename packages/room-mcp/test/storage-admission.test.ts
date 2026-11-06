@@ -197,10 +197,8 @@ it('keeps an actual preview helper visible to drain after its parent call return
     expect((await m.gate.status()).tickets).toBe(1)
     process.kill(-child.pid!, 'SIGTERM'); await exited
     await finish!(); finish = undefined
-    // The helper's ticket is gone; this MCP's own registration still blocks until it unregisters, as any MCP's must.
-    expect((await m.gate.drain(m.owner)).live.map(view => view.id)).toEqual([expect.stringMatching(/^registration:/)])
-    await closeStorageAdmissions()
-    expect((await m.gate.drain(m.owner)).complete).toBe(true)
+    // With its last admission finished during a drain, this MCP acknowledges by unregistering.
+    await vi.waitFor(async () => expect((await m.gate.drain(m.owner)).complete).toBe(true), { timeout: 3000 })
     await m.gate.reopen(m.owner)
   } finally {
     if (child.exitCode === null && child.signalCode === null) { process.kill(-child.pid!, 'SIGTERM'); await exited }
@@ -356,4 +354,30 @@ it('coalesces a burst of background reconcile triggers into one run plus one rer
     await background.backgroundRun
     expect(runs).toBe(2)
   } finally { reconcile.mockRestore() }
+})
+
+it('keeps a registration whose ticket file vanished while its operation is still running, until the operation ends', async () => {
+  const { common } = fixture()
+  const paused = deferred(), entered = deferred()
+  const operation = withAdmission(common, 'collect', async ticket => {
+    // Simulate loss of the non-durable ticket file while the effect is still in progress.
+    fs.rmSync(path.join(common, 'room/storage-gate/tickets', `${ticket.holder}.${ticket.id}.json`))
+    entered.resolve()
+    await paused.promise
+  })
+  await entered.promise
+  const m = await maintenance(common)
+  try {
+    expect((await m.gate.drain(m.owner)).complete).toBe(false)
+    // Give the MCP's draining sweep (1 s interval) time to run: it must not acknowledge for work still running.
+    await new Promise(resolve => setTimeout(resolve, 1300))
+    const during = await m.gate.drain(m.owner)
+    expect(during.complete).toBe(false)
+    expect(during.live.map(view => view.id)).toEqual([expect.stringMatching(/^registration:/)])
+    paused.resolve()
+    await operation
+    // Finishing the operation lets the sweep acknowledge by unregistering.
+    await vi.waitFor(async () => expect((await m.gate.drain(m.owner)).complete).toBe(true), { timeout: 3000 })
+    await m.gate.reopen(m.owner)
+  } finally { paused.resolve(); await operation.catch(() => {}); await m.close() }
 })

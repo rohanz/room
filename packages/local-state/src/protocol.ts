@@ -53,7 +53,7 @@ export const GATE_LIMITS = {
 // ---------------------------------------------------------------------------------------------------------------
 
 export const STORAGE_PATHS = {
-  /** Gate record. All admission and phase transitions serialize on `${gate}.guard` (relay withGuard). */
+  /** Gate record. Initialization, registration and phase/generation transitions serialize on `${gate}.guard`; admission is lock-free against them. */
   gate: 'room/storage-gate.json',
   /** One private file per registration, named `<instance nonce>.json`. */
   registrations: 'room/storage-gate/registrations',
@@ -266,7 +266,10 @@ export interface StorageGate {
    * initializers cannot overwrite each other. Idempotent for the same instance nonce.
    */
   register(input: RegisterInput): Promise<Registration>
-  /** Atomically publish a private ticket under the guard (not fsync-durable). Refuses new work unless phase is `legacy` (or AdmitOptions.parent). */
+  /**
+   * Atomically publish a private ticket (not fsync-durable), then re-read the gate and withdraw it if a transition
+   * intervened; no guard is taken. Refuses new work unless phase is `legacy` (or AdmitOptions.parent).
+   */
   admit(registration: Registration, kind: OperationKind, options?: AdmitOptions): Promise<Ticket>
   /** Remove the ticket. Idempotent; always permitted for a predecessor ticket, including while draining. */
   finish(ticket: Ticket): Promise<void>

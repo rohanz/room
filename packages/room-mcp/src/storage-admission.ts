@@ -14,7 +14,7 @@ import { canonicalCommonDir, closeStorageGates, openStorageGate } from '@room/lo
 import { probeOwnProcess } from '@room/local-state/process'
 import type { InstanceToken } from '@room/local-state/leases'
 import { preflight } from '@room/local-state/preflight'
-import { GATE_LIMITS, StorageRefused, type OperationKind, type PreflightResult, type ReadValidation, type Registration, type StorageGate, type Ticket } from '@room/local-state/protocol'
+import { GATE_LIMITS, StorageRefused, type AdmitOptions, type OperationKind, type PreflightResult, type ReadValidation, type Registration, type StorageGate, type Ticket } from '@room/local-state/protocol'
 import { legacyImportRequired, legacyImportRemedy, preRegistryImportRequired } from './offline/legacy-import.js'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
@@ -61,8 +61,8 @@ async function acquire(context: Admission, commonDir: string): Promise<Ticket> {
   context.commonDir = common
   context.acquiring = (async () => {
     const { gate, registration } = await storageRegistration(common)
-    const ticket = await gate.admit(registration, context.kind)
-    if (!context.active) { await gate.finish(ticket); throw new StorageRefused('unavailable', 'operation ended before admission') }
+    const ticket = await admitTracked(gate, registration, context.kind)
+    if (!context.active) { await finishAdmission(gate, ticket); throw new StorageRefused('unavailable', 'operation ended before admission') }
     context.gate = gate
     context.ticket = ticket
     return ticket
@@ -133,7 +133,7 @@ function unregisterDraining(): Promise<void> {
       drainRequested = false
       for (const [common, pending] of registrations) {
         const state = await pending.catch(() => undefined)
-        if (!state || (await state.gate.observe()).phase !== 'draining') continue
+        if (!state || outstanding.has(common) || (await state.gate.observe()).phase !== 'draining') continue
         try {
           await state.gate.unregister(state.registration)
           if (registrations.get(common) === pending) registrations.delete(common)
@@ -148,8 +148,24 @@ const drainWatch = setInterval(() => {
 }, 1000)
 drainWatch.unref()
 
+/**
+ * Admissions this process has outstanding per clone, counted from before admit until after finish, independently of
+ * ticket files. Unregistering is this process's acknowledgement that it holds no work for the clone; a lost or
+ * unreadable ticket file must never let it acknowledge early.
+ */
+const outstanding = new Map<string, number>()
+const settleOutstanding = (common: string, delta: number) => {
+  const next = (outstanding.get(common) ?? 0) + delta
+  if (next > 0) outstanding.set(common, next); else outstanding.delete(common)
+}
+async function admitTracked(gate: StorageGate, registration: Registration, kind: OperationKind, options?: AdmitOptions): Promise<Ticket> {
+  settleOutstanding(gate.commonDir, 1)
+  try { return await gate.admit(registration, kind, options) }
+  catch (error) { settleOutstanding(gate.commonDir, -1); throw error }
+}
 async function finishAdmission(gate: StorageGate, ticket: Ticket): Promise<void> {
-  await gate.finish(ticket)
+  try { await gate.finish(ticket) }
+  finally { settleOutstanding(gate.commonDir, -1) }
   if ((await gate.observe()).phase === 'draining') await unregisterDraining()
 }
 
@@ -162,6 +178,8 @@ export async function closeStorageAdmissions(): Promise<void> {
     // A clone deleted by its owner has no registration left to release. Never
     // recreate its Git directory merely to take an unregister guard.
     if (!fs.existsSync(common)) { registrations.delete(common); continue }
+    // Work still running keeps its registration; the process exiting leaves it as recovery evidence.
+    if (outstanding.has(common)) continue
     try { await state.gate.unregister(state.registration); registrations.delete(common) }
     catch (error) { if (!(error instanceof StorageRefused && error.reason === 'busy')) throw error }
   }
@@ -175,7 +193,7 @@ export async function withAdmission<T>(commonDir: string, kind: OperationKind, f
   // Nested work reuses the enclosing operation's ticket, acquiring a lazy scope's ticket at this first authority use.
   if (enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)) return fn(await acquire(enclosing, common))
   const { gate, registration } = await storageRegistration(common)
-  const ticket = await gate.admit(registration, kind)
+  const ticket = await admitTracked(gate, registration, kind)
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
   try { return await ambient.run(context, () => fn(ticket)) }
   finally { context.active = false; await finishAdmission(gate, ticket) }
@@ -189,7 +207,7 @@ export async function detachedAdmission(commonDir: string, kind: OperationKind):
   const parent = enclosing?.active && (!enclosing.commonDir || enclosing.commonDir === common)
     ? await acquire(enclosing, common) : undefined
   const { gate, registration } = await storageRegistration(common)
-  const ticket = await gate.admit(registration, kind, { parent })
+  const ticket = await admitTracked(gate, registration, kind, { parent })
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
   let started = false
   const finish = async () => { if (context.active) { context.active = false; await finishAdmission(gate, ticket) } }
@@ -266,12 +284,12 @@ export async function admitStorageHelper(pid: number): Promise<(() => Promise<vo
   // The helper's ticket hangs off this operation's registration but carries the helper's own identity, so drain
   // keeps waiting while the helper lives even if this MCP has exited.
   const { gate, registration } = await storageRegistration(common)
-  const ticket = await gate.admit(registration, 'preview', { parent,
+  const ticket = await admitTracked(gate, registration, 'preview', { parent,
     identity: { pid, startTime: identity.startTime, executable: identity.executable } })
   let done = false
   return async () => {
     if (done) return
-    await gate.finish(ticket)
     done = true
+    await finishAdmission(gate, ticket)
   }
 }

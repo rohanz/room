@@ -161,3 +161,31 @@ it.each([false, true])('retains dead-holder reconciliation after process death (
   expect(fs.readFileSync(intent, 'utf8')).toBe(evidence)
   expect(fs.readdirSync(path.join(dir, STORAGE_PATHS.resolutions)).length).toBeGreaterThan(0)
 }, 60_000)
+
+it('a live helper keeps drain blocked after the MCP that started it has died, and only its own death frees it', async () => {
+  if (process.platform === 'win32') return // the helper identity probe here uses the POSIX process table
+  const dir = commonDir(), gate = openStorageGate(dir)
+  const helper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  children.push(helper)
+  await new Promise(resolve => helper.once('spawn', resolve))
+  const owner = child('helper-owner', dir, String(helper.pid))
+  const ready = await owner.next()
+  await gate.finish(ready.parent) // the parent operation acknowledged; its helper outlives it
+  owner.process.kill('SIGKILL')
+  await exitOf(owner.process)
+  const me = self()
+  expect(createExclusive(lock(dir), me)).toBe(true)
+  await gate.register({ instance: me, kind: 'maintenance', release: 'test' })
+  const maintenanceOwner = { instance: me, token: 'helper-survivor' }
+  const progress = await gate.drain(maintenanceOwner)
+  expect(progress.complete).toBe(false)
+  // Judged by the helper's identity, not the dead MCP's.
+  expect(progress.live.map(view => view.id)).toContain(ready.helperTicket.id)
+  await expect(gate.resolveDead(maintenanceOwner, ready.helperTicket.id, 'must refuse while the helper runs')).rejects.toMatchObject({ reason: 'blocked' })
+  helper.kill('SIGKILL')
+  await exitOf(helper)
+  for (let pass = 0; pass < 2; pass++) {
+    for (const view of (await gate.drain(maintenanceOwner)).dead) await gate.resolveDead(maintenanceOwner, view.id, 'test owner reconciled the helper and its MCP')
+  }
+  expect((await gate.drain(maintenanceOwner)).complete).toBe(true)
+}, 60_000)

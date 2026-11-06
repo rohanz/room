@@ -4,7 +4,7 @@ import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { openStorageGate } from '../src/gate.js'
 import { createExclusive, writeAtomic } from '../src/leases.js'
-import { probeOwnProcess } from '../src/process.js'
+import { probeOwnProcess, probeProcessNow } from '../src/process.js'
 import { STORAGE_PATHS, StorageRefused } from '../src/protocol.js'
 
 const [mode, dir, ...rest] = process.argv.slice(2)
@@ -33,6 +33,17 @@ if (mode === 'init') {
   writeAtomic(path.join(dir, 'room/registry/unfinished-intent.json'), { holder: instance, ticket: ticket.id, phase: 'intent' })
   await send({ instance, ticket })
   setInterval(() => {}, 1000) // killed between admitted intent and finish
+} else if (mode === 'helper-owner') {
+  // An MCP that admits an operation and a helper ticket for a separate process it started, then is killed.
+  const helperPid = Number(rest[0])
+  const helper = probeProcessNow(helperPid)
+  if (!helper?.startTime || !helper.executable) throw new Error('helper identity unreadable')
+  const registration = await gate.register({ instance, kind: 'mcp', release: 'child' })
+  const parent = await gate.admit(registration, 'preview')
+  const helperTicket = await gate.admit(registration, 'preview', { parent,
+    identity: { pid: helperPid, startTime: helper.startTime, executable: helper.executable } })
+  await send({ instance, parent, helperTicket })
+  setInterval(() => {}, 1000) // killed while its helper keeps running
 } else if (mode === 'admitter') {
   const stop = rest[0]
   const registration = await gate.register({ instance, kind: 'mcp', release: 'child' })
