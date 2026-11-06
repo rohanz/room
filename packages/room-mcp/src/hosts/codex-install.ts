@@ -58,7 +58,7 @@ export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env)
     if (fs.statSync(path.join(root, 'compat.json')).size > 4096 || fs.statSync(path.join(root, 'room-mcp.mjs')).size > 64 * 1024 * 1024) return undefined
     const raw = fs.readFileSync(path.join(root, 'compat.json'), 'utf8')
     const descriptor = JSON.parse(raw)
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return undefined
+    if (![1, 2].includes(descriptor.v) || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || !verifyBundleDigests(root, descriptor)) return undefined
     return { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
   } catch { return undefined }
 }
@@ -88,4 +88,21 @@ export function createCodexInstall(env: NodeJS.ProcessEnv = process.env, io: Ins
     }
   }
   return { inspectInstall } satisfies Pick<HostAdapter, 'inspectInstall'>
+}
+
+/** v1 pins retain their historical single-file layout; v2 must cover every emitted executable. */
+export const EXECUTABLE_BUNDLES = ['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs'] as const
+export function verifyBundleDigests(root: string, descriptor: { v: number; bundleSha256: unknown }): boolean {
+  const digest = (name: string) => {
+    const file = path.join(root, name)
+    if (fs.statSync(file).size > 64 * 1024 * 1024) throw new Error('executable exceeds bundle limit')
+    return createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+  }
+  try {
+    if (descriptor.v === 1) return !EXECUTABLE_BUNDLES.filter(name => name.endsWith('-app.mjs')).some(name => fs.existsSync(path.join(root, name))) && descriptor.bundleSha256 === digest('room-mcp.mjs')
+    const hashes = descriptor.bundleSha256
+    if (descriptor.v !== 2 || !hashes || typeof hashes !== 'object' || Array.isArray(hashes)
+      || Object.keys(hashes).length !== EXECUTABLE_BUNDLES.length) return false
+    return EXECUTABLE_BUNDLES.every(name => (hashes as Record<string, unknown>)[name] === digest(name))
+  } catch { return false }
 }

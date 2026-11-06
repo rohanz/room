@@ -1,3 +1,4 @@
+import { storageRegistration } from './storage-admission.js'
 import { sessionHostIdentity } from './hosts/session-host.js'
 import { sessionEntries } from './session-entries.js'
 import { requireDaemonRuntime } from './daemon-cutover.js'
@@ -1039,6 +1040,7 @@ export async function currentDaemonClient(dir: string): Promise<{ currentSession
 
 /** Resolve only installed code; never execute repository startup scripts or use its cwd. */
 async function ensureDaemon(common: string, room: string, dir: string, log?: ServerLog): Promise<LocalRelay> {
+  await storageRegistration(common)
   await requireDaemonRuntime(common, await currentDaemonClient(dir)).catch((error: unknown) => {
     throw new RoomdError(error instanceof Error ? error.message : String(error), 2)
   })

@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Worker worktrees, carry snapshots, links, and cleanup. */
@@ -463,6 +464,7 @@ export interface CleanupWorkerOptions {
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
 export async function cleanupWorker(leadDir: string, w: LocalWorker, options: CleanupWorkerOptions = {}): Promise<boolean> {
+  return withDirectoryAdmission(leadDir, 'retire', async () => {
   const { collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = [], preservation } = options
   // All lifecycle paths converge here. The owner operation lease must be held by
   // callers while checking this snapshot and removing the checkout.
@@ -574,6 +576,8 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
   }
   cleanupWorkerLogs(leadDir, w)
   return true
+
+  })
 }
 
 /** Remove a worker's local logs after either checkout cleanup or vanished-checkout pruning. */

@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from '../storage-admission.js'
 import { requireWorkerInventory } from '../worker-store.js'
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
@@ -60,6 +61,7 @@ export const defs: ToolDef[] = [
 
 /** Save only local worker state when reconnect exceeded its bound; no room writes or claim release. */
 export async function deferWorkerCompletion(ctx: ToolCtx, dir: string, summary: string): Promise<string | undefined> {
+  return withDirectoryAdmission(dir, 'report', async () => {
   const id = ctx.config?.workerId ?? process.env.ROOM_WORKER_ID
   if (!id || !summary.trim()) return undefined
   const registry = await registryForDir(dir), record = (await registry.read(id)), run = record?.runs.at(-1)
@@ -71,6 +73,8 @@ export async function deferWorkerCompletion(ctx: ToolCtx, dir: string, summary: 
     await registry.reportDone(id, run.n, summary.trim(), [])
     return 'completion report saved locally; Room is still reconnecting, so no claims were released and your lead has not been told yet. Your lead can recover this report from the worker registry when you exit.'
   } catch (error) { return `error: could not save completion report locally: ${error instanceof Error ? error.message : String(error)}` }
+
+  })
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -85,6 +89,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
+  return withDirectoryAdmission(S().dir, 'report', async () => {
       const s = S()
       const summary = String(a.summary ?? '').trim()
       if (!summary) return 'error: summary is required'
@@ -160,8 +165,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else { try { out.push(await postLedger(s, pr)) } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) } }
       }
       return out.join('\n')
-    },
+
+  })
+},
     async room_spawn(a) {
+  return withDirectoryAdmission(S().dir, 'spawn', async () => {
       const lead = S()
       const timing = currentToolTiming()
       const timed = <T>(phase: 'lease' | 'prepare' | 'launch' | 'carry-publication', work: () => Promise<T>): Promise<T> => timing ? timing.phase(phase, work) : work()
@@ -366,7 +374,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!childOwned) await registry.abandonPreparation(id).catch(cleanup => { state.log(`worker preparation cleanup: ${cleanup}`) })
         return `error: ${error instanceof Error ? error.message : String(error)}`
       } finally { await registry.finishOperation(id) }
-    },
+
+  })
+},
 
   }
   return handlers
@@ -375,6 +385,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 export async function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): Promise<{ s: Session; w: LocalWorker }[]> {
   const registry = await openWorkerReader(s.dir)
+  return registry.validatedRead(async () => {
   return (await Promise.all((requireWorkerInventory(await registry.list())).map(async record => {
     const status = (await registry.status(record.id))
     if (!status || record.lead.participant !== s.me.name) return []
@@ -383,6 +394,7 @@ export async function registryRunningWorkers(s: Session, rooms: import('../regis
     if (!['starting', 'running', 'unknown', 'ambiguous'].includes(status.status) && !liveHandle) return []
     return [{ s: room, w: realStateInput(record, status) }]
   }))).flat()
+  })
 }
 
 export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
@@ -406,7 +418,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       rooms.remove(ws)
     }
   const runningWorkers = async (s: Session): Promise<{ s: Session; w: LocalWorker }[]> => (await registryRunningWorkers(s, rooms))
-  const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
+  const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal): Promise<string> => withDirectoryAdmission(s.dir, 'stop', async () => {
       const registry = await registryForDir(s.dir)
       const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
       if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`
@@ -467,7 +479,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true })
       return how + cleanupText()
       } finally { if (acquired) await registry.finishOperation(w.id!) }
-    }
+    })
 
   const startWorkersBridge = (lead: import('../session.js').Session, s: import('../session.js').Session): Bridge => {
     const bridge = new Bridge(lead, s, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined, reconcileConflicts: reconcileProjectedConflicts })

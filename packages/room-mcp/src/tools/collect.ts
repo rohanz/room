@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from '../storage-admission.js'
 import { requireWorkerInventory } from '../worker-store.js'
 import { requireWorkerEvidence } from '../worker-store.js'
 import { asyncFilter } from '../async-filter.js'
@@ -956,7 +957,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
     finally { endPhase?.(); for (const workerLock of workerLocks) await registry.finishOperation(workerLock) }
   }
-  return { room_collect: async a => {
+  return { room_collect: async a => withDirectoryAdmission(state.S().dir, a.discard ? 'discard' : 'collect', async () => {
     const session = state.S()
     const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'keep', 'paths', 'force', 'checkpoint', 'reason', 'reviewToken'].includes(key))
     if (unknown) return 'error: unknown argument ' + unknown
@@ -982,5 +983,5 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }) }
     catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
     finally { endLease?.() }
-  } }
+  }) }
 }

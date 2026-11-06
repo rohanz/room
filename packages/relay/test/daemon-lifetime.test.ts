@@ -54,7 +54,9 @@ async function synced(p: WebsocketProvider) { await vi.waitFor(() => expect(p.sy
 async function gone(child: ChildProcess) { await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), { timeout: 10000 }) }
 
 it('a separate process stops at five minutes of fake writer-idle time (short real timer seam)', async () => {
-  const { child, command } = await start(common())
+  const { child, command, info } = await start(common())
+  expect(info.preflight).toMatchObject({ ok: true, evidence: { surface: 'daemon', node: process.versions.node, executable: fs.realpathSync.native(process.execPath) } })
+  expect((await relayHealth(info.port, info.key))?.preflight).toEqual(info.preflight)
   await command('clock', { now: 299999 })
   await new Promise(resolve => setTimeout(resolve, 40))
   expect(child.exitCode).toBeNull()

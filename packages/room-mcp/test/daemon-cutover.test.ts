@@ -647,3 +647,11 @@ it.each([
   const state = await inspectDaemonCutover(common, { ...inspectOptions, probe: pid => pid === 400 ? {} : probe(pid) })
   expect(state.clients[0].liveness).toBe(expected)
 })
+
+it('reports read-only gate inventory without initializing the storage gate', async () => {
+  const { common } = fixture()
+  const state = await inspectDaemonCutover(common, inspectOptions)
+  expect(state.storageGate).toMatchObject({ state: 'absent', registrations: 0, tickets: 0 })
+  expect(daemonCutoverRows(state).join('\n')).toContain('storage gate inventory: absent; phase none; generation none; 0 registration(s); 0 ticket(s)')
+  expect(fs.existsSync(path.join(common, 'room/storage-gate.json'))).toBe(false)
+})

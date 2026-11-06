@@ -282,6 +282,24 @@ describe('compatibility descriptor preflight without sockets', () => {
     const write = (value: unknown) => fs.writeFile(path.join(dir, 'plugins/room/server/compat.json'), JSON.stringify(value))
     return { dir, descriptor, write }
   }
+  it('checks every v2 application and wrapper before exercising a release', async () => {
+    const { EXECUTABLE_BUNDLES } = await import('../src/hosts/codex-install.js')
+    const { dir, descriptor, write } = await fixture()
+    try {
+      const hashes: Record<string, string> = {}
+      for (const name of EXECUTABLE_BUNDLES) {
+        await fs.writeFile(path.join(dir, 'plugins/room/server', name), name)
+        hashes[name] = createHash('sha256').update(name).digest('hex')
+      }
+      await write({ ...descriptor, v: 2, bundleSha256: hashes })
+      await validateDescriptor(dir)
+      for (const name of EXECUTABLE_BUNDLES) {
+        await fs.writeFile(path.join(dir, 'plugins/room/server', name), 'modified')
+        await expect(validateDescriptor(dir)).rejects.toThrow('bundle digest mismatch')
+        await fs.writeFile(path.join(dir, 'plugins/room/server', name), name)
+      }
+    } finally { await fs.rm(dir, { recursive: true, force: true }) }
+  })
   it('accepts the matching descriptor and rejects corrupt JSON and structure', async () => {
     const { dir, descriptor, write } = await fixture()
     try {
@@ -289,7 +307,7 @@ describe('compatibility descriptor preflight without sockets', () => {
       await expect(validateDescriptor(dir)).resolves.toBeUndefined()
       await fs.writeFile(path.join(dir, 'plugins/room/server/compat.json'), '{broken')
       await expect(validateDescriptor(dir)).rejects.toThrow('corrupt compat.json')
-      for (const invalid of [null, [], { ...descriptor, v: 2 }]) {
+      for (const invalid of [null, [], { ...descriptor, v: 99 }]) {
         await write(invalid)
         await expect(validateDescriptor(dir)).rejects.toThrow('corrupt compat.json')
       }

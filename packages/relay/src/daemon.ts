@@ -1,3 +1,5 @@
+import { preflight, preflightDiagnostic } from '@room/local-state/preflight'
+import type { PreflightResult } from '@room/local-state/protocol'
 /** Per-clone transport process and its non-owning client launcher. No shell or host identity. */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -28,6 +30,8 @@ export interface LocalDaemonOptions {
 }
 export interface LocalDaemon extends LocalRelay {
   pid: number; runtime: 'daemon'; idleMs: number
+  /** Authenticated daemon evidence; absent in older daemon releases. */
+  preflight?: PreflightResult
   /** True only when this call's child won authority; adopted instances remain non-owning. */
   launched: boolean
 }
@@ -72,8 +76,11 @@ export class WriterIdleClock {
 export async function startLocalDaemon(opts: {
   commonDir: string; room: string; idleMs?: number; idleCheckMs?: number; now?: () => number
   finalSaveRetryMs?: readonly number[]; retryMs?: number; log?: (line: string) => void
+  runtimeEvidence?: Extract<PreflightResult, { ok: true }>
 }): Promise<StartedLocalDaemon | undefined> {
   const commonDir = fs.realpathSync.native(opts.commonDir)
+  const runtimeEvidence = opts.runtimeEvidence ?? await preflight('daemon', { commonDir })
+  if (!runtimeEvidence.ok) throw new Error(preflightDiagnostic(runtimeEvidence))
   const log = opts.log ?? (() => {})
   const phase = (name: string) => log(`startup pid ${process.pid}: ${name}`)
   phase('state check')
@@ -118,7 +125,7 @@ export async function startLocalDaemon(opts: {
       })
       return stopping
     }
-    const health = (authenticated = false) => ({ ready, nonce, release, uptimeMs: Date.now() - startedAt, idleMs: clock.idleMs, draining, ...(failure ? { stopFailure: authenticated ? failure : failure.match(/\b(?:ENOSPC|EACCES|EIO|EPERM)\b/)?.[0] ?? 'save-blocked' } : {}) })
+    const health = (authenticated = false) => ({ ready, nonce, release, preflight: runtimeEvidence, uptimeMs: Date.now() - startedAt, idleMs: clock.idleMs, draining, ...(failure ? { stopFailure: authenticated ? failure : failure.match(/\b(?:ENOSPC|EACCES|EIO|EPERM)\b/)?.[0] ?? 'save-blocked' } : {}) })
     const open = (port: number) => startRelay(port, { commonDir, key, hub: { lock }, log, finalSaveRetryMs: opts.finalSaveRetryMs,
       daemon: { health, onSignal: () => { void close().catch(() => {}) }, writersChanged: count => clock.changed(count), stop: async (pid, expectedNonce, saved) => {
         if (pid !== process.pid || expectedNonce !== nonce) throw new Error('local daemon identity changed; reread discovery before stopping')
@@ -136,7 +143,7 @@ export async function startLocalDaemon(opts: {
     phase('lease recovery')
     await relay.initialize(opts.room)
     phase('leases recovered')
-    const info: LocalRelayInfo = { schema: 2, discovery: 1, runtime: 'daemon', nonce, compat: { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }, port: relay.port, pid: process.pid, room: opts.room, key, startedAt: Date.now(), lead: identity }
+    const info: LocalRelayInfo = { schema: 2, discovery: 1, runtime: 'daemon', preflight: runtimeEvidence, nonce, compat: { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }, port: relay.port, pid: process.pid, room: opts.room, key, startedAt: Date.now(), lead: identity }
     phase('discovery publication')
     writeAtomic(relayFile(commonDir), info)
     verifyPrivatePath(relayFile(commonDir), true)
@@ -255,7 +262,7 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
     if (!contract.ok) throw new Error(`local daemon incompatible: ${contract.error.text}; drain clients and restart compatible Room`)
     if (health.ready !== true || health.draining) return undefined
     return {
-      url: `ws://127.0.0.1:${info.port}`, httpUrl: `http://127.0.0.1:${info.port}`, port: info.port, key: info.key, pid: health.pid, runtime: 'daemon', idleMs: Number(health.idleMs), owned: false, launched: false,
+      url: `ws://127.0.0.1:${info.port}`, httpUrl: `http://127.0.0.1:${info.port}`, port: info.port, key: info.key, pid: health.pid, runtime: 'daemon', idleMs: Number(health.idleMs), owned: false, launched: false, preflight: health.preflight as PreflightResult | undefined,
       async stop() {},
       async forget() {
         const target = `/memory?room=${encodeURIComponent(room)}`

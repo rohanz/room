@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import { storageRegistration, closeStorageAdmissions, withDirectoryAdmission } from './storage-admission.js'
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
 import path from 'node:path'
@@ -103,6 +104,8 @@ async function main() {
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
     logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
     initialize: async (dir: string, signal: AbortSignal) => {
+      const common = await gitCommonDir(dir)
+      await storageRegistration(common)
       let session: Session | null = null
       // The startup choice only: environment is fixed for the process, and room_join/room_close/joinSession re-resolve it.
       // Resolve and prime while config reads are already awaiting Git; a deferred workspace stays unbound until a call.
@@ -163,6 +166,7 @@ async function main() {
         hostAlive: () => hostSessionAlive(dir, attachingParent()),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
+        withWorkersAdmission: work => withDirectoryAdmission(dir, 'idle-release', work),
         waiting: () => tools.waiting(),
         hostEnded: reason => { void bye(reason) },
         leave: async idle => { for (const joined of [...tools.joinedSessions()].reverse()) await tools.drop(joined, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },
@@ -267,6 +271,7 @@ async function main() {
         if (!signal) await autoJoin.settle()
         await tools.shutdown()
         await arbitration.close()
+        await closeStorageAdmissions()
       } }
       initialized = { dir, call }
       return runtime
@@ -326,7 +331,7 @@ export async function finishSignalShutdown(reason: string, leave: () => Promise<
   exit()
 }
 
-const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])
+const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\](?:index|entry)\.ts|\.mjs)?$/.test(process.argv[1])
 /** Install only for the executable, never when consumers import the package. */
 export function installFailureHandlers(report: (message: string) => void, target: Pick<NodeJS.Process, 'on' | 'exit'> = process): (reason: string, error: unknown) => never {
   const fatal = (reason: string, error: unknown): never => {

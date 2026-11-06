@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, withoutAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 /**
  * The rooms one MCP process is in, and everything hung off each of them.
@@ -124,13 +125,13 @@ export class Rooms {
   track(s: Session): void {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
-    void registryForDir(s.dir).then(registry => {
+    void withoutAdmission(() => registryForDir(s.dir)).then(registry => {
       if (!this.tracked.has(s) || this.projectors.has(s)) return
       const projector = new WorkerProjector(s, registry, this.o.log)
       this.projectors.set(s, projector)
       projector.start()
     }).catch(() => {})
-    const timer = setInterval(() => { void this.autoRetire(s).catch(() => {}) }, 60_000)
+    const timer = setInterval(() => { void withoutAdmission(() => this.autoRetire(s)).catch(() => {}) }, 60_000)
     timer.unref()
     this.autoRetireTimers.set(s, timer)
   }
@@ -263,6 +264,7 @@ export class Rooms {
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
   async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, options: ResumeWorkerOptions = {}): Promise<string | DeliveredResume> {
+  return withDirectoryAdmission(s.dir, 'resume', async () => {
     const { spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log = console.error, at = Date.now,
       exitWaitMs = 30_000, beforeLaunch } = options
     if (toolCallAborted()) return 'error: tool call cancelled'
@@ -348,6 +350,8 @@ export class Rooms {
         : `error: could not resume ${record.tag}: ${launchError.message}`
     }
     } finally { await registry.finishOperation(record.id) }
-  }
+
+  })
+}
 
 }

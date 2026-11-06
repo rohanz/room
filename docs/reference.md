@@ -200,3 +200,34 @@ Room shares one parser worker per process and releases it after 30 seconds idle.
 Base texts have a separate allowance equal to the configured sharing budget (8 MiB by default). Files that do not fit are excluded whole and reported as budget exclusions. Same-clone followers keep HEAD tracking but leave file watching and inventory polling to the publisher; promotion rescans current files.
 
 A local relay admits up to eight retained rooms, 200 connections in total and 100 per room, with bounded awareness messages and identities. Sessions probe the relay every two seconds and give it 2.5 seconds to answer; a joiner treats the lead's relay as gone only after three consecutive timed-out probes, so a busy machine does not make workers leave and rejoin; a refused port still counts as gone at the next tick. Idle rooms still count: their documents are retained rather than evicted through a potentially lossy snapshot. These local defaults are separate from hosted-server limits.
+
+## Storage maintenance
+
+The storage compatibility release keeps worker lifecycle data in the existing files. It adds a durable admission gate in the clone's Git common directory, shared by all linked worktrees. Storage build `1` initializes `minReader=1` and `minWriter=1`; incompatible build ranges are refused independently of room wire compatibility. It does not activate SQLite storage or create the repository database. MCP, daemon and offline entry points preflight their own official Node runtime before loading application storage code; see the [runtime setup](../README.md#start-in-five-minutes).
+
+The gate's `legacy` phase admits file-backed operations. Each admitted operation holds a ticket until its effects and acknowledgements finish; independently running child work holds its own ticket. Maintenance advances the generation and enters `draining`, refusing new work while earlier tickets finish. Live or unknown holders block maintenance. Verified-dead holders still need reconciliation; age alone never clears a ticket. `staging`, `db-complete` and `active` are reserved conversion phases that this compatibility build refuses; these commands do not perform SQL activation. A missing gate alongside activation evidence, or a damaged gate, is a refusal, never permission to reset storage.
+
+Use the installed plugin's `server/room-state.mjs`. Find the absolute common directory with `git rev-parse --path-format=absolute --git-common-dir` from the affected checkout, then substitute it below. Offline maintenance requires stopping old launch/reconnect loops across the clone and linked worktrees first.
+
+```sh
+node "<plugin>/server/room-state.mjs" preflight --common-dir "<common-dir>" --json
+node "<plugin>/server/room-state.mjs" status --common-dir "<common-dir>" --json
+node "<plugin>/server/room-state.mjs" import-legacy --common-dir "<common-dir>"
+```
+
+`preflight` checks the command's actual executable, Node and bundled SQLite, and reports filesystem evidence when `--common-dir` is supplied. It uses only disposable SQLite probes; it does not open the repository database. JSON is `ok: true` with `storage` and `evidence`, or `ok: false` with `failure`, `evidence`, `detail` and `remedy`. Exit status is zero for success and one for refusal. Local APFS, ext4 and NTFS are the selected qualification targets; an unqualified filesystem is reported as `storage: "unqualified"` and remains usable for legacy file operation in this compatibility release. That result is not approval for later SQL activation.
+
+`status` inspects the gate and legacy-import checkpoint without initializing or repairing them, and writes nothing: its entry preflight checks only the runtime. Plain output reports phase, generation, registration/ticket counts, whether maintenance is required, and up to 200 outstanding tickets with their id, operation, generation, holder pid and holder state (`alive`, `dead`, `unknown` or `unreadable`); `--json` adds structured gate state, import status, the ticket listing and any refusal/remedy. It exits one when maintenance is required. A runtime refusal happens before status inspection and is reported on stderr.
+
+If startup says **maintenance required** because pre-registry worker records need import, run `import-legacy` explicitly. It owns the migration lock, closes admission, waits up to 120 seconds for tickets to finish, preserves stable source-to-worker assignments and reopens `legacy` only after import completes. Timeout or failure leaves the gate draining. Preserve worker worktrees, patches, records and the migration checkpoint; do not delete them to bypass the refusal.
+
+After inspecting an interrupted operation's effects and reconciling its intent, a verified-dead ticket can be resolved with an audit note:
+
+```sh
+node "<plugin>/server/room-state.mjs" resolve-ticket --common-dir "<common-dir>" --ticket "<ticket-id>" --note "<what was reconciled>"
+node "<plugin>/server/room-state.mjs" reopen --common-dir "<common-dir>"
+```
+
+`resolve-ticket` refuses live or unknown holders, records the resolution and leaves admission closed. `reopen` requires completed reconciliation and no outstanding legacy import; rerun `import-legacy` when import is pending. Maintenance ownership can be recovered only from a verified-dead owner. Take the ticket identifier from `status`; there is no need to read the private gate records. Neither command authorizes replay of an ambiguous Git or filesystem effect.
+
+**Unmodified older binaries are not fenced by this gate.** A binary that never checks admission can still write files. Inventory and stop every old host, MCP, helper, worker and reconnect loop before maintenance; updating the plugin or seeing zero tickets cannot establish their absence. Existing daemon-cutover requirements still apply. This release provides no SQL migration command or activation window; see [upgrading](upgrading.md#storage-compatibility-release).

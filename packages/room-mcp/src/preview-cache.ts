@@ -1,3 +1,4 @@
+import { admitStorageHelper } from './storage-admission.js'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -77,7 +78,17 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     ? ['-t', '0', file, 'sh', '-c', helper]
     : ['-n', file, 'sh', '-c', helper]
   return new Promise(resolve => {
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'] })
+    // The shell stays the helper's identity while lockf/flock and tracked children run.
+    const child = spawn('sh', ['-c', 'read -r gate; [ "$gate" = GO ] || exit 1; "$@"; status=$?; exit "$status"', 'sh', command, ...args], { stdio: ['pipe', 'pipe', 'ignore'] })
+    let finishAdmission: (() => Promise<void>) | undefined
+    let closed = false
+    child.once('close', () => { closed = true; void finishAdmission?.().catch(() => {}) })
+    void (async () => {
+      if (!child.pid) return
+      finishAdmission = await admitStorageHelper(child.pid)
+      if (closed) { await finishAdmission?.(); return }
+      child.stdin.write('GO\n')
+    })().catch(() => { child.stdin.end(); child.kill() })
     let settled = false
     let timer: NodeJS.Timeout | undefined
     const finish = (release?: PreviewUnlock) => {

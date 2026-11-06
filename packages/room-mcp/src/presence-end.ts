@@ -188,6 +188,8 @@ export interface PresenceEndOptions {
   holds(): boolean
   /** It leads a non-terminal worker (`projectable(me).write` is not empty). */
   leadsWorkers(): boolean | Promise<boolean>
+  /** Hold admission from lifecycle query through the resulting presence removal. */
+  withWorkersAdmission?(work: () => Promise<void>): Promise<void>
   /** A `room_wait` is in progress. */
   waiting(): boolean
   /** The host session ended: end presence everywhere and exit. */
@@ -281,6 +283,7 @@ export class PresenceEnd {
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
     if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return
+    const decide = async () => {
     const epoch = this.epoch
     let leadsWorkers = true
     try { leadsWorkers = await this.options.leadsWorkers() }
@@ -294,5 +297,8 @@ export class PresenceEnd {
         this.options.log?.(`idle presence leave will retry: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
+    }
+    if (this.options.withWorkersAdmission) await this.options.withWorkersAdmission(decide)
+    else await decide()
   }
 }

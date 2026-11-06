@@ -1,3 +1,4 @@
+import { withAdmission, withoutAdmission, closeStorageAdmissions } from '../src/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -19,11 +20,31 @@ function deferred<T>() {
 const empty: WorkerSnapshot = { available: true, revision: 'empty', workers: [], reservations: {}, blockers: [] }
 const unavailable: WorkerSnapshot = { available: false, reason: 'unavailable', detail: 'service restarting' }
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await closeStorageAdmissions(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 const sessions = [{ dir: '/never-open-this-directory', roomName: 'local/test', me: { name: 'lead' } }] as Session[]
 
 describe('async lifecycle boundaries', () => {
-  it.todo('slice 2: rejects an unrelated stop call while another call in the same MCP holds discard, while nested discard-to-stop reuses the outer ticket and cannot release it')
+  it('rejects an unrelated same-MCP stop while nested discard-to-stop cannot release the outer lane', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-lane-call-')); roots.push(dir)
+    execFileSync('git', ['init', '-q', dir])
+    const common = path.join(dir, '.git'), registry = await WorkerRegistry.open(common, { watch: false })
+    try {
+      await withAdmission(common, 'discard', async ticket => {
+        expect(await registry.beginOperation('w_nested', 'discard')).toBe(true)
+        const lease = JSON.parse(fs.readFileSync(path.join(registry.root, 'workers/w_nested.op'), 'utf8'))
+        expect(lease.callToken).toBe(ticket.id)
+        await withoutAdmission(() => expect(withAdmission(common, 'stop', async () => registry.beginOperation('w_nested', 'stop'))).rejects.toThrow('another call'))
+        await withoutAdmission(() => withAdmission(common, 'stop', async () => expect(await registry.finishOperation('w_nested')).toBe(false)))
+        await withAdmission(common, 'stop', async () => {
+          const acquired = await registry.beginOperation('w_nested', 'stop')
+          expect(acquired).toBe(false)
+          if (acquired) await registry.finishOperation('w_nested')
+        })
+        expect(fs.existsSync(path.join(registry.root, 'workers/w_nested.op'))).toBe(true)
+        expect(await registry.finishOperation('w_nested')).toBe(true)
+      })
+    } finally { registry.close() }
+  })
 
   it('keeps unavailable facts distinct from an empty snapshot and holds presence until a delayed decision resolves', async () => {
     const facts = deferred<WorkerSnapshot>(), entered = deferred<void>()

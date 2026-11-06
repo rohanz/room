@@ -466,7 +466,7 @@ export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOpt
 }
 
 /** Historical session relays used `lead: true`; daemon discovery records its process birth identity. */
-export interface LocalRelayInfo { discovery?: number; compat?: unknown; runtime?: string; nonce?: string; schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true | ProcessIdentity }
+export interface LocalRelayInfo { preflight?: import('@room/local-state/protocol').PreflightResult; discovery?: number; compat?: unknown; runtime?: string; nonce?: string; schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string; lead?: true | ProcessIdentity }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */

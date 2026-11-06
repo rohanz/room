@@ -14,6 +14,64 @@ permissions:
   contents: read
 
 jobs:
+  sqlite-state:
+    name: SQLite state (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.22.3', '22.23.4']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    # Git Bash is available on Windows runners; env -u and quoting match checks.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Install dependencies
+        id: install
+        run: npm ci
+      - name: Configure Git identity for tests
+        run: git config --global user.name 'CI' && git config --global user.email 'ci@example.com'
+      - name: Record actual runtime and committed bundle preflight
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/sqlite-evidence.mjs --output "$RUNNER_TEMP/room-sqlite-runtime.json"
+      - name: Local storage gate, bootstrap and privacy
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/local-state --config vitest.config.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$RUNNER_TEMP/room-sqlite-local-state.json"
+      - name: Storage admission and emitted bundle contracts
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        # Vitest substring filters work across shells; an unexpanded glob would match no files.
+        run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npx vitest run --root packages/room-mcp --config vitest.config.ts test/storage- --maxWorkers 1 --reporter default --reporter json --outputFile "$RUNNER_TEMP/room-sqlite-room-mcp.json"
+      - name: Set up official Node below the floor (22.12)
+        if: ${{ !cancelled() && matrix.node == '22.23.4' && matrix.os != 'macos-latest' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+      - name: Prove 22.12 refuses before creating Room state
+        if: ${{ !cancelled() && matrix.node == '22.23.4' && matrix.os != 'macos-latest' }}
+        run: node scripts/sqlite-evidence.mjs --expect-refusal node-version --output "$RUNNER_TEMP/room-sqlite-refusal-22.12.0.json"
+      - name: Set up official Node below the floor (22.14)
+        if: ${{ !cancelled() && matrix.node == '22.23.4' && matrix.os != 'macos-latest' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - name: Prove 22.14 refuses before creating Room state
+        if: ${{ !cancelled() && matrix.node == '22.23.4' && matrix.os != 'macos-latest' }}
+        run: node scripts/sqlite-evidence.mjs --expect-refusal node-version --output "$RUNNER_TEMP/room-sqlite-refusal-22.14.0.json"
+      - name: Upload SQLite runtime and test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-state-${{ matrix.os }}-${{ matrix.node }}
+          path: ${{ runner.temp }}/room-sqlite-*.json
+          if-no-files-found: warn
+
   windows-durable-files:
     runs-on: windows-latest
     timeout-minutes: 10
@@ -118,15 +176,24 @@ jobs:
   # A hygiene failure cannot suppress test/build evidence or silently become optional.
   test:
     if: ${{ always() }}
-    needs: [checks, hygiene, compat]
+    needs: [checks, hygiene, compat, sqlite-state, windows-durable-files, windows-native-smoke]
     runs-on: ubuntu-latest
     steps:
-      - name: Require tests, builds, hygiene and compatibility
+      - name: Require tests, builds, hygiene, compatibility and native storage
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
           HYGIENE_RESULT: ${{ needs.hygiene.result }}
           COMPAT_RESULT: ${{ needs.compat.result }}
-        run: test "$CHECKS_RESULT" = success && test "$HYGIENE_RESULT" = success && test "$COMPAT_RESULT" = success
+          SQLITE_RESULT: ${{ needs.sqlite-state.result }}
+          WINDOWS_DURABLE_RESULT: ${{ needs.windows-durable-files.result }}
+          WINDOWS_SMOKE_RESULT: ${{ needs.windows-native-smoke.result }}
+        run: |
+          test "$CHECKS_RESULT" = success
+          test "$HYGIENE_RESULT" = success
+          test "$COMPAT_RESULT" = success
+          test "$SQLITE_RESULT" = success
+          test "$WINDOWS_DURABLE_RESULT" = success
+          test "$WINDOWS_SMOKE_RESULT" = success
 
   checks:
     runs-on: ubuntu-latest

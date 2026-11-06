@@ -1,3 +1,5 @@
+import { openStorageGate } from '@room/local-state/gate'
+import type { GateStatus } from '@room/local-state/protocol'
 import { sessionHostIdentity } from './hosts/session-host.js'
 import { directoryChain, sessionEntries } from './session-entries.js'
 /** Read-only clone-wide drain inspection. Never signals processes, edits snapshots or takes authority. */
@@ -40,6 +42,7 @@ interface CutoverClient {
 }
 export interface DaemonCutoverState {
   commonDir: string
+  storageGate?: GateStatus
   worktrees: string[]
   clients: CutoverClient[]
   owner?: { pid: number; port?: number; release?: string; runtime: string; liveness: Liveness; identity?: ProcessIdentity }
@@ -69,6 +72,8 @@ const manual = [
 export async function inspectDaemonCutover(commonDir: string, options: InspectOptions = {}): Promise<DaemonCutoverState> {
   commonDir = fs.realpathSync(commonDir)
   const state: DaemonCutoverState = { commonDir, worktrees: [], clients: [], issues: [], blocked: false, drainRecorded: false, manual: [...manual] }
+  try { state.storageGate = await openStorageGate(commonDir).status() }
+  catch (error) { state.issues.push(`Cannot inventory storage gate: ${(error as Error).message}`) }
   const currentPid = options.currentPid ?? process.pid
   const hashes = new Map<string, string>()
   // Every inventory record goes through one no-follow reader: a link or special file is an issue, never absent.
@@ -253,6 +258,10 @@ export function daemonCutoverRows(state: DaemonCutoverState): string[] {
   const owner = state.owner
   const refusal = owner?.liveness === 'unknown' ? `drain required; unknown owner: pid ${owner.pid}, port ${owner.port ?? 'unknown'}` : 'drain required'
   const rows = [`${state.blocked ? 'FAIL' : 'INFO'}  local daemon cutover: ${state.blocked ? refusal : owner?.runtime === 'daemon' && owner.liveness === 'alive' ? 'authenticated daemon' : 'recorded legacy processes drained'}; ${state.worktrees.length} worktree(s); drain record ${state.drainRecorded ? 'present' : 'not yet written'}`]
+  if (state.storageGate) {
+    const gate = state.storageGate
+    rows.push(`INFO  storage gate inventory: ${gate.state}; phase ${gate.gate?.phase ?? 'none'}; generation ${gate.gate?.generation ?? 'none'}; ${gate.registrations} registration(s); ${gate.tickets} ticket(s)${gate.refusal ? `; ${gate.refusal.reason}: ${gate.refusal.detail}` : ''}`)
+  }
   if (owner) rows.push(`INFO  local owner: pid ${owner.pid}, port ${owner.port ?? 'unknown'}, ${owner.runtime}, ${owner.liveness}${owner.release ? `, release ${owner.release}` : ''}`)
   // A used clone holds hundreds of records. Show each one that blocks or that a person resolved; count the rest by kind.
   const resolved = (c: CutoverClient) => !!c.skipped && !!c.reason?.startsWith('resolved by operator')

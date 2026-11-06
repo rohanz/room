@@ -31,3 +31,29 @@ it('keeps unknown, disabled, ambiguous and missing descriptors unverified', () =
   listing.mockReturnValue(JSON.stringify({ installed: [{ pluginId: 'room@room', version: '../outside' }] }))
   expect(installedCodexRoomContract({})).toBeUndefined()
 })
+
+it('authenticates every v2 executable and refuses omission, mutation and descriptor downgrade', async () => {
+  const { EXECUTABLE_BUNDLES } = await import('../src/hosts/codex-install.js')
+  const dir = mkdtempSync(join(tmpdir(), 'worker-contract-v2-')); dirs.push(dir)
+  const server = join(dir, 'plugins/cache/room/room/0.17.32/server'); mkdirSync(server, { recursive: true })
+  const hashes = Object.fromEntries(EXECUTABLE_BUNDLES.map(name => {
+    writeFileSync(join(server, name), name)
+    return [name, createHash('sha256').update(name).digest('hex')]
+  }))
+  const descriptor = { v: 2, release: '0.17.32', compat: CURRENT_COMPAT, workerRecordSchema: 1, bundleSha256: hashes }
+  const write = (value: unknown) => writeFileSync(join(server, 'compat.json'), JSON.stringify(value))
+  listing.mockReturnValue(JSON.stringify({ installed: [{ pluginId: 'room@room', version: '0.17.32' }] }))
+  write(descriptor)
+  expect(installedCodexRoomContract({ CODEX_HOME: dir })).toMatchObject({ release: '0.17.32' })
+  for (const name of EXECUTABLE_BUNDLES) {
+    writeFileSync(join(server, name), 'tampered')
+    expect(installedCodexRoomContract({ CODEX_HOME: dir }), name).toBeUndefined()
+    writeFileSync(join(server, name), name)
+    const omitted = { ...hashes }; delete omitted[name]
+    write({ ...descriptor, bundleSha256: omitted })
+    expect(installedCodexRoomContract({ CODEX_HOME: dir }), name).toBeUndefined()
+    write(descriptor)
+  }
+  write({ ...descriptor, v: 1, bundleSha256: hashes['room-mcp.mjs'] })
+  expect(installedCodexRoomContract({ CODEX_HOME: dir })).toBeUndefined()
+})

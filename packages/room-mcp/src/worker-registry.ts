@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, withValidatedRead } from './storage-admission.js'
 /** Async lifecycle facade. A display snapshot never grants operation authority. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -56,7 +57,7 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
 }
 
 /** A read-only view has no mutation or lease methods, even at runtime. */
-export type WorkerReader = Pick<WorkerRegistry, 'root' | 'commonDir' | 'close' | 'snapshot' | 'read' | 'list' | 'reserved'
+export type WorkerReader = Pick<WorkerRegistry, 'root' | 'commonDir' | 'close' | 'validatedRead' | 'snapshot' | 'read' | 'list' | 'reserved'
   | 'reservedByTagOrName' | 'sourceToken' | 'worktreeOwner' | 'checkoutUsers' | 'status' | 'operationInProgress'
   | 'freshness' | 'statusFromSnapshot' | 'reports' | 'exits' | 'occupancy' | 'projectable' | 'archiveOf'>
 export async function openWorkerReader(dir: string): Promise<WorkerReader> {
@@ -82,6 +83,7 @@ async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
   if (!id) return
   const room = env.ROOM_ROOM ?? ''
   if (!id.startsWith('w_')) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: update the Room plugin for the lead\'s host')
+  return withDirectoryAdmission(dir, 'admit-worker', async () => {
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)
@@ -99,6 +101,7 @@ async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
     hostSessionId }) }
   catch { throw new Error('this worker run was collected, discarded or superseded') }
   if (chain[1]?.startTime && chain[1].executable) admitted = { id, host: chain[1] }
+  })
 }
 /**
  * This clone's current worker under a participant name, as a carried-baseline source with its lead: a local
@@ -124,6 +127,7 @@ export async function ownWorkerNames(dir: string, lead: string): Promise<Set<str
 /** This clone's workers that are not retiring, as the lifecycle helpers' input (registry §1: local facts only). */
 export async function localWorkers(dir: string, keep: (record: WorkerRecord) => boolean = () => true): Promise<LocalWorker[]> {
   const registry = await openWorkerReader(dir)
+  return registry.validatedRead(async () => {
   const records = requireWorkerInventory(await registry.list())
   const workers: LocalWorker[] = []
   for (const record of records) {
@@ -132,6 +136,7 @@ export async function localWorkers(dir: string, keep: (record: WorkerRecord) => 
     if (status) workers.push(realStateInput(record, status))
   }
   return workers
+  })
 }
 
 /** A participant's carried baseline and its lead, when it is one of this clone's workers (ConflictSet's `carriedFrom`). */
@@ -168,7 +173,7 @@ export class WorkerRegistry {
     const registry = new WorkerRegistry(file, file)
     return {
       root: registry.root, commonDir: registry.commonDir,
-      close: () => registry.close(), snapshot: query => registry.snapshot(query),
+      close: () => registry.close(), validatedRead: fn => registry.validatedRead(fn), snapshot: query => registry.snapshot(query),
       read: id => registry.read(id), list: () => registry.list(), reserved: tag => registry.reserved(tag),
       reservedByTagOrName: name => registry.reservedByTagOrName(name), sourceToken: tag => registry.sourceToken(tag),
       worktreeOwner: record => registry.worktreeOwner(record), checkoutUsers: owner => registry.checkoutUsers(owner),
@@ -190,6 +195,10 @@ export class WorkerRegistry {
   newId(): string { return this.backend().newId() }
   close(): void { this.file?.close() }
   onChange(listener: (id?: string) => void): () => void { return this.backend().onChange(listener) }
+  /** Validate the complete logical display, including nested status enrichment. */
+  validatedRead<T>(fn: () => Promise<T>): Promise<T> {
+    return this.file ? withValidatedRead(this.file.commonDir, fn) : fn()
+  }
   snapshot(query?: WorkerQuery): Promise<WorkerSnapshot> { return this.store.snapshot(query) }
   private async facts(query?: WorkerQuery): Promise<AvailableWorkerSnapshot> {
     return requireWorkerEvidence(workerEvidence(await this.snapshot(query)))
@@ -222,6 +231,7 @@ export class WorkerRegistry {
       : Promise.resolve(statusOf(fact.record, fact.record.runs, fact.reports, fact.exits, () => 'unknown'))
   }
   async checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): Promise<{ record: WorkerRecord; status: WorkerStatusResult }[] | BlockedWorkerEvidence> {
+    return this.validatedRead(async () => {
     const snapshot = workerEvidence(await this.snapshot())
     if ('reason' in snapshot) return snapshot
     const users: { record: WorkerRecord; status: WorkerStatusResult }[] = []
@@ -231,13 +241,19 @@ export class WorkerRegistry {
         users.push({ record, status: await this.enrich(fact) })
     }
     return users
+
+    })
   }
   /** Enrich captured lifecycle facts without replacing their records/reports/exits with live reads. */
   async statusFromSnapshot(snapshot: WorkerSnapshot, id: string): Promise<WorkerStatusResult | undefined> {
+    return this.validatedRead(async () => {
     const fact = requireWorkerEvidence(workerEvidence(snapshot)).workers.find(fact => fact.record.id === id)
     return fact && this.enrich(fact)
+
+    })
   }
   async status(id: string): Promise<WorkerStatusResult | undefined> {
+    return this.validatedRead(async () => {
     const records = await this.facts({ workerId: id, recordOnly: true, captureLiveness: true })
     const record = records.workers.find(fact => fact.record.id === id)
     if (!record) return undefined
@@ -253,6 +269,8 @@ export class WorkerRegistry {
       snapshot = fresh
     }
     throw new Error('worker snapshot unavailable: facts changed during status enrichment')
+
+    })
   }
   async operationInProgress(id: string): Promise<boolean> {
     if (!safeId(id)) return true
@@ -273,11 +291,15 @@ export class WorkerRegistry {
     return snapshot.workers.find(fact => fact.record.id === id)?.exits ?? snapshot.orphanRuns?.[id]?.exits ?? []
   }
   async occupancy(): Promise<number> {
+    return this.validatedRead(async () => {
     let count = 0
     for (const fact of (await this.facts()).workers) if (['starting', 'running', 'unknown', 'ambiguous'].includes((await this.enrich(fact)).status)) count++
     return count
+
+    })
   }
   async projectable(lead: string, roomKey: string): Promise<{ write: { record: WorkerRecord; status: WorkerStatusResult }[]; retire: WorkerRecord[] } | BlockedWorkerEvidence> {
+    return this.validatedRead(async () => {
     const snapshot = workerEvidence(await this.snapshot())
     if ('reason' in snapshot) return snapshot
     const write: { record: WorkerRecord; status: WorkerStatusResult }[] = [], retire: WorkerRecord[] = []
@@ -289,6 +311,8 @@ export class WorkerRegistry {
       write.push({ record, status: await this.enrich(fact) })
     }
     return { write, retire }
+
+    })
   }
   async archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): Promise<RetiredWorker> { return this.backend().archiveOf(record, facts) }
   hasPendingIdleClaims(roomKey: string, sessionId: string, idleEpoch: string): boolean { return IdleClaimsJournal.open(this.commonDir).hasPendingIdleClaims(roomKey, sessionId, idleEpoch) }

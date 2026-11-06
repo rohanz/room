@@ -1,5 +1,5 @@
 {
-  "v": 1,
+  "v": 2,
   "release": "0.17.40",
   "compat": {
     "bootstrap": 1,
@@ -32,5 +32,13 @@
     }
   },
   "workerRecordSchema": 1,
-  "bundleSha256": "e11a42df74a9dcebf136bfabcd6ea25c9f1bbaf4177ef05ae9abdd0751f3f572"
+  "bundleSha256": {
+    "room-mcp.mjs": "56fc41ec9727f32082960ccbb8e35491c5b22e132d5dfff695d4d6ca3a423641",
+    "room-mcp-app.mjs": "20912350bdbc532cdcdf4c37a31831017d79a46dc6aae290e28c4cb0e2a4890a",
+    "room-daemon.mjs": "89ec40816561c2175fa91e4354764b66fd4a354bca6d3ac549b6299edc38d204",
+    "room-daemon-app.mjs": "a40db3d226a433726cd7a4ea65cf763cfa28b71b40fa3751522e7717202e1aa6",
+    "room-state.mjs": "20cd865dd84455f24e843d9b914341ade702ca5dab45ecac08908b37d68a5e58",
+    "room-state-app.mjs": "c63fa05f29576de2eeb46b38ee7ca91cffc2f751c4496dcce3c6652b8b69ef52",
+    "parse-worker.mjs": "4917110c2ffde900f3f283857445f8f4e25d0d51af1570e63997803579588faa"
+  }
 }
