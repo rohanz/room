@@ -2,7 +2,7 @@
 // and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
 //
 // Run:        npm run build:plugin   (from the repository root; paths are cwd-relative). Needs `npm ci`.
-// Overwrites: plugins/room/server/{room-mcp,room-daemon,room-state}{,-app}.mjs, parse-worker.mjs, compat.json,
+// Overwrites: plugins/room/server/{room-mcp,room-daemon,room-state}{,-app}.mjs, {parse,gate}-worker.mjs, compat.json,
 // and hooks/{private-core,windows-process-core,*-hook-codec}.mjs;
 // replaces plugins/room/server/grammars/ and (via packages/web/dist) plugins/room/web/.
 // All generated plugin assets are committed; CI checks they are current.
@@ -43,6 +43,7 @@ for (const [wrapper, application, name] of [
     define: { __ROOM_DAEMON_RELEASE__: JSON.stringify(release) } })
 }
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worker.ts'], outfile: 'plugins/room/server/parse-worker.mjs' })
+await build({ ...bundleOptions, entryPoints: ['packages/local-state/src/gate-worker.ts'], outfile: 'plugins/room/server/gate-worker.mjs' })
 
 // One builtins-only privacy policy for hooks and the relay; committed and checked with the other plugin assets.
 await build({ entryPoints: ['packages/local-state/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
@@ -88,7 +89,7 @@ const descriptorModule = await build({
 const { CURRENT_COMPAT, WORKER_RECORD_SCHEMA } = await import(`data:text/javascript;base64,${Buffer.from(descriptorModule.outputFiles[0].text).toString('base64')}`)
 const descriptor = {
   v: 2, release, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA,
-  bundleSha256: Object.fromEntries(['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs'].map(file => [file, createHash('sha256').update(fs.readFileSync(path.join('plugins/room/server', file))).digest('hex')])),
+  bundleSha256: Object.fromEntries(['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs', 'gate-worker.mjs'].map(file => [file, createHash('sha256').update(fs.readFileSync(path.join('plugins/room/server', file))).digest('hex')])),
 }
 fs.writeFileSync('plugins/room/server/compat.json', JSON.stringify(descriptor, null, 2) + '\n')
 console.log('stamped plugins/room/server/compat.json')

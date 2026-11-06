@@ -1,5 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { Worker } from 'node:worker_threads'
+import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { expect, it } from 'vitest'
@@ -71,4 +75,36 @@ it('the descriptor authenticates every executed server bundle', () => {
   expect(descriptor.v).toBe(2)
   expect(fs.readdirSync(server).filter(n => n.endsWith('.mjs')).sort()).toEqual([...EXECUTABLE_BUNDLES].sort())
   expect(verifyBundleDigests(server, descriptor)).toBe(true)
+})
+
+it('ships a self-contained gate worker that executes durable operations without host loaders', async () => {
+  const file = path.join(plugin, 'server', 'gate-worker.mjs')
+  expect(imports(file).every(dependency => dependency.specifier.startsWith('node:') && dependency.specifier !== 'node:sqlite')).toBe(true)
+  // These applications open StorageGate; the slice-2 daemon does not yet use its methods.
+  for (const name of ['room-mcp', 'room-state']) {
+    const code = fs.readFileSync(path.join(plugin, 'server', `${name}-app.mjs`), 'utf8')
+    expect(code.includes('./gate-worker.mjs'), `${name} resolves the shipped worker`).toBe(true)
+  }
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'room-bundled-gate-')))
+  fs.writeFileSync(path.join(dir, 'HEAD'), 'ref: refs/heads/main\n')
+  const worker = new Worker(file, { execArgv: [] })
+  let id = 0
+  const call = async (method: string, ...args: unknown[]) => {
+    const response = once(worker, 'message')
+    worker.postMessage({ id: ++id, commonDir: dir, options: {}, method, args })
+    const [message] = await response
+    expect(message.id).toBe(id)
+    expect(message.error).toBeUndefined()
+    return message.value
+  }
+  try {
+    const registration = await call('register', { instance: { pid: process.pid, startTime: '', executable: '', sessionId: 'bundle-test', nonce: randomUUID() }, kind: 'helper', release: 'test' })
+    const ticket = await call('admit', registration, 'preview')
+    await call('finish', ticket)
+    await call('unregister', registration)
+    expect(await call('status')).toMatchObject({ state: 'present', registrations: 0, tickets: 0 })
+  } finally {
+    await worker.terminate()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

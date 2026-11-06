@@ -7,6 +7,7 @@ import path from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createExclusive, liveness as processLiveness, withGuard, writeAtomic, type InstanceToken, type Liveness, type ProcessIdentity } from './leases.js'
 import { privateStateDirectory } from './private-state.js'
+import { callGateThread } from './gate-thread.js'
 import {
   GATE_LIMITS, STORAGE_BUILD, STORAGE_PATHS, StorageRefused,
   type AdmitOptions, type DrainProgress, type GateOwner, type GatePhase, type GateStatus, type OperationKind, type ReadValidation,
@@ -26,6 +27,7 @@ const EVIDENCE_NAMES = new Set([path.basename(STORAGE_PATHS.database), `${path.b
 const REMEDY = 'run `node <plugin>/server/room-state.mjs status --common-dir <git common dir>` for details'
 
 export interface GateOptions {
+  /** Function injection selects in-thread execution for deterministic tests only. Production uses a worker. */
   now?: () => number
   /** Injected for tests; production uses the shared identity-verified probe. */
   liveness?: (identity: ProcessIdentity) => Liveness
@@ -96,10 +98,29 @@ export function canonicalCommonDir(commonDir: string): string {
 }
 
 export function openStorageGate(commonDir: string, options: GateOptions = {}): StorageGate {
-  return new FileStorageGate(canonicalCommonDir(commonDir), options)
+  const gate = new FileStorageGate(canonicalCommonDir(commonDir), options)
+  // Functions cannot be structured-cloned. Keep the deterministic unit-test seams in this thread;
+  // callers without injected functions (including process/integration tests) always use the worker.
+  if (options.now || options.liveness) return gate
+  return {
+    commonDir: gate.commonDir,
+    register: (...args) => callGateThread(gate.commonDir, options, 'register', args),
+    admit: (...args) => callGateThread(gate.commonDir, options, 'admit', args),
+    finish: (...args) => callGateThread(gate.commonDir, options, 'finish', args),
+    unregister: (...args) => callGateThread(gate.commonDir, options, 'unregister', args),
+    drain: (...args) => callGateThread(gate.commonDir, options, 'drain', args),
+    resolveDead: (...args) => callGateThread(gate.commonDir, options, 'resolveDead', args),
+    takeOver: (...args) => callGateThread(gate.commonDir, options, 'takeOver', args),
+    reopen: (...args) => callGateThread(gate.commonDir, options, 'reopen', args),
+    status: (...args) => callGateThread(gate.commonDir, options, 'status', args),
+    listTickets: (...args) => callGateThread(gate.commonDir, options, 'listTickets', args),
+    // The read-only hot path remains one cached lstat; it never syncs or probes processes.
+    observe: () => gate.observe(),
+  }
 }
 
-class FileStorageGate implements StorageGate {
+/** Internal implementation shared by the worker and function-injected tests. */
+export class FileStorageGate implements StorageGate {
   private readonly now: () => number
   private readonly alive: (identity: ProcessIdentity) => Liveness
   private readonly gateFile: string

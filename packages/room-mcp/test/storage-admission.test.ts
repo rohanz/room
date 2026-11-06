@@ -126,12 +126,16 @@ describe('whole-operation storage admission', () => {
 })
 
 it('cleans a registration that settles after the startup deadline and retries the next attempt', async () => {
-  const { common } = fixture(), gate = openStorageGate(common), delayed = deferred()
+  const { common } = fixture(), gate = openStorageGate(common), delayed = deferred(), entered = deferred(), cleaned = deferred()
   const gates = await import('@room/local-state/gate')
-  const register = gate.register.bind(gate), unregister = vi.spyOn(gate, 'unregister')
+  const register = gate.register.bind(gate), release = gate.unregister.bind(gate)
+  const unregister = vi.spyOn(gate, 'unregister').mockImplementation(async registration => {
+    await release(registration)
+    cleaned.resolve()
+  })
   let attempts = 0
   vi.spyOn(gate, 'register').mockImplementation(async input => {
-    if (++attempts === 1) await delayed.promise
+    if (++attempts === 1) { entered.resolve(); await delayed.promise }
     return register(input)
   })
   vi.spyOn(gates, 'openStorageGate').mockReturnValue(gate)
@@ -140,10 +144,11 @@ it('cleans a registration that settles after the startup deadline and retries th
   try {
     const first = storageRegistration(common)
     const refused = expect(first).rejects.toMatchObject({ reason: 'unavailable', detail: 'storage startup check exceeded 10 s' })
+    await entered.promise
     await vi.advanceTimersByTimeAsync(GATE_LIMITS.startupMs + 1)
     await refused
     delayed.resolve()
-    await vi.advanceTimersByTimeAsync(0)
+    await cleaned.promise // the real worker I/O must settle; advancing fake timers cannot flush it
     expect(unregister).toHaveBeenCalledTimes(1)
     expect((await gate.status()).registrations).toBe(0)
     await storageRegistration(common)

@@ -91,7 +91,7 @@ export function createCodexInstall(env: NodeJS.ProcessEnv = process.env, io: Ins
 }
 
 /** v1 pins retain their historical single-file layout; v2 must cover every emitted executable. */
-export const EXECUTABLE_BUNDLES = ['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs'] as const
+export const EXECUTABLE_BUNDLES = ['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs', 'gate-worker.mjs'] as const
 export function verifyBundleDigests(root: string, descriptor: { v: number; bundleSha256: unknown }): boolean {
   const digest = (name: string) => {
     const file = path.join(root, name)
