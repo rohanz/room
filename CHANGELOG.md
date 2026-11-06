@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.36
 
 - **Worker lifecycle storage sits behind one asynchronous interface** (slice 1 of docs/superpowers/plans/2026-11-06-sqlite-state.md). Every reader and writer of worker records, runs, reports, exits and collection state now goes through a typed async facade with named lifecycle commands instead of synchronous file reads and edit callbacks; the files on disk and their rules are unchanged, and costs stay at baseline (docs/archive/reports/2026-11-06-lifecycle-baseline.md). This prepares the move to SQLite.
 - **A damaged worker record is never treated as missing.** Inventories now report malformed or quarantined records as blockers alongside the valid ones, and reading never moves a file. While a record is blocked Room keeps the checkout, the projected view, presence and team coordination, refuses spawn and resume when capacity can't be counted, does not replay a discard or stop processes in a shared checkout, and does not advance a session's message cursor.

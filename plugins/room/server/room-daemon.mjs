@@ -18099,7 +18099,7 @@ Connection: close\r
 }
 
 // packages/relay/src/daemon.ts
-var release = true ? "0.17.35" : "development";
+var release = true ? "0.17.36" : "development";
 var LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
 function discovery(commonDir) {
   const file = relayFile(commonDir);
