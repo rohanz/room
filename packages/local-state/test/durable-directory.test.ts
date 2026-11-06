@@ -181,13 +181,18 @@ it.runIf(process.platform === 'win32').each(['room', 'config'])('racing Windows 
   }
 }, 90_000) // two bounded ACL inspections after children finish, in addition to cold native writer startup
 
-it.runIf(process.platform === 'win32')('surfaces Windows create denial below an existing root', () => {
+it.runIf(process.platform === 'win32')('surfaces Windows create denial below an existing root', context => {
   const dir = setup(), parent = path.join(dir, 'denied')
   fs.mkdirSync(parent)
   const { user } = windowsAcl(parent)
   // WD creates files; AD creates subdirectories. Deny only this parent so cleanup can remove the ACE.
   execFileSync('icacls', [parent, '/deny', `*${user}:(WD,AD)`], { stdio: 'pipe' })
   try {
+    // A token with backup/restore privileges enabled (MSYS/Git Bash enables them for administrators) bypasses the
+    // deny entry, so the denial cannot be observed there; the default-shell windows-durable-files job covers it.
+    let bypassed = false
+    try { fs.mkdirSync(path.join(parent, 'probe')); bypassed = true } catch { /* denied, as required */ }
+    if (bypassed) context.skip('this process bypasses directory ACLs (backup/restore privileges enabled)')
     expect(() => writeAtomic(path.join(parent, 'new', 'nested', 'record.json'), {})).toThrow()
     expect(fs.existsSync(path.join(parent, 'new'))).toBe(false)
   } finally { execFileSync('icacls', [parent, '/remove:d', `*${user}`], { stdio: 'pipe' }) }

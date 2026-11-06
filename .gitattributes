@@ -1,2 +1,5 @@
 # Generated editor snippets contain intentional indentation in JavaScript template literals.
 plugins/room/web/assets/*.js -whitespace
+# Server bundles are authenticated by sha256 in compat.json: never convert their line endings on checkout
+# (Git for Windows defaults to core.autocrlf=true, which would make every digest mismatch).
+plugins/room/server/*.mjs -text

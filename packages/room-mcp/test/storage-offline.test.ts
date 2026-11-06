@@ -123,7 +123,7 @@ it('refuses unreadable registered Room worktrees instead of omitting them from i
   execFileSync('git', ['-C', root, 'worktree', 'add', '-qb', 'room/old', worker])
   const original = fs.realpathSync
   vi.spyOn(fs, 'realpathSync').mockImplementation(((file: fs.PathLike) => {
-    if (String(file).endsWith('/.room/workers/old')) throw Object.assign(new Error('inventory I/O failure'), { code: 'EACCES' })
+    if (String(file).replaceAll('\\', '/').endsWith('/.room/workers/old')) throw Object.assign(new Error('inventory I/O failure'), { code: 'EACCES' })
     return original(file)
   }) as typeof fs.realpathSync)
   expect(() => discoverLegacyWorktrees(common)).toThrow('inventory is incomplete')

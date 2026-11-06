@@ -177,6 +177,8 @@ it('validates a complete nested display once without registering or creating tic
 })
 
 it('keeps an actual preview helper visible to drain after its parent call returns', async () => {
+  // Preview helpers are POSIX process groups; Windows previews run without lock helpers or tracked groups.
+  if (process.platform === 'win32') return
   const { common } = fixture()
   const child = spawn('sh', ['-c', previewProcessGate, 'sh', process.execPath, '-e', 'process.stdout.write("effect\\n"); setInterval(() => {}, 1000)'], { detached: true, stdio: ['pipe', 'pipe', 'ignore'] })
   await once(child, 'spawn')

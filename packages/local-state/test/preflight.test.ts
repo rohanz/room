@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import { preflight, preflightDiagnostic } from '../src/preflight.js'
 import { primePrivateState } from '../src/private-state.js'
@@ -70,7 +71,7 @@ it('refuses a missing DatabaseSync API', async () => {
 
 it('never opens WAL on an unqualified filesystem: reports unqualified and writes nothing', async () => {
   const dir = commonDir()
-  const network: FilesystemReaders = { platform: 'linux', realpath: file => file, statfsType: () => 0x6969, macMounts: () => '',
+  const network: FilesystemReaders = { platform: 'linux', realpath: () => '/srv/repo/.git', statfsType: () => 0x6969, macMounts: () => '',
     linuxMountinfo: () => `36 25 0:32 / / rw - nfs4 server:/export rw\n`, windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {} }
   const result = await preflight('offline', { commonDir: dir, filesystem: network })
   expect(result).toMatchObject({ ok: true, storage: 'unqualified', evidence: { filesystem: { kind: 'network', journal: 'refuse' } } })
@@ -89,7 +90,7 @@ it('keeps node:sqlite\'s ExperimentalWarning off stderr while other warnings sti
     process.emitWarning('unrelated warning', 'ExperimentalWarning');
     await new Promise(resolve => setImmediate(resolve));
     process.stdout.write(JSON.stringify({ ok: result.ok }));`
-  const child = spawnSync(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 30_000 })
+  const child = spawnSync(process.execPath, ['--import', pathToFileURL(require.resolve('tsx')).href, '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 30_000 })
   expect(child.status).toBe(0)
   expect(JSON.parse(child.stdout)).toEqual({ ok: true })
   expect(child.stderr).not.toMatch(/SQLite is an experimental feature/i)
@@ -98,7 +99,7 @@ it('keeps node:sqlite\'s ExperimentalWarning off stderr while other warnings sti
 
 it('enforces the deadline while filesystem detection is still waiting on the OS', async () => {
   const dir = commonDir()
-  const hanging: FilesystemReaders = { platform: 'linux', realpath: file => file, statfsType: () => undefined, macMounts: () => '',
+  const hanging: FilesystemReaders = { platform: 'linux', realpath: () => '/srv/repo/.git', statfsType: () => undefined, macMounts: () => '',
     linuxMountinfo: () => new Promise<string>(() => {}), windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {} }
   const started = performance.now()
   const result = await preflight('offline', { commonDir: dir, filesystem: hanging, timeoutMs: 100 })
@@ -122,13 +123,13 @@ it('ends a hung SQLite import with the typed timeout, not an unsettled-await exi
     const { preflight } = await import(${JSON.stringify(new URL('../src/preflight.ts', import.meta.url).href)});
     const result = await preflight('mcp', { timeoutMs: 200, importSqlite: '() => new Promise(() => {})' });
     process.stdout.write(JSON.stringify({ failure: result.failure }));`
-  const child = spawnSync(process.execPath, ['--import', require.resolve('tsx'), '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 30_000 })
+  const child = spawnSync(process.execPath, ['--import', pathToFileURL(require.resolve('tsx')).href, '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 30_000 })
   expect(child.status).toBe(0)
   expect(JSON.parse(child.stdout)).toEqual({ failure: 'timeout' })
 }, 60_000)
 
 // Explicit ext4 input exercises probe control flow, not host filesystem qualification.
-const local: FilesystemReaders = { platform: 'linux', realpath: file => file, statfsType: () => 0xef53,
+const local: FilesystemReaders = { platform: 'linux', realpath: () => '/srv/repo/.git', statfsType: () => 0xef53,
   linuxMountinfo: () => '36 25 0:32 / / rw - ext4 /dev/test rw', macMounts: () => '',
   windowsDriveType: () => '', windowsVolumeInfo: () => '', home: () => '/home/u', env: {} }
 

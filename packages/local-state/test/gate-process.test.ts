@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { afterEach, expect, it } from 'vitest'
 import { closeStorageGates, openStorageGate } from '../src/gate.js'
@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url)
 const roots: string[] = [], children: ChildProcess[] = []
 afterEach(async () => {
   await closeStorageGates()
-  for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { child.kill('SIGCONT'); child.kill('SIGKILL') }
+  for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { if (process.platform !== 'win32') child.kill('SIGCONT'); child.kill('SIGKILL') }
   for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 function commonDir(): string {
@@ -26,7 +26,7 @@ function commonDir(): string {
   return fs.realpathSync.native(dir)
 }
 function child(...args: string[]): { process: ChildProcess; next: () => Promise<any>; exited: Promise<number | null> } {
-  const proc = spawn(process.execPath, ['--import', require.resolve('tsx'), fileURLToPath(new URL('./gate-child.ts', import.meta.url)), ...args],
+  const proc = spawn(process.execPath, ['--import', pathToFileURL(require.resolve('tsx')).href, fileURLToPath(new URL('./gate-child.ts', import.meta.url)), ...args],
     { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
   children.push(proc)
   let stderr = ''
