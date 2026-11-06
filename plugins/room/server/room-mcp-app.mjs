@@ -26712,6 +26712,32 @@ var init_legacy_import = __esm({
   }
 });
 
+// packages/room-mcp/src/process-lifecycle.ts
+function holdProcessLifecycle() {
+  holders++;
+  ended = false;
+  let released = false;
+  return () => {
+    if (released) return false;
+    released = true;
+    holders--;
+    if (holders > 0) return false;
+    ended = true;
+    return true;
+  };
+}
+function processLifecycleEnded() {
+  return ended;
+}
+var holders, ended;
+var init_process_lifecycle = __esm({
+  "packages/room-mcp/src/process-lifecycle.ts"() {
+    "use strict";
+    holders = 0;
+    ended = false;
+  }
+});
+
 // packages/room-mcp/src/storage-admission.ts
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes as randomBytes5 } from "node:crypto";
@@ -26780,6 +26806,7 @@ async function storageRegistration(commonDir2) {
   const gate = storageGate(commonDir2), common = gate.commonDir;
   let pending2 = registrations.get(common);
   if (pending2) return pending2;
+  if (processLifecycleEnded()) throw lifecycleEnded();
   let expired = false;
   const deadline = performance.now() + GATE_LIMITS.startupMs;
   const timedOut = () => expired || performance.now() >= deadline;
@@ -26790,6 +26817,7 @@ async function storageRegistration(commonDir2) {
     if (timedOut()) throw new StorageRefused("unavailable", "storage startup check exceeded 10 s");
     const status = await gate.status();
     const preRegistryImport = status.gate?.preRegistryImport ?? (preRegistryImportRequired(common) ? "required" : "not-needed");
+    if (processLifecycleEnded()) throw lifecycleEnded();
     const registration = await gate.register({ instance: storageInstance(), kind: "mcp", release: plugin_default.version, preRegistryImport });
     try {
       if (timedOut()) throw new StorageRefused("unavailable", "storage startup check exceeded 10 s");
@@ -26836,9 +26864,11 @@ function unregisterDraining() {
   return drainingSweep;
 }
 async function admitTracked(common, kind, options) {
+  if (processLifecycleEnded()) throw lifecycleEnded();
   settleOutstanding(common, 1);
   try {
     const { gate, registration } = await storageRegistration(common);
+    if (processLifecycleEnded()) throw lifecycleEnded();
     return { gate, ticket: await gate.admit(registration, kind, options) };
   } catch (error2) {
     settleOutstanding(common, -1);
@@ -26989,7 +27019,7 @@ async function admitStorageHelper(pid) {
     await finishAdmission(gate, ticket);
   };
 }
-var registrations, startups, ambient, reads, gates, drainingSweep, drainRequested, drainWatch, outstanding, settleOutstanding;
+var lifecycleEnded, registrations, startups, ambient, reads, gates, drainingSweep, drainRequested, drainWatch, outstanding, settleOutstanding;
 var init_storage_admission = __esm({
   "packages/room-mcp/src/storage-admission.ts"() {
     "use strict";
@@ -26999,6 +27029,8 @@ var init_storage_admission = __esm({
     init_protocol();
     init_legacy_import();
     init_plugin();
+    init_process_lifecycle();
+    lifecycleEnded = () => new StorageRefused("unavailable", "this Room MCP is shutting down; no new storage admission");
     registrations = /* @__PURE__ */ new Map();
     startups = /* @__PURE__ */ new Set();
     ambient = new AsyncLocalStorage();
@@ -39977,10 +40009,10 @@ var init_timing = __esm({
       begin(name) {
         const start = this.now();
         this.activePhases.add(name);
-        let ended = false;
+        let ended2 = false;
         return () => {
-          if (ended) return;
-          ended = true;
+          if (ended2) return;
+          ended2 = true;
           this.activePhases.delete(name);
           this.add(name, this.now() - start);
         };
@@ -40115,18 +40147,18 @@ async function projectWorkers(s, registry2, lead, role, origin, active = () => t
     s.room.doc.transact(() => {
       for (const { record: record2, status } of write2) {
         const run3 = status.run;
-        const ended = ["done", "failed", "stopped"].includes(status.status);
+        const ended2 = ["done", "failed", "stopped"].includes(status.status);
         const ownsName = s.room.workerOwnsName(record2.id, record2.name);
         const logFile = path45.join(s.dir, ".room", "workers", `${record2.tag}.log`);
-        if (ended && ownsName && s.daemon.fence === fence && run3?.mode === "resume" && run3.promptMsgIds.length && record2.hostSessionId && resumeAccepted(logFile, record2.host, record2.hostSessionId, run3.logStart, runLogIdentity(record2, run3))) {
+        if (ended2 && ownsName && s.daemon.fence === fence && run3?.mode === "resume" && run3.promptMsgIds.length && record2.hostSessionId && resumeAccepted(logFile, record2.host, record2.hostSessionId, run3.logStart, runLogIdentity(record2, run3))) {
           const retained = run3.promptMsgIds.filter((id3) => s.room.message(id3) || s.room.outcomes.has(id3));
           s.room.markSeen(record2.name, retained, { s: record2.hostSessionId, via: "prompt" });
         }
-        if (ended && ownsName) s.room.pruneSeen(
+        if (ended2 && ownsName) s.room.pruneSeen(
           record2.name,
           () => s.daemon.fence === fence && s.room.workerOwnsName(record2.id, record2.name)
         );
-        const missing = ended && run3 && retainedSessionMissing(record2, run3, logFile);
+        const missing = ended2 && run3 && retainedSessionMissing(record2, run3, logFile);
         const shown = missing ? { ...status, note: `its retained conversation ${record2.hostSessionId} no longer exists; the message stays owed` } : status;
         const view = workerView(record2, shown, fence);
         if (JSON.stringify(s.room.workerViews.get(record2.id)) !== JSON.stringify(view)) s.room.workerViews.set(record2.id, view);
@@ -41603,11 +41635,11 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     log: options.log,
     onChange: (fence) => {
       if (!attachPublication || stopping) return;
-      const ended = lease.state === "ended";
+      const ended2 = lease.state === "ended";
       publicationTransition = publicationTransition.then(async () => {
         if (stopping) return;
         if (!fence) {
-          if (!ended) {
+          if (!ended2) {
             if (daemon && lease.epoch !== void 0) withdrawFormerPublisher(daemon.roomDoc, name, String(lease.epoch), "another session");
             policyStore.setPublisher(false);
           }
@@ -46482,7 +46514,7 @@ async function runTrackedProcess(file, args2, options) {
       };
       const onAbort = () => stop(new PreviewCancelled());
       let markEnded;
-      const ended = new Promise((done) => {
+      const ended2 = new Promise((done) => {
         markEnded = done;
       });
       const settle = (finish) => {
@@ -46551,7 +46583,7 @@ async function runTrackedProcess(file, args2, options) {
             if (termAt !== void 0 && Date.now() - termAt >= KILL_AFTER_MS) signalGroup("SIGKILL");
             await new Promise((done) => setTimeout(done, 25));
           }
-          await Promise.race([closed, ended]);
+          await Promise.race([closed, ended2]);
           settle(() => failed ? fail() : resolve6({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped }));
         })().catch((error2) => settle(() => reject(error2)));
       });
@@ -49232,10 +49264,10 @@ var init_worker_file_store = __esm({
           await this.ensureGeneration();
           const status = await storageGate(this.commonDir).status();
           if (legacyImportRequired(this.commonDir, status.legacyImport, status.gate)) return [];
-          const ended = (record2) => record2.phase === "retired" || record2.phase === "abandoned";
-          const borrowers = (records2) => new Set(records2.filter((record2) => !ended(record2)).flatMap((record2) => [record2.sharedWith, this.#worktreeOwner(record2)?.id]).filter(Boolean));
+          const ended2 = (record2) => record2.phase === "retired" || record2.phase === "abandoned";
+          const borrowers = (records2) => new Set(records2.filter((record2) => !ended2(record2)).flatMap((record2) => [record2.sharedWith, this.#worktreeOwner(record2)?.id]).filter(Boolean));
           const expiredAt = (record2, borrowed) => {
-            if (!ended(record2) || borrowed.has(record2.id)) return void 0;
+            if (!ended2(record2) || borrowed.has(record2.id)) return void 0;
             if (record2.keptWorktree && fs59.existsSync(record2.keptWorktree)) return void 0;
             let at = record2.phase === "retired" ? record2.archive?.retiredAt : void 0;
             if (at === void 0) try {
@@ -49930,20 +49962,18 @@ import fs61 from "node:fs";
 import path60 from "node:path";
 import { randomBytes as randomBytes9 } from "node:crypto";
 function beginWorkerRegistries() {
-  holders++;
-  let ended = false, released = false;
+  const release = holdProcessLifecycle();
+  let ended2 = false;
   const lease = {
     get ended() {
-      return ended;
+      return ended2;
     },
     fence() {
-      ended = true;
+      ended2 = true;
     },
     async end() {
-      ended = true;
-      if (released) return;
-      released = true;
-      if (--holders === 0) await shutdownWorkerRegistries();
+      ended2 = true;
+      if (release()) await shutdownWorkerRegistries();
     },
     run: (fn) => leaseScope.run(lease, fn)
   };
@@ -49981,7 +50011,7 @@ async function shutdownWorkerRegistries() {
 }
 function registryForDir(dir, sessionId) {
   const lease = leaseScope.getStore();
-  if (shuttingDown || lease?.ended) return Promise.reject(shutdownRefusal());
+  if (shuttingDown || lease?.ended || processLifecycleEnded()) return Promise.reject(shutdownRefusal());
   const call = openRegistry(dir, sessionId, epoch, lease);
   const tracked = call.catch(() => {
   }).finally(() => calls.delete(tracked));
@@ -49990,7 +50020,7 @@ function registryForDir(dir, sessionId) {
 }
 async function openRegistry(dir, sessionId, started, lease) {
   const common = await gitCommonDir(dir);
-  if (epoch !== started || lease?.ended) throw shutdownRefusal();
+  if (epoch !== started || lease?.ended || processLifecycleEnded()) throw shutdownRefusal();
   if (!fs61.existsSync(path60.join(common, "HEAD"))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`);
   let pending2 = registries.get(common);
   if (!pending2) {
@@ -50013,7 +50043,7 @@ async function openRegistry(dir, sessionId, started, lease) {
     };
     const opened = WorkerRegistry.open(common, { identity: identity4, watch: !process.env.VITEST }).then((registry2) => {
       live.add(registry2);
-      if (epoch !== started || lease?.ended) {
+      if (epoch !== started || lease?.ended || processLifecycleEnded()) {
         void retire(registry2);
         throw shutdownRefusal();
       }
@@ -50135,12 +50165,13 @@ async function workerCarried(dir, env = process.env) {
   if (!id3 || !safeId(id3)) return void 0;
   return (await openWorkerReader(dir)).read(id3);
 }
-var registries, MAX_PROCESS_REGISTRIES, epoch, shuttingDown, calls, live, retiring, shutdownRefusal, holders, leaseScope, admitted, WorkerRegistry;
+var registries, MAX_PROCESS_REGISTRIES, epoch, shuttingDown, calls, live, retiring, shutdownRefusal, leaseScope, admitted, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
     init_storage_admission();
     init_protocol();
+    init_process_lifecycle();
     init_src4();
     init_baseline();
     init_worker_file_store();
@@ -50158,7 +50189,6 @@ var init_worker_registry = __esm({
     live = /* @__PURE__ */ new Set();
     retiring = /* @__PURE__ */ new Map();
     shutdownRefusal = () => new StorageRefused("unavailable", "this Room MCP is shutting down; no worker registry opens");
-    holders = 0;
     leaseScope = new AsyncLocalStorage5();
     WorkerRegistry = class _WorkerRegistry {
       constructor(store, file) {
@@ -65100,8 +65130,8 @@ ${lines2.join("\n")}` };
       const onBus = () => {
         if (finished) return;
         const pending2 = take();
-        if (pending2 instanceof Promise) void pending2.then((ended) => {
-          if (ended) finish(ended);
+        if (pending2 instanceof Promise) void pending2.then((ended2) => {
+          if (ended2) finish(ended2);
         }).catch((error2) => state.log(`wait message status unavailable: ${String(error2)}`));
         else if (pending2) finish(pending2);
       };
