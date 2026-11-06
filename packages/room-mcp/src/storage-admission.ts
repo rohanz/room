@@ -163,7 +163,12 @@ async function admitTracked(common: string, kind: OperationKind, options?: Admit
   try {
     const { gate, registration } = await storageRegistration(common)
     return { gate, ticket: await gate.admit(registration, kind, options) }
-  } catch (error) { settleOutstanding(common, -1); throw error }
+  } catch (error) {
+    settleOutstanding(common, -1)
+    // A refusal during maintenance may have held off the sweep: acknowledge now, as a finished admission does.
+    if (error instanceof StorageRefused && error.reason === 'maintenance' && !outstanding.has(common)) void unregisterDraining().catch(() => {})
+    throw error
+  }
 }
 /**
  * Acknowledge by unregistering, unless an admission started meanwhile. The count is rechecked and the cache entry

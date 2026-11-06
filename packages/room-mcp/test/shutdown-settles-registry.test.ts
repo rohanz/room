@@ -105,8 +105,9 @@ it('refuses opens during shutdown and an open that began before it, even one sti
   const late = registryForDir(dir) // resolving the common dir through Git when shutdown begins
   const shutdown = shutdownWorkerRegistries()
   const during = registryForDir(dir) // made while the shutdown runs
-  await expect(late).rejects.toMatchObject({ reason: 'unavailable' })
-  await expect(during).rejects.toMatchObject({ reason: 'unavailable' })
+  const [lateResult, duringResult] = await Promise.allSettled([late, during])
+  expect(lateResult).toMatchObject({ status: 'rejected', reason: { reason: 'unavailable' } })
+  expect(duringResult).toMatchObject({ status: 'rejected', reason: { reason: 'unavailable' } })
   await shutdown
   await closeStorageAdmissions()
   // Neither left a registration or a watching registry behind.
