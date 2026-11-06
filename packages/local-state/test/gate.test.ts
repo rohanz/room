@@ -287,3 +287,15 @@ describe('observation cost', () => {
     for (const spy of calls) spy.mockRestore()
   })
 })
+
+describe('pre-registry import decision', () => {
+  it('records the initializer\'s decision once; later registrations cannot change it', async () => {
+    const dir = commonDir(), gate = openStorageGate(dir, world())
+    await gate.register({ instance: token(), kind: 'mcp', release: 'x', preRegistryImport: 'not-needed' })
+    await gate.register({ instance: token(), kind: 'mcp', release: 'x', preRegistryImport: 'required' })
+    expect(gateRecord(dir).preRegistryImport).toBe('not-needed')
+    const other = commonDir(), second = openStorageGate(other, world())
+    await second.register({ instance: token(), kind: 'mcp', release: 'x' })
+    expect(gateRecord(other).preRegistryImport).toBe('required')
+  })
+})

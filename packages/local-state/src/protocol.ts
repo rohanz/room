@@ -106,6 +106,12 @@ export interface StorageGateRecord {
   importCheckpoint?: string
   /** Daemon storage-close acknowledgement for this generation (slice 3+; absent in slice 2: no SQL is open). */
   closed?: StorageCloseAck
+  /**
+   * Whether this clone needed a pre-registry (0.16) import when its gate was first initialized, decided once by the
+   * initializer's legacy-evidence check, like the startup migration it replaces (decided, not in spec). Consulted only
+   * while migration.json is absent; `done` in migration.json always wins. Absent field = `required` (conservative).
+   */
+  preRegistryImport?: 'required' | 'not-needed'
   updatedAt: number
 }
 
@@ -187,6 +193,8 @@ export interface RegisterInput {
   release: string
   /** Defaults to STORAGE_BUILD. Tests use it to exercise build-range refusals. */
   build?: number
+  /** Recorded only if this call initializes the gate; ignored otherwise. Default `required`. */
+  preRegistryImport?: 'required' | 'not-needed'
 }
 
 export interface AdmitOptions {

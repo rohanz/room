@@ -184,11 +184,11 @@ class FileStorageGate implements StorageGate {
     return next
   }
 
-  private initialize(): StorageGateRecord {
+  private initialize(preRegistryImport: 'required' | 'not-needed'): StorageGateRecord {
     if (this.activationEvidence()) throw new StorageRefused('unavailable', 'storage activation evidence exists without a storage gate', 'preserve room/state.sqlite and the activation marker; repair the gate with the offline command')
     privateStateDirectory(path.join(this.commonDir, 'room'))
     const gate: StorageGateRecord = { v: 1, cloneId: randomBytes(16).toString('hex'), commonDir: this.commonDir, generation: 1,
-      phase: 'legacy', minReader: 1, minWriter: 1, updatedAt: this.now() }
+      phase: 'legacy', minReader: 1, minWriter: 1, preRegistryImport, updatedAt: this.now() }
     // The guard serializes initializers; exclusive creation also refuses to overwrite a successor written by
     // any process that bypassed it.
     if (!createExclusive(this.gateFile, gate)) return this.requireGate()
@@ -221,7 +221,7 @@ class FileStorageGate implements StorageGate {
     if (!KINDS.includes(input.kind)) throw new StorageRefused('unavailable', 'invalid registration kind')
     const build = input.build ?? STORAGE_BUILD
     const attempt = () => this.guarded(() => {
-      const gate = this.readGate() ?? this.initialize()
+      const gate = this.readGate() ?? this.initialize(input.preRegistryImport ?? 'required')
       this.compatibility(gate, build)
       const existing = this.readRegistration(input.instance.nonce)
       if (existing) return existing

@@ -1,4 +1,4 @@
-import { currentAdmission, storageGate, storageInstance, withoutAdmission, withAdmission, withValidatedRead, assertLegacyReady } from './storage-admission.js'
+import { currentAdmission, requireAdmission, storageGate, storageInstance, withoutAdmission, withAdmission, withValidatedRead, assertLegacyReady } from './storage-admission.js'
 import { StorageRefused } from '@room/local-state/protocol'
 import { retainedSessionMissing } from './hosts/lifecycle.js'
 /** The local source of truth for worker operations. No replicated document grants local authority. */
@@ -218,8 +218,7 @@ export class FileWorkerStore {
 
   /** Reopen disposable file caches/watchers before a successor generation can use them. */
   private async ensureGeneration(): Promise<void> {
-    const ticket = currentAdmission(this.commonDir)
-    if (!ticket) throw new StorageRefused('unavailable', 'worker effects require an admission ticket')
+    const ticket = await requireAdmission(this.commonDir)
     if (this.readOnly) throw new StorageRefused('unavailable', 'display reader cannot authorize worker effects')
     if (this.reopening && this.reopeningTicket !== ticket.id) return this.reopening
     if (this.generation === ticket.generation) return
