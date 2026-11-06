@@ -244,6 +244,16 @@ describe('lazy directory admission', () => {
     } finally { await m.close() }
   })
 
+  it('treats first initialization (absent gate 0 -> 1) as the same epoch, not maintenance', async () => {
+    const { common, dir } = fixture(), effect = vi.fn()
+    expect(fs.existsSync(path.join(common, 'room', 'storage-gate.json'))).toBe(false)
+    await withDirectoryAdmission(dir, 'spawn', async () => {
+      await withValidatedRead(common, async () => 'facts before the gate exists')
+      await withAdmission(common, 'spawn', async ticket => { expect(ticket.generation).toBe(1); effect() })
+    })
+    expect(effect).toHaveBeenCalledTimes(1)
+  })
+
   it('finishes an acquired ticket even when the tool throws', async () => {
     const { common, dir } = fixture(), gate = storageGate(common)
     const finish = vi.spyOn(gate, 'finish')

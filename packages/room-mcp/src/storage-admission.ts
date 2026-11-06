@@ -54,6 +54,12 @@ export function currentAdmission(commonDir: string): Ticket | undefined {
   return context?.active && context.ticket && context.commonDir === storageGate(commonDir).commonDir ? context.ticket : undefined
 }
 
+/**
+ * Generation `b` continues an operation that read under `a` only if no maintenance ran in between. Initialization
+ * moves an absent gate (observed as 0) to 1 without any maintenance; every drain moves from >= 1 to >= 2.
+ */
+const sameEpoch = (a: number, b: number) => a === b || a === 0 && b === 1
+
 /** Acquire the enclosing lazy scope's ticket for this clone, once. */
 async function acquire(context: Admission, commonDir: string): Promise<Ticket> {
   const common = storageGate(commonDir).commonDir
@@ -63,7 +69,7 @@ async function acquire(context: Admission, commonDir: string): Promise<Ticket> {
   context.acquiring = (async () => {
     const { gate, registration } = await storageRegistration(common)
     const ticket = await gate.admit(registration, context.kind)
-    if (context.observed !== undefined && context.observed !== ticket.generation) {
+    if (context.observed !== undefined && !sameEpoch(context.observed, ticket.generation)) {
       await gate.finish(ticket)
       throw new StorageRefused('maintenance', 'storage changed during this operation; nothing was changed, retry it')
     }
@@ -170,7 +176,7 @@ export async function withValidatedRead<T>(commonDir: string, fn: () => Promise<
   const scope = ambient.getStore()
   const remember = (generation: number) => {
     if (!scope?.active || scope.ticket || scope.commonDir && scope.commonDir !== gate.commonDir) return
-    if (scope.observed !== undefined && scope.observed !== generation)
+    if (scope.observed !== undefined && !sameEpoch(scope.observed, generation))
       throw new StorageRefused('maintenance', 'storage changed during this operation; nothing was changed, retry it')
     scope.commonDir = gate.commonDir
     scope.observed = generation
@@ -226,8 +232,9 @@ export async function admitStorageHelper(pid: number): Promise<(() => Promise<vo
   const common = await scopeCommonDir(context)
   if (!common) return undefined
   const parent = await acquire(context, common)
-  const { probeProcessNow } = await import('@room/local-state/process')
-  const identity = probeProcessNow(pid)
+  // Never block the MCP's event loop on `ps` while a preview runs: read the identity asynchronously.
+  const { probeProcessAsync } = await import('@room/local-state/process')
+  const identity = await probeProcessAsync(pid)
   if (!identity?.startTime || !identity.executable) throw new StorageRefused('unavailable', 'preview helper identity is unreadable')
   const gate = storageGate(common)
   const instance = { pid, startTime: identity.startTime, executable: identity.executable,

@@ -16,7 +16,7 @@ import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Ru
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput } from './worker-status.js'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch, type CleanupRegistry } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
 import { WorkerEvidenceBlocked, requireWorkerEvidence, workerEvidence, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
@@ -382,6 +382,24 @@ export class FileWorkerStore {
     return requireWorkerInventory(this.#list()).find(record => record.name === tagOrName && this.#reserved(record.tag)?.id === record.id)
   }
   /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
+  /** This store's own facts for cleanup rechecks during its replays (never a second store over the same files). */
+  private cleanupRegistry(): CleanupRegistry {
+    return {
+      read: async id => this.#read(id),
+      list: async () => this.#list(),
+      worktreeOwner: async record => this.#worktreeOwner(record),
+      checkoutUsers: async owner => {
+        const inventory = this.#list()
+        if (inventory.blockers.length) return { reason: 'blocked', blockers: inventory.blockers }
+        return inventory.records.flatMap(record => {
+          if (record.id === owner.id || ['retiring', 'retired', 'abandoned'].includes(record.phase) || path.resolve(record.dir) !== path.resolve(owner.dir)) return []
+          const status = this.#status(record.id)
+          return status ? [{ record, status }] : []
+        })
+      },
+    }
+  }
+
   #worktreeOwner(record: WorkerRecord): WorkerRecord | undefined {
     if (record.sharedWith) return this.#read(record.sharedWith)
     if (path.basename(record.dir) === record.tag && record.branch === `room/${record.tag}`) return undefined
@@ -1221,7 +1239,7 @@ export class FileWorkerStore {
     }
     if (!record.discard!.steps.cleanup) {
       if (owned) {
-        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers })) return
+        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers, registry: this.cleanupRegistry() })) return
       } else if (!borrowed) {
         await pruneMissingWorkerWorktree(leadDir, own)
         cleanupWorkerLogs(leadDir, own)
