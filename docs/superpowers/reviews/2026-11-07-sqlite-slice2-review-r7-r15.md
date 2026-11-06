@@ -1,4 +1,4 @@
-# SQLite slice 2: Codex gpt-6-astra reviews, rounds 7–15
+# SQLite slice 2: Codex gpt-6-astra reviews, rounds 7–17
 
 Reviewer: Codex gpt-6-astra (high effort, read-only), run through `codex:codex-rescue` in the lead's foreground. Each
 round reviewed the diff since the previous round in the context of `origin/main...HEAD`. Codex's session was read-only,
@@ -15,6 +15,8 @@ so the lead recorded each verdict and its resolution here. Every fix has a regre
 | 13 | `cb805c4b` | DO NOT MERGE | 2 MUST-FIX |
 | 14 | `5f4cabb5` | **MERGE** | 0 |
 | 15 | `24e2e11f` | **MERGE** | 0 |
+| 16 | `96ce8c31` | DO NOT MERGE | 1 MUST-FIX, 1 SHOULD-FIX |
+| 17 | `62fe8397` | DO NOT MERGE | 1 MUST-FIX (performance budget; maintainer decision), 1 NIT |
 
 Rounds 7–13 all concern one class of defect: work started before or during MCP shutdown that registers, admits or opens a
 worker registry after the process acknowledged its storage close. Rounds 7–12 closed individual producers. Round 13 led
@@ -114,3 +116,28 @@ admission could use up the window, and the check would silently skip the cache a
 intermittent failure, now reproduced deterministically by a test that delays the first helper admission. 0 findings.
 Qualification recorded for slice 3: the gate worker RPC has no independent deadline, so a permanently stalled gate
 worker thread could leave an admission pending.
+
+## Round 16
+
+1. **MUST-FIX (contract): runtime-only MCP startup preflight contradicted the spec's "runtime/filesystem preflight before
+   registering".** The MCP preflight now checks only the runtime, once per process, because MCPs never open the database.
+   Classifying the filesystem on every MCP start cost a PowerShell cold start on Windows. The spec was amended: MCPs
+   check the runtime, while the daemon and the offline command keep the filesystem/journal check and its evidence. The
+   maintainer's agent accepted the amendment on 2026-11-07, under the maintainer's overnight authorization, following
+   the decision that the daemon owns the database.
+2. **SHOULD-FIX: the Windows drive memo could keep a partial answer.** `windowsDriveMemo` now keeps only complete
+   answers, keyed by drive and volume serial. Tested failure → partial → complete → remount.
+
+## Round 17: open, pending the maintainer
+
+1. **MUST-FIX (performance budget, spec line 212).** The timing fixture was corrected so it no longer forces four
+   synchronous `ps` confirmations into every `room_done` on both revisions (a synthetic launcher identity). With that,
+   `room_done` costs +1.6 ms at p50 on a first admission and +1.2 ms in steady state, about +52–57% on a ~2.5 ms
+   operation. The cost is the whole-operation admission (admit about 0.7 ms of gate file work including the required
+   fresh recheck, finish about 0.1 ms; the worker-thread hop is under 0.1 ms). It is not within 20%. No clean root fix
+   was found overnight. Possible levers, for the maintainer:
+   - a stat-validated first gate read and a single capacity scan, saving about 0.2–0.3 ms;
+   - letting the lead `room_done`'s claim-release read use an optimistic validated read instead of an admission. That
+     removes its ticket, but reinterprets "tool scopes acquire before reading lifecycle facts";
+   - an absolute budget for sub-5 ms operations.
+2. **NIT:** `entry.ts` still described an MCP filesystem preflight. Fixed.
