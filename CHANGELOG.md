@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.37
+
+- Host adapters, steps 4–6 of docs/superpowers/specs/2026-11-05-host-adapters.md (behaviour-preserving): Claude and Codex worker plans own their shell isolation (filters, env scripts, PowerShell encodings), with a shared artifact writer that applies environment only after a successful write; per-host log decoders turn run logs into one normalized fact union, replacing the mixed host event type; per-host hook codecs own field and tool aliases, transcript reduction and output envelopes, emitted as builtins-only hook modules. `hooks.json` and hook executable paths are unchanged, and every argv, log and hook fixture matches 0.17.36.
+
 ## 0.17.36
 
 - **Worker lifecycle storage sits behind one asynchronous interface** (slice 1 of docs/superpowers/plans/2026-11-06-sqlite-state.md). Every reader and writer of worker records, runs, reports, exits and collection state now goes through a typed async facade with named lifecycle commands instead of synchronous file reads and edit callbacks; the files on disk and their rules are unchanged, and costs stay at baseline (docs/archive/reports/2026-11-06-lifecycle-baseline.md). This prepares the move to SQLite.
