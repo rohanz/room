@@ -107,7 +107,7 @@ export function workerProcessEnv(options: {
     ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
     ROOM_SERVER: options.server, ROOM_ROOM: options.server === 'local' ? options.room : normalizeExplicitRoomName(options.room), ROOM_DIR: options.dir, PWD: options.dir,
     ...(options.port ? { PORT: String(options.port) } : {}),
-    ...(options.host === 'claude' && options.shellEnvFile ? { CLAUDE_ENV_FILE: options.shellEnvFile } : {}),
+    ...workerAdapter(options.host, inherited).shellEnv(options.shellEnvFile),
     ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_WORKER_ID: options.id, ROOM_WORKER_RUN: String(options.run), ROOM_LAUNCH_NONCE: options.nonce,
     ROOM_REGISTRY: options.registry,

@@ -128,3 +128,21 @@ export interface HostAdapter {
   inspectInstall(): Promise<InstallEvidence>;
   dispose(): void;
 }
+
+/** Shared artifact execution reports facts; the host plan owns diagnostic wording. */
+export type WorkerArtifactOutcome = { artifactId: string; path: string } & (
+  | { written: true }
+  | { written: false; error: string }
+);
+export type WorkerLaunchPlan = WorkerPlan & {
+  artifactWarnings(outcomes: readonly WorkerArtifactOutcome[]): string[];
+};
+
+/** The extracted worker facet plus temporary shell compatibility entry points. */
+export type WorkerShellIsolation = {
+  plan(input: WorkerInput): Promise<WorkerLaunchPlan>;
+  launchOptions: { shellEnvHook: boolean; developmentPlugin: boolean };
+  inheritedShellEnvFile?: string;
+  shellEnv(file?: string): Record<string, string>;
+  shellWarnings(written: { warning?: string }, version?: () => Promise<string | undefined>): Promise<string[]>;
+};

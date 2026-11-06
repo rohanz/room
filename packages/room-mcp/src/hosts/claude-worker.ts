@@ -1,9 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { Env, HostAdapter, Runtime, WorkerCommandInput } from './types.js'
+import type { Env, HostAdapter, Runtime, WorkerCommandInput, WorkerShellIsolation } from './types.js'
 import { randomUUID } from 'node:crypto'
-import { POWERSHELL_HOOK_ARGS } from '../worker-shell-env.js'
+import { POWERSHELL_HOOK_ARGS, claudeShellArtifacts, claudeShellEnv, claudeShellWarnings } from './claude-shell.js'
 
 /** Only public configuration is read; credentials are never inspected. */
 function defaults(dir: string, env: Env): Runtime {
@@ -33,8 +33,13 @@ function command(input: WorkerCommandInput) {
   }
 }
 
-export function createClaudeWorker(env: Env = process.env): Pick<NonNullable<HostAdapter['worker']>, 'capabilities' | 'freshSessionId' | 'defaults' | 'normalizeRuntime' | 'command'> {
+export function createClaudeWorker(env: Env = process.env): Pick<NonNullable<HostAdapter['worker']>, 'capabilities' | 'freshSessionId' | 'defaults' | 'normalizeRuntime' | 'command'> & WorkerShellIsolation {
   return { capabilities: { resume: true }, freshSessionId: () => randomUUID(),
     defaults: cwd => defaults(cwd, env),
-    normalizeRuntime: runtime => ({ ...runtime, effort: runtime.effort === 'minimal' ? 'low' : runtime.effort }), command }
+    normalizeRuntime: runtime => ({ ...runtime, effort: runtime.effort === 'minimal' ? 'low' : runtime.effort }), command,
+    launchOptions: { shellEnvHook: true, developmentPlugin: true }, inheritedShellEnvFile: env.CLAUDE_ENV_FILE,
+    shellEnv: claudeShellEnv, shellWarnings: claudeShellWarnings,
+    plan: async input => ({ ...command(input), envPatch: {}, warnings: [],
+      ...claudeShellArtifacts(input.logDir, input.tag, input.inheritedShellEnvFile) }),
+  }
 }

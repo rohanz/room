@@ -6,8 +6,11 @@ import { processToken } from './names.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcessNow, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
-import { leadClaudePluginDir, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
-import { workerShellEnvWarnings, writeWorkerShellEnv } from './worker-shell-env.js'
+import { leadClaudePluginDir, hostWorkerEffort, WORKER_EFFORTS, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
+import { workerShellEnvWarnings } from './worker-shell-env.js'
+import { writeWorkerArtifacts } from './worker-artifacts.js'
+import { workerAdapter } from './hosts/index.js'
+import { DEFAULT_CLAUDE_CHANNEL as defaultChannel } from './hosts/claude-binding.js'
 import { realGitCommonDir } from '@room/roomd'
 import { workerLaunchOptions } from './hosts/selection.js'
 
@@ -105,8 +108,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const nameEpoch = await reserveWorkerName(s, `${policy.owner}+${tag}`, id, policy.log)
     const portChanged = command.mode === 'resume' && port !== command.oldPort
     const launchOptions = workerLaunchOptions(policy.host)
-    const shellEnv = launchOptions.shellEnvHook ? writeWorkerShellEnv(s.dir, tag) : {}
-    const env = workerProcessEnv({ shellEnvFile: shellEnv.file, threads: policy.budget.threads, memGb: policy.budget.memGb,
+    const worker = workerAdapter(policy.host)
+    const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
       share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
@@ -124,10 +127,16 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     let maxBudgetUsd: string | undefined
     try { maxBudgetUsd = workerMaxBudget() }
     catch (e) { throw new WorkerLaunchError('budget', String(e instanceof Error ? e.message : e)) }
-    const built = workerCommand(policy.host, policy.model, prompt, policy.claudeChannel,
-      policy.effort, { tag, sessionId: command.sessionId, resume: command.mode === 'resume',
-        maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir() : undefined })
-    const priority = workerPriority(built, niceEnv)
+    if (policy.effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(policy.effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
+    if (command.mode === 'resume' && !command.sessionId) throw new Error('resuming a worker requires its host session id')
+    const plan = await worker.plan({ tag, sessionId: command.sessionId, mode: command.mode, prompt,
+      runtime: { model: policy.model, effort: hostWorkerEffort(policy.host, policy.effort) },
+      cwd: policy.dir, logDir: s.dir, env: process.env, inheritedShellEnvFile: worker.inheritedShellEnvFile,
+      claudeChannel: policy.claudeChannel === undefined ? defaultChannel : policy.claudeChannel,
+      maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir() : undefined })
+    const written = writeWorkerArtifacts(s.dir, plan)
+    Object.assign(env, written.envPatch)
+    const priority = workerPriority({ cmd: plan.cmd, args: plan.args }, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')
     try { proc = (policy.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args,
@@ -152,7 +161,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     if ((policy.platform ?? process.platform) === 'win32' && !exited && !host.aborted() && proc.isRunning?.() !== false && !identity) {
       throw new WorkerLaunchError('start', 'could not verify the Windows worker process identity; stopping its retained child handle')
     }
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: await workerShellEnvWarnings(policy.host, shellEnv),
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: [...plan.warnings, ...plan.artifactWarnings(written.outcomes), ...await workerShellEnvWarnings(policy.host, {})],
       startedAt: (policy.at ?? Date.now)(), processStartTime: identity?.startTime, processExecutable: identity?.executable }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)

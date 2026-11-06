@@ -1,6 +1,6 @@
 /** Compatibility selectors intentionally retain their different precedence and failure policies. */
 import path from 'node:path'
-import { preBindingAdapter } from './index.js'
+import { preBindingAdapter, workerAdapter } from './index.js'
 import type { Env, HostId, Runtime } from './types.js'
 
 const host = (v: unknown): HostId | undefined => v === 'claude' || v === 'codex' ? v : undefined
@@ -40,7 +40,7 @@ export function workerRuntimeForHost(host: HostId, runtime: Runtime, env: Env): 
     effort: value(runtime.effort) ?? value(env[`${prefix}EFFORT`]) ?? value(env.ROOM_WORKER_EFFORT) }
 }
 
-/** Shell artifact writing and its failure handling remain shared until the isolation extraction. */
+/** Compatibility launch settings; each worker adapter owns its host requirements. */
 export function workerLaunchOptions(host: HostId): { shellEnvHook: boolean; developmentPlugin: boolean } {
-  return { shellEnvHook: host === 'claude', developmentPlugin: host === 'claude' }
+  return workerAdapter(host).launchOptions
 }
