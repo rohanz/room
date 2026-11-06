@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import { closeStorageAdmissions, storageGate, withDirectoryAdmission } from '../src/storage-admission.js'
-import { previewCachePath, runInMergedTree, setPreviewCleanupForTests } from '../src/tools/files.js'
+import { pollRetainedHelpersForTests, previewCachePath, runInMergedTree, setPreviewCleanupForTests } from '../src/tools/files.js'
 import { clearPreviewQuarantine, previewQuarantinePath, quarantinePreview, setPreviewCwdsForTests, tryPreviewLock, lsofCwds, procCwds } from '../src/preview-cache.js'
 import type { Session } from '../src/session.js'
 
@@ -222,11 +222,17 @@ it('keeps a cleanup-incomplete helper ticket while an escaped descendant works i
       runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'FIRST\n']]), `${escape}; echo '1 passed'`))
     expect(result.text).toContain('command completion: incomplete')
     const previewTickets = async () => (await storageGate(common).listTickets()).tickets.filter(ticket => ticket.kind === 'preview')
-    // Several release polls pass with the group gone; the descendant in the tree keeps the ticket for drain.
-    await new Promise(resolve => setTimeout(resolve, 3500))
-    expect((await previewTickets()).length).toBeGreaterThan(0)
+    const descendant = Number(fs.readFileSync(pidFile, 'utf8'))
+    // Repeated release polls with the group gone: the live descendant in the tree keeps the ticket for drain.
+    for (let n = 0; n < 3; n++) {
+      expect(() => process.kill(descendant, 0)).not.toThrow()
+      expect(await pollRetainedHelpersForTests()).toBeGreaterThan(0)
+      expect((await previewTickets()).length).toBeGreaterThan(0)
+    }
     f.killPidFile(pidFile)
-    await vi.waitFor(async () => expect(await previewTickets()).toEqual([]), { timeout: 15_000, interval: 200 })
+    await vi.waitFor(() => expect(() => process.kill(descendant, 0)).toThrow(), { timeout: 5000 })
+    await vi.waitFor(async () => expect(await pollRetainedHelpersForTests()).toBe(0), { timeout: 10_000, interval: 100 })
+    expect(await previewTickets()).toEqual([])
     await closeStorageAdmissions()
     expect((await storageGate(common).status()).registrations).toBe(0)
   } finally { setPreviewCleanupForTests(); await f.dispose(pidFile) }

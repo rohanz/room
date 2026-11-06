@@ -808,18 +808,32 @@ async function runTrackedProcess(file: string, args: string[], options: TrackedP
  * operator resolves the ticket first, the later release finds it absent. Polls without holding the process open.
  */
 const RETAINED_HELPER_POLL_MS = 1000
+/** Each retained helper's poll, single-flight: resolves true once its ticket is released. */
+const retainedHelpers = new Set<() => Promise<boolean>>()
 function releaseWhenHelperGone(pid: number, file: string, tree: PreviewTree | undefined, release: () => Promise<void>): void {
-  const check = async () => {
+  let inFlight: Promise<boolean> | undefined
+  const attempt = async (): Promise<boolean> => {
+    if (!retainedHelpers.has(poll)) return true
     try {
-      const inUse = await previewGroupAlive(pid, file) || (!!tree && await previewTreeInUse(tree.dir, tree.since))
-      if (inUse) { setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref(); return }
+      if (await previewGroupAlive(pid, file) || (tree && await previewTreeInUse(tree.dir, tree.since))) return false
       await release()
+      retainedHelpers.delete(poll)
+      return true
     } catch (error) {
       console.warn(`room preview: retained helper ${pid}: ${error instanceof Error ? error.message : String(error)}`)
-      setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref()
+      return false
     }
   }
-  setTimeout(() => void check(), RETAINED_HELPER_POLL_MS).unref()
+  const poll = () => inFlight ??= attempt().finally(() => { inFlight = undefined })
+  const schedule = () => { setTimeout(() => void poll().then(released => { if (!released) schedule() }), RETAINED_HELPER_POLL_MS).unref() }
+  retainedHelpers.add(poll)
+  schedule()
+}
+
+/** Test seam: run every retained helper's release poll once, as its timer does; returns how many remain retained. */
+export async function pollRetainedHelpersForTests(): Promise<number> {
+  await Promise.all([...retainedHelpers].map(poll => poll()))
+  return retainedHelpers.size
 }
 
 const gitSetup = (dir: string, args: string[]) => {
