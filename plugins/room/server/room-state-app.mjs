@@ -789,27 +789,27 @@ var init_protocol = __esm({
 import fs6 from "node:fs";
 import os from "node:os";
 import { execFile as execFile3 } from "node:child_process";
-var COMMAND_TIMEOUT_MS, run, systemFilesystemReaders;
+var COMMAND_TIMEOUT_MS, run, WINDOWS_DRIVE_SCRIPT, systemFilesystemReaders;
 var init_filesystem = __esm({
   "packages/local-state/src/filesystem.ts"() {
     "use strict";
     COMMAND_TIMEOUT_MS = 3e3;
-    run = (command, args2) => new Promise((resolve, reject) => {
+    run = (command, args2, env) => new Promise((resolve, reject) => {
       execFile3(
         command,
         args2,
-        { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
+        { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
         (error, stdout) => error ? reject(error) : resolve(stdout)
       );
     });
+    WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
     systemFilesystemReaders = {
       platform: process.platform,
       realpath: (file) => fs6.promises.realpath(file),
       statfsType: (file) => fs6.promises.statfs(file).then((stat) => stat.type, () => void 0),
       macMounts: () => run("/sbin/mount", []),
       linuxMountinfo: () => fs6.promises.readFile("/proc/self/mountinfo", "utf8"),
-      windowsDriveType: (drive) => run("fsutil", ["fsinfo", "drivetype", drive]),
-      windowsVolumeInfo: (drive) => run("fsutil", ["fsinfo", "volumeinfo", `${drive}\\`]),
+      windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
       home: () => os.homedir(),
       env: process.env
     };

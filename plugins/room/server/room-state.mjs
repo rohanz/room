@@ -14,22 +14,22 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 var QUALIFIED = /* @__PURE__ */ new Set(["apfs", "ext4", "ntfs"]);
 var COMMAND_TIMEOUT_MS = 3e3;
-var run = (command, args) => new Promise((resolve, reject) => {
+var run = (command, args, env) => new Promise((resolve, reject) => {
   execFile(
     command,
     args,
-    { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
+    { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024, ...env ? { env } : {} },
     (error, stdout) => error ? reject(error) : resolve(stdout)
   );
 });
+var WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f";
 var systemFilesystemReaders = {
   platform: process.platform,
   realpath: (file) => fs.promises.realpath(file),
   statfsType: (file) => fs.promises.statfs(file).then((stat) => stat.type, () => void 0),
   macMounts: () => run("/sbin/mount", []),
   linuxMountinfo: () => fs.promises.readFile("/proc/self/mountinfo", "utf8"),
-  windowsDriveType: (drive) => run("fsutil", ["fsinfo", "drivetype", drive]),
-  windowsVolumeInfo: (drive) => run("fsutil", ["fsinfo", "volumeinfo", `${drive}\\`]),
+  windowsDrive: (drive) => run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }),
   home: () => os.homedir(),
   env: process.env
 };
@@ -88,22 +88,17 @@ async function classifyWindows(file, readers) {
   if (/^\\\\(\?\\UNC\\|[^?.])/i.test(file)) return result("network", "UNC path", file);
   const drive = /^(?:\\\\\?\\)?([A-Za-z]:)/.exec(file)?.[1];
   if (!drive) return result("unknown", "no drive letter", file);
-  let type, volume;
+  let info;
   try {
-    type = await readers.windowsDriveType(drive);
+    info = (await readers.windowsDrive(drive)).trim();
   } catch (error) {
-    return result("unknown", `drive type unavailable: ${error.message}`, file);
+    return result("unknown", `drive information unavailable: ${error.message}`, file);
   }
-  if (/remote|network/i.test(type)) return result("network", type.trim(), file);
-  if (!/fixed/i.test(type)) return result("unknown", type.trim(), file);
-  try {
-    volume = await readers.windowsVolumeInfo(drive);
-  } catch (error) {
-    return result("unknown", `volume information unavailable: ${error.message}`, file);
-  }
-  const name = /File System Name\s*:\s*(\S+)/i.exec(volume)?.[1];
-  if (!name) return result("unknown", "file system name missing", file);
-  return result(name.toUpperCase() === "NTFS" ? "ntfs" : "other-local", `${type.trim()}; ${name}`, file);
+  const [type = "", name = ""] = info.split(/\s+/);
+  if (/^network$/i.test(type)) return result("network", `${drive} ${info}`, file);
+  if (!/^fixed$/i.test(type)) return result("unknown", `${drive} ${info || "drive type unknown"}`, file);
+  if (!name) return result("unknown", `${drive} ${type}: file system name missing`, file);
+  return result(name.toUpperCase() === "NTFS" ? "ntfs" : "other-local", `${drive} ${type}; ${name}`, file);
 }
 async function detectFilesystem(target, readers = systemFilesystemReaders) {
   let file;
