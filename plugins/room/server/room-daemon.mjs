@@ -44,10 +44,10 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/lib0/math.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/math.js
 var floor, abs, min, max, isNaN, isNegativeZero;
 var init_math = __esm({
-  "node_modules/lib0/math.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/math.js"() {
     "use strict";
     floor = Math.floor;
     abs = Math.abs;
@@ -58,10 +58,10 @@ var init_math = __esm({
   }
 });
 
-// node_modules/lib0/binary.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/binary.js
 var BIT1, BIT2, BIT3, BIT4, BIT6, BIT7, BIT8, BIT18, BIT19, BIT20, BIT21, BIT22, BIT23, BIT24, BIT25, BIT26, BIT27, BIT28, BIT29, BIT30, BIT31, BIT32, BITS5, BITS6, BITS7, BITS17, BITS18, BITS19, BITS20, BITS21, BITS22, BITS23, BITS24, BITS25, BITS26, BITS27, BITS28, BITS29, BITS30, BITS31;
 var init_binary = __esm({
-  "node_modules/lib0/binary.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/binary.js"() {
     "use strict";
     BIT1 = 1;
     BIT2 = 2;
@@ -106,10 +106,10 @@ var init_binary = __esm({
   }
 });
 
-// node_modules/lib0/number.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/number.js
 var MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, LOWEST_INT32, isInteger, isNaN2, parseInt;
 var init_number = __esm({
-  "node_modules/lib0/number.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/number.js"() {
     "use strict";
     init_math();
     MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -121,19 +121,19 @@ var init_number = __esm({
   }
 });
 
-// node_modules/lib0/set.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/set.js
 var create;
 var init_set = __esm({
-  "node_modules/lib0/set.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/set.js"() {
     "use strict";
     create = () => /* @__PURE__ */ new Set();
   }
 });
 
-// node_modules/lib0/array.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/array.js
 var last, appendTo, from, isArray;
 var init_array = __esm({
-  "node_modules/lib0/array.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/array.js"() {
     "use strict";
     last = (arr) => arr[arr.length - 1];
     appendTo = (dest, src) => {
@@ -146,10 +146,10 @@ var init_array = __esm({
   }
 });
 
-// node_modules/lib0/string.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/string.js
 var fromCharCode, fromCodePoint, MAX_UTF16_CHARACTER, toLowerCase, trimLeftRegex, trimLeft, fromCamelCaseRegex, fromCamelCase, _encodeUtf8Polyfill, utf8TextEncoder, _encodeUtf8Native, encodeUtf8, utf8TextDecoder;
 var init_string = __esm({
-  "node_modules/lib0/string.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/string.js"() {
     "use strict";
     fromCharCode = String.fromCharCode;
     fromCodePoint = String.fromCodePoint;
@@ -180,10 +180,10 @@ var init_string = __esm({
   }
 });
 
-// node_modules/lib0/encoding.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/encoding.js
 var Encoder, createEncoder, length, toUint8Array, verifyLen, write, writeUint8, writeVarUint, writeVarInt, _strBuffer, _maxStrBSize, _writeVarStringNative, _writeVarStringPolyfill, writeVarString, writeUint8Array, writeVarUint8Array, writeOnDataView, writeFloat32, writeFloat64, writeBigInt64, floatTestBed, isFloat32, writeAny, RleEncoder, flushUintOptRleEncoder, UintOptRleEncoder, flushIntDiffOptRleEncoder, IntDiffOptRleEncoder, StringEncoder;
 var init_encoding = __esm({
-  "node_modules/lib0/encoding.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/encoding.js"() {
     "use strict";
     init_math();
     init_number();
@@ -498,10 +498,10 @@ var init_encoding = __esm({
   }
 });
 
-// node_modules/lib0/error.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/error.js
 var create2, methodUnimplemented, unexpectedCase;
 var init_error = __esm({
-  "node_modules/lib0/error.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/error.js"() {
     "use strict";
     create2 = (s) => new Error(s);
     methodUnimplemented = () => {
@@ -513,10 +513,10 @@ var init_error = __esm({
   }
 });
 
-// node_modules/lib0/decoding.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/decoding.js
 var errorUnexpectedEndOfArray, errorIntegerOutOfRange, Decoder, createDecoder, hasContent, readUint8Array, readVarUint8Array, readUint8, readVarUint, readVarInt, peekVarUint, _readVarStringPolyfill, _readVarStringNative, readVarString, readFromDataView, readFloat32, readFloat64, readBigInt64, readAnyLookupTable, readAny, RleDecoder, UintOptRleDecoder, IntDiffOptRleDecoder, StringDecoder;
 var init_decoding = __esm({
-  "node_modules/lib0/decoding.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/decoding.js"() {
     "use strict";
     init_binary();
     init_math();
@@ -773,14 +773,14 @@ var init_decoding = __esm({
   }
 });
 
-// packages/shared/src/types.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/types.ts
 var init_types = __esm({
-  "packages/shared/src/types.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/types.ts"() {
     "use strict";
   }
 });
 
-// packages/shared/src/identity.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/identity.ts
 function validParticipantName(name) {
   return name.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(name);
 }
@@ -807,16 +807,16 @@ function newId(prefix2 = "") {
 }
 var PALETTE;
 var init_identity = __esm({
-  "packages/shared/src/identity.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/identity.ts"() {
     "use strict";
     PALETTE = ["#2e86de", "#c9761a", "#6d4fc2", "#27ae60", "#c0392b", "#b5179e", "#0f8b8d", "#8d6e63"];
   }
 });
 
-// node_modules/lib0/map.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/map.js
 var create3, copy, setIfUndefined, any;
 var init_map = __esm({
-  "node_modules/lib0/map.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/map.js"() {
     "use strict";
     create3 = () => /* @__PURE__ */ new Map();
     copy = (m) => {
@@ -844,10 +844,10 @@ var init_map = __esm({
   }
 });
 
-// node_modules/lib0/observable.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/observable.js
 var ObservableV2, Observable;
 var init_observable = __esm({
-  "node_modules/lib0/observable.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/observable.js"() {
     "use strict";
     init_map();
     init_set();
@@ -975,11 +975,11 @@ var init_observable = __esm({
   }
 });
 
-// node_modules/lib0/webcrypto.node.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/webcrypto.node.js
 import { webcrypto } from "node:crypto";
 var subtle, getRandomValues;
 var init_webcrypto_node = __esm({
-  "node_modules/lib0/webcrypto.node.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/webcrypto.node.js"() {
     "use strict";
     subtle = /** @type {any} */
     webcrypto.subtle;
@@ -988,10 +988,10 @@ var init_webcrypto_node = __esm({
   }
 });
 
-// node_modules/lib0/random.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/random.js
 var uint32, uuidv4Template, uuidv4;
 var init_random = __esm({
-  "node_modules/lib0/random.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/random.js"() {
     "use strict";
     init_webcrypto_node();
     uint32 = () => getRandomValues(new Uint32Array(1))[0];
@@ -1004,19 +1004,19 @@ var init_random = __esm({
   }
 });
 
-// node_modules/lib0/time.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/time.js
 var getUnixTime;
 var init_time = __esm({
-  "node_modules/lib0/time.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/time.js"() {
     "use strict";
     getUnixTime = Date.now;
   }
 });
 
-// node_modules/lib0/promise.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/promise.js
 var create4, all;
 var init_promise = __esm({
-  "node_modules/lib0/promise.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/promise.js"() {
     "use strict";
     create4 = (f) => (
       /** @type {Promise<T>} */
@@ -1026,19 +1026,19 @@ var init_promise = __esm({
   }
 });
 
-// node_modules/lib0/conditions.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/conditions.js
 var undefinedToNull;
 var init_conditions = __esm({
-  "node_modules/lib0/conditions.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/conditions.js"() {
     "use strict";
     undefinedToNull = (v) => v === void 0 ? null : v;
   }
 });
 
-// node_modules/lib0/storage.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/storage.js
 var VarStoragePolyfill, _localStorage, usePolyfill, varStorage;
 var init_storage = __esm({
-  "node_modules/lib0/storage.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/storage.js"() {
     "use strict";
     VarStoragePolyfill = class {
       constructor() {
@@ -1071,20 +1071,20 @@ var init_storage = __esm({
   }
 });
 
-// node_modules/lib0/trait/equality.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/trait/equality.js
 var EqualityTraitSymbol, equals;
 var init_equality = __esm({
-  "node_modules/lib0/trait/equality.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/trait/equality.js"() {
     "use strict";
     EqualityTraitSymbol = /* @__PURE__ */ Symbol("Equality");
     equals = (a, b) => a === b || !!a?.[EqualityTraitSymbol]?.(b) || false;
   }
 });
 
-// node_modules/lib0/object.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/object.js
 var assign, keys2, forEach, size, isEmpty, every, hasProperty, equalFlat, freeze2, deepFreeze;
 var init_object = __esm({
-  "node_modules/lib0/object.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/object.js"() {
     "use strict";
     init_equality();
     assign = Object.assign;
@@ -1124,10 +1124,10 @@ var init_object = __esm({
   }
 });
 
-// node_modules/lib0/function.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/function.js
 var callAll, id, equalityDeep, isOneOf;
 var init_function = __esm({
-  "node_modules/lib0/function.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/function.js"() {
     "use strict";
     init_object();
     init_equality();
@@ -1221,10 +1221,10 @@ var init_function = __esm({
   }
 });
 
-// node_modules/lib0/environment.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/environment.js
 var isNode, isMac, params, args, computeParams, hasParam, getVariable, hasConf, production, forceColor, supportsColor;
 var init_environment = __esm({
-  "node_modules/lib0/environment.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/environment.js"() {
     "use strict";
     init_map();
     init_string();
@@ -1284,10 +1284,10 @@ var init_environment = __esm({
   }
 });
 
-// node_modules/lib0/buffer.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/buffer.js
 var createUint8ArrayFromLen, copyUint8Array;
 var init_buffer = __esm({
-  "node_modules/lib0/buffer.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/buffer.js"() {
     "use strict";
     createUint8ArrayFromLen = (len) => new Uint8Array(len);
     copyUint8Array = (uint8Array) => {
@@ -1298,19 +1298,19 @@ var init_buffer = __esm({
   }
 });
 
-// node_modules/lib0/symbol.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/symbol.js
 var create5;
 var init_symbol = __esm({
-  "node_modules/lib0/symbol.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/symbol.js"() {
     "use strict";
     create5 = Symbol;
   }
 });
 
-// node_modules/lib0/logging.common.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.common.js
 var BOLD, UNBOLD, BLUE, GREY, GREEN, RED, PURPLE, ORANGE, UNCOLOR, computeNoColorLoggingArgs, lastLoggingTime;
 var init_logging_common = __esm({
-  "node_modules/lib0/logging.common.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.common.js"() {
     "use strict";
     init_symbol();
     init_time();
@@ -1357,10 +1357,10 @@ var init_logging_common = __esm({
   }
 });
 
-// node_modules/lib0/logging.node.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.node.js
 var _nodeStyleMap, computeNodeLoggingArgs, computeLoggingArgs, print, warn;
 var init_logging_node = __esm({
-  "node_modules/lib0/logging.node.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.node.js"() {
     "use strict";
     init_environment();
     init_logging_common();
@@ -1422,10 +1422,10 @@ var init_logging_node = __esm({
   }
 });
 
-// node_modules/lib0/iterator.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/iterator.js
 var createIterator, iteratorFilter, iteratorMap;
 var init_iterator = __esm({
-  "node_modules/lib0/iterator.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/iterator.js"() {
     "use strict";
     createIterator = (next) => ({
       /**
@@ -1451,7 +1451,7 @@ var init_iterator = __esm({
   }
 });
 
-// node_modules/yjs/dist/yjs.mjs
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/yjs/dist/yjs.mjs
 function* lazyStructReaderGenerator(decoder) {
   const numOfStateUpdates = readVarUint(decoder.restDecoder);
   for (let i = 0; i < numOfStateUpdates; i++) {
@@ -1496,7 +1496,7 @@ function* lazyStructReaderGenerator(decoder) {
 }
 var DeleteItem, DeleteSet, iterateDeletedStructs, findIndexDS, isDeleted, sortAndMergeDeleteSet, mergeDeleteSets, addToDeleteSet, createDeleteSet, createDeleteSetFromStructStore, writeDeleteSet, readDeleteSet, readAndApplyDeleteSet, generateNewClientId, Doc, DSDecoderV1, UpdateDecoderV1, DSDecoderV2, UpdateDecoderV2, DSEncoderV1, UpdateEncoderV1, DSEncoderV2, UpdateEncoderV2, writeStructs, writeClientsStructs, readClientsStructRefs, integrateStructs, writeStructsFromTransaction, readUpdateV2, applyUpdateV2, applyUpdate, writeStateAsUpdate, encodeStateAsUpdateV2, encodeStateAsUpdate, readStateVector, decodeStateVector, writeStateVector, writeDocumentStateVector, encodeStateVectorV2, encodeStateVector, EventHandler, createEventHandler, addEventHandlerListener, removeEventHandlerListener, callEventHandlerListeners, ID, compareIDs, createID, findRootTypeKey, RelativePosition, relativePositionToJSON, createRelativePositionFromJSON, AbsolutePosition, createAbsolutePosition, createRelativePosition, createRelativePositionFromTypeIndex, getItemWithOffset, createAbsolutePositionFromRelativePosition, Snapshot, createSnapshot, emptySnapshot, isVisible, splitSnapshotAffectedStructs, StructStore, getStateVector, getState, addStruct, findIndexSS, find, getItem, findIndexCleanStart, getItemCleanStart, getItemCleanEnd, replaceStruct, iterateStructs, Transaction, writeUpdateMessageFromTransaction, addChangedTypeToTransaction, tryToMergeWithLefts, tryGcDeleteSet, tryMergeDeleteSet, cleanupTransactions, transact, LazyStructReader, LazyStructWriter, mergeUpdates, sliceStruct, mergeUpdatesV2, diffUpdateV2, flushLazyStructWriter, writeStructToLazyStructWriter, finishLazyStructWriting, convertUpdateFormat, convertUpdateFormatV2ToV1, errorComputeChanges, YEvent, getPathTo, warnPrematureAccess, maxSearchMarker, globalSearchMarkerTimestamp, ArraySearchMarker, refreshMarkerTimestamp, overwriteMarker, markPosition, findMarker, updateMarkerChanges, callTypeObservers, AbstractType, typeListSlice, typeListToArray, typeListForEach, typeListMap, typeListCreateIterator, typeListGet, typeListInsertGenericsAfter, lengthExceeded, typeListInsertGenerics, typeListPushGenerics, typeListDelete, typeMapDelete, typeMapSet, typeMapGet, typeMapGetAll, typeMapHas, typeMapGetAllSnapshot, createMapIterator, YArrayEvent, YArray, readYArray, YMapEvent, YMap, readYMap, equalAttrs, ItemTextListPosition, findNextPosition, findPosition, insertNegatedAttributes, updateCurrentAttributes, minimizeAttributeChanges, insertAttributes, insertText, formatText, cleanupFormattingGap, cleanupContextlessFormattingGap, cleanupYTextFormatting, cleanupYTextAfterTransaction, deleteText, YTextEvent, YText, readYText, YXmlTreeWalker, YXmlFragment, readYXmlFragment, YXmlElement, readYXmlElement, YXmlEvent, YXmlHook, readYXmlHook, YXmlText, readYXmlText, AbstractStruct, structGCRefNumber, GC, ContentBinary, readContentBinary, ContentDeleted, readContentDeleted, createDocFromOpts, ContentDoc, readContentDoc, ContentEmbed, readContentEmbed, ContentFormat, readContentFormat, ContentJSON, readContentJSON, isDevMode, ContentAny, readContentAny, ContentString, readContentString, typeRefs, YArrayRefID, YMapRefID, YTextRefID, YXmlElementRefID, YXmlFragmentRefID, YXmlHookRefID, YXmlTextRefID, ContentType, readContentType, followRedone, splitItem, Item, readItemContent, contentRefs, structSkipRefNumber, Skip, glo, importIdentifier;
 var init_yjs = __esm({
-  "node_modules/yjs/dist/yjs.mjs"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/yjs/dist/yjs.mjs"() {
     "use strict";
     init_observable();
     init_array();
@@ -8060,10 +8060,10 @@ var init_yjs = __esm({
   }
 });
 
-// packages/shared/src/bus-index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
-  "packages/shared/src/bus-index.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/bus-index.ts"() {
     "use strict";
     init_yjs();
     init_messages();
@@ -8235,7 +8235,7 @@ var init_bus_index = __esm({
   }
 });
 
-// packages/shared/src/ledger.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/ledger.ts
 function compactRetiredWorker(record) {
   const files = [...new Set(record.files)];
   return {
@@ -8288,7 +8288,7 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 }
 var MAX_RETIRED_WORKERS, LEDGER_TYPES;
 var init_ledger = __esm({
-  "packages/shared/src/ledger.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/ledger.ts"() {
     "use strict";
     init_near();
     init_messages();
@@ -8297,7 +8297,7 @@ var init_ledger = __esm({
   }
 });
 
-// packages/shared/src/delivery.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/delivery.ts
 function isOwed(doc, m) {
   return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
 }
@@ -8472,7 +8472,7 @@ function admit(doc, m, now, opts = {}) {
 }
 var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, LEDGER_BUDGET, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, receipted, DeliveryIndex, indexes;
 var init_delivery = __esm({
-  "packages/shared/src/delivery.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
     init_bus_index();
@@ -8782,7 +8782,7 @@ var init_delivery = __esm({
   }
 });
 
-// packages/shared/src/worker-memory.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/worker-memory.ts
 function revisions(doc) {
   const latest = /* @__PURE__ */ new Map();
   const see = (r) => {
@@ -8871,7 +8871,7 @@ function workerMemory(doc) {
 }
 var REVISIONS, revisionKey, compareRevision, publicationRevision, matchesRevision;
 var init_worker_memory = __esm({
-  "packages/shared/src/worker-memory.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/worker-memory.ts"() {
     "use strict";
     REVISIONS = "completedPublicationRevisions";
     revisionKey = (r) => `${r.name}\0${r.epoch}\0${r.semRev}\0${r.rev}`;
@@ -8884,10 +8884,10 @@ var init_worker_memory = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/base.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/base.js
 var Diff;
 var init_base = __esm({
-  "node_modules/diff/libesm/diff/base.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/base.js"() {
     "use strict";
     Diff = class {
       diff(oldStr, newStr, options = {}) {
@@ -9092,13 +9092,13 @@ var init_base = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/character.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/character.js
 function diffChars(oldStr, newStr, options) {
   return characterDiff.diff(oldStr, newStr, options);
 }
 var CharacterDiff, characterDiff;
 var init_character = __esm({
-  "node_modules/diff/libesm/diff/character.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/character.js"() {
     "use strict";
     init_base();
     CharacterDiff = class extends Diff {
@@ -9107,7 +9107,7 @@ var init_character = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/line.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/line.js
 function diffLines(oldStr, newStr, options) {
   return lineDiff.diff(oldStr, newStr, options);
 }
@@ -9131,7 +9131,7 @@ function tokenize(value2, options) {
 }
 var LineDiff, lineDiff;
 var init_line = __esm({
-  "node_modules/diff/libesm/diff/line.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/line.js"() {
     "use strict";
     init_base();
     LineDiff = class extends Diff {
@@ -9162,16 +9162,16 @@ var init_line = __esm({
   }
 });
 
-// node_modules/diff/libesm/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/index.js
 var init_libesm = __esm({
-  "node_modules/diff/libesm/index.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/index.js"() {
     "use strict";
     init_character();
     init_line();
   }
 });
 
-// packages/shared/src/text-diff.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/text-diff.ts
 function commonEdges(a, b) {
   const shortest = Math.min(a.length, b.length);
   let head = 0;
@@ -9261,7 +9261,7 @@ function boundedTextDiff(before, after, stats) {
 }
 var WORK, SMALL_MIDDLE, SMALL_WORK, isHigh, isLow, editBudget, replace;
 var init_text_diff = __esm({
-  "packages/shared/src/text-diff.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/text-diff.ts"() {
     "use strict";
     init_libesm();
     WORK = 2e6;
@@ -9277,7 +9277,7 @@ var init_text_diff = __esm({
   }
 });
 
-// packages/shared/src/doc.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/doc.ts
 import { randomBytes } from "node:crypto";
 function holderFence(holder) {
   return holder && Number.isSafeInteger(holder.epoch) ? String(holder.epoch) : void 0;
@@ -9318,7 +9318,7 @@ function makeAnchor(text2, from2, to2) {
 }
 var validColorIndex, RoomDoc;
 var init_doc = __esm({
-  "packages/shared/src/doc.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/doc.ts"() {
     "use strict";
     init_delivery();
     init_worker_memory();
@@ -9812,10 +9812,10 @@ var init_doc = __esm({
   }
 });
 
-// packages/shared/src/views.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/views.ts
 var ROOM_STALE_MS, STALE_WORKER_MS;
 var init_views = __esm({
-  "packages/shared/src/views.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/views.ts"() {
     "use strict";
     init_claims();
     init_worker_memory();
@@ -9827,12 +9827,12 @@ var init_views = __esm({
   }
 });
 
-// packages/shared/src/manifest.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest.ts
 function manifestKey(name, fence) {
   return `${name}\0${fence}`;
 }
 var init_manifest = __esm({
-  "packages/shared/src/manifest.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest.ts"() {
     "use strict";
     init_doc();
     init_views();
@@ -9840,7 +9840,7 @@ var init_manifest = __esm({
   }
 });
 
-// packages/shared/src/near.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/near.ts
 function normalizeCoordinationPath(p) {
   const parts = [];
   for (const part of p.replaceAll("\\", "/").split("/")) {
@@ -9857,14 +9857,14 @@ function containsPath(parent, child) {
   return a === "." || a === b || b.startsWith(a + "/");
 }
 var init_near = __esm({
-  "packages/shared/src/near.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/near.ts"() {
     "use strict";
     init_identity();
     init_manifest();
   }
 });
 
-// packages/shared/src/messages.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/messages.ts
 function validMessageShape(value2) {
   if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) return false;
   const m = value2;
@@ -9964,7 +9964,7 @@ function formatPlans(plans) {
 }
 var who, to, priority, conflictLabel, PEER_NOTICE_TEXT, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
 var init_messages = __esm({
-  "packages/shared/src/messages.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/messages.ts"() {
     "use strict";
     init_claims();
     init_identity();
@@ -9999,15 +9999,15 @@ var init_messages = __esm({
   }
 });
 
-// packages/shared/src/format.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/format.ts
 var init_format = __esm({
-  "packages/shared/src/format.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/format.ts"() {
     "use strict";
     init_messages();
   }
 });
 
-// packages/shared/src/claims.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/claims.ts
 function rangesOverlap(aFrom, aTo, bFrom, bTo) {
   return aFrom <= bTo && bFrom <= aTo;
 }
@@ -10017,7 +10017,7 @@ function claimsOverlap(a, b) {
   return normalizeCoordinationPath(a.path) === normalizeCoordinationPath(b.path) && rangesOverlap(a.from, a.to, b.from, b.to);
 }
 var init_claims = __esm({
-  "packages/shared/src/claims.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/claims.ts"() {
     "use strict";
     init_identity();
     init_format();
@@ -10025,17 +10025,17 @@ var init_claims = __esm({
   }
 });
 
-// packages/shared/src/manifest-node.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest-node.ts
 var init_manifest_node = __esm({
-  "packages/shared/src/manifest-node.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest-node.ts"() {
     "use strict";
     init_near();
   }
 });
 
-// node_modules/ws/lib/constants.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/ws/lib/constants.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/constants.js"(exports, module) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -10056,9 +10056,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/ws/lib/buffer-util.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/ws/lib/buffer-util.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/buffer-util.js"(exports, module) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
@@ -10131,9 +10131,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/ws/lib/limiter.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/ws/lib/limiter.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/limiter.js"(exports, module) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -10181,9 +10181,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/ws/lib/permessage-deflate.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/ws/lib/permessage-deflate.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/permessage-deflate.js"(exports, module) {
     "use strict";
     var zlib = __require("zlib");
     var bufferUtil = require_buffer_util();
@@ -10564,9 +10564,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/ws/lib/validation.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/ws/lib/validation.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/validation.js"(exports, module) {
     "use strict";
     var { isUtf8 } = __require("buffer");
     var { hasBlob } = require_constants();
@@ -10765,9 +10765,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ws/lib/receiver.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/ws/lib/receiver.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/receiver.js"(exports, module) {
     "use strict";
     var { Writable } = __require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -11388,9 +11388,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/ws/lib/sender.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/ws/lib/sender.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/sender.js"(exports, module) {
     "use strict";
     var { Duplex } = __require("stream");
     var { randomFillSync } = __require("crypto");
@@ -11881,9 +11881,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/ws/lib/event-target.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/ws/lib/event-target.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/event-target.js"(exports, module) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -12110,9 +12110,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/ws/lib/extension.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/ws/lib/extension.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/extension.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -12263,9 +12263,9 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/ws/lib/websocket.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket.js"(exports, module) {
     "use strict";
     var EventEmitter = __require("events");
     var https = __require("https");
@@ -13159,9 +13159,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/ws/lib/stream.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/ws/lib/stream.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/stream.js"(exports, module) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = __require("stream");
@@ -13257,9 +13257,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/ws/lib/subprotocol.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/ws/lib/subprotocol.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/subprotocol.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -13302,9 +13302,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket-server.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/ws/lib/websocket-server.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket-server.js"(exports, module) {
     "use strict";
     var EventEmitter = __require("events");
     var http3 = __require("http");
@@ -13712,11 +13712,11 @@ import fs9 from "node:fs";
 import path10 from "node:path";
 import crypto6 from "node:crypto";
 
-// packages/hub-core/src/protocol.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/protocol.ts
 init_encoding();
 init_decoding();
 
-// packages/hub-core/src/negotiation.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/negotiation.ts
 var COMPAT_BOOTSTRAP = 1;
 var COMPAT_MAX_BYTES = 1024;
 var BOOTSTRAP_MAX_BYTES = 8192;
@@ -13957,7 +13957,7 @@ function parseBootstrapFrame(value2) {
   return invalid("unknown bootstrap frame");
 }
 
-// packages/hub-core/src/protocol.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/protocol.ts
 var MSG_HUB = 7;
 var HUB_PROTO = 1;
 var HUB_ORIGIN = /* @__PURE__ */ Symbol("room-hub");
@@ -13991,7 +13991,7 @@ function incarnationOf(value2) {
   return Math.floor(value2 / COUNTER_LIMIT);
 }
 
-// packages/shared/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/index.ts
 init_types();
 init_identity();
 init_claims();
@@ -14001,23 +14001,23 @@ init_manifest_node();
 init_format();
 init_messages();
 
-// packages/shared/src/wake.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/wake.ts
 init_identity();
 init_claims();
 init_messages();
 
-// packages/shared/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/index.ts
 init_ledger();
 init_delivery();
 
-// packages/shared/src/graph.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/graph.ts
 var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
 var CONTRACT_TEXT_MAX_CHARS = 256 * 1024;
 
-// packages/shared/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/index.ts
 init_views();
 
-// packages/shared/src/memory.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/memory.ts
 init_yjs();
 init_delivery();
 init_worker_memory();
@@ -14141,10 +14141,10 @@ function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2 } = {}) {
   return update;
 }
 
-// packages/shared/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/index.ts
 init_near();
 
-// packages/shared/src/expiry.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/expiry.ts
 init_doc();
 init_views();
 var ROOM_STALE_DAYS = ROOM_STALE_MS / (24 * 60 * 60 * 1e3);
@@ -14223,7 +14223,7 @@ function expireParticipant(room, name, origin, post) {
   }, origin);
 }
 
-// packages/shared/src/build-output.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/build-output.ts
 var REGENERABLE_BUILD_DIRS = [
   "dist",
   "build",
@@ -14249,7 +14249,7 @@ var REGENERABLE_BUILD_DIRS = [
 ];
 var buildDirs = new Set(REGENERABLE_BUILD_DIRS);
 
-// packages/shared/src/compact.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/compact.ts
 var GENERATION_KEY = "generation";
 var docGeneration = (doc) => {
   const value2 = doc.getMap("meta").get(GENERATION_KEY);
@@ -14266,7 +14266,7 @@ function generationGate(stated, current) {
   return stated === FRESH_GENERATION || stated === room ? "accept" : "stale";
 }
 
-// packages/hub-core/src/hub.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/hub.ts
 var MAINTENANCE_MS = 6e4;
 var MAX_HUB_FRAME_BYTES = 96 * 1024;
 var MAX_HUB_REQUESTS_PER_SECOND = 500;
@@ -15034,7 +15034,7 @@ var RoomHub = class {
   }
 };
 
-// packages/hub-core/src/doc-cap.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/doc-cap.ts
 init_decoding();
 var MESSAGE_SYNC = 0;
 var SYNC_STEP2 = 1;
@@ -15120,7 +15120,7 @@ var DocSizeMeter = class {
   }
 };
 
-// packages/hub-core/src/http.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/http.ts
 var HttpFailure = class extends Error {
   constructor(status, message) {
     super(message);
@@ -15137,7 +15137,7 @@ function safeUrl(target) {
   }
 }
 
-// packages/hub-core/src/incarnation-file.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/incarnation-file.ts
 function incarnationFile(file, io) {
   return serializedStore({
     read: async () => {
@@ -16642,7 +16642,7 @@ import fs8 from "node:fs";
 import http2 from "node:http";
 import path9 from "node:path";
 
-// node_modules/ws/wrapper.mjs
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
 var import_extension = __toESM(require_extension(), 1);
 var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -16657,7 +16657,7 @@ init_yjs();
 init_encoding();
 init_decoding();
 
-// node_modules/y-protocols/sync.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/sync.js
 init_encoding();
 init_decoding();
 init_yjs();
@@ -16708,7 +16708,7 @@ var readSyncMessage = (decoder, encoder3, doc, transactionOrigin, errorHandler) 
   return messageType;
 };
 
-// node_modules/y-protocols/awareness.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/awareness.js
 init_encoding();
 init_decoding();
 init_time();

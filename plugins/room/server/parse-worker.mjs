@@ -35,9 +35,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/web-tree-sitter/tree-sitter.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/web-tree-sitter/tree-sitter.js
 var require_tree_sitter = __commonJS({
-  "node_modules/web-tree-sitter/tree-sitter.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/web-tree-sitter/tree-sitter.js"(exports, module) {
     "use strict";
     var Module = typeof Module != "undefined" ? Module : {};
     var ENVIRONMENT_IS_WEB = typeof window == "object";

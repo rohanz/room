@@ -242,7 +242,22 @@ export function daemonCutoverRows(state: DaemonCutoverState): string[] {
   const refusal = owner?.liveness === 'unknown' ? `drain required; unknown owner: pid ${owner.pid}, port ${owner.port ?? 'unknown'}` : 'drain required'
   const rows = [`${state.blocked ? 'FAIL' : 'INFO'}  local daemon cutover: ${state.blocked ? refusal : owner?.runtime === 'daemon' && owner.liveness === 'alive' ? 'authenticated daemon' : 'recorded legacy processes drained'}; ${state.worktrees.length} worktree(s); drain record ${state.drainRecorded ? 'present' : 'not yet written'}`]
   if (owner) rows.push(`INFO  local owner: pid ${owner.pid}, port ${owner.port ?? 'unknown'}, ${owner.runtime}, ${owner.liveness}${owner.release ? `, release ${owner.release}` : ''}`)
-  for (const c of state.clients) rows.push(`${!c.skipped && c.runtime === 'legacy' && !c.bindingOnly && c.liveness !== 'dead' ? 'FAIL' : 'INFO'}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ''}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? 'binding only; no process evidence' : `pid ${c.pid ?? 'unknown'}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ''}${c.reason ? `; ${c.reason}; ${c.source}` : ''}`)
+  // A used clone holds hundreds of records. Show each one that blocks or that a person resolved; count the rest by kind.
+  const resolved = (c: CutoverClient) => !!c.skipped && !!c.reason?.startsWith('resolved by operator')
+  for (const c of state.clients.filter(c => blockingClient(c) || resolved(c))) {
+    rows.push(`${blockingClient(c) ? 'FAIL' : 'INFO'}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ''}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? 'binding only; no process evidence' : `pid ${c.pid ?? 'unknown'}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ''}${c.reason && !c.skipped ? `; ${c.reason}` : ''}; ${c.source}`)
+  }
+  const counts = new Map<string, Map<string, number>>()
+  for (const c of state.clients.filter(c => !blockingClient(c) && !resolved(c))) {
+    const verdict = c.skipped ? 'previously drained' : c.runtime === 'daemon-client' ? 'current client' : c.bindingOnly ? 'binding only' : c.liveness
+    const byKind = counts.get(c.kind) ?? new Map<string, number>()
+    byKind.set(verdict, (byKind.get(verdict) ?? 0) + 1)
+    counts.set(c.kind, byKind)
+  }
+  for (const [kind, byKind] of counts) {
+    const total = [...byKind.values()].reduce((sum, n) => sum + n, 0)
+    rows.push(`INFO  cutover ${kind} records: ${total} not blocking (${[...byKind].map(([verdict, n]) => `${n} ${verdict}`).join(', ')})`)
+  }
   const bundle = fileURLToPath(new URL('../../../plugins/room/server/room-mcp.mjs', import.meta.url))
   const entry = import.meta.url.endsWith('/room-mcp.mjs') ? fileURLToPath(import.meta.url) : bundle
   for (const c of state.clients.filter(blockingClient)) {

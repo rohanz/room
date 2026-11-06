@@ -48,9 +48,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/ajv/dist/compile/codegen/code.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/code.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/codegen/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -202,9 +202,9 @@ var require_code = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/scope.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -347,9 +347,9 @@ var require_scope = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/codegen/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -1067,9 +1067,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/util.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "node_modules/ajv/dist/compile/util.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -1234,9 +1234,9 @@ var require_util = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/names.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "node_modules/ajv/dist/compile/names.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/names.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1273,9 +1273,9 @@ var require_names = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/errors.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "node_modules/ajv/dist/compile/errors.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -1395,9 +1395,9 @@ var require_errors = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/boolSchema.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -1446,9 +1446,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/rules.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "node_modules/ajv/dist/compile/rules.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/rules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getRules = exports.isJSONType = void 0;
@@ -1477,9 +1477,9 @@ var require_rules = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/applicability.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -1500,9 +1500,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/dataType.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -1684,9 +1684,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/defaults.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assignDefaults = void 0;
@@ -1721,9 +1721,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/code.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/code.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
@@ -1854,9 +1854,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/keyword.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -1972,9 +1972,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/subschema.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -2055,9 +2055,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// node_modules/fast-deep-equal/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "node_modules/fast-deep-equal/index.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b) {
       if (a === b) return true;
@@ -2090,9 +2090,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// node_modules/json-schema-traverse/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "node_modules/json-schema-traverse/index.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/json-schema-traverse/index.js"(exports, module) {
     "use strict";
     var traverse = module.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2178,9 +2178,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/resolve.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "node_modules/ajv/dist/compile/resolve.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
@@ -2334,9 +2334,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "node_modules/ajv/dist/compile/validate/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/validate/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -2842,9 +2842,9 @@ var require_validate = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/validation_error.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "node_modules/ajv/dist/runtime/validation_error.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/validation_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2858,9 +2858,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/ref_error.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "node_modules/ajv/dist/compile/ref_error.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/ref_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2875,9 +2875,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "node_modules/ajv/dist/compile/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/compile/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -3099,9 +3099,9 @@ var require_compile = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/data.json
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "node_modules/ajv/dist/refs/data.json"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/refs/data.json"(exports, module) {
     module.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3118,9 +3118,9 @@ var require_data = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/utils.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "node_modules/fast-uri/lib/utils.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-uri/lib/utils.js"(exports, module) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3620,9 +3620,9 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/schemes.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "node_modules/fast-uri/lib/schemes.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-uri/lib/schemes.js"(exports, module) {
     "use strict";
     var { isUUID } = require_utils();
     var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
@@ -3831,9 +3831,9 @@ var require_schemes = __commonJS({
   }
 });
 
-// node_modules/fast-uri/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "node_modules/fast-uri/index.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -4236,9 +4236,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/uri.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "node_modules/ajv/dist/runtime/uri.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/uri.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -4247,9 +4247,9 @@ var require_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/core.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "node_modules/ajv/dist/core.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4858,9 +4858,9 @@ var require_core = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/id.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var def = {
@@ -4873,9 +4873,9 @@ var require_id = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/ref.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.callRef = exports.getValidate = void 0;
@@ -4995,9 +4995,9 @@ var require_ref = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var id_1 = require_id();
@@ -5016,9 +5016,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5048,9 +5048,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5076,9 +5076,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/ucs2length.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     function ucs2length(str4) {
@@ -5102,9 +5102,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5134,9 +5134,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/pattern.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5171,9 +5171,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5200,9 +5200,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/required.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5282,9 +5282,9 @@ var require_required = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5311,9 +5311,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/equal.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "node_modules/ajv/dist/runtime/equal.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/runtime/equal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5322,9 +5322,9 @@ var require_equal = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5389,9 +5389,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/const.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5418,9 +5418,9 @@ var require_const = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/enum.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5467,9 +5467,9 @@ var require_enum = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5505,9 +5505,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateAdditionalItems = void 0;
@@ -5558,9 +5558,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateTuple = void 0;
@@ -5615,9 +5615,9 @@ var require_items = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5632,9 +5632,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5667,9 +5667,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/contains.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5761,9 +5761,9 @@ var require_contains = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5855,9 +5855,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5898,9 +5898,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6004,9 +6004,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/properties.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -6062,9 +6062,9 @@ var require_properties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6136,9 +6136,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/not.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6167,9 +6167,9 @@ var require_not = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6184,9 +6184,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6242,9 +6242,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6269,9 +6269,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/if.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6338,9 +6338,9 @@ var require_if = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6356,9 +6356,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6404,9 +6404,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/format.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6494,9 +6494,9 @@ var require_format = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6505,9 +6505,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/metadata.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6528,9 +6528,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/draft7.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6550,9 +6550,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/types.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.DiscrError = void 0;
@@ -6564,9 +6564,9 @@ var require_types = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6669,9 +6669,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-draft-07.json
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
     module.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6826,9 +6826,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/ajv.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "node_modules/ajv/dist/ajv.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv/dist/ajv.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
@@ -6896,9 +6896,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/formats.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS({
-  "node_modules/ajv-formats/dist/formats.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv-formats/dist/formats.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatNames = exports.fastFormats = exports.fullFormats = void 0;
@@ -7099,9 +7099,9 @@ var require_formats = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/limit.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS({
-  "node_modules/ajv-formats/dist/limit.js"(exports) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv-formats/dist/limit.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatLimitDefinition = void 0;
@@ -7171,9 +7171,9 @@ var require_limit = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS({
-  "node_modules/ajv-formats/dist/index.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ajv-formats/dist/index.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var formats_1 = require_formats();
@@ -7213,17 +7213,17 @@ var require_dist = __commonJS({
   }
 });
 
-// packages/shared/src/types.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/types.ts
 var LIVE_WORKER_STATUSES, workerLive;
 var init_types = __esm({
-  "packages/shared/src/types.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/types.ts"() {
     "use strict";
     LIVE_WORKER_STATUSES = ["starting", "running", "unknown", "ambiguous"];
     workerLive = (status) => LIVE_WORKER_STATUSES.includes(status);
   }
 });
 
-// packages/shared/src/identity.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/identity.ts
 function validParticipantName(name) {
   return name.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(name);
 }
@@ -7272,16 +7272,16 @@ function newId(prefix2 = "") {
 }
 var PALETTE;
 var init_identity = __esm({
-  "packages/shared/src/identity.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/identity.ts"() {
     "use strict";
     PALETTE = ["#2e86de", "#c9761a", "#6d4fc2", "#27ae60", "#c0392b", "#b5179e", "#0f8b8d", "#8d6e63"];
   }
 });
 
-// node_modules/lib0/map.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/map.js
 var create, copy, setIfUndefined, any;
 var init_map = __esm({
-  "node_modules/lib0/map.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/map.js"() {
     "use strict";
     create = () => /* @__PURE__ */ new Map();
     copy = (m) => {
@@ -7309,19 +7309,19 @@ var init_map = __esm({
   }
 });
 
-// node_modules/lib0/set.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/set.js
 var create2;
 var init_set = __esm({
-  "node_modules/lib0/set.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/set.js"() {
     "use strict";
     create2 = () => /* @__PURE__ */ new Set();
   }
 });
 
-// node_modules/lib0/array.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/array.js
 var last, appendTo, from, isArray;
 var init_array = __esm({
-  "node_modules/lib0/array.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/array.js"() {
     "use strict";
     last = (arr) => arr[arr.length - 1];
     appendTo = (dest, src) => {
@@ -7334,10 +7334,10 @@ var init_array = __esm({
   }
 });
 
-// node_modules/lib0/observable.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/observable.js
 var ObservableV2, Observable;
 var init_observable = __esm({
-  "node_modules/lib0/observable.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/observable.js"() {
     "use strict";
     init_map();
     init_set();
@@ -7465,10 +7465,10 @@ var init_observable = __esm({
   }
 });
 
-// node_modules/lib0/math.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/math.js
 var floor, abs, min, max, isNaN2, pow, isNegativeZero;
 var init_math = __esm({
-  "node_modules/lib0/math.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/math.js"() {
     "use strict";
     floor = Math.floor;
     abs = Math.abs;
@@ -7480,10 +7480,10 @@ var init_math = __esm({
   }
 });
 
-// node_modules/lib0/binary.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/binary.js
 var BIT1, BIT2, BIT3, BIT4, BIT6, BIT7, BIT8, BIT18, BIT19, BIT20, BIT21, BIT22, BIT23, BIT24, BIT25, BIT26, BIT27, BIT28, BIT29, BIT30, BIT31, BIT32, BITS5, BITS6, BITS7, BITS17, BITS18, BITS19, BITS20, BITS21, BITS22, BITS23, BITS24, BITS25, BITS26, BITS27, BITS28, BITS29, BITS30, BITS31;
 var init_binary = __esm({
-  "node_modules/lib0/binary.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/binary.js"() {
     "use strict";
     BIT1 = 1;
     BIT2 = 2;
@@ -7528,10 +7528,10 @@ var init_binary = __esm({
   }
 });
 
-// node_modules/lib0/number.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/number.js
 var MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, LOWEST_INT32, isInteger, isNaN3, parseInt2;
 var init_number = __esm({
-  "node_modules/lib0/number.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/number.js"() {
     "use strict";
     init_math();
     MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -7543,10 +7543,10 @@ var init_number = __esm({
   }
 });
 
-// node_modules/lib0/string.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/string.js
 var fromCharCode, fromCodePoint, MAX_UTF16_CHARACTER, toLowerCase, trimLeftRegex, trimLeft, fromCamelCaseRegex, fromCamelCase, _encodeUtf8Polyfill, utf8TextEncoder, _encodeUtf8Native, encodeUtf8, utf8TextDecoder;
 var init_string = __esm({
-  "node_modules/lib0/string.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/string.js"() {
     "use strict";
     fromCharCode = String.fromCharCode;
     fromCodePoint = String.fromCodePoint;
@@ -7577,10 +7577,10 @@ var init_string = __esm({
   }
 });
 
-// node_modules/lib0/encoding.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/encoding.js
 var Encoder, createEncoder, length, toUint8Array, verifyLen, write, writeUint8, writeVarUint, writeVarInt, _strBuffer, _maxStrBSize, _writeVarStringNative, _writeVarStringPolyfill, writeVarString, writeUint8Array, writeVarUint8Array, writeOnDataView, writeFloat32, writeFloat64, writeBigInt64, floatTestBed, isFloat32, writeAny, RleEncoder, flushUintOptRleEncoder, UintOptRleEncoder, flushIntDiffOptRleEncoder, IntDiffOptRleEncoder, StringEncoder;
 var init_encoding = __esm({
-  "node_modules/lib0/encoding.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/encoding.js"() {
     "use strict";
     init_math();
     init_number();
@@ -7895,10 +7895,10 @@ var init_encoding = __esm({
   }
 });
 
-// node_modules/lib0/error.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/error.js
 var create3, methodUnimplemented, unexpectedCase;
 var init_error = __esm({
-  "node_modules/lib0/error.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/error.js"() {
     "use strict";
     create3 = (s) => new Error(s);
     methodUnimplemented = () => {
@@ -7910,10 +7910,10 @@ var init_error = __esm({
   }
 });
 
-// node_modules/lib0/decoding.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/decoding.js
 var errorUnexpectedEndOfArray, errorIntegerOutOfRange, Decoder, createDecoder, hasContent, readUint8Array, readVarUint8Array, readUint8, readVarUint, readVarInt, _readVarStringPolyfill, _readVarStringNative, readVarString, readFromDataView, readFloat32, readFloat64, readBigInt64, readAnyLookupTable, readAny, RleDecoder, UintOptRleDecoder, IntDiffOptRleDecoder, StringDecoder;
 var init_decoding = __esm({
-  "node_modules/lib0/decoding.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/decoding.js"() {
     "use strict";
     init_binary();
     init_math();
@@ -8164,11 +8164,11 @@ var init_decoding = __esm({
   }
 });
 
-// node_modules/lib0/webcrypto.node.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/webcrypto.node.js
 import { webcrypto } from "node:crypto";
 var subtle, getRandomValues;
 var init_webcrypto_node = __esm({
-  "node_modules/lib0/webcrypto.node.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/webcrypto.node.js"() {
     "use strict";
     subtle = /** @type {any} */
     webcrypto.subtle;
@@ -8177,10 +8177,10 @@ var init_webcrypto_node = __esm({
   }
 });
 
-// node_modules/lib0/random.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/random.js
 var uint32, uuidv4Template, uuidv4;
 var init_random = __esm({
-  "node_modules/lib0/random.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/random.js"() {
     "use strict";
     init_webcrypto_node();
     uint32 = () => getRandomValues(new Uint32Array(1))[0];
@@ -8193,19 +8193,19 @@ var init_random = __esm({
   }
 });
 
-// node_modules/lib0/time.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/time.js
 var getUnixTime;
 var init_time = __esm({
-  "node_modules/lib0/time.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/time.js"() {
     "use strict";
     getUnixTime = Date.now;
   }
 });
 
-// node_modules/lib0/promise.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/promise.js
 var create4, all;
 var init_promise = __esm({
-  "node_modules/lib0/promise.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/promise.js"() {
     "use strict";
     create4 = (f) => (
       /** @type {Promise<T>} */
@@ -8215,19 +8215,19 @@ var init_promise = __esm({
   }
 });
 
-// node_modules/lib0/conditions.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/conditions.js
 var undefinedToNull;
 var init_conditions = __esm({
-  "node_modules/lib0/conditions.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/conditions.js"() {
     "use strict";
     undefinedToNull = (v) => v === void 0 ? null : v;
   }
 });
 
-// node_modules/lib0/storage.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/storage.js
 var VarStoragePolyfill, _localStorage, usePolyfill, varStorage, onChange, offChange;
 var init_storage = __esm({
-  "node_modules/lib0/storage.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/storage.js"() {
     "use strict";
     VarStoragePolyfill = class {
       constructor() {
@@ -8270,20 +8270,20 @@ var init_storage = __esm({
   }
 });
 
-// node_modules/lib0/trait/equality.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/trait/equality.js
 var EqualityTraitSymbol, equals;
 var init_equality = __esm({
-  "node_modules/lib0/trait/equality.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/trait/equality.js"() {
     "use strict";
     EqualityTraitSymbol = /* @__PURE__ */ Symbol("Equality");
     equals = (a, b) => a === b || !!a?.[EqualityTraitSymbol]?.(b) || false;
   }
 });
 
-// node_modules/lib0/object.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/object.js
 var assign, keys, forEach, map, size, isEmpty, every, hasProperty, equalFlat, freeze, deepFreeze;
 var init_object = __esm({
-  "node_modules/lib0/object.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/object.js"() {
     "use strict";
     init_equality();
     assign = Object.assign;
@@ -8330,10 +8330,10 @@ var init_object = __esm({
   }
 });
 
-// node_modules/lib0/function.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/function.js
 var callAll, id, equalityDeep, isOneOf;
 var init_function = __esm({
-  "node_modules/lib0/function.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/function.js"() {
     "use strict";
     init_object();
     init_equality();
@@ -8427,10 +8427,10 @@ var init_function = __esm({
   }
 });
 
-// node_modules/lib0/environment.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/environment.js
 var isNode, isBrowser, isMac, params, args, computeParams, hasParam, getVariable, hasConf, production, forceColor, supportsColor;
 var init_environment = __esm({
-  "node_modules/lib0/environment.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/environment.js"() {
     "use strict";
     init_map();
     init_string();
@@ -8491,10 +8491,10 @@ var init_environment = __esm({
   }
 });
 
-// node_modules/lib0/buffer.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/buffer.js
 var createUint8ArrayFromLen, createUint8ArrayViewFromArrayBuffer, createUint8ArrayFromArrayBuffer, toBase64Browser, toBase64Node, fromBase64Browser, fromBase64Node, toBase64, fromBase64, copyUint8Array;
 var init_buffer = __esm({
-  "node_modules/lib0/buffer.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/buffer.js"() {
     "use strict";
     init_string();
     init_environment();
@@ -8531,19 +8531,19 @@ var init_buffer = __esm({
   }
 });
 
-// node_modules/lib0/symbol.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/symbol.js
 var create5;
 var init_symbol = __esm({
-  "node_modules/lib0/symbol.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/symbol.js"() {
     "use strict";
     create5 = Symbol;
   }
 });
 
-// node_modules/lib0/logging.common.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.common.js
 var BOLD, UNBOLD, BLUE, GREY, GREEN, RED, PURPLE, ORANGE, UNCOLOR, computeNoColorLoggingArgs, lastLoggingTime;
 var init_logging_common = __esm({
-  "node_modules/lib0/logging.common.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.common.js"() {
     "use strict";
     init_symbol();
     init_time();
@@ -8590,10 +8590,10 @@ var init_logging_common = __esm({
   }
 });
 
-// node_modules/lib0/logging.node.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.node.js
 var _nodeStyleMap, computeNodeLoggingArgs, computeLoggingArgs, print, warn;
 var init_logging_node = __esm({
-  "node_modules/lib0/logging.node.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/logging.node.js"() {
     "use strict";
     init_environment();
     init_logging_common();
@@ -8655,10 +8655,10 @@ var init_logging_node = __esm({
   }
 });
 
-// node_modules/lib0/iterator.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/iterator.js
 var createIterator, iteratorFilter, iteratorMap;
 var init_iterator = __esm({
-  "node_modules/lib0/iterator.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/iterator.js"() {
     "use strict";
     createIterator = (next) => ({
       /**
@@ -8684,7 +8684,7 @@ var init_iterator = __esm({
   }
 });
 
-// node_modules/yjs/dist/yjs.mjs
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/yjs/dist/yjs.mjs
 function* lazyStructReaderGenerator(decoder) {
   const numOfStateUpdates = readVarUint(decoder.restDecoder);
   for (let i = 0; i < numOfStateUpdates; i++) {
@@ -8729,7 +8729,7 @@ function* lazyStructReaderGenerator(decoder) {
 }
 var DeleteItem, DeleteSet, iterateDeletedStructs, findIndexDS, isDeleted, sortAndMergeDeleteSet, mergeDeleteSets, addToDeleteSet, createDeleteSet, createDeleteSetFromStructStore, writeDeleteSet, readDeleteSet, readAndApplyDeleteSet, generateNewClientId, Doc2, DSDecoderV1, UpdateDecoderV1, DSDecoderV2, UpdateDecoderV2, DSEncoderV1, UpdateEncoderV1, DSEncoderV2, UpdateEncoderV2, writeStructs, writeClientsStructs, readClientsStructRefs, integrateStructs, writeStructsFromTransaction, readUpdateV2, applyUpdateV2, applyUpdate, writeStateAsUpdate, encodeStateAsUpdateV2, encodeStateAsUpdate, readStateVector, decodeStateVector, writeStateVector, writeDocumentStateVector, encodeStateVectorV2, encodeStateVector, EventHandler, createEventHandler, addEventHandlerListener, removeEventHandlerListener, callEventHandlerListeners, ID, compareIDs, createID, findRootTypeKey, RelativePosition, relativePositionToJSON, createRelativePositionFromJSON, AbsolutePosition, createAbsolutePosition, createRelativePosition, createRelativePositionFromTypeIndex, getItemWithOffset, createAbsolutePositionFromRelativePosition, Snapshot, createSnapshot, emptySnapshot, isVisible, splitSnapshotAffectedStructs, StructStore, getStateVector, getState, addStruct, findIndexSS, find, getItem, findIndexCleanStart, getItemCleanStart, getItemCleanEnd, replaceStruct, iterateStructs, Transaction, writeUpdateMessageFromTransaction, addChangedTypeToTransaction, tryToMergeWithLefts, tryGcDeleteSet, tryMergeDeleteSet, cleanupTransactions, transact, LazyStructReader, LazyStructWriter, mergeUpdates, sliceStruct, mergeUpdatesV2, diffUpdateV2, flushLazyStructWriter, writeStructToLazyStructWriter, finishLazyStructWriting, convertUpdateFormat, convertUpdateFormatV2ToV1, errorComputeChanges, YEvent, getPathTo, warnPrematureAccess, maxSearchMarker, globalSearchMarkerTimestamp, ArraySearchMarker, refreshMarkerTimestamp, overwriteMarker, markPosition, findMarker, updateMarkerChanges, callTypeObservers, AbstractType, typeListSlice, typeListToArray, typeListForEach, typeListMap, typeListCreateIterator, typeListGet, typeListInsertGenericsAfter, lengthExceeded, typeListInsertGenerics, typeListPushGenerics, typeListDelete, typeMapDelete, typeMapSet, typeMapGet, typeMapGetAll, typeMapHas, typeMapGetAllSnapshot, createMapIterator, YArrayEvent, YArray, readYArray, YMapEvent, YMap, readYMap, equalAttrs, ItemTextListPosition, findNextPosition, findPosition, insertNegatedAttributes, updateCurrentAttributes, minimizeAttributeChanges, insertAttributes, insertText, formatText, cleanupFormattingGap, cleanupContextlessFormattingGap, cleanupYTextFormatting, cleanupYTextAfterTransaction, deleteText, YTextEvent, YText, readYText, YXmlTreeWalker, YXmlFragment, readYXmlFragment, YXmlElement, readYXmlElement, YXmlEvent, YXmlHook, readYXmlHook, YXmlText, readYXmlText, AbstractStruct, structGCRefNumber, GC, ContentBinary, readContentBinary, ContentDeleted, readContentDeleted, createDocFromOpts, ContentDoc, readContentDoc, ContentEmbed, readContentEmbed, ContentFormat, readContentFormat, ContentJSON, readContentJSON, isDevMode, ContentAny, readContentAny, ContentString, readContentString, typeRefs, YArrayRefID, YMapRefID, YTextRefID, YXmlElementRefID, YXmlFragmentRefID, YXmlHookRefID, YXmlTextRefID, ContentType, readContentType, followRedone, splitItem, Item, readItemContent, contentRefs, structSkipRefNumber, Skip, glo, importIdentifier;
 var init_yjs = __esm({
-  "node_modules/yjs/dist/yjs.mjs"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/yjs/dist/yjs.mjs"() {
     "use strict";
     init_observable();
     init_array();
@@ -15293,10 +15293,10 @@ var init_yjs = __esm({
   }
 });
 
-// packages/shared/src/bus-index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
-  "packages/shared/src/bus-index.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/bus-index.ts"() {
     "use strict";
     init_yjs();
     init_messages();
@@ -15468,7 +15468,7 @@ var init_bus_index = __esm({
   }
 });
 
-// packages/shared/src/ledger.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/ledger.ts
 function compactRetiredWorker(record2) {
   const files4 = [...new Set(record2.files)];
   return {
@@ -15515,7 +15515,7 @@ function areaSummary(messages, scopes, windowMs = 10 * 60 * 1e3, now = Date.now(
 }
 var MAX_RETIRED_WORKERS, LEDGER_TYPES;
 var init_ledger = __esm({
-  "packages/shared/src/ledger.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/ledger.ts"() {
     "use strict";
     init_near();
     init_messages();
@@ -15524,7 +15524,7 @@ var init_ledger = __esm({
   }
 });
 
-// packages/shared/src/delivery.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/delivery.ts
 function isOwed(doc, m) {
   return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
 }
@@ -15572,7 +15572,7 @@ function archiveSummary(doc, area) {
 }
 var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_BYTES, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, LEDGER_BUDGET, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, addressedTo, receipted, DeliveryIndex, indexes;
 var init_delivery = __esm({
-  "packages/shared/src/delivery.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
     init_bus_index();
@@ -15881,7 +15881,7 @@ var init_delivery = __esm({
   }
 });
 
-// packages/shared/src/worker-memory.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/worker-memory.ts
 function revisions(doc) {
   const latest = /* @__PURE__ */ new Map();
   const see = (r) => {
@@ -15920,7 +15920,7 @@ function retainedPublication(room, name) {
 }
 var REVISIONS, compareRevision, publicationRevision, matchesRevision;
 var init_worker_memory = __esm({
-  "packages/shared/src/worker-memory.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/worker-memory.ts"() {
     "use strict";
     REVISIONS = "completedPublicationRevisions";
     compareRevision = (a, b) => a.epoch - b.epoch || a.semRev - b.semRev || a.rev - b.rev;
@@ -15932,10 +15932,10 @@ var init_worker_memory = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/base.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/base.js
 var Diff;
 var init_base = __esm({
-  "node_modules/diff/libesm/diff/base.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/base.js"() {
     "use strict";
     Diff = class {
       diff(oldStr, newStr, options = {}) {
@@ -16140,13 +16140,13 @@ var init_base = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/character.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/character.js
 function diffChars(oldStr, newStr, options) {
   return characterDiff.diff(oldStr, newStr, options);
 }
 var CharacterDiff, characterDiff;
 var init_character = __esm({
-  "node_modules/diff/libesm/diff/character.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/character.js"() {
     "use strict";
     init_base();
     CharacterDiff = class extends Diff {
@@ -16155,7 +16155,7 @@ var init_character = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/line.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/line.js
 function diffLines(oldStr, newStr, options) {
   return lineDiff.diff(oldStr, newStr, options);
 }
@@ -16179,7 +16179,7 @@ function tokenize(value5, options) {
 }
 var LineDiff, lineDiff;
 var init_line = __esm({
-  "node_modules/diff/libesm/diff/line.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/line.js"() {
     "use strict";
     init_base();
     LineDiff = class extends Diff {
@@ -16210,13 +16210,13 @@ var init_line = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/array.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/array.js
 function diffArrays(oldArr, newArr, options) {
   return arrayDiff.diff(oldArr, newArr, options);
 }
 var ArrayDiff, arrayDiff;
 var init_array2 = __esm({
-  "node_modules/diff/libesm/diff/array.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/diff/array.js"() {
     "use strict";
     init_base();
     ArrayDiff = class extends Diff {
@@ -16234,7 +16234,7 @@ var init_array2 = __esm({
   }
 });
 
-// node_modules/diff/libesm/patch/create.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/patch/create.js
 function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
   let optionsObj;
   if (!options) {
@@ -16389,7 +16389,7 @@ function splitLines(text2) {
 }
 var INCLUDE_HEADERS;
 var init_create = __esm({
-  "node_modules/diff/libesm/patch/create.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/patch/create.js"() {
     "use strict";
     init_line();
     INCLUDE_HEADERS = {
@@ -16400,9 +16400,9 @@ var init_create = __esm({
   }
 });
 
-// node_modules/diff/libesm/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/index.js
 var init_libesm = __esm({
-  "node_modules/diff/libesm/index.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/diff/libesm/index.js"() {
     "use strict";
     init_character();
     init_line();
@@ -16411,7 +16411,7 @@ var init_libesm = __esm({
   }
 });
 
-// packages/shared/src/text-diff.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/text-diff.ts
 function commonEdges(a, b) {
   const shortest = Math.min(a.length, b.length);
   let head = 0;
@@ -16501,7 +16501,7 @@ function boundedTextDiff(before, after, stats) {
 }
 var WORK, SMALL_MIDDLE, SMALL_WORK, isHigh, isLow, editBudget, replace;
 var init_text_diff = __esm({
-  "packages/shared/src/text-diff.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/text-diff.ts"() {
     "use strict";
     init_libesm();
     WORK = 2e6;
@@ -16517,7 +16517,7 @@ var init_text_diff = __esm({
   }
 });
 
-// packages/shared/src/doc.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/doc.ts
 import { randomBytes } from "node:crypto";
 function holderFence(holder) {
   return holder && Number.isSafeInteger(holder.epoch) ? String(holder.epoch) : void 0;
@@ -16561,7 +16561,7 @@ function makeAnchor(text2, from2, to2) {
 }
 var validColorIndex, RoomDoc;
 var init_doc = __esm({
-  "packages/shared/src/doc.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/doc.ts"() {
     "use strict";
     init_delivery();
     init_worker_memory();
@@ -17055,7 +17055,7 @@ var init_doc = __esm({
   }
 });
 
-// packages/shared/src/views.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/views.ts
 function participantsView(doc, awareness, now) {
   const names = /* @__PURE__ */ new Set();
   for (const key2 of doc.participants.keys()) {
@@ -17321,7 +17321,7 @@ function unresolvedLines(roomName, entries, messagesTo, maxNames = 5) {
 }
 var ROOM_STALE_MS, AWARENESS_FRESH_MS, STOPPED_WITH_SESSION, STOP_REQUESTED_WITH_SESSION, STOP_UNCONFIRMED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, IDLE_SHOWN_MIN, scopeLine, WORKER_ACTIVITY_MAX, ago, uncollected, STALE_WORKER_MS;
 var init_views = __esm({
-  "packages/shared/src/views.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/views.ts"() {
     "use strict";
     init_claims();
     init_worker_memory();
@@ -17348,7 +17348,7 @@ var init_views = __esm({
   }
 });
 
-// packages/shared/src/manifest-node.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest-node.ts
 var manifest_node_exports = {};
 __export(manifest_node_exports, {
   digestPath: () => digestPath,
@@ -17364,13 +17364,13 @@ function gitBlobHash(text2, format = "sha1") {
   return createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 var init_manifest_node = __esm({
-  "packages/shared/src/manifest-node.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest-node.ts"() {
     "use strict";
     init_near();
   }
 });
 
-// packages/shared/src/manifest.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest.ts
 function manifestKey(name, fence) {
   return `${name}\0${fence}`;
 }
@@ -17478,7 +17478,7 @@ async function versionOf(snap, path74, env = {}) {
   }
 }
 var init_manifest = __esm({
-  "packages/shared/src/manifest.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/manifest.ts"() {
     "use strict";
     init_doc();
     init_views();
@@ -17486,7 +17486,7 @@ var init_manifest = __esm({
   }
 });
 
-// packages/shared/src/near.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/near.ts
 function neighbours(view, me) {
   const names = view.filter((p) => p.visible && p.name !== me && !p.name.startsWith("pr#")).map((p) => p.name).sort();
   const selected = new Set(names);
@@ -17523,14 +17523,14 @@ function nearPath(path74, others) {
   return others.filter((other) => coversPath(path74, other.path));
 }
 var init_near = __esm({
-  "packages/shared/src/near.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/near.ts"() {
     "use strict";
     init_identity();
     init_manifest();
   }
 });
 
-// packages/shared/src/messages.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/messages.ts
 function supersededConflictNotices(messages) {
   const groups = /* @__PURE__ */ new Map();
   for (const m of messages) {
@@ -17666,7 +17666,7 @@ function formatPlans(plans) {
 }
 var who, to, priority, conflictLabel, PEER_NOTICE_TEXT, PEER_NOTICE_ID, priorityRank, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
 var init_messages = __esm({
-  "packages/shared/src/messages.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/messages.ts"() {
     "use strict";
     init_claims();
     init_identity();
@@ -17703,7 +17703,7 @@ var init_messages = __esm({
   }
 });
 
-// packages/shared/src/format.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/format.ts
 function withLineNumbers(text2) {
   const lines2 = text2.split("\n");
   if (lines2.length > 1 && lines2[lines2.length - 1] === "") lines2.pop();
@@ -17711,13 +17711,13 @@ function withLineNumbers(text2) {
   return lines2.map((l, i) => `${String(i + 1).padStart(w)}| ${l}`).join("\n");
 }
 var init_format = __esm({
-  "packages/shared/src/format.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/format.ts"() {
     "use strict";
     init_messages();
   }
 });
 
-// packages/shared/src/claims.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/claims.ts
 function rangesOverlap(aFrom, aTo, bFrom, bTo) {
   return aFrom <= bTo && bFrom <= aTo;
 }
@@ -17846,7 +17846,7 @@ function describeClaim(c) {
 }
 var linesOf, MYERS_STEPS, LCS_CELLS;
 var init_claims = __esm({
-  "packages/shared/src/claims.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/claims.ts"() {
     "use strict";
     init_identity();
     init_format();
@@ -17857,7 +17857,7 @@ var init_claims = __esm({
   }
 });
 
-// packages/shared/src/worker-messages.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/worker-messages.ts
 function completionMessage(record2, run2, status, report) {
   const id3 = completionId(record2.id, run2.n, report?.done?.k);
   if (report?.done || status.status === "done") return { id: id3, body: {
@@ -17878,13 +17878,13 @@ function completionMessage(record2, run2, status, report) {
 }
 var completionId;
 var init_worker_messages = __esm({
-  "packages/shared/src/worker-messages.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/worker-messages.ts"() {
     "use strict";
     completionId = (worker, run2, k = 1) => `wk:${worker}:${run2}${k > 1 ? `:${k}` : ""}`;
   }
 });
 
-// packages/shared/src/wake.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/wake.ts
 function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorkerNames2) {
   if (m.type === "plan" && m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "ended plan" };
   if (m.from === me.name && m.fromKind !== "human") return { wake: false, mustAnswer: false, reason: "own message" };
@@ -17915,7 +17915,7 @@ function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorker
   return { wake: true, mustAnswer: addressed, reason: addressed ? "addressed to me" : "broadcast" };
 }
 var init_wake = __esm({
-  "packages/shared/src/wake.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/wake.ts"() {
     "use strict";
     init_identity();
     init_claims();
@@ -17923,7 +17923,7 @@ var init_wake = __esm({
   }
 });
 
-// packages/shared/src/graph.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/graph.ts
 function whitespaceOutsideLiterals(text2, separator) {
   const chunks = [];
   let quote2 = "", escaped = false, pending = false;
@@ -18083,7 +18083,7 @@ function symbolRange(path74, text2, symbol, parse3) {
 }
 var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, CONTRACT_TEXT_MAX_CHARS, CONTRACT_MAX_DEFINITIONS, CONTRACT_SIGNATURE_MAX_CHARS, CONTRACT_MAX_OVERLOADS_SHOWN, unavailable, tooManyDefinitions, normalized, comparable, boundedSignature, definitionName, COMMON_SYMBOL_FILE_THRESHOLD, SymbolGraph, withoutExtension, directoryOf, basenameOf;
 var init_graph = __esm({
-  "packages/shared/src/graph.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/graph.ts"() {
     "use strict";
     WORD = /[A-Za-z_][A-Za-z0-9_]*/g;
     PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
@@ -18243,7 +18243,7 @@ var init_graph = __esm({
   }
 });
 
-// packages/shared/src/areas.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/areas.ts
 function parseCodeowners(text2) {
   const rules = [];
   for (const raw of text2.split("\n")) {
@@ -18328,7 +18328,7 @@ function sharesArea(a, b) {
 }
 var CODEOWNERS_PATHS, Areas;
 var init_areas = __esm({
-  "packages/shared/src/areas.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/areas.ts"() {
     "use strict";
     CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
     Areas = class _Areas {
@@ -18383,7 +18383,7 @@ var init_areas = __esm({
   }
 });
 
-// packages/shared/src/rooms.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/rooms.ts
 function canonicalRepo(originDerived) {
   if (!originDerived.startsWith("github.com/")) return originDerived;
   return originDerived.toLowerCase();
@@ -18401,15 +18401,15 @@ function roomKey(server, room) {
   return server === "local" ? room : `${new URL(server).origin}/${room}`;
 }
 var init_rooms = __esm({
-  "packages/shared/src/rooms.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/rooms.ts"() {
     "use strict";
   }
 });
 
-// packages/shared/src/memory.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/memory.ts
 var MAX_MEMORY_BYTES, ROOM_DOC_MAX_BYTES;
 var init_memory = __esm({
-  "packages/shared/src/memory.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/memory.ts"() {
     "use strict";
     init_delivery();
     init_worker_memory();
@@ -18418,10 +18418,10 @@ var init_memory = __esm({
   }
 });
 
-// packages/shared/src/expiry.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/expiry.ts
 var ROOM_STALE_DAYS;
 var init_expiry = __esm({
-  "packages/shared/src/expiry.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/expiry.ts"() {
     "use strict";
     init_doc();
     init_views();
@@ -18429,20 +18429,20 @@ var init_expiry = __esm({
   }
 });
 
-// packages/shared/src/parsed.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/parsed.ts
 var init_parsed = __esm({
-  "packages/shared/src/parsed.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/parsed.ts"() {
     "use strict";
   }
 });
 
-// packages/shared/src/build-output.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/build-output.ts
 function isRegenerableBuildPath(rel) {
   return rel.endsWith(".tsbuildinfo") || rel.split("/").some((part) => buildDirs.has(part));
 }
 var REGENERABLE_BUILD_DIRS, buildDirs;
 var init_build_output = __esm({
-  "packages/shared/src/build-output.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/build-output.ts"() {
     "use strict";
     REGENERABLE_BUILD_DIRS = [
       "dist",
@@ -18471,7 +18471,7 @@ var init_build_output = __esm({
   }
 });
 
-// packages/shared/src/compact.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/compact.ts
 function watchReplica(doc) {
   if (received.has(doc)) return;
   received.set(doc, [...decodeStateVector(encodeStateVector(doc)).keys()].some((id3) => id3 !== doc.clientID));
@@ -18496,7 +18496,7 @@ function roomConnection(doc) {
 }
 var GENERATION_KEY, docGeneration, GENERATION_PARAM, FRESH_GENERATION, UNCOMPACTED, STALE_REPLICA_CODE, STALE_REPLICA_REASON, received;
 var init_compact = __esm({
-  "packages/shared/src/compact.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/compact.ts"() {
     "use strict";
     init_yjs();
     GENERATION_KEY = "generation";
@@ -18513,18 +18513,18 @@ var init_compact = __esm({
   }
 });
 
-// packages/shared/src/schema.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/schema.ts
 var WORKER_RECORD_SCHEMA;
 var init_schema = __esm({
-  "packages/shared/src/schema.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/schema.ts"() {
     "use strict";
     WORKER_RECORD_SCHEMA = 1;
   }
 });
 
-// packages/shared/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/index.ts
 var init_src = __esm({
-  "packages/shared/src/index.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/shared/src/index.ts"() {
     "use strict";
     init_types();
     init_identity();
@@ -18552,7 +18552,7 @@ var init_src = __esm({
   }
 });
 
-// packages/roomd/src/repo-path.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/repo-path.ts
 import fs from "node:fs";
 import path from "node:path";
 function validRepoPath(rel, policy) {
@@ -18601,7 +18601,7 @@ function containedRepoPath(rootInput, targetInput, options) {
 }
 var MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH;
 var init_repo_path = __esm({
-  "packages/roomd/src/repo-path.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/repo-path.ts"() {
     "use strict";
     MATERIALIZED_PATH = { backslash: "reject", empty: "reject", dot: "reject", git: "any", nul: "reject" };
     DISK_READ_PATH = { backslash: "separator", empty: "allow", dot: "allow", git: "allow" };
@@ -18611,7 +18611,7 @@ var init_repo_path = __esm({
   }
 });
 
-// packages/roomd/src/git.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/git.ts
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { performance as performance2 } from "node:perf_hooks";
@@ -18930,7 +18930,7 @@ async function gitIgnored(dir, rel, configuredTimeoutMs) {
 }
 var gitObserver, noGitObservation, DEFAULT_GIT_TIMEOUT_MS, UNKNOWN_WHOLE_TREE_PATHS, WHOLE_TREE_PER_PATH_MS, WHOLE_TREE_TIMEOUT_CAP_MS, timeoutMs, gitWholeTree, isGitTimeout, GIT_OUTPUT_MAX_BYTES, GIT_STDERR_MAX_BYTES, GIT_KILL_GRACE_MS, GitOutputTooLarge, stderrDetail, gitHead, gitBranch, BATCH_HEADER_BYTES, gitCountBetween, gitPathsBetween, gitSubject;
 var init_git = __esm({
-  "packages/roomd/src/git.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/git.ts"() {
     "use strict";
     noGitObservation = () => {
     };
@@ -18963,7 +18963,7 @@ var init_git = __esm({
   }
 });
 
-// packages/roomd/src/baseline.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/baseline.ts
 import { execFile as execFile2, execFileSync } from "node:child_process";
 import fs2 from "node:fs";
 import os from "node:os";
@@ -19209,7 +19209,7 @@ async function workerChangedPaths(worker) {
 }
 var carriesWork, committedPaths, MAX_COMMITTED_PATHS, MissingBaseBlob, stdinPathLine;
 var init_baseline = __esm({
-  "packages/roomd/src/baseline.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/baseline.ts"() {
     "use strict";
     init_repo_path();
     init_git();
@@ -19227,7 +19227,7 @@ var init_baseline = __esm({
   }
 });
 
-// packages/roomd/src/git-dirs.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/git-dirs.ts
 import fs3 from "node:fs";
 import path2 from "node:path";
 function worktreeGitDirFromDotGit(dir) {
@@ -19265,14 +19265,14 @@ async function realGitCommonDir(dir) {
   return process.platform === "win32" ? fs3.realpathSync.native(common) : fs3.realpathSync(common);
 }
 var init_git_dirs = __esm({
-  "packages/roomd/src/git-dirs.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/git-dirs.ts"() {
     "use strict";
     init_baseline();
     init_git();
   }
 });
 
-// packages/roomd/src/bounded-read.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/bounded-read.ts
 import fs4 from "node:fs";
 function readBoundedFileSync(file, limit) {
   const fd = fs4.openSync(file, fs4.constants.O_RDONLY | (fs4.constants.O_NOFOLLOW ?? 0));
@@ -19294,7 +19294,7 @@ function readBoundedFileSync(file, limit) {
 }
 var FileTooLarge;
 var init_bounded_read = __esm({
-  "packages/roomd/src/bounded-read.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/bounded-read.ts"() {
     "use strict";
     FileTooLarge = class extends Error {
       constructor(file, limit) {
@@ -19309,7 +19309,7 @@ var init_bounded_read = __esm({
   }
 });
 
-// packages/roomd/src/room-file.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/room-file.ts
 import fs5 from "node:fs";
 import path3 from "node:path";
 function roomFilePath(dir) {
@@ -19337,7 +19337,7 @@ function readRoomFile(dir) {
 }
 var ROOM_FILE_MAX_BYTES;
 var init_room_file = __esm({
-  "packages/roomd/src/room-file.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/room-file.ts"() {
     "use strict";
     init_git_dirs();
     init_bounded_read();
@@ -19345,10 +19345,10 @@ var init_room_file = __esm({
   }
 });
 
-// packages/roomd/src/disk-batch.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/disk-batch.ts
 var MAX_PENDING_PATHS, MAX_SETTLE_MS, BURST_PATHS, DiskBatch;
 var init_disk_batch = __esm({
-  "packages/roomd/src/disk-batch.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/disk-batch.ts"() {
     "use strict";
     MAX_PENDING_PATHS = 1e4;
     MAX_SETTLE_MS = 1e4;
@@ -19502,10 +19502,10 @@ var init_disk_batch = __esm({
   }
 });
 
-// packages/roomd/src/poll.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/poll.ts
 var MAX_POLL_BACKOFF_MS, POLL_DIAGNOSTIC_MS, CoalescedPoll;
 var init_poll = __esm({
-  "packages/roomd/src/poll.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/poll.ts"() {
     "use strict";
     MAX_POLL_BACKOFF_MS = 6e4;
     POLL_DIAGNOSTIC_MS = 5 * 6e4;
@@ -19604,7 +19604,7 @@ var init_poll = __esm({
   }
 });
 
-// packages/roomd/src/share-level.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/share-level.ts
 function parseShare(v) {
   const s = typeof v === "string" ? v.trim().toLowerCase() : "";
   return SHARE_LEVELS.includes(s) ? s : void 0;
@@ -19614,14 +19614,14 @@ function clampShare(level, max2) {
 }
 var SHARE_LEVELS, SHARE_RANK;
 var init_share_level = __esm({
-  "packages/roomd/src/share-level.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/share-level.ts"() {
     "use strict";
     SHARE_LEVELS = ["intent", "declared", "full"];
     SHARE_RANK = { intent: 0, declared: 1, full: 2 };
   }
 });
 
-// packages/roomd/src/roomignore.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/roomignore.ts
 function parseRoomIgnore(text2, maxPatterns = Infinity) {
   const rules = [];
   for (const raw of text2.split(/\r?\n/)) {
@@ -19659,7 +19659,7 @@ function parseRoomIgnore(text2, maxPatterns = Infinity) {
 }
 var ROOMIGNORE_MAX_BYTES, ROOMIGNORE_MAX_PATTERNS, TooManyPatterns;
 var init_roomignore = __esm({
-  "packages/roomd/src/roomignore.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/roomignore.ts"() {
     "use strict";
     ROOMIGNORE_MAX_BYTES = 64 * 1024;
     ROOMIGNORE_MAX_PATTERNS = 2e3;
@@ -19673,7 +19673,7 @@ var init_roomignore = __esm({
   }
 });
 
-// packages/roomd/src/policy.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/policy.ts
 import { createHash as createHash2 } from "node:crypto";
 import { setImmediate as setImmediate3 } from "node:timers/promises";
 function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher = true) {
@@ -19782,7 +19782,7 @@ async function planYielding(inputs, disk, salt) {
 }
 var DEFAULT_IGNORED_DIRS, TRACKED_ONLY_LOCKFILES, isTrackedOnlyLockfile;
 var init_policy = __esm({
-  "packages/roomd/src/policy.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/policy.ts"() {
     "use strict";
     init_src();
     init_share_level();
@@ -19793,7 +19793,7 @@ var init_policy = __esm({
   }
 });
 
-// packages/roomd/src/disk-scan.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/disk-scan.ts
 import fs6 from "node:fs";
 import path4 from "node:path";
 import { createHash as createHash3 } from "node:crypto";
@@ -19965,7 +19965,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
 }
 var StalePublication, FORMAT_CACHE_MAX, formats;
 var init_disk_scan = __esm({
-  "packages/roomd/src/disk-scan.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/disk-scan.ts"() {
     "use strict";
     init_git();
     init_policy();
@@ -19976,7 +19976,7 @@ var init_disk_scan = __esm({
   }
 });
 
-// packages/roomd/src/manifest-publish.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/manifest-publish.ts
 import { setImmediate as setImmediate5 } from "node:timers/promises";
 function olderEpoch(fence, than) {
   const a = epochOf(fence), b = epochOf(than);
@@ -20100,7 +20100,7 @@ function markManifestIncomplete(room, name, fence) {
 }
 var authorized, contentIdentity, headIdentity, epochOf;
 var init_manifest_publish = __esm({
-  "packages/roomd/src/manifest-publish.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/manifest-publish.ts"() {
     "use strict";
     init_yjs();
     init_src();
@@ -20111,10 +20111,10 @@ var init_manifest_publish = __esm({
   }
 });
 
-// packages/roomd/src/recent-keys.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/recent-keys.ts
 var RecentKeys;
 var init_recent_keys = __esm({
-  "packages/roomd/src/recent-keys.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/recent-keys.ts"() {
     "use strict";
     RecentKeys = class {
       constructor(ttlMs, max2, now = Date.now) {
@@ -20149,7 +20149,7 @@ var init_recent_keys = __esm({
   }
 });
 
-// packages/roomd/src/publisher.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/publisher.ts
 import fs7 from "node:fs";
 import { setImmediate as setImmediate6 } from "node:timers/promises";
 function withdrawFormerPublisher(room, name, fence, successor) {
@@ -20174,7 +20174,7 @@ function withdrawFormerPublisher(room, name, fence, successor) {
 }
 var message, incarnationOverlayPaths, Publisher;
 var init_publisher = __esm({
-  "packages/roomd/src/publisher.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/publisher.ts"() {
     "use strict";
     init_src();
     init_git();
@@ -20548,7 +20548,7 @@ var init_publisher = __esm({
   }
 });
 
-// packages/roomd/src/skip-summary.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/skip-summary.ts
 function formatSkips(skips) {
   const counts = /* @__PURE__ */ new Map();
   const folders = [];
@@ -20574,7 +20574,7 @@ function formatSkips(skips) {
 }
 var IGNORED_FOLDER, SkipSummaryGate, fileLabel;
 var init_skip_summary = __esm({
-  "packages/roomd/src/skip-summary.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/skip-summary.ts"() {
     "use strict";
     IGNORED_FOLDER = "ignored folder";
     SkipSummaryGate = class {
@@ -20597,9 +20597,9 @@ var init_skip_summary = __esm({
   }
 });
 
-// node_modules/ws/lib/constants.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/ws/lib/constants.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/constants.js"(exports, module) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -20620,9 +20620,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/ws/lib/buffer-util.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/ws/lib/buffer-util.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/buffer-util.js"(exports, module) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
@@ -20695,9 +20695,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/ws/lib/limiter.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/ws/lib/limiter.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/limiter.js"(exports, module) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -20745,9 +20745,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/ws/lib/permessage-deflate.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/ws/lib/permessage-deflate.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/permessage-deflate.js"(exports, module) {
     "use strict";
     var zlib = __require("zlib");
     var bufferUtil = require_buffer_util();
@@ -21128,9 +21128,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/ws/lib/validation.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/validation.js
 var require_validation2 = __commonJS({
-  "node_modules/ws/lib/validation.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/validation.js"(exports, module) {
     "use strict";
     var { isUtf8 } = __require("buffer");
     var { hasBlob } = require_constants();
@@ -21329,9 +21329,9 @@ var require_validation2 = __commonJS({
   }
 });
 
-// node_modules/ws/lib/receiver.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/ws/lib/receiver.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/receiver.js"(exports, module) {
     "use strict";
     var { Writable } = __require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -21952,9 +21952,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/ws/lib/sender.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/ws/lib/sender.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/sender.js"(exports, module) {
     "use strict";
     var { Duplex } = __require("stream");
     var { randomFillSync } = __require("crypto");
@@ -22445,9 +22445,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/ws/lib/event-target.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/ws/lib/event-target.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/event-target.js"(exports, module) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -22674,9 +22674,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/ws/lib/extension.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/ws/lib/extension.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/extension.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation2();
     function push(dest, name, elem) {
@@ -22827,9 +22827,9 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/ws/lib/websocket.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket.js"(exports, module) {
     "use strict";
     var EventEmitter2 = __require("events");
     var https = __require("https");
@@ -23723,9 +23723,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/ws/lib/stream.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/ws/lib/stream.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/stream.js"(exports, module) {
     "use strict";
     var WebSocket3 = require_websocket();
     var { Duplex } = __require("stream");
@@ -23821,9 +23821,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/ws/lib/subprotocol.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/ws/lib/subprotocol.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/subprotocol.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation2();
     function parse3(header) {
@@ -23866,9 +23866,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket-server.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/ws/lib/websocket-server.js"(exports, module) {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/lib/websocket-server.js"(exports, module) {
     "use strict";
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
@@ -24267,10 +24267,10 @@ var require_websocket_server = __commonJS({
   }
 });
 
-// node_modules/ws/wrapper.mjs
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/wrapper.mjs
 var import_stream, import_extension, import_permessage_deflate, import_receiver, import_sender, import_subprotocol, import_websocket, import_websocket_server, wrapper_default;
 var init_wrapper = __esm({
-  "node_modules/ws/wrapper.mjs"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/ws/wrapper.mjs"() {
     "use strict";
     import_stream = __toESM(require_stream(), 1);
     import_extension = __toESM(require_extension(), 1);
@@ -24284,7 +24284,7 @@ var init_wrapper = __esm({
   }
 });
 
-// packages/relay/src/private-core.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/private-core.ts
 import fs8 from "node:fs";
 import path5 from "node:path";
 function privateDirectoryPath(dir) {
@@ -24329,12 +24329,12 @@ function initializePrivateDirectory(dir, repair) {
   verifyPosixPath(dir);
 }
 var init_private_core = __esm({
-  "packages/relay/src/private-core.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/private-core.ts"() {
     "use strict";
   }
 });
 
-// packages/relay/src/private-state.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/private-state.ts
 import fs9 from "node:fs";
 import path6 from "node:path";
 import { execFile as execFile3, execFileSync as execFileSync2 } from "node:child_process";
@@ -24539,7 +24539,7 @@ function privateStateDirectory(dir) {
 }
 var verifiedWindows, windowsKey, primingWindows;
 var init_private_state = __esm({
-  "packages/relay/src/private-state.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/private-state.ts"() {
     "use strict";
     init_private_core();
     verifiedWindows = /* @__PURE__ */ new Map();
@@ -24548,10 +24548,10 @@ var init_private_state = __esm({
   }
 });
 
-// packages/relay/src/memory.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/memory.ts
 var WARN_EVERY_MS, WARN_KEYS_MAX, WarningLimiter, sharedWarnings;
 var init_memory2 = __esm({
-  "packages/relay/src/memory.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/memory.ts"() {
     "use strict";
     init_private_state();
     init_src();
@@ -24586,7 +24586,7 @@ var init_memory2 = __esm({
   }
 });
 
-// packages/relay/src/windows-process-core.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/windows-process-core.ts
 import path7 from "node:path";
 function windowsProcessName(name) {
   return path7.win32.basename(name).toLowerCase().replace(/\.exe$/, "");
@@ -24620,12 +24620,12 @@ function windowsProcessCommand(pid) {
   return ["-NoProfile", "-NonInteractive", "-Command", script];
 }
 var init_windows_process_core = __esm({
-  "packages/relay/src/windows-process-core.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/windows-process-core.ts"() {
     "use strict";
   }
 });
 
-// packages/relay/src/process.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/process.ts
 import { execFile as execFile4, execFileSync as execFileSync3 } from "node:child_process";
 import fs10 from "node:fs";
 import path8 from "node:path";
@@ -24816,7 +24816,7 @@ function probeProcessConfirm(pid, recorded) {
 }
 var systemProcessReaders, WINDOWS_SYNC_READ_MS, WINDOWS_ASYNC_READ_MS, WINDOWS_MAX_BUFFER, WINDOWS_MAX_IN_FLIGHT, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, CONFIRMED_TTL_MS, startSeconds, agrees, systemProbe, ownIdentity, ownRead;
 var init_process = __esm({
-  "packages/relay/src/process.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/process.ts"() {
     "use strict";
     init_windows_process_core();
     systemProcessReaders = {
@@ -24850,7 +24850,7 @@ var init_process = __esm({
   }
 });
 
-// packages/relay/src/local-migrate.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/local-migrate.ts
 import fs11 from "node:fs";
 import path9 from "node:path";
 function legacyRelayRunning(common, probe = probeProcess) {
@@ -24870,7 +24870,7 @@ function oldRunning(common, probe) {
 }
 var DEFAULT_LIMITS;
 var init_local_migrate = __esm({
-  "packages/relay/src/local-migrate.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/local-migrate.ts"() {
     "use strict";
     init_private_state();
     init_src();
@@ -24880,7 +24880,7 @@ var init_local_migrate = __esm({
   }
 });
 
-// packages/hub-core/src/negotiation.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/negotiation.ts
 function freeze2(value5) {
   if (value5 && typeof value5 === "object") {
     for (const child of Object.values(value5)) freeze2(child);
@@ -25113,7 +25113,7 @@ function parseBootstrapFrame(value5) {
 }
 var COMPAT_BOOTSTRAP, COMPAT_MAX_BYTES, BOOTSTRAP_MAX_BYTES, BOOTSTRAP_SESSION_ID_MAX_LENGTH, BOOTSTRAP_MAX_BUFFERED_BYTES, MAX_CONTRACT_VERSION, CAPABILITY_REGISTRY, LEGACY_COMPAT, CURRENT_COMPAT, CompatibilityValidationError;
 var init_negotiation = __esm({
-  "packages/hub-core/src/negotiation.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/negotiation.ts"() {
     "use strict";
     COMPAT_BOOTSTRAP = 1;
     COMPAT_MAX_BYTES = 1024;
@@ -25139,7 +25139,7 @@ var init_negotiation = __esm({
   }
 });
 
-// packages/hub-core/src/protocol.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/protocol.ts
 function encodeFrame(frame) {
   const enc = createEncoder();
   writeVarUint(enc, MSG_HUB);
@@ -25157,7 +25157,7 @@ function decodeFrame(input) {
 }
 var MSG_HUB, HUB_PROTO, LEASE_TTL_MS, LEASE_RENEW_MS, SETTLE_MS, REQUEST_TIMEOUT_LOCAL_MS, REQUEST_TIMEOUT_TEAM_MS, COUNTER_BITS, COUNTER_LIMIT;
 var init_protocol = __esm({
-  "packages/hub-core/src/protocol.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/protocol.ts"() {
     "use strict";
     init_encoding();
     init_decoding();
@@ -25174,10 +25174,10 @@ var init_protocol = __esm({
   }
 });
 
-// packages/hub-core/src/hub.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/hub.ts
 var MAX_HUB_FRAME_BYTES, MAX_HUB_REQUESTS_PER_SECOND, HubRequestBudget, encoder2;
 var init_hub = __esm({
-  "packages/hub-core/src/hub.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/hub.ts"() {
     "use strict";
     init_src();
     init_protocol();
@@ -25200,33 +25200,33 @@ var init_hub = __esm({
   }
 });
 
-// packages/hub-core/src/doc-cap.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/doc-cap.ts
 var NON_GROWING_MAX_DECODE_BYTES;
 var init_doc_cap = __esm({
-  "packages/hub-core/src/doc-cap.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/doc-cap.ts"() {
     "use strict";
     NON_GROWING_MAX_DECODE_BYTES = 4 * 1048576;
   }
 });
 
-// packages/hub-core/src/http.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/http.ts
 var init_http = __esm({
-  "packages/hub-core/src/http.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/http.ts"() {
     "use strict";
   }
 });
 
-// packages/hub-core/src/incarnation-file.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/incarnation-file.ts
 var init_incarnation_file = __esm({
-  "packages/hub-core/src/incarnation-file.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/incarnation-file.ts"() {
     "use strict";
     init_hub();
   }
 });
 
-// packages/hub-core/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/index.ts
 var init_src2 = __esm({
-  "packages/hub-core/src/index.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/hub-core/src/index.ts"() {
     "use strict";
     init_protocol();
     init_hub();
@@ -25236,7 +25236,7 @@ var init_src2 = __esm({
   }
 });
 
-// packages/relay/src/leases.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/leases.ts
 import fs12 from "node:fs";
 import path10 from "node:path";
 import { createHash as createHash4, randomUUID } from "node:crypto";
@@ -25443,7 +25443,7 @@ function recover(file, orphan, probe = probeProcess) {
 }
 var startMarker, tempPattern;
 var init_leases = __esm({
-  "packages/relay/src/leases.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/leases.ts"() {
     "use strict";
     init_private_state();
     init_process();
@@ -25452,9 +25452,9 @@ var init_leases = __esm({
   }
 });
 
-// packages/relay/src/hub.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/hub.ts
 var init_hub2 = __esm({
-  "packages/relay/src/hub.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/hub.ts"() {
     "use strict";
     init_src2();
     init_leases();
@@ -25462,7 +25462,7 @@ var init_hub2 = __esm({
   }
 });
 
-// packages/relay/src/proof.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/proof.ts
 import crypto from "node:crypto";
 import http from "node:http";
 function mac2(key2, message2) {
@@ -25537,14 +25537,14 @@ async function relayHealth(port, key2, timeoutMs2 = 800) {
 }
 var prefix, HEALTH_MAX_BYTES;
 var init_proof = __esm({
-  "packages/relay/src/proof.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/proof.ts"() {
     "use strict";
     prefix = "room-relay-v1\0";
     HEALTH_MAX_BYTES = 2048;
   }
 });
 
-// packages/relay/src/daemon.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/daemon.ts
 import fs13 from "node:fs";
 import os2 from "node:os";
 import path11 from "node:path";
@@ -25721,7 +25721,7 @@ async function ensure(commonDir2, room, opts) {
 }
 var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights;
 var init_daemon = __esm({
-  "packages/relay/src/daemon.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/daemon.ts"() {
     "use strict";
     init_src2();
     init_hub2();
@@ -25738,10 +25738,10 @@ var init_daemon = __esm({
   }
 });
 
-// node_modules/y-protocols/sync.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/sync.js
 var messageYjsSyncStep1, messageYjsSyncStep2, messageYjsUpdate, writeSyncStep1, writeSyncStep2, readSyncStep1, readSyncStep2, writeUpdate, readUpdate, readSyncMessage;
 var init_sync = __esm({
-  "node_modules/y-protocols/sync.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/sync.js"() {
     "use strict";
     init_encoding();
     init_decoding();
@@ -25795,10 +25795,10 @@ var init_sync = __esm({
   }
 });
 
-// node_modules/y-protocols/awareness.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/awareness.js
 var outdatedTimeout, Awareness, removeAwarenessStates, encodeAwarenessUpdate, applyAwarenessUpdate;
 var init_awareness = __esm({
-  "node_modules/y-protocols/awareness.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/awareness.js"() {
     "use strict";
     init_encoding();
     init_decoding();
@@ -26009,11 +26009,11 @@ var init_awareness = __esm({
   }
 });
 
-// packages/relay/src/secure.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/secure.ts
 import crypto3 from "node:crypto";
 var MAGIC, LABEL, INFO_C2S, INFO_S2C, SecureSession;
 var init_secure = __esm({
-  "packages/relay/src/secure.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/secure.ts"() {
     "use strict";
     MAGIC = Buffer.from("room-secure-v1");
     LABEL = Buffer.from("room-relay-v2\0relay\0");
@@ -26089,17 +26089,17 @@ var init_secure = __esm({
   }
 });
 
-// packages/relay/src/limits.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/limits.ts
 var init_limits = __esm({
-  "packages/relay/src/limits.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/limits.ts"() {
     "use strict";
   }
 });
 
-// packages/relay/src/awareness.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/awareness.ts
 var DEFAULTS;
 var init_awareness2 = __esm({
-  "packages/relay/src/awareness.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/awareness.ts"() {
     "use strict";
     init_limits();
     DEFAULTS = {
@@ -26112,7 +26112,7 @@ var init_awareness2 = __esm({
   }
 });
 
-// packages/relay/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/index.ts
 import crypto4 from "node:crypto";
 import fs14 from "node:fs";
 import path12 from "node:path";
@@ -26155,7 +26155,7 @@ function canonicalRelayWarning(port, commonDir2, identity4, info) {
 }
 var RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, hubBudget, LOCAL_FILE, LocalRelayCompatibilityError;
 var init_src3 = __esm({
-  "packages/relay/src/index.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/relay/src/index.ts"() {
     "use strict";
     init_memory2();
     init_local_migrate();
@@ -26192,7 +26192,7 @@ var init_src3 = __esm({
   }
 });
 
-// packages/roomd/src/ws-auth.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/ws-auth.ts
 function authorizedWebSocket(credentials) {
   const headers = {
     ...credentials.session ? { authorization: `Bearer ${credentials.session}` } : {},
@@ -26324,7 +26324,7 @@ function authorizedWebSocket(credentials) {
   };
 }
 var init_ws_auth = __esm({
-  "packages/roomd/src/ws-auth.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/ws-auth.ts"() {
     "use strict";
     init_wrapper();
     init_src3();
@@ -26332,10 +26332,10 @@ var init_ws_auth = __esm({
   }
 });
 
-// node_modules/lib0/broadcastchannel.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/broadcastchannel.js
 var channels, LocalStoragePolyfill, BC, getChannel, subscribe, unsubscribe, publish;
 var init_broadcastchannel = __esm({
-  "node_modules/lib0/broadcastchannel.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/broadcastchannel.js"() {
     "use strict";
     init_map();
     init_set();
@@ -26393,10 +26393,10 @@ var init_broadcastchannel = __esm({
   }
 });
 
-// node_modules/y-protocols/auth.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/auth.js
 var messagePermissionDenied, readAuthMessage;
 var init_auth = __esm({
-  "node_modules/y-protocols/auth.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-protocols/auth.js"() {
     "use strict";
     init_decoding();
     messagePermissionDenied = 0;
@@ -26409,20 +26409,20 @@ var init_auth = __esm({
   }
 });
 
-// node_modules/lib0/url.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/url.js
 var encodeQueryParams;
 var init_url = __esm({
-  "node_modules/lib0/url.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/lib0/url.js"() {
     "use strict";
     init_object();
     encodeQueryParams = (params2) => map(params2, (val, key2) => `${encodeURIComponent(key2)}=${encodeURIComponent(val)}`).join("&");
   }
 });
 
-// node_modules/y-websocket/src/y-websocket.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-websocket/src/y-websocket.js
 var messageSync, messageQueryAwareness, messageAwareness, messageAuth, messageHandlers, messageReconnectTimeout, permissionDeniedHandler, readMessage, defaultShouldReconnect, closeWebsocketConnection, setupWS, broadcastMessage, WebsocketProvider;
 var init_y_websocket = __esm({
-  "node_modules/y-websocket/src/y-websocket.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/y-websocket/src/y-websocket.js"() {
     "use strict";
     init_broadcastchannel();
     init_time();
@@ -26819,7 +26819,7 @@ ${reason}`);
   }
 });
 
-// packages/roomd/src/reanchor.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/reanchor.ts
 import { createHash as createHash5 } from "node:crypto";
 import { setImmediate as setImmediate7 } from "node:timers/promises";
 function claimDigest(text2, from2, to2) {
@@ -26992,7 +26992,7 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
 }
 var DEFAULT_WORK_BUDGET, BASE, digestLines, splitLines2;
 var init_reanchor = __esm({
-  "packages/roomd/src/reanchor.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/reanchor.ts"() {
     "use strict";
     init_libesm();
     DEFAULT_WORK_BUDGET = 4e6;
@@ -27006,7 +27006,7 @@ var init_reanchor = __esm({
   }
 });
 
-// node_modules/readdirp/esm/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/readdirp/esm/index.js
 import { stat, lstat, readdir, realpath } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { resolve as presolve, relative as prelative, join as pjoin, sep as psep } from "node:path";
@@ -27028,7 +27028,7 @@ function readdirp(root, options = {}) {
 }
 var EntryTypes, defaultOptions, RECURSIVE_ERROR_CODE, NORMAL_FLOW_ERRORS, ALL_TYPES, DIR_TYPES, FILE_TYPES, isNormalFlowError, wantBigintFsStats, emptyFn, normalizeFilter, ReaddirpStream;
 var init_esm = __esm({
-  "node_modules/readdirp/esm/index.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/readdirp/esm/index.js"() {
     "use strict";
     EntryTypes = {
       FILE_TYPE: "files",
@@ -27231,7 +27231,7 @@ var init_esm = __esm({
   }
 });
 
-// node_modules/chokidar/esm/handler.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/chokidar/esm/handler.js
 import { watchFile, unwatchFile, watch as fs_watch } from "fs";
 import { open as open2, stat as stat2, lstat as lstat2, realpath as fsrealpath } from "fs/promises";
 import * as sysPath from "path";
@@ -27255,7 +27255,7 @@ function createFsWatchInstance(path74, options, listener, errHandler, emitRaw) {
 }
 var STR_DATA, STR_END, STR_CLOSE, EMPTY_FN, pl, isWindows, isMacos, isLinux, isFreeBSD, isIBMi, EVENTS, EV, THROTTLE_MODE_WATCH, statMethods, KEY_LISTENERS, KEY_ERR, KEY_RAW, HANDLER_KEYS, binaryExtensions, isBinaryPath, foreach, addAndConvert, clearItem, delFromSet, isEmptySet, FsWatchInstances, fsWatchBroadcast, setFsWatchListener, FsWatchFileInstances, setFsWatchFileListener, NodeFsHandler;
 var init_handler = __esm({
-  "node_modules/chokidar/esm/handler.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/chokidar/esm/handler.js"() {
     "use strict";
     STR_DATA = "data";
     STR_END = "end";
@@ -27993,7 +27993,7 @@ var init_handler = __esm({
   }
 });
 
-// node_modules/chokidar/esm/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/chokidar/esm/index.js
 import { stat as statcb } from "fs";
 import { stat as stat3, readdir as readdir2 } from "fs/promises";
 import { EventEmitter } from "events";
@@ -28069,7 +28069,7 @@ function watch(paths, options = {}) {
 }
 var SLASH, SLASH_SLASH, ONE_DOT, TWO_DOTS, STRING_TYPE, BACK_SLASH_RE, DOUBLE_SLASH_RE, DOT_RE, REPLACER_RE, isMatcherObject, unifyPaths, toUnix, normalizePathToUnix, normalizeIgnored, getAbsolutePath, EMPTY_SET, DirEntry, STAT_METHOD_F, STAT_METHOD_L, WatchHelper, FSWatcher, esm_default;
 var init_esm2 = __esm({
-  "node_modules/chokidar/esm/index.js"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/chokidar/esm/index.js"() {
     "use strict";
     init_esm();
     init_handler();
@@ -28715,12 +28715,12 @@ var init_esm2 = __esm({
   }
 });
 
-// packages/roomd/src/checkout-watch.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/checkout-watch.ts
 import fs15 from "node:fs";
 import path13 from "node:path";
 var CheckoutWatch, WatcherHandoff;
 var init_checkout_watch = __esm({
-  "packages/roomd/src/checkout-watch.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/checkout-watch.ts"() {
     "use strict";
     init_esm2();
     CheckoutWatch = class {
@@ -28841,7 +28841,7 @@ var init_checkout_watch = __esm({
   }
 });
 
-// packages/roomd/src/base.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/base.ts
 import { execFile as execFile5 } from "node:child_process";
 async function isAncestor(dir, ancestor, descendant) {
   try {
@@ -29031,7 +29031,7 @@ async function comparePair(dir, remote, a, b) {
 }
 var short, refsKey, WORKER_ANCHOR_REFS, FETCH_TIMEOUT_MS, FETCH_RETRY_MS, fetchAttempts, hasCommit;
 var init_base2 = __esm({
-  "packages/roomd/src/base.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/base.ts"() {
     "use strict";
     init_src();
     init_git();
@@ -29053,7 +29053,7 @@ var init_base2 = __esm({
   }
 });
 
-// packages/roomd/src/index.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/index.ts
 import fs16 from "node:fs";
 import path14 from "node:path";
 import os3 from "node:os";
@@ -29143,7 +29143,7 @@ function errMsg(error2) {
 }
 var machineHostname, machineIdentities, machineIdentityWarningLogged, RoomdError, ROOM_FILE, ROOMIGNORE, GIT_EXCLUDE_MAX_BYTES, IGNORED_DIRS_REFRESH_MS, DEFAULT_STARTUP_TIMEOUT_MS, Daemon, hubAccepted, TRANSITION_ATTEMPTS, NO_CLAIM_CHANGES, branchName;
 var init_src4 = __esm({
-  "packages/roomd/src/index.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/index.ts"() {
     "use strict";
     init_room_file();
     init_repo_path();
@@ -31632,7 +31632,7 @@ var init_plugin = __esm({
   }
 });
 
-// packages/roomd/src/local.ts
+// ../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/local.ts
 import path22 from "node:path";
 async function mainWorktree(dir) {
   const common = await gitCommonDir(dir);
@@ -31643,7 +31643,7 @@ async function localRoomName(dir) {
   return `local/${path22.basename(main2)}`;
 }
 var init_local = __esm({
-  "packages/roomd/src/local.ts"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/packages/roomd/src/local.ts"() {
     "use strict";
     init_git_dirs();
   }
@@ -33536,7 +33536,21 @@ function daemonCutoverRows(state) {
   const refusal = owner?.liveness === "unknown" ? `drain required; unknown owner: pid ${owner.pid}, port ${owner.port ?? "unknown"}` : "drain required";
   const rows = [`${state.blocked ? "FAIL" : "INFO"}  local daemon cutover: ${state.blocked ? refusal : owner?.runtime === "daemon" && owner.liveness === "alive" ? "authenticated daemon" : "recorded legacy processes drained"}; ${state.worktrees.length} worktree(s); drain record ${state.drainRecorded ? "present" : "not yet written"}`];
   if (owner) rows.push(`INFO  local owner: pid ${owner.pid}, port ${owner.port ?? "unknown"}, ${owner.runtime}, ${owner.liveness}${owner.release ? `, release ${owner.release}` : ""}`);
-  for (const c of state.clients) rows.push(`${!c.skipped && c.runtime === "legacy" && !c.bindingOnly && c.liveness !== "dead" ? "FAIL" : "INFO"}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ""}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? "binding only; no process evidence" : `pid ${c.pid ?? "unknown"}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ""}${c.reason ? `; ${c.reason}; ${c.source}` : ""}`);
+  const resolved = (c) => !!c.skipped && !!c.reason?.startsWith("resolved by operator");
+  for (const c of state.clients.filter((c2) => blockingClient(c2) || resolved(c2))) {
+    rows.push(`${blockingClient(c) ? "FAIL" : "INFO"}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ""}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? "binding only; no process evidence" : `pid ${c.pid ?? "unknown"}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ""}${c.reason && !c.skipped ? `; ${c.reason}` : ""}; ${c.source}`);
+  }
+  const counts = /* @__PURE__ */ new Map();
+  for (const c of state.clients.filter((c2) => !blockingClient(c2) && !resolved(c2))) {
+    const verdict = c.skipped ? "previously drained" : c.runtime === "daemon-client" ? "current client" : c.bindingOnly ? "binding only" : c.liveness;
+    const byKind = counts.get(c.kind) ?? /* @__PURE__ */ new Map();
+    byKind.set(verdict, (byKind.get(verdict) ?? 0) + 1);
+    counts.set(c.kind, byKind);
+  }
+  for (const [kind, byKind] of counts) {
+    const total = [...byKind.values()].reduce((sum, n) => sum + n, 0);
+    rows.push(`INFO  cutover ${kind} records: ${total} not blocking (${[...byKind].map(([verdict, n]) => `${n} ${verdict}`).join(", ")})`);
+  }
   const bundle = fileURLToPath4(new URL("../../../plugins/room/server/room-mcp.mjs", import.meta.url));
   const entry = import.meta.url.endsWith("/room-mcp.mjs") ? fileURLToPath4(import.meta.url) : bundle;
   for (const c of state.clients.filter(blockingClient)) {
@@ -41693,7 +41707,7 @@ var init_company = __esm({
   }
 });
 
-// node_modules/node-diff3/dist/diff3.mjs
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/node-diff3/dist/diff3.mjs
 function LCS(buffer1, buffer2) {
   let equivalenceClasses = /* @__PURE__ */ Object.create(null);
   for (let j = 0; j < buffer2.length; j++) {
@@ -41906,7 +41920,7 @@ function diff3Merge(a, o, b, options) {
   return results;
 }
 var init_diff3 = __esm({
-  "node_modules/node-diff3/dist/diff3.mjs"() {
+  "../../../../../Documents/progwork/aitinkerhackathon/node_modules/node-diff3/dist/diff3.mjs"() {
     "use strict";
   }
 });
@@ -48393,7 +48407,7 @@ import fs75 from "node:fs";
 import { parseArgs } from "node:util";
 import path73 from "node:path";
 
-// node_modules/zod/v4/core/util.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -49230,7 +49244,7 @@ function constantCatch(value5) {
   return fn;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: void 0, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -49349,7 +49363,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -49468,7 +49482,7 @@ function formatError(error2, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params2) {
   return { callee: params2?.callee ?? callee, Err: params2?.Err };
 }
@@ -49571,7 +49585,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value5, _ctx) => {
   return _safeParseAsync(_Err)(schema, value5, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -49633,7 +49647,7 @@ var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a3;
   inst._zod ?? (inst._zod = {});
@@ -50024,7 +50038,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args2 = [], closed = {}) {
     this.content = [];
@@ -50061,14 +50075,14 @@ ${content.join("\n")}
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 5,
   patch: 4
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a3;
   inst ?? (inst = {});
@@ -51656,7 +51670,7 @@ function handleRefineResult(result2, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/core/memoizer.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/memoizer.js
 var $ZodCyclicError = class extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -51894,7 +51908,7 @@ function isBackEdge(ctx, value5) {
   return backEdges !== void 0 && value5 !== null && typeof value5 === "object" && backEdges.has(value5);
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -52017,7 +52031,7 @@ function en_default() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/registries.js
 var _a2;
 var $ZodRegistry = class {
   constructor() {
@@ -52065,7 +52079,7 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string(Class2, params2) {
   return new Class2({
@@ -52594,7 +52608,7 @@ function _check(fn, params2) {
   return ch;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key2 of Reflect.ownKeys(source)) {
@@ -53125,7 +53139,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params2) 
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -53568,7 +53582,7 @@ var optionalProcessor = (schema, ctx, _json, params2) => {
   seen.ref = def.innerType;
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -53631,7 +53645,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key2, make) {
   Object.defineProperty(proto, key2, {
@@ -53676,7 +53690,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, void 0
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -53690,7 +53704,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -54611,7 +54625,7 @@ function preprocess(fn, schema) {
   });
 }
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -54636,7 +54650,7 @@ function duration2(params2) {
   return _isoDuration(ZodISODuration, params2);
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -56155,15 +56169,15 @@ var UrlElicitationRequiredError = class extends McpError {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -56184,7 +56198,7 @@ function parseWithCompat(schema, data) {
   return result2.data;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
 var Protocol = class {
   constructor(_options) {
@@ -57138,7 +57152,7 @@ function mergeCapabilities(base, additional) {
   return result2;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -57206,7 +57220,7 @@ var AjvJsonSchemaValidator = class {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 var ExperimentalServerTasks = class {
   constructor(_server) {
     this._server = _server;
@@ -57419,7 +57433,7 @@ var ExperimentalServerTasks = class {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -57454,7 +57468,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server = class extends Protocol {
   /**
    * Initializes this server with the given name and version information.
@@ -66268,10 +66282,10 @@ init_config();
 // packages/room-mcp/src/transport.ts
 import process4 from "node:process";
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process3 from "node:process";
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
   constructor(options) {
@@ -66308,7 +66322,7 @@ function serializeMessage(message2) {
   return JSON.stringify(message2) + "\n";
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../../../Documents/progwork/aitinkerhackathon/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
   constructor(_stdin = process3.stdin, _stdout = process3.stdout, options) {
     this._stdin = _stdin;

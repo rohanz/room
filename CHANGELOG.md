@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`room_state check=true` stays readable on a used clone.** The cutover section listed every recorded session, MCP and worker, one row each (about 95,000 characters on a clone with 290 records, more than an agent's tool output allows). It now shows each record that blocks or that a person resolved, and one count line per kind for the rest; the drain record keeps the full list.
+
 ## 0.17.38
 
 - **The local daemon cutover no longer refuses clones that have been used.** Since 0.17.34 the cutover read every entry under `.git/room/sessions/` as a session folder, so the clone-wide idle-episode counter in that folder failed with `ENOTDIR` and every clone that had ever written it was refused. Session records are folders; files there are now skipped. The cutover rehearsal script seeds that counter so this is exercised.
