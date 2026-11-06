@@ -131,11 +131,20 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
   const sessions = path.join(room, 'sessions')
   for (const sid of entries(sessions)) {
     const dir = path.join(sessions, sid)
-    // A session record is a directory. sessions/ also holds clone-wide files such as the durable idle-episode
-    // counter (presence-end.ts); they make no session or process claim, so they are not inventoried.
-    let directory = false
-    try { directory = fs.lstatSync(dir).isDirectory() } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    if (!directory) continue
+    // A session record is a real directory. sessions/ also holds clone-wide regular files such as the durable
+    // idle-episode counter (presence-end.ts), which make no session or process claim. Never follow a link to decide:
+    // a symlink or special entry could stand for a live legacy client, so it blocks like any unreadable evidence.
+    let entry: fs.Stats
+    try { entry = fs.lstatSync(dir) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue // removed while inventorying
+      state.issues.push(`Cannot inspect ${dir}: ${(error as NodeJS.ErrnoException).code ?? String(error)}`)
+      continue
+    }
+    if (entry.isFile()) continue
+    if (!entry.isDirectory()) {
+      state.issues.push(`Session entry ${dir} is a ${entry.isSymbolicLink() ? 'symlink' : 'special file'}; inspect it before cutover (Room never follows links in its state)`)
+      continue
+    }
     const session = read(path.join(dir, 'session.json')), mcp = read(path.join(dir, 'mcp.json'))
     const runtime = mcp?.pid === currentPid || mcp?.runtime === 'daemon-client' && alive(identityOf(mcp)) === 'alive' ? 'daemon-client' : 'legacy'
     // Binding can change (or remain unknown) between arbitration's two-second publications.

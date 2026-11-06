@@ -115,6 +115,36 @@ describe('drained daemon cutover', () => {
     expect(fs.existsSync(path.join(room, 'daemon-cutover.json'))).toBe(true)
     expect(JSON.parse(fs.readFileSync(path.join(room, 'sessions', 'idle-episode.json'), 'utf8'))).toEqual({ max: 3 })
   })
+  it.skipIf(process.platform === 'win32')('blocks on a symlinked session entry without following it, and writes no drain record', async () => {
+    const { root, common } = fixture(), room = path.join(common, 'room')
+    // The link target holds live legacy MCP evidence; following it would be needed to see the client.
+    const elsewhere = path.join(root, 'elsewhere-session')
+    write(path.join(elsewhere, 'mcp.json'), { ...identity(200) })
+    write(path.join(elsewhere, 'session.json'), { session_id: 'linked', hostPid: 200, chain: [identity(200)] })
+    fs.mkdirSync(path.join(room, 'sessions'), { recursive: true })
+    fs.symlinkSync(elsewhere, path.join(room, 'sessions', 'linked'))
+    const state = await inspectDaemonCutover(common, inspectOptions)
+    expect(state.blocked).toBe(true)
+    expect(state.issues).toContainEqual(expect.stringMatching(/sessions\/linked is a symlink/))
+    await expect(requireDaemonRuntime(common, inspectOptions)).rejects.toThrow()
+    expect(fs.existsSync(path.join(room, 'daemon-cutover.json'))).toBe(false)
+  })
+  it('records an unreadable session entry as a blocking issue and keeps inspecting', async () => {
+    const { common } = fixture(), room = path.join(common, 'room')
+    write(path.join(room, 'sessions', 'broken', 'session.json'), { session_id: 'broken' })
+    write(path.join(room, 'sessions', 'fine', 'session.json'), { session_id: 'fine' })
+    const real = fs.lstatSync
+    const spy = vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      if (String(target).endsWith(path.join('sessions', 'broken'))) throw Object.assign(new Error('injected'), { code: 'EACCES' })
+      return (real as (...args: unknown[]) => fs.Stats)(target, ...rest)
+    }) as typeof fs.lstatSync)
+    try {
+      const state = await inspectDaemonCutover(common, inspectOptions)
+      expect(state.blocked).toBe(true)
+      expect(state.issues).toContainEqual(expect.stringMatching(/sessions\/broken: EACCES/))
+      expect(state.clients.some(client => client.label === 'fine')).toBe(true)
+    } finally { spy.mockRestore() }
+  })
   it('accepts a proven daemon and daemon-capable recorded clients', async () => {
     const { common } = fixture(); owner(common, 100, 'daemon')
     write(path.join(common, 'room/sessions/new/mcp.json'), { ...identity(200), runtime: 'daemon-client' })
