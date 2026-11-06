@@ -149,8 +149,17 @@ export class Rooms {
     if (this.primary() === s) this.o.setPrimary(null)
   }
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
-  /** Wait for background work already started (the tracked open, retirement and projector passes, stopped attachments). */
-  async settle(): Promise<void> { await Promise.allSettled([...this.background]) }
+  /**
+   * Wait up to `deadlineMs` for background work already started (the tracked open, retirement and projector passes,
+   * stopped attachments). False when some is still running: its admission keeps this process registered as recovery
+   * evidence rather than acknowledging a drain it has not reached.
+   */
+  async settle(deadlineMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), deadlineMs); timer.unref() })
+    try { return await Promise.race([Promise.allSettled([...this.background]).then(() => true as const), late]) }
+    finally { clearTimeout(timer) }
+  }
   private stopAttachment(attachment: Attachment | undefined): void {
     attachment?.stop()
     if (attachment?.settled) this.inBackground(attachment.settled())

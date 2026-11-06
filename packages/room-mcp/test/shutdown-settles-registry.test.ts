@@ -7,6 +7,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import { closeStorageAdmissions, storageGate } from '../src/storage-admission.js'
 import { createTools } from '../src/tools.js'
+import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -32,4 +33,20 @@ it('shutdown settles the tracked session registry open, so closing admissions le
   const status = await storageGate(join(dir, '.git')).status()
   expect(status.registrations).toBe(0)
   expect(status.tickets).toBe(0)
+})
+
+it('bounds the shutdown settle: hung background work is reported, not awaited forever', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'room-shutdown-settle-'))
+  dirs.push(dir)
+  execFileSync('git', ['-C', dir, 'init', '-q'])
+  const room = new RoomDoc()
+  const s = { room, dir } as Session
+  let stopped = false
+  const rooms = new Rooms({ primary: () => null, setPrimary: () => {}, log: () => {}, attach: () => ({ stop() { stopped = true }, settled: () => new Promise<void>(() => {}) }) })
+  rooms.add(s, 'primary')
+  rooms.remove(s)
+  expect(stopped).toBe(true)
+  const started = performance.now()
+  expect(await rooms.settle(100)).toBe(false)
+  expect(performance.now() - started).toBeLessThan(2000)
 })

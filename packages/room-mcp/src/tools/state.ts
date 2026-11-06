@@ -25,6 +25,9 @@ import { SoloGate } from '../solo.js'
 import { trustedWorker, workerText, NotJoined, type HandlerState, type ToolCtx } from './context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
+/** Shutdown waits this long for background registry work; like worker dismissal, it cannot hold the host's exit open. */
+const SHUTDOWN_SETTLE_MS = 2000
+
 export function createHandlerState(ctx: ToolCtx): HandlerState {
   const now = ctx.now ?? (() => Date.now())
   const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
@@ -218,7 +221,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       }
       const s = ctx.getSession()
       // Registry work these sessions started finishes its admission before the caller closes storage admissions.
-      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await rooms.settle(); return }
+      const settle = async () => {
+        if (!await rooms.settle(SHUTDOWN_SETTLE_MS)) log(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`)
+      }
+      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await settle(); return }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
       const cancellation = new AbortController()
       const pending = new Set(running.map(r => r.w.tag))
@@ -242,7 +248,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       await state.closeWorkersRoom(true).catch(() => {})
       rooms.remove(s)
       await doLeave(s)
-      await rooms.settle()
+      await settle()
     },
     async drop(s: Session, reason: string) {
       log(`leaving ${s.roomName}: ${reason}`)
