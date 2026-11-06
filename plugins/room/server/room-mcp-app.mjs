@@ -43194,9 +43194,22 @@ var init_registry = __esm({
       async flush() {
         for (const e of this.entries.values()) await e.attachment?.flush?.();
       }
-      /** Wait for background work already started (the tracked open, retirement and projector passes, stopped attachments). */
-      async settle() {
-        await Promise.allSettled([...this.background]);
+      /**
+       * Wait up to `deadlineMs` for background work already started (the tracked open, retirement and projector passes,
+       * stopped attachments). False when some is still running: its admission keeps this process registered as recovery
+       * evidence rather than acknowledging a drain it has not reached.
+       */
+      async settle(deadlineMs) {
+        let timer;
+        const late = new Promise((resolve6) => {
+          timer = setTimeout(() => resolve6(false), deadlineMs);
+          timer.unref();
+        });
+        try {
+          return await Promise.race([Promise.allSettled([...this.background]).then(() => true), late]);
+        } finally {
+          clearTimeout(timer);
+        }
       }
       stopAttachment(attachment) {
         attachment?.stop();
@@ -66412,6 +66425,7 @@ function workerNotice(m, workers) {
 // packages/room-mcp/src/tools/state.ts
 init_context();
 init_disk_text();
+var SHUTDOWN_SETTLE_MS = 2e3;
 function createHandlerState(ctx) {
   const now = ctx.now ?? (() => Date.now());
   const log2 = ctx.log ?? ((l) => process.stderr.write(`room-mcp: ${l}
@@ -66645,10 +66659,13 @@ function createHandlerState(ctx) {
         }
       }
       const s = ctx.getSession();
+      const settle = async () => {
+        if (!await rooms.settle(SHUTDOWN_SETTLE_MS)) log2(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`);
+      };
       if (!s) {
         await state.closeWorkersRoom(true).catch(() => {
         });
-        await rooms.settle();
+        await settle();
         return;
       }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async (r) => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter((r) => r.action === "stop");
@@ -66679,7 +66696,7 @@ function createHandlerState(ctx) {
       });
       rooms.remove(s);
       await doLeave(s);
-      await rooms.settle();
+      await settle();
     },
     async drop(s, reason) {
       log2(`leaving ${s.roomName}: ${reason}`);
