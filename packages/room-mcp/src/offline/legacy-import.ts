@@ -16,7 +16,7 @@ export interface LegacySource {
   key: string; tag: string; dir: string; branch: string; host: HostId
   oldId?: string; model?: string; task?: string; said?: string; keptWorktree?: string; share?: WorkerRecord['share']
 }
-export interface MigrationMap { v: 1; sources: Record<string, { id: string; state: 'assigned' | 'imported' }>; done: boolean }
+interface MigrationMap { v: 1; sources: Record<string, { id: string; state: 'assigned' | 'imported' }>; done: boolean }
 const readJson = <T>(file: string): T | undefined => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
   catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined; throw e }
