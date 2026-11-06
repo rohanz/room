@@ -86,6 +86,18 @@ export async function assertLegacyReady(commonDir: string, gate = storageGate(co
     throw new StorageRefused('maintenance', 'offline legacy import required', legacyImportRemedy(gate.commonDir))
 }
 
+/**
+ * The MCP's startup preflight is the runtime check only (executable, Node, vendor, SQLite): MCPs never open the
+ * repository database, so filesystem qualification belongs to the daemon and the offline owner, not every MCP start
+ * (on Windows it costs a PowerShell cold start). A process's runtime cannot change, so one success serves every clone;
+ * a failure is never cached.
+ */
+let runtimeCheck: Promise<PreflightResult> | undefined
+function mcpRuntimeCheck(): Promise<PreflightResult> {
+  const check = runtimeCheck ??= preflight('mcp')
+  void check.then(result => { if (!result.ok && runtimeCheck === check) runtimeCheck = undefined }, () => { if (runtimeCheck === check) runtimeCheck = undefined })
+  return check
+}
 /** One successful preflight and registration per canonical directory. Failed startup is never cached. */
 export async function storageRegistration(commonDir: string): Promise<ProcessRegistration> {
   const gate = storageGate(commonDir), common = gate.commonDir
@@ -97,7 +109,7 @@ export async function storageRegistration(commonDir: string): Promise<ProcessReg
   const timedOut = () => expired || performance.now() >= deadline
   let timer: ReturnType<typeof setTimeout> | undefined
   const work = async (): Promise<ProcessRegistration> => {
-    const evidence = await preflight('mcp', { commonDir: common })
+    const evidence = await mcpRuntimeCheck()
     if (!evidence.ok) throw new StorageRefused('unavailable', evidence.detail, evidence.remedy)
     if (timedOut()) throw new StorageRefused('unavailable', 'storage startup check exceeded 10 s')
     const status = await gate.status()

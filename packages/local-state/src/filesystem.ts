@@ -42,13 +42,30 @@ const run = (command: string, args: string[], env?: NodeJS.ProcessEnv, timeout =
 const WINDOWS_DRIVE_SCRIPT = "$d=[IO.DriveInfo]::new($env:ROOM_DRIVE); $f=''; try { $f=$d.DriveFormat } catch { }; $d.DriveType.ToString() + ' ' + $f"
 
 
+/**
+ * One PowerShell query per volume per process: a volume's type and file system do not change while its serial number
+ * (`stat().dev` on Windows) stays the same, so a remount under the same letter is queried again. Failures are not kept.
+ */
+const driveAnswers = new Map<string, Promise<string>>()
+async function windowsDriveOnce(drive: string): Promise<string> {
+  const root = `${drive}\\`
+  const key = `${drive}:${(await fs.promises.stat(root)).dev}`
+  let answer = driveAnswers.get(key)
+  if (!answer) {
+    answer = run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: root }, POWERSHELL_TIMEOUT_MS)
+    driveAnswers.set(key, answer)
+    answer.catch(() => { if (driveAnswers.get(key) === answer) driveAnswers.delete(key) })
+  }
+  return answer
+}
+
 export const systemFilesystemReaders: FilesystemReaders = {
   platform: process.platform,
   realpath: file => fs.promises.realpath(file),
   statfsType: file => fs.promises.statfs(file).then(stat => stat.type, () => undefined),
   macMounts: () => run('/sbin/mount', []),
   linuxMountinfo: () => fs.promises.readFile('/proc/self/mountinfo', 'utf8'),
-  windowsDrive: drive => run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_DRIVE_SCRIPT], { ...process.env, ROOM_DRIVE: `${drive}\\` }, POWERSHELL_TIMEOUT_MS),
+  windowsDrive: drive => windowsDriveOnce(drive),
   home: () => os.homedir(),
   env: process.env,
 }

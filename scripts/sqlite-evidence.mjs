@@ -30,6 +30,15 @@ try {
   const init = spawnSync('git', ['init', '-q', root], { encoding: 'utf8', timeout: 10_000 })
   if (init.error || init.status !== 0) throw new Error(`git init failed: ${init.error ?? init.stderr}`)
   const bundle = fileURLToPath(new URL('../plugins/room/server/room-state.mjs', import.meta.url))
+  // What every MCP start runs: the runtime check only (no filesystem qualification), timed as a cold child.
+  if (!expectedRefusal) {
+    const started = performance.now()
+    const startup = spawnSync(process.execPath, [bundle, 'preflight', '--json'], { cwd: root, encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024 })
+    let result
+    try { result = JSON.parse(startup.stdout) } catch { result = undefined }
+    evidence.startupPreflight = { status: startup.status, wallMs: Math.round(performance.now() - started),
+      elapsedMs: result?.evidence?.elapsedMs, ok: result?.ok, filesystemProbed: !!result?.evidence?.filesystem }
+  }
   const run = spawnSync(process.execPath, [bundle, 'preflight', '--common-dir', path.join(root, '.git'), '--json'],
     { cwd: root, encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024 })
   evidence.preflight = { status: run.status, signal: run.signal, stdout: run.stdout, stderr: run.stderr,
