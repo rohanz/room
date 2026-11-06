@@ -1,3 +1,4 @@
+import { withoutAdmission } from '../storage-admission.js'
 import { openWorkerReader } from '../worker-registry.js'
 import { snapshotStatus, type WorkerSnapshot } from '../worker-store.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
@@ -44,13 +45,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    * team room (the state file is the team room's).
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
-    void refreshWorkerFacts(s).then(() => primaryHooks?.scheduleWrite(), log)
+    void withoutAdmission(() => refreshWorkerFacts(s)).then(() => primaryHooks?.scheduleWrite(), log)
     ledger.bind(s)
     const unwatch = solo.watch(s)
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
       // Only what may reach the hooks: while alone nothing does, and the hook stays quiet.
-      prepare: () => refreshWorkerFacts(s),
+      prepare: () => withoutAdmission(() => refreshWorkerFacts(s)),
       owedCount: () => ledger.candidates(s).filter(solo.audible(s)).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
       sessionDir: () => ctx.binding?.dir(), paused: () => s.rejected
         ? `[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`
@@ -149,7 +150,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   })
   const wakes = new WakeReconciler({
     ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
-    prepare: s => refreshWorkerFacts(s),
+    prepare: s => withoutAdmission(() => refreshWorkerFacts(s)),
     send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
     codexTurn: ctx.wakeProbe,
     midTurn: ctx.midTurn,

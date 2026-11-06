@@ -2,15 +2,15 @@
  * Whole-operation file-storage admission. Hooks use validated reads and never register or write tickets.
  *
  * A tool call opens a lazy scope (withDirectoryAdmission) that costs nothing until the call first needs lifecycle
- * authority: opening the store or a mutation acquires the scope's single ticket, which then spans every later effect
- * until the scope ends. Reads before that point are validated reads; the scope remembers the generation they saw, and
- * a ticket admitted in a different generation is refused before any effect, so an operation either runs within one
- * legacy generation or stops without acting. Calls that never touch lifecycle storage never touch the gate.
+ * authority: its first lifecycle read acquires the scope's single ticket, which spans every later effect
+ * until the scope ends. Only reads outside an operation use generation validation, and cannot authorize effects.
+ * Calls that never touch lifecycle storage never touch the gate.
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
-import { canonicalCommonDir, openStorageGate } from '@room/local-state/gate'
+import fs from 'node:fs'
+import { canonicalCommonDir, closeStorageGates, openStorageGate } from '@room/local-state/gate'
 import { probeOwnProcess } from '@room/local-state/process'
 import type { InstanceToken } from '@room/local-state/leases'
 import { preflight } from '@room/local-state/preflight'
@@ -24,10 +24,9 @@ interface Admission {
   /** Lazy scopes resolve their clone only when they first need it. */
   dir?: string
   commonDir?: string; ticket?: Ticket; gate?: StorageGate; acquiring?: Promise<Ticket>
-  /** Generation seen by validated reads in this scope before its ticket existed. */
-  observed?: number
 }
 const registrations = new Map<string, Promise<ProcessRegistration>>()
+const startups = new Set<Promise<ProcessRegistration>>()
 const ambient = new AsyncLocalStorage<Admission>()
 const reads = new AsyncLocalStorage<{ commonDir: string; active: boolean }>()
 const gates = new Map<string, StorageGate>()
@@ -54,12 +53,6 @@ export function currentAdmission(commonDir: string): Ticket | undefined {
   return context?.active && context.ticket && context.commonDir === storageGate(commonDir).commonDir ? context.ticket : undefined
 }
 
-/**
- * Generation `b` continues an operation that read under `a` only if no maintenance ran in between. Initialization
- * moves an absent gate (observed as 0) to 1 without any maintenance; every drain moves from >= 1 to >= 2.
- */
-const sameEpoch = (a: number, b: number) => a === b || a === 0 && b === 1
-
 /** Acquire the enclosing lazy scope's ticket for this clone, once. */
 async function acquire(context: Admission, commonDir: string): Promise<Ticket> {
   const common = storageGate(commonDir).commonDir
@@ -69,10 +62,6 @@ async function acquire(context: Admission, commonDir: string): Promise<Ticket> {
   context.acquiring = (async () => {
     const { gate, registration } = await storageRegistration(common)
     const ticket = await gate.admit(registration, context.kind)
-    if (context.observed !== undefined && !sameEpoch(context.observed, ticket.generation)) {
-      await gate.finish(ticket)
-      throw new StorageRefused('maintenance', 'storage changed during this operation; nothing was changed, retry it')
-    }
     if (!context.active) { await gate.finish(ticket); throw new StorageRefused('unavailable', 'operation ended before admission') }
     context.gate = gate
     context.ticket = ticket
@@ -123,19 +112,60 @@ export async function storageRegistration(commonDir: string): Promise<ProcessReg
     timer = setTimeout(() => { expired = true; reject(new StorageRefused('unavailable', 'storage startup check exceeded 10 s', legacyImportRemedy(common))) }, GATE_LIMITS.startupMs)
     timer.unref?.()
   })
-  pending = Promise.race([work(), timeout]).finally(() => clearTimeout(timer))
+  const startup = work()
+  startups.add(startup)
+  void startup.then(() => startups.delete(startup), () => startups.delete(startup))
+  pending = Promise.race([startup, timeout]).finally(() => clearTimeout(timer))
   registrations.set(common, pending)
   void pending.catch(() => { if (registrations.get(common) === pending) registrations.delete(common) })
   return pending
 }
 
+/** A live MCP acknowledges drain by unregistering only after its last effect ticket.
+ * The idle sweep also covers maintenance starting between calls. Hooks create no registrations. */
+let drainingSweep: Promise<void> | undefined
+let drainRequested = false
+function unregisterDraining(): Promise<void> {
+  drainRequested = true
+  if (drainingSweep) return drainingSweep
+  drainingSweep = (async () => {
+    do {
+      drainRequested = false
+      for (const [common, pending] of registrations) {
+        const state = await pending.catch(() => undefined)
+        if (!state || (await state.gate.observe()).phase !== 'draining') continue
+        try {
+          await state.gate.unregister(state.registration)
+          if (registrations.get(common) === pending) registrations.delete(common)
+        } catch (error) { if (!(error instanceof StorageRefused && error.reason === 'busy')) throw error }
+      }
+    } while (drainRequested)
+  })().finally(() => { drainingSweep = undefined })
+  return drainingSweep
+}
+const drainWatch = setInterval(() => {
+  if (registrations.size) void unregisterDraining().catch(() => {})
+}, 1000)
+drainWatch.unref()
+
+async function finishAdmission(gate: StorageGate, ticket: Ticket): Promise<void> {
+  await gate.finish(ticket)
+  if ((await gate.observe()).phase === 'draining') await unregisterDraining()
+}
+
 export async function closeStorageAdmissions(): Promise<void> {
+  await Promise.allSettled([...startups])
+  await drainingSweep
   for (const [common, pending] of registrations) {
     const state = await pending.catch(() => undefined)
     if (!state) continue
+    // A clone deleted by its owner has no registration left to release. Never
+    // recreate its Git directory merely to take an unregister guard.
+    if (!fs.existsSync(common)) { registrations.delete(common); continue }
     try { await state.gate.unregister(state.registration); registrations.delete(common) }
     catch (error) { if (!(error instanceof StorageRefused && error.reason === 'busy')) throw error }
   }
+  if (!registrations.size) { await closeStorageGates(); gates.clear() }
 }
 // beforeExit permits the guarded async unregister to settle; abrupt death preserves recovery evidence.
 process.on('beforeExit', () => { void closeStorageAdmissions().catch(() => {}) })
@@ -148,7 +178,7 @@ export async function withAdmission<T>(commonDir: string, kind: OperationKind, f
   const ticket = await gate.admit(registration, kind)
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
   try { return await ambient.run(context, () => fn(ticket)) }
-  finally { context.active = false; await gate.finish(ticket) }
+  finally { context.active = false; await finishAdmission(gate, ticket) }
 }
 
 /** Reserve a detached callback before returning from its parent, then run/finish it exactly once. */
@@ -162,7 +192,7 @@ export async function detachedAdmission(commonDir: string, kind: OperationKind):
   const ticket = await gate.admit(registration, kind, { parent })
   const context: Admission = { kind, commonDir: common, ticket, gate, active: true }
   let started = false
-  const finish = async () => { if (context.active) { context.active = false; await gate.finish(ticket) } }
+  const finish = async () => { if (context.active) { context.active = false; await finishAdmission(gate, ticket) } }
   return { async run<T>(fn: () => Promise<T>): Promise<T> {
     if (started || !context.active) throw new StorageRefused('unavailable', 'detached admission already consumed')
     started = true
@@ -171,29 +201,26 @@ export async function detachedAdmission(commonDir: string, kind: OperationKind):
 }
 
 export async function withValidatedRead<T>(commonDir: string, fn: () => Promise<T>): Promise<T> {
-  if (currentAdmission(commonDir)) return fn()
   const gate = storageGate(commonDir)
   const scope = ambient.getStore()
-  const remember = (generation: number) => {
-    if (!scope?.active || scope.ticket || scope.commonDir && scope.commonDir !== gate.commonDir) return
-    if (scope.observed !== undefined && !sameEpoch(scope.observed, generation))
-      throw new StorageRefused('maintenance', 'storage changed during this operation; nothing was changed, retry it')
-    scope.commonDir = gate.commonDir
-    scope.observed = generation
+  // Tool scopes acquire before reading lifecycle facts. Only display/hook callers
+  // outside a scope use optimistic validation, which never grants effect authority.
+  if (scope?.active) {
+    await requireAdmission(gate.commonDir)
+    return fn()
   }
   const enclosing = reads.getStore()
   if (enclosing?.active && enclosing.commonDir === gate.commonDir) return fn()
   for (let attempt = 0; attempt < 3; attempt++) {
     const before = await gate.observe()
     if (before.phase !== 'legacy') throw new StorageRefused('maintenance', 'storage is under maintenance')
-    remember(before.generation)
     const context = { commonDir: gate.commonDir, active: true }
     let value: T
     try { value = await reads.run(context, fn) }
     finally { context.active = false }
     const after: ReadValidation = await gate.observe()
     if (after.phase !== 'legacy') throw new StorageRefused('maintenance', 'storage is under maintenance')
-    if (before.generation === after.generation) { remember(after.generation); return value }
+    if (before.generation === after.generation) return value
   }
   throw new StorageRefused('maintenance', 'storage changed during the read; retry after maintenance')
 }
@@ -210,7 +237,7 @@ export async function withDirectoryAdmission<T>(dir: string | undefined, kind: O
   finally {
     context.active = false
     const pending = context.acquiring
-    if (pending) { const ticket = await pending.catch(() => undefined); if (ticket) await context.gate!.finish(ticket) }
+    if (pending) { const ticket = await pending.catch(() => undefined); if (ticket) await finishAdmission(context.gate!, ticket) }
   }
 }
 
@@ -248,6 +275,7 @@ export async function admitStorageHelper(pid: number): Promise<(() => Promise<vo
     if (done) return
     await gate.finish(ticket)
     await gate.unregister(registration)
+    await unregisterDraining()
     done = true
   }
 }

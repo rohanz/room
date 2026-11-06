@@ -19,6 +19,8 @@ export type GateResponse = { id: number; value?: unknown; error?: {
 
 let worker: Worker | undefined
 let sequence = 0
+let closing: Promise<void> | undefined
+const inFlight = new Set<Promise<unknown>>()
 const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
 
 function thread(): Worker {
@@ -59,6 +61,7 @@ function thread(): Worker {
 
 export function callGateThread<M extends GateMethod>(commonDir: string, options: GateOptions, method: M,
   args: Parameters<StorageGate[M]>): ReturnType<StorageGate[M]> {
+  if (closing) return Promise.reject(new StorageRefused('unavailable', 'storage gates are closing')) as ReturnType<StorageGate[M]>
   const result = new Promise<unknown>((resolve, reject) => {
     const current = thread(), id = ++sequence
     pending.set(id, { resolve, reject })
@@ -72,5 +75,20 @@ export function callGateThread<M extends GateMethod>(commonDir: string, options:
       reject(error)
     }
   })
+  inFlight.add(result)
+  void result.then(() => inFlight.delete(result), () => inFlight.delete(result))
   return result as ReturnType<StorageGate[M]>
+}
+
+/** Finish accepted RPCs before stopping the shared worker. New calls refuse during close;
+ * after it settles, a later call may lazily start a fresh worker. Safe to call repeatedly. */
+export function closeStorageGates(): Promise<void> {
+  if (closing) return closing
+  closing = (async () => {
+    await Promise.allSettled([...inFlight])
+    const current = worker
+    worker = undefined
+    if (current) await current.terminate()
+  })().finally(() => { closing = undefined })
+  return closing
 }

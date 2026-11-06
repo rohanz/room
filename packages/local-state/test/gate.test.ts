@@ -110,7 +110,7 @@ describe('initialization', () => {
 })
 
 describe('admission and drain', () => {
-  it('admits and finishes tickets durably; finish is idempotent', async () => {
+  it('admits and finishes tickets atomically; finish is idempotent', async () => {
     const dir = commonDir(), gate = openStorageGate(dir, world())
     const reg = await gate.register({ instance: token(), kind: 'mcp', release: 'x' })
     const ticket = await gate.admit(reg, 'collect')
@@ -155,6 +155,9 @@ describe('admission and drain', () => {
     expect((await refusal(gate.admit(reg, 'launch-callback', { parent: held }))).reason).toBe('maintenance')
     expect((await gate.drain(owner)).complete).toBe(false)
     await gate.finish(child)
+    // A touched process must acknowledge that no operation remains by unregistering.
+    expect((await gate.drain(owner)).live.map(view => view.id)).toEqual([`registration:${reg.instance.nonce}`])
+    await gate.unregister(reg)
     const done = await gate.drain(owner)
     expect(done).toMatchObject({ complete: true, generation: 2 })
 
@@ -163,7 +166,8 @@ describe('admission and drain', () => {
     const reopened = await gate.reopen(owner)
     expect(reopened).toMatchObject({ generation: 2, phase: 'legacy' })
     expect(reopened.owner).toBeUndefined()
-    expect((await gate.admit(reg, 'spawn')).generation).toBe(2)
+    const next = await gate.register({ instance: reg.instance, kind: 'mcp', release: 'x' })
+    expect((await gate.admit(next, 'spawn')).generation).toBe(2)
   })
 
   it('reports unknown and dead holders; only resolveDead removes a verified-dead ticket, with an audit record', async () => {
@@ -185,6 +189,9 @@ describe('admission and drain', () => {
     await gate.resolveDead(owner, deadTicket.id, 'worker registry recovery verified\nno pending intent')
     const audit = JSON.parse(fs.readFileSync(path.join(dir, STORAGE_PATHS.resolutions, `${deadTicket.id}.json`), 'utf8'))
     expect(audit).toMatchObject({ ticket: { id: deadTicket.id }, owner: owner.instance.nonce, generation: 2, note: 'worker registry recovery verified no pending intent' })
+    // Ticket recovery cannot erase evidence of another ticket lost in a power failure.
+    expect((await gate.drain(owner)).dead.map(view => view.id)).toEqual([`registration:${deadReg.instance.nonce}`])
+    await gate.resolveDead(owner, `registration:${deadReg.instance.nonce}`, 'all holder lifecycle intents reconciled')
     expect((await gate.drain(owner)).dead).toHaveLength(0)
     expect((await gate.drain(owner)).complete).toBe(false)
   })
@@ -361,4 +368,83 @@ it('keeps admission closed when the reopen deadline passes while waiting for the
     expect(gateRecord(dir)).toEqual(before)
     expect(await gate.reopen(owner, { notAfter: 201 })).toMatchObject({ phase: 'legacy', generation: before.generation })
   } finally { guard.mockRestore() }
+})
+
+
+it('keeps ticketless dead or unknown held-ticket registrations for recovery even at the cap', async () => {
+  const options = { ...world(), limits: { registrations: 2 } }, dir = commonDir(), gate = openStorageGate(dir, options)
+  const holder = await gate.register({ instance: token(), kind: 'mcp', release: 'test' })
+  const ticket = await gate.admit(holder, 'collect')
+  fs.unlinkSync(path.join(dir, STORAGE_PATHS.tickets, `${holder.instance.nonce}.${ticket.id}.json`))
+  const owner = await maintenance(gate, dir)
+  const live = await gate.drain(owner)
+  expect(live.complete).toBe(false)
+  expect(live.live.map(view => view.id)).toEqual([`registration:${holder.instance.nonce}`])
+  await expect(gate.resolveDead(owner, live.live[0].id, 'still alive')).rejects.toMatchObject({ reason: 'blocked' })
+  options.states.set(holder.instance.pid, 'unknown')
+  const unknown = await gate.drain(owner)
+  expect(unknown).toMatchObject({ complete: false, dead: [], live: [] })
+  expect(unknown.unknown.map(view => view.id)).toEqual([`registration:${holder.instance.nonce}`])
+  await expect(gate.resolveDead(owner, unknown.unknown[0].id, 'not verified')).rejects.toMatchObject({ reason: 'blocked' })
+  options.states.set(holder.instance.pid, 'dead')
+  await expect(gate.register({ instance: token(), kind: 'mcp', release: 'test' })).rejects.toMatchObject({ reason: 'capacity' })
+  const dead = await gate.drain(owner)
+  expect(dead.complete).toBe(false)
+  expect(dead.dead.map(view => view.id)).toEqual([`registration:${holder.instance.nonce}`])
+  expect((await gate.listTickets()).tickets).toContainEqual(expect.objectContaining({ id: dead.dead[0].id, holderState: 'dead' }))
+  await gate.resolveDead(owner, dead.dead[0].id, 'all holder intents checked')
+  expect((await gate.drain(owner)).complete).toBe(true)
+  expect(JSON.parse(fs.readFileSync(path.join(dir, STORAGE_PATHS.resolutions, `registration-${holder.instance.nonce}.json`), 'utf8')))
+    .toMatchObject({ registration: { hasHeldTickets: true, instance: holder.instance }, liveness: 'dead' })
+})
+
+it('syncs first-admission recovery evidence once, keeps per-call tickets cheap, and syncs transitions', async () => {
+  const dir = commonDir(), gate = openStorageGate(dir, world())
+  const holder = await gate.register({ instance: token(), kind: 'mcp', release: 'test' })
+  const owner = await maintenance(gate, dir)
+  const sync = vi.spyOn(fs, 'fsyncSync')
+  try {
+    const first = await gate.admit(holder, 'collect')
+    expect(sync).toHaveBeenCalled()
+    expect(JSON.parse(fs.readFileSync(path.join(dir, STORAGE_PATHS.registrations, `${holder.instance.nonce}.json`), 'utf8')))
+      .toMatchObject({ hasHeldTickets: true })
+    sync.mockClear()
+    await gate.finish(first)
+    await gate.finish(await gate.admit(holder, 'collect'))
+    expect(sync).not.toHaveBeenCalled()
+    await gate.drain(owner)
+    expect(sync).toHaveBeenCalled()
+    sync.mockClear()
+    await gate.reopen(owner)
+    expect(sync).toHaveBeenCalled()
+  } finally { sync.mockRestore() }
+})
+
+
+it('retains dead tickets and registration evidence when durable recovery auditing fails', async () => {
+  const options = world(), dir = commonDir(), gate = openStorageGate(dir, options)
+  const reg = await gate.register({ instance: token(), kind: 'mcp', release: 'test' })
+  const ticket = await gate.admit(reg, 'collect'), owner = await maintenance(gate, dir)
+  options.states.set(reg.instance.pid, 'dead')
+  await gate.drain(owner)
+  const rename = fs.renameSync.bind(fs)
+  const failAudit = () => vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (String(to).startsWith(path.join(dir, STORAGE_PATHS.resolutions))) throw new Error('injected audit failure')
+    return rename(from, to)
+  })
+  let failure = failAudit()
+  try {
+    await expect(gate.resolveDead(owner, ticket.id, 'reconciled')).rejects.toMatchObject({ reason: 'unavailable' })
+    expect((await gate.drain(owner)).dead.map(view => view.id)).toEqual([ticket.id])
+  } finally { failure.mockRestore() }
+  await gate.resolveDead(owner, ticket.id, 'ticket reconciled')
+  const id = `registration:${reg.instance.nonce}`
+  failure = failAudit()
+  try {
+    await expect(gate.resolveDead(owner, id, 'holder reconciled')).rejects.toMatchObject({ reason: 'unavailable' })
+    expect((await gate.drain(owner)).dead.map(view => view.id)).toEqual([id])
+    expect(fs.existsSync(path.join(dir, STORAGE_PATHS.registrations, `${reg.instance.nonce}.json`))).toBe(true)
+  } finally { failure.mockRestore() }
+  await gate.resolveDead(owner, id, 'holder reconciled')
+  expect((await gate.drain(owner)).complete).toBe(true)
 })

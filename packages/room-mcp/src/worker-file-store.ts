@@ -883,7 +883,14 @@ export class FileWorkerStore {
     // A clean exit may have produced a no-report notice. The late real report has its
     // own deterministic ID and supersedes that fallback in the registry projection.
     const messageId = completionId(id, n, report.done.k)
-    if (report.posted === messageId || run.posted && !run.posted.endsWith(':no-report')) return false
+    if (run.posted && !run.posted.endsWith(':no-report')) return false
+    if (report.posted === messageId) {
+      // A concurrent projector may have acknowledged the report while the record
+      // was still active. Retirement must retain that acknowledgement on the run.
+      if (!['prepared', 'active'].includes(record.phase)) await this.update(id, old => ({ ...old,
+        runs: old.runs.map(value => value.n === n ? { ...value, posted: messageId } : value), seq: old.seq + 1 }))
+      return false
+    }
     await post(messageId, record, report)
     // A retiring record admits no report write; its run carries the posted id, so retirement can complete.
     if (['prepared', 'active'].includes(record.phase)) await this.writeReport(id, { ...report, posted: messageId })

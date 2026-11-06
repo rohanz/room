@@ -128,14 +128,20 @@ export async function ownWorkerNames(dir: string, lead: string): Promise<Set<str
 export async function localWorkers(dir: string, keep: (record: WorkerRecord) => boolean = () => true): Promise<LocalWorker[]> {
   const registry = await openWorkerReader(dir)
   return registry.validatedRead(async () => {
-  const records = requireWorkerInventory(await registry.list())
-  const workers: LocalWorker[] = []
-  for (const record of records) {
-    if (['retiring', 'retired', 'abandoned'].includes(record.phase) || !keep(record)) continue
-    const status = await registry.status(record.id)
-    if (status) workers.push(realStateInput(record, status))
+  // Enrich one inventory, then validate it as a whole. A list followed by status(id)
+  // rebuilt three snapshots per worker and could combine a stale record with new status.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const snapshot = requireWorkerEvidence(workerEvidence(await registry.snapshot()))
+    const workers: LocalWorker[] = []
+    for (const { record } of snapshot.workers) {
+      if (['retiring', 'retired', 'abandoned'].includes(record.phase) || !keep(record)) continue
+      const status = await registry.statusFromSnapshot(snapshot, record.id)
+      if (status) workers.push(realStateInput(record, status))
+    }
+    const fresh = requireWorkerEvidence(workerEvidence(await registry.snapshot()))
+    if (fresh.revision === snapshot.revision) return workers
   }
-  return workers
+  throw new Error('worker snapshot unavailable: facts changed during inventory enrichment')
   })
 }
 

@@ -5,7 +5,11 @@ import { WorkerRegistry, type RegistryOptions } from '../../src/worker-registry.
 import { withAdmission, closeStorageAdmissions } from '../../src/storage-admission.js'
 
 const finishes: (() => Promise<void>)[] = []
-afterEach(async () => { for (const finish of finishes.splice(0)) await finish(); await closeStorageAdmissions() })
+export async function closeAdmittedRegistries(): Promise<void> {
+  for (const finish of finishes.splice(0)) await finish()
+  await closeStorageAdmissions()
+}
+afterEach(closeAdmittedRegistries)
 
 export async function openAdmittedRegistry(common: string, options: RegistryOptions = {}): Promise<WorkerRegistry> {
   return openAdmittedStore(common, () => WorkerRegistry.open(common, options))

@@ -1,3 +1,4 @@
+import { closeStorageAdmissions } from '../src/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -12,7 +13,7 @@ import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { ConflictSet } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
-import { localWorkerBaseline, openWorkerReader, WorkerRegistry } from '../src/worker-registry.js'
+import { closeRegistryForDir, localWorkers, localWorkerBaseline, openWorkerReader, WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 
@@ -94,7 +95,7 @@ describe('registry reads during a conflict check', () => {
       const warm = reads.count()
       console.log(JSON.stringify({ peers: PEERS, retired: RETIRED, coldReads: cold, warmReads: warm }))
       expect(warm).toBe(0)
-    } finally { vi.useRealTimers(); reads.restore(); set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.useRealTimers(); reads.restore(); set.stop(); room.doc.destroy(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 })
 
@@ -108,7 +109,7 @@ it('memoizes a supplied carried callback separately from production baseline acq
     const pass = await (set as unknown as { carriedPass(): Promise<(name: string) => unknown> }).carriedPass()
     pass('lead'); pass('lead'); pass('lead')
     expect(callback).toHaveBeenCalledTimes(1)
-  } finally { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
+  } finally { set.stop(); room.doc.destroy(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
 })
 
 describe('worker registry read cache', () => {
@@ -154,7 +155,7 @@ describe('worker registry read cache', () => {
       expect(await reader.checkoutUsers(owner)).toMatchObject({ reason: 'blocked', blockers: expect.arrayContaining([expect.stringContaining(borrower.id)]) })
       expect(await reader.projectable(owner.lead.participant, owner.room)).toMatchObject({ reason: 'blocked' })
       await expect(reader.occupancy()).rejects.toThrow(borrower.id)
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it.each(['report', 'exit'] as const)('startup preserves blockers for malformed %s evidence on an unlaunched worker', async kind => {
@@ -180,7 +181,7 @@ describe('worker registry read cache', () => {
         expect(quarantined).toHaveLength(1)
         expect(fs.readFileSync(join(registry.root, 'quarantine', quarantined[0]), 'utf8')).toBe('{malformed')
       } finally { restarted.close() }
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('rechecks run blockers after a recovery await before adopting a launch', async () => {
@@ -205,7 +206,7 @@ describe('worker registry read cache', () => {
         expect(JSON.parse(fs.readFileSync(workerFile, 'utf8')).runs[0].launch).toBeUndefined()
         expect(fs.readFileSync(file, 'utf8')).toBe('{malformed')
       } finally { spy.mockRestore() }
-    } finally { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.restoreAllMocks(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('writer reads retain healthy records and blockers without quarantining until reconciliation', async () => {
@@ -230,7 +231,7 @@ describe('worker registry read cache', () => {
       expect(fs.existsSync(file)).toBe(false)
       expect(fs.existsSync(join(registry.root, 'tags', `${damaged.tag}.json`))).toBe(true)
       expect((await registry.list()).blockers.length).toBeGreaterThan(0)
-    } finally { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.restoreAllMocks(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('does not quarantine a repair that replaces a record while reconciliation decodes old bytes', async () => {
@@ -255,7 +256,7 @@ describe('worker registry read cache', () => {
       expect(repaired).toBe(true)
       expect(fs.readFileSync(file)).toEqual(healthy)
       expect((await registry.read(record.id))?.id).toBe(record.id)
-    } finally { vi.restoreAllMocks(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.restoreAllMocks(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('keeps a reservation whose payload is missing blocked rather than treating it as absence', async () => {
@@ -271,7 +272,7 @@ describe('worker registry read cache', () => {
       await expect(reader.reserved(record.tag)).rejects.toMatchObject({ reason: 'blocked' })
       await registry.reconcile()
       expect(fs.readFileSync(join(registry.root, 'tags', `${record.tag}.json`))).toEqual(before)
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it.each(['record', 'report', 'exit'] as const)('read-only access preserves malformed %s bytes and reports blocking evidence', async kind => {
@@ -294,7 +295,7 @@ describe('worker registry read cache', () => {
       const facts = await reader.snapshot()
       expect(tree(reader.root)).toEqual(before)
       expect(facts.available && facts.blockers.some(value => value.includes(path.basename(file)))).toBe(true)
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it.each(['null', '{}', '{"id":"unsafe/id"}'])('blocks a corrupt baseline reservation (%s) without changing it', async bytes => {
@@ -306,7 +307,7 @@ describe('worker registry read cache', () => {
       const snapshot = await reader.snapshot({ tag: 'broken', recordOnly: true })
       expect(fs.readFileSync(file, 'utf8')).toBe(bytes)
       expect(snapshot.available && snapshot.blockers.some(value => value.includes('broken.json'))).toBe(true)
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('resolves a participant to its reserved incarnation, never a retired one with the same name', async () => {
@@ -324,7 +325,7 @@ describe('worker registry read cache', () => {
       expect((await localWorkerBaseline(dir, 'lead'))).toBeUndefined()
       expect((await localWorkerBaseline(dir, 'other+w3'))).toBeUndefined()
       expect((await localWorkerBaseline(dir, 'lead+missing'))).toBeUndefined()
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('sees another writer\'s replacement, in-place rewrite, addition and removal on the next call', async () => {
@@ -353,7 +354,7 @@ describe('worker registry read cache', () => {
       fs.rmSync(file)
       expect((await (await openWorkerReader(dir)).read(record.id))).toBeUndefined()
       expect((requireWorkerInventory(await (await openWorkerReader(dir)).list())).map(r => r.id)).toEqual([id])
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   /**
@@ -399,7 +400,7 @@ describe('worker registry read cache', () => {
         expect(await registry.sourceToken('solo')).toBe(second)
         expect(reads.count()).toBe(0)
       } finally { reads.restore(); stat.restore() }
-    } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.useRealTimers(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('revalidates the record after capturing status liveness', async () => {
@@ -421,7 +422,7 @@ describe('worker registry read cache', () => {
         expect((await registry.status(record.id))?.status).toBe('abandoned')
         expect(probed).toBe(true)
       } finally { registry.close() }
-    } finally { rmSync(dir, { recursive: true, force: true }) }
+    } finally { await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it.each([
@@ -458,7 +459,7 @@ describe('worker registry read cache', () => {
         expect((await registry.read(record.id))?.task).toBe('dddd')
         expect(reads.count()).toBe(0)
       } finally { reads.restore(); stat.restore() }
-    } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.useRealTimers(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('treats a timestamp ahead of the clock as racy', async () => {
@@ -477,7 +478,7 @@ describe('worker registry read cache', () => {
         writeFileSync(file, JSON.stringify({ ...record, task: 'bbbb' }))
         expect((await registry.read(record.id))?.task).toBe('bbbb')
       } finally { stat.restore() }
-    } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.useRealTimers(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('sees an addition and a removal behind a colliding directory stat', async () => {
@@ -500,6 +501,26 @@ describe('worker registry read cache', () => {
         at(tick + 10_000n * MS)
         expect((requireWorkerInventory(await registry.list())).map(r => r.id)).toEqual([record.id])
       } finally { stat.restore() }
-    } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }) }
+    } finally { vi.useRealTimers(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
   })
+})
+
+it('retries the complete worker inventory when records change during status enrichment', async () => {
+  const { dir } = repo()
+  const { record } = await seedRegistryWorker(dir, 'moving')
+  const reader = await openWorkerReader(dir)
+  const enrich = WorkerRegistry.prototype.statusFromSnapshot
+  let changed = false
+  const spy = vi.spyOn(WorkerRegistry.prototype, 'statusFromSnapshot').mockImplementation(async function (snapshot, id) {
+    const status = await enrich.call(this, snapshot, id)
+    if (!changed) {
+      changed = true
+      writeFileSync(join(reader.root, 'workers', `${record.id}.json`), JSON.stringify({ ...record, task: 'new task', seq: record.seq + 1 }))
+    }
+    return status
+  })
+  try {
+    expect((await localWorkers(dir)).find(worker => worker.id === record.id)?.task).toBe('new task')
+    expect(spy).toHaveBeenCalledTimes(2)
+  } finally { spy.mockRestore(); reader.close(); await closeRegistryForDir(dir); await closeStorageAdmissions(); rmSync(dir, { recursive: true, force: true }) }
 })

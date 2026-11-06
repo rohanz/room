@@ -386,14 +386,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 export async function registryRunningWorkers(s: Session, rooms: import('../registry.js').Rooms): Promise<{ s: Session; w: LocalWorker }[]> {
   const registry = await openWorkerReader(s.dir)
   return registry.validatedRead(async () => {
-  return (await Promise.all((requireWorkerInventory(await registry.list())).map(async record => {
-    const status = (await registry.status(record.id))
-    if (!status || record.lead.participant !== s.me.name) return []
-    const room = rooms.all().find(candidate => candidate.roomName === record.room) ?? s
-    const liveHandle = rooms.hasHandle(room, realStateInput(record, status))
-    if (!['starting', 'running', 'unknown', 'ambiguous'].includes(status.status) && !liveHandle) return []
-    return [{ s: room, w: realStateInput(record, status) }]
-  }))).flat()
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const snapshot = await registry.snapshot()
+      if (!snapshot.available || snapshot.blockers.length) throw new Error('worker inventory unavailable')
+      const workers: { s: Session; w: LocalWorker }[] = []
+      for (const { record } of snapshot.workers) {
+        if (record.lead.participant !== s.me.name) continue
+        const status = await registry.statusFromSnapshot(snapshot, record.id)
+        if (!status) continue
+        const room = rooms.all().find(candidate => candidate.roomName === record.room) ?? s
+        const w = realStateInput(record, status)
+        if (['starting', 'running', 'unknown', 'ambiguous'].includes(status.status) || rooms.hasHandle(room, w)) workers.push({ s: room, w })
+      }
+      const fresh = await registry.snapshot()
+      if (fresh.available && !fresh.blockers.length && fresh.revision === snapshot.revision) return workers
+    }
+    throw new Error('worker inventory changed during status enrichment')
   })
 }
 

@@ -1,3 +1,7 @@
+import { settleWorkerPublication } from '../src/worker-publication.js'
+import { acknowledgeKeptPublication } from '../src/kept-publication.js'
+import { RoomDoc } from '@room/shared'
+import type { Session } from '../src/session.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -214,13 +218,13 @@ describe('lazy directory admission', () => {
     expect(flight).not.toHaveBeenCalled()
   })
 
-  it('acquires once on the first mutation, reuses nested/concurrent requests and finishes on scope exit', async () => {
+  it('acquires once on the first lifecycle read, reuses nested/concurrent requests and finishes on scope exit', async () => {
     const { common, dir } = fixture(), gate = storageGate(common)
     await storageRegistration(common)
     const admit = vi.spyOn(gate, 'admit'), finish = vi.spyOn(gate, 'finish')
     await withDirectoryAdmission(dir, 'collect', async () => {
       await withValidatedRead(common, async () => undefined)
-      expect(admit).not.toHaveBeenCalled()
+      expect(admit).toHaveBeenCalledTimes(1)
       const [a, b] = await Promise.all([requireAdmission(common), requireAdmission(common)])
       expect(a.id).toBe(b.id)
       await withDirectoryAdmission(dir, 'stop', async () => {
@@ -234,29 +238,37 @@ describe('lazy directory admission', () => {
     expect((await gate.status()).tickets).toBe(0)
   })
 
-  it('refuses a generation changed since its pre-ticket read, before effects', async () => {
-    const { common, dir } = fixture()
-    await storageRegistration(common)
-    const m = await maintenance(common), effect = vi.fn()
+  it('holds admission from its first read through a paused lifecycle-derived effect', async () => {
+    const { common, dir } = fixture(), read = deferred(), release = deferred(), effect = vi.fn()
+    const registry = await WorkerRegistry.openReader(common)
+    const operation = withDirectoryAdmission(dir, 'message', async () => {
+      await registry.snapshot()
+      read.resolve()
+      await release.promise
+      expect(currentAdmission(common)).toBeDefined()
+      effect()
+    })
+    await read.promise
+    const m = await maintenance(common)
     try {
-      await expect(withDirectoryAdmission(dir, 'collect', async () => {
-        await withValidatedRead(common, async () => 'old facts')
-        await m.gate.drain(m.owner); await m.gate.reopen(m.owner)
-        await withAdmission(common, 'collect', async () => effect())
-      })).rejects.toMatchObject({ reason: 'maintenance' })
+      expect((await m.gate.drain(m.owner)).complete).toBe(false)
       expect(effect).not.toHaveBeenCalled()
-      expect((await m.gate.status()).tickets).toBe(0)
-    } finally { await m.close() }
+      release.resolve(); await operation
+      expect(effect).toHaveBeenCalledTimes(1)
+      expect((await m.gate.drain(m.owner)).complete).toBe(true)
+      await m.gate.reopen(m.owner)
+    } finally { release.resolve(); await operation; await m.close(); registry.close() }
   })
 
-  it('treats first initialization (absent gate 0 -> 1) as the same epoch, not maintenance', async () => {
-    const { common, dir } = fixture(), effect = vi.fn()
+  it('leaves display reads outside tool scopes ticket-free', async () => {
+    const { common } = fixture(), gate = storageGate(common)
+    const admit = vi.spyOn(gate, 'admit'), register = vi.spyOn(gate, 'register')
+    const reader = await WorkerRegistry.openReader(common)
+    await reader.snapshot()
+    expect(admit).not.toHaveBeenCalled()
+    expect(register).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(common, 'room', 'storage-gate.json'))).toBe(false)
-    await withDirectoryAdmission(dir, 'spawn', async () => {
-      await withValidatedRead(common, async () => 'facts before the gate exists')
-      await withAdmission(common, 'spawn', async ticket => { expect(ticket.generation).toBe(1); effect() })
-    })
-    expect(effect).toHaveBeenCalledTimes(1)
+    reader.close()
   })
 
   it('finishes an acquired ticket even when the tool throws', async () => {
@@ -272,16 +284,52 @@ describe('lazy directory admission', () => {
 })
 
 
-it('fences detached work against the lazy parent’s pre-ticket generation', async () => {
+it('admits detached work from a live parent during drain and holds it through its effect', async () => {
   const { common, dir } = fixture()
   await storageRegistration(common)
   const m = await maintenance(common)
+  let child!: Awaited<ReturnType<typeof detachedAdmission>>
   try {
-    await expect(withDirectoryAdmission(dir, 'preview', async () => {
+    await withDirectoryAdmission(dir, 'preview', async () => {
       await withValidatedRead(common, async () => 'before')
-      await m.gate.drain(m.owner); await m.gate.reopen(m.owner)
-      await detachedAdmission(common, 'preview')
-    })).rejects.toMatchObject({ reason: 'maintenance' })
-    expect((await m.gate.status()).tickets).toBe(0)
-  } finally { await m.close() }
+      expect((await m.gate.drain(m.owner)).complete).toBe(false)
+      child = await detachedAdmission(common, 'preview')
+    })
+    expect((await m.gate.drain(m.owner)).complete).toBe(false)
+    await child.run(async () => { expect(currentAdmission(common)).toBeDefined() })
+    expect((await m.gate.drain(m.owner)).complete).toBe(true)
+    await m.gate.reopen(m.owner)
+  } finally { await child?.finish(); await m.close() }
+})
+
+it.each(['done', 'kept'] as const)('keeps delayed %s publication admitted after the timeout returns', async kind => {
+  const { dir, common } = fixture(), entered = deferred(), release = deferred(), settled = deferred()
+  execFileSync('git', ['-C', dir, '-c', 'user.name=Test', '-c', 'user.email=test@test', 'commit', '--allow-empty', '-qm', 'base'])
+  const room = new RoomDoc(), log = vi.fn()
+  const session = { dir, room, me: { name: 'lead' }, policyStore: { policy: { level: 'full' } },
+    daemon: { fence: 'fence', reconcileGitChanges: async () => { entered.resolve(); await release.promise },
+      settle: async () => { expect(currentAdmission(common)).toBeDefined(); settled.resolve() } },
+  } as unknown as Session
+  let expire!: () => void
+  const setTimer = globalThis.setTimeout
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...args: unknown[]) => {
+    if (ms === 5000) { expire = fn; return setTimer(() => {}, 60_000) }
+    return setTimer(fn, ms, ...args)
+  }) as typeof setTimeout)
+  const operation = withDirectoryAdmission(dir, 'report', async () => {
+    await withValidatedRead(common, async () => undefined)
+    if (kind === 'done') await settleWorkerPublication(session, log)
+    else expect((await acknowledgeKeptPublication(session, undefined, [])).pending).toBe(true)
+  })
+  await entered.promise
+  expire(); await operation
+  const m = await maintenance(common)
+  try {
+    expect((await m.gate.status()).tickets).toBe(1)
+    expect((await m.gate.drain(m.owner)).complete).toBe(false)
+    release.resolve(); await settled.promise
+    await vi.waitFor(async () => expect((await m.gate.status()).tickets).toBe(0))
+    expect((await m.gate.drain(m.owner)).complete).toBe(true)
+    await m.gate.reopen(m.owner)
+  } finally { release.resolve(); await m.close(); room.doc.destroy() }
 })

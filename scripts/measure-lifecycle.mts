@@ -13,9 +13,14 @@ import path from 'node:path'
 import { spawnSync, execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { syncBuiltinESMExports } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { performance } from 'node:perf_hooks'
 import type { WorkerRecord } from '../packages/room-mcp/src/worker-status.js'
+
+// The same measurement driver imports each revision's sources and fixtures.
+const sourceArg = process.argv.find(arg => arg.startsWith('--source-root='))?.slice(14)
+const sourceRoot = sourceArg ? path.resolve(sourceArg) : fileURLToPath(new URL('../', import.meta.url))
+const source = (relative: string): Promise<any> => import(pathToFileURL(path.join(sourceRoot, relative)).href)
 
 const identity = { pid: process.pid, startTime: 'synthetic-alive', executable: process.execPath, sessionId: 'baseline', nonce: 'baseline' }
 function record(common: string, n: number): WorkerRecord {
@@ -69,11 +74,11 @@ async function child(common: string, count: number) {
   const meter = instrument()
   try {
     const start = performance.now()
-    const { requireWorkerInventory } = await import('../packages/room-mcp/src/worker-store.js')
-    const { WorkerRegistry } = await import('../packages/room-mcp/src/worker-registry.js')
+    const { requireWorkerInventory } = await source('packages/room-mcp/src/worker-store.js')
+    const { WorkerRegistry } = await source('packages/room-mcp/src/worker-registry.js')
     const registry = await WorkerRegistry.open(common, { migrate: false, watch: false, identity, liveness: () => 'alive' })
     // Startup maintenance work: per-clone preflight, gate registration and maintenance status, once per process.
-    const { storageRegistration, withAdmission } = await import('../packages/room-mcp/src/storage-admission.js')
+    const { storageRegistration, withAdmission } = await source('packages/room-mcp/src/storage-admission.js')
     await storageRegistration(common)
     const startup = { ms: performance.now() - start, fs: meter.result() }
     try {
@@ -117,8 +122,8 @@ function fixture(root: string, count: number) {
 // Bound hooks reuse memorySession and the production tools/arbitration path used by hooks.test.ts.
 type Measurement = { ms: number; fs?: { total: number; byApi: Record<string, number> }; stdoutBytes?: number; stderr?: string; ipcContacts?: number }
 async function gateSample(common: string, count: number): Promise<Record<string, Measurement>> {
-  const { openStorageGate } = await import('../packages/local-state/src/gate.js')
-  const { probeOwnProcess } = await import('../packages/local-state/src/process.js')
+  const { openStorageGate } = await source('packages/local-state/src/gate.js')
+  const { probeOwnProcess } = await source('packages/local-state/src/process.js')
   const own = probeOwnProcess()
   if (!own?.startTime || !own.executable) throw new Error('cannot verify measurement process identity')
   const gate = openStorageGate(common)
@@ -146,7 +151,7 @@ async function gateSample(common: string, count: number): Promise<Record<string,
 
 async function hooksSample(root: string, mode: string): Promise<Record<string, Measurement>> {
   const result: Record<string, Measurement> = {}
-  const hooks = fileURLToPath(new URL('../plugins/room/hooks/', import.meta.url))
+  const hooks = path.join(sourceRoot, 'plugins/room/hooks')
   const common = path.join(root, '.git')
   const env = { ...process.env }
   for (const key of Object.keys(env)) if (/^(ROOM_|CLAUDE_|CODEX_|GIT_)/.test(key)) delete env[key]
@@ -155,15 +160,16 @@ async function hooksSample(root: string, mode: string): Promise<Record<string, M
   for (const variant of mode === 'both' ? ['alone', 'bound'] : [mode]) {
     for (const host of ['codex', 'claude'] as const) {
       const id = `measurement-${variant}-${host}`
-      const { sessionDirectory } = await import('../packages/room-mcp/src/session.js')
+      const { sessionDirectory } = await source('packages/room-mcp/src/session.js')
       const sessionDir = sessionDirectory(common, id)
       let contacts = 0
+      let selectionMs = 0
       let close = async () => {}
       if (variant === 'bound') {
-        const { memorySession } = await import('../packages/room-mcp/test/fixtures/session.js')
-        const { visiblePeer } = await import('../packages/room-mcp/test/fixtures/visible.js')
-        const { createTools } = await import('../packages/room-mcp/src/tools.js')
-        const { startArbitration } = await import('../packages/room-mcp/src/arbitration.js')
+        const { memorySession } = await source('packages/room-mcp/test/fixtures/session.js')
+        const { visiblePeer, presentPeer } = await source('packages/room-mcp/test/fixtures/visible.js')
+        const { createTools } = await source('packages/room-mcp/src/tools.js')
+        const { startArbitration } = await source('packages/room-mcp/src/arbitration.js')
         const session = memorySession({ name: 'measurement', kind: 'agent' }, root)
         visiblePeer(session.room, 'measurement', 'agent', id)
         visiblePeer(session.room, 'peer', 'agent', 'measurement-peer')
@@ -182,7 +188,7 @@ async function hooksSample(root: string, mode: string): Promise<Record<string, M
         }
         try {
           tools.attachHooks(session)
-          arbitration = await startArbitration({ binding, ledger: tools.ledger, select: () => tools.hookSelect(), onContact: () => { contacts++ } })
+          arbitration = await startArbitration({ binding, ledger: tools.ledger, select: () => { const start = performance.now(); try { return tools.hookSelect() } finally { selectionMs += performance.now() - start } }, onContact: () => { contacts++ } })
           // State publication is debounced; wait outside the timed child invocation.
           const deadline = Date.now() + 5000
           while (!fs.existsSync(path.join(sessionDir, 'state.json'))) {
@@ -197,7 +203,8 @@ async function hooksSample(root: string, mode: string): Promise<Record<string, M
       }
       try {
         for (const hook of ['session-start', 'before-edit']) {
-          const beforeContacts = contacts
+          const beforeContacts = contacts, beforeSelection = selectionMs
+          const meter = process.env.MEASURE_HOOKS_DIAGNOSTIC ? instrument() : undefined
           const start = performance.now()
           const run = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
             const proc = execFile(process.execPath, [path.join(hooks, `${hook}.mjs`), '--host', host],
@@ -206,7 +213,8 @@ async function hooksSample(root: string, mode: string): Promise<Record<string, M
             proc.stdin!.end(JSON.stringify({ cwd: root, session_id: id, source: 'startup', tool_name: 'Edit',
               tool_input: { file_path: path.join(root, 'app.py'), old_string: 'x', new_string: 'y' } }))
           })
-          result[`${variant}.${host}.${hook}`] = { ms: performance.now() - start, stdoutBytes: Buffer.byteLength(run.stdout), stderr: run.stderr, ipcContacts: contacts - beforeContacts }
+          result[`${variant}.${host}.${hook}`] = { ms: performance.now() - start, stdoutBytes: Buffer.byteLength(run.stdout), stderr: run.stderr, ipcContacts: contacts - beforeContacts, ...(meter ? { fs: meter.result(), selectionMs: selectionMs - beforeSelection } : {}) }
+          meter?.restore()
           if (run.stderr) throw new Error(`hook emitted stderr: ${run.stderr}`)
           if (variant === 'bound' && contacts <= beforeContacts) throw new Error(`bound ${hook} did not contact the MCP arbitration endpoint`)
         }
@@ -214,6 +222,80 @@ async function hooksSample(root: string, mode: string): Promise<Record<string, M
     }
   }
   return result
+}
+
+/** Real lifecycle-reading tool calls over two private workers; no host/model launched.
+ * Collection uses keep=true and applies one file; spawn measures admission/writeIntent only. */
+async function toolsSample(root: string): Promise<Record<string, Measurement>> {
+  const common = path.join(root, '.git'), result: Record<string, Measurement> = {}
+  const git = (...args: string[]) => {
+    const run = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' })
+    if (run.status !== 0) throw new Error(run.stderr)
+    return run.stdout.trim()
+  }
+  git('config', 'user.name', 'Measurement'); git('config', 'user.email', 'measurement@example.test')
+  fs.writeFileSync(path.join(root, 'base.txt'), 'base\n')
+  fs.writeFileSync(path.join(root, '.gitignore'), '.room/\n')
+  git('add', '.'); git('commit', '-qm', 'baseline')
+  const head = git('rev-parse', 'HEAD')
+  const { memorySession } = await source('packages/room-mcp/test/fixtures/session.js')
+  const { visiblePeer, presentPeer } = await source('packages/room-mcp/test/fixtures/visible.js')
+  const { createTools } = await source('packages/room-mcp/src/tools.js')
+  const { registryForDir, closeRegistryForDir } = await source('packages/room-mcp/src/worker-registry.js')
+  const { probeOwnProcess } = await source('packages/room-mcp/src/worker-process.js')
+  const admission = fs.existsSync(path.join(sourceRoot, 'packages/room-mcp/src/storage-admission.ts'))
+    ? await source('packages/room-mcp/src/storage-admission.js') : undefined
+  const own = probeOwnProcess(), instance = { ...identity, startTime: own?.startTime ?? '', executable: own?.executable ?? process.execPath }
+  for (const [n, tag] of ['running', 'finished'].entries()) {
+    const worker = { ...record(common, n), id: `w_${tag}`, tag, name: `baseline+${tag}`, phase: 'active', base: head,
+      dir: path.join(root, '.room/workers', tag), branch: `room/${tag}`, collectedKeep: true,
+      lead: { participant: 'baseline', room: 'local/baseline', instance },
+      runs: [{ ...record(common, n).runs[0], launch: { outcome: 'launched', pid: tag === 'finished' ? 4_000_000 : process.pid, process: { ...instance, pid: tag === 'finished' ? 4_000_000 : process.pid } } }] }
+    git('worktree', 'add', '-qb', worker.branch, worker.dir, head)
+    fs.writeFileSync(path.join(common, 'room/registry/workers', `${worker.id}.json`), JSON.stringify(worker))
+    fs.writeFileSync(path.join(common, 'room/registry/tags', `${tag}.json`), JSON.stringify({ id: worker.id, holder: instance, at: 1 }))
+    const runDir = path.join(common, 'room/registry/runs', worker.id)
+    fs.mkdirSync(runDir, { recursive: true })
+    // Use the public facade below for evidence files; its schemas/path layout belong to each revision.
+  }
+  const registry = await registryForDir(root)
+  const running = await registry.read('w_running'), finished = await registry.read('w_finished')
+  for (const worker of [running, finished]) await registry.writeReport(worker.id,
+    { run: 1, nonce: worker.runs[0].nonce, chain: [], joinedAt: 1,
+      ...(worker.tag === 'finished' ? { done: { at: Date.now(), summary: 'finished', changed: ['result.txt'] } } : {}) })
+  await registry.writeExit('w_finished', { run: 1, code: 0, at: Date.now(), witnessed: true })
+  fs.writeFileSync(path.join(finished.dir, 'result.txt'), 'collected\n')
+  const session = memorySession({ name: 'baseline', kind: 'agent', owner: 'baseline' }, root, undefined, 'local/baseline')
+  visiblePeer(session.room, 'baseline', 'agent', 'measurement')
+  const leavePeer = presentPeer(session.room, session.awareness, 'baseline+running')
+  session.local = { url: 'ws://127.0.0.1:9', port: 9, owned: false, stop: async () => {} }
+  await session.policyStore.markDisclosed('full', 2)
+  const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: root,
+    probe: () => undefined, listCwdProcesses: () => [], log: () => {} })
+  const timed = async (name: string, fn: () => Promise<unknown>) => {
+    const start = performance.now(); const value = await fn(); result[name] = { ms: performance.now() - start }
+    if (typeof value === 'string' && /^(error:|not joined)/i.test(value)) throw new Error(`${name}: ${value}`)
+    return value
+  }
+  try {
+    // Establish tool/registry caches before measuring steady calls, exactly once on both revisions.
+    await tools.call('room_state', {})
+    await timed('room_state', () => tools.call('room_state', {}))
+    await timed('room_send', () => tools.call('room_send', { type: 'note', to: 'baseline+running', text: 'measurement' }))
+    await timed('room_done', () => tools.call('room_done', { summary: 'measurement' }))
+    const collected = await timed('collect', () => tools.call('room_collect', { tag: 'finished', keep: true }))
+    if (!fs.existsSync(path.join(root, 'result.txt'))) throw new Error(`collect did not apply fixture: ${collected}`)
+    const spawn = async () => {
+      await registry.snapshot()
+      await registry.writeIntent(record(common, 2), 3)
+      await registry.finishOperation(record(common, 2).id)
+    }
+    await timed('spawnAdmission', () => admission ? admission.withDirectoryAdmission(root, 'spawn', spawn) : spawn())
+    return result
+  } finally {
+    await tools.shutdown(); await closeRegistryForDir(root); await admission?.closeStorageAdmissions()
+    leavePeer(); session.graph?.stop(); session.hub.close(); session.awareness.destroy(); session.room.doc.destroy()
+  }
 }
 
 async function extraPhase(args: string[]) {
@@ -276,7 +358,7 @@ const args = process.argv.slice(2)
 if (args[0] === '--extra-child') {
   for (const key of Object.keys(process.env)) if (/^(ROOM_|CLAUDE_|CODEX_|GIT_)/.test(key)) delete process.env[key]
   try {
-    const result = args[1] === 'gate' ? await gateSample(args[2], Number(args[3])) : await hooksSample(path.dirname(args[2]), args[4])
+    const result = args[1] === 'gate' ? await gateSample(args[2], Number(args[3])) : args[1] === 'tools' ? await toolsSample(path.dirname(args[2])) : await hooksSample(path.dirname(args[2]), args[4])
     process.stdout.write(JSON.stringify(result) + '\n')
   } catch (error) { console.error(error); process.exitCode = 1 }
 } else if (args.some(arg => arg.startsWith('--phase='))) {

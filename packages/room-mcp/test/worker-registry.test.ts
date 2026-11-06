@@ -1,4 +1,4 @@
-import { openAdmittedRegistry } from './fixtures/storage-admission.js'
+import { closeAdmittedRegistries, openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { runLegacyImport } from '../src/offline/room-state.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
@@ -16,7 +16,7 @@ import { memoryFile, saveMemory } from '@room/relay'
 
 
 const dirs: string[] = []
-afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+afterEach(async () => { await closeAdmittedRegistries(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 const openRegistry = async (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => {
   if (options.migrate !== false && (!fs.existsSync(path.join(dir, 'room/registry/migration.json')) || !JSON.parse(fs.readFileSync(path.join(dir, 'room/registry/migration.json'), 'utf8')).done)) await runLegacyImport(dir, { sources: options.sources })
   return openAdmittedRegistry(dir, { ...options, watch: false })

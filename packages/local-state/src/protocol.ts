@@ -135,6 +135,8 @@ export interface Registration {
   /** Generation observed at registration. */
   generation: number
   registeredAt: number
+  /** Set durably before first ticket publication; retained until unregister or audited holder recovery. */
+  hasHeldTickets?: true
 }
 
 /**
@@ -209,9 +211,9 @@ export interface DrainProgress {
   generation: number
   phase: GatePhase
   /**
-   * True only when no ticket of any generation remains. Ticketless registrations need no acknowledgement: admission
-   * and the drain transition share the guard, so they can only observe the new phase (decided, not in spec).
-   * Verified-dead ticketless registrations are pruned during drain.
+   * True only when no ticket or held-ticket registration evidence remains. A registration durably marked on
+   * first admission must unregister after finishing; missing volatile tickets never prove a holder is drained.
+   * Only verified-dead registrations that never held tickets are pruned without explicit reconciliation.
    */
   complete: boolean
   live: TicketView[]
@@ -223,6 +225,7 @@ export interface DrainProgress {
   pending: number
 }
 
+/** Synthetic registration evidence uses id `registration:<nonce>`, kind `reconcile`; resolveDead accepts it too. */
 export interface TicketView { id: string; kind: OperationKind; generation: number; holder: string; pid: number; parent?: string; admittedAt: number }
 /** A read-only ticket listing for operators: holder liveness from the identity probe; damaged records are `unreadable`. */
 export interface TicketListing { tickets: (TicketView & { holderState: 'alive' | 'dead' | 'unknown' | 'unreadable' })[]; total: number; truncated: boolean }
@@ -256,7 +259,7 @@ export interface StorageGate {
    * initializers cannot overwrite each other. Idempotent for the same instance nonce.
    */
   register(input: RegisterInput): Promise<Registration>
-  /** Write a durable ticket under the guard. Refuses new work unless phase is `legacy` (or AdmitOptions.parent). */
+  /** Atomically publish a private ticket under the guard (not fsync-durable). Refuses new work unless phase is `legacy` (or AdmitOptions.parent). */
   admit(registration: Registration, kind: OperationKind, options?: AdmitOptions): Promise<Ticket>
   /** Remove the ticket. Idempotent; always permitted for a predecessor ticket, including while draining. */
   finish(ticket: Ticket): Promise<void>
@@ -269,8 +272,9 @@ export interface StorageGate {
    */
   drain(owner: GateOwner): Promise<DrainProgress>
   /**
-   * Offline owner only: a ticket whose holder is verified dead, after the owner reconciled its intent (slice 2:
-   * the file registry's own recovery evidence). Records an audit entry, then removes the ticket.
+   * Offline owner only: a ticket or `registration:<nonce>` whose holder is verified dead, after the owner reconciled
+   * its intent (slice 2: file-registry recovery evidence). Durably audits before removal. A registration can be
+   * resolved only after all its surviving tickets; its audit covers all holder intents, including vanished tickets.
    */
   resolveDead(owner: GateOwner, ticketId: string, note: string): Promise<void>
   /**
@@ -298,7 +302,7 @@ export interface StorageGate {
 // ---------------------------------------------------------------------------------------------------------------
 
 /**
- * Display snapshots outside an admitted operation take no durable ticket. They read the gate before and after the
+ * Display snapshots outside an admitted operation take no ticket. They read the gate before and after the
  * snapshot (no guard) and keep the result only when both reads show phase `legacy` with the same generation.
  * A change between two legacy observations (e.g. initialization 0 -> 1, or a completed legacy maintenance) retries
  * the read a bounded number of times; a non-legacy observation refuses with `maintenance`. Inside an admitted operation, snapshots run under that ticket.

@@ -121,9 +121,8 @@ export class Bridge {
 
   /** This lead's `local` workers that are not retiring, from the registry (never the room). */
   workers(): WorkerRecord[] {
-    // Synchronous Y.Doc mirroring consumes display facts refreshed by admitted/validated reads.
-    // It opens no lifecycle storage and makes no lifecycle decisions. Slice 3's changes feed
-    // replaces this refresh mechanism; cached mirroring and hook selection need no durable ticket.
+    // Callers that act on these cached facts refresh them under admission first.
+    // Pure display callers may inspect the projection without authorizing effects.
     return (this.facts?.available ? this.facts.workers.map(fact => fact.record) : []).filter(r => r.lead.participant === this.local.me.name && r.room === this.local.roomName
       && !['retiring', 'retired', 'abandoned'].includes(r.phase))
   }
@@ -149,23 +148,28 @@ export class Bridge {
     const l = this.local.room, t = this.team.room
     const onLocal = () => this.schedule()
     const onLocalClaims = (ev: { changes: { keys: Map<string, { action: string }> } }) => {
-      for (const [id, ch] of ev.changes.keys) {
-        if (ch.action === 'add') this.mirrorClaim(id)
-        else if (ch.action === 'update') this.updateMirrorClaim(id)
-        else if (ch.action === 'delete') this.unmirrorClaim(id)
-      }
+      const changes = [...ev.changes.keys]
+      this.queueClaims(async () => {
+        for (const [id, ch] of changes) {
+          if (ch.action === 'add') this.mirrorClaim(id)
+          else if (ch.action === 'update') this.updateMirrorClaim(id)
+          else if (ch.action === 'delete') await this.unmirrorClaim(id)
+        }
+      })
     }
-    // A mirror removed by something other than this bridge (the lead's own room_done or a stale sweep)
-    // while the worker's claim is still open: put it back.
+    // Restore mirrors only after refreshing lifecycle authority under admission.
     const onTeamClaims = (ev: { changes: { keys: Map<string, { action: string }> } }, tr: { origin: unknown }) => {
       if (tr.origin === this) return
-      for (const [teamId, ch] of ev.changes.keys) {
-        if (ch.action !== 'delete') continue
-        const localId = this.localIdOf(teamId)
-        if (!localId) continue
-        this.mirrored.delete(localId)
-        if (this.local.room.claims.has(localId)) { this.mirrorClaim(localId); this.o.log?.(`bridge: re-mirrored ${localId} (its mirror ${teamId} was removed by someone else)`) }
-      }
+      const removed = [...ev.changes.keys].filter(([, change]) => change.action === 'delete').map(([id]) => id)
+      if (!removed.length) return
+      this.queueClaims(async () => {
+        for (const teamId of removed) {
+          const localId = this.localIdOf(teamId)
+          if (!localId) continue
+          this.mirrored.delete(localId)
+          if (this.local.room.claims.has(localId)) this.mirrorClaim(localId)
+        }
+      })
     }
     const onTeamBus = (ev: { changes: { delta: { insert?: unknown }[] }; transaction: { local: boolean } }) => {
       if (ev.transaction.local) return
@@ -229,6 +233,18 @@ export class Bridge {
     return undefined
   }
 
+  /** Observer callbacks cannot borrow the tool that happened to deliver the CRDT event. */
+  private queueClaims(effect: () => Promise<void>): void {
+    this.relaying = withoutAdmission(() => this.relaying.then(() =>
+      withDirectoryAdmission(this.local.dir, 'project', async () => {
+        if (this.stopped || !this.registry) return
+        const facts = await this.registry.snapshot()
+        if (this.stopped || !facts.available || facts.blockers.length) return
+        this.facts = facts
+        await effect()
+      }))).catch(error => this.o.log?.(`bridge claims: ${String(error)}`))
+  }
+
   private schedule(): void {
     if (this.stopped) return
     const ms = this.o.debounceMs ?? 300
@@ -251,7 +267,7 @@ export class Bridge {
       } catch (error) { this.o.log?.(`bridge: worker facts unavailable: ${String(error)}`); return }
     }
     if (this.stopped) return
-    try { this.syncCoordination() } catch (e) { this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`) }
+    try { await this.syncCoordination() } catch (e) { this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`) }
     return this.project()
 
   })
@@ -261,7 +277,10 @@ export class Bridge {
    * `coordination[lead] = {paths, workers, at}`: the union of the lead's projectable workers' scope and
    * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
    */
-  syncCoordination(): void {
+  async syncCoordination(): Promise<void> {
+    return withDirectoryAdmission(this.local.dir, 'project', async () => {
+    if (this.stopped || !this.registry) return
+    this.facts = await this.registry.snapshot()
     if (!this.facts?.available || this.facts.blockers.length) return
     if (this.stopped || !this.registry || !this.team.daemon.fence) return
     const lead = this.team.me.name
@@ -276,6 +295,7 @@ export class Bridge {
     const next: CoordinationRecord = { paths, workers, at: Date.now() }
     this.team.room.doc.transact(() => { this.team.room.coordination.set(lead, next) }, this)
     this.o.log?.(`bridge: coordination covers ${paths.length} path(s) from ${workers.length} worker(s)`)
+    })
   }
 
   /** Serialized: one pass at a time, and a request during a pass runs once after it. */
@@ -618,7 +638,7 @@ export class Bridge {
   }
 
   /** The local claim is gone: drop the mirror and tell the team what became of the plans it showed them. */
-  private unmirrorClaim(localId: string): void {
+  private async unmirrorClaim(localId: string): Promise<void> {
     const teamId = this.mirrored.get(localId)
     if (!teamId) return
     this.mirrored.delete(localId)
@@ -627,7 +647,7 @@ export class Bridge {
     if (!mirrored) return
     const local = [...this.local.room.messages()].reverse().find((m): m is ReleaseMsg => m.type === 'release' && m.claimId === localId)
     const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1]
-    void this.team.post<ReleaseMsg>(this.team.me, {
+    await this.team.post<ReleaseMsg>(this.team.me, {
       type: 'release', claimId: teamId, path: mirrored.path,
       summary: `${tag ? `[${tag}] ` : ''}${local?.summary ?? 'released'}`,
       ...(local?.unfulfilled?.length ? { unfulfilled: local.unfulfilled } : {}),

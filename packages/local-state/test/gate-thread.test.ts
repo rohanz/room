@@ -4,7 +4,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as threads from 'node:worker_threads'
 import { afterEach, expect, it, vi } from 'vitest'
-import { openStorageGate } from '../src/gate.js'
+import { closeStorageGates, openStorageGate } from '../src/gate.js'
 import { StorageRefused } from '../src/protocol.js'
 
 vi.mock('node:worker_threads', async importOriginal => ({ ...await importOriginal<typeof threads>(), Worker: vi.fn() }))
@@ -12,6 +12,7 @@ const OriginalWorker = (await vi.importActual<typeof threads>('node:worker_threa
 const roots: string[] = []
 const workers: threads.Worker[] = []
 afterEach(async () => {
+  await closeStorageGates()
   vi.restoreAllMocks()
   await Promise.all(workers.splice(0).map(worker => worker.terminate()))
   for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
@@ -31,7 +32,7 @@ function captureWorkers(prelude = '', workerData?: unknown) {
   })
 }
 
-it('keeps the caller responsive through a 300 ms fsync stall in each production write operation', async () => {
+it('keeps the caller responsive through a 300 ms fsync stall in durable production writes', async () => {
   const stall = new Int32Array(new SharedArrayBuffer(8))
   const constructors = captureWorkers(`
     import fs from 'node:fs';
@@ -72,7 +73,7 @@ it('keeps the caller responsive through a 300 ms fsync stall in each production 
   }
   const registration = await responsive(() => gate.register(input))
   const ticket = await responsive(() => gate.admit(registration, 'preview'))
-  await responsive(() => gate.finish(ticket))
+  await gate.finish(ticket)
   await responsive(() => gate.unregister(registration))
   await openStorageGate(fixture().dir).status()
   expect(constructors).toHaveBeenCalledTimes(1) // one worker, including across clones/proxies
@@ -100,11 +101,54 @@ it('rejects every pending call on worker death without replay and can start a fr
   const stopped = worker.terminate()
   const calls = [gate.status(), gate.status()]
   const results = Promise.allSettled(calls)
+  const closing = closeStorageGates()
   await stopped
   for (const result of await results) {
     expect(result.status).toBe('rejected')
     if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(StorageRefused)
   }
+  await closing
   expect(await gate.status()).toMatchObject({ state: 'absent' })
   expect(workers).toHaveLength(2)
+})
+
+it('close drains accepted I/O, refuses racing calls, joins the worker, and permits a fresh worker later', async () => {
+  const barrier = new Int32Array(new SharedArrayBuffer(4))
+  captureWorkers(`
+    import fs from 'node:fs';
+    import { workerData, parentPort } from 'node:worker_threads';
+    const barrier = new Int32Array(workerData), sync = fs.fsyncSync;
+    fs.fsyncSync = fd => {
+      if (Atomics.compareExchange(barrier, 0, 0, 1) === 0) {
+        parentPort.postMessage({ stalled: true });
+        Atomics.wait(barrier, 0, 1);
+      }
+      return sync(fd);
+    };
+  `, barrier.buffer)
+  const { dir, input } = fixture(), gate = openStorageGate(dir)
+  await gate.status()
+  const stalled = new Promise<void>(resolve => workers[0].on('message', message => { if (message.stalled) resolve() }))
+  const registration = gate.register(input)
+  await stalled
+  let closed = false
+  const closing = closeStorageGates()
+  void closing.then(() => { closed = true })
+  try {
+    expect(closeStorageGates()).toBe(closing)
+    await expect(gate.status()).rejects.toMatchObject({ reason: 'unavailable', detail: 'storage gates are closing' })
+    expect(closed).toBe(false)
+  } finally {
+    Atomics.store(barrier, 0, 2)
+    Atomics.notify(barrier, 0)
+  }
+  await registration
+  await closing
+  expect(workers[0].threadId).toBe(-1)
+  fs.rmSync(path.join(dir, 'room'), { recursive: true }) // no worker can recreate it after close
+  expect(await gate.status()).toMatchObject({ state: 'absent' })
+  expect(workers).toHaveLength(2)
+  await closeStorageGates()
+  await closeStorageGates()
+  expect(workers[1].threadId).toBe(-1)
 })

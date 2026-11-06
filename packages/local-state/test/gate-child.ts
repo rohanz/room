@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { openStorageGate } from '../src/gate.js'
-import { createExclusive } from '../src/leases.js'
+import { createExclusive, writeAtomic } from '../src/leases.js'
 import { probeOwnProcess } from '../src/process.js'
 import { STORAGE_PATHS, StorageRefused } from '../src/protocol.js'
 
@@ -27,6 +27,12 @@ if (mode === 'init') {
   const progress = publish === 'publish' ? await gate.drain({ instance, token }) : undefined
   await send({ ready: true, instance, generation: progress?.generation })
   setInterval(() => {}, 1000) // held until the test kills or resumes this process
+} else if (mode === 'held-ticket') {
+  const registration = await gate.register({ instance, kind: 'mcp', release: 'child' })
+  const ticket = await gate.admit(registration, 'collect')
+  writeAtomic(path.join(dir, 'room/registry/unfinished-intent.json'), { holder: instance, ticket: ticket.id, phase: 'intent' })
+  await send({ instance, ticket })
+  setInterval(() => {}, 1000) // killed between admitted intent and finish
 } else if (mode === 'admitter') {
   const stop = rest[0]
   const registration = await gate.register({ instance, kind: 'mcp', release: 'child' })
@@ -36,6 +42,7 @@ if (mode === 'init') {
     try { const ticket = await gate.admit(registration, 'collect'); admitted.push(ticket.generation); await gate.finish(ticket) }
     catch (error) { if (!(error instanceof StorageRefused)) throw error; refused.push(error.reason); await new Promise(resolve => setTimeout(resolve, 1)) }
   }
+  await gate.unregister(registration)
   await send({ admitted, refused })
   process.disconnect()
 } else throw new Error(`unknown mode ${mode}`)

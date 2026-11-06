@@ -8,6 +8,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { createExclusive, liveness as processLiveness, withGuard, writeAtomic, type InstanceToken, type Liveness, type ProcessIdentity } from './leases.js'
 import { privateStateDirectory } from './private-state.js'
 import { callGateThread } from './gate-thread.js'
+export { closeStorageGates } from './gate-thread.js'
 import {
   GATE_LIMITS, STORAGE_BUILD, STORAGE_PATHS, StorageRefused,
   type AdmitOptions, type DrainProgress, type GateOwner, type GatePhase, type GateStatus, type OperationKind, type ReadValidation,
@@ -21,6 +22,7 @@ const MAX_RECORD_BYTES = 8 * 1024
 const MAX_NOTE = 512
 const NONCE = /^[0-9a-f-]{8,64}$/
 const TICKET_ID = /^[0-9a-f]{32}$/
+const REGISTRATION_ID = /^registration:([0-9a-f-]{8,64})$/
 const TICKET_FILE = /^([0-9a-f-]{8,64})\.([0-9a-f]{32})\.json$/
 const EVIDENCE_NAMES = new Set([path.basename(STORAGE_PATHS.database), `${path.basename(STORAGE_PATHS.database)}-wal`,
   `${path.basename(STORAGE_PATHS.database)}-shm`, path.basename(STORAGE_PATHS.activationMarker)])
@@ -70,7 +72,8 @@ export function parseGate(value: unknown): StorageGateRecord {
 
 function parseRegistration(value: unknown, nonce: string): Registration {
   if (!object(value) || value.v !== 1 || !tokenShape(value.instance) || value.instance.nonce !== nonce || !KINDS.includes(value.kind as RegistrationKind)
-    || !positive(value.build) || typeof value.release !== 'string' || !positive(value.generation) || typeof value.registeredAt !== 'number')
+    || !positive(value.build) || typeof value.release !== 'string' || !positive(value.generation) || typeof value.registeredAt !== 'number'
+    || value.hasHeldTickets !== undefined && value.hasHeldTickets !== true)
     throw new Error('invalid storage registration')
   return value as unknown as Registration
 }
@@ -147,7 +150,7 @@ export class FileStorageGate implements StorageGate {
   private async guarded<T>(fn: () => T extends PromiseLike<unknown> ? never : T): Promise<T> {
     const deadline = performance.now() + GATE_LIMITS.guardWaitMs
     for (let attempt = 0; ; attempt++) {
-      try { return withGuard(this.gateFile, fn) }
+      try { return withGuard(this.gateFile, fn, undefined, { durable: false }) }
       catch (error) {
         if (error instanceof StorageRefused) throw error
         if (!guardBusy(error)) throw new StorageRefused('unavailable', bounded(`storage gate I/O failed: ${(error as Error).message ?? error}`), REMEDY)
@@ -284,10 +287,13 @@ export class FileStorageGate implements StorageGate {
       }
       if (this.ticketNames().length >= this.limits.tickets)
         throw new StorageRefused('capacity', `${this.limits.tickets} operations are in progress for this clone`, 'retry after current operations finish')
+      // One durable marker per registration, before any non-durable ticket can authorize effects.
+      // It survives ticket loss and prevents dead-holder pruning from skipping lifecycle recovery.
+      if (!current.hasHeldTickets) writeAtomic(this.registrationFile(holder), { ...current, hasHeldTickets: true })
       const ticket: Ticket = { v: 1, id: randomBytes(16).toString('hex'), holder, identity: {
         pid: registration.instance.pid, startTime: registration.instance.startTime, executable: registration.instance.executable },
         kind, generation, ...(parent ? { parent: parent.id } : {}), admittedAt: this.now() }
-      if (!createExclusive(this.ticketFile(holder, ticket.id), ticket)) throw new StorageRefused('unavailable', 'ticket id collision')
+      if (!createExclusive(this.ticketFile(holder, ticket.id), ticket, { durable: false })) throw new StorageRefused('unavailable', 'ticket id collision')
       return ticket
     })
   }
@@ -300,15 +306,16 @@ export class FileStorageGate implements StorageGate {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw new StorageRefused('unavailable', bounded(`ticket release failed: ${(error as NodeJS.ErrnoException).code ?? error}`))
     }
-    syncDirectoryQuietly(this.ticketDir)
   }
 
   async unregister(registration: Registration): Promise<void> {
     const nonce = registration.instance.nonce
-    if (this.ticketNames().some(name => name.startsWith(`${nonce}.`)))
-      throw new StorageRefused('busy', 'this process still holds storage tickets')
-    try { fs.unlinkSync(this.registrationFile(nonce)); syncDirectoryQuietly(this.registrationDir) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    await this.guarded(() => {
+      if (this.ticketNames().some(name => name.startsWith(`${nonce}.`)))
+        throw new StorageRefused('busy', 'this process still holds storage tickets')
+      try { fs.unlinkSync(this.registrationFile(nonce)); syncDirectoryQuietly(this.registrationDir) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    })
   }
 
   async drain(owner: GateOwner): Promise<DrainProgress> {
@@ -340,6 +347,30 @@ export class FileStorageGate implements StorageGate {
     return this.progress(gate)
   }
 
+  /** Registration evidence is separate from volatile tickets. Never interpret lifecycle leases here. */
+  private async registrationEvidence(ticketNames: string[]): Promise<TicketListing['tickets']> {
+    const holders = new Set(ticketNames.map(name => name.split('.')[0]))
+    const names = this.registrationNames(), evidence: TicketListing['tickets'] = []
+    for (let start = 0; start < names.length; start += this.limits.scanBatch) {
+      for (const name of names.slice(start, start + this.limits.scanBatch)) {
+        const holder = name.slice(0, -5)
+        if (holders.has(holder)) continue
+        let registration: Registration | undefined
+        try { registration = this.readRegistration(holder) }
+        catch {
+          evidence.push({ id: `registration:${holder}`, holder, kind: 'reconcile', generation: 0, pid: 0,
+            admittedAt: 0, holderState: 'unreadable' })
+          continue
+        }
+        if (!registration?.hasHeldTickets) continue
+        evidence.push({ id: `registration:${holder}`, holder, kind: 'reconcile', generation: registration.generation,
+          pid: registration.instance.pid, admittedAt: registration.registeredAt, holderState: this.alive(registration.instance) })
+      }
+      await yieldTurn()
+    }
+    return evidence
+  }
+
   private async progress(gate: StorageGateRecord): Promise<DrainProgress> {
     const live: TicketView[] = [], unknown: TicketView[] = [], dead: TicketView[] = []
     const names = this.ticketNames()
@@ -356,8 +387,12 @@ export class FileStorageGate implements StorageGate {
       }
       await yieldTurn()
     }
+    for (const { holderState, ...view } of await this.registrationEvidence(names)) {
+      ;(holderState === 'alive' ? live : holderState === 'dead' ? dead : unknown).push(view)
+    }
     if (!names.length) await this.pruneDeadRegistrations()
-    return { generation: gate.generation, phase: gate.phase, complete: names.length === 0, live, unknown, dead, pending: 0 }
+    return { generation: gate.generation, phase: gate.phase,
+      complete: names.length === 0 && !live.length && !dead.length && !unknown.length, live, unknown, dead, pending: 0 }
   }
 
   private async pruneDeadRegistrations(): Promise<void> {
@@ -370,7 +405,7 @@ export class FileStorageGate implements StorageGate {
         let registration: Registration | undefined
         try { registration = this.readRegistration(nonce) } catch { continue } // damaged: keep as evidence
         // Owner identity survives in gate.owner; takeover never needs the dead registration file.
-        if (!registration || this.alive(registration.instance) !== 'dead') continue
+        if (!registration || registration.hasHeldTickets || this.alive(registration.instance) !== 'dead') continue
         try { fs.unlinkSync(this.registrationFile(nonce)) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       }
       await yieldTurn()
@@ -379,6 +414,26 @@ export class FileStorageGate implements StorageGate {
   }
 
   async resolveDead(owner: GateOwner, ticketId: string, note: string): Promise<void> {
+    const registrationId = REGISTRATION_ID.exec(ticketId)
+    if (registrationId) {
+      const holder = registrationId[1], registration = this.readRegistration(holder)
+      if (!registration?.hasHeldTickets) throw new StorageRefused('unavailable', 'no such registration evidence')
+      if (this.alive(registration.instance) !== 'dead')
+        throw new StorageRefused('blocked', 'the registration holder is alive or its identity cannot be verified')
+      await this.guarded(() => {
+        const gate = this.requireGate()
+        if (gate.phase !== 'draining') throw new StorageRefused('maintenance', 'dead holders are resolved only while draining')
+        this.requireOwner(owner, gate)
+        if (!this.readRegistration(holder)?.hasHeldTickets) return
+        if (this.ticketNames().some(name => name.startsWith(`${holder}.`)))
+          throw new StorageRefused('busy', 'resolve remaining holder tickets before registration evidence')
+        writeAtomic(path.join(this.resolutionDir, `registration-${holder}.json`), { v: 1, registration, note: bounded(note),
+          owner: owner.instance.nonce, generation: gate.generation, liveness: 'dead', at: this.now(), id: randomUUID() })
+        fs.unlinkSync(this.registrationFile(holder))
+        syncDirectoryQuietly(this.registrationDir)
+      })
+      return
+    }
     if (!TICKET_ID.test(ticketId)) throw new StorageRefused('unavailable', 'invalid ticket id')
     const name = this.ticketNames().find(candidate => candidate.endsWith(`.${ticketId}.json`))
     if (!name) throw new StorageRefused('unavailable', 'no such ticket')
@@ -457,7 +512,10 @@ export class FileStorageGate implements StorageGate {
           ...(ticket.parent ? { parent: ticket.parent } : {}), admittedAt: ticket.admittedAt, holderState: this.alive(ticket.identity) })
       } catch { tickets.push({ id, kind: 'reconcile', generation: 0, holder, pid: 0, admittedAt: 0, holderState: 'unreadable' }) }
     }
-    return { tickets, total: names.length, truncated: names.length > bound }
+    const evidence = await this.registrationEvidence(names)
+    tickets.push(...evidence.slice(0, Math.max(0, bound - tickets.length)))
+    const total = names.length + evidence.length
+    return { tickets, total, truncated: total > bound }
   }
 
   async observe(): Promise<ReadValidation> {

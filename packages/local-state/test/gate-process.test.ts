@@ -7,14 +7,15 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { afterEach, expect, it } from 'vitest'
-import { openStorageGate } from '../src/gate.js'
+import { closeStorageGates, openStorageGate } from '../src/gate.js'
 import { createExclusive, type InstanceToken } from '../src/leases.js'
 import { probeOwnProcess } from '../src/process.js'
 import { STORAGE_PATHS } from '../src/protocol.js'
 
 const require = createRequire(import.meta.url)
 const roots: string[] = [], children: ChildProcess[] = []
-afterEach(() => {
+afterEach(async () => {
+  await closeStorageGates()
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { child.kill('SIGCONT'); child.kill('SIGKILL') }
   for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -71,6 +72,7 @@ it('an owner killed before publication leaves legacy admission open; killed afte
   await exitOf(early.process)
   expect(await gate.observe()).toEqual({ generation: 1, phase: 'legacy' })
   await gate.finish(await gate.admit(registration, 'spawn'))
+  await gate.unregister(registration)
   fs.rmSync(lock(dir)) // the dead holder's lock: recovery of migration.lock itself is the offline command's job
 
   const late = child('owner', dir, 'late-token', 'publish')
@@ -79,7 +81,8 @@ it('an owner killed before publication leaves legacy admission open; killed afte
   await exitOf(late.process)
   // Owner death never reopens or resets the generation.
   expect(await gate.observe()).toEqual({ generation: 2, phase: 'draining' })
-  await expect(gate.admit(registration, 'spawn')).rejects.toMatchObject({ reason: 'maintenance' })
+  const restarted = await gate.register({ instance: me, kind: 'mcp', release: 'test' })
+  await expect(gate.admit(restarted, 'spawn')).rejects.toMatchObject({ reason: 'maintenance' })
 
   // A successor recovers the lock from the dead holder and takes over with the real identity probe.
   fs.rmSync(lock(dir))
@@ -130,3 +133,31 @@ it('admission racing a drain never succeeds in the successor generation, and dra
   await Promise.all(admitters.map(admitter => admitter.exited))
   expect((await gate.drain(owner)).complete).toBe(true)
 }, 90_000)
+
+
+it.each([false, true])('retains dead-holder reconciliation after process death (unsynced ticket lost: %s)', async lost => {
+  const dir = commonDir(), gate = openStorageGate(dir)
+  const holder = child('held-ticket', dir)
+  const ready = await holder.next()
+  holder.process.kill('SIGKILL')
+  await exitOf(holder.process)
+  const intent = path.join(dir, 'room/registry/unfinished-intent.json')
+  const evidence = fs.readFileSync(intent, 'utf8')
+  if (lost) fs.unlinkSync(path.join(dir, STORAGE_PATHS.tickets, `${ready.instance.nonce}.${ready.ticket.id}.json`))
+  const me = self()
+  expect(createExclusive(lock(dir), me)).toBe(true)
+  await gate.register({ instance: me, kind: 'maintenance', release: 'test' })
+  const owner = { instance: me, token: 'crash-recovery' }
+  const progress = await gate.drain(owner)
+  expect(progress.complete).toBe(false)
+  expect(progress.dead.some(view => view.holder === ready.instance.nonce)).toBe(true)
+  expect(fs.readFileSync(intent, 'utf8')).toBe(evidence)
+  expect(fs.existsSync(path.join(dir, STORAGE_PATHS.registrations, `${ready.instance.nonce}.json`))).toBe(true)
+  // The gate cannot interpret lifecycle intent. Only the owner, after recovery, may clear its evidence.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const view of (await gate.drain(owner)).dead) await gate.resolveDead(owner, view.id, 'test owner reconciled lifecycle intent')
+  }
+  expect((await gate.drain(owner)).complete).toBe(true)
+  expect(fs.readFileSync(intent, 'utf8')).toBe(evidence)
+  expect(fs.readdirSync(path.join(dir, STORAGE_PATHS.resolutions)).length).toBeGreaterThan(0)
+}, 60_000)

@@ -1,3 +1,5 @@
+import { withDirectoryAdmission, withoutAdmission } from '../storage-admission.js'
+import type { OperationKind } from '@room/local-state/protocol'
 import { formatMsg, type Priority } from '@room/shared'
 import { createHandlerState } from './state.js'
 import { hookHealthNote } from '../hooks-bridge.js'
@@ -115,7 +117,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const completionDir = ctx.getSession()?.dir ?? ctx.cwd
         let joined = !autoJoin && !ctx.completionReady
         // Do not let an in-flight or failed replacement swallow the completion deadline.
-        if (!joined) void (async () => { await ctx.completionReady?.(); await autoJoin?.ensure(); joined = true })()
+        if (!joined) void withoutAdmission(async () => { await ctx.completionReady?.(); await autoJoin?.ensure(); joined = true })
           .catch(error => ctx.log?.(`completion reconnect failed: ${String(error)}`))
         const waited = await waitForCompletionReconnect(() => { const s = ctx.getSession(); return joined || s?.closed || s?.rejected ? s : null }, signal)
         if (waited === 'cancelled') return 'error: tool call cancelled'
@@ -243,19 +245,23 @@ export function createTools(ctx: ToolCtx): Tools {
       }
       try {
       if (name === 'room_spawn') currentToolTiming()?.endQueue()
-      const batch = ledger.open('reply')
-      try {
-        const body = await run(name, args, signal, batch)
-        const rejected = ctx.getSession()?.rejected
-        const result = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
-        const warning = name === 'room_state' ? staleVersionWarning() : undefined
-        const text = warning ? `${warning}\n${result}` : result
-        // A cancelled call's reply is never written: its selections stay owed.
-        if (signal?.aborted) ledger.release(batch)
-        else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
-        else ledger.commit(batch)
-        return text
-      } catch (e) { ledger.release(batch); throw e }
+      const operation: OperationKind = name === 'room_spawn' ? 'spawn' : name === 'room_collect' ? (args?.discard ? 'discard' : 'collect')
+        : name === 'room_done' ? 'report' : name === 'room_send' ? 'message' : name === 'room_preview_merge' ? 'preview' : 'reconcile'
+      return await withDirectoryAdmission(ctx.getSession()?.dir ?? ctx.cwd, operation, async () => {
+        const batch = ledger.open('reply')
+        try {
+          const body = await run(name, args, signal, batch)
+          const rejected = ctx.getSession()?.rejected
+          const result = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
+          const warning = name === 'room_state' ? staleVersionWarning() : undefined
+          const text = warning ? `${warning}\n${result}` : result
+          // A cancelled call's reply is never written: its selections stay owed.
+          if (signal?.aborted) ledger.release(batch)
+          else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
+          else ledger.commit(batch)
+          return text
+        } catch (e) { ledger.release(batch); throw e }
+      })
       } finally { release?.() }
     },
   }
