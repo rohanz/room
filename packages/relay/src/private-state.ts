@@ -40,7 +40,7 @@ function windowsAclScript(protectNew: boolean, createDirectory: boolean, repair:
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
-    # Room's own writers remove files concurrently (atomic-write temps, consumed start tickets). A descendant that
+    # Room's own writers remove files concurrently (atomic-write temporaries, retired records). A descendant that
     # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
     # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
     function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };

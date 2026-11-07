@@ -17512,7 +17512,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
-    # Room's own writers remove files concurrently (atomic-write temps, consumed start tickets). A descendant that
+    # Room's own writers remove files concurrently (atomic-write temporaries, retired records). A descendant that
     # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
     # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
     function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };
@@ -18468,20 +18468,6 @@ function discovery(commonDir2) {
   if (v.lead !== void 0 && v.lead !== true && (!v.lead || typeof v.lead !== "object" || !Number.isInteger(v.lead.pid) || v.lead.pid < 1 || typeof v.lead.startTime !== "string" || !v.lead.startTime || typeof v.lead.executable !== "string" || !v.lead.executable)) throw new Error("invalid discovery process identity; preserve and repair the record");
   return v;
 }
-function issueStartAdmission(commonDir2, now = Date.now()) {
-  const dir = admissionDir(commonDir2);
-  privateStateDirectory(dir);
-  for (const name of fs13.readdirSync(dir)) {
-    const stale = path11.join(dir, name);
-    try {
-      if (now - fs13.lstatSync(stale).mtimeMs > STARTUP_HARD_CAP_MS) fs13.rmSync(stale, { force: true });
-    } catch {
-    }
-  }
-  const token = crypto2.randomBytes(32).toString("hex"), file = admissionFile(commonDir2, token);
-  writeAtomic(file, { v: 1, at: now, pid: process.pid });
-  return { token, file };
-}
 function startupLog(commonDir2) {
   const file = path11.join(commonDir2, "room", "daemon.log");
   let fd;
@@ -18590,18 +18576,10 @@ async function ensure(commonDir2, room, opts) {
   const reportDir = path11.join(os2.tmpdir(), `room-daemon-start-${crypto2.randomBytes(12).toString("hex")}`);
   privateStateDirectory(reportDir);
   const report = path11.join(reportDir, "error");
-  let ticket;
   try {
-    const admission = issueStartAdmission(commonDir2);
-    ticket = admission.file;
-    fs13.writeFileSync(path11.join(reportDir, "admission"), admission.token, { flag: "wx", mode: 384 });
     return await launch();
   } finally {
-    try {
-      fs13.rmSync(reportDir, { recursive: true, force: true });
-    } finally {
-      if (ticket) fs13.rmSync(ticket, { force: true });
-    }
+    fs13.rmSync(reportDir, { recursive: true, force: true });
   }
   async function launch() {
     const child = spawn2(process.execPath, [...opts.execArgv ?? [], entry, "--common-dir", commonDir2, "--room", room, "--startup-report", report], { cwd: commonDir2, env, shell: false, detached: true, windowsHide: true, stdio: "ignore" });
@@ -18635,7 +18613,7 @@ async function ensure(commonDir2, room, opts) {
     throw startupFailure(commonDir2, child.pid, Date.now() >= hardUntil ? "startup hard cap reached" : "startup phase stalled", report);
   }
 }
-var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, admissionDir, admissionFile, STARTUP_LOG_BYTES, flights;
+var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights;
 var init_daemon = __esm({
   "packages/relay/src/daemon.ts"() {
     "use strict";
@@ -18649,8 +18627,6 @@ var init_daemon = __esm({
     LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
     STARTUP_PHASE_WAIT_MS = 25e3;
     STARTUP_HARD_CAP_MS = 6e4;
-    admissionDir = (commonDir2) => path11.join(commonDir2, "room", "admissions");
-    admissionFile = (commonDir2, token) => path11.join(admissionDir(commonDir2), `${crypto2.createHash("sha256").update(token).digest("hex")}.json`);
     STARTUP_LOG_BYTES = 1024;
     flights = /* @__PURE__ */ new Map();
   }

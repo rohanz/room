@@ -216,12 +216,8 @@ it('maintenance stop authenticates PID plus nonce and verifies save and actual c
   expect(saved.getMap('meta').get('maintenance')).toBe('retained'); saved.destroy()
 })
 
-it.each([{ forged: false, args: ['start'] }, { forged: false, args: [] }, { forged: true, args: [] }])('refuses a direct start ($args, forged ticket $forged) that bypasses the launcher admission, writing no discovery', ({ forged, args }) => {
+it.each([{ args: ['start'] }, { args: [] }])('refuses a direct start ($args) that bypasses the launcher admission, writing no discovery', ({ args }) => {
   const dir = common()
-  // Mimic the launcher's flag with a self-made ticket; no record exists in the clone's private state.
-  const fake = fs.mkdtempSync(path.join(dir, 'fake-launcher-'))
-  fs.writeFileSync(path.join(fake, 'admission'), 'a'.repeat(64))
-  if (forged) args = [...args, '--startup-report', path.join(fake, 'error')]
   const result = (() => { try { execFileSync(process.execPath, ['--import', require.resolve('tsx'), fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), ...args, '--common-dir', dir, '--room', 'local/direct'], { stdio: 'pipe', encoding: 'utf8' }); return { code: 0, stderr: '' } }
     catch (error) { const e = error as { status: number; stderr: string }; return { code: e.status, stderr: String(e.stderr) } } })()
   expect(result.code).toBe(1)
