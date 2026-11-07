@@ -11,9 +11,10 @@ import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
 import { createRelevance } from '../src/relevance.js'
 import type { WakeReconcilerOptions } from '../src/wake-reconciler.js'
-import { createMidTurnSender, createWakeSender } from '../src/wake-path.js'
+import { createMidTurnSender } from '../src/hosts/codex-wake.js'
+import { createWakeSender } from '../src/hosts/wake.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
-import { CodexTurnProbe } from '../src/codex-turn.js'
+import { CodexTurnProbe } from '../src/hosts/codex-turn.js'
 import { formatDeliveryHealth } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -58,7 +59,7 @@ function appendItems(rollout: string, count = 1_300) {
 }
 
 it('queues a standalone idle thread when the daemon explicitly reports it not loaded', async () => {
-  const r = rig(false, { codexTurn: new CodexTurnProbe({ status: async () => ({ kind: 'unknown', reason: 'notLoaded' }) }) })
+  const r = rig(false, { turnProbe: new CodexTurnProbe({ status: async () => ({ kind: 'unknown', reason: 'notLoaded' }) }) })
   try {
     r.note()
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
@@ -85,7 +86,7 @@ it('does not retry uncertain mid-turn submissions or count them as confirmed wak
 it('treats active-to-idle between probes as a normal race with no degraded notice', async () => {
   let active = true
   const post = vi.fn(async () => { active = false; return { kind: 'idle' as const } })
-  const r = rig(true, { codexTurn: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
+  const r = rig(true, { turnProbe: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
   try {
     r.note()
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
@@ -98,7 +99,7 @@ it('treats active-to-idle between probes as a normal race with no degraded notic
 it('backs off unknown host probes even when unrelated document changes reconcile', async () => {
   vi.useFakeTimers()
   const state = vi.fn(async () => ({ kind: 'unknown' as const, source: 'host' as const, reason: 'status-unavailable' }))
-  const r = rig(false, { codexTurn: { state, busy: async () => true } })
+  const r = rig(false, { turnProbe: { state, busy: async () => true } })
   try {
     r.note()
     await vi.advanceTimersByTimeAsync(0)
@@ -123,7 +124,7 @@ it('offers a bounded notice for a new degradation reason and withdraws it on rec
     if (result === 'throw') throw new Error('private host error')
     return result === 'joined' ? { kind: 'joined' as const, turnId: 'turn' } : { kind: 'unavailable' as const, reason: 'private error' }
   })
-  const r = rig(true, { codexTurn: { busy: async () => true }, midTurn: createMidTurnSender({ env: {}, post }), busyPollMs: 1000 })
+  const r = rig(true, { turnProbe: { busy: async () => true }, midTurn: createMidTurnSender({ env: {}, post }), busyPollMs: 1000 })
   try {
     r.note()
     await vi.advanceTimersByTimeAsync(0)
@@ -549,7 +550,7 @@ it('rechecks the bound session after a busy probe', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   let bound = { id: 'initial', host: 'codex' as const }
-  const r = rig(true, { midTurn, bound: () => bound, codexTurn: { busy: async () => { bound = { id: bound.id === 'initial' ? 'replacement' : 'initial', host: 'codex' }; return true } }, pollMs: 1000 })
+  const r = rig(true, { midTurn, bound: () => bound, turnProbe: { busy: async () => { bound = { id: bound.id === 'initial' ? 'replacement' : 'initial', host: 'codex' }; return true } }, pollMs: 1000 })
   try {
     r.note()
     await vi.advanceTimersByTimeAsync(80)
@@ -623,7 +624,7 @@ it.each(['joined', 'uncertain', 'idle'] as const)('replays a turn finishing duri
     return outcome === 'joined' ? { kind: outcome, turnId: 'ending-turn' }
       : outcome === 'uncertain' ? { kind: outcome, reason: 'lost after write' } : { kind: outcome }
   })
-  const r = rig(true, { codexTurn: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
+  const r = rig(true, { turnProbe: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
   try {
     const message = r.note()
     await vi.advanceTimersByTimeAsync(0)

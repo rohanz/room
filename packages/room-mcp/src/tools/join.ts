@@ -1,5 +1,5 @@
 import { releaseClaimsOnDone } from './claims.js'
-import { claudeWakeNote } from '../prompt.js'
+import { sessionWakeNote } from '../prompt.js'
 import { manifestPaths, participantRecord, scopeLine, type Claim, type NoteMsg } from '@room/shared'
 import { dirname, resolve } from 'node:path'
 import { primePrivateDirectory } from '@room/relay'
@@ -330,7 +330,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cs.length) { out.push(`open claims (${cs.length}):`); for (const c of cs) out.push(claimLine(s, c)) }
       out.push(await browserViewLine(s))
       out.push('next: room_scope(area, summary, paths) before you edit.')
-      const wakeNote = here.length ? claudeWakeNote(s, 'company') : ''
+      const wakeNote = here.length ? sessionWakeNote(s, 'company') : ''
       if (wakeNote) out.push(wakeNote)
       return out.join('\n')
     },

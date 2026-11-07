@@ -7,7 +7,8 @@ import * as Y from 'yjs'
 import { localRoomName } from '@room/roomd/local'
 import { manifestKey, participantRecord, type RetiredWorker } from '@room/shared'
 import { startAutoTaggedRoomd } from '../src/session.js'
-import { resolveConfig, resolveSessionHost } from '../src/config.js'
+import { resolveConfig } from '../src/config.js'
+import { sessionHost } from '../src/hosts/selection.js'
 import { clearChoice, readChoice, rememberTag, writeChoice, worktreePath } from '../src/choice.js'
 import { hubRoom, type HubRoom } from './fixtures/hub-provider.js'
 
@@ -231,12 +232,12 @@ describe('automatic session tags (registry §15: local lease, then hub lease)', 
     expect(await readChoice(dir)).toBeUndefined()
   })
   it('resolves environment hints and falls back for unknown or missing hosts', () => {
-    expect(resolveSessionHost({ ROOM_HOST: 'codex' }, () => 'claude')).toBe('codex')
-    expect(resolveSessionHost({}, () => '/usr/bin/codex')).toBe('codex')
-    expect(resolveSessionHost({}, () => '/usr/bin/claude')).toBe('claude')
-    expect(resolveSessionHost({ CLAUDE_CODE_SESSION_ID: 'abc' }, () => 'node')).toBe('claude')
+    expect(sessionHost({ ROOM_HOST: 'codex' }, () => 'claude')).toBe('codex')
+    expect(sessionHost({}, () => '/usr/bin/codex')).toBe('codex')
+    expect(sessionHost({}, () => '/usr/bin/claude')).toBe('claude')
+    expect(sessionHost({ CLAUDE_CODE_SESSION_ID: 'abc' }, () => 'node')).toBe('claude')
     // No per-worktree session file decides the host any more: it is the bound session's (registry §17).
-    expect(resolveSessionHost({}, () => 'node')).toBe('agent')
-    expect(resolveSessionHost({}, () => { throw new Error('ps denied') })).toBe('agent')
+    expect(sessionHost({}, () => 'node')).toBe('agent')
+    expect(sessionHost({}, () => { throw new Error('ps denied') })).toBe('agent')
   })
 })

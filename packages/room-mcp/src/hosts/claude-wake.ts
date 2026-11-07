@@ -1,7 +1,7 @@
 import { mode } from './wake-mode.js'
 import net from 'node:net'
 import { execFileSync } from 'node:child_process'
-import { DEFAULT_CLAUDE_CHANNEL } from '../config.js'
+import { DEFAULT_CLAUDE_CHANNEL } from './claude-binding.js'
 import type { WakeEnv, WakeAvailability, WakePathStatus } from './wake-types.js'
 import { wakeTarget } from './wake-types.js'
 import type { WakeFacet, WakeFacetOptions } from './wake.js'

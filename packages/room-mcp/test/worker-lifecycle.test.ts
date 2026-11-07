@@ -1,14 +1,22 @@
+import { workerInput } from './fixtures/worker-input.js'
 import { expect, it } from 'vitest'
-import { workerCommand, leadClaudePluginDir } from '../src/worker-config.js'
+import { workerAdapter } from '../src/hosts/index.js'
+import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
+import { leadClaudePluginDir } from '../src/hosts/claude-install.js'
 import { defs as sendDefs } from '../src/tools/messaging.js'
 import { defs as workerDefs } from '../src/tools/workers.js'
 
-it('passes a lead development plugin to Claude workers and disables installed Room', () => {
-  const args = workerCommand('claude', undefined, 'task', undefined, undefined, { pluginDir: '/tmp/room-plugin' }).args
+it('passes a lead development plugin to Claude workers and disables installed Room', async () => {
+  const args = (await workerAdapter('claude').plan(workerInput({
+    pluginDir: '/tmp/room-plugin',
+    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+  }))).args
   expect(args).toContain('--plugin-dir')
   expect(args[args.indexOf('--plugin-dir') + 1]).toBe('/tmp/room-plugin')
   expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({ enabledPlugins: { 'room@room': false } })
-  expect(workerCommand('claude', undefined, 'task', undefined, undefined, {}).args).not.toContain('--plugin-dir')
+  expect((await workerAdapter('claude').plan(workerInput({
+    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+  }))).args).not.toContain('--plugin-dir')
   expect(leadClaudePluginDir({}, '/tmp/dev/plugins/room/server/room-mcp.mjs')).toBe('/tmp/dev/plugins/room')
   expect(leadClaudePluginDir({}, '/home/user/.claude/plugins/cache/room/room/0.17.0/server/room-mcp.mjs', '/home/user/.claude/plugins/cache/room/room/0.17.0')).toBeUndefined()
   expect(leadClaudePluginDir({}, '/home/user/.claude/plugins/cache/room/room/0.17.0/server/room-mcp.mjs', '/home/user/.claude/plugins/cache/room/room/0.16.40')).toBe('/home/user/.claude/plugins/cache/room/room/0.17.0')

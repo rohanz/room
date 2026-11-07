@@ -22,8 +22,8 @@ import { registerWorkers } from './registry-fixture.js'
 
 // Lifecycle processes are synthetic. Give their executable a compatible test contract instead of
 // consulting this machine's installed plugin; worker-contract.test.ts verifies real descriptor reads.
-vi.mock('../src/worker-config.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/worker-config.js')>()
+vi.mock('../src/hosts/codex-install.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/hosts/codex-install.js')>()
   const { CURRENT_COMPAT } = await import('@room/hub-core')
   return { ...actual, installedCodexRoomContract: vi.fn(() => ({ release: 'test-install', compat: CURRENT_COMPAT, workerRecordSchema: 1 })) }
 })

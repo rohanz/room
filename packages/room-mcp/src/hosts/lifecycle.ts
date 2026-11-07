@@ -17,9 +17,3 @@ export function retainedSessionMissing(record: Pick<WorkerRecord, 'host' | 'host
   const facts = runLogFacts(file, run.logStart, identity).get(record.host)!
   return facts.missingSessions.has(record.hostSessionId) && !facts.acceptedSessions.has(record.hostSessionId)
 }
-
-/** Compatibility entry point for the former Claude-only accessor. */
-export function missingClaudeLogSession(file: string, hostSessionId: string, start: number): boolean {
-  const facts = runLogFacts(file, start).get('claude')!
-  return facts.missingSessions.has(hostSessionId) && !facts.acceptedSessions.has(hostSessionId)
-}

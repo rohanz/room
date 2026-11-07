@@ -15,10 +15,10 @@ import { isAgentic, manifestPaths, defaultPriority, parseClaimRelease, shouldWak
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
-import { claudeWakeUnavailable } from './prompt.js'
+import { wakeUnavailable } from './hosts/prompt.js'
 import { waitConsumesMessage } from './tools/messaging.js'
-import type { SendMidTurn, SendWake, WakeTarget, WakeVia, WakeAttempt, WakePathStatus } from './wake-path.js'
-import type { CodexWakeProbe } from './hosts/codex-turn.js'
+import type { SendMidTurn, SendWake, WakeTarget, WakeVia, WakeAttempt, WakePathStatus } from './hosts/wake-types.js'
+import type { WakeFacetOptions } from './hosts/wake.js'
 import { createWakeFacets, type WakeFacet } from './hosts/wake.js'
 import type { HostId, Target, TurnState as HostTurnState } from './hosts/types.js'
 
@@ -41,7 +41,7 @@ const UNKNOWN_BACKOFF_MS = [2_000, 5_000, 30_000]
 const HEALTH_SAMPLE_LIMIT = 1_000
 type TurnState = Exclude<HostTurnState, { kind: 'unneeded' }> & { reason?: string }
 export interface DeliveryHealth {
-  host: 'codex' | 'claude' | 'unbound'
+  host: HostId | 'unbound'
   path?: WakePathStatus
   state?: TurnState
   attempt?: WakeAttempt
@@ -76,7 +76,7 @@ export interface WakeReconcilerOptions {
   windowMs?: number
   pollMs?: number
   busyPollMs?: number
-  codexTurn?: CodexWakeProbe
+  turnProbe?: WakeFacetOptions['probe']
 }
 
 export class WakeReconciler {
@@ -113,7 +113,7 @@ export class WakeReconciler {
 
   /** Status comes from the bound host's wake facet, the same facet that sends. */
   private describe(target: WakeTarget) { return this.facet(target.host).describe({ ...target, surface: 'interactive' }) }
-  constructor(private readonly o: WakeReconcilerOptions) { this.facet = createWakeFacets({ send: o.send, midTurn: o.midTurn, probe: o.codexTurn }) }
+  constructor(private readonly o: WakeReconcilerOptions) { this.facet = createWakeFacets({ send: o.send, midTurn: o.midTurn, probe: o.turnProbe }) }
 
   /** Aggregate the retained ledger, not a second history. No names, ids, payloads or host errors escape. */
   health(): DeliveryHealth {
@@ -177,7 +177,7 @@ export class WakeReconciler {
   /** Watch a joined room: any change to it (bus, receipts, outcomes, claims) reconciles. */
   attach(s: Session): void {
     if (this.sessions.has(s)) return
-    s.awareness.setLocalStateField('wakeUnavailable', claudeWakeUnavailable(s.dir))
+    s.awareness.setLocalStateField('wakeUnavailable', wakeUnavailable(s.dir))
     const kick = () => this.reconcile()
     s.room.doc.on('update', kick)
     this.sessions.set(s, () => s.room.doc.off('update', kick))

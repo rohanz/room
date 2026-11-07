@@ -1,3 +1,4 @@
+import type { HostId } from './hosts/types.js'
 /** Durable facts, not the room document, determine a local worker's lifecycle. */
 import type { RetiredWorker, ShareLevel, WorkerStatus, WorkerStopReason, WorkerView } from '@room/shared'
 import type { InstanceToken, Liveness, ProcessIdentity } from './leases.js'
@@ -43,7 +44,7 @@ interface DiscardPlan {
 export interface WorkerRecord {
   v: 1; id: string; tag: string; name: string; mode: 'here' | 'local'; room: string
   lead: { participant: string; room: string; instance: InstanceToken }
-  host: 'claude' | 'codex'; model?: string; effort?: string
+  host: HostId; model?: string; effort?: string
   budget: { threads: number; memGb: number; nice: number }; share: ShareLevel; link?: string[]; task: string
   dir: string; outside: boolean; branch: string; prep: PrepJournal
   /** The host's log, `<lead>/.room/workers/<tag>.log`; records before 0.17.0-rc8 lack it (see workerLogFile). */
@@ -137,7 +138,7 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
  * builds it, from the local registry record; nothing in the room document yields one (registry §1).
  */
 export interface LocalWorker {
-  id: string; tag: string; name: string; lead: string; host: 'claude' | 'codex'; model?: string; effort?: string
+  id: string; tag: string; name: string; lead: string; host: HostId; model?: string; effort?: string
   hostSessionId?: string; budget: WorkerRecord['budget']; port?: number; share: ShareLevel; link?: string[]
   task: string; dir: string; branch: string; sharedWith?: string; base?: string; carriedBase?: string; carriedUntracked?: WorkerRecord['carriedUntracked']
   /** Zero unless the signal capability names a launched process. */

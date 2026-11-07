@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { codexControlSocket, postCodexToolOutput } from './codex-app-server.js'
-import { isCodexExecWorker } from '../binding.js'
+import { isCodexExecWorker } from './codex-identity.js'
 import { mode } from './wake-mode.js'
 import type { WakeEnv, WakeAttempt, SendMidTurn } from './wake-types.js'
 import { wakeTarget } from './wake-types.js'

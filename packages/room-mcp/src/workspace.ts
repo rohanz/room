@@ -1,45 +1,19 @@
+import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
+import { missingWorkspace, workspaceMismatch } from './hosts/workspace-guidance.js'
 /** Codex 0.157.1 may spawn MCP servers from a shared app-server in another clone. */
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { gitCommonDir } from '@room/roomd'
-import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
-import { workspaceAdapter } from './hosts/selection.js'
-import { deferWorkspace } from './hosts/codex-binding.js'
 
-export type ParentCommandReader = () => string
-
-/**
- * The session's folder without call metadata. ROOM_DIR (workers) is explicit. Codex starts Room in
- * the plugin folder, so its PWD names the session's folder. Claude Code starts Room in the session's
- * folder, and an inherited PWD may name wherever the host was launched (another repository), so it
- * only supplies the spelling (a symlinked path) of that same folder.
- */
-export function fallbackWorkspace(env: NodeJS.ProcessEnv, processDir: string): string {
-  return workspaceAdapter(env).startup({ env, processDir, platform: process.platform }).fallbackDir
-}
-
-export const parentCommand: ParentCommandReader = () => execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
-  encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'],
-}).trim()
-
-/** Unknown parent identity is conservative: Codex's inherited PWD may belong to another session. */
-export function deferForSharedCodex(env: NodeJS.ProcessEnv, readParent: ParentCommandReader = parentCommand, platform = process.platform): boolean {
-  return deferWorkspace(env, readParent, platform)
-}
 
 const worktreeRoot = (dir: string): string | undefined => {
   try { return execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined }
   catch { return undefined }
 }
 
-/** Thread identity supplied by Codex, including daemon calls that carry no workspaces. */
-export function codexThreadFromMeta(params: { _meta?: unknown }): string | undefined {
-  return callMetadata.decodeCall(params._meta).toolSessionId
-}
 
 /** Tool-call metadata is supplied by Codex, not by MCP initialize or roots/list. */
-export function codexWorkspace(params: { _meta?: unknown }, rootOf: (dir: string) => string | undefined = worktreeRoot): string | undefined {
-  const candidates = callMetadata.decodeCall(params._meta).workspaceCandidates
+export function admittedWorkspace(candidates: readonly string[], rootOf: (dir: string) => string | undefined = worktreeRoot): string | undefined {
   const roots = new Set<string>()
   const plain = new Set<string>()
   for (const key of candidates) {
@@ -66,7 +40,6 @@ async function sameWorkspace(a: string, b: string): Promise<boolean> {
   } catch { return false }
 }
 
-const missingWorkspace = 'Room could not tell which folder this Codex session is in (no workspace in the call). Update Codex, or start it with ROOM_DIR=<repo>.'
 const startFailure = (attempt: { dir: string; failed?: unknown }): string =>
   `Room could not start for ${attempt.dir}: ${attempt.failed instanceof Error ? attempt.failed.message : String(attempt.failed)}; try again.`
 const closingMessage = 'Room is shutting down; restart this session to use Room.'
@@ -101,7 +74,7 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
   }
   const forCall = async (params: { _meta?: unknown }): Promise<{ runtime: T; error?: never } | { error: string; runtime?: never }> => {
     if (closing) return { error: closingMessage }
-    const workspace = codexWorkspace(params)
+    const workspace = admittedWorkspace(callMetadata.decodeCall(params._meta).workspaceCandidates)
     if (deferred && !workspace) return { error: missingWorkspace }
     while (true) {
       if (closing) return { error: closingMessage }
@@ -117,7 +90,7 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
         if (!current && 'failed' in binding) return { error: startFailure(binding) }
         continue
       }
-      if (!matchesBinding) return { error: `This Codex session's workspace is ${workspace}, but Room is attached to ${binding.dir}; restart the session to switch.` }
+      if (!matchesBinding) return { error: workspaceMismatch(workspace, binding.dir) }
       let runtime: T
       try { runtime = await binding.promise } catch { return { error: closing ? closingMessage : startFailure(binding) } }
       return closing ? { error: closingMessage } : { runtime }

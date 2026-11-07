@@ -4,7 +4,7 @@ import { sendCodexWake, codexWakeStatus } from './codex-wake.js'
 import type { WakeSenderOptions, SendWake, WakeVia, WakeAttempt, WakeAvailability, WakePathStatus } from './wake-types.js'
 import type { HostAdapter, HostId } from './types.js'
 import type { SendMidTurn } from './wake-types.js'
-import { CodexTurnProbe, type CodexWakeProbe, type CodexTurnProbeOptions } from './codex-turn.js'
+import { CodexTurnProbe, type CodexWakeProbe } from './codex-turn.js'
 import { createClaudeWakeFacet } from './claude-wake.js'
 import { createCodexWakeFacet } from './codex-wake.js'
 
@@ -38,8 +38,6 @@ export function createWakeSender(o: WakeSenderOptions): SendWake {
   return send
 }
 
-/** Compatibility probe port for callers migrating in step 9. */
-export function createWakeProbe(options: CodexTurnProbeOptions = {}): CodexWakeProbe { return new CodexTurnProbe(options) }
 
 export interface WakeFacetOptions {
   send: SendWake
@@ -54,3 +52,8 @@ export function createWakeFacets(options: WakeFacetOptions): (host: HostId) => W
 }
 
 export type WakeAttemptRunner = (via: WakeVia, run: () => Promise<unknown>) => Promise<WakeVia>
+
+/** Production probe owns host options; contact age remains a live presence reading. */
+export function createProductionWakeProbe(contactAgeMs: () => number | undefined, clientVersion: string): CodexWakeProbe {
+  return new CodexTurnProbe({ contactAgeMs, clientVersion })
+}

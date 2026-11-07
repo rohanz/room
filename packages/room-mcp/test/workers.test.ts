@@ -1,3 +1,5 @@
+import * as hostRegistry from '../src/hosts/index.js'
+import { workerInput } from './fixtures/worker-input.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { base, createTools, dir, fakeSession, ignore, lead, pair, realRepo, reportDone, setFixtureRepo, setupLead, workerId } from './workers-fixture.js'
@@ -13,14 +15,17 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import * as Y from 'yjs'
 import { resolveConfig } from '../src/config.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
-import { claudeWakeUnavailable } from '../src/prompt.js'
+import { wakeUnavailable } from '../src/hosts/prompt.js'
 import type { Session } from '../src/session.js'
-import { workerBudget, workerCommand, workerEnv, workerPriority, installedCodexRoomContract } from '../src/worker-config.js'
+import { workerBudget, workerEnv, workerPriority } from '../src/worker-config.js'
+import { workerAdapter } from '../src/hosts/index.js'
+import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
+import { installedCodexRoomContract } from '../src/hosts/codex-install.js'
 import { cleanupPreparedWorktree, prepareWorkerLinks, prepareWorktree } from '../src/worker-git.js'
 import { defaultSpawner, pidAlive, probeProcess, workerLogTail, type SpawnSpec } from '../src/worker-process.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import { registryForDir } from '../src/worker-registry.js'
-import { CODEX_SHELL_FILTER } from '../src/worker-shell-env.js'
+import { CODEX_SHELL_FILTER } from '../src/hosts/codex-shell.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { finishFixtureProcess, fixtureProbe, fixtureProcess, spawnFixtureProcess } from './fixtures/process-liveness.js'
 import { visiblePeer } from './fixtures/visible.js'
@@ -46,6 +51,19 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     return { a, b, leadTools, workerTools, workerSession: ws!, specs, exits, killed }
   }
+
+  it.each([false, true])('persists adapter resume capability %s at spawn', async resume => {
+    const original = hostRegistry.workerAdapter
+    vi.spyOn(hostRegistry, 'workerAdapter').mockImplementation((...args) => ({
+      ...original(...args), capabilities: { resume },
+    }))
+    const t = setup()
+    try {
+      expect(await t.leadTools.call('room_spawn', { tag: 'capability', task: 'task' })).toContain('spawned capability')
+      const records = requireWorkerInventory(await (await registryForDir(dir)).list())
+      expect(records.find(record => record.tag === 'capability')?.capabilities.resume).toBe(resume)
+    } finally { await t.leadTools.shutdown() }
+  })
 
   it('records the owner when dir points at another worker worktree', async () => {
     const t = setup()
@@ -312,7 +330,11 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const t = setup()
     const out = await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', host: 'codex', model: 'gpt-5.6', effort: 'medium' })
     expect(out).toContain('spawned money: rohanz+money (codex gpt-5.6, pid 4243)')
-    const priority = workerPriority(workerCommand('codex', 'gpt-5.6', 'unused'))
+    const priority = workerPriority((await workerAdapter('codex').plan(workerInput({
+      runtime: workerAdapter('codex').normalizeRuntime({ model: 'gpt-5.6', effort: undefined }),
+      prompt: 'unused',
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    }))))
     expect(t.specs[0].cmd).toBe(priority.cmd)
     if (priority.nice) expect(t.specs[0].args.slice(0, 3)).toEqual(['-n', '10', 'codex'])
     expect(out).toContain(` · priority ${priority.nice ? 'nice 10' : 'normal'}`)
@@ -1100,16 +1122,40 @@ describe('worker scheduling priority', () => {
   })
 })
 
-it('passes documented effort and session flags to Claude and Codex', () => {
-  expect(workerCommand('claude', undefined, 'task', '', 'medium', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', maxBudgetUsd: '2.50' }).args)
+it('passes documented effort and session flags to Claude and Codex', async () => {
+  expect((await workerAdapter('claude').plan(workerInput({
+    tag: 'money',
+    sessionId: '550e8400-e29b-41d4-a716-446655440000',
+    maxBudgetUsd: '2.50',
+    runtime: workerAdapter('claude').normalizeRuntime({ model: undefined, effort: 'medium' }),
+  }))).args)
     .toEqual(['-p', 'task', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--effort', 'medium', '--name', 'money', '--session-id', '550e8400-e29b-41d4-a716-446655440000', '--max-budget-usd', '2.50'])
-  expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
-  expect(workerCommand('claude', undefined, 'task', '', 'minimal').args).toContain('low')
-  expect(workerCommand('codex', undefined, 'task', '', 'medium').args).toContain('model_reasoning_effort=medium')
-  expect(workerCommand('codex', undefined, 'task').args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false)
-  expect(workerCommand('claude', 'opus', 'fix', '', 'high', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
+  expect((await workerAdapter('claude').plan(workerInput({
+    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+  }))).args).not.toContain('--effort')
+  expect((await workerAdapter('claude').plan(workerInput({
+    runtime: workerAdapter('claude').normalizeRuntime({ model: undefined, effort: 'minimal' }),
+  }))).args).toContain('low')
+  expect((await workerAdapter('codex').plan(workerInput({
+    runtime: workerAdapter('codex').normalizeRuntime({ model: undefined, effort: 'medium' }),
+  }))).args).toContain('model_reasoning_effort=medium')
+  expect((await workerAdapter('codex').plan(workerInput({
+    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+  }))).args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false)
+  expect((await workerAdapter('claude').plan(workerInput({
+    tag: 'money',
+    sessionId: '550e8400-e29b-41d4-a716-446655440000',
+    mode: true ? 'resume' : 'fresh',
+    runtime: workerAdapter('claude').normalizeRuntime({ model: 'opus', effort: 'high' }),
+    prompt: 'fix',
+  }))).args)
     .toEqual(['-p', '--resume', '550e8400-e29b-41d4-a716-446655440000', 'fix', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money'])
-  expect(workerCommand('codex', 'gpt-6-sol', 'fix', '', 'high', { sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
+  expect((await workerAdapter('codex').plan(workerInput({
+    sessionId: '550e8400-e29b-41d4-a716-446655440000',
+    mode: true ? 'resume' : 'fresh',
+    runtime: workerAdapter('codex').normalizeRuntime({ model: 'gpt-6-sol', effort: 'high' }),
+    prompt: 'fix',
+  }))).args)
     .toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'fix'])
   expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
 })
@@ -1219,10 +1265,10 @@ describe('spawn inputs and effort', () => {
   })
 
   it('guides a Claude lead only on the first spawn, after a silent solo room_state', async () => {
-    expect(claudeWakeUnavailable(dir, 'claude', 'claude')).toBe(true)
-    expect(claudeWakeUnavailable(dir, 'codex', 'codex')).toBe(false)
-    expect(claudeWakeUnavailable(dir, 'claude', 'claude --dangerously-load-development-channels plugin:room@room')).toBe(false)
-    expect(claudeWakeUnavailable(dir, 'claude', 'claude --channels plugin:unrelated@other')).toBe(true)
+    expect(wakeUnavailable(dir, 'claude', 'claude')).toBe(true)
+    expect(wakeUnavailable(dir, 'codex', 'codex')).toBe(false)
+    expect(wakeUnavailable(dir, 'claude', 'claude --dangerously-load-development-channels plugin:room@room')).toBe(false)
+    expect(wakeUnavailable(dir, 'claude', 'claude --channels plugin:unrelated@other')).toBe(true)
     vi.stubEnv('ROOM_HOST', 'claude')
     vi.stubEnv('SHELL', '/bin/bash')
     const t = setupLead()

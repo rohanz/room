@@ -109,7 +109,6 @@ export interface HostAdapter {
     freshSessionId(): string | undefined;
     defaults(cwd: string): Runtime; // synchronous public-config reader via injected filesystem
     normalizeRuntime(runtime: Runtime): Runtime;
-    command(input: WorkerCommandInput): Pick<WorkerPlan, 'cmd' | 'args'>; // pure, sync wrapper seam
     plan(input: WorkerInput): Promise<WorkerPlan>;
   };
   readonly hooks?: {
@@ -131,7 +130,7 @@ export type WorkerLaunchPlan = WorkerPlan & {
   artifactWarnings(outcomes: readonly WorkerArtifactOutcome[]): string[];
 };
 
-/** The extracted worker facet plus temporary shell compatibility entry points. */
+/** Worker shell isolation capabilities. */
 export type WorkerShellIsolation = {
   plan(input: WorkerInput): Promise<WorkerLaunchPlan>;
   launchOptions: { shellEnvHook: boolean; developmentPlugin: boolean };
@@ -157,3 +156,5 @@ export interface HostLogDecoder {
   acceptsLine(line: string): boolean
   push(raw: unknown): readonly NormalizedLogFact[]
 }
+
+export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const

@@ -21,7 +21,7 @@ import { startArbitration, type Arbitration } from '../src/arbitration.js'
 import type { SessionBinding } from '../src/binding.js'
 import { Ledger } from '../src/ledger.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
-import type { SendWake } from '../src/wake-path.js'
+import type { SendWake } from '../src/hosts/wake-types.js'
 import type { LocalWorker } from '../src/worker-status.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { registerWorkers } from './registry-fixture.js'
@@ -199,7 +199,7 @@ describe('claims on separate lines of a 3,000-line changelog (rehearsal R3)', ()
 /** Wakes for a bound Codex session, attached to `s`. */
 function wakes(s: Session, send: SendWake = async () => 'queue', ownWorkers: ReadonlySet<string> = new Set()) {
   const ledger = new Ledger({ sessionId: () => SID, route: () => ({}) })
-  const w = new WakeReconciler({ ledger, bound: () => ({ id: SID, host: 'codex' }), sessionDir: () => sdir(), send, ownWorkers: () => ownWorkers, windowMs: 0, codexTurn: { busy: async () => false } })
+  const w = new WakeReconciler({ ledger, bound: () => ({ id: SID, host: 'codex' }), sessionDir: () => sdir(), send, ownWorkers: () => ownWorkers, windowMs: 0, turnProbe: { busy: async () => false } })
   ledger.bind(s); w.attach(s)
   return w
 }

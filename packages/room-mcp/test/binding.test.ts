@@ -22,11 +22,12 @@ async function binding() {
 
 it('admits a daemon thread immediately in every binding, even after an unbound result was cached', async () => {
   vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
   const b = await binding()
   const other = await binding()
   expect(other.bound()).toBeUndefined()
   expect(b.bound()).toBeUndefined()
-  b.admitCodexThread('01a119cb-010e-7883-a11e-04bf44b77f04')
+  codexIdentity.admitToolSession('01a119cb-010e-7883-a11e-04bf44b77f04')
   expect(b.bound()).toEqual({ id: '01a119cb-010e-7883-a11e-04bf44b77f04', host: 'codex' })
   expect(other.bound()).toEqual(b.bound())
   expect(b.id()).toBe('01a119cb-010e-7883-a11e-04bf44b77f04')
@@ -36,25 +37,27 @@ it('admits a daemon thread immediately in every binding, even after an unbound r
 
 it('ignores invalid ids and refuses every conflicting thread without replacing the first', async () => {
   vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
   const b = await binding()
-  for (const id of ['', '../foreign', 'a_b', 'a'.repeat(129), 'thread\n']) b.admitCodexThread(id)
+  for (const id of ['', '../foreign', 'a_b', 'a'.repeat(129), 'thread\n']) codexIdentity.admitToolSession(id)
   expect(b.bound()).toBeUndefined()
-  b.admitCodexThread('first-thread')
-  b.admitCodexThread('first-thread')
+  codexIdentity.admitToolSession('first-thread')
+  codexIdentity.admitToolSession('first-thread')
   for (let i = 0; i < 40; i++) {
-    expect(() => b.admitCodexThread(`conflict-${i}`)).toThrow(/mcp_connection_sharing.*mcp_2026_07_28/)
+    expect(() => codexIdentity.admitToolSession(`conflict-${i}`)).toThrow(/mcp_connection_sharing.*mcp_2026_07_28/)
   }
-  expect(() => b.admitCodexThread('conflict-0')).toThrow(/disable.*mcp_connection_sharing.*Room release/)
-  expect(() => b.admitCodexThread('first-thread')).not.toThrow()
+  expect(() => codexIdentity.admitToolSession('conflict-0')).toThrow(/disable.*mcp_connection_sharing.*Room release/)
+  expect(() => codexIdentity.admitToolSession('first-thread')).not.toThrow()
   expect(b.bound()).toEqual({ id: 'first-thread', host: 'codex' })
   const other = await binding()
   expect(other.bound()).toEqual({ id: 'first-thread', host: 'codex' })
-  expect(() => other.admitCodexThread('other-room')).toThrow(/mcp_connection_sharing/)
+  expect(() => codexIdentity.admitToolSession('other-room')).toThrow(/mcp_connection_sharing/)
   expect(b.bound()).toEqual({ id: 'first-thread', host: 'codex' })
 })
 
 it('binds a Claude session once its folder becomes a repository (git init after the session started)', async () => {
   vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-late-repo-'))
   dirs.push(dir)
   let now = 0
@@ -72,12 +75,13 @@ it('binds a Claude session once its folder becomes a repository (git init after 
 
 it('admits pre-binding metadata without workspaces while deferring workspace initialization', async () => {
   vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
   const { preBindingAdapter } = await import('../src/hosts/index.js')
   const { createWorkspaceBinding } = await import('../src/workspace.js')
   const b = await binding()
   const facts = preBindingAdapter('codex').decodeCall({ 'x-codex-turn-metadata': { thread_id: 'metadata-only' } })
   expect(facts).toEqual({ toolSessionId: 'metadata-only', workspaceCandidates: [] })
-  b.admitCodexThread(facts.toolSessionId!)
+  codexIdentity.admitToolSession(facts.toolSessionId!)
   const initialize = vi.fn(async () => 'runtime')
   const workspace = createWorkspaceBinding({ deferred: true, fallbackDir: () => '/unused', initialize, logFallback: () => {} })
   const result = await workspace.forCall({ _meta: { 'x-codex-turn-metadata': { thread_id: 'metadata-only' } } })
@@ -88,6 +92,7 @@ it('admits pre-binding metadata without workspaces while deferring workspace ini
 
 it('admits each tool call through the host facet whose decoder recognizes its metadata', async () => {
   vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
   const { identityAdapter, preBindingAdapter } = await import('../src/hosts/index.js')
   const { admitCallSessions } = await import('../src/session.js')
   const codex = vi.spyOn(identityAdapter('codex'), 'admitToolSession')
@@ -110,11 +115,12 @@ it('admits each tool call through the host facet whose decoder recognizes its me
 
 it('routes compatibility admission through the identity facet', async () => {
   vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
   const { identityAdapter } = await import('../src/hosts/index.js')
-  const { admitCodexThread } = await import('../src/session.js')
+
   const admit = vi.spyOn(identityAdapter('codex'), 'admitToolSession')
   try {
-    admitCodexThread('wrapper-thread')
+    codexIdentity.admitToolSession('wrapper-thread')
     expect(admit).toHaveBeenCalledWith('wrapper-thread')
     const b = await binding()
     expect(b.bound()).toEqual({ id: 'wrapper-thread', host: 'codex' })

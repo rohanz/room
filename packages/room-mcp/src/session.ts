@@ -1,6 +1,6 @@
+import type { HostId } from './hosts/types.js'
 import { hostIds, identityAdapter, preBindingAdapter } from './hosts/index.js'
 import { bindingHost, initialJoinIdentity } from './hosts/selection.js'
-export { admittedCodexThread } from './hosts/codex-identity.js'
 import { sessionEntries } from './session-entries.js'
 import { requireDaemonRuntime } from './daemon-cutover.js'
 import { trackConnection } from './connection.js'
@@ -32,7 +32,8 @@ import { GraphIndex, type GraphSeed } from './graph-index.js'
 import { checkoutLead, endCheckoutLead } from './checkout-lead.js'
 import { withdrawFormerPublisher } from '@room/roomd/publisher'
 import { credentialsPath as defaultCredentialsPath, getCredential, removeCredential, setCredential } from './credentials.js'
-import { LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
+import { LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionRuntime } from './config.js'
+import { sessionHost } from './hosts/selection.js'
 import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
 import { migrateLegacyLocalChoice, worktreePath } from './choice.js'
@@ -138,7 +139,7 @@ export interface Session {
 /** SessionStart owns session.json; the same session's hooks own runtime.json. */
 export interface SessionRecord {
   session_id: string
-  host: 'claude' | 'codex'
+  host: HostId
   cwd: string
   at: number
   source?: string
@@ -191,15 +192,15 @@ export interface SessionBindingOptions {
   commonDir?: string
   cwd?: string
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>
-  host?: 'claude' | 'codex'
+  host?: HostId
   parent?: ProcessIdentity
   probe?: ProcessProbe
   workerId?: string
   /** Registry's pre-generated Claude session, or an admitted Codex log thread ID. */
   workerSessionId?: string
   /** Thread identity supplied by Codex tool-call metadata under the shared daemon. */
-  codexThreadId?: string
-  codexLogSessionId?: string
+  toolSessionId?: string
+  logSessionId?: string
   appServer?: boolean
   parentArgs?: string
 }
@@ -227,10 +228,6 @@ export function admitCallSessions(rawMeta: unknown): void {
   }
 }
 
-/** Compatibility entry point: metadata from this host uses its process-global admission fence. */
-export function admitCodexThread(id: string): void {
-  identityAdapter('codex').admitToolSession(id)
-}
 
 /** Shared scheduling consumes the adapter's pending-identity policy. */
 export function initialSessionJoinWaitMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -239,7 +236,7 @@ export function initialSessionJoinWaitMs(env: NodeJS.ProcessEnv = process.env): 
 }
 
 /** Re-evaluate on every call; adapters interpret the shared evidence without caching records. */
-export function boundSession(options: SessionBindingOptions = {}): { id: string; host: 'claude' | 'codex' } | undefined {
+export function boundSession(options: SessionBindingOptions = {}): { id: string; host: HostId } | undefined {
   const env = options.env ?? process.env
   const parent = options.parent ?? processIdentity(process.ppid, options.probe ?? probeProcess)
   const host = bindingHost(options.host, env, parent)
@@ -256,7 +253,7 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
     get repositoryAvailable() { return !!commonDir() },
     get records() { const dir = commonDir(); return dir ? sessionRecords(dir) : [] },
     workerId: options.workerId ?? env.ROOM_WORKER_ID, workerSessionId: options.workerSessionId,
-    toolSessionId: options.codexThreadId, logSessionId: options.codexLogSessionId, appServer: options.appServer,
+    toolSessionId: options.toolSessionId, logSessionId: options.logSessionId, appServer: options.appServer,
   })
   return result.kind === 'bound' ? { id: result.target.id, host: result.target.host } : undefined
 }
@@ -669,7 +666,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     const epoch = Number(process.env.ROOM_NAME_EPOCH)
     const commonDir = await gitCommonDir(options.dir)
     chosen = await timed('name', () => inPhase('name', () => chooseName({
-      dir: options.dir, commonDir, roomKey: key, owner, explicitTag, host: resolveSessionHost(),
+      dir: options.dir, commonDir, roomKey: key, owner, explicitTag, host: sessionHost(),
       doc: new RoomDoc(doc), hub: reachable ? hub : undefined, token, holder, workerId, takeover: options.takeover,
       ...(workerId && Number.isSafeInteger(epoch) ? { supersedes: epoch } : {}), log: options.log ?? console.error,
     })))
@@ -731,7 +728,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
         return { ok: false }
       },
       onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
-      host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) }))
+      host: sessionHost(), ...resolveSessionRuntime(binding.dir()) }))
     if (lease.fence()) claimLegacyIdentity(started.roomDoc, options.dir, name)
   } catch (e) { await publishing?.detach(); await lease.end(); hub.close(); closeProbe(); throw e }
   // The daemon's connection carries the hub from here (one client per session): the lease's clock and epoch move with it.
@@ -778,7 +775,7 @@ function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurr
     if (!hostCurrent()) return
     const current = daemon.provider.awareness.getLocalState()
     const runtime = resolveSessionRuntime(binding.dir())
-    if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(), ...runtime })
+    if (current) daemon.provider.awareness.setLocalState({ ...current, host: sessionHost(), ...runtime })
   }
   let published = ''
   let lastActivity = Date.now() // do not replay activity left by an earlier session

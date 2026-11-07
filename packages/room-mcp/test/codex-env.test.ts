@@ -1,7 +1,9 @@
+import { workerInput } from './fixtures/worker-input.js'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
-import { workerCommand, workerProcessEnv } from '../src/worker-config.js'
+import { workerProcessEnv } from '../src/worker-config.js'
+import { workerAdapter } from '../src/hosts/index.js'
 
 it('passes every launched worker ROOM variable through the Codex MCP allow-list', () => {
   const file = fileURLToPath(new URL('../../../plugins/room/codex-mcp.json', import.meta.url))
@@ -26,13 +28,15 @@ it('passes the documented ROOM_ tuning knobs through the Codex MCP allow-list', 
   }
 })
 
-it('forwards ROOM_WAKE=channels into a Claude worker launch', () => {
+it('forwards ROOM_WAKE=channels into a Claude worker launch', async () => {
   const file = fileURLToPath(new URL('../../../plugins/room/codex-mcp.json', import.meta.url))
   const envVars = (JSON.parse(fs.readFileSync(file, 'utf8')) as { mcpServers: { room: { env_vars: string[] } } }).mcpServers.room.env_vars
   const shell = { ROOM_WAKE: 'channels' }
   const forwarded = Object.fromEntries(Object.entries(shell).filter(([key]) => envVars.includes(key)))
-  const command = workerCommand('claude', undefined, 'task', 'plugin:room@room', undefined,
-    { wakeChannels: forwarded.ROOM_WAKE === 'channels' })
+  const command = (await workerAdapter('claude').plan(workerInput({
+    wakeChannels: forwarded.ROOM_WAKE === 'channels',
+    claudeChannel: 'plugin:room@room',
+  })))
   expect(command.args).toContain('--dangerously-load-development-channels')
   expect(command.args).toContain('plugin:room@room')
 })

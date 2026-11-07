@@ -1,3 +1,4 @@
+import { workerInput } from './fixtures/worker-input.js'
 import { base, createTools, dir, fakeSession, lead, pair, realRepo, scratchRepos } from './workers-fixture.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { execFileSync } from 'node:child_process'
@@ -7,15 +8,24 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/config.js'
 import type { Session } from '../src/session.js'
-import { validTag, workerCommand, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
+import { validTag, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
+import { workerAdapter } from '../src/hosts/index.js'
+import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { cleanupPreparedWorktree, prepareWorktree } from '../src/worker-git.js'
 
 describe('worker plumbing', () => {
-  it('validates tags and builds host commands', () => {
+  it('validates tags and builds host commands', async () => {
     expect(validTag('money')).toBe('money'); expect(validTag('a b')).toBeUndefined(); expect(validTag('')).toBeUndefined()
-    const c = workerCommand('claude', 'claude-sonnet-5', 'do it')
+    const c = (await workerAdapter('claude').plan(workerInput({
+      runtime: workerAdapter('claude').normalizeRuntime({ model: 'claude-sonnet-5', effort: undefined }),
+      prompt: 'do it',
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    })))
     expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args.slice(0, 2)).toEqual(['-p', 'do it'])
-    const x = workerCommand('codex', undefined, 'do it')
+    const x = (await workerAdapter('codex').plan(workerInput({
+      prompt: 'do it',
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    })))
     expect(x.cmd).toBe('codex'); expect(x.args.slice(0, 3)).toEqual(['exec', '-s', 'workspace-write'])
     expect(x.args).toContain('--json')
     const prompt = workerPrompt('rohanz', 'money', 'switch to cents')
@@ -37,11 +47,18 @@ describe('worker plumbing', () => {
   it('uses the resolved channel override and supports disabling it', async () => {
     for (const channel of ['plugin:custom@market', '']) {
       const config = await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: channel } })
-      const c = workerCommand('claude', undefined, 'task', config.claudeChannel)
+      const c = (await workerAdapter('claude').plan(workerInput({
+        claudeChannel: config.claudeChannel ?? DEFAULT_CLAUDE_CHANNEL,
+      })))
       expect(c.args.slice(0, 2)).toEqual(['-p', 'task'])
-      const channels = workerCommand('claude', undefined, 'task', config.claudeChannel, undefined, { wakeChannels: true })
+      const channels = (await workerAdapter('claude').plan(workerInput({
+        wakeChannels: true,
+        claudeChannel: config.claudeChannel ?? DEFAULT_CLAUDE_CHANNEL,
+      })))
       expect(channels.args.slice(0, channel ? 4 : 2)).toEqual(channel ? ['--dangerously-load-development-channels', channel, '-p', 'task'] : ['-p', 'task'])
-      expect(workerCommand('codex', undefined, 'task', config.claudeChannel).args).not.toContain('--dangerously-load-development-channels')
+      expect((await workerAdapter('codex').plan(workerInput({
+        claudeChannel: config.claudeChannel ?? DEFAULT_CLAUDE_CHANNEL,
+      }))).args).not.toContain('--dangerously-load-development-channels')
     }
   })
 

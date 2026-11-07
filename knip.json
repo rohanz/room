@@ -55,11 +55,7 @@
       "entry": [
         "src/parse/worker.ts!",
         "src/doctor.ts!",
-        "test/**/*.test.ts",
-        "src/channel.ts",
-        "src/codex-app-server.ts",
-        "src/codex-turn.ts",
-        "src/wake-path.ts"
+        "test/**/*.test.ts"
       ],
       "project": [
         "src/**/*.ts!",

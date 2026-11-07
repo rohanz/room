@@ -23,16 +23,17 @@ describe('host session binding', () => {
         .toEqual({ id: host + '-no-pid', host })
     }
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, appServer: true,
-      codexThreadId: 'codex-no-pid', env: {} })).toEqual({ id: 'codex-no-pid', host: 'codex' })
+      toolSessionId: 'codex-no-pid', env: {} })).toEqual({ id: 'codex-no-pid', host: 'codex' })
   })
 
   it('binds an admitted Codex thread to a hook record without hostPid', async () => {
     vi.resetModules()
     const session = await import('../src/session.js')
+    const { codexIdentity, admittedCodexThread } = await import('../src/hosts/codex-identity.js')
     const dir = common()
     session.writeSessionRecord(dir, { session_id: 'admitted-no-pid', host: 'codex', cwd: dir, at: 1, chain: [] })
-    session.admitCodexThread('admitted-no-pid')
-    expect(session.admittedCodexThread()).toBe('admitted-no-pid')
+    codexIdentity.admitToolSession('admitted-no-pid')
+    expect(admittedCodexThread()).toBe('admitted-no-pid')
     expect(session.boundSession({ commonDir: dir, host: 'codex', parent: child, appServer: true, env: {} }))
       .toEqual({ id: 'admitted-no-pid', host: 'codex' })
   })
@@ -40,7 +41,7 @@ describe('host session binding', () => {
   it('prefers the newest worker hook over log and tool evidence, then log over tool', () => {
     const dir = common()
     const options = { commonDir: dir, cwd: dir, host: 'codex' as const, workerId: 'worker',
-      codexLogSessionId: 'log', codexThreadId: 'tool', env: {} }
+      logSessionId: 'log', toolSessionId: 'tool', env: {} }
     expect(boundSession(options)).toEqual({ id: 'log', host: 'codex' })
     record(dir, 'old-hook', 'codex', 1, [child], 'worker')
     record(dir, 'new-hook', 'codex', 2, [child], 'worker')
@@ -120,9 +121,9 @@ describe('host session binding', () => {
     expect(boundSession({ commonDir: dir, host: 'claude', workerId: 'w_456', workerSessionId: 'pre-generated', appServer: true })).toEqual({ id: 'pre-generated', host: 'claude' })
     expect(boundSession({ commonDir: dir, host: 'codex', appServer: true, parent: child })).toBeUndefined()
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex app-server', env: {} })).toBeUndefined()
-    expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex app-server', codexThreadId: 'daemon-thread', env: {} })).toEqual({ id: 'daemon-thread', host: 'codex' })
-    expect(boundSession({ commonDir: dir, host: 'codex', appServer: true, codexThreadId: 'daemon-thread', env: {} })).toEqual({ id: 'daemon-thread', host: 'codex' })
-    expect(boundSession({ commonDir: dir, host: 'codex', workerId: 'w_123', appServer: true, codexThreadId: 'daemon-thread' })).toEqual({ id: 'worker-thread', host: 'codex' })
+    expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex app-server', toolSessionId: 'daemon-thread', env: {} })).toEqual({ id: 'daemon-thread', host: 'codex' })
+    expect(boundSession({ commonDir: dir, host: 'codex', appServer: true, toolSessionId: 'daemon-thread', env: {} })).toEqual({ id: 'daemon-thread', host: 'codex' })
+    expect(boundSession({ commonDir: dir, host: 'codex', workerId: 'w_123', appServer: true, toolSessionId: 'daemon-thread' })).toEqual({ id: 'worker-thread', host: 'codex' })
     expect(syntheticSessionId(parent)).toBe('mcp:71:birth-71')
   })
 
@@ -138,14 +139,14 @@ describe('host session binding', () => {
     const dir = common()
     record(dir, 'chain-thread', 'codex', 1, [child])
     for (const parentArgs of ['codex', undefined, 'node shim.js']) {
-      expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs, codexThreadId: 'admitted-thread', env: {} })).toEqual({ id: 'admitted-thread', host: 'codex' })
+      expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs, toolSessionId: 'admitted-thread', env: {} })).toEqual({ id: 'admitted-thread', host: 'codex' })
     }
   })
 
   it('ignores an admitted Codex thread for Claude', () => {
     const dir = common()
     record(dir, 'claude-thread', 'claude', 1, [parent])
-    expect(boundSession({ commonDir: dir, host: 'claude', parent, codexThreadId: 'admitted-thread', env: {} })).toEqual({ id: 'claude-thread', host: 'claude' })
+    expect(boundSession({ commonDir: dir, host: 'claude', parent, toolSessionId: 'admitted-thread', env: {} })).toEqual({ id: 'claude-thread', host: 'claude' })
   })
 
   it('ignores another worker, host, or checkout when discovering a worker thread', () => {
