@@ -58179,11 +58179,132 @@ function createWorkerRestartNotices(ledger2, log2) {
 // packages/room-mcp/src/prompt.ts
 init_config();
 
-// packages/room-mcp/src/wake-path.ts
-import net from "node:net";
-import { execFile as execFile14, execFileSync as execFileSync10 } from "node:child_process";
+// packages/room-mcp/src/hosts/wake-mode.ts
+function mode(env) {
+  const value5 = env.ROOM_WAKE;
+  return value5 === "socket" || value5 === "channels" || value5 === "off" ? value5 : "auto";
+}
 
-// packages/room-mcp/src/codex-app-server.ts
+// packages/room-mcp/src/hosts/claude-wake.ts
+init_config();
+import net from "node:net";
+import { execFileSync as execFileSync10 } from "node:child_process";
+
+// packages/room-mcp/src/hosts/wake-types.ts
+var wakeTarget = (t) => ({ id: t.id, host: t.host });
+
+// packages/room-mcp/src/hosts/wake-result.ts
+function sendResult(via) {
+  if (via === "uncertain-turn") return { kind: "uncertain", via: "turn" };
+  if (via === "idle") return { kind: "idle" };
+  return via ? { kind: "submitted", via } : { kind: "unavailable" };
+}
+
+// packages/room-mcp/src/hosts/claude-channel.ts
+async function sendChannelNotification(content, notify) {
+  await notify({ method: "notifications/claude/channel", params: { content, meta: { type: "room_wake" } } });
+}
+
+// packages/room-mcp/src/hosts/claude-wake.ts
+var SOCKET_POST_TIMEOUT_MS = 1500;
+var parentArgsCache;
+function claudeParentArgs() {
+  if (parentArgsCache !== void 0) return parentArgsCache;
+  try {
+    parentArgsCache = execFileSync10("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
+  } catch {
+    parentArgsCache = "";
+  }
+  return parentArgsCache;
+}
+function channelAdmitted(env, parentArgs, channel) {
+  const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL;
+  if (!entry) return false;
+  const admitted2 = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
+  return admitted2.some((m) => m[1].split(",").includes(entry));
+}
+function claudeWakeAvailable(o) {
+  if (o.host !== "claude") return false;
+  const env = o.env ?? process.env;
+  const selected = mode(env);
+  if (selected === "off") return false;
+  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (selected === "socket") return socket;
+  if (selected === "auto" && socket) return true;
+  const channel = channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
+  return selected === "channels" ? channel : socket || channel;
+}
+function wakePathStatus(o) {
+  const env = o.env ?? process.env, selected = mode(env);
+  if (selected === "off") return { mode: selected, transport: "none", availability: "off" };
+  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (selected !== "channels" && socket) return { mode: selected, transport: "socket", availability: "configured" };
+  if (selected === "channels" && o.channel !== "") return { mode: selected, transport: "channel", availability: "configured" };
+  if (selected === "auto" && channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)) return { mode: selected, transport: "channel", availability: "configured" };
+  return { mode: selected, transport: "none", availability: "unavailable" };
+}
+function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIMEOUT_MS) {
+  return new Promise((resolve6, reject) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let flushed = false;
+    const finish = (error2) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error2) reject(error2);
+      else resolve6();
+    };
+    socket.setTimeout(timeoutMs2, () => finish(new Error("Claude inbox socket timed out")));
+    socket.once("error", finish);
+    socket.once("close", () => {
+      if (!settled) finish(flushed ? void 0 : new Error("Claude inbox socket closed before write"));
+    });
+    socket.once("connect", () => {
+      const lines2 = token ? [{ type: "auth", token }, { type: "user", message: { role: "user", content } }] : [{ type: "user", message: { role: "user", content } }];
+      socket.end(lines2.map((line) => JSON.stringify(line)).join("\n") + "\n", () => {
+        flushed = true;
+      });
+    });
+  });
+}
+function createClaudeWakeFacet(o) {
+  return {
+    reportsState: false,
+    describe: (target) => {
+      const path74 = o.send.describe?.(wakeTarget(target));
+      return path74 && { ...path74, limitation: "A write is not a receipt." };
+    },
+    state: async () => ({ kind: "unneeded" }),
+    send: async (target, pointer, phase) => phase === "active" ? { kind: "unavailable" } : sendResult(await o.send(wakeTarget(target), pointer))
+  };
+}
+async function sendClaudeWake(o, text2, attempt, fallback2) {
+  const env = o.env ?? process.env;
+  const selected = mode(env);
+  const admitted2 = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
+  const channel = () => attempt("channel", () => sendChannelNotification(text2, o.notify));
+  if (selected === "channels") return o.channel === "" ? void 0 : channel();
+  const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (!socket) return selected === "auto" && admitted2() ? channel() : void 0;
+  try {
+    return await attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text2));
+  } catch (error2) {
+    if (selected === "auto" && admitted2()) {
+      try {
+        return await channel();
+      } finally {
+        fallback2();
+      }
+    }
+    throw error2;
+  }
+}
+
+// packages/room-mcp/src/hosts/codex-wake.ts
+import { execFile as execFile14 } from "node:child_process";
+
+// packages/room-mcp/src/hosts/codex-app-server.ts
 init_wrapper();
 import fs57 from "node:fs";
 import os14 from "node:os";
@@ -58288,131 +58409,185 @@ function exchange(o, post) {
   });
 }
 
-// packages/room-mcp/src/wake-path.ts
-init_config();
+// packages/room-mcp/src/hosts/codex-wake.ts
 init_binding();
 
-// packages/room-mcp/src/channel.ts
-async function sendChannelNotification(content, notify) {
-  await notify({ method: "notifications/claude/channel", params: { content, meta: { type: "room_wake" } } });
-}
-
-// packages/room-mcp/src/wake-path.ts
-var SOCKET_POST_TIMEOUT_MS = 1500;
-var parentArgsCache;
-function claudeParentArgs() {
-  if (parentArgsCache !== void 0) return parentArgsCache;
-  try {
-    parentArgsCache = execFileSync10("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
-  } catch {
-    parentArgsCache = "";
+// packages/room-mcp/src/hosts/codex-turn.ts
+import { promises as fs58 } from "node:fs";
+import os15 from "node:os";
+import path57 from "node:path";
+var TAIL_BYTES = 64 * 1024;
+var MAX_READ_BYTES = 1024 * 1024;
+var MAX_SCAN_BYTES = 8 * 1024 * 1024;
+var CONTACT_MS = 1e4;
+var TURN_EVENTS = /* @__PURE__ */ new Set(["task_started", "task_complete", "turn_aborted"]);
+var CodexTurnProbe = class {
+  constructor(options = {}) {
+    this.options = options;
   }
-  return parentArgsCache;
-}
-function mode(env) {
-  const value5 = env.ROOM_WAKE;
-  return value5 === "socket" || value5 === "channels" || value5 === "off" ? value5 : "auto";
-}
-function channelAdmitted(env, parentArgs, channel) {
-  const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL;
-  if (!entry) return false;
-  const admitted2 = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
-  return admitted2.some((m) => m[1].split(",").includes(entry));
-}
-function claudeWakeAvailable(o) {
-  if (o.host !== "claude") return false;
-  const env = o.env ?? process.env;
-  const selected = mode(env);
-  if (selected === "off") return false;
-  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
-  if (selected === "socket") return socket;
-  if (selected === "auto" && socket) return true;
-  const channel = channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
-  return selected === "channels" ? channel : socket || channel;
-}
-function wakePathStatus(o) {
-  const env = o.env ?? process.env, selected = mode(env);
-  if (selected === "off") return { mode: selected, transport: "none", availability: "off" };
-  if (o.host === "codex") return { mode: selected, transport: codexControlSocket(env) ? "turn/queue" : "legacy/queue", availability: "unknown" };
-  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
-  if (selected !== "channels" && socket) return { mode: selected, transport: "socket", availability: "configured" };
-  if (selected === "channels" && o.channel !== "") return { mode: selected, transport: "channel", availability: "configured" };
-  if (selected === "auto" && channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)) return { mode: selected, transport: "channel", availability: "configured" };
-  return { mode: selected, transport: "none", availability: "unavailable" };
-}
-function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIMEOUT_MS) {
-  return new Promise((resolve6, reject) => {
-    const socket = net.createConnection(socketPath);
-    let settled = false;
-    let flushed = false;
-    const finish = (error2) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (error2) reject(error2);
-      else resolve6();
+  options;
+  cursors = /* @__PURE__ */ new Map();
+  async busy(threadId) {
+    return (await this.state(threadId)).kind !== "idle";
+  }
+  async state(threadId) {
+    let status;
+    try {
+      status = await (this.options.status ?? ((id3) => readCodexThreadStatus({
+        socketPath: codexControlSocket({ ...process.env, CODEX_HOME: this.options.home?.() ?? process.env.CODEX_HOME }),
+        threadId: id3,
+        clientVersion: this.options.clientVersion
+      })))(threadId);
+    } catch {
+      return { kind: "unknown", source: "host", reason: "status-unavailable" };
+    }
+    if (status.kind === "active" || status.kind === "idle") return { kind: status.kind, source: "host" };
+    if (!(status.kind === "unknown" && status.reason === "notLoaded") && !(status.kind === "unavailable" && status.legacy)) return {
+      kind: "unknown",
+      source: "host",
+      reason: status.kind === "unknown" ? status.reason : "status-unavailable"
     };
-    socket.setTimeout(timeoutMs2, () => finish(new Error("Claude inbox socket timed out")));
-    socket.once("error", finish);
-    socket.once("close", () => {
-      if (!settled) finish(flushed ? void 0 : new Error("Claude inbox socket closed before write"));
-    });
-    socket.once("connect", () => {
-      const lines2 = token ? [{ type: "auth", token }, { type: "user", message: { role: "user", content } }] : [{ type: "user", message: { role: "user", content } }];
-      socket.end(lines2.map((line) => JSON.stringify(line)).join("\n") + "\n", () => {
-        flushed = true;
-      });
-    });
-  });
-}
+    const file = await this.find(threadId);
+    if (file) {
+      try {
+        const event = await this.lastTurnEvent(threadId, file);
+        if (event === null) return { kind: "unknown", source: "legacy", reason: "scan-budget" };
+        if (event) return { kind: event === "task_started" ? "active" : "idle", source: "legacy" };
+      } catch {
+        this.cursors.delete(threadId);
+        return { kind: "unknown", source: "legacy", reason: "rollout-unavailable" };
+      }
+    }
+    const age = this.options.contactAgeMs?.();
+    return age !== void 0 && age >= 0 && age < CONTACT_MS ? { kind: "active", source: "contact" } : { kind: "unknown", source: "legacy", reason: "no-turn-evidence" };
+  }
+  async find(threadId) {
+    const cached3 = this.cursors.get(threadId);
+    if (cached3) return cached3.file;
+    if (!/^[a-zA-Z0-9-]{1,128}$/.test(threadId)) return void 0;
+    const root = path57.join(this.options.home?.() ?? process.env.CODEX_HOME ?? path57.join(os15.homedir(), ".codex"), "sessions");
+    try {
+      const years = (await fs58.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
+      for (const year of years) {
+        if (!/^\d{4}$/.test(year)) continue;
+        const yearDir = path57.join(root, year);
+        const months = (await fs58.readdir(yearDir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
+        for (const month of months) {
+          if (!/^\d{2}$/.test(month)) continue;
+          const monthDir = path57.join(yearDir, month);
+          const days = (await fs58.readdir(monthDir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
+          for (const day of days) {
+            if (!/^\d{2}$/.test(day)) continue;
+            const dayDir = path57.join(monthDir, day);
+            const name = (await fs58.readdir(dayDir)).find((n) => n.startsWith("rollout-") && n.endsWith(`-${threadId}.jsonl`));
+            if (name) {
+              const file = path57.join(dayDir, name);
+              this.cursors.set(threadId, { file, offset: 0 });
+              return file;
+            }
+          }
+        }
+      }
+    } catch {
+    }
+    return void 0;
+  }
+  async lastTurnEvent(threadId, file) {
+    const handle = await fs58.open(file, "r");
+    try {
+      const { size: size2, dev, ino } = await handle.stat();
+      let cursor = this.cursors.get(threadId);
+      if (size2 < cursor.offset || cursor.device !== void 0 && (cursor.device !== dev || cursor.inode !== ino)) {
+        cursor = { file, offset: 0 };
+        this.cursors.set(threadId, cursor);
+      }
+      cursor.device = dev;
+      cursor.inode = ino;
+      if (cursor.scan && cursor.scan.size !== size2) cursor.scan = void 0;
+      if (cursor.scan || size2 - cursor.offset > MAX_READ_BYTES) {
+        const scan = cursor.scan ?? { size: size2, position: size2, carry: Buffer.alloc(0), skipPartial: true };
+        cursor.scan = scan;
+        cursor.lastEvent = void 0;
+        let scanned = 0;
+        while (scan.position > 0 && scanned < MAX_SCAN_BYTES) {
+          const length2 = Math.min(TAIL_BYTES, scan.position, MAX_SCAN_BYTES - scanned);
+          const start = scan.position - length2;
+          const chunk = Buffer.alloc(length2);
+          const { bytesRead: bytesRead2 } = await handle.read(chunk, 0, length2, start);
+          if (bytesRead2 !== length2) {
+            cursor.scan = void 0;
+            return null;
+          }
+          scan.position = start;
+          scanned += length2;
+          let data = Buffer.concat([chunk, scan.carry]);
+          if (scan.skipPartial) {
+            const lastNewline2 = data.lastIndexOf(10);
+            if (lastNewline2 < 0) {
+              await new Promise((resolve6) => setImmediate(resolve6));
+              continue;
+            }
+            scan.completeEnd = start + lastNewline2 + 1;
+            data = data.subarray(0, lastNewline2 + 1);
+            scan.skipPartial = false;
+          }
+          let end = data.length;
+          while (end > 0) {
+            const previousNewline = end > 1 ? data.lastIndexOf(10, end - 2) : -1;
+            if (previousNewline < 0) break;
+            const event2 = this.parseEvent(data.subarray(previousNewline + 1, end - 1));
+            if (event2) {
+              cursor.offset = scan.completeEnd;
+              cursor.lastEvent = event2;
+              cursor.scan = void 0;
+              return event2;
+            }
+            end = previousNewline + 1;
+          }
+          scan.carry = Buffer.from(data.subarray(0, end));
+          await new Promise((resolve6) => setImmediate(resolve6));
+        }
+        if (scan.position > 0) return null;
+        const event = this.parseEvent(scan.carry.subarray(0, Math.max(0, scan.carry.length - 1)));
+        cursor.offset = scan.completeEnd ?? 0;
+        cursor.lastEvent = event;
+        cursor.scan = void 0;
+        return event;
+      }
+      if (cursor.offset === size2) return cursor.lastEvent;
+      const buffer = Buffer.alloc(size2 - cursor.offset);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, cursor.offset);
+      if (bytesRead !== buffer.length) return null;
+      const lastNewline = buffer.lastIndexOf(10);
+      if (lastNewline < 0) return cursor.lastEvent;
+      const body = buffer.toString("utf8", 0, lastNewline + 1);
+      for (const line of body.split("\n")) {
+        const event = this.parseEvent(line);
+        if (event) cursor.lastEvent = event;
+      }
+      cursor.offset += lastNewline + 1;
+      return cursor.lastEvent;
+    } finally {
+      await handle.close();
+    }
+  }
+  parseEvent(line) {
+    const text2 = typeof line === "string" ? line : line.toString("utf8");
+    if (!text2.includes("task_started") && !text2.includes("task_complete") && !text2.includes("turn_aborted")) return void 0;
+    try {
+      const record2 = JSON.parse(text2);
+      if (record2.type === "event_msg" && typeof record2.payload?.type === "string" && TURN_EVENTS.has(record2.payload.type)) return record2.payload.type;
+    } catch {
+    }
+    return void 0;
+  }
+};
+
+// packages/room-mcp/src/hosts/codex-wake.ts
 function codexQueue(threadId, text2) {
   return new Promise((resolve6, reject) => {
     execFile14("codex", ["queue", "--thread", threadId, "--message", text2], { timeout: 1e4 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve6());
   });
-}
-function createWakeSender(o) {
-  let last2;
-  let lastTarget;
-  const attempt = async (via, run2) => {
-    last2 = { via, at: Date.now(), outcome: "attempting" };
-    try {
-      await run2();
-      last2 = { ...last2, outcome: via === "queue" ? "queued" : "written" };
-      return via;
-    } catch (e) {
-      last2 = { ...last2, outcome: "failed" };
-      throw e;
-    }
-  };
-  const send = async (target, text2) => {
-    const key2 = `${target.host}\0${target.id}`;
-    if (lastTarget !== key2) last2 = void 0;
-    lastTarget = key2;
-    const env = o.env ?? process.env;
-    const selected = mode(env);
-    if (selected === "off") return void 0;
-    if (target.host === "codex") return attempt("queue", () => (o.queue ?? codexQueue)(target.id, text2));
-    const admitted2 = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
-    const channel = () => attempt("channel", () => sendChannelNotification(text2, o.notify));
-    if (selected === "channels") return o.channel === "" ? void 0 : channel();
-    const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
-    if (!socket) return selected === "auto" && admitted2() ? channel() : void 0;
-    try {
-      return await attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text2));
-    } catch (error2) {
-      if (selected === "auto" && admitted2()) {
-        try {
-          return await channel();
-        } finally {
-          if (last2) last2 = { ...last2, fallback: "socket-failed" };
-        }
-      }
-      throw error2;
-    }
-  };
-  send.describe = (target) => wakePathStatus({ ...o, host: target.host });
-  send.lastAttempt = (target) => (!target || `${target.host}\0${target.id}` === lastTarget) && last2 ? { ...last2 } : void 0;
-  return send;
 }
 function createMidTurnSender(o = {}) {
   let last2;
@@ -58449,6 +58624,72 @@ function createMidTurnSender(o = {}) {
   };
   send.lastAttempt = (target) => (!target || `${target.host}\0${target.id}` === lastTarget) && last2 ? { ...last2 } : void 0;
   return send;
+}
+function createCodexWakeFacet(o) {
+  const probe = o.probe ?? new CodexTurnProbe();
+  return {
+    reportsState: !!probe.state,
+    describe: (target) => {
+      const path74 = o.send.describe?.(wakeTarget(target));
+      return path74 && { ...path74, limitation: "Submission is not a receipt." };
+    },
+    state: async (target) => {
+      if (!probe.state) return { kind: await probe.busy(target.id) ? "active" : "idle", source: "host" };
+      const state = await probe.state(target.id);
+      return state.kind === "unknown" ? { ...state, kind: "unknown", reason: state.reason ?? "status-unavailable" } : { ...state, kind: state.kind };
+    },
+    send: async (target, pointer, phase) => sendResult(await (phase === "active" ? o.midTurn?.(wakeTarget(target), pointer) : o.send(wakeTarget(target), pointer)))
+  };
+}
+function sendCodexWake(o, id3, text2, attempt) {
+  return attempt("queue", () => (o.queue ?? codexQueue)(id3, text2));
+}
+function codexWakeStatus(o) {
+  return { mode: mode(o.env ?? process.env), transport: codexControlSocket(o.env) ? "turn/queue" : "legacy/queue", availability: "unknown" };
+}
+
+// packages/room-mcp/src/hosts/wake.ts
+function wakePathStatus2(o) {
+  const selected = mode(o.env ?? process.env);
+  if (selected !== "off" && o.host === "codex") return codexWakeStatus(o);
+  return wakePathStatus(o);
+}
+function createWakeSender(o) {
+  let last2;
+  let lastTarget;
+  const attempt = async (via, run2) => {
+    last2 = { via, at: Date.now(), outcome: "attempting" };
+    try {
+      await run2();
+      last2 = { ...last2, outcome: via === "queue" ? "queued" : "written" };
+      return via;
+    } catch (e) {
+      last2 = { ...last2, outcome: "failed" };
+      throw e;
+    }
+  };
+  const send = async (target, text2) => {
+    const key2 = `${target.host}\0${target.id}`;
+    if (lastTarget !== key2) last2 = void 0;
+    lastTarget = key2;
+    const env = o.env ?? process.env;
+    const selected = mode(env);
+    if (selected === "off") return void 0;
+    if (target.host === "codex") return sendCodexWake(o, target.id, text2, attempt);
+    return sendClaudeWake(o, text2, attempt, () => {
+      if (last2) last2 = { ...last2, fallback: "socket-failed" };
+    });
+  };
+  send.describe = (target) => wakePathStatus2({ ...o, host: target.host });
+  send.lastAttempt = (target) => (!target || `${target.host}\0${target.id}` === lastTarget) && last2 ? { ...last2 } : void 0;
+  return send;
+}
+function createWakeProbe(options = {}) {
+  return new CodexTurnProbe(options);
+}
+function createWakeFacets(options) {
+  const facets = { claude: createClaudeWakeFacet(options), codex: createCodexWakeFacet(options) };
+  return (host2) => facets[host2];
 }
 
 // packages/room-mcp/src/prompt.ts
@@ -58514,7 +58755,7 @@ init_graph_index();
 init_context();
 init_disk_text();
 init_worker_registry();
-import fs58 from "node:fs";
+import fs59 from "node:fs";
 import { createHash as createHash21, randomUUID as randomUUID7 } from "node:crypto";
 var hash = (value5) => createHash21("sha256").update(value5).digest("hex");
 var slotKey = (owner, kind, other, path74, subject = "") => [owner, kind, other, path74, subject].join("\0");
@@ -58536,7 +58777,7 @@ var StaleConflictInputs = class extends Error {
 };
 var samePath = (a, b) => {
   try {
-    return fs58.realpathSync(a) === fs58.realpathSync(b);
+    return fs59.realpathSync(a) === fs59.realpathSync(b);
   } catch {
     return false;
   }
@@ -58847,7 +59088,7 @@ var ConflictSet = class _ConflictSet {
     return {
       id: trusted.record.id,
       status: trusted.status.status,
-      dir: fs58.realpathSync(trusted.record.dir),
+      dir: fs59.realpathSync(trusted.record.dir),
       run: run2 ? `${run2.n}:${run2.nonce}` : "",
       seq: trusted.record.seq
     };
@@ -60101,10 +60342,10 @@ init_share();
 init_hosts();
 init_selection();
 init_src();
-import fs60 from "node:fs";
+import fs61 from "node:fs";
 import { randomUUID as randomUUID8 } from "node:crypto";
-import os15 from "node:os";
-import path58 from "node:path";
+import os16 from "node:os";
+import path59 from "node:path";
 init_src4();
 init_git();
 init_registry();
@@ -60121,15 +60362,15 @@ init_worker_status();
 init_post();
 
 // packages/room-mcp/src/watcher-exclusions.ts
-import fs59 from "node:fs";
-import path57 from "node:path";
+import fs60 from "node:fs";
+import path58 from "node:path";
 var MAX_CONFIG_BYTES = 64 * 1024;
 var ROOM_TOKEN = /(?:^|[\\/'"`])\.room(?=$|[\\/'"`])/;
 function readSmallFile(root, name) {
   try {
-    const file = path57.join(root, name);
-    const stat4 = fs59.statSync(file);
-    return stat4.isFile() && stat4.size <= MAX_CONFIG_BYTES ? fs59.readFileSync(file, "utf8") : void 0;
+    const file = path58.join(root, name);
+    const stat4 = fs60.statSync(file);
+    return stat4.isFile() && stat4.size <= MAX_CONFIG_BYTES ? fs60.readFileSync(file, "utf8") : void 0;
   } catch {
     return void 0;
   }
@@ -60251,7 +60492,7 @@ function excludesRoom(name, source) {
 function watcherExclusionWarning(repoRoot) {
   let entries;
   try {
-    entries = new Set(fs59.readdirSync(repoRoot));
+    entries = new Set(fs60.readdirSync(repoRoot));
   } catch {
     return void 0;
   }
@@ -60313,8 +60554,8 @@ function missingBriefPaths(task, leadDir, workerDir) {
     const rel = match[0].replace(/^\.\//, "").replace(/\.+$/, "");
     if (rel.split("/").some((part) => part === ".." || part === ".")) continue;
     if (/^\.(?:room|git)(?:\/|$)/.test(rel)) continue;
-    const source = path58.join(leadDir, rel), target = path58.join(workerDir, rel);
-    if (fs60.existsSync(source) && !fs60.existsSync(target)) paths.add(rel);
+    const source = path59.join(leadDir, rel), target = path59.join(workerDir, rel);
+    if (fs61.existsSync(source) && !fs61.existsSync(target)) paths.add(rel);
   }
   return [...paths].sort();
 }
@@ -60469,8 +60710,8 @@ function handlers4(state) {
       const owner = s.me.owner ?? s.me.name, name = `${owner}+${tag}`;
       const { server, isWorker } = workerOrigin(s);
       const count = await registry2.occupancy();
-      const cores = Math.max(1, os15.availableParallelism?.() ?? os15.cpus().length);
-      const budget = workerBudget({ cores, memBytes: os15.totalmem(), maxWorkers: max2, running: count });
+      const cores = Math.max(1, os16.availableParallelism?.() ?? os16.cpus().length);
+      const budget = workerBudget({ cores, memBytes: os16.totalmem(), maxWorkers: max2, running: count });
       const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS), inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB);
       const divisor = isWorker ? Math.max(2, max2) : 1;
       const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads;
@@ -60483,11 +60724,11 @@ function handlers4(state) {
       } catch (e) {
         return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`;
       }
-      const suppliedDir = typeof a.dir === "string" && a.dir ? path58.resolve(a.dir) : void 0;
-      const dir = suppliedDir ?? path58.join(s.dir, ".room", "workers", tag);
-      if (suppliedDir && !fs60.existsSync(dir)) return `error: ${dir} does not exist`;
-      const relative3 = path58.relative(s.dir, dir);
-      const outside = relative3 === ".." || relative3.startsWith(`..${path58.sep}`) || path58.isAbsolute(relative3);
+      const suppliedDir = typeof a.dir === "string" && a.dir ? path59.resolve(a.dir) : void 0;
+      const dir = suppliedDir ?? path59.join(s.dir, ".room", "workers", tag);
+      if (suppliedDir && !fs61.existsSync(dir)) return `error: ${dir} does not exist`;
+      const relative3 = path59.relative(s.dir, dir);
+      const outside = relative3 === ".." || relative3.startsWith(`..${path59.sep}`) || path59.isAbsolute(relative3);
       if (suppliedDir && s.local) {
         let sameClone = false;
         try {
@@ -60498,13 +60739,13 @@ function handlers4(state) {
       }
       if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
       if (suppliedDir) {
-        const canonical = path58.relative(fs60.realpathSync(s.dir), fs60.realpathSync(dir));
-        if ((canonical === ".." || canonical.startsWith(`..${path58.sep}`) || path58.isAbsolute(canonical)) && a.allowOutside !== true) {
+        const canonical = path59.relative(fs61.realpathSync(s.dir), fs61.realpathSync(dir));
+        if ((canonical === ".." || canonical.startsWith(`..${path59.sep}`) || path59.isAbsolute(canonical)) && a.allowOutside !== true) {
           return `error: ${dir} resolves outside this repo; a worker's directory must be in this repo`;
         }
       }
       const branch = suppliedDir ? (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "?")).trim() : `room/${tag}`;
-      const sharedOwner = suppliedDir && !outside ? requireWorkerInventory(await registry2.list()).find((record3) => !record3.sharedWith && !["retiring", "retired", "abandoned"].includes(record3.phase) && record3.lead.participant === s.me.name && path58.resolve(record3.dir) === path58.resolve(dir)) : void 0;
+      const sharedOwner = suppliedDir && !outside ? requireWorkerInventory(await registry2.list()).find((record3) => !record3.sharedWith && !["retiring", "retired", "abandoned"].includes(record3.phase) && record3.lead.participant === s.me.name && path59.resolve(record3.dir) === path59.resolve(dir)) : void 0;
       if (suppliedDir && !outside && !await isOwnedWorkerWorktree(
         s.dir,
         sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch } : { name, tag, lead: s.me.name, dir, branch },
@@ -60514,7 +60755,7 @@ function handlers4(state) {
       }
       const hostSessionId = workerAdapter(host2).freshSessionId();
       const usedPorts = workerPortsInUse(requireWorkerInventory(await registry2.list()));
-      const prep = { step: "plan", worktreeExisted: fs60.existsSync(dir), created: !suppliedDir && !fs60.existsSync(dir) };
+      const prep = { step: "plan", worktreeExisted: fs61.existsSync(dir), created: !suppliedDir && !fs61.existsSync(dir) };
       const record2 = {
         v: 1,
         id: id3,
@@ -60535,7 +60776,7 @@ function handlers4(state) {
         branch,
         prep,
         hostSessionId,
-        logFile: path58.join(s.dir, ".room", "workers", `${tag}.log`),
+        logFile: path59.join(s.dir, ".room", "workers", `${tag}.log`),
         ...sharedOwner ? { sharedWith: sharedOwner.id } : {},
         capabilities: { resume: true, signal: true, collect: outside ? "none" : "delta" },
         phase: "intent",
@@ -60863,14 +61104,14 @@ import { dirname as dirname5 } from "node:path";
 init_daemon_cutover();
 init_binding();
 init_src4();
-import path63 from "node:path";
+import path64 from "node:path";
 
 // packages/room-mcp/src/browser-open.ts
 init_src3();
 import { spawn as spawn6 } from "node:child_process";
 import { createHash as createHash22, randomUUID as randomUUID9 } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
-import path59 from "node:path";
+import path60 from "node:path";
 function launchBrowserHandler(command3, args2) {
   return new Promise((resolve6, reject) => {
     const child = spawn6(command3, args2, { detached: true, stdio: "ignore", windowsHide: true });
@@ -60902,7 +61143,7 @@ async function openRoomBrowser(url, directory, options = {}) {
   privateStateDirectory(directory);
   const destination = new URLSearchParams(parsed.hash.slice(1)).get("room") ?? parsed.href.split("#")[0];
   const name = createHash22("sha256").update(destination).digest("hex").slice(0, 24);
-  const entry = path59.join(directory, `${name}.html`), temporary = path59.join(directory, `${randomUUID9()}.tmp`);
+  const entry = path60.join(directory, `${name}.html`), temporary = path60.join(directory, `${randomUUID9()}.tmp`);
   try {
     await writeFile(temporary, html, { mode: 384, flag: "wx" });
     await rename(temporary, entry);
@@ -60929,8 +61170,8 @@ init_codex_install();
 init_install_io();
 init_config();
 init_credentials();
-import fs61 from "node:fs";
-import path60 from "node:path";
+import fs62 from "node:fs";
+import path61 from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 
 // packages/room-mcp/src/stale-version.ts
@@ -61147,9 +61388,9 @@ function hookCompatibilityWarning(dir) {
   if (!dir) return void 0;
   try {
     const parse3 = (name) => {
-      const file = path60.join(dir, name);
-      if (fs61.statSync(file).size > 4096) throw new Error("oversize hook endpoint diagnostic");
-      return JSON.parse(fs61.readFileSync(file, "utf8"));
+      const file = path61.join(dir, name);
+      if (fs62.statSync(file).size > 4096) throw new Error("oversize hook endpoint diagnostic");
+      return JSON.parse(fs62.readFileSync(file, "utf8"));
     };
     const endpoint = parse3("mcp.json"), status = parse3("hook-compat.json");
     if (status.degraded && typeof endpoint.incarnation === "string" && status.incarnation === endpoint.incarnation && status.pid === endpoint.pid)
@@ -61181,7 +61422,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
     wakeBound: claudeWakeAvailable({ host: "claude" }),
     ...inSession && (process.env.ROOM_HOST === "codex" || process.env.ROOM_HOST === "claude") ? {
       sessionHost: process.env.ROOM_HOST,
-      deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }),
+      deliveryPath: wakePathStatus2({ host: process.env.ROOM_HOST }),
       deliveryHost: process.env.ROOM_HOST === "claude" ? "Claude" : "Codex"
     } : {},
     claudeHooks: claudeInstall.hooks,
@@ -61253,8 +61494,8 @@ FAIL  local daemon cutover: ${error2 instanceof Error ? error2.message : String(
 
 // packages/room-mcp/src/cpu-watchdog.ts
 init_src3();
-import fs62 from "node:fs";
-import path61 from "node:path";
+import fs63 from "node:fs";
+import path62 from "node:path";
 var CPU_HIGH_SHARE = 0.5;
 var CPU_WINDOW_MS = 6e4;
 var CPU_PROFILE_MS = 1e4;
@@ -61293,7 +61534,7 @@ function topSelfFrames(profile, n = 5) {
   for (const [id3, micros] of selfMicros) {
     const frame = byId.get(id3)?.callFrame;
     if (!frame || frame.functionName === "(idle)") continue;
-    const where = frame.url ? ` ${path61.basename(frame.url)}:${frame.lineNumber + 1}` : "";
+    const where = frame.url ? ` ${path62.basename(frame.url)}:${frame.lineNumber + 1}` : "";
     const key2 = `${frame.functionName || "(anonymous)"}${where}`;
     byFrame.set(key2, (byFrame.get(key2) ?? 0) + micros);
   }
@@ -61301,10 +61542,10 @@ function topSelfFrames(profile, n = 5) {
 }
 async function writeCpuProfile(dir, profile, at, keep = CPU_PROFILE_KEEP) {
   privateStateDirectory(dir);
-  const file = path61.join(dir, `${at.toISOString().replace(/[:.]/g, "-")}.cpuprofile`);
-  await fs62.promises.writeFile(file, JSON.stringify(profile), { mode: 384, flag: "wx" });
-  const names = (await fs62.promises.readdir(dir)).filter((name) => name.endsWith(".cpuprofile")).sort();
-  for (const old of names.slice(0, Math.max(0, names.length - keep))) await fs62.promises.rm(path61.join(dir, old), { force: true });
+  const file = path62.join(dir, `${at.toISOString().replace(/[:.]/g, "-")}.cpuprofile`);
+  await fs63.promises.writeFile(file, JSON.stringify(profile), { mode: 384, flag: "wx" });
+  const names = (await fs63.promises.readdir(dir)).filter((name) => name.endsWith(".cpuprofile")).sort();
+  for (const old of names.slice(0, Math.max(0, names.length - keep))) await fs63.promises.rm(path62.join(dir, old), { force: true });
   return file;
 }
 var CpuWatchdog = class {
@@ -61392,8 +61633,8 @@ init_worker_projector();
 // packages/room-mcp/src/worker-activity.ts
 init_hosts();
 init_run_log_facts();
-import fs63 from "node:fs";
-import path62 from "node:path";
+import fs64 from "node:fs";
+import path63 from "node:path";
 import { StringDecoder as StringDecoder2 } from "node:string_decoder";
 function eventActivity(line, decoder) {
   const activity = decodeLogLine(decoder, line).find((fact) => fact.kind === "activity");
@@ -61418,8 +61659,8 @@ var WorkerActivityTracker = class {
     const key2 = JSON.stringify([logFile, since, logDecoderKey(host2, context2)]);
     let entry = this.entries.get(key2);
     try {
-      fd = fs63.openSync(logFile, "r");
-      const stat4 = fs63.fstatSync(fd);
+      fd = fs64.openSync(logFile, "r");
+      const stat4 = fs64.fstatSync(fd);
       if (!entry || stat4.size < entry.offset) {
         entry = { hostDecoder: createLogDecoder(host2, context2), offset: 0, pending: "", decoder: new StringDecoder2("utf8"), skipPartial: false, polledAt: entry?.polledAt };
         this.remember(key2, entry);
@@ -61435,7 +61676,7 @@ var WorkerActivityTracker = class {
       let found;
       let foundLast = false;
       while (entry.offset < stat4.size) {
-        const count = fs63.readSync(fd, chunk, 0, Math.min(chunk.length, stat4.size - entry.offset), entry.offset);
+        const count = fs64.readSync(fd, chunk, 0, Math.min(chunk.length, stat4.size - entry.offset), entry.offset);
         if (!count) break;
         entry.offset += count;
         entry.pending += entry.decoder.write(chunk.subarray(0, count));
@@ -61468,7 +61709,7 @@ var WorkerActivityTracker = class {
     } catch {
       return entry?.latest;
     } finally {
-      if (fd !== void 0) fs63.closeSync(fd);
+      if (fd !== void 0) fs64.closeSync(fd);
     }
   }
   remember(logFile, entry) {
@@ -61480,7 +61721,7 @@ var WorkerActivityTracker = class {
 var workerActivity = new WorkerActivityTracker();
 function liveWorkerActivity(sessionDir, worker, processGone, now = Date.now()) {
   if (worker.status !== "running" || processGone) return void 0;
-  return workerActivity.poll(path62.join(sessionDir, ".room", "workers", `${worker.tag}.log`), worker.host, worker.dir, now, worker.startedAt, { workerId: worker.id ?? worker.tag, run: worker.run ?? 0 });
+  return workerActivity.poll(path63.join(sessionDir, ".room", "workers", `${worker.tag}.log`), worker.host, worker.dir, now, worker.startedAt, { workerId: worker.id ?? worker.tag, run: worker.run ?? 0 });
 }
 
 // packages/room-mcp/src/tools/scope.ts
@@ -61566,7 +61807,7 @@ ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else 
       const s = S(), url = await refreshBrowserUrl(s);
       if (!URL.canParse(url)) return "Browser viewer unavailable; build or reinstall the Room plugin.";
       try {
-        const directory = path63.join(await gitCommonDir(s.dir), "room", "browser");
+        const directory = path64.join(await gitCommonDir(s.dir), "room", "browser");
         await (state.ctx.openBrowser ?? openRoomBrowser)(url, directory);
         return `Requested the default browser to open ${s.roomName}. If it did not appear, paste this complete URL into its address bar:
 ${url}`;
@@ -62616,7 +62857,7 @@ function createPrs(deps) {
 // packages/room-mcp/src/tools/messaging.ts
 init_worker_store();
 init_src();
-import fs65 from "node:fs";
+import fs66 from "node:fs";
 init_prs();
 init_names2();
 init_context();
@@ -62627,9 +62868,9 @@ init_git();
 init_worker_git();
 init_baseline();
 init_worker_state();
-import fs64 from "node:fs";
-import path64 from "node:path";
-import os16 from "node:os";
+import fs65 from "node:fs";
+import path65 from "node:path";
+import os17 from "node:os";
 import { randomUUID as randomUUID10 } from "node:crypto";
 import { execFile as execFile15 } from "node:child_process";
 var MAX_LISTED = 10;
@@ -62676,8 +62917,8 @@ async function containmentDetails(dir, deltaBase, target, delivered) {
   }
 }
 async function keptHistory(w, base, parent, from2, workingTree, marker) {
-  const temp = fs64.mkdtempSync(path64.join(os16.tmpdir(), "room-refresh-index-"));
-  const env = { ...process.env, GIT_INDEX_FILE: path64.join(temp, "index") };
+  const temp = fs65.mkdtempSync(path65.join(os17.tmpdir(), "room-refresh-index-"));
+  const env = { ...process.env, GIT_INDEX_FILE: path65.join(temp, "index") };
   const run2 = async (args2, override = env) => (await boundedGit(w.dir, ["-c", "core.hooksPath=/dev/null", ...identity3, ...args2], void 0, override)).toString().trim();
   try {
     await run2(["read-tree", base]);
@@ -62692,25 +62933,25 @@ async function keptHistory(w, base, parent, from2, workingTree, marker) {
         const blob = (value5) => /^100(?:644|755) blob ([0-9a-f]+)\t/.exec(value5)?.[1];
         const before = blob(old), ours = blob(kept), theirs = blob(entry);
         if (before && ours && theirs && before !== ours && ours !== theirs) {
-          const files4 = ["ours", "base", "theirs"].map((name2) => path64.join(temp, name2));
-          for (const [index, sha] of [ours, before, theirs].entries()) fs64.writeFileSync(files4[index], await boundedGit(w.dir, ["cat-file", "blob", sha]));
-          const binary = files4.some((file2) => fs64.readFileSync(file2).includes(0));
+          const files4 = ["ours", "base", "theirs"].map((name2) => path65.join(temp, name2));
+          for (const [index, sha] of [ours, before, theirs].entries()) fs65.writeFileSync(files4[index], await boundedGit(w.dir, ["cat-file", "blob", sha]));
+          const binary = files4.some((file2) => fs65.readFileSync(file2).includes(0));
           if (!binary) {
             const merged = await boundedGit(w.dir, ["merge-file", "--theirs", "-p", ...files4]);
-            fs64.writeFileSync(files4[0], merged);
+            fs65.writeFileSync(files4[0], merged);
             const sha = (await git(w.dir, ["hash-object", "-w", "--", files4[0]])).trim();
             entry = entry.replace(` blob ${theirs}	`, ` blob ${sha}	`);
           }
         }
         entries.push(entry ? entry.replace(/^([0-7]+) (?:blob|commit) /, "$1 ") : `0 ${"0".repeat(base.length)}	${file}\0`);
       }
-      const info = path64.join(temp, "entries");
-      fs64.writeFileSync(info, entries.join(""), { mode: 384 });
+      const info = path65.join(temp, "entries");
+      fs65.writeFileSync(info, entries.join(""), { mode: 384 });
       boundedGitSync(w.dir, ["update-index", "-z", "--index-info"], { env, stdinFile: info });
       const tree = await run2(["write-tree"]);
       const [name, email2, date3] = (await git(w.dir, ["log", "-1", "--format=%an%x00%ae%x00%aI", commit])).trim().split("\0");
-      const message2 = path64.join(temp, "message");
-      fs64.writeFileSync(message2, await git(w.dir, ["log", "-1", "--format=%B", commit]), { mode: 384 });
+      const message2 = path65.join(temp, "message");
+      fs65.writeFileSync(message2, await git(w.dir, ["log", "-1", "--format=%B", commit]), { mode: 384 });
       tip = await run2(["commit-tree", tree, "-p", tip, "-F", message2], { ...env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email2, GIT_AUTHOR_DATE: date3 });
       previous = commit;
     }
@@ -62719,12 +62960,12 @@ async function keptHistory(w, base, parent, from2, workingTree, marker) {
     if (snapshot2) tip = await run2(["commit-tree", workingTree, "-p", tip, "-m", marker]);
     return { tip, snapshot: snapshot2 };
   } finally {
-    fs64.rmSync(temp, { recursive: true, force: true });
+    fs65.rmSync(temp, { recursive: true, force: true });
   }
 }
 async function operationInProgress(dir) {
   const files4 = lines(await git(dir, ["rev-parse", ...OPERATIONS.flatMap((name) => ["--git-path", name])]));
-  return files4.some((file) => fs64.existsSync(path64.resolve(dir, file)));
+  return files4.some((file) => fs65.existsSync(path65.resolve(dir, file)));
 }
 function refreshRefusal(leadDir, record2, borrowers) {
   if (record2.sharedWith || record2.outside || !roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch)) {
@@ -62954,7 +63195,7 @@ function handlers8(state) {
       const ago2 = finished === void 0 ? "" : ` ${Math.max(0, Math.floor((now() - finished) / 6e4))}m ago`;
       const summary = record2.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
       const verb = retired || exited ? "finished" : `reported ${worker.status}`;
-      const resumable2 = !!own2 && own2.status === "done" && !!own2.hostSessionId && fs65.existsSync(own2.dir) && !retired;
+      const resumable2 = !!own2 && own2.status === "done" && !!own2.hostSessionId && fs66.existsSync(own2.dir) && !retired;
       return { text: resumable2 ? `${name} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : `${name} ${verb}${ago2} and will not answer; its summary: ${summary}${!own2 && !retired && worker?.status === "done" ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ""}`, terminal: true };
     }
     if (presences(s).some((p) => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false };
@@ -63441,8 +63682,8 @@ init_leases2();
 init_context();
 init_disk_text();
 init_git();
-import fs66 from "node:fs";
-import path65 from "node:path";
+import fs67 from "node:fs";
+import path66 from "node:path";
 import { createHash as createHash23, randomUUID as randomUUID11 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
@@ -63479,7 +63720,7 @@ var HooksBridge = class {
     if (this.timer) clearTimeout(this.timer);
     if (this.written) {
       try {
-        if (JSON.parse(fs66.readFileSync(this.written, "utf8")).writer === this.writer) fs66.rmSync(this.written, { force: true });
+        if (JSON.parse(fs67.readFileSync(this.written, "utf8")).writer === this.writer) fs67.rmSync(this.written, { force: true });
       } catch {
       }
     }
@@ -63527,12 +63768,12 @@ var HooksBridge = class {
     const leaseFence = this.s.lease?.fence();
     const dir = this.o.sessionDir();
     if (!dir) return;
-    const file = path65.join(dir, "state.json");
+    const file = path66.join(dir, "state.json");
     if (!this.o.fenced()) {
       const paused2 = this.o.paused?.();
       if (!paused2 || this.written !== file) return;
       try {
-        if (JSON.parse(fs66.readFileSync(file, "utf8")).writer !== this.writer) return;
+        if (JSON.parse(fs67.readFileSync(file, "utf8")).writer !== this.writer) return;
       } catch {
         return;
       }
@@ -63602,20 +63843,20 @@ var HooksBridge = class {
 var hookHealth = /* @__PURE__ */ new WeakMap();
 var PROCESS_STARTED_AT = Date.now();
 function hookReceiptPath(sessionDir, sessionId) {
-  return path65.join(sessionDir, "..", "..", "hook-receipts", createHash23("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
+  return path66.join(sessionDir, "..", "..", "hook-receipts", createHash23("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
 }
 function readBoundedJson(file) {
   let fd;
   try {
-    fd = fs66.openSync(file, "r");
-    if (fs66.fstatSync(fd).size > 4096) return void 0;
+    fd = fs67.openSync(file, "r");
+    if (fs67.fstatSync(fd).size > 4096) return void 0;
     const bytes = Buffer.alloc(4097);
-    const count = fs66.readSync(fd, bytes, 0, bytes.length, 0);
+    const count = fs67.readSync(fd, bytes, 0, bytes.length, 0);
     return count <= 4096 ? JSON.parse(bytes.toString("utf8", 0, count)) : void 0;
   } catch {
     return void 0;
   } finally {
-    if (fd !== void 0) fs66.closeSync(fd);
+    if (fd !== void 0) fs67.closeSync(fd);
   }
 }
 function newHookHealth(now) {
@@ -63633,13 +63874,13 @@ function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = 
     health = newHookHealth(now);
     hookHealth.set(s, health);
   }
-  const session = sessionDir ? readBoundedJson(path65.join(sessionDir, "session.json")) : void 0;
+  const session = sessionDir ? readBoundedJson(path66.join(sessionDir, "session.json")) : void 0;
   const id3 = typeof session?.session_id === "string" && session.session_id.length > 0 && session.session_id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(session.session_id) ? session.session_id : void 0;
   if (!sessionDir || !id3) return "";
   const sessionAt = session?.at;
   const sessionStartedAt = Math.max(PROCESS_STARTED_AT, typeof sessionAt === "number" && Number.isFinite(sessionAt) ? sessionAt : 0);
   const receipt = readBoundedJson(hookReceiptPath(sessionDir, id3));
-  const activity = readBoundedJson(path65.join(sessionDir, "hook-activity.json"));
+  const activity = readBoundedJson(path66.join(sessionDir, "hook-activity.json"));
   if (receipt?.sessionId === id3 && typeof receipt.at === "number" && receipt.at >= sessionStartedAt && receipt.at <= now || activity?.session_id === id3 && activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at >= sessionStartedAt && activity.at <= now) health.observed = true;
   if (!expected || health.observed || health.noted) return "";
   const upFront = team && resolveSessionHost() === "codex";
@@ -63666,179 +63907,6 @@ init_src();
 init_leases2();
 import fs68 from "node:fs";
 import path67 from "node:path";
-
-// packages/room-mcp/src/codex-turn.ts
-import { promises as fs67 } from "node:fs";
-import os17 from "node:os";
-import path66 from "node:path";
-var TAIL_BYTES = 64 * 1024;
-var MAX_READ_BYTES = 1024 * 1024;
-var MAX_SCAN_BYTES = 8 * 1024 * 1024;
-var CONTACT_MS = 1e4;
-var TURN_EVENTS = /* @__PURE__ */ new Set(["task_started", "task_complete", "turn_aborted"]);
-var CodexTurnProbe = class {
-  constructor(options = {}) {
-    this.options = options;
-  }
-  options;
-  cursors = /* @__PURE__ */ new Map();
-  async busy(threadId) {
-    return (await this.state(threadId)).kind !== "idle";
-  }
-  async state(threadId) {
-    let status;
-    try {
-      status = await (this.options.status ?? ((id3) => readCodexThreadStatus({
-        socketPath: codexControlSocket({ ...process.env, CODEX_HOME: this.options.home?.() ?? process.env.CODEX_HOME }),
-        threadId: id3,
-        clientVersion: this.options.clientVersion
-      })))(threadId);
-    } catch {
-      return { kind: "unknown", source: "host", reason: "status-unavailable" };
-    }
-    if (status.kind === "active" || status.kind === "idle") return { kind: status.kind, source: "host" };
-    if (!(status.kind === "unknown" && status.reason === "notLoaded") && !(status.kind === "unavailable" && status.legacy)) return {
-      kind: "unknown",
-      source: "host",
-      reason: status.kind === "unknown" ? status.reason : "status-unavailable"
-    };
-    const file = await this.find(threadId);
-    if (file) {
-      try {
-        const event = await this.lastTurnEvent(threadId, file);
-        if (event === null) return { kind: "unknown", source: "legacy", reason: "scan-budget" };
-        if (event) return { kind: event === "task_started" ? "active" : "idle", source: "legacy" };
-      } catch {
-        this.cursors.delete(threadId);
-        return { kind: "unknown", source: "legacy", reason: "rollout-unavailable" };
-      }
-    }
-    const age = this.options.contactAgeMs?.();
-    return age !== void 0 && age >= 0 && age < CONTACT_MS ? { kind: "active", source: "contact" } : { kind: "unknown", source: "legacy", reason: "no-turn-evidence" };
-  }
-  async find(threadId) {
-    const cached3 = this.cursors.get(threadId);
-    if (cached3) return cached3.file;
-    if (!/^[a-zA-Z0-9-]{1,128}$/.test(threadId)) return void 0;
-    const root = path66.join(this.options.home?.() ?? process.env.CODEX_HOME ?? path66.join(os17.homedir(), ".codex"), "sessions");
-    try {
-      const years = (await fs67.readdir(root, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
-      for (const year of years) {
-        if (!/^\d{4}$/.test(year)) continue;
-        const yearDir = path66.join(root, year);
-        const months = (await fs67.readdir(yearDir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
-        for (const month of months) {
-          if (!/^\d{2}$/.test(month)) continue;
-          const monthDir = path66.join(yearDir, month);
-          const days = (await fs67.readdir(monthDir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort().reverse();
-          for (const day of days) {
-            if (!/^\d{2}$/.test(day)) continue;
-            const dayDir = path66.join(monthDir, day);
-            const name = (await fs67.readdir(dayDir)).find((n) => n.startsWith("rollout-") && n.endsWith(`-${threadId}.jsonl`));
-            if (name) {
-              const file = path66.join(dayDir, name);
-              this.cursors.set(threadId, { file, offset: 0 });
-              return file;
-            }
-          }
-        }
-      }
-    } catch {
-    }
-    return void 0;
-  }
-  async lastTurnEvent(threadId, file) {
-    const handle = await fs67.open(file, "r");
-    try {
-      const { size: size2, dev, ino } = await handle.stat();
-      let cursor = this.cursors.get(threadId);
-      if (size2 < cursor.offset || cursor.device !== void 0 && (cursor.device !== dev || cursor.inode !== ino)) {
-        cursor = { file, offset: 0 };
-        this.cursors.set(threadId, cursor);
-      }
-      cursor.device = dev;
-      cursor.inode = ino;
-      if (cursor.scan && cursor.scan.size !== size2) cursor.scan = void 0;
-      if (cursor.scan || size2 - cursor.offset > MAX_READ_BYTES) {
-        const scan = cursor.scan ?? { size: size2, position: size2, carry: Buffer.alloc(0), skipPartial: true };
-        cursor.scan = scan;
-        cursor.lastEvent = void 0;
-        let scanned = 0;
-        while (scan.position > 0 && scanned < MAX_SCAN_BYTES) {
-          const length2 = Math.min(TAIL_BYTES, scan.position, MAX_SCAN_BYTES - scanned);
-          const start = scan.position - length2;
-          const chunk = Buffer.alloc(length2);
-          const { bytesRead: bytesRead2 } = await handle.read(chunk, 0, length2, start);
-          if (bytesRead2 !== length2) {
-            cursor.scan = void 0;
-            return null;
-          }
-          scan.position = start;
-          scanned += length2;
-          let data = Buffer.concat([chunk, scan.carry]);
-          if (scan.skipPartial) {
-            const lastNewline2 = data.lastIndexOf(10);
-            if (lastNewline2 < 0) {
-              await new Promise((resolve6) => setImmediate(resolve6));
-              continue;
-            }
-            scan.completeEnd = start + lastNewline2 + 1;
-            data = data.subarray(0, lastNewline2 + 1);
-            scan.skipPartial = false;
-          }
-          let end = data.length;
-          while (end > 0) {
-            const previousNewline = end > 1 ? data.lastIndexOf(10, end - 2) : -1;
-            if (previousNewline < 0) break;
-            const event2 = this.parseEvent(data.subarray(previousNewline + 1, end - 1));
-            if (event2) {
-              cursor.offset = scan.completeEnd;
-              cursor.lastEvent = event2;
-              cursor.scan = void 0;
-              return event2;
-            }
-            end = previousNewline + 1;
-          }
-          scan.carry = Buffer.from(data.subarray(0, end));
-          await new Promise((resolve6) => setImmediate(resolve6));
-        }
-        if (scan.position > 0) return null;
-        const event = this.parseEvent(scan.carry.subarray(0, Math.max(0, scan.carry.length - 1)));
-        cursor.offset = scan.completeEnd ?? 0;
-        cursor.lastEvent = event;
-        cursor.scan = void 0;
-        return event;
-      }
-      if (cursor.offset === size2) return cursor.lastEvent;
-      const buffer = Buffer.alloc(size2 - cursor.offset);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, cursor.offset);
-      if (bytesRead !== buffer.length) return null;
-      const lastNewline = buffer.lastIndexOf(10);
-      if (lastNewline < 0) return cursor.lastEvent;
-      const body = buffer.toString("utf8", 0, lastNewline + 1);
-      for (const line of body.split("\n")) {
-        const event = this.parseEvent(line);
-        if (event) cursor.lastEvent = event;
-      }
-      cursor.offset += lastNewline + 1;
-      return cursor.lastEvent;
-    } finally {
-      await handle.close();
-    }
-  }
-  parseEvent(line) {
-    const text2 = typeof line === "string" ? line : line.toString("utf8");
-    if (!text2.includes("task_started") && !text2.includes("task_complete") && !text2.includes("turn_aborted")) return void 0;
-    try {
-      const record2 = JSON.parse(text2);
-      if (record2.type === "event_msg" && typeof record2.payload?.type === "string" && TURN_EVENTS.has(record2.payload.type)) return record2.payload.type;
-    } catch {
-    }
-    return void 0;
-  }
-};
-
-// packages/room-mcp/src/wake-reconciler.ts
 var BACKOFF_MS = [1e3, 3e3];
 var WINDOW_MS = 5e3;
 var POLL_MS = 5e3;
@@ -63854,7 +63922,7 @@ var HEALTH_SAMPLE_LIMIT = 1e3;
 var WakeReconciler = class {
   constructor(o) {
     this.o = o;
-    this.codexTurn = o.codexTurn ?? new CodexTurnProbe();
+    this.facet = createWakeFacets({ send: o.send, midTurn: o.midTurn, probe: o.codexTurn });
   }
   o;
   sessions = /* @__PURE__ */ new Map();
@@ -63883,17 +63951,21 @@ var WakeReconciler = class {
   state;
   degraded;
   degradedNotice;
-  codexTurn;
+  facet;
   releaseChecks = /* @__PURE__ */ new Map();
   /** Messages already logged as held back while alone (one line each). */
   held = /* @__PURE__ */ new Set();
+  /** Status comes from the bound host's wake facet, the same facet that sends. */
+  describe(target) {
+    return this.facet(target.host).describe({ ...target, surface: "interactive" });
+  }
   /** Aggregate the retained ledger, not a second history. No names, ids, payloads or host errors escape. */
   health() {
     const target = this.o.bound();
     const current2 = target && this.bindingKey === `${target.host}\0${target.id}`;
     const health = {
       host: target?.host ?? "unbound",
-      path: target && this.o.send.describe?.(target),
+      path: target && this.describe(target),
       state: current2 ? this.state : void 0,
       degraded: this.degradation(),
       retainedAddressed: 0,
@@ -63946,7 +64018,7 @@ var WakeReconciler = class {
   degradation() {
     const target = this.o.bound();
     if (!target) return this.degraded === "unbound" ? "unbound" : void 0;
-    return target && this.bindingKey === `${target.host}\0${target.id}` && this.o.send.describe?.(target).availability !== "off" ? this.degraded : void 0;
+    return target && this.bindingKey === `${target.host}\0${target.id}` && this.describe(target)?.availability !== "off" ? this.degraded : void 0;
   }
   recover() {
     if (this.degradedNotice) this.o.ledger.withdraw(this.degradedNotice);
@@ -64063,31 +64135,29 @@ var WakeReconciler = class {
       this.midTurnNextAt = 0;
       this.sendNextAt = 0;
     }
-    if (this.o.send.describe?.(target).availability === "off") {
+    if (this.describe(target)?.availability === "off") {
       this.recover();
       return;
     }
-    let busy2 = false;
-    if (target.host === "codex") {
-      if (this.codexTurn.state) {
-        if (this.now() < this.unknownNextAt) {
-          this.arm(this.unknownNextAt - this.now());
-          return;
-        }
-        this.state = await this.codexTurn.state(target.id);
-        if (this.state.kind === "unknown") {
-          const delay = UNKNOWN_BACKOFF_MS[Math.min(this.unknownFailures++, UNKNOWN_BACKOFF_MS.length - 1)];
-          this.unknownNextAt = this.now() + delay;
-          this.degrade("host-state-unknown");
-          this.arm(delay);
-          return;
-        }
-        this.unknownFailures = 0;
-        this.unknownNextAt = 0;
-        if (this.degraded === "host-state-unknown") this.recover();
-        busy2 = this.state.kind === "active";
-      } else busy2 = await this.codexTurn.busy(target.id);
+    const facet = this.facet(target.host);
+    const facetTarget = { ...target, surface: "interactive" };
+    if (this.now() < this.unknownNextAt) {
+      this.arm(this.unknownNextAt - this.now());
+      return;
     }
+    const state = await facet.state(facetTarget);
+    if (facet.reportsState && state.kind !== "unneeded") this.state = state;
+    if (state.kind === "unknown") {
+      const delay = UNKNOWN_BACKOFF_MS[Math.min(this.unknownFailures++, UNKNOWN_BACKOFF_MS.length - 1)];
+      this.unknownNextAt = this.now() + delay;
+      this.degrade("host-state-unknown");
+      this.arm(delay);
+      return;
+    }
+    this.unknownFailures = 0;
+    this.unknownNextAt = 0;
+    if (this.degraded === "host-state-unknown") this.recover();
+    const busy2 = state.kind === "active";
     const windowMs = this.o.windowMs ?? WINDOW_MS;
     const since = this.lastSentAt === void 0 ? Infinity : this.now() - this.lastSentAt;
     if (since < windowMs) {
@@ -64127,7 +64197,8 @@ var WakeReconciler = class {
           this.midTurnAttempts.set(key2, (this.midTurnAttempts.get(key2) ?? 0) + 1);
         }
         try {
-          const via2 = await this.o.midTurn(target, this.pointer(urgent));
+          const result2 = await facet.send(facetTarget, this.pointer(urgent), "active");
+          const via2 = result2.kind === "submitted" ? result2.via : result2.kind === "uncertain" ? "uncertain-turn" : result2.kind === "idle" ? "idle" : void 0;
           if (this.stopped) return;
           if (via2 === "turn" || via2 === "uncertain-turn") {
             this.midTurnFailure = void 0;
@@ -64137,7 +64208,7 @@ var WakeReconciler = class {
             const wakes2 = this.wakes(), at2 = this.now();
             for (const { s, m } of urgent) (wakes2[s.roomName] ??= {})[m.id] = { via: "turn", at: at2, ...via2 === "uncertain-turn" && { uncertain: true } };
             this.persist();
-            this.o.log?.(`wake: ${via2 === "turn" ? "submitted" : "uncertain submission of"} mid-turn pointer to codex session ${target.id} via turn for ${urgent.map(({ m }) => `${m.type} ${m.id}`).join(", ")}`);
+            this.o.log?.(`wake: ${via2 === "turn" ? "submitted" : "uncertain submission of"} mid-turn pointer to ${target.host} session ${target.id} via turn for ${urgent.map(({ m }) => `${m.type} ${m.id}`).join(", ")}`);
           } else if (via2 === "idle") {
             this.recover();
             for (const item of urgent) this.midTurnAttempts.delete(deliveryKey(item));
@@ -64145,7 +64216,7 @@ var WakeReconciler = class {
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
           const key2 = `${target.id}\0${reason}`;
-          if (this.midTurnFailure !== key2) this.o.log?.(`wake: mid-turn failed for codex session ${target.id}: ${reason}`);
+          if (this.midTurnFailure !== key2) this.o.log?.(`wake: mid-turn failed for ${target.host} session ${target.id}: ${reason}`);
           this.midTurnFailure = key2;
           this.degrade("transport-failed");
         }
@@ -64180,7 +64251,8 @@ var WakeReconciler = class {
     }
     let via;
     try {
-      via = await this.o.send(target, this.pointer(due));
+      const result2 = await facet.send(facetTarget, this.pointer(due), "idle");
+      via = result2.kind === "submitted" ? result2.via : void 0;
     } catch (e) {
       this.degrade("transport-failed");
       const delays = this.o.backoffMs ?? BACKOFF_MS;
@@ -67443,7 +67515,7 @@ async function main() {
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification) });
       let presence;
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION });
-      const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION });
+      const wakeProbe = createWakeProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION });
       let startupReplica = startup.server === LOCAL ? createLocalReplica() : void 0;
       const tools = createTools({ join: async (opts) => {
         if (!session && opts.server === LOCAL) {

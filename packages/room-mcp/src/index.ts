@@ -15,7 +15,7 @@ import { gitCommonDir } from '@room/roomd'
 import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
 import { createMidTurnSender, createWakeSender } from './wake-path.js'
-import { CodexTurnProbe } from './codex-turn.js'
+import { createWakeProbe } from './hosts/wake.js'
 import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import type { WorkerStopCause } from './worker-status.js'
@@ -118,7 +118,7 @@ async function main() {
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION })
-      const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION })
+      const wakeProbe = createWakeProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION })
       let startupReplica = startup.server === LOCAL ? createLocalReplica() : undefined
       const tools = createTools({ join: async opts => {
         if (!session && opts.server === LOCAL) {

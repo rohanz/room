@@ -613,3 +613,48 @@ it('uses kind priorities for legacy messages with no explicit priority', async (
     expect(r.texts[0]).toContain('worker finished')
   } finally { r.close() }
 })
+
+it.each(['joined', 'uncertain', 'idle'] as const)('replays a turn finishing during an awaited %s send without receipts or duplicate wakes', async outcome => {
+  vi.useFakeTimers()
+  let active = true
+  let finish!: () => void
+  const post = vi.fn(async () => {
+    await new Promise<void>(resolve => { finish = resolve })
+    return outcome === 'joined' ? { kind: outcome, turnId: 'ending-turn' }
+      : outcome === 'uncertain' ? { kind: outcome, reason: 'lost after write' } : { kind: outcome }
+  })
+  const r = rig(true, { codexTurn: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
+  try {
+    const message = r.note()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(post).toHaveBeenCalledOnce()
+    r.wakes.reconcile() // a document update while the transport awaits
+    active = false
+    finish()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(post).toHaveBeenCalledOnce()
+    expect(r.texts).toHaveLength(1)
+    expect(r.ledger.candidates(r.s).map(m => m.id)).toContain(message.id)
+    expect(r.wakes.health().handedToHost).toBe(0)
+    r.wakes.reconcile()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(r.texts).toHaveLength(1)
+  } finally { r.close() }
+})
+
+it('takes delivery status from the bound host wake facet, for health and for off suppression', async () => {
+  const describe = (availability: 'configured' | 'off') => () => ({ mode: availability === 'off' ? 'off' as const : 'auto' as const, transport: availability === 'off' ? 'none' as const : 'turn/queue' as const, availability })
+  const texts: string[] = []
+  const send = Object.assign(async (_target: unknown, text: string) => { texts.push(text); return 'queue' as const }, { describe: describe('configured') })
+  const r = rig(false, { send })
+  try {
+    // Only the Codex facet adds its limitation, so its presence proves health came through the facet.
+    expect(r.wakes.health().path).toEqual({ mode: 'auto', transport: 'turn/queue', availability: 'configured', limitation: 'Submission is not a receipt.' })
+    send.describe = describe('off')
+    r.note()
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(texts).toEqual([])
+    expect(r.wakes.health().path).toMatchObject({ availability: 'off', limitation: 'Submission is not a receipt.' })
+    expect(r.wakes.health().degraded).toBeUndefined()
+  } finally { r.close() }
+})

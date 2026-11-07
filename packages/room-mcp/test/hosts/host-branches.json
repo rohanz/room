@@ -2283,6 +2283,11 @@
       "path": "packages/room-mcp/src/session.ts",
       "text": "identityAdapter('codex').admitToolSession(id)",
       "reason": "Step 7 legacy admitCodexThread wrapper delegates to its named host facet, preserving metadata admission independently of binding host selection."
+    },
+    {
+      "path": "packages/room-mcp/src/wake-reconciler.ts",
+      "text": "constructor(private readonly o: WakeReconcilerOptions) { this.facet = createWakeFacets({ send: o.send, midTurn: o.midTurn, probe: o.codexTurn }) }",
+      "reason": "Step 8 forwards the legacy injected probe option into the adapter factory; no host selection or interpretation remains here. Step 9 removes compatibility ports."
     }
   ]
 }

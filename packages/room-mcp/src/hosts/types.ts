@@ -1,3 +1,4 @@
+import type { WakePathStatus } from './wake-types.js'
 /** Host evidence ports. Behavior-preserving extraction contract; no adapter is constructed here.
  * Lifetimes: pre-binding/fences per MCP, transports per target, log decoders per run/scope,
  * hook codecs per invocation, installation evidence per environment. */
@@ -41,11 +42,8 @@ export type WakeResult =
   | { kind: 'submitted' | 'uncertain'; via: WakeVia }
   | { kind: 'idle' } // raced with turn end; caller may try idle path
   | { kind: 'off' | 'unavailable' | 'failed'; reason?: string };
-export type WakeStatus = {
-  mode: 'auto' | 'socket' | 'channels' | 'off'; transport: string;
-  availability: 'configured' | 'unknown' | 'off' | 'unavailable';
-  limitation: string;
-};
+/** The shared path status, plus what this host's delivery cannot prove. */
+export type WakeStatus = WakePathStatus & { limitation: string };
 export type WorkerInput = {
   mode: 'fresh' | 'resume'; sessionId?: string; prompt: string;
   runtime: Runtime; tag: string; cwd: string; logDir: string;
@@ -101,7 +99,8 @@ export interface HostAdapter {
   identify(evidence: BindingEvidence): IdentityResult;
   admitToolSession(id: string): void; // validates, first-id fence where appropriate
   readonly wake?: {
-    describe(target: Target): WakeStatus;
+    /** Undefined when the sender reports no path (an unobserved transport). */
+    describe(target: Target): WakeStatus | undefined;
     state(target: Target): Promise<TurnState>;
     send(target: Target, pointer: string, phase: 'idle' | 'active'): Promise<WakeResult>;
   };
