@@ -1,8 +1,9 @@
-// Bundles room-mcp (with @room/relay, the local relay) into a single file so the Codex plugin runs from its cache dir with no node_modules,
+// Emits bootstrap wrappers and isolated application bundles so the plugin runs from its cache with no node_modules,
 // and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
 //
 // Run:        npm run build:plugin   (from the repository root; paths are cwd-relative). Needs `npm ci`.
-// Overwrites: plugins/room/server/{room-mcp,room-daemon,parse-worker}.mjs and hooks/{private-core,windows-process-core,*-hook-codec}.mjs;
+// Overwrites: plugins/room/server/{room-mcp,room-daemon,room-state}{,-app}.mjs, {parse,gate}-worker.mjs, compat.json,
+// and hooks/{private-core,windows-process-core,*-hook-codec}.mjs;
 // replaces plugins/room/server/grammars/ and (via packages/web/dist) plugins/room/web/.
 // All generated plugin assets are committed; CI checks they are current.
 // --skip-web  rebuilds only the server bundle (for sandboxes that cannot build the web view): partial output, never commit it.
@@ -23,15 +24,32 @@ const bundleOptions = {
   banner: { js: "import { createRequire as __roomCreateRequire } from 'node:module'; import { fileURLToPath as __roomFileURLToPath } from 'node:url'; import { dirname as __roomDirname } from 'node:path'; const require = __roomCreateRequire(import.meta.url); const __filename = __roomFileURLToPath(import.meta.url); const __dirname = __roomDirname(__filename);" },
   logLevel: 'info',
 }
-await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/index.ts'], outfile: 'plugins/room/server/room-mcp.mjs' })
-await build({ ...bundleOptions, entryPoints: ['packages/relay/src/daemon-bin.ts'], outfile: 'plugins/room/server/room-daemon.mjs', define: { __ROOM_DAEMON_RELEASE__: JSON.stringify(release) } })
+// Keep application imports external in each bootstrap bundle. Audits can inspect the complete
+// bootstrap graph without accidentally evaluating the application before runtime qualification.
+for (const [wrapper, application, name] of [
+  ['packages/room-mcp/src/entry.ts', 'packages/room-mcp/src/index.ts', 'room-mcp'],
+  ['packages/relay/src/daemon-bin.ts', 'packages/relay/src/daemon-app.ts', 'room-daemon'],
+  ['packages/room-mcp/src/offline/entry.ts', 'packages/room-mcp/src/offline/room-state.ts', 'room-state'],
+]) {
+  await build({ ...bundleOptions, entryPoints: [wrapper], outfile: `plugins/room/server/${name}.mjs`,
+    plugins: [{ name: 'defer-application', setup(build) {
+      build.onResolve({ filter: /\.\/(?:index|daemon-app|room-state)\.js$/ }, args => {
+        if (args.kind === 'dynamic-import' && path.resolve(path.dirname(args.importer), args.path).replace(/\.js$/, '.ts') === path.resolve(application))
+          return { path: `./${name}-app.mjs`, external: true }
+      })
+    } }],
+  })
+  await build({ ...bundleOptions, entryPoints: [application], outfile: `plugins/room/server/${name}-app.mjs`,
+    define: { __ROOM_DAEMON_RELEASE__: JSON.stringify(release) } })
+}
 await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worker.ts'], outfile: 'plugins/room/server/parse-worker.mjs' })
+await build({ ...bundleOptions, entryPoints: ['packages/local-state/src/gate-worker.ts'], outfile: 'plugins/room/server/gate-worker.mjs' })
 
 // One builtins-only privacy policy for hooks and the relay; committed and checked with the other plugin assets.
-await build({ entryPoints: ['packages/relay/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
+await build({ entryPoints: ['packages/local-state/src/private-core.ts'], outfile: 'plugins/room/hooks/private-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
 // One builtins-only Windows process table reader for hooks and the relay.
-await build({ entryPoints: ['packages/relay/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
+await build({ entryPoints: ['packages/local-state/src/windows-process-core.ts'], outfile: 'plugins/room/hooks/windows-process-core.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node20', logLevel: 'info' })
 await build({ entryPoints: ['packages/room-mcp/src/hosts/session-host.ts'], outfile: 'plugins/room/hooks/session-host.mjs', bundle: true, platform: 'node', format: 'esm' })
 
@@ -70,8 +88,8 @@ const descriptorModule = await build({
 })
 const { CURRENT_COMPAT, WORKER_RECORD_SCHEMA } = await import(`data:text/javascript;base64,${Buffer.from(descriptorModule.outputFiles[0].text).toString('base64')}`)
 const descriptor = {
-  v: 1, release, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA,
-  bundleSha256: createHash('sha256').update(fs.readFileSync('plugins/room/server/room-mcp.mjs')).digest('hex'),
+  v: 2, release, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA,
+  bundleSha256: Object.fromEntries(['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs', 'gate-worker.mjs'].map(file => [file, createHash('sha256').update(fs.readFileSync(path.join('plugins/room/server', file))).digest('hex')])),
 }
 fs.writeFileSync('plugins/room/server/compat.json', JSON.stringify(descriptor, null, 2) + '\n')
 console.log('stamped plugins/room/server/compat.json')

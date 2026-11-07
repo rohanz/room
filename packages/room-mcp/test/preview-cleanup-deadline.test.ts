@@ -3,8 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, expect, it } from 'vitest'
-import { previewCachePath, runInMergedTree, setPreviewCleanupForTests } from '../src/tools/files.js'
+import { afterEach, expect, it, vi } from 'vitest'
+import { closeStorageAdmissions, storageGate, withDirectoryAdmission } from '../src/storage-admission.js'
+import { pollRetainedHelpersForTests, previewCachePath, runInMergedTree, setPreviewCleanupForTests } from '../src/tools/files.js'
 import { clearPreviewQuarantine, previewQuarantinePath, quarantinePreview, setPreviewCwdsForTests, tryPreviewLock, lsofCwds, procCwds } from '../src/preview-cache.js'
 import type { Session } from '../src/session.js'
 
@@ -164,7 +165,7 @@ it('the process probes fail closed: a partial lsof listing or an unreadable own 
   expect(lsofCwds(null, '')).toBeUndefined()
   expect(lsofCwds(null, 'p1\nn/a\np2\nn/b (deleted)\n')).toEqual(['/a', '/b (deleted)'])
   const err = (code: string) => Object.assign(new Error(code), { code })
-  const readers = (map: Record<string, string | Error>, owners: Record<string, number | undefined> = {}, starts: Record<string, number | undefined> = {}) => ({
+  const readers = (map: Record<string, string | Error>, owners: Record<string, number | 'gone' | undefined> = {}, starts: Record<string, number | undefined> = {}) => ({
     readCwd: async (pid: string) => { const v = map[pid]; if (v instanceof Error) throw v; return v },
     ownerOf: async (pid: string) => pid in owners ? owners[pid] : 501,
     startedAt: async (pid: string) => starts[pid],
@@ -180,7 +181,61 @@ it('the process probes fail closed: a partial lsof listing or an unreadable own 
   // any other error is incomplete
   expect(await procCwds(['1'], 501, readers({ '1': err('EIO') }))).toBeUndefined()
   // an owner that vanished between listing and stat is an exited process
-  expect(await procCwds(['1'], 501, readers({ '1': err('EPERM') }, { '1': undefined }))).toEqual([])
+  expect(await procCwds(['1'], 501, readers({ '1': err('EPERM') }, { '1': 'gone' }))).toEqual([])
+  // unknown ownership of a process whose cwd is denied is not proof it is foreign: the listing is incomplete
+  expect(await procCwds(['1', '2'], 501, readers({ '1': '/a', '2': err('EACCES') }, { '2': undefined }))).toBeUndefined()
   // a deleted cwd keeps its path for prefix matching
   expect(await procCwds(['1'], 501, readers({ '1': '/t/x (deleted)' }))).toEqual(['/t/x'])
 })
+
+it('keeps a cleanup-incomplete helper ticket while its group survives, then releases it so the MCP can acknowledge', async () => {
+  if (!posix) return
+  const f = await fixture(true)
+  let survivors = true
+  try {
+    setPreviewCleanupForTests({ graceMs: 300, groupAlive: async (_pid, file) => file !== 'git' && survivors })
+    const common = path.join(f.root, '.git')
+    const result = await withDirectoryAdmission(f.root, 'preview', () =>
+      runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'FIRST\n']]), `echo '1 passed'`))
+    expect(result.text).toContain('command completion: incomplete')
+    // The operation's own ticket is finished; the surviving group's helper tickets stay visible to drain.
+    const previewTickets = async () => (await storageGate(common).listTickets()).tickets.filter(ticket => ticket.kind === 'preview')
+    expect((await previewTickets()).length).toBeGreaterThan(0)
+    survivors = false
+    await vi.waitFor(async () => expect(await previewTickets()).toEqual([]), { timeout: 5000 })
+    await vi.waitFor(async () => expect((await storageGate(common).status()).tickets).toBe(0), { timeout: 5000 })
+    // Nothing outstanding remains, so this MCP can acknowledge by unregistering.
+    await closeStorageAdmissions()
+    expect((await storageGate(common).status()).registrations).toBe(0)
+  } finally { setPreviewCleanupForTests(); await f.dispose() }
+}, 30_000)
+
+it('keeps a cleanup-incomplete helper ticket while an escaped descendant works in the preview tree after its group is gone', async () => {
+  if (!posix) return
+  const f = await fixture(true)
+  const pidFile = path.join(f.root, 'escaped.pid')
+  try {
+    // Every original group reads as gone, so only the escaped descendant's working directory can hold the ticket.
+    setPreviewCleanupForTests({ graceMs: 500, groupAlive: async () => false })
+    const common = path.join(f.root, '.git')
+    // A new process group the check cannot signal, with the cached tree as its cwd and the stdout pipe open.
+    const escape = `node -e ${JSON.stringify(`const c=require('child_process').spawn('sleep',['30'],{detached:true,stdio:'inherit'}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); c.unref()`)}`
+    const result = await withDirectoryAdmission(f.root, 'preview', () =>
+      runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'FIRST\n']]), `${escape}; echo '1 passed'`))
+    expect(result.text).toContain('command completion: incomplete')
+    const previewTickets = async () => (await storageGate(common).listTickets()).tickets.filter(ticket => ticket.kind === 'preview')
+    const descendant = Number(fs.readFileSync(pidFile, 'utf8'))
+    // Repeated release polls with the group gone: the live descendant in the tree keeps the ticket for drain.
+    for (let n = 0; n < 3; n++) {
+      expect(() => process.kill(descendant, 0)).not.toThrow()
+      expect(await pollRetainedHelpersForTests()).toBeGreaterThan(0)
+      expect((await previewTickets()).length).toBeGreaterThan(0)
+    }
+    f.killPidFile(pidFile)
+    await vi.waitFor(() => expect(() => process.kill(descendant, 0)).toThrow(), { timeout: 5000 })
+    await vi.waitFor(async () => expect(await pollRetainedHelpersForTests()).toBe(0), { timeout: 10_000, interval: 100 })
+    expect(await previewTickets()).toEqual([])
+    await closeStorageAdmissions()
+    expect((await storageGate(common).status()).registrations).toBe(0)
+  } finally { setPreviewCleanupForTests(); await f.dispose(pidFile) }
+}, 45_000)

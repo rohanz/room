@@ -6,7 +6,11 @@ Your files and Git workflow stay yours: Room shares context, then you decide wha
 
 ## Start in five minutes
 
-You need **Node.js 22+**, **Git**, a repository with at least one commit, and either **Claude Code 2.1.224+** (2.1.234+ on native Windows) or **Codex 0.157+**. The plugin carries its server bundle; you do not need to build it to install from GitHub.
+You need **official nodejs.org Node.js 22.22.3 or later in the 22.x line**, **Git**, a repository with at least one commit, and either **Claude Code 2.1.224+** (2.1.234+ on native Windows) or **Codex 0.157+**. The plugin carries its server bundle; you do not need to build it to install from GitHub.
+
+Put that Node installation's `bin` directory first on the **PATH used to launch the host**; on Windows use the directory containing `node.exe`. GUI apps and persistent MCP-launching daemons can retain a different PATH from your terminal. After correcting it, fully stop and restart the host **and any daemon that launches its MCPs**. Updating Node in a terminal alone does not update an already-running parent process.
+
+Room checks the actual MCP, daemon and maintenance-command runtime before loading storage code. An old runtime is refused with `Room cannot start (mcp): node-version: Node <version> is below the minimum 22.22.3.` followed by the executable, SQLite result and setup remedy. Run `node "<plugin>/server/room-state.mjs" preflight --json` to check that command's runtime; add `--common-dir "<absolute Git common directory>"` for filesystem evidence. A successful terminal check does not establish which executable a GUI host launches. See [storage maintenance](docs/reference.md#storage-maintenance) and the [compatibility upgrade steps](docs/upgrading.md#storage-compatibility-release).
 
 Install for your agent:
 

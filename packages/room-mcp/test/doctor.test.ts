@@ -21,7 +21,7 @@ const trust = `[hooks.state."room@room:hooks.json:pre_tool_use:0:0"]
 trusted_hash = "${CODEX_ROOM_HOOK_HASHES['pre_tool_use:0:0']}"
 [hooks.state."room@room:hooks.json:session_start:0:0"]
 trusted_hash = "${CODEX_ROOM_HOOK_HASHES['session_start:0:0']}"`
-const base = (): DoctorFacts => ({ node: 'v22.14.0', git: 'git version 2.39.0', repo: true,
+const base = (): DoctorFacts => ({ node: 'v22.22.3', git: 'git version 2.39.0', repo: true,
   claudeCli: true, codexCli: true, claude: { version }, codex: { version }, claudeVersion: '2.1.285',
   claudeHooks: `export const HOOKS_VERSION = '${version}'`, codexHooks: `export const HOOKS_VERSION = '${version}'`,
   codexTrust: trust, wakeSession: true, wakeBound: true, relayFile: '/tmp/relay.json', relayHealth: true,

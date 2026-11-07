@@ -1,3 +1,5 @@
+import { commonGitDirFromDotGit } from '@room/roomd'
+import { detachedAdmission } from './storage-admission.js'
 import { participantRecord } from '@room/shared'
 import { git } from '@room/roomd/git'
 import type { Session } from './session.js'
@@ -12,8 +14,9 @@ export async function settleWorkerPublication(s: Session, log: (line: string) =>
     if (!s.daemon) throw new Error('no daemon')
     if (s.policyStore.policy.level === 'intent') throw new Error('intent sharing has no disk publication')
     if (!s.daemon.fence) throw new Error('no daemon fence')
+    const admission = await detachedAdmission(commonGitDirFromDotGit(s.dir), 'project')
     await Promise.race([
-      (async () => {
+      admission.run(async () => {
         await s.daemon.reconcileGitChanges()
         await s.daemon.settle()
         // Reconciliation schedules retries on failure rather than throwing. Verify its result,
@@ -26,7 +29,7 @@ export async function settleWorkerPublication(s: Session, log: (line: string) =>
           || !manifest?.complete || manifest.fence !== published.fence || manifest.base !== published.base) {
           throw new Error('current HEAD and overlay are not published yet')
         }
-      })(),
+      }),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('publication did not settle within 5 s')), 5_000)
       }),

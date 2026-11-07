@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import { storageRegistration, closeStorageAdmissions, withAdmission } from './storage-admission.js'
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
 import path from 'node:path'
@@ -9,14 +10,15 @@ import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
-import { joinableRoot, sameFolder } from './repository.js'
+import { joinableRoot, repositoryProblem, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
-import { primePrivateState } from '@room/relay'
+import { primePrivateState } from '@room/local-state/private-state'
 import { resolveConfig } from './config.js'
 import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
 import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
+import { HostRebind } from './host-rebind.js'
 import type { Settle } from './tools/index.js'
 import type { WorkerStopCause } from './worker-status.js'
 import { FlushedStdioTransport } from './transport.js'
@@ -104,6 +106,9 @@ async function main() {
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
     logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
     initialize: async (dir: string, signal: AbortSignal) => {
+      // Keep the non-repository runtime alive to explain the remedy and recheck on the next call.
+      // joinSession registers storage if this folder becomes a repository later.
+      if (!await repositoryProblem(dir)) await storageRegistration(await gitCommonDir(dir))
       let session: Session | null = null
       // The startup choice only: environment is fixed for the process, and room_join/room_close/joinSession re-resolve it.
       // Resolve and prime while config reads are already awaiting Git; a deferred workspace stays unbound until a call.
@@ -113,8 +118,8 @@ async function main() {
       LOG_FILE = startup.logFile
       const sessionBinding = createSessionBinding(dir)
       roomLogDir = () => sessionBinding.commonDir()
-      let rebinding: Promise<void> | undefined
-      let rebindHost: (sessionId: string) => Promise<void> = async () => {}
+      let hostRebind: HostRebind | undefined
+      const rebindHost = (sessionId: string): Promise<void> => hostRebind?.rebind(sessionId) ?? Promise.resolve()
       // Content-free wakes: Codex active-turn output or idle queue; Claude inbox or channel.
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
@@ -130,14 +135,14 @@ async function main() {
       }, completionReady: async () => {
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
-        else if (rebinding) await rebinding
+        else if (hostRebind?.pending) await hostRebind.pending
       }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log })
       // A replica the server refused after a compacting restart is replaced inside the auto-join (compacted.ts).
       const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (s, why) => tools.drop(s, why),
         attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead), credentialsPath: startup.credentialsPath, log })
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
-        canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
+        canSelect: () => !hostRebind?.pending && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
         onContact: () => presence?.activity(), log, worker: admittedWorker })
       const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
@@ -165,6 +170,7 @@ async function main() {
         hostAlive: () => hostSessionAlive(dir, attachingParent()),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
+        withWorkersAdmission: async work => withAdmission(await gitCommonDir(dir), 'idle-release', work),
         waiting: () => tools.waiting(),
         hostEnded: reason => { void bye(reason) },
         leave: async idle => { for (const joined of [...tools.joinedSessions()].reverse()) await tools.drop(joined, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },
@@ -173,26 +179,16 @@ async function main() {
         publishIdle: minutes => { for (const joined of tools.joinedSessions()) try { joined.awareness.setLocalStateField('idleMin', minutes) } catch { /* leaving */ } },
         log,
       })
-      rebindHost = async nextId => {
-        if (rebinding) return rebinding
-        const joined = tools.joinedSessions()
-        const primary = joined[0]
-        if (!primary || primary.lease?.sessionId === nextId) return
-        rebinding = (async () => {
-          log(`host session changed from ${primary.lease?.sessionId ?? '?'} to ${nextId}; rebinding room leases`)
-          const reuse = new Map(joined.map(old => [old, detachCheckout(old)]))
-          try {
-            for (const old of [...joined].reverse()) await tools.drop(old, 'host session rebound')
-            const fresh = await joinSession({ ...rejoinOptions(primary, startup.credentialsPath), reuse: reuse.get(primary), sessionId: nextId, log })
-            await adopt(fresh, false)
-            for (const old of joined.slice(1)) {
-              const secondary = await joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse: reuse.get(old), sessionId: nextId, log })
-              tools.attachWorkersRoom(secondary, fresh)
-            }
-          } finally { await Promise.all([...reuse.values()].map(value => value.watcher?.dispose())) }
-        })().finally(() => { rebinding = undefined })
-        return rebinding
-      }
+      hostRebind = new HostRebind({
+        joined: () => tools.joinedSessions(),
+        detach: detachCheckout,
+        drop: (old, reason) => tools.drop(old, reason),
+        join: (old, reuse, sessionId) => joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse, sessionId, log }),
+        adopt: fresh => adopt(fresh, false),
+        attachSecondary: (secondary, primary) => tools.attachWorkersRoom(secondary, primary),
+        dispose: async late => { const unsaved = await leaveSession(late, { preserveReplica: true }); if (unsaved) log(`WARN: ${unsaved}`) },
+        log,
+      })
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
         // Completion bypasses lease rebinding, but must retain a thread discovered since admission.
         if (req.params.name === 'room_done' && process.env.ROOM_WORKER_ID) {
@@ -204,7 +200,7 @@ async function main() {
         }
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
-        else if (rebinding) await rebinding
+        else if (hostRebind?.pending) await hostRebind.pending
         const away = presence!.hasLeft
         const idle = presence!.activity()
         await (currentToolTiming()?.phase('settle', () => autoJoin.settle()) ?? autoJoin.settle()) // a join in progress decides which session the reply is about
@@ -266,10 +262,12 @@ async function main() {
 
       const runtime = { call, shutdown: async (reason?: WorkerStopCause, progress: (phase: string) => void = () => {}) => {
         presence.stop(); autoJoin.cancel({ explicitLeave: false })
+        await hostRebind?.close(reason !== 'SIGTERM' && reason !== 'SIGINT')
         if (reason !== 'SIGTERM' && reason !== 'SIGINT') { progress('settling auto-join'); await autoJoin.settle() }
         await tools.shutdown(reason, progress)
         progress('closing arbitration')
         await arbitration.close()
+        await closeStorageAdmissions()
       } }
       initialized = { dir, call }
       return runtime
@@ -352,7 +350,7 @@ export async function finishSignalShutdown(reason: string, leave: (progress: (ph
   exit()
 }
 
-const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])
+const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\](?:index|entry)\.ts|\.mjs)?$/.test(process.argv[1])
 /** Install only for the executable, never when consumers import the package. */
 export function installFailureHandlers(report: (message: string) => void, target: Pick<NodeJS.Process, 'on' | 'exit'> = process): (reason: string, error: unknown) => never {
   const fatal = (reason: string, error: unknown): never => {

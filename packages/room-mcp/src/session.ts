@@ -1,3 +1,4 @@
+import { storageRegistration } from './storage-admission.js'
 import { sessionHostIdentity } from './hosts/session-host.js'
 import { sessionEntries } from './session-entries.js'
 import { requireDaemonRuntime } from './daemon-cutover.js'
@@ -21,7 +22,8 @@ import type { Awareness } from 'y-protocols/awareness'
 import { normalizeExplicitRoomName } from './room-name.js'
 export { normalizeExplicitRoomName } from './room-name.js'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type WatcherHandoff, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { primePrivateState, primePrivateDirectory, ensureLocalDaemon, relayHealth, LocalRelayCompatibilityError, localViewKey, type LocalRelay } from '@room/relay'
+import { ensureLocalDaemon, relayHealth, LocalRelayCompatibilityError, localViewKey, type LocalRelay } from '@room/relay'
+import { primePrivateState, primePrivateDirectory } from '@room/local-state/private-state'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -35,7 +37,7 @@ import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
 import { migrateLegacyLocalChoice, worktreePath } from './choice.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
-import { sameStartTime } from '@room/relay/process'
+import { sameStartTime } from '@room/local-state/process'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
@@ -1038,6 +1040,7 @@ export async function currentDaemonClient(dir: string): Promise<{ currentSession
 
 /** Resolve only installed code; never execute repository startup scripts or use its cwd. */
 async function ensureDaemon(common: string, room: string, dir: string, log?: ServerLog): Promise<LocalRelay> {
+  await storageRegistration(common)
   const client = await currentDaemonClient(dir)
   const gate = (forStart: boolean) => requireDaemonRuntime(common, { ...client, forStart }).catch((error: unknown) => {
     throw new RoomdError(error instanceof Error ? error.message : String(error), 2)

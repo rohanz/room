@@ -292,7 +292,7 @@ describe('ConflictSlots', () => {
 
 describe('derived pair slots', () => {
   function fixture(baseFiles: Record<string, string> = {}) {
-    const dir = mkdtempSync(join(tmpdir(), 'room-slot-'))
+    const dir = fs.realpathSync(mkdtempSync(join(tmpdir(), 'room-slot-')))
     const run = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
     run('init', '-q'); run('config', 'user.email', 't@t'); run('config', 'user.name', 't')
     writeFileSync(join(dir, 'x'), 'old\n')

@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, withoutAdmission } from './storage-admission.js'
 import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { acceptedGit, defaultPriority, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
@@ -604,6 +605,8 @@ export class ConflictSet {
     if (this.timer) clearTimeout(this.timer)
     if (this.tick) clearTimeout(this.tick)
   }
+  /** Resolves once a reconcile running at stop() has finished. */
+  async settled(): Promise<void> { while (this.running) await this.running.catch(() => {}) }
   private schedulePeriodic(): void {
     if (!this.started || this.stopped) return
     this.tick = setTimeout(() => { this.tick = undefined; this.schedule(0) }, 60_000)
@@ -611,7 +614,7 @@ export class ConflictSet {
   }
   private schedule(ms = this.debounceMs): void {
     if (this.stopped || this.timer) return
-    this.timer = setTimeout(() => { this.timer = undefined; void this.reconcile('change').catch(e => this.log(`conflict reconcile: ${String(e)}`)) }, ms)
+    this.timer = setTimeout(() => { this.timer = undefined; void withoutAdmission(() => this.reconcile('change')).catch(e => this.log(`conflict reconcile: ${String(e)}`)) }, ms)
     this.timer.unref?.()
   }
   async flush(): Promise<void> {
@@ -707,6 +710,7 @@ export class ConflictSet {
   }
 
   private async run(reason: string): Promise<void> {
+  return withDirectoryAdmission(this.team.dir, 'project', async () => {
     const carriedOf = await this.carriedPass()
     this.freshStorage = carriedOf.refresh
     this.fileWork = 0
@@ -945,7 +949,9 @@ export class ConflictSet {
       }
     }
     this.log(`conflicts ${this.owner}: reconciled ${reason}`)
-  }
+
+  })
+}
 
   /** Retain resumable workers, but end their stale claims once all claimed files reached the lead. */
   private async releaseLandedWorkerClaims(leaseFence: string): Promise<void> {

@@ -2273,6 +2273,16 @@
       "path": "packages/room-mcp/src/worker-restart-notices.ts",
       "text": "ledger.noticeEvents('worker-restart', header, lines, INBOX_BUDGET)",
       "reason": "Pre-extraction delivery budget (derived from the host hook context cap) reused for owed restart notices, exactly as messaging and hook selection use it; moves behind the host adapter with the remaining adapter steps."
+    },
+    {
+      "path": "packages/room-mcp/src/storage-admission.ts",
+      "text": "import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }",
+      "reason": "Host-neutral storage registration release metadata; both plugin manifests carry the same version (release-version.test.ts)."
+    },
+    {
+      "path": "packages/room-mcp/src/offline/room-state.ts",
+      "text": "import manifest from '../../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }",
+      "reason": "Host-neutral storage registration release metadata; both plugin manifests carry the same version (release-version.test.ts)."
     }
   ]
 }

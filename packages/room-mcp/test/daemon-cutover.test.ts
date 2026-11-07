@@ -3,8 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { cloneId, privateStateDirectory } from '@room/relay'
-import { probeProcessNow } from '@room/relay/process'
+import { cloneId } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
+import { probeProcessNow } from '@room/local-state/process'
 import { inspectDaemonCutover, requireDaemonRuntime, daemonCutoverRows, resolveDaemonCutover, cutoverResolveCommand } from '../src/daemon-cutover.js'
 import * as cutover from '../src/daemon-cutover.js'
 import * as doctor from '../src/doctor.js'
@@ -726,4 +727,12 @@ describe('joins while an authenticated daemon owns the clone', () => {
     owner(common, 100) // a legacy in-session relay now holds discovery and authority
     expect((await inspectDaemonCutover(common, { probe: live, authenticate: noHealth })).blocked).toBe(true)
   })
+})
+
+it('reports read-only gate inventory without initializing the storage gate', async () => {
+  const { common } = fixture()
+  const state = await inspectDaemonCutover(common, inspectOptions)
+  expect(state.storageGate).toMatchObject({ state: 'absent', registrations: 0, tickets: 0 })
+  expect(daemonCutoverRows(state).join('\n')).toContain('storage gate inventory: absent; phase none; generation none; 0 registration(s); 0 ticket(s)')
+  expect(fs.existsSync(path.join(common, 'room/storage-gate.json'))).toBe(false)
 })

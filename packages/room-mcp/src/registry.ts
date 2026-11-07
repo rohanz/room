@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, withoutAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 /**
  * The rooms one MCP process is in, and everything hung off each of them.
@@ -52,6 +53,8 @@ export const currentToolSignal = (): AbortSignal | undefined => toolSignal.getSt
 export interface Attachment {
   /** Stop everything this attachment started. */
   stop(): void
+  /** Resolves once work started before stop() has finished. */
+  settled?(): Promise<void>
   /** Run any pending automatic conflict checks now (tests). */
   flush?(): Promise<void>
   /** Write this attachment's worker facts now (the bridge's team projection). */
@@ -66,6 +69,13 @@ export interface RoomsOptions {
   setPrimary(s: Session | null): void
   /** Full attachments for a session that was joined through the tools or adopted at startup. */
   attach(s: Session, role: Role, lead?: Session): Attachment
+  /** A session that arrives after close() (a join or rebind that finished during shutdown): leave it, never attach it. */
+  late?(s: Session): void
+  /**
+   * The owning tools instance's lifecycle scope. Attachments, tracking, retirement timers and projectors are born in
+   * add/track, so running those in this scope binds every producer (and what it schedules) to that lifecycle.
+   */
+  scope?<T>(fn: () => T): T
   log?: (line: string) => void
 }
 
@@ -77,6 +87,14 @@ export function workerOrigin(s: Session): { server: string; isWorker: boolean } 
   }
 }
 
+/** Whether `work` settles within `ms`; it is not cancelled when it does not. */
+export async function within(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); timer.unref() })
+  try { return await Promise.race([work.then(() => true as const, () => true as const), late]) }
+  finally { clearTimeout(timer) }
+}
+
 export class Rooms {
   private entries = new Map<Session, { role: Role; attachment?: Attachment }>()
   private tracked = new WeakSet<Session>()
@@ -85,6 +103,9 @@ export class Rooms {
   private exitWaiters = new Map<string, Set<() => void>>()
   private autoRetireTimers = new Map<Session, ReturnType<typeof setInterval>>()
   private retiring = new Map<Session, Promise<void>>()
+  /** Background registry work started for tracked sessions; shutdown settles it before storage admissions close. */
+  private background = new Set<Promise<unknown>>()
+  private closed = false
   /** Each tracked session's writer of its workers' views and retirement cleanup (registry §13). */
   private projectors = new Map<Session, WorkerProjector>()
 
@@ -110,27 +131,38 @@ export class Rooms {
   roleOf(s: Session): Role | undefined { return this.entries.get(s)?.role ?? (s === this.primary() ? 'primary' : undefined) }
   byName(roomName: string): Session | undefined { return this.all().find(s => s.roomName === roomName) }
 
+  /** Shutdown has begun: from now on no session is added or tracked, so nothing starts producers or opens registries. */
+  close(): void { this.closed = true }
+  get isClosed(): boolean { return this.closed }
   /** Register a session with its full attachments; idempotent per session. A primary also becomes `primary()`. */
   add(s: Session, role: Role, lead?: Session): void {
+    if (this.closed) { this.o.late?.(s); return }
+    this.inScope(() => this.addInScope(s, role, lead))
+  }
+  private inScope(fn: () => void): void { if (this.o.scope) this.o.scope(fn); else fn() }
+  private addInScope(s: Session, role: Role, lead?: Session): void {
     if (role === 'primary' && this.primary() !== s) this.o.setPrimary(s)
     this.track(s)
     const cur = this.entries.get(s)
     if (cur?.attachment) return
     // One primary and one workers room at a time: an older session in the same role is detached first.
-    for (const [other, e] of this.entries) if (other !== s && e.role === role) { e.attachment?.stop(); this.stopRetirement(other); this.entries.delete(other) }
+    for (const [other, e] of this.entries) if (other !== s && e.role === role) { this.stopAttachment(e.attachment); this.stopRetirement(other); this.entries.delete(other) }
     this.entries.set(s, { role, attachment: this.o.attach(s, role, lead) })
   }
   /** The worker projector and auto-retirement only (a session the host set without joining through the tools, e.g. in tests). */
   track(s: Session): void {
-    if (this.tracked.has(s)) return
+    if (this.closed || this.tracked.has(s)) return
     this.tracked.add(s)
-    void registryForDir(s.dir).then(registry => {
+    this.inScope(() => this.trackInScope(s))
+  }
+  private trackInScope(s: Session): void {
+    this.inBackground(withoutAdmission(() => registryForDir(s.dir)).then(registry => {
       if (!this.tracked.has(s) || this.projectors.has(s)) return
       const projector = new WorkerProjector(s, registry, this.o.log)
       this.projectors.set(s, projector)
       projector.start()
-    }).catch(() => {})
-    const timer = setInterval(() => { void this.autoRetire(s).catch(() => {}) }, 60_000)
+    }))
+    const timer = setInterval(() => { this.inBackground(withoutAdmission(() => this.autoRetire(s))) }, 60_000)
     timer.unref()
     this.autoRetireTimers.set(s, timer)
   }
@@ -138,18 +170,34 @@ export class Rooms {
   remove(s: Session): void {
     this.stopRetirement(s)
     const e = this.entries.get(s)
-    e?.attachment?.stop()
+    this.stopAttachment(e?.attachment)
     this.entries.delete(s)
     for (const [id, h] of Array.from(this.handles)) if (h.session === s) this.handles.delete(id)
     if (this.primary() === s) this.o.setPrimary(null)
   }
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
+  /**
+   * Wait up to `deadlineMs` for background work already started (the tracked open, retirement and projector passes,
+   * stopped attachments). False when some is still running: its admission keeps this process registered as recovery
+   * evidence rather than acknowledging a drain it has not reached.
+   */
+  settle(deadlineMs: number): Promise<boolean> { return within(Promise.allSettled([...this.background]), deadlineMs) }
+  private stopAttachment(attachment: Attachment | undefined): void {
+    attachment?.stop()
+    if (attachment?.settled) this.inBackground(attachment.settled())
+  }
+  private inBackground(work: Promise<unknown>): void {
+    const settled = work.catch(() => {}).finally(() => this.background.delete(settled))
+    this.background.add(settled)
+  }
 
   private stopRetirement(s: Session): void {
     readDiffCache.clear(s)
     clearInterval(this.autoRetireTimers.get(s))
     this.autoRetireTimers.delete(s)
-    this.projectors.get(s)?.stop()
+    const projector = this.projectors.get(s)
+    projector?.stop()
+    if (projector) this.inBackground(projector.settled())
     this.projectors.delete(s)
     this.tracked.delete(s)
   }
@@ -157,8 +205,10 @@ export class Rooms {
   /** Auto-retirement (registry §12, decideRetire's rules): after exits, before previews and PR tools, and every minute. */
   async autoRetire(session?: Session): Promise<void> {
     for (const s of session ? [session] : this.all()) {
+      if (this.closed) return
       const pending = this.retiring.get(s)
-      if (pending) { await pending; await this.autoRetire(s); continue }
+      // A pass queued behind another runs only while the session is still tracked and Rooms is open.
+      if (pending) { await pending; if (!this.closed && this.tracked.has(s)) await this.autoRetire(s); continue }
       const run = autoRetire(s, this)
       this.retiring.set(s, run)
       try { await run } finally { this.retiring.delete(s) }
@@ -263,6 +313,7 @@ export class Rooms {
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
   async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, options: ResumeWorkerOptions = {}): Promise<string | DeliveredResume> {
+  return withDirectoryAdmission(s.dir, 'resume', async () => {
     const { spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log = console.error, at = Date.now,
       exitWaitMs = 30_000, beforeLaunch } = options
     if (toolCallAborted()) return 'error: tool call cancelled'
@@ -348,6 +399,8 @@ export class Rooms {
         : `error: could not resume ${record.tag}: ${launchError.message}`
     }
     } finally { await registry.finishOperation(record.id) }
-  }
+
+  })
+}
 
 }

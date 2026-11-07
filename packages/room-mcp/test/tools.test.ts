@@ -280,6 +280,16 @@ async function dropRegistry(): Promise<void> {
 }
 
 describe('session gating', () => {
+  it('sends a non-lifecycle broadcast from a session without a directory', async () => {
+    const t = setup()
+    const fixtureDir = t.session!.dir
+    t.session!.dir = undefined as unknown as string
+    try {
+      expect(await t.tools.call('room_send', { type: 'note', text: 'coordination only' })).toContain('coordination only')
+      expect(t.room.messages().some(message => message.type === 'note' && message.text === 'coordination only')).toBe(true)
+    } finally { t.session!.dir = fixtureDir }
+  })
+
   it('lists each file of a per-peer conflict notice in room_state and room_state path=', async () => {
     const t = setup()
     const conflicts = t.room.doc.getMap<any>('conflicts')

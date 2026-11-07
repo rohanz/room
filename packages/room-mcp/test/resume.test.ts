@@ -569,7 +569,8 @@ describe('resumed worker boundaries', () => {
     expect((await workerByTag(t.dir, 'bgdone'))).toMatchObject({ status: 'done' })
     const registry = await registryForDir(t.dir)
     expect((await registry.status(record.id))?.note).toBe(said)
-    expect(t.room.messages().filter(m => m.type === 'done' && m.summary.startsWith(said))).toHaveLength(1)
+    // The session's projector posts a resumed follow-up's completion after the exit is recorded: wait for its pass.
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done' && m.summary.startsWith(said))).toHaveLength(1), { timeout: 10_000 })
   })
 
   it('fails a resumed nonzero exit with the death note', async () => {

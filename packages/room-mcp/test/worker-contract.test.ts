@@ -213,3 +213,52 @@ it('re-verifies when a project config is created after verification', () => {
     expect(listing).toHaveBeenCalledTimes(3)
   } finally { cwd.mockRestore() }
 })
+
+it('authenticates every v2 executable and refuses omission, mutation and descriptor downgrade', async () => {
+  const { EXECUTABLE_BUNDLES } = await import('../src/hosts/codex-install.js')
+  const dir = mkdtempSync(join(tmpdir(), 'worker-contract-v2-')); dirs.push(dir)
+  const server = join(dir, 'plugins/cache/room/room/0.17.32/server'); mkdirSync(server, { recursive: true })
+  const hashes = Object.fromEntries(EXECUTABLE_BUNDLES.map(name => {
+    writeFileSync(join(server, name), name)
+    return [name, createHash('sha256').update(name).digest('hex')]
+  }))
+  const descriptor = { v: 2, release: '0.17.32', compat: CURRENT_COMPAT, workerRecordSchema: 1, bundleSha256: hashes }
+  const write = (value: unknown) => writeFileSync(join(server, 'compat.json'), JSON.stringify(value))
+  listing.mockReturnValue(JSON.stringify({ installed: [{ pluginId: 'room@room', version: '0.17.32' }] }))
+  write(descriptor)
+  expect(installedCodexRoomContract({ CODEX_HOME: dir })).toMatchObject({ release: '0.17.32' })
+  for (const name of EXECUTABLE_BUNDLES) {
+    writeFileSync(join(server, name), 'tampered')
+    expect(installedCodexRoomContract({ CODEX_HOME: dir }), name).toBeUndefined()
+    writeFileSync(join(server, name), name)
+    const omitted = { ...hashes }; delete omitted[name]
+    write({ ...descriptor, bundleSha256: omitted })
+    expect(installedCodexRoomContract({ CODEX_HOME: dir }), name).toBeUndefined()
+    write(descriptor)
+  }
+  write({ ...descriptor, v: 1, bundleSha256: hashes['room-mcp.mjs'] })
+  expect(installedCodexRoomContract({ CODEX_HOME: dir })).toBeUndefined()
+})
+
+
+it('invalidates a cached v2 contract when any executable changes', async () => {
+  const { EXECUTABLE_BUNDLES } = await import('../src/hosts/codex-install.js')
+  const dir = mkdtempSync(join(tmpdir(), 'worker-contract-v2-cache-')); dirs.push(dir); selectionConfig(dir)
+  const server = join(dir, 'plugins/cache/room/room/0.17.41/server'); mkdirSync(server, { recursive: true })
+  const hashes = Object.fromEntries(EXECUTABLE_BUNDLES.map(name => {
+    writeFileSync(join(server, name), name)
+    return [name, createHash('sha256').update(name).digest('hex')]
+  }))
+  writeFileSync(join(server, 'compat.json'), JSON.stringify({ v: 2, release: '0.17.41', compat: CURRENT_COMPAT, workerRecordSchema: 1, bundleSha256: hashes }))
+  listing.mockReturnValue(JSON.stringify({ installed: [{ pluginId: 'room@room', version: '0.17.41', enabled: true }] }))
+  const env = selectionEnv(dir)
+  expect(installedCodexRoomContract(env)).toBeDefined()
+  expect(installedCodexRoomContract(env)).toBeDefined()
+  expect(listing).toHaveBeenCalledTimes(1)
+  for (const name of EXECUTABLE_BUNDLES) {
+    writeFileSync(join(server, name), 'tampered')
+    expect(installedCodexRoomContract(env), name).toBeUndefined()
+    writeFileSync(join(server, name), name)
+    expect(installedCodexRoomContract(env), name).toBeDefined()
+  }
+})

@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { requireDaemonRuntime } from '../src/daemon-cutover.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -75,6 +76,7 @@ it('a lead session may ensure the daemon', async () => {
 })
 it("a nested host in a Room worker's worktree may ensure the daemon without worker variables", async () => {
   const wt = join(dir, '.room', 'workers', 'w')
+  await storageRegistration(join(dir, '.git'))
   execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'room/w', wt])
   await expect(joinSession({ dir: wt, server: 'local', name: 'Ada', room: `local/${basename(dir)}` })).rejects.toThrow('relay boundary')
   expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.any(Object))

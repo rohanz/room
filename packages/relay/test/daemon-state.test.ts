@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { WriterIdleClock, ensureLocalDaemon } from '../src/daemon.js'
 import { MemoryLoadError, RoomMemory, memoryFile } from '../src/memory.js'
-import { checkWindowsAcl } from '../src/private-state.js'
+import { checkWindowsAcl } from '@room/local-state/private-state'
 import { CURRENT_COMPAT, LEGACY_COMPAT, selectContract } from '@room/hub-core'
 
 const dirs: string[] = [], memories: RoomMemory[] = []
@@ -72,8 +72,8 @@ it('malformed discovery blocks launch without echoing private discovery contents
 })
 
 it('initializes the private root idempotently before any client/preflight/daemon writer', async () => {
-  const { privateStateDirectory, verifyPrivatePath } = await import('../src/private-state.js')
-  const { writeAtomic } = await import('../src/leases.js')
+  const { privateStateDirectory, verifyPrivatePath } = await import('@room/local-state/private-state')
+  const { writeAtomic } = await import('@room/local-state/leases')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-private-root-')); dirs.push(dir)
   const state = path.join(dir, 'room')
   // Preflight creates the root and writes first; a later daemon validates the same root.
@@ -102,8 +102,8 @@ it.each([new Error('EACCES retained leases'), [{ name: 'invalid' }]])('strict au
 })
 
 it('an atomic writer creating Room state first uses the same initializer, and unsafe existing state stays refused', async () => {
-  const { writeAtomic } = await import('../src/leases.js')
-  const { privateStateDirectory } = await import('../src/private-state.js')
+  const { writeAtomic } = await import('@room/local-state/leases')
+  const { privateStateDirectory } = await import('@room/local-state/private-state')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-atomic-private-')); dirs.push(dir)
   const state = path.join(dir, 'room')
   writeAtomic(path.join(state, 'sessions', 'first', 'record.json'), { v: 1 })

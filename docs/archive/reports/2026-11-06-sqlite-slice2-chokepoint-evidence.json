@@ -1,0 +1,3934 @@
+{
+  "status": "INCOMPLETE: source changes implemented; final dependency preview, required checks and performance acceptance blocked",
+  "baseline": "1d599fcd64191de22470a972489265f165423ec1",
+  "workerBase": "9e6e5694598349bc3175aab34186c02591525c4c",
+  "dependency": {
+    "peer": "rohanz+s2-cheap-ticket",
+    "interface": "closeStorageGates(): Promise<void> exported from @room/local-state/gate; guarded unregister refuses live tickets; durable registration protects non-fsync tickets",
+    "blocked": "Peer finished and its publication became stale. room_preview_merge excludes all its source files; current tree typecheck cannot resolve closeStorageGates. Lead is offline; room_wait reports lead finished and will not answer. Peer refresh question timed out. No files copied from peer into this overlay.",
+    "questions": [
+      "m_mw50djvodpr14y",
+      "m_mw50dkbnx015yt"
+    ]
+  },
+  "implemented": [
+    "First lifecycle read in a lazy scope acquires its one ticket; removed pre-ticket generation observation/fence. Out-of-scope hook/display reads retain validated, ticket-free semantics.",
+    "Bridge attach/relay/coordination and queued claim mirroring refresh lifecycle facts under admission; publication timeout branches reserve child tickets until underlying work settles.",
+    "Reference and upgrading docs distinguish reopen cancel-drain from completed reconciliation.",
+    "MCP close awaits late startup work and gate worker close; fixture teardown explicitly closes registry/admissions before deleting directories. Guarded unregister acknowledges drain after final effect, including idle process sweep.",
+    "Retirement transfers an already-posted active report acknowledgement to the retained run before projection can lose it.",
+    "Inventory enrichment uses one snapshot and validates its revision, avoiding repeated full snapshots and stale record/new status combinations.",
+    "Tool dispatcher lazy scope spans pre/post-handler lifecycle reads; hook/wake display preparation explicitly exits tool admission."
+  ],
+  "validation": {
+    "priorCompletePeerPreviews": {
+      "storage-admission": 16,
+      "storage-offline": 12,
+      "retirement": 35,
+      "bridge": {
+        "passed": 39,
+        "skipped": 1
+      },
+      "hook-fixes": 6,
+      "wakes-audit": 24,
+      "carry-wip": 33,
+      "preview-cache-config": 17,
+      "preview-names": 16
+    },
+    "typecheck": "Passed in complete peer previews before latest dispatcher, running-worker inventory and fixture teardown edits. Current standalone/partial tree fails missing dependency export; not counted as a code pass.",
+    "latestFailure": "worker-registry failed teardown after clone removal; explicit closeAdmittedRegistries ordering now changed, pending rerun.",
+    "notCompleted": [
+      "current worker-registry",
+      "registry-read-cache including inventory consistency regression and lifecycle budgets",
+      "done-publication",
+      "kept-publication",
+      "collect",
+      "hooks",
+      "preview-run-cache",
+      "tools/worker dispatch integration after final wrapper",
+      "final current typecheck",
+      "plugin rebuild",
+      "final full integrated suite"
+    ],
+    "limits": "Each prior test file ran separately with --maxWorkers 1 through unsandboxed named-peer previews. Native helper/process identity probes failed in local sandbox; unsandboxed storage-admission passed. carry-wip and three preview regressions passed unchanged with cheaper gates; no isolated root cause established for the earlier integrated failures. Prior passes are interim evidence, not final-tree validation.",
+    "hashes": {
+      "storageAndRetirement": "40270688db72ca78632ea2b48ea4f94c8885ae3e63e4a9be1122b09b42185e4a",
+      "bridgeHooks": "c1f3ec2899b9f92186591453a89d86e551fe0e1d52ef0a103b3c5aa05d096a6c",
+      "remainingRegressions": "f3877d6e181cc407699ddc5f1bf86fcd0f0858f1c541f573bbd270e812a03bdc",
+      "typecheckBridgeBoundary": "45a93637ed86e492328ab0b8536d7ce1a0a1ab972746540ddd892a536ed8d817",
+      "storageOfflineRegistryAttempt": "756d4a705c848d8b495610cc0ea0ea53359d6037eff379f066c93900952b7c0b"
+    },
+    "finalPreview": {
+      "people": [
+        "rohanz+s2-cheap-ticket",
+        "rohanz+slice2-lead"
+      ],
+      "inputHash": "3293314c19e9b71761cc67297bea6abc086b710a12dfbb17ce3adf09e3ff2b5a",
+      "command": "git diff --check && npm run typecheck",
+      "coverage": "PARTIAL",
+      "exit": 2,
+      "error": "packages/room-mcp/src/storage-admission.ts(13,30): TS2724: @room/local-state/gate has no exported member closeStorageGates",
+      "exclusions": "Stale cheap-ticket rev19 excluded; lead generated app bundles excluded; historical wrapper text exceeded Room read limit. Not validation of integrated tree."
+    }
+  },
+  "performance": {
+    "acceptance": "NOT ESTABLISHED",
+    "tools": "20 alternating AB/BA pairs on one machine. room_done p50 +22.36% and spawnAdmission +20.37% exceed the <=20% requirement. Additional inventory/dispatcher changes not remeasured. Other p50 changes: state -6.28%, send +6.30%, collect +0.26%. Full p95/p99 and raw samples below.",
+    "hooks": "40 alternating pairs: codex before-edit baseline/candidate p50 45.59/45.78 ms, p95 60.85/51.91 ms; claude before-edit p50 44.04/43.94 ms, p95 49.39/51.16 ms. These do not establish strict no-regression. Need second interleaved current-tree round.",
+    "diagnosis": "3-pair diagnostic: arbitration selection around 0.2-0.5 ms on both; candidate bound hooks add two gate lstat validations (20 JS filesystem calls versus baseline18). No per-hook fsync/registration on MCP main thread. Initial SessionStart overlaps registry startup I/O. Historical +6 ms codex cause not conclusively isolated. JS counts exclude worker/native/Git I/O.",
+    "invalidFixtureAttempts": "Earlier smoke runs exposed absent recipient, a finished fixture using a live pid (collect waited15s), and unignored .room worktrees (collection refused). Both baseline and candidate were affected. Fixed fixtures before retained20-pair success run; failed smoke timings are not reported as valid operation timings.",
+    "commands": [
+      "node --import tsx scripts/measure-lifecycle-interleaved.mts --baseline-root=<isolated-1d599fcd-checkout> --phase=tools --samples=20",
+      "node --import tsx scripts/measure-lifecycle-interleaved.mts --baseline-root=<isolated-1d599fcd-checkout> --phase=hooks --samples=40",
+      "MEASURE_HOOKS_DIAGNOSTIC=1 node --import tsx scripts/measure-lifecycle-interleaved.mts --baseline-root=<isolated-1d599fcd-checkout> --phase=hooks --samples=3"
+    ],
+    "hashes": {
+      "hooks": "3a1981f3a65dfab703e5b6feeee1e3b3ca7822e8ecb3605ce2e9e41f538e6e55",
+      "tools": "c3618e1329e10f570b0a85b53165aee90d11f56cfe5a02ff5a0ff20aeb125bbd"
+    }
+  },
+  "measurements": {
+    "tools": [
+      {
+        "kind": "environment",
+        "at": "2026-11-06T13:19:34.499Z",
+        "phase": "tools",
+        "samples": 20,
+        "baseline": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/.room/workers/s2-chokepoint/.room/lifecycle-baseline",
+        "candidate": "/Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/",
+        "node": "v22.23.4",
+        "executable": "/usr/local/bin/node",
+        "platform": "darwin",
+        "arch": "arm64",
+        "cpu": "Apple M2 Max",
+        "memory": 34359738368,
+        "filesystem": 26,
+        "fixture": "fresh private Git clone and child per observation; alternating AB/BA pairs; OS page cache not cleared; one child at a time; hooks use real arbitration with in-memory session; tools use two workers, no host/model; collect applies one file with keep=true; spawn admission excludes checkout and host launch"
+      },
+      {
+        "kind": "sample",
+        "sample": 0,
+        "label": "baseline",
+        "room_state": {
+          "ms": 33.261708999999996
+        },
+        "room_send": {
+          "ms": 75.98654199999999
+        },
+        "room_done": {
+          "ms": 15.332042000000001
+        },
+        "collect": {
+          "ms": 562.06825
+        },
+        "spawnAdmission": {
+          "ms": 88.53979099999992
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 0,
+        "label": "candidate",
+        "room_state": {
+          "ms": 30.012958000000026
+        },
+        "room_send": {
+          "ms": 79.12004200000001
+        },
+        "room_done": {
+          "ms": 18.067333999999846
+        },
+        "collect": {
+          "ms": 537.0920839999999
+        },
+        "spawnAdmission": {
+          "ms": 101.26358400000004
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 1,
+        "label": "candidate",
+        "room_state": {
+          "ms": 31.172541999999908
+        },
+        "room_send": {
+          "ms": 100.383958
+        },
+        "room_done": {
+          "ms": 18.99391700000001
+        },
+        "collect": {
+          "ms": 590.46325
+        },
+        "spawnAdmission": {
+          "ms": 110.76312499999995
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 1,
+        "label": "baseline",
+        "room_state": {
+          "ms": 31.959790999999996
+        },
+        "room_send": {
+          "ms": 67.96408300000007
+        },
+        "room_done": {
+          "ms": 16.175917000000027
+        },
+        "collect": {
+          "ms": 545.8136250000001
+        },
+        "spawnAdmission": {
+          "ms": 80.61516699999993
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 2,
+        "label": "baseline",
+        "room_state": {
+          "ms": 34.73929199999998
+        },
+        "room_send": {
+          "ms": 81.89254100000005
+        },
+        "room_done": {
+          "ms": 13.326958999999988
+        },
+        "collect": {
+          "ms": 774.5864159999999
+        },
+        "spawnAdmission": {
+          "ms": 264.26191700000004
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 2,
+        "label": "candidate",
+        "room_state": {
+          "ms": 29.183207999999922
+        },
+        "room_send": {
+          "ms": 84.99804199999994
+        },
+        "room_done": {
+          "ms": 18.977249999999913
+        },
+        "collect": {
+          "ms": 670.659625
+        },
+        "spawnAdmission": {
+          "ms": 138.1898329999999
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 3,
+        "label": "candidate",
+        "room_state": {
+          "ms": 33.063084
+        },
+        "room_send": {
+          "ms": 77.92504199999996
+        },
+        "room_done": {
+          "ms": 38.827541999999994
+        },
+        "collect": {
+          "ms": 677.7660000000001
+        },
+        "spawnAdmission": {
+          "ms": 141.11520900000005
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 3,
+        "label": "baseline",
+        "room_state": {
+          "ms": 59.76241599999992
+        },
+        "room_send": {
+          "ms": 83.45670899999993
+        },
+        "room_done": {
+          "ms": 15.828792000000021
+        },
+        "collect": {
+          "ms": 545.6251669999999
+        },
+        "spawnAdmission": {
+          "ms": 78.98366699999997
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 4,
+        "label": "baseline",
+        "room_state": {
+          "ms": 34.18729200000007
+        },
+        "room_send": {
+          "ms": 86.503916
+        },
+        "room_done": {
+          "ms": 16.218459000000053
+        },
+        "collect": {
+          "ms": 523.7638330000001
+        },
+        "spawnAdmission": {
+          "ms": 76.68391700000006
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 4,
+        "label": "candidate",
+        "room_state": {
+          "ms": 31.28037500000005
+        },
+        "room_send": {
+          "ms": 70.75545899999997
+        },
+        "room_done": {
+          "ms": 16.996624999999995
+        },
+        "collect": {
+          "ms": 514.5267909999999
+        },
+        "spawnAdmission": {
+          "ms": 100.21512499999994
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 5,
+        "label": "candidate",
+        "room_state": {
+          "ms": 29.10024999999996
+        },
+        "room_send": {
+          "ms": 73.99874999999997
+        },
+        "room_done": {
+          "ms": 18.60970800000007
+        },
+        "collect": {
+          "ms": 518.519166
+        },
+        "spawnAdmission": {
+          "ms": 98.93166599999995
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 5,
+        "label": "baseline",
+        "room_state": {
+          "ms": 38.37245900000005
+        },
+        "room_send": {
+          "ms": 66.29329200000006
+        },
+        "room_done": {
+          "ms": 14.765416999999957
+        },
+        "collect": {
+          "ms": 535.709
+        },
+        "spawnAdmission": {
+          "ms": 80.00879200000008
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 6,
+        "label": "baseline",
+        "room_state": {
+          "ms": 31.20049999999992
+        },
+        "room_send": {
+          "ms": 66.20229200000006
+        },
+        "room_done": {
+          "ms": 14.743625000000065
+        },
+        "collect": {
+          "ms": 580.252834
+        },
+        "spawnAdmission": {
+          "ms": 154.56050000000005
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 6,
+        "label": "candidate",
+        "room_state": {
+          "ms": 31.260208000000034
+        },
+        "room_send": {
+          "ms": 69.37083299999995
+        },
+        "room_done": {
+          "ms": 17.43816700000002
+        },
+        "collect": {
+          "ms": 545.538709
+        },
+        "spawnAdmission": {
+          "ms": 95.715375
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 7,
+        "label": "candidate",
+        "room_state": {
+          "ms": 31.605707999999936
+        },
+        "room_send": {
+          "ms": 69.51208300000008
+        },
+        "room_done": {
+          "ms": 17.312834000000066
+        },
+        "collect": {
+          "ms": 538.02025
+        },
+        "spawnAdmission": {
+          "ms": 98.56720799999994
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 7,
+        "label": "baseline",
+        "room_state": {
+          "ms": 28.65308399999992
+        },
+        "room_send": {
+          "ms": 65.78804100000002
+        },
+        "room_done": {
+          "ms": 15.371125000000006
+        },
+        "collect": {
+          "ms": 548.872583
+        },
+        "spawnAdmission": {
+          "ms": 101.8911250000001
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 8,
+        "label": "baseline",
+        "room_state": {
+          "ms": 28.488459000000034
+        },
+        "room_send": {
+          "ms": 69.62808299999995
+        },
+        "room_done": {
+          "ms": 17.38495899999998
+        },
+        "collect": {
+          "ms": 522.5017499999999
+        },
+        "spawnAdmission": {
+          "ms": 77.67737499999998
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 8,
+        "label": "candidate",
+        "room_state": {
+          "ms": 30.244792000000075
+        },
+        "room_send": {
+          "ms": 76.00562500000001
+        },
+        "room_done": {
+          "ms": 18.472375000000056
+        },
+        "collect": {
+          "ms": 619.5184160000001
+        },
+        "spawnAdmission": {
+          "ms": 168.7979580000001
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 9,
+        "label": "candidate",
+        "room_state": {
+          "ms": 34.06050000000005
+        },
+        "room_send": {
+          "ms": 81.23925000000008
+        },
+        "room_done": {
+          "ms": 18.59024999999997
+        },
+        "collect": {
+          "ms": 624.954667
+        },
+        "spawnAdmission": {
+          "ms": 151.03287499999988
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 9,
+        "label": "baseline",
+        "room_state": {
+          "ms": 28.510958999999957
+        },
+        "room_send": {
+          "ms": 64.56004199999995
+        },
+        "room_done": {
+          "ms": 15.058499999999981
+        },
+        "collect": {
+          "ms": 530.470625
+        },
+        "spawnAdmission": {
+          "ms": 86.72804100000008
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 10,
+        "label": "baseline",
+        "room_state": {
+          "ms": 29.824958000000038
+        },
+        "room_send": {
+          "ms": 65.34195900000009
+        },
+        "room_done": {
+          "ms": 14.191749999999956
+        },
+        "collect": {
+          "ms": 501.28037500000016
+        },
+        "spawnAdmission": {
+          "ms": 80.87245899999994
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 10,
+        "label": "candidate",
+        "room_state": {
+          "ms": 31.297374999999988
+        },
+        "room_send": {
+          "ms": 70.703667
+        },
+        "room_done": {
+          "ms": 17.227374999999938
+        },
+        "collect": {
+          "ms": 519.1002920000001
+        },
+        "spawnAdmission": {
+          "ms": 96.09795899999995
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 11,
+        "label": "candidate",
+        "room_state": {
+          "ms": 28.456749999999943
+        },
+        "room_send": {
+          "ms": 71.8655
+        },
+        "room_done": {
+          "ms": 18.254208999999946
+        },
+        "collect": {
+          "ms": 515.4637090000001
+        },
+        "spawnAdmission": {
+          "ms": 93.40712499999995
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 11,
+        "label": "baseline",
+        "room_state": {
+          "ms": 32.313125000000014
+        },
+        "room_send": {
+          "ms": 67.66483400000004
+        },
+        "room_done": {
+          "ms": 14.246624999999995
+        },
+        "collect": {
+          "ms": 559.5476669999999
+        },
+        "spawnAdmission": {
+          "ms": 113.8106670000002
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 12,
+        "label": "baseline",
+        "room_state": {
+          "ms": 37.816167000000064
+        },
+        "room_send": {
+          "ms": 77.36458300000004
+        },
+        "room_done": {
+          "ms": 15.525041999999985
+        },
+        "collect": {
+          "ms": 503.4109169999999
+        },
+        "spawnAdmission": {
+          "ms": 84.75525000000016
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 12,
+        "label": "candidate",
+        "room_state": {
+          "ms": 28.795417000000043
+        },
+        "room_send": {
+          "ms": 72.45504199999993
+        },
+        "room_done": {
+          "ms": 16.448167000000012
+        },
+        "collect": {
+          "ms": 521.4404169999999
+        },
+        "spawnAdmission": {
+          "ms": 94.52800000000002
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 13,
+        "label": "candidate",
+        "room_state": {
+          "ms": 29.868875000000003
+        },
+        "room_send": {
+          "ms": 69.71233300000006
+        },
+        "room_done": {
+          "ms": 17.335000000000036
+        },
+        "collect": {
+          "ms": 516.366583
+        },
+        "spawnAdmission": {
+          "ms": 93.63416700000016
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 13,
+        "label": "baseline",
+        "room_state": {
+          "ms": 28.051582999999937
+        },
+        "room_send": {
+          "ms": 67.13354199999992
+        },
+        "room_done": {
+          "ms": 13.11566700000003
+        },
+        "collect": {
+          "ms": 507.66558299999997
+        },
+        "spawnAdmission": {
+          "ms": 83.76891599999999
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 14,
+        "label": "baseline",
+        "room_state": {
+          "ms": 33.473292000000015
+        },
+        "room_send": {
+          "ms": 65.84291700000006
+        },
+        "room_done": {
+          "ms": 12.267875000000004
+        },
+        "collect": {
+          "ms": 495.0050840000001
+        },
+        "spawnAdmission": {
+          "ms": 74.63900000000012
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 14,
+        "label": "candidate",
+        "room_state": {
+          "ms": 32.823375000000055
+        },
+        "room_send": {
+          "ms": 76.28329099999996
+        },
+        "room_done": {
+          "ms": 19.509500000000003
+        },
+        "collect": {
+          "ms": 553.6406250000001
+        },
+        "spawnAdmission": {
+          "ms": 94.82566700000007
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 15,
+        "label": "candidate",
+        "room_state": {
+          "ms": 31.371334000000047
+        },
+        "room_send": {
+          "ms": 69.47183399999994
+        },
+        "room_done": {
+          "ms": 17.170000000000073
+        },
+        "collect": {
+          "ms": 511.18541700000003
+        },
+        "spawnAdmission": {
+          "ms": 94.56358399999999
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 15,
+        "label": "baseline",
+        "room_state": {
+          "ms": 41.06279200000006
+        },
+        "room_send": {
+          "ms": 73.33695799999998
+        },
+        "room_done": {
+          "ms": 17.06812500000001
+        },
+        "collect": {
+          "ms": 556.388584
+        },
+        "spawnAdmission": {
+          "ms": 76.55312500000014
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 16,
+        "label": "baseline",
+        "room_state": {
+          "ms": 33.83350000000007
+        },
+        "room_send": {
+          "ms": 77.48958400000004
+        },
+        "room_done": {
+          "ms": 15.069707999999991
+        },
+        "collect": {
+          "ms": 524.676875
+        },
+        "spawnAdmission": {
+          "ms": 77.43337500000007
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 16,
+        "label": "candidate",
+        "room_state": {
+          "ms": 29.319624999999974
+        },
+        "room_send": {
+          "ms": 71.01333399999999
+        },
+        "room_done": {
+          "ms": 16.37824999999998
+        },
+        "collect": {
+          "ms": 510.41158400000006
+        },
+        "spawnAdmission": {
+          "ms": 97.34841699999993
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 17,
+        "label": "candidate",
+        "room_state": {
+          "ms": 28.621792000000028
+        },
+        "room_send": {
+          "ms": 71.83954200000005
+        },
+        "room_done": {
+          "ms": 17.114749999999958
+        },
+        "collect": {
+          "ms": 526.6900830000001
+        },
+        "spawnAdmission": {
+          "ms": 97.34091700000022
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 17,
+        "label": "baseline",
+        "room_state": {
+          "ms": 36.84800000000007
+        },
+        "room_send": {
+          "ms": 78.7828340000001
+        },
+        "room_done": {
+          "ms": 13.773333999999977
+        },
+        "collect": {
+          "ms": 519.087
+        },
+        "spawnAdmission": {
+          "ms": 73.73512499999993
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 18,
+        "label": "baseline",
+        "room_state": {
+          "ms": 28.973375000000033
+        },
+        "room_send": {
+          "ms": 68.16820800000005
+        },
+        "room_done": {
+          "ms": 12.173541999999998
+        },
+        "collect": {
+          "ms": 568.7927080000001
+        },
+        "spawnAdmission": {
+          "ms": 92.35033399999998
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 18,
+        "label": "candidate",
+        "room_state": {
+          "ms": 34.56162500000005
+        },
+        "room_send": {
+          "ms": 83.94112500000006
+        },
+        "room_done": {
+          "ms": 19.810625000000073
+        },
+        "collect": {
+          "ms": 561.3641250000001
+        },
+        "spawnAdmission": {
+          "ms": 88.52370900000005
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 19,
+        "label": "candidate",
+        "room_state": {
+          "ms": 35.913291999999956
+        },
+        "room_send": {
+          "ms": 76.83620800000006
+        },
+        "room_done": {
+          "ms": 19.41508399999998
+        },
+        "collect": {
+          "ms": 568.2243329999999
+        },
+        "spawnAdmission": {
+          "ms": 113.6417919999999
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 19,
+        "label": "baseline",
+        "room_state": {
+          "ms": 62.19608299999993
+        },
+        "room_send": {
+          "ms": 76.98033399999997
+        },
+        "room_done": {
+          "ms": 13.998249999999985
+        },
+        "collect": {
+          "ms": 621.7965
+        },
+        "spawnAdmission": {
+          "ms": 93.67283399999997
+        }
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "room_state",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 33.261708999999996,
+        "p95Ms": 59.76241599999992,
+        "p99Ms": 62.19608299999993
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "room_send",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 68.16820800000005,
+        "p95Ms": 83.45670899999993,
+        "p99Ms": 86.503916
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "room_done",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 14.765416999999957,
+        "p95Ms": 17.06812500000001,
+        "p99Ms": 17.38495899999998
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "collect",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 535.709,
+        "p95Ms": 621.7965,
+        "p99Ms": 774.5864159999999
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "spawnAdmission",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 80.87245899999994,
+        "p95Ms": 154.56050000000005,
+        "p99Ms": 264.26191700000004
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "room_state",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 31.172541999999908,
+        "p95Ms": 34.56162500000005,
+        "p99Ms": 35.913291999999956
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "room_send",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 72.45504199999993,
+        "p95Ms": 84.99804199999994,
+        "p99Ms": 100.383958
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "room_done",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 18.067333999999846,
+        "p95Ms": 19.810625000000073,
+        "p99Ms": 38.827541999999994
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "collect",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 537.0920839999999,
+        "p95Ms": 670.659625,
+        "p99Ms": 677.7660000000001
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "spawnAdmission",
+        "successfulSamples": 20,
+        "failedSamples": 0,
+        "p50Ms": 97.34841699999993,
+        "p95Ms": 151.03287499999988,
+        "p99Ms": 168.7979580000001
+      }
+    ],
+    "hooks-before": [
+      {
+        "kind": "environment",
+        "at": "2026-11-06T13:14:57.827Z",
+        "phase": "hooks",
+        "samples": 40,
+        "baseline": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/.room/workers/s2-chokepoint/.room/lifecycle-baseline",
+        "candidate": "/Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/",
+        "node": "v22.23.4",
+        "executable": "/usr/local/bin/node",
+        "platform": "darwin",
+        "arch": "arm64",
+        "cpu": "Apple M2 Max",
+        "memory": 34359738368,
+        "filesystem": 26,
+        "fixture": "fresh private Git clone and child per observation; alternating AB/BA pairs; OS page cache not cleared; one child at a time; hooks use real arbitration with in-memory session; tools use two workers, no host/model; collect applies one file with keep=true; spawn admission excludes checkout and host launch"
+      },
+      {
+        "kind": "sample",
+        "sample": 0,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 100.18166599999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.72066700000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.40324999999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.51916700000015,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 0,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 93.84887500000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.735124999999925,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 111.13866700000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 61.269250000000056,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 1,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 102.45945799999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 42.99770799999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 92.38829199999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.44204100000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 1,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 95.74437500000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.91679099999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 95.05075,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.03483399999993,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 2,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 91.73333300000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.63158299999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.9872079999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.20104099999992,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 2,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 107.20545899999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 51.91266699999994,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 93.52970800000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.496583999999984,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 3,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 92.99845900000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.14708400000006,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.99687500000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.06816600000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 3,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 95.12537499999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.97995800000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.11283400000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.45662500000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 4,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 95.80887499999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 54.97820899999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.03820800000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.03666599999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 4,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 100.719833,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.81766600000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.67529100000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.614124999999945,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 5,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 90.246125,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.65437500000007,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.81437500000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.001667,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 5,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 99.670166,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 50.88754199999994,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.37900000000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.712875000000054,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 6,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.142875,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.405958000000055,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 91.36458300000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.400208999999904,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 6,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 95.08637499999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.18787499999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 92.29562499999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.734083000000055,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 7,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 94.18445800000006,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.64925000000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.74924999999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.86983299999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 7,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 91.37599999999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 50.038749999999936,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.94512500000008,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.66445799999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 8,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 90.31624999999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.94366699999989,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.20904100000007,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.02383299999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 8,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 91.51862499999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.85720900000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.81841700000007,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.74208299999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 9,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 88.52770800000008,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.55104200000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.18000000000006,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 41.82454199999995,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 9,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.56170900000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.23320799999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.78712499999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.65954199999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 10,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.58216699999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.524875000000065,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 94.80799999999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.65812500000004,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 10,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 90.01075000000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.34141599999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 91.10816699999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.67583300000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 11,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 88.15104099999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.70012499999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.22512499999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.26791700000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 11,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 97.33829200000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.177082999999925,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.30295899999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.512042000000065,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 12,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 90.77541699999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.21641699999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.64162499999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.83504099999993,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 12,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 94.503375,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.265750000000025,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.83887500000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.38129100000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 13,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 93.88833299999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.50741700000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 94.37141700000006,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.23058400000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 13,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 90.545458,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.312082999999916,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 87.77154200000007,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.591249999999945,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 14,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.46908300000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.370457999999985,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.29358300000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.579207999999994,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 14,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 89.94687500000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.66458399999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 101.58195799999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.87041599999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 15,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 88.93270800000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.77716699999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 89.36779200000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.21550000000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 15,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 89.42666700000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.25820799999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 92.57158299999992,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.76079100000004,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 16,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 90.92104100000006,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 46.099333,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 95.69816600000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.955999999999904,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 16,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 92.31816700000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.101749999999925,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.34124999999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.441749999999956,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 17,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 88.75520900000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.16783299999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.554125,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.05104099999994,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 17,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 159.41274999999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 61.667625000000044,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 103.285125,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 49.394624999999905,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 18,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 96.68858300000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 50.24041700000009,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 95.56904199999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.73700000000008,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 18,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 95.17991699999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.822208000000046,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 112.73720800000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 49.43316600000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 19,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 107.65866600000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.292416,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 97.76049999999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.798167000000035,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 19,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 91.41116700000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.025041999999985,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 188.508875,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 93.6712500000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 20,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 784.9393749999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 79.58983399999988,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 101.85891700000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 47.61545799999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 20,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 109.48962499999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 55.43025,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 98.41399999999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.082042,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 21,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 102.35700000000008,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.547207999999955,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 99.67766600000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.68820800000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 21,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 94.29537499999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.66787499999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 96.30879199999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.00512500000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 22,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 96.21337499999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.436874999999986,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 93.48820799999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.60979199999997,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 22,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 104.81554200000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.70358399999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 100.0675,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.85487499999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 23,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 95.43141700000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.50845800000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 96.99879099999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.79937499999994,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 23,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.9925,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.39720799999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 95.34950000000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.85370799999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 24,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 99.674083,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 60.84825000000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 91.42220800000007,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.058208000000036,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 24,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 94.12741700000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.24345800000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 94.95616600000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.33962500000007,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 25,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 97.68825000000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 49.7355,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 101.60070900000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 51.16395799999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 25,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 102.08562499999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.594791999999984,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 109.03374999999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.36675000000014,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 26,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 93.22666599999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 46.113707999999974,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 92.02945799999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.480125000000044,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 26,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 96.77004199999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.46174999999994,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 93.41874999999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.94358299999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 27,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 95.56025,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.02745900000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 99.78395799999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.49379099999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 27,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 91.26295900000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.856042,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 93.09450000000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 48.37579199999993,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 28,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 100.53799999999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 46.09125000000006,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 94.51237500000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.47975000000008,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 28,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 94.66749999999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 42.351125000000025,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 124.50804199999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.6801670000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 29,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 90.31120799999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 46.19341599999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.43045900000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.48620800000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 29,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 96.686667,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.95637499999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 107.85237499999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.714500000000044,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 30,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 91.87474999999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.90224999999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 104.35591700000009,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 41.488000000000056,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 30,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 92.97066699999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.322667000000024,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 95.46974999999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.138000000000034,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 31,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 110.5335,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.661500000000046,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 95.407375,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.85804099999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 31,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 90.76433299999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.90141700000004,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 98.83720800000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.41091700000004,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 32,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 103.58229199999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.96854200000007,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 96.62900000000013,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.631875000000036,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 32,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 96.70129200000008,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.84495800000002,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 94.33641699999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.81212500000004,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 33,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 102.50187500000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 46.39362500000004,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 88.52712499999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.83808299999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 33,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 96.33133300000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 51.082584,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 96.63129200000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.02562499999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 34,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 100.12837499999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 49.40208299999995,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 103.45970799999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 43.48524999999995,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 34,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 107.520333,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.50145799999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 96.58512500000006,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 46.44537500000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 35,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 95.70070800000002,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 55.95875000000001,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 92.19729199999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.51029200000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 35,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.909291,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.924082999999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 91.40295800000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.32445800000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 36,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 102.14720800000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.01187500000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 93.48766599999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.12645799999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 36,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 99.90116700000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 46.15808400000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 138.22966699999995,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 66.78283299999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 37,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 98.22904199999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.479582999999934,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 105.61433399999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.41945800000008,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 37,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 92.58387499999998,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 44.47279200000003,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 115.35070800000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 51.196417,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 38,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 97.81641699999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 50.4180409999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 99.573666,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.426124999999956,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 38,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 102.61962499999993,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 48.869375000000105,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 96.5864580000001,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 47.185542000000055,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 39,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 99.67395799999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 49.52170899999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 100.32666700000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 48.11812500000008,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 39,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 98.91600000000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.789709000000016,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.session-start": {
+          "ms": 90.03654199999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.692499999999995,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1
+        }
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.codex.session-start",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 94.29537499999998,
+        "p95Ms": 103.58229199999994,
+        "p99Ms": 784.9393749999999
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.codex.before-edit",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 45.594791999999984,
+        "p95Ms": 60.84825000000001,
+        "p99Ms": 79.58983399999988
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.claude.session-start",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 93.48766599999999,
+        "p95Ms": 109.03374999999994,
+        "p99Ms": 188.508875
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.claude.before-edit",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 44.03666599999997,
+        "p95Ms": 49.394624999999905,
+        "p99Ms": 93.6712500000001
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.codex.session-start",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 95.17991699999993,
+        "p95Ms": 107.65866600000004,
+        "p99Ms": 110.5335
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.codex.before-edit",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 45.77716699999996,
+        "p95Ms": 51.91266699999994,
+        "p99Ms": 55.95875000000001
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.claude.session-start",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 94.33641699999998,
+        "p95Ms": 112.73720800000001,
+        "p99Ms": 138.22966699999995
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.claude.before-edit",
+        "successfulSamples": 40,
+        "failedSamples": 0,
+        "p50Ms": 43.94358299999999,
+        "p95Ms": 51.16395799999998,
+        "p99Ms": 66.78283299999998
+      }
+    ],
+    "hook-diagnostic": [
+      {
+        "kind": "environment",
+        "at": "2026-11-06T13:22:05.758Z",
+        "phase": "hooks",
+        "samples": 3,
+        "baseline": "/Users/rohan/Documents/progwork/aitinkerhackathon/.room/workers/slice2-lead/.room/workers/s2-chokepoint/.room/lifecycle-baseline",
+        "candidate": "/Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/",
+        "node": "v22.23.4",
+        "executable": "/usr/local/bin/node",
+        "platform": "darwin",
+        "arch": "arm64",
+        "cpu": "Apple M2 Max",
+        "memory": 34359738368,
+        "filesystem": 26,
+        "fixture": "fresh private Git clone and child per observation; alternating AB/BA pairs; OS page cache not cleared; one child at a time; hooks use real arbitration with in-memory session; tools use two workers, no host/model; collect applies one file with keep=true; spawn admission excludes checkout and host launch"
+      },
+      {
+        "kind": "sample",
+        "sample": 0,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 98.75070799999992,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.4292089999999007
+        },
+        "bound.codex.before-edit": {
+          "ms": 47.23483399999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.16112499999997
+        },
+        "bound.claude.session-start": {
+          "ms": 235.05008399999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.4439159999999447
+        },
+        "bound.claude.before-edit": {
+          "ms": 56.48874999999998,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.165958000000046
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 0,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 119.74908300000004,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 70,
+            "byApi": {
+              "fs.statSync": 8,
+              "fs.mkdirSync": 7,
+              "fs.lstatSync": 21,
+              "fs.readdirSync": 28,
+              "fs.watch": 2,
+              "fs.openSync": 1,
+              "fs.fstatSync": 1,
+              "fs.fchmodSync": 1,
+              "fs.closeSync": 1
+            }
+          },
+          "selectionMs": 0.5021669999999858
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.63862500000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.22395800000003874
+        },
+        "bound.claude.session-start": {
+          "ms": 88.892834,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.24658300000010058
+        },
+        "bound.claude.before-edit": {
+          "ms": 42.956957999999986,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.13891699999999219
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 1,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 91.52137500000003,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 70,
+            "byApi": {
+              "fs.statSync": 8,
+              "fs.mkdirSync": 7,
+              "fs.lstatSync": 21,
+              "fs.readdirSync": 28,
+              "fs.watch": 2,
+              "fs.openSync": 1,
+              "fs.fstatSync": 1,
+              "fs.fchmodSync": 1,
+              "fs.closeSync": 1
+            }
+          },
+          "selectionMs": 0.4332920000000513
+        },
+        "bound.codex.before-edit": {
+          "ms": 43.30170899999996,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.21325000000001637
+        },
+        "bound.claude.session-start": {
+          "ms": 94.69779100000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.21029199999998127
+        },
+        "bound.claude.before-edit": {
+          "ms": 45.59120800000005,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.17337499999996453
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 1,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 96.39487499999996,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.4485829999999851
+        },
+        "bound.codex.before-edit": {
+          "ms": 54.165167,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.18295799999998508
+        },
+        "bound.claude.session-start": {
+          "ms": 91.69191699999999,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.4692090000000917
+        },
+        "bound.claude.before-edit": {
+          "ms": 41.48933299999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.3586250000000746
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 2,
+        "label": "baseline",
+        "bound.codex.session-start": {
+          "ms": 99.62,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.4255829999999605
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.0742919999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.2390420000000404
+        },
+        "bound.claude.session-start": {
+          "ms": 94.88920799999994,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.1668329999999969
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.57679200000007,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 18,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.15412500000002183
+        }
+      },
+      {
+        "kind": "sample",
+        "sample": 2,
+        "label": "candidate",
+        "bound.codex.session-start": {
+          "ms": 96.51354199999997,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 56,
+            "byApi": {
+              "fs.statSync": 6,
+              "fs.mkdirSync": 7,
+              "fs.lstatSync": 17,
+              "fs.readdirSync": 20,
+              "fs.watch": 2,
+              "fs.openSync": 1,
+              "fs.fstatSync": 1,
+              "fs.fchmodSync": 1,
+              "fs.closeSync": 1
+            }
+          },
+          "selectionMs": 0.5135000000000218
+        },
+        "bound.codex.before-edit": {
+          "ms": 45.391624999999976,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.25033300000006875
+        },
+        "bound.claude.session-start": {
+          "ms": 91.29825000000005,
+          "stdoutBytes": 106,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.20562500000005457
+        },
+        "bound.claude.before-edit": {
+          "ms": 44.14895799999999,
+          "stdoutBytes": 0,
+          "stderr": "",
+          "ipcContacts": 1,
+          "fs": {
+            "total": 20,
+            "byApi": {
+              "fs.statSync": 2,
+              "fs.lstatSync": 2,
+              "fs.readdirSync": 16
+            }
+          },
+          "selectionMs": 0.15850000000000364
+        }
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.codex.session-start",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 98.75070799999992,
+        "p95Ms": 99.62,
+        "p99Ms": 99.62
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.codex.before-edit",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 47.23483399999998,
+        "p95Ms": 54.165167,
+        "p99Ms": 54.165167
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.claude.session-start",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 94.88920799999994,
+        "p95Ms": 235.05008399999997,
+        "p99Ms": 235.05008399999997
+      },
+      {
+        "kind": "summary",
+        "label": "baseline",
+        "operation": "bound.claude.before-edit",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 44.57679200000007,
+        "p95Ms": 56.48874999999998,
+        "p99Ms": 56.48874999999998
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.codex.session-start",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 96.51354199999997,
+        "p95Ms": 119.74908300000004,
+        "p99Ms": 119.74908300000004
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.codex.before-edit",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 45.391624999999976,
+        "p95Ms": 45.63862500000005,
+        "p99Ms": 45.63862500000005
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.claude.session-start",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 91.29825000000005,
+        "p95Ms": 94.69779100000005,
+        "p99Ms": 94.69779100000005
+      },
+      {
+        "kind": "summary",
+        "label": "candidate",
+        "operation": "bound.claude.before-edit",
+        "successfulSamples": 3,
+        "failedSamples": 0,
+        "p50Ms": 44.14895799999999,
+        "p95Ms": 45.59120800000005,
+        "p99Ms": 45.59120800000005
+      }
+    ]
+  },
+  "testLogTails": {
+    "carry-wip": "ried paths and counts the rest 1135ms\n     \u2713 (1) spawn carries tracked, staged, deleted and untracked WIP, never ignored or Room files, and reports it 1356ms\n     \u2713 (2) collect applies only the worker's delta: lead edits to carried lines survive, nothing duplicated, staged or committed 2201ms\n     \u2713 (3) two workers spawned at different moments of the lead's WIP are collected together 5470ms\n     \u2713 (4) a worker that changed nothing after the carry has nothing to apply and retires cleanly 2078ms\n     \u2713 (5) discard keeps a recovery patch of the worker's changes only 2366ms\n     \u2713 (6) room_preview_merge agrees with collect for scenario 2 2300ms\n     \u2713 names the carried base when the lead edited the same file before spawn 1524ms\n     \u2713 worker preview treats the lead carried line as common ancestry 1187ms\n     \u2713 worker preview names an unpublished lead path as a gap and says PARTIAL, never assuming it unchanged 2778ms\n     \u2713 worker preview reports a shared lead revert to HEAD as a conflict 1238ms\n     \u2713 worker preview includes a lead commit after spawn when the lead overlay omits the file 2811ms\n     \u2713 worker preview reports competing edits to a carried line 1179ms\n     \u2713 (G1) a sibling preview keeps carried untracked files the sibling left as carried 4453ms\n     \u2713 (G2) collect leaves a large carried tracked file the worker never changed to the lead 1981ms\n     \u2713 (G2) collect still refuses a large carried tracked file the worker changed 2095ms\n     \u2713 (R1) collect keeps a worker file recreated (untracked) at a path the carry commit deleted 1923ms\n     \u2713 (R2) preview shows a worker file recreated (untracked) at a path the carry commit deleted 3206ms\n     \u2713 (R3b) collect applies a worker's executable bit when the lead's umask leaves files group-writable 2751ms\n     \u2713 (R3) collect keeps a committed worker change of a carried tracked file 2604ms\n     \u2713 (R4) collect keeps a worker change hidden by assume-unchanged on a carried tracked file 2295ms\n     \u2713 (7) a clean lead behaves exactly as 0.10.2: base is HEAD, no carried commit, no carried line 1807ms\n\n Test Files  1 passed (1)\n      Tests  33 passed (33)\n   Start at  21:06:29\n   Duration  63.11s (tests 98%, transform 1%)\n\n",
+    "storage-admission": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - import \"../../vitest.shared\" without a file extension (packages/room-mcp/vitest.config.ts:1:42). Add the file extension\n  - ESM syntax in a file loaded as CommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.0 /Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/packages/room-mcp\n\n \u2713 test/storage-admission.test.ts (16 tests) 3848ms\n   \u2713 whole-operation storage admission (5)\n     \u2713 holds collect admission from its first read through Git, acknowledgement and lane release 347ms\n     \u2713 keeps detached helpers admitted after their parent finishes and isolates concurrent/cancelled calls 373ms\n     \u2713 stops reconciliation while draining and reopens before the next admitted operation 410ms\n   \u2713 keeps an actual preview helper visible to drain after its parent call returns 381ms\n   \u2713 keeps delayed done publication admitted after the timeout returns 355ms\n   \u2713 keeps delayed kept publication admitted after the timeout returns 367ms\n\n Test Files  1 passed (1)\n      Tests  16 passed (16)\n   Start at  21:22:40\n   Duration  4.89s (tests 80%, transform 16%, import 4%)\n\n",
+    "preview-cache-config": "ommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.0 /Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/packages/room-mcp\n\nstderr | test/preview-cache-config.test.ts > rejects a sparse cached slot even when the source is a full checkout\nroom preview: abandoning /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-preview-config-Wsa8B6/.git/room-preview/7e1bf9696dc35754b176/shared-43573aa76f0b9f95: preview slot uses sparse checkout\n\nPreparing worktree (detached HEAD 20c287b)\n \u2713 test/preview-cache-config.test.ts (17 tests) 63186ms\n   \u2713 checks the full tracked tree for sparse sources and leaves their sparse settings intact 712ms\n   \u2713 abandons a warm slot when source worktree checkout conversion changes 3663ms\n   \u2713 rejects a sparse cached slot even when the source is a full checkout 3207ms\n   \u2713 applies source info attributes when creating a cache slot 3285ms\n   \u2713 replaces a slot when source info attributes change after warming 3098ms\n   \u2713 abandons a linked worktree slot when shared info attributes change 3179ms\n   \u2713 abandons a slot when core.attributesFile contents changes 3251ms\n   \u2713 abandons a slot when core.attributesFile path changes 3486ms\n   \u2713 expands a ~/ core.attributesFile path 3900ms\n   \u2713 keeps every byte of a core.attributesFile path, including a trailing space 4213ms\n   \u2713 previews on a fresh tree when Git cannot report its system attributes file 1054ms\n   \u2713 treats a nonzero integer GIT_ATTR_NOSYSTEM as disabling system attributes, as Git does 3359ms\n   \u2713 abandons a slot when a relative core.attributesFile path changes 3444ms\n   \u2713 abandons a slot when the default XDG attributes file changes 4189ms\n   \u2713 uses HOME/.config/git/attributes when XDG_CONFIG_HOME is unset 4952ms\n   \u2713 preserves filter driver subsection case in the checkout fingerprint 5055ms\n   \u2713 keeps the same slot and fingerprint for unrelated config changes 9137ms\n\n Test Files  1 passed (1)\n      Tests  17 passed (17)\n   Start at  21:07:32\n   Duration  64.09s (tests 99%, transform 1%)\n\n",
+    "preview-names": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - import \"../../vitest.shared\" without a file extension (packages/room-mcp/vitest.config.ts:1:42). Add the file extension\n  - ESM syntax in a file loaded as CommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.0 /Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/packages/room-mcp\n\n \u2713 test/preview-names.test.ts (16 tests) 19819ms\n   \u2713 a worker sees present siblings and the lead but names non-overlapping peers instead of merging them 315ms\n   \u2713 keeps finished sibling workers offline by default and retains the manifest-facts opt-in 311ms\n   \u2713 includes the caller's own running worker even without overlapping paths 560ms\n   \u2713 drops the caller display name and resolves a peer display name before building 2081ms\n   \u2713 clears a previous passing preview when a later name is refused or only names the caller 4025ms\n   \u2713 keeps another participant version when one version is held 2048ms\n   \u2713 keeps a shared version when another participant excluded the path 2780ms\n   \u2713 does not endorse a passing check on the caller tree when no peer path was applied 2204ms\n   \u2713 keeps a newer refusal after an older preview succeeds 2062ms\n   \u2713 keeps a newer success after an older preview fails late 2306ms\n\n Test Files  1 passed (1)\n      Tests  16 passed (16)\n   Start at  21:08:37\n   Duration  21.18s (tests 94%, transform 5%, import 1%)\n\n",
+    "wakes-audit": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - import \"../../vitest.shared\" without a file extension (packages/room-mcp/vitest.config.ts:1:42). Add the file extension\n  - ESM syntax in a file loaded as CommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.0 /Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/packages/room-mcp\n\nroom-mcp: wake: woke codex session wake-session via queue for question m_mw4zmzuz7pxsxx\nroom-mcp: inbox \u2192 Rohan: [notify] Kieran's agent \u2192 Rohan's agent asks: which token do we use?\nroom-mcp: wake: could not wake codex session wake-session (codex: thread is busy); retrying in 1000ms\nroom-mcp: wake: woke codex session wake-session via queue for question m_mw4zn03bznzt1o\nroom-mcp: inbox \u2192 Rohan: [notify] Kieran's agent \u2192 Rohan's agent asks: asked before you arrived\nroom-mcp: wake: woke codex session wake-session via queue for note m_mw4zn0giivgn4z\nroom-mcp: wake: woke codex session wake-session via queue for question m_mw4zn0ja0zdhsr\nroom-mcp: wake: woke codex session wake-session via queue for question m_mw4zn0rc98xqrb\n \u2713 test/wakes-audit.test.ts (24 tests) 2296ms\n   \u2713 posts an inferred answer after worker resume when answered arrives 304ms\n   \u2713 wakes (ledger test 11, MF8) (6)\n     \u2713 the Codex queue text has no body; the content is delivered once, by the reply, and never woken again 307ms\n     \u2713 the 2026-09-27 Codex queue scenario: a queued pointer, then the edit hook hands M off once; no duplicate, no loss 647ms\n\n Test Files  1 passed (1)\n      Tests  24 passed (24)\n   Start at  21:06:07\n   Duration  3.42s (tests 69%, transform 26%, import 5%)\n\n",
+    "retirement": "    \u2713 retains checkout and coordination when a borrower record blocks auto-retirement 696ms\n     \u2713 auto-retires a worker whose worktree vanished and keeps unmerged commits 1457ms\n     \u2713 keeps a vanished done worker with a host session addressable for follow-up 693ms\n     \u2713 retains a done worker and its actionable record when ignored output remains 778ms\n     \u2713 finishes a pending collection once the host is gone, under collect\u2019s ignored and uncollected rules 1549ms\n     \u2713 keeps a pending collection live while a nested worker remains, then finishes it 2187ms\n     \u2713 completes retirement of a record whose completion was never posted before it began retiring 1076ms\n     \u2713 adopts a 0.17.30 retired record kept for an unconfirmed exit once its output is fully collected 1718ms\n     \u2713 retains the record when automatic worktree cleanup cannot safely complete 678ms\n     \u2713 retires a carried worker that made no own changes and removes its worktree 1577ms\n     \u2713 saves only worker edits in a discard patch after a real carried commit 340ms\n     \u2713 counts worker commits after the carried base and recognizes their merge 461ms\n     \u2713 does not retire a carried no-op worker while collection waits for its exit 1727ms\n     \u2713 retires a merged worker whose only untracked path is a Room-linked input 1437ms\n     \u2713 distinguishes merged, dirty, ahead, clean and missing worktrees 431ms\n     \u2713 retires only this lead\u2019s exited done workers; failures need dismissal; handles block retirement 2556ms\n     \u2713 evaluates on the slow timer and cancels it when the session leaves 1309ms\n   \u2713 keeps uncommitted work visible until the lead commits and merges it; merged dirty work stays live 1646ms\n   \u2713 retires clean zero-commit and legacy workers as clean, and archives dismissed dirty file counts 2473ms\n   \u2713 clears a dismissed dirty worker sharing record while keeping another room 951ms\n   \u2713 removes a matching legacy grant during retirement so it cannot migrate on a later join 735ms\n   \u2713 retains workers when the worktree, branch, fork commit or lead git state is unknown 1876ms\n\n Test Files  1 passed (1)\n      Tests  35 passed (35)\n   Start at  21:04:10\n   Duration  29.53s (tests 97%, transform 3%, import 1%)\n\n",
+    "bridge": " unfulfilled plans; a mirror removed by others is restored 347ms\n     \u2713 stop() removes the mirrored claims and stops relaying 352ms\n   \u2713 Bridge: the team projection of a local worker (manifest \u00a75.5, registry \u00a713) (21)\n     \u2713 withdraws projected metadata and text before a narrowing policy mutation resolves 440ms\n     \u2713 keeps synchronous withdrawal when an older projection prepare completes 552ms\n     \u2713 withdraws stale worker projection and restores it on a same-state heartbeat 425ms\n     \u2713 F5 rechecks a narrowing policy after a preparation yield before writing hashes 347ms\n     \u2713 N6 renders accepted, stale and ended projected worker status in participant lines 312ms\n     \u2713 N2 leaves a projection untouched during a paused lease, then retires it with authority 482ms\n     \u2713 M2 does not resurrect a retired worker after composition fails 332ms\n     \u2713 M3 excludes a carried symlink without publishing its target hash or name 395ms\n     \u2713 M2 abandons a projection when the lead narrows sharing during composition 393ms\n     \u2713 M3 applies the lead ignore and size rules to source and carried paths 354ms\n     \u2713 M3 applies the lead Git ignore and total budget to projected source facts 340ms\n     \u2713 S3 refreshes at and scannedAt without changing semantic revisions 421ms\n     \u2713 projects the worker against the lead's team base: projectedFrom, the lead's fence, held: 'worker', and everything between B and C 332ms\n     \u2713 D1: at declared, only paths inside the lead's text area keep hash and size 356ms\n     \u2713 D1 keeps a source hashless held path hashless even when the lead shares full 441ms\n     \u2713 N2: coverage is inherited, never upgraded \u2014 a source at intent projects nothing 326ms\n     \u2713 carried paths excluded by the lead are digested, never named 400ms\n     \u2713 only local workers are projected: a here worker writes its own team records (R3b) 571ms\n     \u2713 collect retires the projection by worker ID and marks the team cleanup done; a restarted lead replaces stale fences 537ms\n     \u2713 calls the conflict reconciler for each projected worker 323ms\n\n Test Files  1 passed (1)\n      Tests  35 passed | 1 skipped (36)\n   Start at  21:05:49\n   Duration  14.62s (tests 94%, transform 5%, import 1%)\n\n",
+    "storage-offline": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - import \"../../vitest.shared\" without a file extension (packages/room-mcp/vitest.config.ts:1:42). Add the file extension\n  - ESM syntax in a file loaded as CommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.0 /Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/packages/room-mcp\n\nRoom repaired private state directory: /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-storage-offline-0nHZnH/.git/room\nstderr | test/storage-offline.test.ts > reuses a durable source assignment after an interrupted import\nRoom repaired private state directory: /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-storage-offline-0nHZnH/.git/room/registry\n\nRoom repaired private state directory: /private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-storage-offline-QmC2C2/.git/room\n \u2713 test/storage-offline.test.ts (12 tests) 4514ms\n   \u2713 offline import owns durable assignments and reopens legacy storage without SQL 378ms\n   \u2713 reuses a durable source assignment after an interrupted import 301ms\n   \u2713 CLI imports an empty clone and reports its generation, counts and status 338ms\n   \u2713 preserves assigned IDs across owner death and resumes only from a verified successor 778ms\n   \u2713 resolves a verified-dead ticket with an audit note, then explicitly reopens from a new process 1446ms\n   \u2713 persists the pre-registry decision before newer worker worktrees appear 355ms\n\n Test Files  1 passed (1)\n      Tests  12 passed (12)\n   Start at  21:22:45\n   Duration  5.23s (tests 88%, transform 10%, import 2%)\n\n",
+    "worker-registry": "der the operation lease 201ms\n     \u00d7 accepts a matching run-writer handoff after an ambiguous launch 308ms\n     \u00d7 lets a restarted writer of the same host session retain a done report 367ms\n     \u00d7 adds posted after done and preserves the first chain and host session through restart (S2) 449ms\n     \u00d7 notifies subscribers of another registry\u2019s record, report, and exit writes (M4) 266ms\n     \u00d7 reuses an abandoned or fully cleaned retired tag, but keeps a retired worktree reserved (M5) 751ms\n     \u00d7 keeps a witnessed exit over later polling, and upgrades an unwitnessed exit 250ms\n     \u00d7 counts ambiguous intents against capacity across reopened registries 251ms\n     \u00d7 keeps a dead orphan tag reservation blocked while its payload is missing 150ms\n     \u00d7 resumes a partially written migration map with the same worker id 327ms\n     \u00d7 lets a second process open after the first completes the migration barrier 1984ms\n     \u00d7 waits for a live migration guard before recovering a dead migration lock 1238ms\n     \u00d7 waits for a live guard while releasing the migration lock 1054ms\n     \u00d7 waits through live guards for intent, update, and idle-claim release 2853ms\n     \u00d7 lets a timer run while an intent waits for another process\u2019s capacity guard (S8) 1432ms\n     \u00d7 does not replay an entered idle-release callback that throws a guard-busy error 178ms\n     \u00d7 discovers an owned legacy Git worktree as imported and copy-only 592ms\n     \u00d7 discovers a nested legacy worker for its actual parent checkout, not its directory name (M3) 634ms\n     \u00d7 imports only locally verified carry and session capabilities from a legacy snapshot 487ms\n     \u00d7 imports a relay-saved protected-overflow kept retirement without reviving the worker (M7) 538ms\n     \u00d7 skips legacy worktree import when a snapshot is corrupt or beyond the shared ceiling (M7) 1877ms\n     \u00d7 rolls back only a dead launcher\u2019s journaled new worktree and marks it abandoned 608ms\n     \u00d7 marks an interrupted collect without claiming that a partial apply was undone 231ms\n     \u00d7 quarantines a corrupt worker record and keeps its tag reserved 222ms\n     \u00d7 quarantines structurally corrupt records without aborting healthy recovery (S4) 267ms\n     \u00d7 releases claims at 8h idle with exactly one notice, and resets after activity 258ms\n     \u00d7 never releases interactive CLI claims solely for quiet time 115ms\n     \u00d7 does not release a successor holder\u2019s claims under the same participant name 115ms\n     \u00d7 rechecks the holder fence after waiting for an idle-release guard 971ms\n     \u00d7 replays an idle-release intent after a failed post with the original claim names 249ms\n     \u00d7 replays the same deterministic notice id after a crash following the post 245ms\n     \u00d7 releases a scope-only shared app-server session at eight hours 180ms\n\n\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 38 \u23af\u23af\u23af\u23af\u23af\u23af\u23af\n\n FAIL  test/worker-registry.test.ts > passes a discovered Codex binding to admission without host ID environment variables\n FAIL  test/worker-registry.test.ts > refuses a worker launched by an older Room before it can publish\n FAIL  test/worker-registry.test.ts > admits a current worker in the exact explicit room local/repo/special\n FAIL  test/worker-registry.test.ts > admits a current worker in the exact explicit room git/gitlab.com/group/subgroup/repo\n FAIL  test/worker-registry.test.ts > admits a worker when ROOM_REGISTRY uses a symlink to the same registry root\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > reopens a written intent and reconciles a dead launcher to ambiguous without relaunch\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > does not let a second live instance mutate a worker under the operation lease\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > accepts a matching run-writer handoff after an ambiguous launch\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > lets a restarted writer of the same host session retain a done report\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > adds posted after done and preserves the first chain and host session through restart (S2)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > notifies subscribers of another registry\u2019s record, report, and exit writes (M4)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > reuses an abandoned or fully cleaned retired tag, but keeps a retired worktree reserved (M5)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > keeps a witnessed exit over later polling, and upgrades an unwitnessed exit\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > counts ambiguous intents against capacity across reopened registries\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > keeps a dead orphan tag reservation blocked while its payload is missing\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > resumes a partially written migration map with the same worker id\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > lets a second process open after the first completes the migration barrier\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > waits for a live migration guard before recovering a dead migration lock\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > waits for a live guard while releasing the migration lock\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > waits through live guards for intent, update, and idle-claim release\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > lets a timer run while an intent waits for another process\u2019s capacity guard (S8)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > does not replay an entered idle-release callback that throws a guard-busy error\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > discovers an owned legacy Git worktree as imported and copy-only\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > discovers a nested legacy worker for its actual parent checkout, not its directory name (M3)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > imports only locally verified carry and session capabilities from a legacy snapshot\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > imports a relay-saved protected-overflow kept retirement without reviving the worker (M7)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > skips legacy worktree import when a snapshot is corrupt or beyond the shared ceiling (M7)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > rolls back only a dead launcher\u2019s journaled new worktree and marks it abandoned\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > marks an interrupted collect without claiming that a partial apply was undone\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > quarantines a corrupt worker record and keeps its tag reserved\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > quarantines structurally corrupt records without aborting healthy recovery (S4)\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > releases claims at 8h idle with exactly one notice, and resets after activity\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > never releases interactive CLI claims solely for quiet time\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > does not release a successor holder\u2019s claims under the same participant name\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > rechecks the holder fence after waiting for an idle-release guard\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > replays an idle-release intent after a failed post with the original claim names\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > replays the same deterministic notice id after a crash following the post\n FAIL  test/worker-registry.test.ts > WorkerRegistry durable store > releases a scope-only shared app-server session at eight hours\nStorageRefused: Room storage unavailable: storage gate I/O failed: ENOENT: no such file or directory, stat '/private/var/folders/pp/nwmw6f_97mj7t4jg_ystxw0w0000gn/T/room-registry-RxMV73/.git'; run `node <plugin>/server/room-state.mjs status --common-dir <git common dir>` for details\n \u276f Worker.<anonymous> ../local-state/src/gate-thread.ts:53:40\n     51|     const error = message.error\n     52|     if (!error) request.resolve(message.value)\n     53|     else request.reject(error.reason ? new StorageRefused(error.reason\u2026\n       |                                        ^\n     54|       : Object.assign(new Error(error.detail), { code: error.code }))\n     55|   })\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/38]\u23af\n\n\n Test Files  1 failed (1)\n      Tests  38 failed (38)\n   Start at  21:22:51\n   Duration  21.26s (tests 97%, transform 2%, import 1%)\n\n",
+    "hook-fixes": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - import \"../../vitest.shared\" without a file extension (packages/room-mcp/vitest.config.ts:1:42). Add the file extension\n  - ESM syntax in a file loaded as CommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v5.0.0 /Users/rohan/Documents/progwork/aitinkerhackathon/.git/room-preview/2cf299794be211be7035/shared-034296f249cde1b5/packages/room-mcp\n\nroom-mcp: wake: this claude session has no wake path; messages wait for its next turn\nroom-mcp: wake: this claude session has no wake path; messages wait for its next turn\n \u2713 test/hook-fixes.test.ts (6 tests) 1337ms\n   \u2713 F-M3: a hook fired inside a subagent does not take the main session's inbox (1)\n     \u2713 with agent_id: claims and the content-free pending line, no selection and no receipt 328ms\n\n Test Files  1 passed (1)\n      Tests  6 passed (6)\n   Start at  21:06:04\n   Duration  2.45s (tests 56%, transform 36%, import 8%)\n\n"
+  }
+}

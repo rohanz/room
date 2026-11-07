@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -24,7 +25,7 @@ afterEach(async () => {
   startsPreviewMaintenance = false
 })
 
-function fixture() {
+async function fixture() {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-manifest-preview-'))
   const git = (...args: string[]) => execFileSync('git', ['-C', root!, ...args], { encoding: 'utf8' }).trim()
   git('init', '-q')
@@ -34,6 +35,7 @@ function fixture() {
   fs.writeFileSync(path.join(root, 'tests.txt'), 'base tests\n')
   git('add', '.')
   git('commit', '-qm', 'base')
+  await storageRegistration(path.join(root, '.git'))
   const base = git('rev-parse', 'HEAD')
   const room = new RoomDoc()
   room.ensureRoomSalt()
@@ -57,13 +59,13 @@ function fixture() {
 }
 
 it('bounds an own-disk room_read before rendering file lines', async () => {
-  const { state } = fixture()
+  const { state } = await fixture()
   fs.writeFileSync(path.join(root!, 'app.py'), 'x'.repeat(512 * 1024 + 1))
   await expect(handlers(state).room_read({ path: 'app.py' })).rejects.toThrow('file too large for Room read')
 })
 
 it('reports an oversized historical base as a named preview and diff gap', async () => {
-  const { room, head, entries, texts, state } = fixture()
+  const { room, head, entries, texts, state } = await fixture()
   fs.writeFileSync(path.join(root!, 'app.py'), 'x'.repeat(512 * 1024 + 1))
   execFileSync('git', ['add', 'app.py'], { cwd: root! })
   execFileSync('git', ['commit', '-qm', 'large old text'], { cwd: root! })
@@ -84,7 +86,7 @@ it('reports an oversized historical base as a named preview and diff gap', async
 })
 
 it('yields during the path-safety pass before checking the last path', async () => {
-  const { entries, state } = fixture()
+  const { entries, state } = await fixture()
   for (let i = 0; i < 96; i++) entries.set(`held-${String(i).padStart(3, '0')}`, {
     change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
   })
@@ -104,7 +106,7 @@ it('yields during the path-safety pass before checking the last path', async () 
 })
 
 it('retains held paths as partial gaps instead of silently dropping them', async () => {
-  const { entries, state } = fixture()
+  const { entries, state } = await fixture()
   for (let i = 0; i < 96; i++) entries.set(`held-${String(i).padStart(3, '0')}`, {
     change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
   })
@@ -115,7 +117,7 @@ it('retains held paths as partial gaps instead of silently dropping them', async
 })
 
 it('services an event-loop turn between merged file materialisations', async () => {
-  const { entries, texts, state } = fixture()
+  const { entries, texts, state } = await fixture()
   for (const [rel, value] of [['app.py', 'changed app\n'], ['tests.txt', 'changed tests\n']] as const) {
     entries.set(rel, { change: 'M', state: 'shared', hash: gitBlobHash(value), size: Buffer.byteLength(value), at: Date.now(), fence: '1' })
     texts.set(rel, new Y.Text(value))
@@ -141,7 +143,7 @@ it('services an event-loop turn between merged file materialisations', async () 
 })
 
 it('services an event-loop turn within preview mode preparation', async () => {
-  const { entries, texts, state } = fixture()
+  const { entries, texts, state } = await fixture()
   for (let i = 0; i < 96; i++) {
     const rel = `mode-${String(i).padStart(3, '0')}.txt`, value = `worker ${i}\n`
     entries.set(rel, { change: 'A', state: 'shared', hash: gitBlobHash(value), size: Buffer.byteLength(value), at: 1, fence: '1' })
@@ -150,7 +152,7 @@ it('services an event-loop turn within preview mode preparation', async () => {
   const lstat = fs.lstatSync.bind(fs)
   let turned = false, lastSawTurn = false
   const seam = vi.spyOn(fs, 'lstatSync').mockImplementation(((file: fs.PathLike, options?: Parameters<typeof fs.lstatSync>[1]) => {
-    const inModePreparation = new Error().stack?.split('\n').slice(1, 4).join('\n').includes('Object.room_preview_merge')
+    const inModePreparation = new Error().stack?.includes('previewDiskMode')
     if (inModePreparation && String(file) === path.join(root!, 'mode-000.txt')) setImmediate(() => { turned = true })
     if (inModePreparation && String(file) === path.join(root!, 'mode-095.txt')) lastSawTurn = turned
     return lstat(file, options as never)
@@ -163,7 +165,7 @@ it('services an event-loop turn within preview mode preparation', async () => {
 })
 
 it('marks a changed disk symlink as a named partial gap even if a scratch test passes', async () => {
-  const { room, session, state } = fixture()
+  const { room, session, state } = await fixture()
   fs.unlinkSync(path.join(root!, 'app.py'))
   fs.symlinkSync(path.join(os.tmpdir(), 'outside-room-preview'), path.join(root!, 'app.py'))
   startsPreviewMaintenance = true
@@ -175,7 +177,7 @@ it('marks a changed disk symlink as a named partial gap even if a scratch test p
 })
 
 it('marks a changed tracked file replaced by a directory as partial', async () => {
-  const { session, state } = fixture()
+  const { session, state } = await fixture()
   fs.unlinkSync(path.join(root!, 'app.py'))
   fs.mkdirSync(path.join(root!, 'app.py'))
   fs.writeFileSync(path.join(root!, 'app.py', 'nested.py'), 'replacement\n')
@@ -186,7 +188,7 @@ it('marks a changed tracked file replaced by a directory as partial', async () =
 })
 
 it('keeps a hashless held file out of the combined tree and records a partial passing run', async () => {
-  const { room, entries, texts, session, state } = fixture()
+  const { room, entries, texts, session, state } = await fixture()
   entries.set('app.py', { change: 'M', state: 'held', held: 'scope', at: Date.now(), fence: '1' })
   entries.set('tests.txt', { change: 'M', state: 'shared', hash: gitBlobHash('tests pass\n'), size: 11, at: Date.now(), fence: '1' })
   texts.set('tests.txt', new Y.Text('tests pass\n'))
@@ -209,7 +211,7 @@ it('keeps a hashless held file out of the combined tree and records a partial pa
 })
 
 it('reports anonymous exclusion and intent gaps even with no mergeable paths', async () => {
-  const { room, head, session, state } = fixture()
+  const { room, head, session, state } = await fixture()
   room.manifestHead.set('ben', { ...head, excluded: [digestPath(room.ensureRoomSalt(), 'app.py')], semRev: 2 })
   const excluded = await handlers(state).room_preview_merge({ person: 'ben' })
   expect(excluded).toContain('PARTIAL preview')
@@ -224,7 +226,7 @@ it('reports anonymous exclusion and intent gaps even with no mergeable paths', a
 })
 
 it('records a partial ledger note when automatic selection cannot enumerate a present peer', async () => {
-  const { room, head, state, session } = fixture()
+  const { room, head, state, session } = await fixture()
   room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
   room.setScope('ben', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
   state.presences = () => [{ user: { name: 'ben', kind: 'agent' } }] as never
@@ -236,7 +238,7 @@ it('records a partial ledger note when automatic selection cannot enumerate a pr
 })
 
 it('default preview includes a present neighbour whose only overlapping change is committed', async () => {
-  const { room, head, session, state } = fixture()
+  const { room, head, session, state } = await fixture()
   room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
   fs.writeFileSync(path.join(root!, 'app.py'), 'ben committed\n')
   execFileSync('git', ['add', '.'], { cwd: root! })
@@ -253,7 +255,7 @@ it('default preview includes a present neighbour whose only overlapping change i
 })
 
 it('names a pushed participant commit in complete and partial preview notes', async () => {
-  const { room, head, entries, state } = fixture()
+  const { room, head, entries, state } = await fixture()
   fs.writeFileSync(path.join(root!, 'app.py'), 'ben committed\n')
   execFileSync('git', ['add', '.'], { cwd: root! })
   execFileSync('git', ['commit', '-qm', 'ben change'], { cwd: root! })
@@ -278,7 +280,7 @@ it('names a pushed participant commit in complete and partial preview notes', as
 })
 
 it('names the accepted base after a combined-tree retry', async () => {
-  const { room, head, state, session } = fixture()
+  const { room, head, state, session } = await fixture()
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root!, encoding: 'utf8' }).trim()
   fs.writeFileSync(path.join(root!, 'app.py'), 'older\n')
   git('add', 'app.py'); git('commit', '-qm', 'C1')
@@ -312,7 +314,7 @@ it('names the accepted base after a combined-tree retry', async () => {
 })
 
 it('labels live changes from the accepted retry snapshot', async () => {
-  const { room, head, entries, texts, state, session } = fixture()
+  const { room, head, entries, texts, state, session } = await fixture()
   fs.writeFileSync(path.join(root!, 'app.py'), 'committed\n')
   execFileSync('git', ['add', 'app.py'], { cwd: root! })
   execFileSync('git', ['commit', '-qm', 'participant commit'], { cwd: root! })
@@ -340,7 +342,7 @@ it('labels live changes from the accepted retry snapshot', async () => {
 })
 
 it('fetches a reachable participant anchor before explicit preview and honours ROOM_AUTO_FETCH=0', async () => {
-  const { room, head, state, session } = fixture()
+  const { room, head, state, session } = await fixture()
   const origin = path.join(root!, '.git', 'origin.git')
   execFileSync('git', ['clone', '--bare', '-q', root!, origin])
   execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: root! })
@@ -368,7 +370,7 @@ it('fetches a reachable participant anchor before explicit preview and honours R
 })
 
 it.skipIf(process.env.TEST_SCALE !== '1')('S1 keeps a manifest-overlapping peer when committed paths exceed the preview bound', async () => {
-  const { room, head, entries, session, state } = fixture()
+  const { room, head, entries, session, state } = await fixture()
   room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
   entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash('ben edit\n'), at: 1, fence: '1' })
   room.setOverlay(manifestKey('ben', '1'), 'app.py', 'ben edit\n')
@@ -396,7 +398,7 @@ it.skipIf(process.env.TEST_SCALE !== '1')('S1 keeps a manifest-overlapping peer 
 }, 120_000)
 
 it('keeps the 512 KB default for local files in a preview and names the file instead of failing', async () => {
-  const { entries, texts, state } = fixture()
+  const { entries, texts, state } = await fixture()
   fs.writeFileSync(path.join(root!, 'app.py'), 'x'.repeat(512 * 1024 + 1))
   const changed = 'ben replacement\n'
   entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(changed), size: changed.length, at: 1, fence: '1' })
@@ -406,7 +408,7 @@ it('keeps the 512 KB default for local files in a preview and names the file ins
 })
 
 it('previews the publishing checkout when the requested active lead is a non-publisher', async () => {
-  const { room, head, entries, texts, state } = fixture()
+  const { room, head, entries, texts, state } = await fixture()
   const value = 'checkout change\n'
   entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(value), size: value.length, at: 1, fence: '1' })
   texts.set('app.py', new Y.Text(value))
@@ -421,7 +423,7 @@ it('previews the publishing checkout when the requested active lead is a non-pub
 })
 
 it('reports a stale checkout publication without applying its old text', async () => {
-  const { room, head, entries, texts, session, state } = fixture()
+  const { room, head, entries, texts, session, state } = await fixture()
   const value = 'stale checkout change\n'
   entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(value), size: value.length, at: 1, fence: '1' })
   texts.set('app.py', new Y.Text(value))

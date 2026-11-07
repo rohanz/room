@@ -181,14 +181,77 @@ it.runIf(process.platform === 'win32').each(['room', 'config'])('racing Windows 
   }
 }, 90_000) // two bounded ACL inspections after children finish, in addition to cold native writer startup
 
-it.runIf(process.platform === 'win32')('surfaces Windows create denial below an existing root', () => {
+it.runIf(process.platform === 'win32')('surfaces Windows create denial below an existing root', context => {
   const dir = setup(), parent = path.join(dir, 'denied')
   fs.mkdirSync(parent)
   const { user } = windowsAcl(parent)
   // WD creates files; AD creates subdirectories. Deny only this parent so cleanup can remove the ACE.
   execFileSync('icacls', [parent, '/deny', `*${user}:(WD,AD)`], { stdio: 'pipe' })
   try {
+    // A token with backup/restore privileges enabled (MSYS/Git Bash enables them for administrators) bypasses the
+    // deny entry, so the denial cannot be observed there; the default-shell windows-durable-files job covers it.
+    let bypassed = false
+    try { fs.mkdirSync(path.join(parent, 'probe')); bypassed = true } catch { /* denied, as required */ }
+    if (bypassed) context.skip('this process bypasses directory ACLs (backup/restore privileges enabled)')
     expect(() => writeAtomic(path.join(parent, 'new', 'nested', 'record.json'), {})).toThrow()
     expect(fs.existsSync(path.join(parent, 'new'))).toBe(false)
   } finally { execFileSync('icacls', [parent, '/remove:d', `*${user}`], { stdio: 'pipe' }) }
 }, 30_000)
+
+// Observe actual fsync calls without replacing their durability effect.
+function syncedDirectories(): string[] {
+  const opened = new Map<number, string>(), synced: string[] = []
+  const open = fs.openSync.bind(fs), sync = fs.fsyncSync.bind(fs), close = fs.closeSync.bind(fs)
+  vi.spyOn(fs, 'openSync').mockImplementation((target, flags, mode) => {
+    const fd = open(target, flags, mode)
+    if (fs.fstatSync(fd).isDirectory()) opened.set(fd, String(target))
+    return fd
+  })
+  vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => { if (opened.has(fd)) synced.push(opened.get(fd)!); sync(fd) })
+  vi.spyOn(fs, 'closeSync').mockImplementation(fd => { opened.delete(fd); close(fd) })
+  return synced
+}
+
+// Native Windows rejects opening directories for fsync; POSIX tests assert the actual calls.
+it.skipIf(process.platform === 'win32').each(['replace-ancestor', 'replace-root', 'reinsert', 'inode-reuse'])('syncs the current namespace after %s', mutation => {
+  const dir = setup(), state = path.join(dir, 'room'), ancestor = path.join(state, 'a'), leaf = path.join(ancestor, 'b'), file = path.join(leaf, 'record.json')
+  writeAtomic(file, { n: 1 })
+  const original = fs.statSync(leaf, { bigint: true })
+  if (mutation === 'replace-ancestor') {
+    fs.renameSync(ancestor, path.join(dir, 'old-a'))
+    fs.mkdirSync(ancestor)
+    fs.renameSync(path.join(dir, 'old-a', 'b'), leaf)
+    expect(fs.statSync(leaf, { bigint: true }).ino).toBe(original.ino)
+  } else if (mutation === 'replace-root') {
+    fs.renameSync(state, path.join(dir, 'old-room'))
+    fs.mkdirSync(state)
+    fs.renameSync(path.join(dir, 'old-room', 'a'), ancestor)
+    expect(fs.statSync(leaf, { bigint: true }).ino).toBe(original.ino)
+  } else if (mutation === 'reinsert') {
+    fs.renameSync(leaf, path.join(dir, 'aside'))
+    fs.renameSync(path.join(dir, 'aside'), leaf)
+    expect(fs.statSync(leaf, { bigint: true }).ino).toBe(original.ino)
+  } else {
+    fs.rmSync(ancestor, { recursive: true })
+    fs.mkdirSync(leaf, { recursive: true })
+    // Deterministic inode reuse: a leaf-identity cache must not bless these new namespace entries.
+    const stat = fs.statSync.bind(fs)
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options: any) =>
+      String(target) === leaf && options?.bigint ? original : stat(target, options)) as typeof fs.statSync)
+  }
+  const synced = syncedDirectories()
+  writeAtomic(file, { n: 2 })
+  expect(synced).toContain(dir) // room's entry
+  expect(synced).toContain(state) // a's entry
+  expect(synced).not.toContain(path.dirname(dir)) // repository location is outside Room ownership
+  expect(synced).toContain(ancestor) // b's entry
+  expect(synced).toContain(leaf) // record's entry
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ n: 2 })
+  synced.length = 0
+  writeAtomic(file, { n: 3 })
+  // Even unchanged leaf identity cannot exclude namespace mutation by another process.
+  expect(synced).toContain(dir)
+  expect(synced).toContain(state)
+  expect(synced).not.toContain(path.dirname(dir))
+  expect(synced).toContain(ancestor)
+})

@@ -359,7 +359,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
     // The bridge publishes the workers' paths as the lead's coordination record, never as the lead's scope (manifest §5.6).
     await vi.waitFor(() => expect(team.b.coordination.get('rohanz')?.paths).toEqual(['api/models.py']), { timeout: 15_000 })
-    expect(team.b.openClaims().map(c => c.intent)).toEqual(['[money] bump'])
+    // Claim mirroring is its own admitted operation, settling independently of coordination.
+    await vi.waitFor(() => expect(team.b.openClaims().map(c => c.intent)).toEqual(['[money] bump']), { timeout: 15_000 })
     expect(team.b.scopes.has(workerId.name)).toBe(false)
     const st = await leadTools.call('room_state', { all: true })
     expect(st).toContain('workers room: local (local/x')

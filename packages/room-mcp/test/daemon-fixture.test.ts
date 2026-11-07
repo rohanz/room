@@ -8,8 +8,8 @@ import { recordTestDaemon, stopTestDaemon, stopTestDaemons } from './daemon-fixt
 
 const seam = vi.hoisted(() => ({ stop: vi.fn<(...args: unknown[]) => Promise<void | 'different daemon instance'>>(), ensure: vi.fn(), alive: true }))
 vi.mock('@room/relay', async importOriginal => ({ ...await importOriginal<typeof import('@room/relay')>(), stopLocalDaemon: seam.stop, ensureLocalDaemon: (...args: unknown[]) => seam.ensure(...args) }))
-vi.mock('@room/relay/process', async importOriginal => ({ ...await importOriginal<typeof import('@room/relay/process')>(), pidAlive: () => seam.alive }))
-vi.mock('@room/relay/leases', async importOriginal => ({ ...await importOriginal<typeof import('@room/relay/leases')>(), liveness: () => seam.alive ? 'alive' : 'dead' }))
+vi.mock('@room/local-state/process', async importOriginal => ({ ...await importOriginal<typeof import('@room/local-state/process')>(), pidAlive: () => seam.alive }))
+vi.mock('@room/local-state/leases', async importOriginal => ({ ...await importOriginal<typeof import('@room/local-state/leases')>(), liveness: () => seam.alive ? 'alive' : 'dead' }))
 
 const roots: string[] = []
 afterEach(() => { seam.stop.mockReset(); seam.ensure.mockReset(); seam.alive = true; for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })

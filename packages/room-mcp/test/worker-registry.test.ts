@@ -1,9 +1,11 @@
+import { closeAdmittedRegistries, openAdmittedRegistry } from './fixtures/storage-admission.js'
+import { runLegacyImport } from '../src/offline/room-state.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import * as Y from 'yjs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -14,12 +16,15 @@ import { memoryFile, saveMemory } from '@room/relay'
 
 
 const dirs: string[] = []
-afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
-const openRegistry = (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => WorkerRegistry.open(dir, { ...options, watch: false })
+afterEach(async () => { await closeAdmittedRegistries(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+const openRegistry = async (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => {
+  if (options.migrate !== false && (!fs.existsSync(path.join(dir, 'room/registry/migration.json')) || !JSON.parse(fs.readFileSync(path.join(dir, 'room/registry/migration.json'), 'utf8')).done)) await runLegacyImport(dir, { sources: options.sources })
+  return openAdmittedRegistry(dir, { ...options, watch: false })
+}
 const token = { pid: 31, startTime: 'start', executable: '/bin/agent', sessionId: 's', nonce: 'n' }
 const legacyMemoryFile = (commonDir: string, room: string) => path.join(commonDir, 'room-local', `${encodeURIComponent(room)}.ydoc`)
 it('passes a discovered Codex binding to admission without host ID environment variables', async () => {
-  const dir = common()
+  const dir = checkout()
   execFileSync('git', ['-C', dir, 'init', '-q'])
   const registry = await registryForDir(dir)
   const read = vi.spyOn(registry, 'read').mockResolvedValue(intent())
@@ -41,7 +46,7 @@ it('refuses a worker launched by an older Room before it can publish', async () 
   await expect(admitWorkerEnvironment('/tmp', { ROOM_WORKER_ID: 'lead/tag#1', ROOM_ROOM: 'local/repo/main' })).rejects.toThrow("this worker runs Room 0.17 but its lead runs an older Room")
 })
 it.each(['local/repo/special', 'git/gitlab.com/group/subgroup/repo'])('admits a current worker in the exact explicit room %s', async room => {
-  const dir = common()
+  const dir = checkout()
   execFileSync('git', ['-C', dir, 'init', '-q'])
   const registry = await registryForDir(dir)
   const read = vi.spyOn(registry, 'read').mockResolvedValue({ ...intent(), room } as WorkerRecord)
@@ -54,7 +59,7 @@ it.each(['local/repo/special', 'git/gitlab.com/group/subgroup/repo'])('admits a 
   } finally { read.mockRestore(); admit.mockRestore(); await closeRegistryForDir(dir) }
 })
 it('admits a worker when ROOM_REGISTRY uses a symlink to the same registry root', async () => {
-  const dir = common(), alias = `${dir}-alias`
+  const dir = checkout(), alias = `${dir}-alias`
   execFileSync('git', ['-C', dir, 'init', '-q'])
   fs.symlinkSync(dir, alias); dirs.push(alias)
   const registry = await registryForDir(dir)
@@ -74,7 +79,8 @@ const intent = (): WorkerRecord => ({
   runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'launch-nonce', busFrontier: 0, promptMsgIds: [], launcher: token, logStart: 0 }],
   createdAt: 1, seq: 1,
 })
-function common(): string { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-registry-')); dirs.push(dir); return dir }
+function checkout(): string { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-registry-')); dirs.push(dir); return dir }
+function common(): string { const dir = checkout(); execFileSync('git', ['init', '--bare', '-q', dir]); return dir }
 async function holdGuard(file: string, ms = 700): Promise<ReturnType<typeof spawn>> {
   const source = `import { withGuard } from ${JSON.stringify(new URL('../src/leases.ts', import.meta.url).href)};
     withGuard(process.argv[1], () => { process.stdout.write('inside\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.argv[2])) })`
@@ -235,8 +241,8 @@ describe('WorkerRegistry durable store', () => {
 
   it('lets a second process open after the first completes the migration barrier', async () => {
     const dir = common()
-    const source = `import { WorkerRegistry } from ${JSON.stringify(new URL('../src/worker-registry.ts', import.meta.url).href)};
-      await WorkerRegistry.open(process.argv[1], { watch: false, sources: () => {
+    const source = `import { runLegacyImport } from ${JSON.stringify(new URL('../src/offline/room-state.ts', import.meta.url).href)};
+      await runLegacyImport(process.argv[1], { sources: () => {
         if (process.argv[2] === 'pause') { process.stdout.write('inside\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200) }
         return []
       } }); process.stdout.write('done\\n')`
@@ -336,7 +342,7 @@ describe('WorkerRegistry durable store', () => {
   })
 
   it('discovers an owned legacy Git worktree as imported and copy-only', async () => {
-    const dir = common()
+    const dir = checkout()
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
     git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
     fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
@@ -358,7 +364,7 @@ describe('WorkerRegistry durable store', () => {
   })
 
   it('discovers a nested legacy worker for its actual parent checkout, not its directory name (M3)', async () => {
-    const dir = common()
+    const dir = checkout()
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
     git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
     fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
@@ -375,7 +381,7 @@ describe('WorkerRegistry durable store', () => {
   })
 
   it('imports only locally verified carry and session capabilities from a legacy snapshot', async () => {
-    const dir = common()
+    const dir = checkout()
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
     git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
     fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
@@ -406,7 +412,7 @@ describe('WorkerRegistry durable store', () => {
   })
 
   it('imports a relay-saved protected-overflow kept retirement without reviving the worker (M7)', async () => {
-    const dir = common()
+    const dir = checkout()
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
     git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
     fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
@@ -434,7 +440,7 @@ describe('WorkerRegistry durable store', () => {
 
   it('skips legacy worktree import when a snapshot is corrupt or beyond the shared ceiling (M7)', async () => {
     for (const corrupt of [true, false]) {
-      const dir = common()
+      const dir = checkout()
       const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
       git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
       fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
@@ -446,7 +452,11 @@ describe('WorkerRegistry durable store', () => {
       fs.mkdirSync(path.dirname(file), { recursive: true })
       if (corrupt) fs.writeFileSync(file, new Uint8Array([255, 255, 255]))
       else { fs.writeFileSync(file, new Uint8Array([0])); fs.truncateSync(file, ROOM_DOC_MAX_BYTES + 1) }
-      expect((requireWorkerInventory(await (await openRegistry(commonDir)).list()))).toEqual([])
+      const attempt = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+        `import { runLegacyImport } from ${JSON.stringify(new URL('../src/offline/room-state.ts', import.meta.url).href)}; await runLegacyImport(process.argv[1]).catch(() => process.exit(1))`, commonDir],
+        { cwd: process.cwd(), encoding: 'utf8' })
+      expect(attempt.status).toBe(1)
+      await expect(WorkerRegistry.open(commonDir, { watch: false })).rejects.toMatchObject({ reason: 'maintenance' })
       const repaired = new RoomDoc()
       repaired.doc.getArray('retiredWorkers').push([{ name: 'lead+tests', tag: 'tests', lead: 'lead', host: 'codex',
         task: 'old task', summary: 'kept', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3,
@@ -458,7 +468,7 @@ describe('WorkerRegistry durable store', () => {
   })
 
   it('rolls back only a dead launcher’s journaled new worktree and marks it abandoned', async () => {
-    const dir = common()
+    const dir = checkout()
     const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
     git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
     fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
@@ -466,6 +476,7 @@ describe('WorkerRegistry durable store', () => {
     fs.mkdirSync(path.dirname(workerDir), { recursive: true })
     git('worktree', 'add', '-qb', 'room/tests', workerDir)
     const commonDir = path.resolve(dir, git('rev-parse', '--git-common-dir'))
+    await runLegacyImport(commonDir, { sources: () => [] })
     const store = await openRegistry(commonDir, { migrate: false, liveness: () => 'alive' })
     await store.writeIntent({ ...intent(), dir: workerDir, phase: 'preparing', prep: {
       step: 'worktree', worktreeExisted: false, branchExisted: false, created: true, branchCreated: true,

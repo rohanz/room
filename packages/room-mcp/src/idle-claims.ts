@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import { participantRecord, type RoomDoc } from '@room/shared'
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import { withGuard, writeAtomic } from './leases.js'
 import { idleClaimsDue } from './worker-status.js'
 export interface IdleClaimsAction {

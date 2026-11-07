@@ -39,6 +39,17 @@
         "test/**/*.ts"
       ]
     },
+    "packages/local-state": {
+      "entry": [
+        "src/gate-worker.ts!",
+        "test/**/*.test.ts",
+        "test/gate-child.ts"
+      ],
+      "project": [
+        "src/**/*.ts!",
+        "test/**/*.ts"
+      ]
+    },
     "packages/relay": {
       "entry": [
         "test/**/*.test.ts",
@@ -55,7 +66,10 @@
       "entry": [
         "src/parse/worker.ts!",
         "src/doctor.ts!",
-        "test/**/*.test.ts"
+        "test/**/*.test.ts",
+        "src/entry.ts!",
+        "src/offline/entry.ts!",
+        "test/fixtures/storage-helper-owner.ts"
       ],
       "project": [
         "src/**/*.ts!",

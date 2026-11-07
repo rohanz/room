@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -27,6 +28,7 @@ async function fixture() {
   fs.writeFileSync(path.join(root, 'app.txt'), 'base\n')
   git('add', '.')
   git('commit', '-qm', 'base')
+  await storageRegistration(path.join(root, '.git'))
   const workerDir = path.join(root, '.room', 'workers', 'w1')
   git('worktree', 'add', '-qb', 'room/w1', workerDir)
   const head = git('rev-parse', 'HEAD')

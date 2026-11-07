@@ -1,3 +1,5 @@
+import { withDirectoryAdmission } from '../src/storage-admission.js'
+import { runLegacyImport } from '../src/offline/room-state.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
 import { finishSignalShutdown } from '../src/index.js'
@@ -10,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '../src/session.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { parsePsLstartUtc, probeProcess, workerProcessOwnership, type SpawnSpec } from '../src/worker-process.js'
-import { registryForDir } from '../src/worker-registry.js'
+import { beginWorkerRegistries, openWorkerReader, registryForDir } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { finishFixtureProcess, fixtureLiveness, fixtureProcess } from './fixtures/process-liveness.js'
 import { workspaceRepo } from './fixtures/workspace-repo.js'
@@ -79,7 +81,8 @@ describe('worker safety', () => {
     expect(t.killed).toEqual([1])
     // §9: the durable stop is mirrored even though the note failed; §6 row 8 keeps it running.
     expect((await workerByTag(dir, 'erroring'))).toEqual({ ...before, stopReason: 'lead-session-ended' })
-    expect((await (await registryForDir(dir)).read(before.id!))?.stop?.reason).toBe('lead-session-ended')
+    // After shutdown this process opens no registry; inspect through a read-only reader.
+    expect((await (await openWorkerReader(dir)).read(before.id!))?.stop?.reason).toBe('lead-session-ended')
   })
 
   it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {
@@ -102,7 +105,7 @@ describe('worker safety', () => {
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
     await tools.shutdown()
     expect((await workerByTag(dir, 'unknown'))?.status).toBe('running')
-    expect((requireWorkerInventory(await (await registryForDir(dir)).list())).find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
+    expect((requireWorkerInventory(await (await openWorkerReader(dir)).list())).find(record => record.tag === 'unknown')?.stop?.reason).toBe('lead-session-ended')
     expect(a.messages().some(m => m.type === 'note' && m.to === 'rohanz' && m.text === `could not verify unknown's process (pid ${process.pid}); left running, not stopped`)).toBe(true)
   })
 
@@ -189,9 +192,14 @@ describe('worker safety', () => {
       await vi.advanceTimersByTimeAsync(1800)
       await shutdown
       expect((await workerByTag(dir, 'slow-note'))).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
-      const registry = await registryForDir(dir), worker = (await workerByTag(dir, 'slow-note'))!
-      expect(await registry.beginOperation(worker.id!, 'stop')).toBe(true)
-      await registry.finishOperation(worker.id!)
+      // Slice 2 closes the old registry lifecycle. A new session must still acquire the released stop lane.
+      await expect(registryForDir(dir)).rejects.toThrow('this Room MCP is shutting down')
+      const nextSession = beginWorkerRegistries()
+      try {
+        const registry = await nextSession.run(() => registryForDir(dir)), worker = (await workerByTag(dir, 'slow-note'))!
+        expect(await registry.beginOperation(worker.id!, 'stop')).toBe(true)
+        await registry.finishOperation(worker.id!)
+      } finally { await nextSession.end() }
     } finally { release(); vi.useRealTimers(); await shutdown }
   })
 
@@ -346,8 +354,11 @@ describe('worker safety', () => {
       runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'old', busFrontier: 0, promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
       createdAt: 1, seq: 1,
     }
-    await registry.writeIntent(abandoned)
-    await registry.abandonPreparation(abandoned.id)
+    await withDirectoryAdmission(dir, 'spawn', async () => {
+      await registry.writeIntent(abandoned)
+      await registry.abandonPreparation(abandoned.id)
+      await registry.finishOperation(abandoned.id)
+    })
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'new', host: 'codex' })).toContain('spawned money')
     const current = (await registry.reserved('money'))!
     expect(current.id).not.toBe(abandoned.id)
@@ -360,6 +371,7 @@ describe('worker safety', () => {
     // shared fixture registry, so use a fresh repository for this startup assertion.
     const { repo, head } = realRepo()
     const prepared = await prepareWorktree(repo, 'same', 'rohanz')
+    await runLegacyImport(join(repo, '.git'))
     const t = setupLead(repo, head)
     writeFileSync(join(repo, 'lead-only.txt'), 'lead edit')
     try {

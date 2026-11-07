@@ -1,3 +1,4 @@
+import { currentAdmission, withAdmission, withoutAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 /**
  * The lead-side writer of its workers' room facts (registry §13): in each room a lead session is in, the
@@ -29,6 +30,8 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
  * written, so projection cannot undo retirement (N2). Returns the written records for the caller's own facts.
  */
 export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown, active: () => boolean = () => true): Promise<WorkerRecord[] | undefined> {
+  if (!s.daemon.fence || !active()) return undefined
+  return withAdmission(registry.commonDir, 'project', async () => {
   const roomKey = s.roomName, fence = s.daemon.fence
   const current = () => active() && s.daemon.fence === fence
   if (!fence || !current()) return undefined
@@ -136,6 +139,8 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
     if (!undelivered.has(record.id)) await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
   }
   return write.map(({ record }) => record)
+
+  })
 }
 
 /** Brings the cached facts of each resumed run's log up to date; a status read on them then reads nothing. */
@@ -151,22 +156,24 @@ async function warmRunLogs(s: Session, records: WorkerRecord[]): Promise<void> {
 export async function localWorkerView(s: Session, id: string): Promise<WorkerView | undefined> {
   if (!s.daemon.fence) return undefined
   const registry = await openWorkerReader(s.dir)
+  return registry.validatedRead(async () => {
   const before = await registry.freshness(id)
   const record = await registry.read(id), status = await registry.status(id)
   const latest = await registry.freshness(id)
   return before?.revision === latest?.revision && record && status && s.daemon.fence
     ? workerView(record, status, s.daemon.fence) : undefined
+  })
 }
 
 /** Keeps a lead session's worker facts in one room current: on start, on every registry change, and on demand. */
 export class WorkerProjector {
   private unsubscribe?: () => void
-  private onSync = (synced: boolean) => { if (synced) void this.project() }
+  private onSync = (synced: boolean) => { if (synced) void withoutAdmission(() => this.project()) }
   private onBusDelete = (event: { changes: { delta: { delete?: number }[] } }) => {
-    if (event.changes.delta.some(change => change.delete)) void this.project()
+    if (event.changes.delta.some(change => change.delete)) void withoutAdmission(() => this.project())
   }
   private onReferenceDelete = (event: { changes: { keys: Map<string, { action: string }> } }) => {
-    if ([...event.changes.keys.values()].some(change => change.action === 'delete')) void this.project()
+    if ([...event.changes.keys.values()].some(change => change.action === 'delete')) void withoutAdmission(() => this.project())
   }
   private running?: Promise<void>
   private dirty = false
@@ -175,12 +182,12 @@ export class WorkerProjector {
   constructor(private s: Session, private registry: WorkerRegistry, private log: (line: string) => void = () => {}) {}
 
   start(): void {
-    this.unsubscribe = this.registry.onChange(() => { void this.project() })
+    this.unsubscribe = this.registry.onChange(() => { void withoutAdmission(() => this.project()) })
     this.s.provider.on?.('sync', this.onSync)
     this.s.room.bus.observe(this.onBusDelete)
     this.s.room.mail.observe(this.onReferenceDelete)
     this.s.room.outcomes.observe(this.onReferenceDelete)
-    void this.project()
+    void withoutAdmission(() => this.project())
   }
 
   stop(): void {
@@ -191,26 +198,43 @@ export class WorkerProjector {
     this.s.room.mail.unobserve(this.onReferenceDelete)
     this.s.room.outcomes.unobserve(this.onReferenceDelete)
   }
+  /** Resolves once a pass running at stop() has finished; stop() starts no new pass. */
+  async settled(): Promise<void> { while (this.running) await this.running.catch(() => {}) }
 
   /** A request waits for a pass started after that request; concurrent requests share the next pass. */
   project(): Promise<void> {
     if (this.stopped) return Promise.resolve()
+    if (currentAdmission(this.registry.commonDir)) {
+      // An awaited retirement projection is part of that call, including its held lane.
+      const next = Promise.resolve(this.running).then(() => this.pass())
+      this.running = next
+      void next.finally(() => {
+        if (this.running !== next) return
+        this.running = undefined
+        if (this.dirty) void withoutAdmission(() => this.project())
+      })
+      return next
+    }
     this.dirty = true
-    if (!this.running) this.running = Promise.resolve().then(() => this.drain())
+    if (!this.running) {
+      const next = withoutAdmission(() => Promise.resolve().then(() => this.drain()))
+      this.running = next
+      void next.finally(() => { if (this.running === next) this.running = undefined })
+    }
     return this.running
   }
 
+  private async pass(): Promise<void> {
+    if (this.stopped) return
+    try { await projectWorkers(this.s, this.registry, this.s.me.name, 'joined', this, () => !this.stopped) }
+    catch (e) { this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`) }
+  }
   private async drain(): Promise<void> {
-    try {
       while (this.dirty && !this.stopped) {
         this.dirty = false
         // projectWorkers reads the current registry and checks the current fence on each pass.
         // Changes arriving during an awaited pass request just one follow-up pass.
-        try { await projectWorkers(this.s, this.registry, this.s.me.name, 'joined', this, () => !this.stopped) }
-        catch (e) { this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`) }
+        await this.pass()
       }
-    } finally {
-      this.running = undefined
-    }
   }
 }

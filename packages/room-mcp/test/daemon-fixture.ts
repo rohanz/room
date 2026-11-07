@@ -2,8 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import * as relay from '@room/relay'
 import { readRelayInfo, stopLocalDaemon } from '@room/relay'
-import { liveness } from '@room/relay/leases'
-import { pidAlive } from '@room/relay/process'
+import { liveness } from '@room/local-state/leases'
+import { pidAlive } from '@room/local-state/process'
 import { beforeEach, vi } from 'vitest'
 
 const started = new Map<string, string>()

@@ -1,4 +1,4 @@
-import { privateStateDirectory } from '../src/private-state.js'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -9,7 +9,7 @@ import { RoomDoc } from '@room/shared'
 import { catchUpLocal, forgetLegacyLocal } from '../src/local-migrate.js'
 import { loadMemory, memoryFile } from '../src/memory.js'
 import { owed } from '@room/shared'
-import { probeProcess } from '../src/process.js'
+import { probeProcess } from '@room/local-state/process'
 
 let common: string
 const ledgerFile = (room: string) => path.join(common, 'room', 'relay', `migrated-${crypto.createHash('sha256').update(room).digest('hex').slice(0, 16)}.json`)

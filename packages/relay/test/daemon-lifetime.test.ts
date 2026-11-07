@@ -54,7 +54,9 @@ async function synced(p: WebsocketProvider) { await vi.waitFor(() => expect(p.sy
 async function gone(child: ChildProcess) { await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), { timeout: 10000 }) }
 
 it('a separate process stops at five minutes of fake writer-idle time (short real timer seam)', async () => {
-  const { child, command } = await start(common())
+  const { child, command, info } = await start(common())
+  expect(info.preflight).toMatchObject({ ok: true, evidence: { surface: 'daemon', node: process.versions.node, executable: fs.realpathSync.native(process.execPath) } })
+  expect((await relayHealth(info.port, info.key))?.preflight).toEqual(info.preflight)
   await command('clock', { now: 299999 })
   await new Promise(resolve => setTimeout(resolve, 40))
   expect(child.exitCode).toBeNull()
@@ -255,7 +257,7 @@ it.skipIf(process.platform !== 'win32').each(['preflight-first', 'client-first']
   const daemon = await ensureLocalDaemon(dir, room, { admitStart: async () => {}, entryPath: fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), execArgv: ['--import', require.resolve('tsx')], startupTimeoutMs: 15000 })
   daemonPids.push(daemon.pid)
   expect((await relayHealth(daemon.port, daemon.key))?.ready).toBe(true)
-  const { verifyPrivatePath } = await import('../src/private-state.js')
+  const { verifyPrivatePath } = await import('@room/local-state/private-state')
   verifyPrivatePath(path.join(dir, 'room'))
   verifyPrivatePath(path.join(dir, 'room/relay.json'))
   await stopLocalDaemon(dir)

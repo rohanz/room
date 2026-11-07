@@ -1,4 +1,5 @@
-import { openWorkerReader } from '../worker-registry.js'
+import { withoutAdmission } from '../storage-admission.js'
+import { openWorkerReader, beginWorkerRegistries } from '../worker-registry.js'
 import { snapshotStatus, type WorkerSnapshot } from '../worker-store.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
 import { createWorkerRuntime, registryRunningWorkers } from './workers.js'
@@ -14,7 +15,7 @@ import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { WakeReconciler } from '../wake-reconciler.js'
 import { ConflictSet } from '../conflict-set.js'
-import { Rooms, type Attachment, type Role } from '../registry.js'
+import { Rooms, within, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, detachCheckout, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
 import { Ledger } from '../ledger.js'
 import { createRelevance } from '../relevance.js'
@@ -24,7 +25,12 @@ import { SoloGate } from '../solo.js'
 import { trustedWorker, workerText, NotJoined, type HandlerState, type ToolCtx } from './context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
+/** Shutdown waits this long for background registry work; like worker dismissal, it cannot hold the host's exit open. */
+const SHUTDOWN_SETTLE_MS = 2000
+
 export function createHandlerState(ctx: ToolCtx): HandlerState {
+  // This tools instance holds the process's worker-registry lifecycle until its shutdown.
+  const registryLease = beginWorkerRegistries()
   const now = ctx.now ?? (() => Date.now())
   const log = ctx.log ?? ((l: string) => process.stderr.write(`room-mcp: ${l}\n`))
   const doJoin = ctx.join ?? joinSession
@@ -44,13 +50,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    * team room (the state file is the team room's).
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
-    void refreshWorkerFacts(s).then(() => primaryHooks?.scheduleWrite(), log)
+    void withoutAdmission(() => refreshWorkerFacts(s)).then(() => primaryHooks?.scheduleWrite(), log)
     ledger.bind(s)
     const unwatch = solo.watch(s)
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
       // Only what may reach the hooks: while alone nothing does, and the hook stays quiet.
-      prepare: () => refreshWorkerFacts(s),
+      prepare: () => withoutAdmission(() => refreshWorkerFacts(s)),
       owedCount: () => ledger.candidates(s).filter(solo.audible(s)).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
       sessionDir: () => ctx.binding?.dir(), paused: () => s.rejected
         ? `[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`
@@ -76,11 +82,14 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }
       },
+      settled: async () => { await Promise.all([bridge?.settled(), watcher?.settled()]) },
       flush: () => watcher?.flush() ?? Promise.resolve(),
       project: () => bridge?.sync() ?? Promise.resolve(),
     }
   }
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses })
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: s => ctx.setSession(s), attach, log, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses,
+    scope: fn => registryLease.run(fn),
+    late: s => { log(`leaving ${s.roomName}: joined after shutdown began`); void doLeave(s).catch(error => log(`late session leave failed: ${error instanceof Error ? error.message : String(error)}`)) } })
 
   const S = (): Session => {
     const s = ctx.getSession()
@@ -149,7 +158,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   })
   const wakes = new WakeReconciler({
     ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
-    prepare: s => refreshWorkerFacts(s),
+    prepare: s => withoutAdmission(() => refreshWorkerFacts(s)),
     send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
     codexTurn: ctx.wakeProbe,
     midTurn: ctx.midTurn,
@@ -204,8 +213,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     scheduleInboxWrite,
     upgraded,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
+    registryLease,
     clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown(progress = () => {}) {
+      // First: a join, rebind or replacement finishing during shutdown is left, not attached, and a tool call still
+      // running opens no registry when it resumes.
+      rooms.close()
+      registryLease.fence()
       preserveBridgeFacts = true
       wakes.stop()
       // Withdraw every joined session while its transport is still up. Worker cleanup can
@@ -217,7 +231,17 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       }
       const s = ctx.getSession()
       progress('discovering running workers')
-      if (!s) { progress('closing workers room'); await state.closeWorkersRoom(true).catch(() => {}); return }
+      // Registry work these sessions started finishes its admission before the caller closes storage admissions.
+      // Then this instance ends its registry lifecycle: with no other holder, every registry the process opened stops
+      // watching and polling for good, so nothing reconciles after admissions close.
+      const settle = async () => {
+        const started = performance.now()
+        const remaining = () => Math.max(0, SHUTDOWN_SETTLE_MS - (performance.now() - started))
+        const quiet = await rooms.settle(remaining())
+        const stopped = await within(registryLease.end(), remaining())
+        if (!quiet || !stopped) log(`shutdown: background worker-registry work still running after ${SHUTDOWN_SETTLE_MS} ms; its storage registration stays as recovery evidence`)
+      }
+      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); await settle(); return }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
       // Persist stop intent, clean up owned children and signal the host before leaving.
       // The process exit deadline reports these pending stages if disk I/O stalls.
@@ -246,6 +270,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       rooms.remove(s)
       progress(`leaving ${s.roomName}`)
       await doLeave(s)
+      await settle()
     },
     async drop(s: Session, reason: string) {
       log(`leaving ${s.roomName}: ${reason}`)

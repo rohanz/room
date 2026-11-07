@@ -1,3 +1,4 @@
+import { closeStorageAdmissions } from '../src/storage-admission.js'
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest'
 import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -17,7 +18,8 @@ beforeAll(() => {
   writeFileSync(join(dir, 'app.py'), 'x = 1\n')
 })
 afterAll(() => rmSync(dir, { force: true, recursive: true }))
-beforeEach(() => {
+beforeEach(async () => {
+  await closeStorageAdmissions()
   const stateDir = sessionDirectory(join(dir, '.git'), SID)
   rmSync(join(dir, '.git/room'), { force: true, recursive: true })
   mkdirSync(stateDir, { recursive: true })

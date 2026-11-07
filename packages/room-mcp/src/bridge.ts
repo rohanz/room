@@ -1,3 +1,4 @@
+import { withDirectoryAdmission, withoutAdmission } from './storage-admission.js'
 /**
  * A lead in two rooms: the team room (server) it belongs to, and a local workers room on this
  * machine where its spawned `local` workers live. The bridge is the lead's single writer in the team
@@ -102,6 +103,7 @@ export class Bridge {
   /** local claim id -> mirrored team claim id */
   private mirrored = new Map<string, string>()
   private relayed: string[] = []
+  private relaying: Promise<void> = Promise.resolve()
   /** worker|path|type -> last relay time, so a chatty team room does not become a stream of notices. */
   private recent = new Map<string, number>()
   private unobserve: (() => void)[] = []
@@ -112,6 +114,8 @@ export class Bridge {
   private facts?: WorkerSnapshot
   private storageEpoch = 0
   private running: Promise<void> = Promise.resolve()
+  /** Attach and timer-started passes, so a stopped bridge can be awaited before admissions close. */
+  private inFlight = new Set<Promise<unknown>>()
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {
     this.registry = o.registry
@@ -119,6 +123,8 @@ export class Bridge {
 
   /** This lead's `local` workers that are not retiring, from the registry (never the room). */
   workers(): WorkerRecord[] {
+    // Callers that act on these cached facts refresh them under admission first.
+    // Pure display callers may inspect the projection without authorizing effects.
     return (this.facts?.available ? this.facts.workers.map(fact => fact.record) : []).filter(r => r.lead.participant === this.local.me.name && r.room === this.local.roomName
       && !['retiring', 'retired', 'abandoned'].includes(r.phase))
   }
@@ -144,27 +150,35 @@ export class Bridge {
     const l = this.local.room, t = this.team.room
     const onLocal = () => this.schedule()
     const onLocalClaims = (ev: { changes: { keys: Map<string, { action: string }> } }) => {
-      for (const [id, ch] of ev.changes.keys) {
-        if (ch.action === 'add') this.mirrorClaim(id)
-        else if (ch.action === 'update') this.updateMirrorClaim(id)
-        else if (ch.action === 'delete') this.unmirrorClaim(id)
-      }
+      const changes = [...ev.changes.keys]
+      this.queueClaims(async () => {
+        for (const [id, ch] of changes) {
+          if (ch.action === 'add') this.mirrorClaim(id)
+          else if (ch.action === 'update') this.updateMirrorClaim(id)
+          else if (ch.action === 'delete') await this.unmirrorClaim(id)
+        }
+      })
     }
-    // A mirror removed by something other than this bridge (the lead's own room_done or a stale sweep)
-    // while the worker's claim is still open: put it back.
+    // Restore mirrors only after refreshing lifecycle authority under admission.
     const onTeamClaims = (ev: { changes: { keys: Map<string, { action: string }> } }, tr: { origin: unknown }) => {
       if (tr.origin === this) return
-      for (const [teamId, ch] of ev.changes.keys) {
-        if (ch.action !== 'delete') continue
-        const localId = this.localIdOf(teamId)
-        if (!localId) continue
-        this.mirrored.delete(localId)
-        if (this.local.room.claims.has(localId)) { this.mirrorClaim(localId); this.o.log?.(`bridge: re-mirrored ${localId} (its mirror ${teamId} was removed by someone else)`) }
-      }
+      const removed = [...ev.changes.keys].filter(([, change]) => change.action === 'delete').map(([id]) => id)
+      if (!removed.length) return
+      this.queueClaims(async () => {
+        for (const teamId of removed) {
+          const localId = this.localIdOf(teamId)
+          if (!localId) continue
+          this.mirrored.delete(localId)
+          if (this.local.room.claims.has(localId)) this.mirrorClaim(localId)
+        }
+      })
     }
     const onTeamBus = (ev: { changes: { delta: { insert?: unknown }[] }; transaction: { local: boolean } }) => {
       if (ev.transaction.local) return
-      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) this.relayDown(m)
+      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
+        this.relaying = withoutAdmission(() => this.relaying.then(() => this.relayDown(m)))
+          .catch(error => this.o.log?.(`bridge relay: ${String(error)}`))
+      }
     }
     // The lead's team base, level or fence moving changes every projection (R3c).
     const onTeamLead = (ev: { keysChanged: Set<string> }, tr: { origin: unknown }) => {
@@ -188,7 +202,7 @@ export class Bridge {
     )
     this.tick = setInterval(() => this.schedule(), PROJECT_TICK_MS)
     this.tick.unref?.()
-    const attach = async (registry: WorkerRegistry) => {
+    const attach = async (registry: WorkerRegistry) => withDirectoryAdmission(this.local.dir, 'project', async () => {
       if (this.stopped) return
       this.registry = registry
       const facts = await registry.snapshot()
@@ -198,9 +212,20 @@ export class Bridge {
       this.facts = facts
       for (const c of l.openClaims()) this.mirrorClaim(c.id)
       this.schedule()
-    }
-    if (this.registry) void attach(this.registry).catch(e => this.o.log?.(`bridge: no worker registry: ${String(e)}`))
-    else void registryForDir(this.local.dir).then(attach).catch(e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`))
+    })
+    if (this.registry) this.background(withoutAdmission(() => attach(this.registry!)).catch(e => this.o.log?.(`bridge: no worker registry: ${String(e)}`)))
+    else this.background(withoutAdmission(() => registryForDir(this.local.dir).then(attach)).catch(e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`)))
+  }
+
+  private background(work: Promise<unknown>): void {
+    const settled = work.catch(() => {}).finally(() => this.inFlight.delete(settled))
+    this.inFlight.add(settled)
+  }
+  /** Resolves once work started before stop() has finished: attach, sync passes, claim relays and projection. */
+  async settled(): Promise<void> {
+    while (this.inFlight.size) await Promise.allSettled([...this.inFlight])
+    await this.relaying.catch(() => {})
+    await this.running.catch(() => {})
   }
 
   /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
@@ -221,17 +246,31 @@ export class Bridge {
     return undefined
   }
 
+  /** Observer callbacks cannot borrow the tool that happened to deliver the CRDT event. */
+  private queueClaims(effect: () => Promise<void>): void {
+    this.relaying = withoutAdmission(() => this.relaying.then(() =>
+      withDirectoryAdmission(this.local.dir, 'project', async () => {
+        if (this.stopped || !this.registry) return
+        const facts = await this.registry.snapshot()
+        if (this.stopped || !facts.available || facts.blockers.length) return
+        this.facts = facts
+        await effect()
+      }))).catch(error => this.o.log?.(`bridge claims: ${String(error)}`))
+  }
+
   private schedule(): void {
     if (this.stopped) return
     const ms = this.o.debounceMs ?? 300
-    if (ms === 0) { void this.sync(); return }
+    if (ms === 0) { this.background(withoutAdmission(() => this.sync()).catch(e => this.o.log?.(`bridge: ${String(e)}`))); return }
     if (this.timer) clearTimeout(this.timer)
-    this.timer = setTimeout(() => { this.timer = null; void this.sync() }, ms)
+    this.timer = setTimeout(() => { this.timer = null; this.background(withoutAdmission(() => this.sync()).catch(e => this.o.log?.(`bridge: ${String(e)}`))) }, ms)
     this.timer.unref?.()
   }
 
   /** Coordination now, then one serialized projection pass. */
   async sync(): Promise<void> {
+  return withDirectoryAdmission(this.local.dir, 'project', async () => {
+    await this.relaying
     if (this.stopped) return
     if (this.registry) {
       try {
@@ -241,15 +280,20 @@ export class Bridge {
       } catch (error) { this.o.log?.(`bridge: worker facts unavailable: ${String(error)}`); return }
     }
     if (this.stopped) return
-    try { this.syncCoordination() } catch (e) { this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`) }
+    try { await this.syncCoordination() } catch (e) { this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`) }
     return this.project()
-  }
+
+  })
+}
 
   /**
    * `coordination[lead] = {paths, workers, at}`: the union of the lead's projectable workers' scope and
    * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
    */
-  syncCoordination(): void {
+  async syncCoordination(): Promise<void> {
+    return withDirectoryAdmission(this.local.dir, 'project', async () => {
+    if (this.stopped || !this.registry) return
+    this.facts = await this.registry.snapshot()
     if (!this.facts?.available || this.facts.blockers.length) return
     if (this.stopped || !this.registry || !this.team.daemon.fence) return
     const lead = this.team.me.name
@@ -264,6 +308,7 @@ export class Bridge {
     const next: CoordinationRecord = { paths, workers, at: Date.now() }
     this.team.room.doc.transact(() => { this.team.room.coordination.set(lead, next) }, this)
     this.o.log?.(`bridge: coordination covers ${paths.length} path(s) from ${workers.length} worker(s)`)
+    })
   }
 
   /** Serialized: one pass at a time, and a request during a pass runs once after it. */
@@ -283,6 +328,7 @@ export class Bridge {
    * whose worker is no longer in the set are deleted.
    */
   private async projectOnce(registry: WorkerRegistry): Promise<void> {
+  return withDirectoryAdmission(this.local.dir, 'project', async () => {
     const authority = this.team.daemon.fence
     if (!authority) return
     const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this, () => !this.stopped)
@@ -303,7 +349,9 @@ export class Bridge {
       if (!currentAuthority()) return
       await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record.name })
     }
-  }
+
+  })
+}
 
   /** Delete a projected participant's team records: its flat keys, manifest incarnations and head. */
   private dropProjection(name: string): void {
@@ -603,7 +651,7 @@ export class Bridge {
   }
 
   /** The local claim is gone: drop the mirror and tell the team what became of the plans it showed them. */
-  private unmirrorClaim(localId: string): void {
+  private async unmirrorClaim(localId: string): Promise<void> {
     const teamId = this.mirrored.get(localId)
     if (!teamId) return
     this.mirrored.delete(localId)
@@ -612,7 +660,7 @@ export class Bridge {
     if (!mirrored) return
     const local = [...this.local.room.messages()].reverse().find((m): m is ReleaseMsg => m.type === 'release' && m.claimId === localId)
     const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1]
-    void this.team.post<ReleaseMsg>(this.team.me, {
+    await this.team.post<ReleaseMsg>(this.team.me, {
       type: 'release', claimId: teamId, path: mirrored.path,
       summary: `${tag ? `[${tag}] ` : ''}${local?.summary ?? 'released'}`,
       ...(local?.unfulfilled?.length ? { unfulfilled: local.unfulfilled } : {}),
@@ -621,13 +669,18 @@ export class Bridge {
 
   /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
    *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
-  private relayDown(m: Msg): void {
+  private async relayDown(m: Msg): Promise<void> {
+    return withDirectoryAdmission(this.local.dir, 'project', async () => {
+    if (this.stopped || !this.registry) return
     if (this.relayed.includes(m.id)) return
     if (m.from === this.team.me.name && m.fromKind !== 'human') return
     const broadcast = m.type === 'note' && !m.to && (m.priority === 'notify' || m.priority === 'interrupt')
     if (!broadcast && !RELAY_TYPES.has(m.type)) return
     const paths = msgPaths(m)
     if (!broadcast && !paths.length) return
+    const facts = await this.registry.snapshot()
+    if (this.stopped || !facts.available || facts.blockers.length) return
+    this.facts = facts
     const now = Date.now()
     const hit = this.workers().filter(w => {
       if (m.to && m.to !== w.name) return false
@@ -646,11 +699,12 @@ export class Bridge {
       const last = this.recent.get(key) ?? 0
       if (!broadcast && priority !== 'interrupt' && now - last < RELAY_DEDUPE_MS) continue
       this.recent.set(key, now)
-      void this.local.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority, text: `[team room] ${formatMsg(m)}` }, { auto: true })
+      await this.local.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority, text: `[team room] ${formatMsg(m)}` }, { auto: true })
       delivered.push(w.tag)
     }
     if (this.recent.size > RELAYED_MAX) for (const [k, t] of this.recent) if (now - t > RELAY_DEDUPE_MS) this.recent.delete(k)
     if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(', ')} at ${priority}`)
+    })
   }
 }
 

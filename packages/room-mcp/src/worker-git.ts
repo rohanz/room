@@ -1,3 +1,4 @@
+import { withDirectoryAdmission } from './storage-admission.js'
 import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Worker worktrees, carry snapshots, links, and cleanup. */
@@ -5,7 +6,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isRegenerableBuildPath } from '@room/shared'
-import type { LocalWorker } from './worker-status.js'
+import type { LocalWorker, WorkerRecord, WorkerStatusResult } from './worker-status.js'
+import type { WorkerInventory, BlockedWorkerEvidence } from './worker-store.js'
 import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
@@ -459,17 +461,36 @@ export interface CleanupWorkerOptions {
   workers?: Iterable<WorktreeOwnershipRecord>
   /** Receives what kept the worktree, instead of logging a recovery ref. */
   preservation?: WorkerCleanupPreservation
+  /**
+   * The lifecycle facts to recheck, from the caller's own store. A store replaying its own work passes itself, so
+   * cleanup never reaches back through the process registry cache into a second store over the same files.
+   * Omitted by facade-level callers, which use this process's registry for the clone.
+   */
+  registry?: CleanupRegistry
+}
+
+/** The lifecycle reads cleanup needs, satisfied by WorkerRegistry and by FileWorkerStore for its own replays. */
+export interface CleanupRegistry {
+  read(id: string): Promise<WorkerRecord | undefined>
+  list(): Promise<WorkerInventory<WorkerRecord>>
+  worktreeOwner(record: WorkerRecord): Promise<WorkerRecord | undefined>
+  checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): Promise<{ record: WorkerRecord; status: WorkerStatusResult }[] | BlockedWorkerEvidence>
 }
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
 export async function cleanupWorker(leadDir: string, w: LocalWorker, options: CleanupWorkerOptions = {}): Promise<boolean> {
+  return withDirectoryAdmission(leadDir, 'retire', async () => {
   const { collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = [], preservation } = options
+  const lifecycle = async (): Promise<CleanupRegistry> => {
+    if (options.registry) return options.registry
+    const { registryForDir } = await import('./worker-registry.js')
+    return registryForDir(leadDir)
+  }
   // All lifecycle paths converge here. The owner operation lease must be held by
   // callers while checking this snapshot and removing the checkout.
   const available = async () => {
     if (!w.id) return true // Legacy direct callers have no registry capability.
-    const { registryForDir } = await import('./worker-registry.js')
-    const registry = await registryForDir(leadDir)
+    const registry = await lifecycle()
     const record = (await registry.read(w.id))
     if (!record) return w.branch === `room/${w.tag}` && (requireWorkerInventory(await registry.list())).every(peer =>
       path.resolve(peer.dir) !== path.resolve(w.dir) || peer.tag === w.tag)
@@ -499,8 +520,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     // writing there); ordinary collection already applied the worker's final tree under its operation lease.
     let retainedOwner = false
     if (!discarded && w.id) {
-      const { registryForDir } = await import('./worker-registry.js')
-      const owner = await (await registryForDir(leadDir)).read(w.id)
+      const owner = await (await lifecycle()).read(w.id)
       retainedOwner = owner?.phase === 'retired' && !!owner.keptWorktree && !!owner.archive?.keptReason?.startsWith('shared checkout: ')
     }
     if (retainedOwner) {
@@ -574,6 +594,8 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
   }
   cleanupWorkerLogs(leadDir, w)
   return true
+
+  })
 }
 
 /** Remove a worker's local logs after either checkout cleanup or vanished-checkout pruning. */

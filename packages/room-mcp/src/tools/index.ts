@@ -1,3 +1,5 @@
+import { withDirectoryAdmission, withoutAdmission } from '../storage-admission.js'
+import type { OperationKind } from '@room/local-state/protocol'
 import { formatMsg, type Priority } from '@room/shared'
 import { createHandlerState } from './state.js'
 import { createWorkerRestartNotices } from '../worker-restart-notices.js'
@@ -127,7 +129,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const completionDir = ctx.getSession()?.dir ?? ctx.cwd
         let joined = !autoJoin && !ctx.completionReady
         // Do not let an in-flight or failed replacement swallow the completion deadline.
-        if (!joined) void (async () => { await ctx.completionReady?.(); await autoJoin?.ensure(); joined = true })()
+        if (!joined) void withoutAdmission(async () => { await ctx.completionReady?.(); await autoJoin?.ensure(); joined = true })
           .catch(error => ctx.log?.(`completion reconnect failed: ${String(error)}`))
         const waited = await waitForCompletionReconnect(() => { const s = ctx.getSession(); return joined || s?.closed || s?.rejected ? s : null }, signal)
         if (waited === 'cancelled') return 'error: tool call cancelled'
@@ -177,7 +179,8 @@ export function createTools(ctx: ToolCtx): Tools {
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.autoRetire()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
-        if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
+        // A join that finished after shutdown began was left, not attached: never re-arm reconnection for it.
+        if (s2 && autoJoin && !state.rooms.isClosed && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
         if (WORKER_OPS.has(name) || process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts()
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2, batch) : ''
         if (s2) await offerTeamSharingDisclosure(s2, ledger)
@@ -232,7 +235,9 @@ export function createTools(ctx: ToolCtx): Tools {
       const items: HookItem[] = chosen.map(c => ({ id: c.m.id, priority: c.m.priority, line: line(c) }))
       return { batch, items, notices, more: more + moreNotices }
     },
-    async call(name, args, signal, handoff) {
+    call(name, args, signal, handoff) { return state.registryLease.run(() => callTool(name, args, signal, handoff)) },
+  }
+  async function callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal, handoff?: (settle: Settle) => void): Promise<string> {
       // Setup checks must work while auto-join, rebinding, or room sync is stuck.
       // They do not reserve owed messages or touch the current room. Already-prepared
       // local notices can still reach this first reply, without waiting for startup I/O.
@@ -246,28 +251,31 @@ export function createTools(ctx: ToolCtx): Tools {
         const notices = sameSession ? ledger.notices(batch).map(n => n.text + '\n\n').join('') : ''
         return finishReply(batch, notices + body, signal, handoff)
       }
-      let release: (() => void) | undefined
-      if (CHOOSES_ROOM.has(name)) {
-        pendingMoves++
-        const previous = moves
-        const mine = new Promise<void>(resolve => { release = () => { pendingMoves--; resolve() } })
-        moves = previous.then(() => mine)
-        const wait = untilAborted(signal)
-        const cancelled = await Promise.race([previous.then(async () => { while (workerOps.size) await Promise.all([...workerOps]) }).then(() => false), wait.aborted])
-        wait.done()
-        if (cancelled) { release!(); return 'error: tool call cancelled' }
-      } else if (WORKER_OPS.has(name)) {
-        const wait = untilAborted(signal)
-        while (pendingMoves) {
-          if (await Promise.race([moves.then(() => false), wait.aborted])) { wait.done(); return 'error: tool call cancelled' }
-        }
-        wait.done()
-        const done = new Promise<void>(resolve => { release = resolve })
-        workerOps.add(done)
-        void done.then(() => workerOps.delete(done))
+    let release: (() => void) | undefined
+    if (CHOOSES_ROOM.has(name)) {
+      pendingMoves++
+      const previous = moves
+      const mine = new Promise<void>(resolve => { release = () => { pendingMoves--; resolve() } })
+      moves = previous.then(() => mine)
+      const wait = untilAborted(signal)
+      const cancelled = await Promise.race([previous.then(async () => { while (workerOps.size) await Promise.all([...workerOps]) }).then(() => false), wait.aborted])
+      wait.done()
+      if (cancelled) { release!(); return 'error: tool call cancelled' }
+    } else if (WORKER_OPS.has(name)) {
+      const wait = untilAborted(signal)
+      while (pendingMoves) {
+        if (await Promise.race([moves.then(() => false), wait.aborted])) { wait.done(); return 'error: tool call cancelled' }
       }
-      try {
-      if (name === 'room_spawn') currentToolTiming()?.endQueue()
+      wait.done()
+      const done = new Promise<void>(resolve => { release = resolve })
+      workerOps.add(done)
+      void done.then(() => workerOps.delete(done))
+    }
+    try {
+    if (name === 'room_spawn') currentToolTiming()?.endQueue()
+    const operation: OperationKind = name === 'room_spawn' ? 'spawn' : name === 'room_collect' ? (args?.discard ? 'discard' : 'collect')
+      : name === 'room_done' ? 'report' : name === 'room_send' ? 'message' : name === 'room_preview_merge' ? 'preview' : 'reconcile'
+    return await withDirectoryAdmission(ctx.getSession()?.dir ?? ctx.cwd, operation, async () => {
       const batch = ledger.open('reply')
       try {
         const body = await run(name, args, signal, batch)
@@ -277,8 +285,8 @@ export function createTools(ctx: ToolCtx): Tools {
         const text = warning ? `${warning}\n${result}` : result
         return finishReply(batch, text, signal, handoff)
       } catch (e) { ledger.release(batch); throw e }
-      } finally { release?.() }
-    },
+    })
+    } finally { release?.() }
   }
 }
 

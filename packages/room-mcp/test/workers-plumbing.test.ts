@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { base, createTools, dir, fakeSession, lead, pair, realRepo, scratchRepos } from './workers-fixture.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { execFileSync } from 'node:child_process'
@@ -179,6 +180,7 @@ describe('worker plumbing', () => {
     const { repo, git } = realRepo()
     writeFileSync(join(repo, 'modified.txt'), 'carried input\n')
     writeFileSync(join(repo, 'untracked-input.txt'), 'private input\n')
+    await storageRegistration(join(repo, '.git'))
     const first = await prepareWorktree(repo, 'survivor', 'rohanz')
     writeFileSync(join(first.dir, 'worker.txt'), 'preserved worker work\n')
     git('-C', first.dir, 'add', 'worker.txt')

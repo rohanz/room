@@ -74,7 +74,9 @@ function windowsAclScript(protectNew: boolean, createDirectory: boolean, repair:
       ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
     }).Count -gt 0;` : ''}
-    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree.
+    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree. Other Room
+    # processes create and remove entries meanwhile: an entry (or directory) reported not found needs no verification;
+    # any other failure, access denied included, still refuses.
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
@@ -107,6 +109,8 @@ function windowsAclScript(protectNew: boolean, createDirectory: boolean, repair:
           # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
           # read with its inherited entries would persist those entries as explicit ones.
           & $icacls $child /reset /q | Out-Null;
+          # 2/3: file/path not found (removed meanwhile); any other failure, access denied (5) included, refuses.
+          if ($LASTEXITCODE -eq 2 -or $LASTEXITCODE -eq 3) { continue };
           if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
           $childAcl=ReadAcl $child; $rules=Rules $childAcl
         };

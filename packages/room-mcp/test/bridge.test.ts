@@ -1,3 +1,6 @@
+import { openStorageGate } from '@room/local-state/gate'
+import { createExclusive, compareAndRelease } from '@room/local-state/leases'
+import { closeStorageAdmissions, storageInstance } from '../src/storage-admission.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -96,6 +99,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const cleanup of fixtureCleanup.splice(0).reverse()) cleanup()
   await closeRegistryForDir(dir)
+  await closeStorageAdmissions()
 })
 
 /** Let the bridge's posts and projection passes settle. */
@@ -163,6 +167,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     const old = hubAppend<NoteMsg>(t.local.a, lead, { type: 'note', text: 'before spawn', priority: 'notify' })
     hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
     await settle()
+    await t.bridge.sync() // relay is an admitted operation; wait for it rather than for elapsed time
     const relayed = t.local.b.messages().find(m => m.type === 'note' && m.to === worker.name)!
     // The worker's frontier is above the old broadcast; the relayed copy is addressed, so it is owed regardless.
     const workerSession = fakeSession(t.local.b, worker, LOCAL, true)
@@ -177,6 +182,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     t.team.a.setScope(own)
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
     await settle()
+    await t.bridge.sync() // coordination is an admitted operation; wait for it rather than for elapsed time
     expect(t.team.b.coordination.get(lead.name)).toMatchObject({ paths: ['api/models.py'], workers: [worker.name] })
     publishSource(t.local.b, { 'tests/test_money.py': { change: 'A', state: 'shared', hash: 'h', size: 2 } })
     await t.bridge.sync()
@@ -187,6 +193,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     t.local.a.clearScope(worker.name)
     publishSource(t.local.b, {})
     await settle()
+    await t.bridge.sync()
     expect(t.team.b.coordination.has(lead.name)).toBe(false)
     expect(t.team.b.scope(lead.name)?.paths).toEqual(['api/auth.py'])
   })
@@ -234,6 +241,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     t.bridge.start()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })
     await settle()
+    await t.bridge.sync()
     expect(t.team.b.coordination.get(lead.name)?.paths).toEqual(['api/'])
     expect(applyInputs).not.toHaveBeenCalled()
     t.bridge.stop()
@@ -243,16 +251,19 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
   it("workers' claims are mirrored into the team room under the lead's name and removed with the original", async () => {
     const t = await setup()
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })
+    await t.bridge.sync()
     const mirrored = t.team.b.openClaims()
     expect(mirrored).toHaveLength(1)
     expect(mirrored[0]).toMatchObject({ by: 'rohanz', path: 'app.py', from: 1, to: 1, intent: '[money] bump x', mirrorOf: 'money' })
     t.local.b.removeClaim(c.id)
+    await t.bridge.sync()
     expect(t.team.b.openClaims()).toEqual([])
   })
 
   it('omits a worker claim digest outside the lead text grant', async () => {
     const t = await setup({ policy: testPolicyStore('declared') })
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'edit', claimedHash: 'f'.repeat(64) })
+    await t.bridge.sync()
     expect(c.claimedHash).toBe('f'.repeat(64))
     expect(t.team.b.openClaims()[0]?.claimedHash).toBeUndefined()
   })
@@ -268,17 +279,17 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     const t = await setup()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })
     hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c_k', path: 'api/handlers.py', from_line: 1, to_line: 5, intent: 'renaming validate' })
-    await settle()
+    await t.bridge.sync()
     const relayed = t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)
     expect(relayed).toHaveLength(1)
     expect(relayed[0].priority).toBe('notify')
     expect((relayed[0] as { text: string }).text).toContain('[team room]')
     hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c_k2', path: 'web/index.ts', from_line: 1, to_line: 5, intent: 'css' })
     hubAppend<ClaimMsg>(t.team.a, lead, { type: 'claim', claimId: 'c_me', path: 'api/x.py', from_line: 1, to_line: 1, intent: 'mine' })
-    await settle()
+    await t.bridge.sync()
     expect(t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)).toHaveLength(1)
     hubAppend<PlanMsg>(t.team.b, kieran, { type: 'plan', status: 'cancelled', claimId: 'c1', path: 'api/handlers.py', plan: { kind: 'rename', symbol: 'validate' }, text: 'plan cancelled' })
-    await settle()
+    await t.bridge.sync()
     expect(t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name).at(-1)?.priority).toBe('interrupt')
   })
 
@@ -287,7 +298,7 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     await localWorker(t.registry, 'tax')
     const send = (priority: 'fyi' | 'notify' | 'interrupt') => hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority, text: priority })
     send('fyi'); send('notify'); send('interrupt')
-    await settle()
+    await t.bridge.sync()
     const notes = t.local.b.messages().filter((m): m is NoteMsg => m.type === 'note')
     expect(notes.map(m => [m.to, m.priority])).toEqual([
       [worker.name, 'notify'], ['rohanz+tax', 'notify'], [worker.name, 'interrupt'], ['rohanz+tax', 'interrupt'],
@@ -297,28 +308,71 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
   it('unmirroring a claim posts a release to the team, carrying unfulfilled plans; a mirror removed by others is restored', async () => {
     const t = await setup()
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'rename x', plans: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
+    await t.bridge.sync()
     const first = t.team.b.openClaims()[0]
     t.team.a.removeClaim(first.id)
+    await t.bridge.sync()
     const again = t.team.b.openClaims()
     expect(again).toHaveLength(1)
     expect(again[0].id).not.toBe(first.id)
     hubAppend<ReleaseMsg>(t.local.b, worker, { type: 'release', claimId: c.id, path: 'app.py', summary: 'gave up', unfulfilled: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
     t.local.b.removeClaim(c.id)
-    await settle()
+    await t.bridge.sync()
     const rel = t.team.b.messages().filter((m): m is ReleaseMsg => m.type === 'release')
     expect(rel).toHaveLength(1)
     expect(rel[0]).toMatchObject({ from: 'rohanz', claimId: again[0].id, path: 'app.py', summary: '[money] gave up' })
     expect(t.team.b.openClaims()).toEqual([])
   })
 
+  it.each(['attach', 'coordination', 'relay', 'claim'] as const)('holds admission before the first %s effect', async action => {
+    const t = await setup({ start: !['attach', 'coordination'].includes(action) })
+    if (!['attach', 'coordination'].includes(action)) await t.bridge.sync()
+    let entered!: () => void, release!: () => void
+    const paused = new Promise<void>(resolve => { entered = resolve })
+    const resumed = new Promise<void>(resolve => { release = resolve })
+    const snapshot = t.registry.snapshot.bind(t.registry)
+    const read = vi.spyOn(t.registry, 'snapshot').mockImplementationOnce(async query => {
+      const value = await snapshot(query)
+      entered(); await resumed
+      return value
+    })
+    const effect = action === 'relay' ? vi.spyOn(t.localLead, 'post')
+      : action === 'coordination' ? vi.spyOn(t.teamLead.room.coordination, 'set')
+      : vi.spyOn(t.teamLead.room, 'addClaim')
+    let operation: Promise<void> | undefined
+    if (action === 'coordination') {
+      t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })
+      operation = t.bridge.syncCoordination()
+    } else if (action === 'relay') hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority: 'notify', text: 'boundary' })
+    else {
+      t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'boundary' })
+      if (action === 'attach') t.bridge.start()
+    }
+    await paused
+    const common = join(dir, '.git'), gate = openStorageGate(common), instance = storageInstance()
+    const owner = { instance, token: 'bridge-boundary' }, lock = join(common, 'room/registry/migration.lock')
+    createExclusive(lock, instance)
+    const registration = await gate.register({ instance, kind: 'maintenance', release: 'test' })
+    try {
+      expect(effect).not.toHaveBeenCalled()
+      expect((await gate.drain(owner)).complete).toBe(false)
+      release(); await operation; await t.bridge.sync()
+      expect(effect).toHaveBeenCalled()
+      await vi.waitFor(async () => expect((await gate.drain(owner)).complete).toBe(true))
+      await gate.reopen(owner)
+    } finally { release(); read.mockRestore(); effect.mockRestore(); await gate.unregister(registration); compareAndRelease(lock, instance) }
+  })
+
   it('stop() removes the mirrored claims and stops relaying', async () => {
     const t = await setup()
     t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })
+    await t.bridge.sync()
     expect(t.team.b.openClaims()).toHaveLength(1)
     t.bridge.stop()
     expect(t.team.b.openClaims()).toEqual([])
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'late', paths: ['late.py'] })
     await settle()
+    await t.bridge.sync()
     expect(t.team.b.coordination.has(lead.name)).toBe(false)
   })
 })

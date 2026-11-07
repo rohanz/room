@@ -10,7 +10,7 @@ import net from 'node:net'
 import path from 'node:path'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { randomBytes } from 'node:crypto'
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import { writeAtomic } from './leases.js'
 import { probeOwnProcess } from './worker-process.js'
 import type { SessionBinding } from './binding.js'

@@ -6,8 +6,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { incarnationFile as createIncarnationFile, type HolderIn, type IncarnationStore, type LeaseStore, type StoredLease } from '@room/hub-core'
-import { compareAndRelease, createExclusive, liveness, recover, writeAtomic, type InstanceToken } from './leases.js'
-import { pidAlive, probeOwnProcess } from './process.js'
+import { compareAndRelease, createExclusive, liveness, recover, writeAtomic, type InstanceToken } from '@room/local-state/leases'
+import { pidAlive, probeOwnProcess } from '@room/local-state/process'
 
 const hubDir = (commonDir: string): string => path.join(commonDir, 'room', 'hub')
 

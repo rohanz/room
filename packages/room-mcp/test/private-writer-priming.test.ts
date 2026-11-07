@@ -4,14 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
-import { primePrivateDirectory, primePrivateState } from '@room/relay'
+import { primePrivateDirectory, primePrivateState } from '@room/local-state/private-state'
 import { createTools } from '../src/tools.js'
 import { pollLogin, checkTeamAdmission } from '../src/session.js'
 import { writeChoice } from '../src/choice.js'
 import { CURRENT_COMPAT } from '@room/hub-core'
 
-vi.mock('@room/relay', async importOriginal => ({
-  ...await importOriginal<typeof import('@room/relay')>(),
+vi.mock('@room/local-state/private-state', async importOriginal => ({
+  ...await importOriginal<typeof import('@room/local-state/private-state')>(),
   primePrivateDirectory: vi.fn(async () => {}), primePrivateState: vi.fn(async () => {}),
 }))
 const roots: string[] = []

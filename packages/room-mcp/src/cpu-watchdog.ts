@@ -1,4 +1,4 @@
-import { privateStateDirectory } from '@room/relay'
+import { privateStateDirectory } from '@room/local-state/private-state'
 import fs from 'node:fs'
 import path from 'node:path'
 

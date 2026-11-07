@@ -1,5 +1,5 @@
 /** Shared positional host selection: hooks start at the host or one hook interpreter. */
-import type { ProcessIdentity } from '@room/relay/leases'
+import type { ProcessIdentity } from '@room/local-state/leases'
 
 const HOOK_INTERPRETER = /^(?:sh|bash|dash|zsh|fish|cmd|powershell|pwsh)(?:\.exe)?$/i
 const identity = (value: any): value is ProcessIdentity => !!value && Number.isSafeInteger(value.pid) && value.pid > 0

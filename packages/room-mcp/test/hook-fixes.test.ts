@@ -1,3 +1,4 @@
+import { closeStorageAdmissions } from '../src/storage-admission.js'
 // Wave-2 review fixes on the hook path (Fable F-M1, F-M2, F-M3), checked against the Claude Code hooks
 // reference (2.1.283): additionalContext is capped at 10,000 characters, and `agent_id` is present only when
 // the hook fires inside a subagent.
@@ -36,7 +37,7 @@ beforeEach(() => {
   for (const key of ['ROOM_HOST', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'CLAUDE_CODE_SESSION_ID', 'ROOM_WAKE', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN']) vi.stubEnv(key, undefined)
   rmSync(join(dir, '.git/room'), { recursive: true, force: true })
 })
-afterEach(() => { vi.unstubAllEnvs() })
+afterEach(async () => { await closeStorageAdmissions(); vi.unstubAllEnvs() })
 
 const sdir = () => sessionDirectory(join(dir, '.git'), SID)
 const readSession = (name: string) => JSON.parse(readFileSync(join(sdir(), name), 'utf8'))

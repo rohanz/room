@@ -1,4 +1,4 @@
-// packages/relay/src/private-core.ts
+// packages/local-state/src/private-core.ts
 import fs from "node:fs";
 import path from "node:path";
 function privateDirectoryPath(dir) {

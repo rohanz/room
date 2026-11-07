@@ -1,4 +1,5 @@
 import { preparedTest } from './fixtures/prepared-test.js'
+import { storageRegistration } from '../src/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
@@ -252,6 +253,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(reply).toContain('not in this worktree')
   })
   it('removes the private carry refs after normal worker cleanup without a carry owner record', async () => {
+    await storageRegistration(path.join(repo, '.git'))
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
     const prepared = await prepareWorktree(repo, 'retired', 'rohanz', { linkExclusions: [] })

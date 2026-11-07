@@ -51,7 +51,14 @@ export interface WorkerContract { release: string; compat: CompatAdvertisement; 
 /** Only successful verifications are cached; a new home/CLI or changed executable evidence must reverify. */
 let verifiedContract: { key: string; root: string; evidence: string; selection: string; contract: WorkerContract } | undefined
 function contractEvidence(root: string): string {
-  return ([['compat.json', 4096], ['room-mcp.mjs', 64 * 1024 * 1024]] as const).map(([name, limit]) => {
+  const descriptorFile = path.join(root, 'compat.json')
+  const descriptorStat = fs.statSync(descriptorFile)
+  if (!descriptorStat.isFile() || descriptorStat.size > 4096) throw new Error('invalid installed contract file')
+  const descriptor = JSON.parse(fs.readFileSync(descriptorFile, 'utf8')) as { v?: number }
+  if (descriptor.v === 1 && EXECUTABLE_BUNDLES.some(name => name.endsWith('-app.mjs') && fs.existsSync(path.join(root, name)))) throw new Error('invalid legacy executable layout')
+  const names = descriptor.v === 2 ? EXECUTABLE_BUNDLES : ['room-mcp.mjs']
+  return (['compat.json', ...names]).map(name => {
+    const limit = name === 'compat.json' ? 4096 : 64 * 1024 * 1024
     const file = path.join(root, name)
     const stat = fs.statSync(file, { bigint: true })
     if (!stat.isFile() || stat.size > BigInt(limit)) throw new Error('invalid installed contract file')
@@ -115,7 +122,7 @@ export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env)
     const evidence = contractEvidence(root)
     const raw = fs.readFileSync(path.join(root, 'compat.json'), 'utf8')
     const descriptor = JSON.parse(raw)
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return undefined
+    if (![1, 2].includes(descriptor.v) || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || !verifyBundleDigests(root, descriptor)) return undefined
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
     if (contractEvidence(root) !== evidence) return undefined
     const after = selectionEvidence(home, env)
@@ -150,4 +157,21 @@ export function createCodexInstall(env: NodeJS.ProcessEnv = process.env, io: Ins
     }
   }
   return { inspectInstall } satisfies Pick<HostAdapter, 'inspectInstall'>
+}
+
+/** v1 pins retain their historical single-file layout; v2 must cover every emitted executable. */
+export const EXECUTABLE_BUNDLES = ['room-mcp.mjs', 'room-mcp-app.mjs', 'room-daemon.mjs', 'room-daemon-app.mjs', 'room-state.mjs', 'room-state-app.mjs', 'parse-worker.mjs', 'gate-worker.mjs'] as const
+export function verifyBundleDigests(root: string, descriptor: { v: number; bundleSha256: unknown }): boolean {
+  const digest = (name: string) => {
+    const file = path.join(root, name)
+    if (fs.statSync(file).size > 64 * 1024 * 1024) throw new Error('executable exceeds bundle limit')
+    return createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+  }
+  try {
+    if (descriptor.v === 1) return !EXECUTABLE_BUNDLES.filter(name => name.endsWith('-app.mjs')).some(name => fs.existsSync(path.join(root, name))) && descriptor.bundleSha256 === digest('room-mcp.mjs')
+    const hashes = descriptor.bundleSha256
+    if (descriptor.v !== 2 || !hashes || typeof hashes !== 'object' || Array.isArray(hashes)
+      || Object.keys(hashes).length !== EXECUTABLE_BUNDLES.length) return false
+    return EXECUTABLE_BUNDLES.every(name => (hashes as Record<string, unknown>)[name] === digest(name))
+  } catch { return false }
 }

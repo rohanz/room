@@ -1,3 +1,4 @@
+import { storageRegistration } from '../src/storage-admission.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -36,6 +37,7 @@ async function fixture(change: Change, remote = false) {
   put(root, '.gitignore', '.room/\n'); put(root, oldPath, script)
   put(root, 'lead-edit.txt', 'base\n'); put(root, 'lead-delete.txt', 'base\n')
   git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
+  await storageRegistration(path.join(root, '.git'))
   const base = git(root, 'rev-parse', 'HEAD'), worker = path.join(root, '.room/workers/test')
   git(root, 'worktree', 'add', '-qb', 'room/test', worker)
   if (change === 'committed deletion') git(worker, 'rm', oldPath)

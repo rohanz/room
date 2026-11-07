@@ -1,1 +1,1 @@
-export * from '@room/relay/leases'
+export * from '@room/local-state/leases'

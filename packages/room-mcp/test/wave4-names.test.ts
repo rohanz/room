@@ -47,6 +47,7 @@ it('M2 detaches a lapsed name holder so another live session can publish the che
 
 it('M6 keeps the H1 journal pending until the hub accepts and retries the same notice ID', async () => {
   const dir = temporary(), doc = new RoomDoc()
+  execFileSync('git', ['init', '--bare', '-q', dir])
   const registry = await WorkerRegistry.open(dir, { migrate: false, watch: false })
   doc.addClaim({ path: 'x', from: 1, to: 1, by: 'ada', byKind: 'agent', intent: 'edit' })
   doc.setScope({ by: 'ada', byKind: 'agent', area: 'old', summary: 'old', paths: ['x'], at: 1 })
