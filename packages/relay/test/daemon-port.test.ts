@@ -10,8 +10,19 @@ it.each(['EADDRINUSE', 'EACCES'])('falls back to any free port when the preferre
   expect(tried).toEqual([4400, 0])
 })
 
-it('refuses to start beside this clone\'s own Room owner on the preferred port', async () => {
-  await expect(openPreferred(4400, async () => { throw refused('EADDRINUSE') }, async () => true)).rejects.toThrow('still answers on port 4400')
+it.each(['EADDRINUSE', 'EACCES'])('refuses to start beside this clone\'s own Room owner on %s', async code => {
+  const tried: number[] = []
+  await expect(openPreferred(4400, async port => { tried.push(port); throw refused(code) }, async () => true)).rejects.toThrow('still answers on port 4400')
+  expect(tried).toEqual([4400])
+})
+
+it('propagates a failure from the fallback open', async () => {
+  const tried: number[] = [], failure = refused('EACCES')
+  await expect(openPreferred(4400, async port => {
+    tried.push(port)
+    throw port === 4400 ? refused('EADDRINUSE') : failure
+  }, async () => false)).rejects.toBe(failure)
+  expect(tried).toEqual([4400, 0])
 })
 
 it('does not hide other listen errors', async () => {

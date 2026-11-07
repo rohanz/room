@@ -44,6 +44,20 @@ function contractNoticeId(room: RoomDoc, key: string, epoch = 1): string {
 }
 
 describe('ConflictSlots', () => {
+  it('gives a recreated overlap slot a fresh notice identity after retirement', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    try {
+      const slots = new ConflictSlots(room, post, '1')
+      const key = slotKey('A', 'edit-in-claim', 'B', 'x')
+      const result = { owner: 'A', other: 'B', kind: 'edit-in-claim' as const, path: 'x', status: 'conflict' as const, inputs: 'same', factId: 'same', merges: 'clean' as const }
+      await slots.settle(key, result)
+      slots.drop(key)
+      await slots.settle(key, result)
+      await slots.replay('A')
+      for (const to of ['A', 'B']) expect(new Set(post.mock.calls.filter(c => c[1].to === to).map(c => c[2].id)).size).toBe(2)
+    } finally { room.doc.destroy() }
+  })
+
   it('reconciles a pre-existing conflict once and replays the same id after a hub outage', async () => {
     const room = new RoomDoc()
     const post = vi.fn().mockResolvedValueOnce({ ok: false, text: 'unreachable' }).mockResolvedValue({ ok: true })
@@ -209,13 +223,14 @@ describe('ConflictSlots', () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
     room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
     const slots = new ConflictSlots(room, post, '1')
-    await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f' })
-    await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'd'), { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'd', status: 'conflict', inputs: 'i', factId: 'f' })
+    const key = slotKey('A', 'edit-in-claim', 'A+w', 'x')
+    await slots.settle(key, { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f' })
+    await slots.settle(key, { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'd', status: 'conflict', inputs: 'renewed claim', factId: 'f' })
     expect(post.mock.calls[0][1].priority).toBe('notify')
     expect(new Set(post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)).size).toBe(1)
   })
 
-  it("tells the lead when its running worker's clean overlap stops merging, within one burst", async () => {
+  it("tells the lead when its running worker's clean overlap stops merging", async () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
     room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
     const slots = new ConflictSlots(room, post, '1')
@@ -225,7 +240,7 @@ describe('ConflictSlots', () => {
     const toLead = [...new Map(post.mock.calls.filter(c => c[1].to === 'A').map(c => [c[2].id, c[1]])).values()]
     expect(toLead.map(body => formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...body } as any).replace(/:.*/, '')))
       .toEqual(['[notify] overlap on x', '[notify] CONFLICT on x'])
-    // And back: the burst's versions merge again, and the lead is told so.
+    // And back: the versions merge again, and the lead is told so.
     await slots.settle(key, { ...base, inputs: 'i3', factId: 'clean again', merges: 'clean' })
     const ids = post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)
     expect(new Set(ids).size).toBe(3)
@@ -1182,7 +1197,7 @@ describe('derived pair slots', () => {
       source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
       const workers = { ...f.session('L', sourcePost), room: source } as Session
       await reconcileProjectedConflicts({ team: f.session('L'), workers, owner: 'W' })
-      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'edit-in-claim', 'B', 'x', f.room.openClaims()[0]!.id))?.status).toBe('conflict')
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'edit-in-claim', 'B', 'x'))?.status).toBe('conflict')
       expect(sourcePost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W' }), expect.anything())
       expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining("W's earlier change to x overlaps your new claim") }), expect.anything())
     } finally { f.cleanup() }
@@ -1404,6 +1419,142 @@ describe('derived pair slots', () => {
       await new ConflictSet(f.session('A')).reconcile('claims')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(slotKey('A', 'claims', 'B', 'x', `${a.id}\0${b.id}`))?.status).toBe('conflict')
     } finally { f.cleanup() }
+  })
+
+  function overlapFixture(committed = false, worker = false) {
+    const f = fixture({ x: 'a\nb\nc\nd\ne\nf\ng\nh\n' })
+    const ours = 'a\nB\nc\nd\ne\nF\ng\nh\n'
+    f.holder('A'); f.holder('B')
+    f.entry('A', committed ? undefined : ours); f.entry('B', 'a\nb\nc\nd\ne\nf\ng\nH\n')
+    if (committed) {
+      const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()
+      writeFileSync(join(f.dir, 'x'), ours)
+      run('add', 'x'); run('commit', '-qm', 'earlier change')
+      const tip = run('rev-parse', 'HEAD')
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, base: tip })
+      f.room.participants.set('A\0git', { ...f.room.participants.get('A\0git')!, base: tip, head: tip, rev: 2 })
+    }
+    if (worker) f.room.workerViews.set('w', { id: 'w', tag: 'w', name: 'B', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
+    const set = new ConflictSet(f.session('A'))
+    // Keep these transition tests focused on notice identity rather than the merge rate limiter.
+    vi.spyOn(set as unknown as { budget(): Promise<void> }, 'budget').mockResolvedValue()
+    const claim = () => f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 8, intent: 'rewrite x' })
+    const notices = (to = 'A') => [...new Map(f.post.mock.calls.filter(c => c[1].type === 'conflict' && c[1].to === to).map(c => [c[2].id, { ...c[1], id: c[2].id }])).values()]
+    return { ...f, set, claim, notices, pass: () => set.reconcile('overlap regression'), close: () => { set.stop(); f.room.doc.destroy(); f.cleanup() } }
+  }
+
+  it.each([false, true])('notifies once for renewed and replaced claims on an unchanged overlap (committed=%s)', async committed => {
+    const f = overlapFixture(committed)
+    try {
+      const first = f.claim()
+      await f.pass()
+      f.room.moveClaim(first.id, 2, 3)
+      await f.pass()
+      const duplicate = f.claim()
+      await f.pass()
+      f.room.removeClaim(first.id); f.room.removeClaim(duplicate.id); f.claim()
+      await f.pass()
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
+      expect(f.notices()[0]).toMatchObject({ priority: 'notify', merges: 'clean' })
+      if (committed) expect(f.notices()[0].text).toMatch(/earlier change to x \([0-9a-f]{7}\)/)
+    } finally { f.close() }
+  })
+
+  it.each([false, true])('notifies for changed overlap verdicts and newly conflicting lines (own worker=%s)', async worker => {
+    const f = overlapFixture(false, worker)
+    try {
+      f.claim(); await f.pass()
+      f.entry('B', 'a\nX\nc\nd\ne\nf\ng\nh\n'); await f.pass()
+      f.entry('B', 'a\nX\nc\nd\ne\nY\ng\nh\n'); await f.pass()
+      f.entry('B', 'a\nb\nc\nd\ne\nf\ng\nH\n'); await f.pass()
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(4)
+      expect(f.notices().map(n => n.priority)).toEqual(['notify', worker ? 'notify' : 'interrupt', worker ? 'notify' : 'interrupt', 'notify'])
+      expect(f.notices().map(n => n.merges)).toEqual(['clean', undefined, undefined, 'clean'])
+    } finally { f.close() }
+  })
+
+  it('notifies again after a cleared overlap followed by a new overlap', async () => {
+    const f = overlapFixture()
+    try {
+      const first = f.claim(); await f.pass()
+      f.room.removeClaim(first.id); await f.pass()
+      f.claim(); await f.pass()
+      await f.pass()
+      expect(f.notices()).toHaveLength(3)
+      expect(f.notices().map(n => n.priority)).toEqual(['notify', 'fyi', 'notify'])
+      expect(f.notices()[1].clearedFrom).toBe('conflict')
+      expect(f.notices('B')).toHaveLength(2)
+    } finally { f.close() }
+  })
+
+  it('keeps the same overlap verdict when a peer rewrites an already conflicting line', async () => {
+    const f = overlapFixture()
+    try {
+      f.claim(); await f.pass()
+      f.entry('B', 'a\nX\nc\nd\ne\nf\ng\nh\n'); await f.pass()
+      f.entry('B', 'a\nX revised\nc\nd\ne\nf\ng\nh\n'); await f.pass()
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(2)
+    } finally { f.close() }
+  })
+
+  it('keeps aggregate possible overlap episodes distinct across exact evidence and clears after the last claim', async () => {
+    const f = overlapFixture()
+    try {
+      const first = f.claim(), second = f.claim()
+      f.entry('B', undefined, true); await f.pass()
+      expect(f.notices()).toHaveLength(1)
+      expect(f.notices()[0]).toMatchObject({ priority: 'fyi', id: expect.stringMatching(/:possible$/) })
+      const firstId = f.notices()[0].id
+      f.room.removeClaim(first.id); await f.pass()
+      expect(f.notices()).toHaveLength(1)
+      f.entry('B', 'a\nb\nc\nd\ne\nf\ng\nH\n'); await f.pass()
+      expect(f.notices()[1]).toMatchObject({ priority: 'notify', merges: 'clean' })
+      f.entry('B', undefined, true); await f.pass()
+      const secondId = f.notices()[2].id
+      expect(secondId).toMatch(/:possible$/)
+      expect(secondId).not.toBe(firstId)
+      await f.pass()
+      expect(f.notices()).toHaveLength(3)
+      f.room.removeClaim(second.id); await f.pass()
+      expect(f.notices()).toHaveLength(4)
+      expect(f.notices()[3]).toMatchObject({ priority: 'fyi', clearedFrom: 'possible' })
+    } finally { f.close() }
+  })
+
+  it('preserves overlap identity through unreadable evidence and a reconciler restart, but reports a new revision', async () => {
+    const f = overlapFixture()
+    try {
+      f.claim(); await f.pass()
+      f.entry('A', undefined, true); await f.pass()
+      f.entry('A', 'a\nB\nc\nd\ne\nF\ng\nh\n'); await f.pass()
+      const restarted = new ConflictSet(f.session('A'))
+      try { await restarted.reconcile('restart') } finally { restarted.stop() }
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
+      f.entry('A', 'a\nB2\nc\nd\ne\nF\ng\nh\n'); await f.pass()
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(2)
+    } finally { f.close() }
+  })
+
+  it('consolidates legacy claim slots without a false clearance and retains known evidence when unreadable', async () => {
+    const f = overlapFixture()
+    try {
+      const first = f.claim(), second = f.claim()
+      const slots = new ConflictSlots(f.room, f.post, '1')
+      for (const claim of [first, second]) await slots.settle(slotKey('A', 'edit-in-claim', 'B', 'x', claim.id), {
+        owner: 'A', other: 'B', kind: 'edit-in-claim', path: 'x', subject: claim.id,
+        status: 'conflict', inputs: claim.id, factId: 'legacy fact', merges: 'clean',
+      })
+      f.post.mockClear()
+      f.entry('A', undefined, true); await f.pass()
+      const remaining = slots.owned('A').filter(([, s]) => s.kind === 'edit-in-claim')
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0][1]).toMatchObject({ status: 'unknown', settled: 'conflict', merges: 'clean', epoch: 1 })
+      f.entry('A', 'a\nB\nc\nd\ne\nF\ng\nh\n'); await f.pass()
+      expect(f.notices().some(n => n.clearedFrom)).toBe(false)
+      const ids = f.notices().map(n => n.id)
+      f.room.removeClaim(first.id); f.room.removeClaim(second.id); f.claim(); await f.pass()
+      expect(f.notices().map(n => n.id)).toEqual(ids)
+    } finally { f.close() }
   })
 
   // rc9 dogfood: an edit inside another's claim that merged cleanly arrived as a CONFLICT notify.

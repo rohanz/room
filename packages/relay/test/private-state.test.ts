@@ -19,6 +19,13 @@ function inspectWindows(target: string): { user: string; protected: boolean; gra
   { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), ROOM_TEST_PATH: target }, encoding: 'utf8', timeout: 20_000 }).trim())
 }
 
+/** One PowerShell process for many paths: the explicit ACE count of each. */
+function explicitCounts(targets: string[]): number[] {
+  return JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference='Stop'; ConvertTo-Json -Compress @($env:ROOM_TEST_PATHS -split \"`n\" | ForEach-Object { @((Get-Acl -LiteralPath $_).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {!$_.IsInherited}).Count })"],
+  { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), ROOM_TEST_PATHS: targets.join('\n') }, encoding: 'utf8', timeout: 60_000 }).trim())
+}
+
 it.runIf(process.platform === 'win32').each(['protected directory', 'explicit file grant'])('Windows priming repairs an existing descendant with %s', async kind => {
   const { root, room } = fixture(), child = path.join(room, 'sessions', 'legacy'), file = path.join(child, 'session.json')
   fs.mkdirSync(child, { recursive: true }); fs.writeFileSync(file, '{}')
@@ -43,6 +50,31 @@ it.runIf(process.platform === 'win32').each(['protected directory', 'explicit fi
   privateStateDirectory(child)
   verifyPrivatePath(file)
 }, 90_000)
+
+it.runIf(process.platform === 'win32')('Windows priming skips descendants removed by Room writers during the walk', async () => {
+  const { root, room } = fixture(), tickets = path.join(room, 'admissions')
+  fs.mkdirSync(tickets, { recursive: true })
+  const names = Array.from({ length: 300 }, (_, i) => path.join(tickets, `${String(i).padStart(64, '0')}.json`))
+  for (const name of names) fs.writeFileSync(name, '{}')
+  // Explicit grants make every descendant need an icacls reset, so the walk runs long after enumeration.
+  execFileSync('icacls', [path.join(tickets, '*'), '/grant', '*S-1-1-0:R'], { stdio: 'pipe' })
+  const prime = primePrivateState(root)
+  // Checkpoint: the walk enumerates the whole subtree before repairing any descendant, so once the first ticket
+  // has been reset, every name is already in its list. The same probe confirms the last ticket is not yet repaired,
+  // and the walk repairs in enumeration order (one icacls process per ticket, seconds for the remaining 150), so
+  // the deletion that follows within milliseconds lands on names the walk still has to repair.
+  let settled = false
+  prime.then(() => { settled = true }, () => { settled = true })
+  for (;;) {
+    expect(settled).toBe(false)
+    const [first, last] = explicitCounts([names[0], names[names.length - 1]])
+    if (first === 0) { expect(last).toBeGreaterThan(0); break }
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  for (const name of names.slice(150)) fs.rmSync(name, { force: true })
+  await expect(prime).resolves.toBeUndefined()
+  expect(explicitCounts(names.slice(0, 150))).toEqual(names.slice(0, 150).map(() => 0))
+}, 120_000)
 
 it.runIf(process.platform === 'win32')('refuses a Windows Room subtree above the 20000 entry inspection limit', async () => {
   const { root, room } = fixture()

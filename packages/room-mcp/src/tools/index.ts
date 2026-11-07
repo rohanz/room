@@ -1,5 +1,7 @@
 import { formatMsg, type Priority } from '@room/shared'
 import { createHandlerState } from './state.js'
+import { createWorkerRestartNotices } from '../worker-restart-notices.js'
+import type { WorkerStopCause } from '../worker-status.js'
 import { hookHealthNote } from '../hooks-bridge.js'
 import type { Batch, Ledger, Notice } from '../ledger.js'
 import { INBOX_BUDGET, selectWithin, type Chosen } from '../inbox-budget.js'
@@ -48,8 +50,10 @@ export interface Tools {
   startupNotice(text: string): void
   /** Attach the hooks bridge (state file + wake) to a session; idempotent. */
   attachHooks(s: Session): void
+  /** Prepare recovery advice before startup enables hooks, or the first tool reply is selected. */
+  prepareNotices(s: Session): Promise<void>
   /** Release claims, clear scope, stop the bridge and daemon (process exit path). */
-  shutdown(): Promise<void>
+  shutdown(cause?: WorkerStopCause, progress?: (phase: string) => void): Promise<void>
   /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
   clearStale(s: Session): number
   /** The automatic join: every tool call ensures it first; room_join/create retarget it, room_leave/close end it. */
@@ -104,6 +108,14 @@ export function createTools(ctx: ToolCtx): Tools {
   const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), prHandlers(state), shareHandlers(state))
 
   const { ledger } = state
+  const prepareNotices = createWorkerRestartNotices(ledger, state.log)
+  const finishReply = (batch: Batch, text: string, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
+    // A cancelled call's reply is never written: its selections stay owed.
+    if (signal?.aborted) ledger.release(batch)
+    else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
+    else ledger.commit(batch)
+    return text
+  }
   let startup: Notice | undefined
   /** A room joined since the startup notice was written makes it moot. */
   const withdrawStartup = () => { if (startup && ctx.getSession()) { ledger.withdraw(startup.id); startup = undefined } }
@@ -169,6 +181,7 @@ export function createTools(ctx: ToolCtx): Tools {
         if (WORKER_OPS.has(name) || process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts()
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2, batch) : ''
         if (s2) await offerTeamSharingDisclosure(s2, ledger)
+        if (s2) await prepareNotices(s2)
         withdrawStartup()
         const notices = ledger.notices(batch).map(n => n.text + '\n\n').join('')
         if (s2) await greeted(s2.hub)
@@ -194,10 +207,11 @@ export function createTools(ctx: ToolCtx): Tools {
     list: () => DEFS,
     ledger,
     attachHooks: state.attachHooks,
+    prepareNotices,
     clearStale: state.clearStale,
     setAutoJoin(a) { autoJoin = a },
     drop: state.drop,
-    shutdown: state.shutdown,
+    async shutdown(cause, progress) { ctx.shutdownCause = cause; await state.shutdown(progress) },
     flushConflicts: state.flushConflicts,
     waiting: () => waits > 0,
     joinedSessions: () => state.rooms.all(),
@@ -208,19 +222,30 @@ export function createTools(ctx: ToolCtx): Tools {
       withdrawStartup()
       const s = ctx.getSession()
       const ws = state.rooms.workers()
-      const notices = ledger.notices(batch).map(n => n.text)
+      const notices = ledger.notices(batch, budget).map(n => n.text)
+      const moreNotices = ledger.noticeCount() - notices.length
       if (s?.rejected) notices.unshift(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
       const line = ({ s: source, m }: Chosen) => `${source === s ? '' : '[workers room] '}${formatMsg(m)}`
       const room = budget - notices.reduce((n, text) => n + text.length + 1, 0)
       // Silent while alone (solo.ts): what has no company stays for room_state and the next Room tool reply.
       const { chosen, more } = s ? selectWithin(ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, room, c => line(c).length + 3, false, state.audible) : { chosen: [], more: 0 }
       const items: HookItem[] = chosen.map(c => ({ id: c.m.id, priority: c.m.priority, line: line(c) }))
-      return { batch, items, notices, more }
+      return { batch, items, notices, more: more + moreNotices }
     },
     async call(name, args, signal, handoff) {
       // Setup checks must work while auto-join, rebinding, or room sync is stuck.
-      // They do not reserve inbox messages or touch the current room.
-      if (name === 'room_state' && args?.check === true) return handlers.room_state(args)
+      // They do not reserve owed messages or touch the current room. Already-prepared
+      // local notices can still reach this first reply, without waiting for startup I/O.
+      if (name === 'room_state' && args?.check === true) {
+        const body = await handlers.room_state(args)
+        const batch = ledger.open('reply')
+        const s = ctx.getSession()
+        // Diagnostics bypass host rebinding. Never hand the previous binding's advice
+        // to a different host session merely because it names the same checkout.
+        const sameSession = !ctx.binding || !!s?.lease && s.lease.sessionId === ctx.binding.bound()?.id
+        const notices = sameSession ? ledger.notices(batch).map(n => n.text + '\n\n').join('') : ''
+        return finishReply(batch, notices + body, signal, handoff)
+      }
       let release: (() => void) | undefined
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++
@@ -250,11 +275,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const result = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
         const warning = name === 'room_state' ? staleVersionWarning() : undefined
         const text = warning ? `${warning}\n${result}` : result
-        // A cancelled call's reply is never written: its selections stay owed.
-        if (signal?.aborted) ledger.release(batch)
-        else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
-        else ledger.commit(batch)
-        return text
+        return finishReply(batch, text, signal, handoff)
       } catch (e) { ledger.release(batch); throw e }
       } finally { release?.() }
     },

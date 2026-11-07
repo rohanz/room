@@ -205,39 +205,46 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     upgraded,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
-    async shutdown() {
+    async shutdown(progress = () => {}) {
       preserveBridgeFacts = true
       wakes.stop()
       // Withdraw every joined session while its transport is still up. Worker cleanup can
-      // take 1.8 seconds, so it must not delay the lease release or offline awareness.
+      // include slow disk I/O, so it must not delay the lease release or offline awareness.
       for (const joined of rooms.all()) {
+        progress(`releasing lease for ${joined.roomName}`)
         try { await joined.lease?.end() } catch (error) { log(`shutdown lease release failed for ${joined.roomName}: ${error instanceof Error ? error.message : String(error)}`) }
         try { joined.awareness.setLocalState(null) } catch { /* already disconnected */ }
       }
       const s = ctx.getSession()
-      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); return }
+      progress('discovering running workers')
+      if (!s) { progress('closing workers room'); await state.closeWorkersRoom(true).catch(() => {}); return }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
-      const cancellation = new AbortController()
-      const pending = new Set(running.map(r => r.w.tag))
-      const stops = running.map(async r => {
-        try { await state.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended', cancellation.signal) }
-        catch (e) { log(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
-        finally { pending.delete(r.w.tag) }
-      })
-      if (stops.length) {
-        let timer: ReturnType<typeof setTimeout> | undefined
-        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise<false>(resolve => {
-          timer = setTimeout(() => resolve(false), 1800)
-          timer.unref()
-        })])
-        if (timer) clearTimeout(timer)
-        if (!completed) {
-          cancellation.abort()
-          for (const tag of pending) log(`shutdown dismissal timed out for ${tag}; worker record kept for restart`)
+      // Persist stop intent, clean up owned children and signal the host before leaving.
+      // The process exit deadline reports these pending stages if disk I/O stalls.
+      // Notification delivery has its own budget after the stop attempt.
+      const pending = new Map(running.map(r => [r, 'starting dismissal']))
+      const describePending = () => progress([...pending].map(([r, phase]) => `worker ${r.w.tag}: ${phase}`).join('; '))
+      await Promise.all(running.map(async r => {
+        const workerProgress = (phase: string) => { pending.set(r, phase); describePending() }
+        workerProgress('opening registry')
+        const notify = async (send: () => Promise<unknown>): Promise<void> => {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const delivered = await Promise.race([Promise.resolve().then(send).then(() => true), new Promise<false>(resolve => {
+              timer = setTimeout(() => resolve(false), 1800)
+              timer.unref()
+            })])
+            if (!delivered) log(`shutdown notification timed out for ${r.w.tag}; worker stop already attempted`)
+          } finally { if (timer) clearTimeout(timer) }
         }
-      }
+        try { await state.dismissWorker(r.s, r.w, "the lead's session ended", 'lead-session-ended', notify, workerProgress) }
+        catch (e) { log(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`) }
+        finally { pending.delete(r); describePending() }
+      }))
+      progress('closing workers room')
       await state.closeWorkersRoom(true).catch(() => {})
       rooms.remove(s)
+      progress(`leaving ${s.roomName}`)
       await doLeave(s)
     },
     async drop(s: Session, reason: string) {

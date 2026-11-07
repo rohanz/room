@@ -56,10 +56,10 @@ beforeEach(() => {
   put(lead, 'file.txt', 'base\n'); put(lead, '.gitignore', 'artifact.bin\nnode_modules/\n.room/\n')
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
-})
+}, 0) // fixture construction has no behavioral deadline
 // Removal runs off the event loop: a synchronous delete of a large fixture held the worker for the whole hook.
 // Collection and previews queue preview-cache maintenance that writes lock files under the lead's .git; wait for it before the tree goes.
-afterEach(async () => { collectRefHook.call = undefined; await disposePreviewFixture(root, { registries: [lead] }) })
+afterEach(async () => { collectRefHook.call = undefined; await disposePreviewFixture(root, { registries: [lead] }) }, 0)
 
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {

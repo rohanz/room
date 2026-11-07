@@ -19,7 +19,11 @@ export const HOOK_LEASE_MS = 10_000
 
 export type BatchKind = 'reply' | 'hook'
 /** A local synthetic item (sharing disclosure, startup notice): delivered like a message, receipted in notices.json. */
-export interface Notice { id: string; text: string }
+export interface Notice {
+  id: string; text: string
+  /** A presentation chunk receipts its constituent events, never the chunk's changing membership. */
+  receiptIds?: string[]
+}
 export interface Selected { s: Session; m: Msg; via: Via }
 
 function noticeId(kind: string, text: string): string {
@@ -160,7 +164,10 @@ export class Ledger {
     }
     if (batch.notices.length) {
       const delivered = this.deliveredNotices()
-      for (const n of batch.notices) { delivered[n.id] = { at: Date.now(), via: batch.kind === 'hook' ? 'hook' : 'reply' }; this.pendingNotices.delete(n.id) }
+      for (const n of batch.notices) {
+        for (const id of n.receiptIds ?? [n.id]) delivered[id] = { at: Date.now(), via: batch.kind === 'hook' ? 'hook' : 'reply' }
+        this.pendingNotices.delete(n.id)
+      }
       this.persistNotices()
       for (const n of batch.notices) this.fireDelivered(n.id)
     }
@@ -215,6 +222,30 @@ export class Ledger {
     return n
   }
 
+  /** Offer event-keyed advice in bounded presentation chunks. Only confirmed events get receipts. */
+  noticeEvents(kind: string, header: string, events: readonly { identity: string; text: string }[], budget: number): void {
+    const delivered = this.deliveredNotices()
+    const queued = new Set([...this.pendingNotices.values()].flatMap(n => n.receiptIds ?? [n.id]))
+    let text = header, receiptIds: string[] = []
+    const offer = () => {
+      // This key arbitrates a chunk in memory; commit persists only its per-event receiptIds.
+      const n = { id: noticeId(`${kind}:chunk`, receiptIds.join(',')), text, receiptIds }
+      this.pendingNotices.set(n.id, n)
+      this.o.onSettled?.()
+    }
+    for (const event of events) {
+      const id = noticeId(kind, event.identity)
+      if (delivered[id] || queued.has(id)) continue
+      if (receiptIds.length && text.length + event.text.length + 2 > budget) {
+        offer(); text = header; receiptIds = []
+      }
+      text += '\n' + event.text
+      receiptIds.push(id)
+      queued.add(id)
+    }
+    if (receiptIds.length) offer()
+  }
+
   private fireDelivered(id: string): void {
     const fn = this.onDelivered.get(id)
     this.onDelivered.delete(id)
@@ -228,11 +259,13 @@ export class Ledger {
   withdraw(id: string): void { this.pendingNotices.delete(id) }
 
   /** Pending notices no live batch holds, reserved into `batch`. */
-  notices(batch: Batch): Notice[] {
+  notices(batch: Batch, budget = Infinity): Notice[] {
     if (batch.settled) return []
     const out: Notice[] = []
     for (const n of this.pendingNotices.values()) {
       if (this.noticeReservations.has(n.id) || batch.notices.some(x => x.id === n.id)) continue
+      if (n.text.length + 1 > budget) continue
+      budget -= n.text.length + 1
       this.lease(batch)
       batch.notices.push(n); out.push(n)
       this.noticeReservations.set(n.id, batch)

@@ -26,6 +26,11 @@ export interface LocalDaemonOptions {
   startupTimeoutMs?: number
   probeTimeoutMs?: number
 }
+/**
+ * Starting a daemon needs the caller's admission (the cutover inventory). It runs after no live daemon answered and
+ * immediately before the spawn; a rejection prevents it. Admission to an existing daemon is not admission to start one.
+ */
+export interface EnsureDaemonOptions extends LocalDaemonOptions { admitStart: () => Promise<void> }
 export interface LocalDaemon extends LocalRelay {
   pid: number; runtime: 'daemon'; idleMs: number
   /** True only when this call's child won authority; adopted instances remain non-owning. */
@@ -68,7 +73,12 @@ export class WriterIdleClock {
   expired(): boolean { return this.writers === 0 && this.now() - this.emptySince >= this.idleMs }
 }
 
-/** Run in the child only. Losing contenders exit without ever publishing shared state. */
+/**
+ * Run in the child only. Losing contenders exit without ever publishing shared state.
+ * Not an admission boundary: the shipped entry (room-daemon.mjs) reaches this only when launched by
+ * ensureLocalDaemon after its required admitStart. In-repo test and compatibility harnesses call it directly
+ * on throwaway common directories; @room/relay is a workspace package bundled into the plugin, not published.
+ */
 export async function startLocalDaemon(opts: {
   commonDir: string; room: string; idleMs?: number; idleCheckMs?: number; now?: () => number
   finalSaveRetryMs?: readonly number[]; retryMs?: number; log?: (line: string) => void
@@ -175,6 +185,38 @@ export async function openPreferred<T>(port: number, open: (port: number) => Pro
 }
 
 const STARTUP_HARD_CAP_MS = 60_000
+
+/**
+ * A start admission is a one-time ticket: the launcher records the hash of a random token in this clone's private
+ * Room state after admitStart passes, and hands the token only to its own child (in its private report directory).
+ * The daemon entry consumes a matching, fresh ticket before taking authority. Starting without one requires
+ * writing Room's private state, which no flag can stand in for.
+ */
+const admissionDir = (commonDir: string) => path.join(commonDir, 'room', 'admissions')
+const admissionFile = (commonDir: string, token: string) => path.join(admissionDir(commonDir), `${crypto.createHash('sha256').update(token).digest('hex')}.json`)
+
+export function issueStartAdmission(commonDir: string, now = Date.now()): { token: string; file: string } {
+  const dir = admissionDir(commonDir)
+  privateStateDirectory(dir)
+  for (const name of fs.readdirSync(dir)) {
+    const stale = path.join(dir, name)
+    try { if (now - fs.lstatSync(stale).mtimeMs > STARTUP_HARD_CAP_MS) fs.rmSync(stale, { force: true }) } catch { /* raced with its consumer */ }
+  }
+  const token = crypto.randomBytes(32).toString('hex'), file = admissionFile(commonDir, token)
+  writeAtomic(file, { v: 1, at: now, pid: process.pid })
+  return { token, file }
+}
+
+export function consumeStartAdmission(commonDir: string, token: string, now = Date.now()): void {
+  const refuse = (why: string) => new Error(`daemon start not admitted (${why}); Room starts the daemon itself on join`)
+  if (!/^[0-9a-f]{64}$/.test(token)) throw refuse('no launcher ticket')
+  const file = admissionFile(commonDir, token)
+  let record: { v?: unknown; at?: unknown }
+  try { verifyPrivatePath(file); record = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { throw refuse('no matching ticket') }
+  // Consume before judging, so a ticket admits at most one start.
+  try { fs.unlinkSync(file) } catch { throw refuse('ticket already used') }
+  if (record.v !== 1 || typeof record.at !== 'number' || now - record.at > STARTUP_HARD_CAP_MS || record.at > now + 5_000) throw refuse('stale ticket')
+}
 const STARTUP_LOG_BYTES = 1024
 function startupLog(commonDir: string): string {
   const file = path.join(commonDir, 'room', 'daemon.log')
@@ -232,7 +274,7 @@ export function daemonChildEnvironment(source: NodeJS.ProcessEnv = process.env, 
 }
 
 /** Caller must already be repository-bound and validate worker clone ownership. No in-process fallback. */
-export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDaemonOptions = {}): Promise<LocalDaemon> {
+export function ensureLocalDaemon(commonDir: string, room: string, opts: EnsureDaemonOptions): Promise<LocalDaemon> {
   const canonical = fs.realpathSync.native(commonDir)
   const running = flights.get(canonical)
   if (running) return running.then(() => ensure(canonical, room, opts))
@@ -240,7 +282,7 @@ export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDa
   flights.set(canonical, work)
   return work
 }
-async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions): Promise<LocalDaemon> {
+async function ensure(commonDir: string, room: string, opts: EnsureDaemonOptions): Promise<LocalDaemon> {
   await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
   const ready = async (): Promise<LocalDaemon | undefined> => {
@@ -268,6 +310,7 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
   if (existing) return existing
   const info = discovery(commonDir)
   if (info?.lead && info.lead !== true && liveness(info.lead) !== 'dead') throw new Error(`local daemon pid ${info.pid} is live or has unknown identity; retry without taking over`)
+  await opts.admitStart()
   const entry = opts.entryPath ?? fileURLToPath(new URL('./room-daemon.mjs', import.meta.url))
   if (!path.isAbsolute(entry) || !fs.statSync(entry).isFile()) throw new Error('local daemon entry must be an absolute installed bundle path')
   const env = daemonChildEnvironment()
@@ -278,9 +321,16 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions)
   const reportDir = path.join(os.tmpdir(), `room-daemon-start-${crypto.randomBytes(12).toString('hex')}`)
   privateStateDirectory(reportDir)
   const report = path.join(reportDir, 'error')
+  let ticket: string | undefined
   try {
+    const admission = issueStartAdmission(commonDir)
+    ticket = admission.file
+    fs.writeFileSync(path.join(reportDir, 'admission'), admission.token, { flag: 'wx', mode: 0o600 })
     return await launch()
-  } finally { fs.rmSync(reportDir, { recursive: true, force: true }) }
+  } finally {
+    // Each removal is attempted on its own; an unconsumed ticket also expires.
+    try { fs.rmSync(reportDir, { recursive: true, force: true }) } finally { if (ticket) fs.rmSync(ticket, { force: true }) }
+  }
 
   async function launch(): Promise<LocalDaemon> {
     const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry, '--common-dir', commonDir, '--room', room, '--startup-report', report], { cwd: commonDir, env, shell: false, detached: true, windowsHide: true, stdio: 'ignore' })

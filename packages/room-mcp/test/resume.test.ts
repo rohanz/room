@@ -82,12 +82,153 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   return { dir, room, session, tools, record, specs, spawned, exits, errors, kills, logs, seed, portFile: (port: number) => join(dir, 'room', 'ports', String(port)) }
 }
 
-describe('resumed worker boundaries', () => {
-  it('sends the lead clone identity on a resumed run', async () => {
+describe('worker restart notices', () => {
+  const header = '[room] Stopped workers with retained sessions'
+  const stopped = { status: 'dismissed' as const, stopReason: 'lead-session-ended' as const }
+  function reconnect(t: ReturnType<typeof setup>) {
+    const sessionDir = join(t.dir, 'receipts')
+    mkdirSync(sessionDir, { recursive: true })
+    return createTools({ getSession: () => t.session, setSession() {}, cwd: t.dir, log() {},
+      binding: { id: () => 'host-1', bound: () => ({ id: 'host-1', host: 'claude' }), dir: () => sessionDir, commonDir: () => join(t.dir, '.git') } })
+  }
+
+  it('does not replay B after delivering A+B, resuming A, and reconnecting', async () => {
     const t = setup()
+    await t.seed('a', stopped)
+    await t.seed('b', stopped)
+    const before = await reconnect(t).call('room_state', {})
+    expect(before).toContain('rohanz+a: stopped')
+    expect(before).toContain('rohanz+b: stopped')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'a', text: 'Continue' })).toContain('resumed a')
+    expect(await reconnect(t).call('room_state', {})).not.toContain(header)
+    await t.exits[0](0)
+  })
+
+  it('offers all retained stopped workers on the first tool reply, with stop evidence, time, dirty state and resume command', async () => {
+    const t = setup()
+    await t.seed('dirty', stopped)
+    await t.seed('clean', stopped)
+    writeFileSync(join(t.dir, '.room/workers/dirty/new.txt'), 'unfinished\n')
+    const registry = await registryForDir(t.dir)
+    await registry.beginStop((await t.record('dirty'))!.id, 'lead-session-ended', 'stdin closed')
+    // A lead can close after launch but before onSpawn advances the record to active.
+    await mutateWorkerFixture(registry, (await t.record('clean'))!.id, old => ({ ...old, phase: 'prepared', seq: old.seq + 1 }))
+    const at = (await t.record('dirty'))!.stop!.at
+    await closeRegistryForDir(t.dir) // Exercise persisted stop evidence after a lead MCP restart.
+    const reply = await t.tools.call('room_state', {})
+    expect(reply).toContain(header)
+    expect(reply).toContain(new Date(at).toISOString())
+    expect(reply).toMatch(/rohanz\+dirty: stopped.*uncommitted work: yes/)
+    expect(reply).toMatch(/rohanz\+clean: stopped.*uncommitted work: no tracked or non-ignored untracked changes/)
+    expect(reply).toContain('reconnect or host exit; Room cannot distinguish them')
+    expect(reply).toContain('cause was not recorded')
+    expect(reply).toContain('room_send(to="rohanz+dirty", type="note"')
+    expect(await t.tools.call('room_state', {})).not.toContain(header)
+  })
+
+  it('offers the notice to the first hook while alone and keeps an unconfirmed selection owed', async () => {
+    const t = setup()
+    await t.seed('hook', stopped)
+    await t.tools.prepareNotices(t.session) // The production startup awaits this before enabling hooks.
+    const first = t.tools.hookSelect()
+    expect(first.notices.join('\n')).toContain(header)
+    t.tools.ledger.release(first.batch)
+    const retry = t.tools.hookSelect()
+    expect(retry.notices.join('\n')).toContain('rohanz+hook')
+    t.tools.ledger.commit(retry.batch)
+    expect(await t.tools.call('room_state', {})).not.toContain(header)
+  })
+
+  it('keeps recovery advice beyond the hook budget owed instead of receipting truncated worker names', async () => {
+    const t = setup()
+    for (let n = 0; n < 24; n++) await t.seed(`bulk-${n}`, stopped)
+    const original = reconnect(t)
+    await original.prepareNotices(t.session)
+    const first = original.hookSelect()
+    expect(first.notices.join('\n').length).toBeLessThanOrEqual(6_000)
+    expect(first.more).toBeGreaterThan(0)
+    original.ledger.commit(first.batch)
+    // Restart partway through delivery and change every status line before rechunking.
+    for (let n = 0; n < 24; n++) writeFileSync(join(t.dir, `.room/workers/bulk-${n}/app.py`), 'unfinished\n')
+    const replacement = reconnect(t)
+    await replacement.prepareNotices(t.session)
+    const second = replacement.hookSelect()
+    expect(second.notices.join('\n').length).toBeLessThanOrEqual(6_000)
+    const names = [...first.notices, ...second.notices].join('\n').match(/- rohanz\+bulk-\d+:/g)!
+    expect(names).toHaveLength(24)
+    expect(new Set(names).size).toBe(24)
+    replacement.ledger.commit(second.batch)
+    expect(await reconnect(t).call('room_state', {})).not.toContain(header)
+  }, 60_000)
+
+  it('includes only lifecycle metadata and statuses, never file contents, file names, or task secrets', async () => {
+    const t = setup()
+    await t.seed('private', { ...stopped, task: 'TASK_SECRET_9431' })
+    writeFileSync(join(t.dir, '.room/workers/private/app.py'), 'FILE_SECRET_7829\n')
+    writeFileSync(join(t.dir, '.room/workers/private/SECRET_FILENAME_6382.env'), 'TOKEN_SECRET_5237\n')
+    await t.tools.prepareNotices(t.session)
+    const notice = t.tools.hookSelect()
+    const text = notice.notices.join('\n')
+    expect(text).toContain('rohanz+private')
+    expect(text).toContain('uncommitted work: yes')
+    for (const secret of ['TASK_SECRET_9431', 'FILE_SECRET_7829', 'SECRET_FILENAME_6382', 'TOKEN_SECRET_5237', 'app.py']) expect(text).not.toContain(secret)
+    t.tools.ledger.commit(notice.batch)
+  })
+
+  it('keeps a failed tool handoff owed and suppresses repeats after confirmation across MCP restarts', async () => {
+    const t = setup()
+    await t.seed('receipt', stopped)
+    const sessionDir = join(t.dir, 'receipts')
+    mkdirSync(sessionDir)
+    const start = () => createTools({ getSession: () => t.session, setSession() {}, cwd: t.dir, log() {},
+      binding: { id: () => 'host-1', bound: () => ({ id: 'host-1', host: 'claude' }), dir: () => sessionDir, commonDir: () => join(t.dir, '.git') } })
+    const first = start()
+    expect(await first.call('room_state', {}, undefined, settle => settle.release())).toContain(header)
+    // The released reply was not delivered; a replacement MCP must still offer it.
+    const replacement = start()
+    expect(await replacement.call('room_state', {})).toContain(header)
+    writeFileSync(join(t.dir, '.room/workers/receipt/changed.txt'), 'later changes\n')
+    expect(await start().call('room_state', {})).not.toContain(header)
+  })
+
+  it('does not report other leads, running workers, completed workers, discarded workers, or missing retained sessions', async () => {
+    const t = setup()
+    await t.seed('foreign', { ...stopped, lead: 'someone-else' })
+    await t.seed('running', { status: 'running' })
+    await t.seed('done')
+    await t.seed('discarded', { status: 'dismissed' })
+    await t.seed('no-session', { ...stopped, hostSessionId: undefined })
+    expect(await t.tools.call('room_state', {})).not.toContain(header)
+  })
+
+  it('reports an unavailable worktree as unknown instead of clean', async () => {
+    const t = setup()
+    await t.seed('missing', stopped)
+    rmSync(join(t.dir, '.room/workers/missing'), { recursive: true, force: true })
+    expect(await t.tools.call('room_state', {})).toMatch(/rohanz\+missing: stopped.*uncommitted work: unknown/)
+  })
+
+  it('finds local workers owned by a lead in a team room without joining another room', async () => {
+    const t = setup()
+    await t.seed('local', stopped)
+    const registry = await registryForDir(t.dir)
+    await mutateWorkerFixture(registry, (await t.record('local'))!.id, old => ({ ...old,
+      lead: { ...old.lead, room: 'github.com/rohanz/x' }, seq: old.seq + 1 }))
+    t.session.roomName = 'github.com/rohanz/x'
+    delete t.session.local
+    const reply = await t.tools.call('room_state', {})
+    expect(reply).toContain(header)
+    expect(reply).toContain('rohanz+local')
+  })
+})
+
+describe('resumed worker boundaries', () => {
+  it('sends the lead clone identity and records the resumed process identity', async () => {
+    const t = setup(2, undefined, () => ({ startTime: 'resumed-birth', executable: 'claude' }))
     await t.seed('clone')
     expect(await t.tools.call('room_send', { type: 'note', to: 'clone', text: 'follow up' })).toContain('resumed clone')
     expect(t.specs[0].env.ROOM_LEAD_CLONE).toBe(realpathSync(join(t.dir, '.git')))
+    expect((await t.record('clone'))?.runs.at(-1)?.launch).toMatchObject({ process: { pid: 6001, startTime: 'resumed-birth', executable: 'claude' } })
   })
   it.each(['mcp', 'projector'] as const)('M1: resume %s receipts only messages present in its prompt', async acceptance => {
     const t = setup()

@@ -9982,7 +9982,8 @@ var init_messages = __esm({
       changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
       question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
       answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
-      conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
+      // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
+      conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
       note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || !m.to && m.priority === "interrupt" && !!w.me && messageForMe({ name: w.me }, m)), format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
@@ -15245,6 +15246,12 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
+    # Room's own writers remove files concurrently (atomic-write temps, consumed start tickets). A descendant that
+    # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
+    # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
+    function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };
+    function Vanished($path, $err) { if (NotFound $err.Exception) { return $true }; try { [IO.File]::GetAttributes($path) | Out-Null; $false } catch { NotFound $_.Exception } };
+    function Entries($dir) { try { @([IO.Directory]::EnumerateFileSystemEntries($dir)) } catch { if (Vanished $dir $_) { @() } else { throw } } };
     function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
     function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
     function Grants($acl) { @(Rules $acl | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value}) };
@@ -15277,9 +15284,9 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
-      foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
+      foreach ($child in (Entries $pending.Pop())) {
         if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-        $attributes=[IO.File]::GetAttributes($child);
+        try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Vanished $child $_) { continue } else { throw } };
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $children.Add($child);
         if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
@@ -15295,6 +15302,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
     $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
     foreach ($child in $children) {
+      try {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
         # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
@@ -15310,6 +15318,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
             @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
+      } catch { if (Vanished $child $_) { continue } else { throw } }
     };` : ""}
     # SIDs and booleans only, so the report is built without ConvertTo-Json.
     $bool={ param($v) if ($v) { 'true' } else { 'false' } };
@@ -18254,6 +18263,27 @@ async function openPreferred(port, open, ownerAnswers) {
     return open(0);
   }
 }
+var STARTUP_HARD_CAP_MS = 6e4;
+var admissionDir = (commonDir) => path10.join(commonDir, "room", "admissions");
+var admissionFile = (commonDir, token) => path10.join(admissionDir(commonDir), `${crypto6.createHash("sha256").update(token).digest("hex")}.json`);
+function consumeStartAdmission(commonDir, token, now = Date.now()) {
+  const refuse = (why) => new Error(`daemon start not admitted (${why}); Room starts the daemon itself on join`);
+  if (!/^[0-9a-f]{64}$/.test(token)) throw refuse("no launcher ticket");
+  const file = admissionFile(commonDir, token);
+  let record;
+  try {
+    verifyPrivatePath(file);
+    record = JSON.parse(fs9.readFileSync(file, "utf8"));
+  } catch {
+    throw refuse("no matching ticket");
+  }
+  try {
+    fs9.unlinkSync(file);
+  } catch {
+    throw refuse("ticket already used");
+  }
+  if (record.v !== 1 || typeof record.at !== "number" || now - record.at > STARTUP_HARD_CAP_MS || record.at > now + 5e3) throw refuse("stale ticket");
+}
 async function stopLocalDaemon(commonDir, timeoutMs = 15e3, expectedNonce) {
   const canonical = fs9.realpathSync.native(commonDir);
   const info = discovery(canonical);
@@ -18297,7 +18327,15 @@ try {
     await stopLocalDaemon(commonDir);
     process.stdout.write("Daemon saved and process exit verified.\n");
   } else {
-    if (args2[0] && !args2[0].startsWith("--") && args2[0] !== "start") throw new Error("usage: room-daemon.mjs [start|stop] --common-dir <absolute git common directory> [--room <room>]");
+    if (args2[0] && !args2[0].startsWith("--")) throw new Error("usage: room-daemon.mjs stop --common-dir <absolute git common directory> (Room starts the daemon itself on join)");
+    const ticket = (() => {
+      try {
+        return fs10.readFileSync(path11.join(path11.dirname(value("--startup-report")), "admission"), "utf8");
+      } catch {
+        return "";
+      }
+    })();
+    consumeStartAdmission(commonDir, ticket);
     await primePrivateState(commonDir);
     privateStateDirectory(path11.join(commonDir, "room"));
     const file = path11.join(commonDir, "room", "daemon.log");

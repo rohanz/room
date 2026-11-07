@@ -1,5 +1,6 @@
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
+import { finishSignalShutdown } from '../src/index.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -127,6 +128,71 @@ describe('worker safety', () => {
     // §6 row 14: a witnessed nonzero exit is `failed`.
     expect((await registry.status(id))?.status).toBe('failed')
     expect((await workerByTag(dir, 'a'))).toMatchObject({ status: 'failed', exitCode: 3 })
+  })
+
+  it.each([false, true])('waits for durable stop before signalling, with bounded process exit (stalled: %s)', async stalled => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'slow-stop', task: 'x' })
+    const registry = await registryForDir(dir), beginStop = registry.beginStop.bind(registry)
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const stopping = new Promise<void>(resolve => { entered = resolve })
+    vi.spyOn(registry, 'beginStop').mockImplementation(async (...args) => { entered(); await gate; return beginStop(...args) })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let returned = false
+    let cleanup!: Promise<void>
+    const log = vi.fn(), exit = vi.fn()
+    const shutdown = finishSignalShutdown('SIGTERM', progress => {
+      cleanup = t.leadTools.shutdown('SIGTERM', progress)
+      return cleanup
+    }, log, () => { returned = true; exit() })
+    try {
+      await stopping
+      await vi.advanceTimersByTimeAsync(1801)
+      expect(returned).toBe(false)
+      expect(t.killed).toEqual([])
+      if (stalled) {
+        await vi.advanceTimersByTimeAsync(2199)
+        await shutdown
+        expect(exit).toHaveBeenCalledOnce()
+        expect(t.killed).toEqual([])
+        expect((await workerByTag(dir, 'slow-stop'))).toMatchObject({ status: 'running' })
+        expect((await workerByTag(dir, 'slow-stop'))?.stopReason).toBeUndefined()
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('pending: worker slow-stop: writing durable stop intent; host not yet signalled'))
+        expect(log).not.toHaveBeenCalledWith('stopped: SIGTERM')
+      }
+      release()
+      await cleanup
+      await shutdown
+      expect(t.killed).toEqual([1])
+      expect(exit).toHaveBeenCalledOnce()
+      expect((await workerByTag(dir, 'slow-stop'))).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+    } finally { release(); vi.useRealTimers(); await cleanup; await shutdown }
+  })
+
+  it('bounds notification delivery only after signalling and still releases the stop operation', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'slow-note', task: 'x' })
+    const post = t.session.post.bind(t.session)
+    let entered!: () => void, release!: () => void
+    const sending = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    vi.spyOn(t.session, 'post').mockImplementation(async (...args) => {
+      if ((args[1] as { type?: string }).type === 'note') { entered(); await gate }
+      return post(...args)
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const shutdown = t.leadTools.shutdown()
+    try {
+      await sending
+      expect(t.killed).toEqual([1])
+      await vi.advanceTimersByTimeAsync(1800)
+      await shutdown
+      expect((await workerByTag(dir, 'slow-note'))).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+      const registry = await registryForDir(dir), worker = (await workerByTag(dir, 'slow-note'))!
+      expect(await registry.beginOperation(worker.id!, 'stop')).toBe(true)
+      await registry.finishOperation(worker.id!)
+    } finally { release(); vi.useRealTimers(); await shutdown }
   })
 
   it('room_leave refuses while workers run, force dismisses them; shutdown dismisses too', async () => {

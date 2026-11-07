@@ -85,3 +85,22 @@ it('a possibility after an exact conflict is a new notice, not the first possibi
   expect(possibleIds).toHaveLength(2)
   expect(new Set(possibleIds).size).toBe(2)
 })
+
+it('keeps one possible episode through unknown evidence and restart until the last claim clears', async () => {
+  const { room, post, add, settle } = fixture()
+  try {
+    add(claim('c1', 1, 2)); add(claim('c2', 5, 6))
+    await settle('c1', 'possible'); await settle('c2', 'possible')
+    await settle('c1', 'unknown'); await settle('c2', 'unknown')
+    const restarted = new ConflictSlots(room, post, '1')
+    await restarted.replay('rohanz')
+    expect(new Set(post.mock.calls.map(c => c[2].id)).size).toBe(1)
+    await settle('c1', 'clean')
+    await restarted.replay('rohanz')
+    expect(post.mock.calls.filter(c => c[1].clearedFrom)).toHaveLength(0)
+    await settle('c2', 'clean')
+    await restarted.replay('rohanz')
+    expect(new Set(post.mock.calls.map(c => c[2].id)).size).toBe(2)
+    expect(new Set(post.mock.calls.filter(c => c[1].clearedFrom).map(c => c[2].id)).size).toBe(1)
+  } finally { room.doc.destroy() }
+})

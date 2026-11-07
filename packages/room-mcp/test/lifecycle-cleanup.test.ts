@@ -15,7 +15,7 @@ import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
 import { type HandlerState } from '../src/tools/context.js'
-import { closeRegistryForDir } from '../src/worker-registry.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import type { LocalWorker } from '../src/worker-status.js'
 import { finishWorker, registerWorkers, workerByTag } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -169,7 +169,7 @@ describe('worker lifecycle cleanup', () => {
     room.doc.destroy()
   })
 
-  it('shutdown times out a stalled dismissal without changing the worker record', async () => {
+  it('shutdown exits at its deadline with durable stop evidence when dismissal stalls', async () => {
     const root = mkdtempSync(join(tmpdir(), 'room-stalled-'))
     execFileSync('git', ['-C', root, 'init', '-q', '-b', 'main'], { stdio: 'pipe' })
     const room = new RoomDoc()
@@ -177,28 +177,46 @@ describe('worker lifecycle cleanup', () => {
     await registerWorkers(s, [{ id: 'stalled-id', tag: 'stalled', name: 'lead+stalled', lead: 'lead', host: 'codex',
       task: 'x', dir: join(root, '.room', 'workers', 'stalled'), branch: 'room/stalled', pid: process.pid, processStartTime: 'test:start', startedAt: 1, status: 'running' }])
     const worker = (await workerByTag(root, 'stalled'))!
-    const before = { ...worker }
+    const registry = await registryForDir(root)
     const log = vi.fn()
     const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: root, leave: async () => {},
       probe: () => ({ startTime: 'test:start', executable: 'codex' }), log })
-    let release!: () => void
+    let release!: () => void, entered!: () => void
+    const dismissing = new Promise<void>(resolve => { entered = resolve })
     const stalled = new Promise<void>(resolve => { release = resolve })
     state.runningWorkers = () => [{ s, w: worker }]
-    state.dismissWorker = async (_s, w, _why, reason, cancelled) => {
-      await stalled
-      if (!cancelled?.aborted) await finishWorker(s, w.tag, { status: 'dismissed', stopReason: reason })
+    state.dismissWorker = async (_s, w, _why, reason, _notify, progress) => {
+      await registry.beginStop(w.id!, reason!)
+      progress?.('cleaning child processes before host signal; stop intent recorded')
+      entered(); await stalled
+      await finishWorker(s, w.tag, { status: 'dismissed', stopReason: reason })
       return 'late dismissal'
     }
     state.closeWorkersRoom = async () => {}
     state.cleanupMine = () => 0
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let returned = false
+    let cleanup!: Promise<void>
+    const shutdown = finishSignalShutdown('SIGTERM', progress => {
+      cleanup = state.shutdown(progress)
+      return cleanup
+    }, log, () => { returned = true })
     try {
-      await state.shutdown()
+      await dismissing
+      await vi.advanceTimersByTimeAsync(1801)
+      expect(returned).toBe(false)
+      expect((await workerByTag(root, 'stalled'))).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('timed out'))
+      await vi.advanceTimersByTimeAsync(2199)
+      await shutdown
+      expect(returned).toBe(true)
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('pending: worker stalled: cleaning child processes before host signal; stop intent recorded'))
+      expect(log).not.toHaveBeenCalledWith('stopped: SIGTERM')
+      expect((await workerByTag(root, 'stalled'))).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
       release()
-      await stalled
-      await new Promise(resolve => setTimeout(resolve, 10))
-      expect((await workerByTag(root, 'stalled'))).toEqual(before)
-      expect(log).toHaveBeenCalledWith('shutdown dismissal timed out for stalled; worker record kept for restart')
-    } finally { release(); room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
+      await cleanup
+      expect((await workerByTag(root, 'stalled'))).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+    } finally { release(); vi.useRealTimers(); await cleanup; await shutdown; room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
   })
 
   it.each(['SIGINT', 'SIGTERM'])('%s shutdown ends lease and presence before dismissing a running worker', async reason => {

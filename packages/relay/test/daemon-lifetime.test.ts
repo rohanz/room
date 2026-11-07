@@ -169,7 +169,7 @@ it('refuses discovery whose pid disagrees with authenticated listener metadata',
   const dir = common(), runtime = await start(dir)
   const discovery = path.join(dir, 'room', 'relay.json')
   fs.writeFileSync(discovery, JSON.stringify({ ...runtime.info, pid: process.pid }), { mode: 0o600 })
-  await expect(ensureLocalDaemon(dir, room)).rejects.toThrow(/PID does not match the authenticated listener/)
+  await expect(ensureLocalDaemon(dir, room, { admitStart: async () => {} })).rejects.toThrow(/PID does not match the authenticated listener/)
   expect((await relayHealth(runtime.info.port, runtime.info.key))?.pid).toBe(runtime.child.pid)
 })
 
@@ -216,6 +216,20 @@ it('maintenance stop authenticates PID plus nonce and verifies save and actual c
   expect(saved.getMap('meta').get('maintenance')).toBe('retained'); saved.destroy()
 })
 
+it.each([{ forged: false, args: ['start'] }, { forged: false, args: [] }, { forged: true, args: [] }])('refuses a direct start ($args, forged ticket $forged) that bypasses the launcher admission, writing no discovery', ({ forged, args }) => {
+  const dir = common()
+  // Mimic the launcher's flag with a self-made ticket; no record exists in the clone's private state.
+  const fake = fs.mkdtempSync(path.join(dir, 'fake-launcher-'))
+  fs.writeFileSync(path.join(fake, 'admission'), 'a'.repeat(64))
+  if (forged) args = [...args, '--startup-report', path.join(fake, 'error')]
+  const result = (() => { try { execFileSync(process.execPath, ['--import', require.resolve('tsx'), fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), ...args, '--common-dir', dir, '--room', 'local/direct'], { stdio: 'pipe', encoding: 'utf8' }); return { code: 0, stderr: '' } }
+    catch (error) { const e = error as { status: number; stderr: string }; return { code: e.status, stderr: String(e.stderr) } } })()
+  expect(result.code).toBe(1)
+  expect(result.stderr).toMatch(/Room starts the daemon itself on join/)
+  expect(fs.existsSync(path.join(dir, 'room/relay.json'))).toBe(false)
+  expect(fs.existsSync(path.join(dir, 'room/hub/authority.lock'))).toBe(false)
+})
+
 it('maintenance save failure reports the cause, retains the live daemon, and permits an explicit retry', async () => {
   const dir = common(), runtime = await start(dir)
   await runtime.command('full', { full: true })
@@ -238,7 +252,7 @@ it.skipIf(process.platform !== 'win32').each(['preflight-first', 'client-first']
     await requireDaemonRuntime(dir)
     expect(fs.existsSync(path.join(dir, 'room/daemon-cutover.json'))).toBe(true)
   }
-  const daemon = await ensureLocalDaemon(dir, room, { entryPath: fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), execArgv: ['--import', require.resolve('tsx')], startupTimeoutMs: 15000 })
+  const daemon = await ensureLocalDaemon(dir, room, { admitStart: async () => {}, entryPath: fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), execArgv: ['--import', require.resolve('tsx')], startupTimeoutMs: 15000 })
   daemonPids.push(daemon.pid)
   expect((await relayHealth(daemon.port, daemon.key))?.ready).toBe(true)
   const { verifyPrivatePath } = await import('../src/private-state.js')

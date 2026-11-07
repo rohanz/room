@@ -273,6 +273,24 @@ it('room_state check works before a session joins', async () => {
   expect(await tools.call('room_state', { check: true })).toContain('PASS  doctor: report from tool')
 })
 
+it('a first diagnostic reply hands off already-prepared recovery notices without waiting for join', async () => {
+  const { createTools } = await import('../src/tools.js')
+  const tools = createTools({ getSession: () => null, setSession() {}, cwd: '/not/a/repository' })
+  tools.ledger.notice('worker-restart', 'stopped worker recovery advice')
+  expect(await tools.call('room_state', { check: true }, undefined, settle => settle.release())).toContain('stopped worker recovery advice')
+  expect(await tools.call('room_state', { check: true })).toContain('stopped worker recovery advice')
+  expect(await tools.call('room_state', { check: true })).not.toContain('stopped worker recovery advice')
+})
+
+it('diagnostics keep recovery advice owed until the bound host session has joined', async () => {
+  const { createTools } = await import('../src/tools.js')
+  const tools = createTools({ getSession: () => null, setSession() {}, cwd: '/not/a/repository',
+    binding: { id: () => 'next-thread', bound: () => ({ id: 'next-thread', host: 'codex' }), dir: () => undefined, commonDir: () => undefined } })
+  tools.ledger.notice('worker-restart', 'previous binding recovery advice')
+  expect(await tools.call('room_state', { check: true })).not.toContain('previous binding recovery advice')
+  expect(tools.ledger.noticeCount()).toBe(1)
+})
+
 it('room_state check includes bounded runtime delivery evidence even before join', async () => {
   const { createTools } = await import('../src/tools.js')
   const wake = createWakeSender({ env: { ROOM_WAKE: 'off' }, notify: vi.fn() })

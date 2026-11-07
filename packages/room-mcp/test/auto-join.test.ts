@@ -13,6 +13,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RoomdError } from '@room/roomd'
 import { readRelayInfo, relayProof } from '@room/relay'
+import { probeProcessNow } from '@room/relay/process'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
 import { LOCAL, NoRoom, createLocalReplica, joinSession, leaveSession, writeSessionRecord, type Session } from '../src/session.js'
@@ -43,21 +44,46 @@ function repo(): string {
 }
 
 /** A real room-mcp process over stdio, as a host starts it; its stderr lines are collected. */
-async function startMcp(dir: string, workerEnv: Record<string, string> = {}) {
+async function startMcp(dir: string, workerEnv: Record<string, string> = {}, onLaunched?: (pid: number) => Promise<void>) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-home-'))
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ROOM_')) env[k] = v
   Object.assign(env, { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), ROOM_DIR: dir }, workerEnv)
   const lines: string[] = []
-  const transport = new StdioClientTransport({ command: path.join(ROOT, 'node_modules/.bin/tsx'), args: [path.join(ROOT, 'packages/room-mcp/src/index.ts')], env, cwd: dir, stderr: 'pipe' })
+  const entry = path.join(ROOT, 'packages/room-mcp/src/index.ts')
+  const ready = path.join(home, 'host-ready'), go = path.join(home, 'start-mcp')
+  // A real parent host, held before MCP startup until its durable launch identity is recorded.
+  // The barrier makes simultaneous-worker admission deterministic, without assuming CLI startup speed.
+  const host = `const fs = require('node:fs'); const { spawn } = require('node:child_process');
+    fs.writeFileSync(${JSON.stringify(ready)}, '');
+    const timer = setInterval(() => {
+      if (!fs.existsSync(${JSON.stringify(go)})) return;
+      clearInterval(timer);
+      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, ${JSON.stringify(entry)}], { stdio: 'inherit' });
+      process.on('SIGTERM', () => child.kill());
+      child.on('exit', code => process.exit(code ?? 1));
+    }, 10);`
+  const transport = new StdioClientTransport({
+    command: onLaunched ? process.execPath : path.join(ROOT, 'node_modules/.bin/tsx'),
+    args: onLaunched ? ['-e', host] : [entry], env, cwd: dir, stderr: 'pipe',
+  })
   transport.stderr?.on('data', d => { lines.push(...String(d).split('\n').filter(Boolean)) })
   const client = new Client({ name: 'test-host', version: '1' })
   // `dir` is a clone this test created in a private temp directory, so only this test's own room-mcp children can
   // launch a daemon there: a changed discovery nonce is this fixture's launch, never an adopted foreign daemon.
   const initialCommon = gitCommonDir(dir), initialNonce = readRelayInfo(initialCommon)?.nonce
-  await client.connect(transport)
-  if (readRelayInfo(initialCommon)?.nonce !== initialNonce) recordTestDaemon(initialCommon)
   cleanups.push(() => client.close())
+  const connecting = client.connect(transport)
+  void connecting.catch(() => {}) // Observe startup failure while a launch callback is still writing its facts.
+  if (onLaunched) {
+    try {
+      await vi.waitFor(() => expect(fs.existsSync(ready)).toBe(true))
+      await onLaunched(transport.pid!)
+      fs.writeFileSync(go, '')
+    } catch (error) { await client.close(); await connecting.catch(() => {}); throw error }
+  }
+  await connecting
+  if (readRelayInfo(initialCommon)?.nonce !== initialNonce) recordTestDaemon(initialCommon)
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const common = gitCommonDir(dir), before = readRelayInfo(common)?.nonce
     try { return ((await client.callTool({ name, arguments: args }, undefined, { timeout: 120_000 })).content as { text: string }[])[0].text }
@@ -104,6 +130,47 @@ async function crashOntoForeignPort(commonDir: string) {
 }
 
 describe('automatic join (real room-mcp processes)', () => {
+  it('workers launched together both join under a running daemon, though neither has published a marker for its peer', async () => {
+    const dir = repo(), room = 'local/concurrent'
+    const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
+    cleanups.push(() => leaveSession(lead))
+    const registry = await registryForDir(dir), launcher = registry.instance
+    cleanups.push(() => closeRegistryForDir(dir))
+    const records = []
+    for (const tag of ['one', 'two']) {
+      const workerDir = path.join(dir, '.room', 'workers', tag)
+      execFileSync('git', ['-C', dir, 'worktree', 'add', '-qb', tag, workerDir], { stdio: 'pipe' })
+      records.push((await seedRegistryWorker(dir, tag, {
+        name: `Ada+${tag}`, room, lead: { participant: 'Ada', room, instance: launcher }, host: 'codex',
+        dir: workerDir, branch: tag,
+      })).record)
+    }
+    let launched = 0, release!: () => void
+    const allLaunched = new Promise<void>(resolve => { release = resolve })
+    const clients = await Promise.all(records.map(record => {
+      const run = record.runs[0]
+      const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir: record.dir,
+        tag: record.tag, lead: 'Ada', owner: 'Ada', share: 'intent', run: run.n, nonce: run.nonce,
+        registry: registry.root, id: record.id, logDir: dir, isWorker: false, leadClone: path.join(dir, '.git') })
+      return startMcp(record.dir, env, async pid => {
+        const observed = probeProcessNow(pid)
+        expect(observed?.startTime).toBeTruthy()
+        expect(observed?.executable).toBeTruthy()
+        await mutateWorkerFixture(registry, record.id, old => ({ ...old, seq: old.seq + 1,
+          runs: [{ ...run, launch: { outcome: 'launched', pid,
+            process: { pid, startTime: observed!.startTime!, executable: observed!.executable! } } }] }))
+        expect(await registry.reports(record.id)).toEqual([])
+        if (++launched === records.length) release()
+        await allLaunched
+      })
+    }))
+    await Promise.all(clients.map((client, i) => client.waitFor(new RegExp(`Ada\\+${records[i].tag} joined`), 30_000)))
+    for (const [i, client] of clients.entries()) {
+      expect(await client.call('room_state')).toContain(`you: Ada+${records[i].tag}`)
+      expect(client.lines.join('\n')).not.toContain('drain required')
+    }
+  }, 45_000)
+
   it('a retained worker process uses its launch sharing as a seed and preserves later policy choices', async () => {
     const dir = repo()
     const room = 'local/demo'
@@ -430,23 +497,55 @@ describe('AutoJoin (the ensure step)', () => {
     expect(t.a.failure).toMatch(/local room/)
   })
 
-  it('does not retry what a human must fix, and stops for good', async () => {
+  it.each([false, true])('retries a refused join on a later tool call with backoff, still refused=%s', async refusedAgain => {
+    const dir = repo()
+    let clock = 1000, calls = 0, current: Session | null = null
+    const tools = createTools({ cwd: dir, getSession: () => current, setSession: s => { current = s }, log: () => {} })
+    const a = new AutoJoin({ local: true, now: () => clock, retryAfterMs: 50,
+      attempt: async () => {
+        calls++
+        if (calls === 1 || refusedAgain) throw new RoomdError(`drain required: blocker ${calls}`, 2)
+        return memorySession({ name: 'Ada', kind: 'agent' }, dir)
+      },
+      adopt: async s => { current = s }, discard: async () => {}, joined: () => current !== null,
+      log: () => {}, report: () => {},
+    })
+    tools.setAutoJoin(a)
+    cleanups.push(() => tools.shutdown())
+    expect(await tools.call('room_scope', { area: 'test', summary: 'test', paths: ['app.py'] })).toContain('blocker 1')
+    clock += 49
+    expect(await tools.call('room_scope', { area: 'test', summary: 'test', paths: ['app.py'] })).toContain('blocker 1')
+    expect(calls).toBe(1)
+    clock++
+    const reply = await tools.call('room_scope', { area: 'test', summary: 'test', paths: ['app.py'] })
+    expect(calls).toBe(2)
+    if (refusedAgain) {
+      expect(reply).toContain('blocker 2')
+      expect(reply).not.toContain('blocker 1')
+    } else {
+      expect(reply).toContain('scope set')
+      expect(a.failure).toBeUndefined()
+    }
+  })
+
+  it('rechecks a refused team join on a later call, without retrying inside the run', async () => {
     let calls = 0
     const t = setup(async () => { calls++; throw new NoRoom('github.com/o/r/main', 'no room for github.com/o/r/main yet', 'wss://x') }, { local: false })
     await t.a.ensure()
     await new Promise(r => setTimeout(r, 60))
     await t.a.ensure()
-    expect(calls).toBe(1)
-    expect(t.reports[0]).toBe('Room could not join: no room for github.com/o/r/main yet; use room_join.')
+    expect(calls).toBe(2)
+    expect(t.reports).toHaveLength(1)
+    expect(t.reports[0]).toContain('Room could not join: no room for github.com/o/r/main yet. Room tries again')
   })
 
-  it('does not promise automatic retry for a permanent local join failure', async () => {
+  it('backs off a local refusal and explains the next tool-call retry', async () => {
     let calls = 0
     const t = setup(async () => { calls++; throw new RoomdError('clone mismatch', 2) }, { local: true })
     await t.a.ensure()
     await t.a.ensure()
     expect(calls).toBe(1)
-    expect(t.reports[0]).toBe('Room could not join the local room: clone mismatch; room_join to retry now.')
+    expect(t.reports[0]).toContain('Room could not join the local room: clone mismatch. Room tries again on the next Room tool call')
   })
 
   it('a cancel ends a pending run at once, and a session that arrives afterwards is left', async () => {
@@ -496,7 +595,7 @@ describe('AutoJoin (the ensure step)', () => {
     fail = true
     const u = setup(async target => { targets.push(target); throw new RoomdError('relay gone', 1) }, { local: false, deadlineMs: 50, delaysMs: [1000], retryAfterMs: 60_000 })
     await u.a.ensure()
-    expect(u.reports).toEqual(['Room could not join: relay gone; use room_join.'])
+    expect(u.reports).toEqual(['Room could not join: relay gone. Room tries again on the next Room tool call (at most every 60 s); room_join to retry now.'])
     u.a.retarget(chosen)
     expect(u.a.failure).toBeUndefined()
     await u.a.ensure()

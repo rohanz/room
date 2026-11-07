@@ -617,7 +617,9 @@ export interface StartedRelay {
 
 /** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race.
  *  Serves only API endpoints and a /health line. Websockets are accepted from loopback only, and when
- *  `key` is set they must prove possession without sending it (the /health line stays open). */
+ *  `key` is set they must prove possession without sending it (the /health line stays open).
+ *  With `hub.lock` it serves a clone's authority. Shipped code passes one only from startLocalDaemon (see there);
+ *  the in-repo compatibility harness passes one for historical session-relay pairs. */
 export function startRelay(port: number, opts: RelayOptions = {}): Promise<StartedRelay> {
   return new Promise((resolve, reject) => {
     parseAdvertisement(CURRENT_COMPAT) // startup fails rather than truncating an oversized or invalid manifest

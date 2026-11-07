@@ -1,3 +1,4 @@
+import { gitTree } from './fixtures/git-tree.js'
 import { clearFixture, deleteFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -695,6 +696,14 @@ describe('GraphIndex', () => {
 })
 
 describe('GraphIndex snapshot discipline', () => {
+  // Publication completion is an event, independent of parser and disk scheduling.
+  function snapshot(room: RoomDoc, check: () => boolean): Promise<void> {
+    if (check()) return Promise.resolve()
+    return new Promise(resolve => {
+      const changed = () => { if (check()) { room.graphs.unobserve(changed); resolve() } }
+      room.graphs.observe(changed)
+    })
+  }
   let repo: string, largeBase: string
   const total = 2100
   const readLarge = async (_dir: string, _sha: string, path: string): Promise<string> => {
@@ -705,11 +714,8 @@ describe('GraphIndex snapshot discipline', () => {
   }
   beforeAll(() => {
     repo = mkdtempSync(join(tmpdir(), 'room-graph-large-'))
-    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
-    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
-    for (let i = 0; i < total; i++) writeFileSync(join(repo, `file${i}.py`), '')
-    git('add', '.'); git('commit', '-qm', 'fixture'); largeBase = git('rev-parse', 'HEAD')
-  }, 30_000)
+    largeBase = gitTree(repo, Array.from({ length: total }, (_, i) => [`file${i}.py`, ''] as const))
+  }, 0) // fixture I/O has no behavioral deadline
   afterAll(() => rmSync(repo, { recursive: true, force: true }), 30_000)
 
   it('yields during indexing before starting edge publication', async () => {
@@ -747,7 +753,7 @@ describe('GraphIndex snapshot discipline', () => {
         return originalPublish(name, snapshot)
       })
       publishFixture(room, 'Rohan', 'file4.py', 'def changed(): pass\n')
-      await eventually(() => probeAtReady !== undefined)
+      await snapshot(room, () => probeAtReady !== undefined)
       expect(room.graphs.get('Rohan')?.status).toBe('ready')
       expect(probeAtReady).toBe(true)
       expect(room.graphs.get('Rohan')?.truncated).toBe(true)
@@ -761,7 +767,7 @@ describe('GraphIndex snapshot discipline', () => {
     const dependencies = vi.spyOn(published, 'dependenciesOf')
     try {
       gi.start(); await gi.ready
-      await eventually(() => room.graphs.get('Rohan')?.status === 'ready', 10_000)
+      await snapshot(room, () => room.graphs.get('Rohan')?.status === 'ready')
       expect(published.size).toBe(total)
       // Force one more publish and count the edge work it does: the body is far over the
       // 200 KiB budget, so construction must stop well before every path is visited.
@@ -779,17 +785,14 @@ describe('GraphIndex snapshot discipline', () => {
 
   it('keeps a snapshot of many long path names within the byte budget', async () => {
     const wide = mkdtempSync(join(tmpdir(), 'room-graph-wide-'))
-    const git = (...args: string[]) => execFileSync('git', ['-C', wide, ...args], { stdio: 'pipe' }).toString().trim()
-    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
     const names = Array.from({ length: 1200 }, (_, i) => `${'d'.repeat(180)}_${String(i).padStart(4, '0')}.py`)
-    for (const name of names) writeFileSync(join(wide, name), '')
-    git('add', '.'); git('commit', '-qm', 'wide'); const wideBase = git('rev-parse', 'HEAD')
+    const wideBase = gitTree(wide, names.map(name => [name, ''] as const))
     const room = new RoomDoc(); setParticipantBase(room, 'Rohan', wideBase); setFixtureLocalRoot(room, 'Rohan', wide)
     const read = async (): Promise<string> => 'def shared(): pass\n'
     const gi = new GraphIndex(room, 'Rohan', wide, undefined, { random: () => 0, minPublishMs: 0, read })
     try {
       gi.start(); await gi.ready
-      await eventually(() => room.graphs.get('Rohan')?.status === 'ready', 20_000)
+      await snapshot(room, () => room.graphs.get('Rohan')?.status === 'ready')
       const graph = room.graphs.get('Rohan')!
       expect(Buffer.byteLength(JSON.stringify(graph))).toBeLessThanOrEqual(200 * 1024)
       expect(graph.truncated).toBe(true)
@@ -821,34 +824,42 @@ describe('GraphIndex snapshot discipline', () => {
       gi.start(); await gi.ready
       const calls = dependencies.mock.calls.length
       expect(calls).toBe(published.size)
-      await new Promise(resolve => setTimeout(resolve, 150))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      await vi.advanceTimersByTimeAsync(150)
+      await (gi as unknown as { publication: Promise<void> }).publication
       expect(dependencies).toHaveBeenCalledTimes(calls)
-    } finally { gi.stop(); room.doc.destroy() }
+    } finally { gi.stop(); vi.useRealTimers(); room.doc.destroy() }
   })
 
   it('stamps a new manifest revision for equal symbols, avoids duplicate writes, and waits out the publish window', async () => {
     const room = new RoomDoc()
     setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
-    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 400 })
-    gi.start(); await gi.ready
-    await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
-    expect(room.graphs.get('Rohan')!.edges.length).toBe(1)
-    let writes = 0
-    room.graphs.observe(() => { if (room.graphs.get('Rohan')?.status === 'ready') writes++ })
-    publishFixture(room, 'Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
-    await gi.whenIdle()
-    await eventually(() => writes === 1)
-    expect(room.graphs.get('Rohan')?.sourceRev).toBe(room.manifestHead.get('Rohan')?.rev)
-    await gi.refresh('session.py'); await gi.whenIdle()
-    await new Promise(resolve => setTimeout(resolve, 450))
-    expect(writes).toBe(1) // unchanged revision and content do not rewrite
-    const firstAt = room.graphs.get('Rohan')!.at
-    publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return t\n')
-    for (let i = 0; i < 60 && writes < 2; i++) await new Promise(r => setTimeout(r, 50)) // changed: written once the window has passed
-    expect(writes).toBe(2)
-    expect(room.graphs.get('Rohan')!.at - firstAt).toBeGreaterThanOrEqual(400)
-    expect(room.graphs.get('Rohan')!.edges).toEqual([])
-    gi.stop()
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 400 })
+    try {
+      gi.start(); await gi.ready
+      await snapshot(room, () => room.graphs.get('Rohan')?.status === 'ready')
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      expect(room.graphs.get('Rohan')!.edges.length).toBe(1)
+      let writes = 0
+      room.graphs.observe(() => { if (room.graphs.get('Rohan')?.status === 'ready') writes++ })
+      publishFixture(room, 'Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
+      await gi.whenIdle()
+      await vi.advanceTimersByTimeAsync(400)
+      await snapshot(room, () => writes === 1)
+      expect(room.graphs.get('Rohan')?.sourceRev).toBe(room.manifestHead.get('Rohan')?.rev)
+      await gi.refresh('session.py'); await gi.whenIdle()
+      await vi.advanceTimersByTimeAsync(450)
+      await (gi as unknown as { publication: Promise<void> }).publication
+      expect(writes).toBe(1) // unchanged revision and content do not rewrite
+      const firstAt = room.graphs.get('Rohan')!.at
+      publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return t\n')
+      await gi.whenIdle()
+      await vi.advanceTimersByTimeAsync(400)
+      await snapshot(room, () => writes === 2)
+      expect(writes).toBe(2)
+      expect(room.graphs.get('Rohan')!.at - firstAt).toBeGreaterThanOrEqual(400)
+      expect(room.graphs.get('Rohan')!.edges).toEqual([])
+    } finally { gi.stop(); vi.useRealTimers(); room.doc.destroy() }
   })
 })
 

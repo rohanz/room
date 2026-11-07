@@ -1,4 +1,5 @@
 import { requireWorkerInventory } from '../worker-store.js'
+import { workerStopDescription } from '../worker-restart-notices.js'
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
@@ -406,17 +407,26 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       rooms.remove(ws)
     }
   const runningWorkers = async (s: Session): Promise<{ s: Session; w: LocalWorker }[]> => (await registryRunningWorkers(s, rooms))
-  const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal): Promise<string> => {
+  const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], notify: (send: () => Promise<unknown>) => Promise<void> = async send => { await send() }, progress: (phase: string) => void = () => {}): Promise<string> => {
+      progress('opening registry')
       const registry = await registryForDir(s.dir)
+      progress('verifying local capability')
       const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
       if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`
       let acquired: boolean
+      progress('acquiring stop operation')
       try { acquired = await registry.beginOperation(w.id!, 'stop') }
       catch { return `error: ${w.tag} is already being handled; not signalled` }
+      let stopRecorded = !!trusted.record.stop
       try {
-      const alreadyStopping = !!trusted.record.stop
+      const alreadyStopping = stopRecorded
       const reason = stopReason ?? (why === 'discarded by the lead' ? 'discarded' : 'lead-session-ended')
-      await registry.beginStop(w.id!, reason)
+      const cause = reason === 'lead-session-ended' ? (why === 'the lead left the room' ? 'explicit leave' : ctx.shutdownCause) : undefined
+      if (cause) why = workerStopDescription(cause)
+      progress('writing durable stop intent; host not yet signalled')
+      await registry.beginStop(w.id!, reason, cause)
+      stopRecorded = true
+      progress('verifying process and worktree ownership; stop intent recorded')
       w = realStateInput(trusted.record, trusted.status)
       const proc = rooms.handle(s, w.id)
       if (!proc) {
@@ -424,7 +434,8 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
         if (processState.process === 'not-ours' && pidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`
         if (processState.process === 'unknown') {
           const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
-          await s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message }, { auto: true })
+          progress('delivering unverifiable-process notification; host not signalled')
+          await notify(() => s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message }, { auto: true }))
           return message
         }
         if (processState.process !== 'ours') return `pid ${w.pid} not signalled: the process is gone; worker record kept`
@@ -441,10 +452,12 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
         catch (e) { cleanupError = `cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}` }
       }
       const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(', ')}` : '') + (cleanupError ? `; ${cleanupError}` : '')
+      progress('cleaning child processes before host signal; stop intent recorded')
       await stopCwdProcesses()
       if (proc && alreadyStopping && why !== 'discarded by the lead') {
         return `pid ${w.pid} already signalled; waiting for exit${cleanupText()}`
       }
+      progress('signalling host; stop intent recorded')
       let how: string, signalled: boolean
       if (proc) {
         signalled = proc.kill()
@@ -459,14 +472,15 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       if (!signalled && pidPresent(w.pid, ctx.probe)) how = proc
         ? `pid ${w.pid} not signalled: worker process is still alive`
         : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
+      progress(`cleaning child processes after host signal attempt (${signalled ? 'signal sent' : 'no signal sent'}); stop intent recorded`)
       await stopCwdProcesses()
       if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc)
       // The stop fact was committed before any signal.
-      if (cancelled?.aborted) return how + cleanupText()
       if (stopReason && cleanupError) throw new Error(cleanupError)
-      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true })
+      progress(`delivering notification (${signalled ? 'signal sent' : 'no signal sent'}); stop intent recorded`)
+      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await notify(() => s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true }))
       return how + cleanupText()
-      } finally { if (acquired) await registry.finishOperation(w.id!) }
+      } finally { if (acquired) { progress(`releasing stop operation; ${stopRecorded ? 'stop intent recorded' : 'stop intent not confirmed'}`); await registry.finishOperation(w.id!) } }
     }
 
   const startWorkersBridge = (lead: import('../session.js').Session, s: import('../session.js').Session): Bridge => {

@@ -210,6 +210,32 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect((await workerByTag(dir, 'finished'))?.stopReason).toBeUndefined()
   })
 
+  it.each(['stdin closed', 'stdin/transport closed', 'SIGTERM', undefined] as const)('persists observed MCP shutdown cause %s', async cause => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'interrupted', task: 'x', host: 'claude' })
+    await t.leadTools.shutdown(cause)
+    const registry = await registryForDir(dir)
+    const record = requireWorkerInventory(await registry.list()).find(r => r.tag === 'interrupted')!
+    expect(record.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
+    expect(record.stop?.cause).toBe(cause)
+    expect(t.killed).toEqual([1])
+    if (cause === 'stdin closed') expect(t.a.messages().some(m => 'text' in m && m.text.includes('reconnect or host exit; Room cannot distinguish them'))).toBe(true)
+    if (cause === 'stdin/transport closed') expect(t.a.messages().some(m => 'text' in m && m.text.includes("the host's reason is unknown"))).toBe(true)
+    t.exits[0](null)
+    await vi.waitFor(async () => expect((await registry.exits(record.id)).length).toBe(1))
+  })
+
+  it('records explicit forced leave separately from host stdin closure', async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'leaving', task: 'x', host: 'claude' })
+    expect(await t.leadTools.call('room_leave', { force: true })).toContain('left local/x')
+    const registry = await registryForDir(dir)
+    const record = requireWorkerInventory(await registry.list()).find(r => r.tag === 'leaving')!
+    expect(record.stop).toMatchObject({ reason: 'lead-session-ended', cause: 'explicit leave' })
+    t.exits[0](null)
+    await vi.waitFor(async () => expect((await registry.exits(record.id)).length).toBe(1))
+  })
+
   it('releases a reserved port when spawning fails', async () => {
     const { a } = pair()
     a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
@@ -902,6 +928,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     })
     await tools.call('room_spawn', { tag: 'money', task: 't' })
     expect((await workerByTag(dir, 'money'))?.processStartTime).toBe('test:worker:8')
+    expect((await (await registryForDir(dir)).reserved('money'))?.runs[0].launch).toMatchObject({ process: { pid: 8, startTime: 'test:worker:8' } })
     const refused = await tools.call('room_collect', { discard: true, tag: 'money' })
     expect(refused).toContain('worker process has not stopped')
     const registry = await registryForDir(dir)

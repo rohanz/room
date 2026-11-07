@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
-import type { LocalWorker } from '../worker-status.js'
+import type { LocalWorker, WorkerStopCause } from '../worker-status.js'
 import type { ShareLevel, SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
 import type { ConflictSet } from '../conflict-set.js'
@@ -28,6 +28,8 @@ export interface ToolDef {
 }
 
 export interface ToolCtx {
+  /** Set by the transport shutdown wrapper, separate from explicit room_leave. */
+  shutdownCause?: WorkerStopCause
   /** Finish host rebinding before completion; the caller bounds this wait. */
   completionReady?(): Promise<void>
   /** Current session, or null before room_join. */
@@ -106,7 +108,7 @@ export interface HandlerState {
   hasCompany: (s: Session) => CompanyState
   /** Whether a message may wake this session or reach its hooks now (solo.ts: silent while alone). */
   audible: (s: Session) => (m: Msg) => boolean
-  dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
+  dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], notify?: (send: () => Promise<unknown>) => Promise<void>, progress?: (phase: string) => void) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
@@ -154,7 +156,7 @@ export interface HandlerState {
   upgraded: Set<string>
   attachHooks: (s: Session) => void
   clearStale: (s: Session) => number
-  shutdown: () => Promise<void>
+  shutdown: (progress?: (phase: string) => void) => Promise<void>
   drop: (s: Session, reason: string) => Promise<void>
   flushConflicts: () => Promise<void>
 }

@@ -382,11 +382,11 @@ describe('drained daemon cutover', () => {
         ROOM_WORKER_RUN: String(run.n), ROOM_LAUNCH_NONCE: run.nonce, ROOM_ROOM: record.room })) vi.stubEnv(key, value)
       // No binding yet: this worker must still be recognised through its verified launch.
       await expect(joinSession({ dir: clone, server: LOCAL, name: 'Ada' })).rejects.toThrow('gate reached')
-      expect(gate).toHaveBeenLastCalledWith(common, { currentSessionId: undefined, currentWorkerId: record.id })
+      expect(gate).toHaveBeenLastCalledWith(common, { currentSessionId: undefined, currentWorkerId: record.id, forStart: false })
       // The hook record can arrive between startup and a subsequent join; no arbitration poll runs.
       writeSessionRecord(common, { session_id: 'late-thread', worker_id: record.id, host: 'codex', cwd: clone, at: Date.now(), chain: [] })
       await expect(joinSession({ dir: clone, server: LOCAL, name: 'Ada' })).rejects.toThrow('gate reached')
-      expect(gate).toHaveBeenLastCalledWith(common, { currentSessionId: 'late-thread', currentWorkerId: record.id })
+      expect(gate).toHaveBeenLastCalledWith(common, { currentSessionId: 'late-thread', currentWorkerId: record.id, forStart: false })
       expect(await tools.call('room_state', { check: true })).not.toContain('drain required')
       expect(inspection).toHaveBeenLastCalledWith(common, { currentSessionId: 'late-thread', currentWorkerId: record.id })
       // Environment alone cannot grant this evidence: a superseded nonce never reaches the gate.
@@ -645,4 +645,85 @@ it.each([
   write(path.join(common, 'room/registry/runs/w/1.report.json'), { hostProcess: identity(Number(reportPid)) })
   const state = await inspectDaemonCutover(common, { ...inspectOptions, probe: pid => pid === 400 ? {} : probe(pid) })
   expect(state.clients[0].liveness).toBe(expected)
+})
+
+
+describe('joins while an authenticated daemon owns the clone', () => {
+  const daemonHealth = (common: string, pid = 300) => async () => ({ proven: true, health: { clone: cloneId(common), pid, runtime: 'daemon', release: 'D' } })
+  const liveWorkers = (common: string) => {
+    for (const [id, pid] of [['w_first', 100], ['w_second', 200]] as const) {
+      write(path.join(common, `room/registry/workers/${id}.json`), { id, host: 'codex', phase: 'active',
+        runs: [{ n: 1, launch: { outcome: 'launched', pid, process: identity(pid) } }] })
+    }
+  }
+  const drained = async (common: string) => {
+    owner(common, 300, 'daemon')
+    await requireDaemonRuntime(common, { probe: (pid: number) => pid === 300 ? identity(300) : probe(pid), authenticate: daemonHealth(common) })
+  }
+  const live = (pid: number) => pid === 100 || pid === 200 || pid === 300 ? identity(pid) : undefined
+
+  it('does not block on live workers that have not published a marker yet, for each worker and a reconnecting lead', async () => {
+    const { common } = fixture()
+    await drained(common)
+    liveWorkers(common)
+    const options = { probe: live, authenticate: daemonHealth(common) }
+    for (const currentWorkerId of ['w_first', 'w_second', undefined]) {
+      const state = await inspectDaemonCutover(common, { ...options, currentWorkerId })
+      expect(state.daemonOwns).toBe(true)
+      expect(state.blocked).toBe(false)
+    }
+    await expect(Promise.all(['w_first', 'w_second', undefined].map(currentWorkerId =>
+      requireDaemonRuntime(common, { ...options, currentWorkerId })))).resolves.toEqual([undefined, undefined, undefined])
+    expect(daemonCutoverRows(await inspectDaemonCutover(common, options)).join('\n')).toMatch(/2 live client record\(s\) without daemon-client evidence do not block/)
+  })
+  it('never exempts clients when admitting a daemon start, even while the owner still answers', async () => {
+    const { common } = fixture()
+    await drained(common)
+    liveWorkers(common)
+    const options = { probe: live, authenticate: daemonHealth(common) }
+    await expect(requireDaemonRuntime(common, options)).resolves.toBeUndefined()
+    const start = await inspectDaemonCutover(common, { ...options, forStart: true })
+    expect(start.daemonOwns).toBe(false)
+    expect(start.blocked).toBe(true)
+    await expect(requireDaemonRuntime(common, { ...options, forStart: true })).rejects.toThrow(/cutover worker/)
+  })
+  it('records no drain evidence for a join it admitted only because a daemon owns the clone', async () => {
+    const { common } = fixture()
+    liveWorkers(common)
+    owner(common, 300, 'daemon')
+    const record = path.join(common, 'room/daemon-cutover.json')
+    expect(fs.existsSync(record)).toBe(false)
+    await requireDaemonRuntime(common, { probe: live, authenticate: daemonHealth(common) })
+    expect(fs.existsSync(record)).toBe(false)
+    // The daemon exits; worker liveness is now unknown. Nothing may treat them as previously drained.
+    const unknown = (pid: number) => pid === 100 || pid === 200 ? { pid } : undefined
+    const after = await inspectDaemonCutover(common, { probe: unknown, authenticate: noHealth })
+    expect(after.clients.filter(c => c.skipped)).toEqual([])
+    expect(after.blocked).toBe(true)
+  })
+  it('still blocks on live legacy clients while no daemon owns the clone', async () => {
+    const { common } = fixture()
+    liveWorkers(common)
+    // No owner yet: the inventory decides whether a daemon may start.
+    const starting = await inspectDaemonCutover(common, { probe: live, authenticate: noHealth })
+    expect(starting.daemonOwns).toBe(false)
+    expect(starting.blocked).toBe(true)
+  })
+  it('still blocks when the drained daemon is gone or cannot be authenticated', async () => {
+    const { common } = fixture()
+    await drained(common)
+    liveWorkers(common)
+    const gone = await inspectDaemonCutover(common, { probe: (pid: number) => pid === 300 ? undefined : live(pid), authenticate: noHealth })
+    expect(gone.daemonOwns).toBe(false)
+    expect(gone.blocked).toBe(true)
+    const unauthenticated = await inspectDaemonCutover(common, { probe: live, authenticate: noHealth })
+    expect(unauthenticated.daemonOwns).toBe(false)
+    expect(unauthenticated.blocked).toBe(true)
+  })
+  it('still blocks an old owner taking over after the drain', async () => {
+    const { common } = fixture()
+    await drained(common)
+    owner(common, 100) // a legacy in-session relay now holds discovery and authority
+    expect((await inspectDaemonCutover(common, { probe: live, authenticate: noHealth })).blocked).toBe(true)
+  })
 })

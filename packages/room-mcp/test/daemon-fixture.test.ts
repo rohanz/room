@@ -83,14 +83,14 @@ it('handles a replacement between the fixture check and authenticated stop witho
 it('records a daemon the fixture starts through ensure, but does not acquire an adopted daemon', async () => {
   const dir = root(), common = record(dir)
   seam.ensure.mockResolvedValue({ pid: 2147483000, launched: false })
-  await ensureLocalDaemon(common, 'local/test')
+  await ensureLocalDaemon(common, 'local/test', { admitStart: async () => {} })
   expect(await stopTestDaemon(common)).toBe(false)
   expect(seam.stop).not.toHaveBeenCalled()
   seam.ensure.mockImplementationOnce(async () => {
     record(dir, 'daemon', '33333333-3333-3333-3333-333333333333')
     return { pid: 2147483000, launched: true }
   })
-  await ensureLocalDaemon(common, 'local/test')
+  await ensureLocalDaemon(common, 'local/test', { admitStart: async () => {} })
   seam.stop.mockResolvedValueOnce(undefined)
   expect(await stopTestDaemon(common)).toBe(true)
   expect(seam.stop).toHaveBeenCalledWith(common, undefined, '33333333-3333-3333-3333-333333333333')
@@ -102,7 +102,7 @@ it('does not stop a racing launcher winner even when discovery changes during en
     record(dir, 'daemon', '44444444-4444-4444-4444-444444444444')
     return { pid: 2147483000, launched: false }
   })
-  await ensureLocalDaemon(common, 'local/test')
+  await ensureLocalDaemon(common, 'local/test', { admitStart: async () => {} })
   expect(await stopTestDaemon(common)).toBe(false)
   await disposePreviewFixture(dir)
   expect(seam.stop).not.toHaveBeenCalled()

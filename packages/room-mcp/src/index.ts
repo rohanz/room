@@ -18,6 +18,7 @@ import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
 import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
+import type { WorkerStopCause } from './worker-status.js'
 import { FlushedStdioTransport } from './transport.js'
 import { admitCodexThread } from './session.js'
 import { CODEX_WORKER_BIND_WAIT_MS, createSessionBinding, isCodexExecWorker } from './binding.js'
@@ -97,7 +98,7 @@ async function main() {
     { name: 'room', version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: channelCapabilities }, instructions: AGENT_INSTRUCTIONS() },
   )
-  let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) => Promise<string> } | undefined
+  let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
     deferred: deferForSharedCodex(process.env), fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
@@ -141,6 +142,7 @@ async function main() {
       const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)
+        await tools.prepareNotices(s)
         session = s
         joined(s)
         tools.attachHooks(s)
@@ -262,10 +264,11 @@ async function main() {
       tools.setAutoJoin(autoJoin)
       if (!signal.aborted) void autoJoin.ensure()
 
-      const runtime = { call, shutdown: async (signal?: boolean) => {
+      const runtime = { call, shutdown: async (reason?: WorkerStopCause, progress: (phase: string) => void = () => {}) => {
         presence.stop(); autoJoin.cancel({ explicitLeave: false })
-        if (!signal) await autoJoin.settle()
-        await tools.shutdown()
+        if (reason !== 'SIGTERM' && reason !== 'SIGINT') { progress('settling auto-join'); await autoJoin.settle() }
+        await tools.shutdown(reason, progress)
+        progress('closing arbitration')
         await arbitration.close()
       } }
       initialized = { dir, call }
@@ -286,7 +289,7 @@ async function main() {
         const active = initialized
         if (active) {
           const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)])
-          if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal), error: undefined }
+          if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal, settle => transport.expect(extra.requestId, settle)), error: undefined }
         }
         return { value: await runDoctor(dir), error: undefined }
       }
@@ -295,14 +298,22 @@ async function main() {
     return { content: [{ type: 'text' as const, text: result.error ?? result.value! }], ...(result.error ? { isError: true } : {}) }
   })
 
+  const shutdownInterrupt = new AbortController()
   const bye = async (reason: string) => {
-    if (closing) return
+    if (closing) {
+      if (reason === 'SIGINT' || reason === 'SIGTERM') shutdownInterrupt.abort(reason)
+      return
+    }
     closing = true
     watchdog.stop()
-    await finishSignalShutdown(reason, async () => { await (await binding.close())?.shutdown(reason === 'SIGTERM' || reason === 'SIGINT') }, log, () => process.exit(0))
+    const cause = reason === 'stdin closed' || reason === 'stdin/transport closed' || reason === 'SIGTERM' || reason === 'SIGINT' ? reason : undefined
+    await finishSignalShutdown(reason, async progress => {
+      progress('closing runtime binding')
+      await (await binding.close())?.shutdown(cause, progress)
+    }, log, () => process.exit(0), shutdownInterrupt.signal)
   }
   process.on('SIGINT', () => { void bye('SIGINT') }); process.on('SIGTERM', () => { void bye('SIGTERM') })
-  mcp.onclose = () => { void bye('stdin/transport closed') }
+  mcp.onclose = () => { void bye(process.stdin.readableEnded ? 'stdin closed' : 'stdin/transport closed') }
   process.stdin.on('end', () => { void bye('stdin closed') })
 
   // The definitions are static; a shared Codex daemon needs no directory-bound state until a call.
@@ -314,15 +325,30 @@ async function main() {
 }
 
 /** Give signal cleanup a bounded chance to end leases and clear awareness before process exit. */
-export async function finishSignalShutdown(reason: string, leave: () => Promise<void>, report: (line: string) => void, exit: () => void, limitMs = 4_000): Promise<void> {
+export async function finishSignalShutdown(reason: string, leave: (progress: (phase: string) => void) => Promise<void>, report: (line: string) => void, exit: () => void, force?: AbortSignal): Promise<void> {
   report(`stopping: ${reason}`)
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let pending = 'session cleanup', timer: ReturnType<typeof setTimeout> | undefined
+  let interrupt!: () => void
+  const interrupted = new Promise<'forced'>(resolve => { interrupt = () => resolve('forced') })
+  force?.addEventListener('abort', interrupt, { once: true })
+  if (force?.aborted) interrupt()
   try {
-    const completed = await Promise.race([leave().then(() => true), new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), limitMs) })])
-    if (!completed) report(`shutdown timed out after ${limitMs}ms: ${reason}`)
-  } catch (error) { report(`shutdown error: ${error instanceof Error ? error.message : String(error)}`) }
-  finally { if (timer) clearTimeout(timer) }
-  report(`stopped: ${reason}`)
+    // The deadline bounds the entire exit path, including registry I/O and binding startup.
+    // Do not manufacture completion facts: durable stop intent remains recovery evidence.
+    const result = await Promise.race([
+      Promise.resolve().then(() => leave(phase => { pending = phase })).then(() => 'complete' as const, error => ({ error })),
+      new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), 4000) }),
+      interrupted,
+    ])
+    if (result === 'complete') report(`stopped: ${reason}`)
+    else if (result === 'timeout' || result === 'forced') {
+      const cause = result === 'timeout' ? 'timed out after 4000ms' : `forced by ${String(force?.reason)}`
+      report(`shutdown ${cause}: ${reason}; pending: ${pending}; stop records retained for recovery`)
+    } else report(`shutdown error: ${result.error instanceof Error ? result.error.message : String(result.error)}; pending: ${pending}`)
+  } finally {
+    if (timer) clearTimeout(timer)
+    force?.removeEventListener('abort', interrupt)
+  }
   exit()
 }
 

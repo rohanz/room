@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, defaultPriority, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitBlobInfoMany } from '@room/roomd/git'
@@ -29,7 +29,7 @@ export interface ConflictSlot {
   settled: 'conflict' | 'possible' | 'clean' | 'none'
   clearedFrom?: 'conflict' | 'possible'
   epoch: number
-  /** Stable within one authorized contract episode, new after the slot is withdrawn. */
+  /** Stable within one contract/overlap episode, new after the slot is withdrawn. */
   episode?: string
   lines?: number[]
   why?: string
@@ -37,21 +37,15 @@ export interface ConflictSlot {
   earlierSha?: string | null
   /** An edit inside a claim whose two versions merge without conflict as they stand: an overlap, not a CONFLICT. */
   merges?: 'clean'
-  /** How many times an edit-in-claim conflict changed between merging and not: a burst notice per turn. */
-  mergeTurns?: number
   fence: string
   checkedAt: number
-  burstAt?: number
   retryAt?: number
   retrySource?: string
   /** Consumer paths are published only while their text grants remain valid. */
   consumers?: string[]
-  /**
-   * A possible edit-in-claim's episode (1, 2, …), shared by every claim of the same holder on the same path: an
-   * approximate mapping cannot tell the holder's claims apart, so it is one fact with one notice and one "cleared". Kept after it clears.
-   */
+  /** Shared possible-overlap episode for this owner, holder and path; retained across exact/clean states. */
   possibleEpisode?: number
-  /** This slot joined an episode another slot opened: that slot's notice covers it. */
+  /** Another slot opened this episode and posted its notice. */
   possibleJoined?: boolean
   /**
    * A file merge conflict's peer episode (1, 2, …), shared by every file in conflict with the same peer at once:
@@ -63,11 +57,6 @@ export interface ConflictSlot {
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers'>
 
-/** A conflict that turns between merging and not counts a turn; any other state keeps the count. */
-const mergeTurns = (result: Evaluation, prev: ConflictSlot | undefined): Pick<ConflictSlot, 'mergeTurns'> => {
-  const turns = (prev?.mergeTurns ?? 0) + (result.status === 'conflict' && prev?.settled === 'conflict' && !result.merges !== !prev.merges ? 1 : 0)
-  return turns ? { mergeTurns: turns } : {}
-}
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
   [owner, kind, other, path, subject].join('\0')
@@ -149,19 +138,17 @@ export class ConflictSlots {
       ? prev?.settled !== result.status || prev.factId !== result.factId : false
     const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0)
     const settled = result.status === 'unknown' ? prev?.settled ?? 'none' : result.status
-    const episode = result.kind === 'edit-in-claim' ? this.joinPossibleEpisode(key, result, settled, prev) : {}
+    const possibleEpisode = result.kind === 'edit-in-claim' ? this.joinPossibleEpisode(key, result, settled, prev) : {}
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
     const slot: ConflictSlot = {
-      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now, ...episode,
-      ...(result.kind === 'contract' && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
+      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now, ...possibleEpisode,
+      ...((result.kind === 'contract' || result.kind === 'edit-in-claim') && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       // A cleared slot re-checked clean (or unreadable) keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...((result.status === 'clean' || result.status === 'unknown') && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
       // What cleared was an overlap that merged, not a CONFLICT; an unreadable pass keeps what was last known.
       ...((result.status === 'clean' || result.status === 'unknown') && prev?.merges && (prev.settled === 'conflict' || prev.settled === 'clean' && prev.clearedFrom) ? { merges: prev.merges } : {}),
-      ...(result.kind === 'edit-in-claim' ? mergeTurns(result, prev) : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
-      ...(result.kind === 'edit-in-claim' && result.status === 'conflict' ? { burstAt: prev?.status === 'conflict' ? prev.burstAt ?? now : now } : {}),
     }
     // A file joins its peer's open episode, or leaves it: the peer's one notice changes, not a notice per file.
     const peerTurn = peerMerge(result) && (changedFact && settled === 'conflict' || prev?.settled === 'conflict' && settled !== 'conflict')
@@ -241,15 +228,14 @@ export class ConflictSlots {
     return this.owned(slot.owner).filter(([k, s]) => k !== key && s.kind === 'edit-in-claim' && s.other === slot.other && s.path === slot.path)
   }
 
-  /** Join the open possible episode of this holder and path, or open a new one; a clean slot keeps the episode it clears. */
+  /** Approximate evidence cannot distinguish claims: keep one possible notice until the last clears. */
   private joinPossibleEpisode(key: string, result: Evaluation, settled: ConflictSlot['settled'], prev: ConflictSlot | undefined): Pick<ConflictSlot, 'possibleEpisode' | 'possibleJoined'> {
-    // Every state keeps the episode number, so a later possibility (even after an exact conflict) numbers past it.
+    // Retain the counter through exact conflicts, so returning to possible opens a new episode.
     if (settled !== 'possible') return prev?.possibleEpisode !== undefined ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {}
     if (prev?.settled === 'possible' && prev.possibleEpisode !== undefined) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined }
     const group = this.claimGroup(key, result)
     const open = group.find(([, s]) => s.settled === 'possible' && s.possibleEpisode !== undefined)?.[1]
     if (open) return { possibleEpisode: open.possibleEpisode, possibleJoined: true }
-    // Numbered like a slot's epoch, so its "cleared" shares the id of the same path's other cleared notices.
     return { possibleEpisode: 1 + Math.max(prev?.possibleEpisode ?? 0, ...group.map(([, s]) => s.possibleEpisode ?? 0)), possibleJoined: false }
   }
 
@@ -273,25 +259,19 @@ export class ConflictSlots {
       ? slot.possibleEpisode : undefined
     if (episode !== undefined) {
       const open = this.claimGroup(key, slot).filter(([, s]) => s.settled === 'possible' && s.possibleEpisode === episode)
-      // One notice per episode: its opener posts it (on a replay, the first open slot), and the last to clear posts "cleared".
+      // Only the opener posts immediately; replay uses one surviving open slot, even if the opener cleared.
       if (slot.settled === 'possible' && (replay ? open.some(([k]) => k < key) : slot.possibleJoined)) return
       if (slot.settled === 'clean' && open.length) return
     }
-    const workerBurst = slot.kind === 'edit-in-claim' && slot.status === 'conflict' && workerView?.lead === slot.owner
-      ? Math.min(...this.owned(slot.owner).filter(([, other]) => other.kind === 'edit-in-claim' && other.other === slot.other && other.path === slot.path && other.status === 'conflict').map(([, other]) => other.burstAt ?? other.checkedAt))
-      : undefined
     const id = episode !== undefined
       ? `cf:${hash([slot.owner, slot.other, slot.path, 'possible', episode].join('\0'))}:${slot.settled === 'clean' ? 'clean' : 'possible'}`
       : slot.settled === 'clean' && slot.kind !== 'contract'
       ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join('\0'))}:clean`
-      : workerBurst !== undefined
-        // A burst's clean overlap has its own id, so the same burst turning into a CONFLICT is still told.
-        ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join('\0'))}:worker${slot.mergeTurns ? `:${slot.mergeTurns}` : ''}`
-        : noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
+      : noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
     const status = slot.settled
     const ownWorker = workerView?.lead === slot.owner
-    const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' && !ownWorker ? 'interrupt' : 'notify'
-    // Name the claimed lines: an exact conflict is about one claim, a possible one about all of the holder's claims here.
+    const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' && !ownWorker ? defaultPriority({ type: 'conflict', merges: slot.merges }) : 'notify'
+    // Name a representative exact claim; approximate mapping cannot distinguish the holder's claims here.
     const held = this.room.openClaims().filter(c => c.by === slot.other && c.path === slot.path && !c.path.endsWith('/'))
     const claimed = (claims: Claim[]) => `${slot.other}'s claim${claims.length > 1 ? 's' : ''}${claims.length
       ? ` at line${claims.length > 1 || claims[0]!.from !== claims[0]!.to ? 's' : ''} ${claims.sort((a, b) => a.from - b.from).map(c => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(', ')}` : ''}`
@@ -325,7 +305,7 @@ export class ConflictSlots {
         const holderText = slot.earlierSha !== undefined
           ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps your new claim`
           : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}`
-        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: holderText + mergeNote } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch)}:holder`, auto: true })
+        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: holderText + mergeNote } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch, slot.episode)}:holder`, auto: true })
         if (!holder.ok) this.log(`conflict holder notice ${id}: ${holder.text}`)
       } catch (e) { this.log(`conflict holder notice ${id}: ${String(e)}`) }
     }
@@ -1156,43 +1136,76 @@ export class ConflictSet {
     for (const path of paths) {
       await this.fileTurn()
       if (path.endsWith('/')) continue
+      // One semantic overlap per peer and path. Claim renewal/replacement changes the inputs,
+      // not the notice identity. Keep a legacy slot's key/epoch when consolidating old claim slots.
+      const prior = this.slots.owned(this.owner).filter(([, s]) => s.kind === 'edit-in-claim' && s.other === other && s.path === path)
+        .sort(([ak, a], [bk, b]) => Number(b.settled === 'conflict') - Number(a.settled === 'conflict') ||
+          Number(b.settled === 'possible') - Number(a.settled === 'possible') || ak.localeCompare(bk))
+      const key = prior[0]?.[0] ?? slotKey(this.owner, 'edit-in-claim', other, path)
+      seen.add(key)
+      for (const [oldKey] of prior.slice(1)) await this.drop(oldKey)
+      const claims = theirClaims.filter(c => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+      const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase,
+        claims.map(c => [c.id, c.from, c.to, c.claimedHash, c.at]), sideInput(mine, path), sideInput(theirs, path)]))
+      const base = { owner: this.owner, other, kind: 'edit-in-claim' as const, path, inputs }
+      if (!claims.length) {
+        await this.settle(key, { ...base, status: 'clean', factId: '' })
+        continue
+      }
       const [ownV, theirV] = await Promise.all([read(mine, path), read(theirs, path)])
       const ownText = asText(ownV), theirText = asText(theirV)
       let ancestor: string | undefined
       try { ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? '' } catch { /* unavailable */ }
-      for (const claim of theirClaims.filter(c => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER }))) {
-        const key = slotKey(this.owner, 'edit-in-claim', other, path, claim.id)
-        seen.add(key)
-        const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase, claim.id, claim.from, claim.to, claim.claimedHash, sideInput(mine, path), sideInput(theirs, path)]))
-        if (ownText === undefined || ancestor === undefined) {
-          await this.settle(key, { owner: this.owner, other, kind: 'edit-in-claim', path, subject: claim.id, status: 'unknown', inputs, factId: '', why: 'cannot map claim' }); continue
-        }
-        const mapped = claim.path.endsWith('/') ? { from: 1, to: Math.max(1, ownText.split('\n').length), approximate: false } : claimInMyLines(claim, theirText, ownText)
-        // Copies between separate publishers create no competing edit. A non-publisher's claim
-        // still coordinates edits in its shared checkout, whose versions come from one publisher.
-        const identicalCopy = mine.name !== theirs.name && ownText === theirText
-        const ranges = changed.has(path) && !identicalCopy ? changedRanges(ancestor, ownText) : []
-        const hit = ranges.find(r => claimsOverlap({ path, ...mapped }, { path, ...r }) && !ownClaims.some(c => claimsOverlap(c, { path, ...r })))
-        let earlierSha: string | null | undefined
-        let merges: 'clean' | undefined
-        if (hit && !mapped.approximate && theirText !== undefined) {
-          await this.budget()
-          const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: 'base', theirs: other })
-          if (!merged.conflicts.length) merges = 'clean'
-        }
-        if (hit) {
-          const entryAt = mine.entries.get(path)?.at
-          if (entryAt !== undefined && entryAt <= claim.at) earlierSha = null
-          else if (entryAt === undefined) {
-            const last = await git(this.team.dir, ['log', '-1', '--format=%H:%ct', mine.head.base, '--', path]).catch(() => '')
-            const match = /^([0-9a-f]{40,64}):(\d+)/.exec(last.trim())
-            if (match && Number(match[2]) * 1000 <= claim.at) earlierSha = match[1]!.slice(0, 7)
-          }
-        }
-        await this.settle(key, { owner: this.owner, other, kind: 'edit-in-claim', path, subject: claim.id, status: hit ? mapped.approximate ? 'possible' : 'conflict' : 'clean', inputs,
-          // Whether it merges is part of the fact: an overlap that stops merging is a new notice, a CONFLICT.
-          factId: hit ? hash(JSON.stringify([claim.id, hit, mapped, ...merges ? [merges] : []])) : '', ...(hit ? { lines: [hit.from], why: mapped.approximate ? 'approximate range' : claim.intent, ...(earlierSha !== undefined ? { earlierSha } : {}), ...(merges ? { merges } : {}) } : {}) })
+      if (ownText === undefined || ancestor === undefined) {
+        await this.settle(key, { ...base, subject: claims[0]!.id, status: 'unknown', factId: '', why: 'cannot map claim' })
+        continue
       }
+      // Copies between separate publishers create no competing edit. A non-publisher's claim
+      // still coordinates edits in its shared checkout, whose versions come from one publisher.
+      const identicalCopy = mine.name !== theirs.name && ownText === theirText
+      const ranges = changed.has(path) && !identicalCopy ? changedRanges(ancestor, ownText)
+        .filter(r => !ownClaims.some(c => claimsOverlap(c, { path, ...r }))) : []
+      const overlaps = claims.map(claim => {
+        const mapped = claim.path.endsWith('/') ? { from: 1, to: Math.max(1, ownText.split('\n').length), approximate: false } : claimInMyLines(claim, theirText, ownText)
+        return { claim, mapped, hits: ranges.filter(r => claimsOverlap({ path, ...mapped }, { path, ...r })) }
+      }).filter(c => c.hits.length)
+      // Exact evidence takes precedence over a second claim whose mapping is only approximate.
+      const exact = overlaps.filter(c => !c.mapped.approximate)
+      const relevant = exact.length ? exact : overlaps
+      const representative = relevant[0]
+      if (!representative) {
+        await this.settle(key, { ...base, status: 'clean', factId: '' })
+        continue
+      }
+      const hits = ranges.filter(r => relevant.some(c => c.hits.includes(r)))
+      const { claim } = representative
+      let earlierSha: string | null | undefined
+      let revision = gitBlobHash(ownText)
+      let merges: 'clean' | undefined
+      let conflicts: Awaited<ReturnType<typeof gitMergeFile>>['conflicts'] | undefined
+      if (exact.length && theirText !== undefined) {
+        await this.budget()
+        const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: 'base', theirs: other })
+        conflicts = merged.conflicts
+        if (!conflicts.length) merges = 'clean'
+      }
+      const entryAt = mine.entries.get(path)?.at
+      if (entryAt !== undefined && entryAt <= claim.at) earlierSha = null
+      else if (entryAt === undefined) {
+        const last = await git(this.team.dir, ['log', '-1', '--format=%H:%ct', mine.head.base, '--', path]).catch(() => '')
+        const match = /^([0-9a-f]{40,64}):(\d+)/.exec(last.trim())
+        if (match) {
+          revision = match[1]!
+          if (Number(match[2]) * 1000 <= claim.at) earlierSha = revision.slice(0, 7)
+        }
+      }
+      await this.settle(key, { ...base, subject: claim.id, status: exact.length ? 'conflict' : 'possible',
+        // Claim IDs, timestamps and range padding are inputs, not new overlap facts. Actual
+        // conflicting regions matter even when the merge verdict stays "conflict"; another
+        // rewrite of the peer's text inside the same region does not change that verdict.
+        factId: hash(JSON.stringify([revision, merges ? [] : hits, conflicts?.map(c => [c.from, c.o])])), lines: hits.map(r => r.from),
+        why: exact.length ? claim.intent : 'approximate range', ...(earlierSha !== undefined ? { earlierSha } : {}), ...(merges ? { merges } : {}) })
     }
     for (const a of ownClaims) for (const b of theirClaims) {
       if (!coversPath(a.path, b.path)) continue

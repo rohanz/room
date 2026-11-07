@@ -41,10 +41,17 @@ export interface DaemonCutoverState {
   commonDir: string
   worktrees: string[]
   clients: CutoverClient[]
-  owner?: { pid: number; port?: number; release?: string; runtime: string; liveness: Liveness; identity?: ProcessIdentity }
+  owner?: { pid: number; port?: number; release?: string; runtime: string; liveness: Liveness; identity?: ProcessIdentity; authenticated?: boolean }
   issues: string[]
   blocked: boolean
   drainRecorded: boolean
+  /**
+   * An authenticated, live daemon owns this clone. A daemon is started only after this gate passes, so the drain
+   * already happened. Live legacy clients are then reported but do not block a join: the daemon refuses old
+   * writers before document sync, and an old owner's takeover is judged separately. The legacy-client inventory
+   * decides only whether a daemon may start.
+   */
+  daemonOwns: boolean
   keyFingerprint?: string
   /** Required human checks; disk records cannot enumerate unrecorded hosts or viewers. */
   manual: string[]
@@ -57,6 +64,8 @@ interface InspectOptions {
   currentSessionId?: string
   /** Only supply after admitWorkerEnvironment verifies this process's current launch nonce and checkout. */
   currentWorkerId?: string
+  /** Admission to start a daemon: a running daemon owner exempts nobody, since it is about to be replaced. */
+  forStart?: boolean
 }
 const manual = [
   'Stop old-plugin launches and reconnect loops in every linked worktree, on both hosts; retain worker files and results.',
@@ -67,7 +76,7 @@ const manual = [
 /** Missing is distinct from malformed/unreadable; evidence is never quarantined or deleted. */
 export async function inspectDaemonCutover(commonDir: string, options: InspectOptions = {}): Promise<DaemonCutoverState> {
   commonDir = fs.realpathSync(commonDir)
-  const state: DaemonCutoverState = { commonDir, worktrees: [], clients: [], issues: [], blocked: false, drainRecorded: false, manual: [...manual] }
+  const state: DaemonCutoverState = { commonDir, worktrees: [], clients: [], issues: [], blocked: false, drainRecorded: false, daemonOwns: false, manual: [...manual] }
   const currentPid = options.currentPid ?? process.pid
   const hashes = new Map<string, string>()
   // Every inventory record goes through one no-follow reader: a link or special file is an issue, never absent.
@@ -141,7 +150,7 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
         const answer = await (options.authenticate ?? relayIdentity)(discovery.port, discovery.key)
         if (answer?.proven && answer.health.clone === cloneId(commonDir) && answer.health.pid === identity.pid) health = answer.health
       }
-      state.owner = { pid: identity.pid, ...(discovery ? { port: discovery.port } : {}), ...(typeof health?.release === 'string' ? { release: health.release } : {}),
+      state.owner = { pid: identity.pid, ...(discovery ? { port: discovery.port } : {}), ...(typeof health?.release === 'string' ? { release: health.release } : {}), authenticated: !!health,
         runtime: health ? String(health.runtime ?? 'session-relay') : String(discovery?.runtime ?? 'session-relay'),
         liveness: health ? 'alive' : status, identity }
       // Discovery is a hint: it cannot exempt an owner from the legacy gate without key/clone proof.
@@ -243,8 +252,10 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
         runtime: options.currentSessionId && session.session_id === options.currentSessionId ? 'daemon-client' : worker?.runtime ?? 'legacy', ...(!processClaim ? { bindingOnly: true } : {}) }, identity)
     }
   }
+  // Only a listener that proved it is this clone's process counts; a live pid alone does not.
+  state.daemonOwns = !options.forStart && state.owner?.runtime === 'daemon' && state.owner.authenticated === true && state.owner.liveness === 'alive'
   state.blocked = state.issues.length > 0 || !!(state.owner && state.owner.liveness !== 'dead' && state.owner.runtime !== 'daemon')
-    || state.clients.some(c => !c.skipped && c.runtime === 'legacy' && !c.bindingOnly && c.liveness !== 'dead')
+    || state.clients.some(c => blockingClient(state, c))
   return state
 }
 
@@ -255,11 +266,11 @@ export function daemonCutoverRows(state: DaemonCutoverState): string[] {
   if (owner) rows.push(`INFO  local owner: pid ${owner.pid}, port ${owner.port ?? 'unknown'}, ${owner.runtime}, ${owner.liveness}${owner.release ? `, release ${owner.release}` : ''}`)
   // A used clone holds hundreds of records. Show each one that blocks or that a person resolved; count the rest by kind.
   const resolved = (c: CutoverClient) => !!c.skipped && !!c.reason?.startsWith('resolved by operator')
-  for (const c of state.clients.filter(c => blockingClient(c) || resolved(c))) {
-    rows.push(`${blockingClient(c) ? 'FAIL' : 'INFO'}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ''}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? 'binding only; no process evidence' : `pid ${c.pid ?? 'unknown'}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ''}${c.reason && !c.skipped ? `; ${c.reason}` : ''}; ${c.source}`)
+  for (const c of state.clients.filter(c => blockingClient(state, c) || resolved(c))) {
+    rows.push(`${blockingClient(state, c) ? 'FAIL' : 'INFO'}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ''}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? 'binding only; no process evidence' : `pid ${c.pid ?? 'unknown'}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ''}${c.reason && !c.skipped ? `; ${c.reason}` : ''}; ${c.source}`)
   }
   const counts = new Map<string, Map<string, number>>()
-  for (const c of state.clients.filter(c => !blockingClient(c) && !resolved(c))) {
+  for (const c of state.clients.filter(c => !blockingClient(state, c) && !resolved(c))) {
     const verdict = c.skipped ? 'previously drained' : c.runtime === 'daemon-client' ? 'current client' : c.bindingOnly ? 'binding only' : c.liveness
     const byKind = counts.get(c.kind) ?? new Map<string, number>()
     byKind.set(verdict, (byKind.get(verdict) ?? 0) + 1)
@@ -269,9 +280,11 @@ export function daemonCutoverRows(state: DaemonCutoverState): string[] {
     const total = [...byKind.values()].reduce((sum, n) => sum + n, 0)
     rows.push(`INFO  cutover ${kind} records: ${total} not blocking (${[...byKind].map(([verdict, n]) => `${n} ${verdict}`).join(', ')})`)
   }
+  const liveLegacy = state.daemonOwns ? state.clients.filter(c => !c.skipped && c.runtime === 'legacy' && !c.bindingOnly && c.liveness !== 'dead').length : 0
+  if (liveLegacy) rows.push(`INFO  cutover: ${liveLegacy} live client record(s) without daemon-client evidence do not block; the authenticated daemon refuses old writers before document sync`)
   const bundle = fileURLToPath(new URL('../../../plugins/room/server/room-mcp.mjs', import.meta.url))
   const entry = import.meta.url.endsWith('/room-mcp.mjs') ? fileURLToPath(import.meta.url) : bundle
-  for (const c of state.clients.filter(blockingClient)) {
+  for (const c of state.clients.filter(c => blockingClient(state, c))) {
     const record = path.relative(state.commonDir, c.source)
     const args = [entry, 'cutover-resolve', '--dir', state.worktrees[0] ?? state.commonDir, '--record', record, '--confirm-not-running']
     rows.push(`FIX   ${c.label}: ${c.checks ?? 'Check the recorded process and host session; save and exit it if running'}. Record ${JSON.stringify(record)}. After verifying it is not running, run (${process.platform === 'win32' ? 'PowerShell' : 'sh'}): ${cutoverResolveCommand(args)}`)
@@ -286,7 +299,9 @@ export function daemonCutoverRows(state: DaemonCutoverState): string[] {
 export async function requireDaemonRuntime(commonDir: string, options: InspectOptions = {}): Promise<void> {
   const state = await inspectDaemonCutover(commonDir, options)
   if (state.blocked) throw new Error(daemonCutoverRows(state).join('\n'))
-  if (state.drainRecorded) return
+  // A pass granted only because a daemon already owns the clone is not drain evidence: the live clients it
+  // exempted must be judged again before any daemon starts.
+  if (state.drainRecorded || state.daemonOwns) return
   privateStateDirectory(path.join(state.commonDir, 'room'))
   writeAtomic(path.join(state.commonDir, 'room', 'daemon-cutover.json'), { v: 1, clone: cloneId(state.commonDir), at: Date.now(),
     ...(state.keyFingerprint ? { keyFingerprint: state.keyFingerprint } : {}),
@@ -362,7 +377,8 @@ function validResolutions(record: Record<string, any> | undefined, clone: string
     && Number.isFinite(r.at) && !isNaN(new Date(r.at).getTime()) && (r.note === undefined || typeof r.note === 'string'))
     ? record.resolutions : undefined
 }
-const blockingClient = (c: CutoverClient) => !c.skipped && c.runtime === 'legacy' && !c.bindingOnly && c.liveness !== 'dead'
+const blockingClient = (state: Pick<DaemonCutoverState, 'daemonOwns'>, c: CutoverClient) =>
+  !state.daemonOwns && !c.skipped && c.runtime === 'legacy' && !c.bindingOnly && c.liveness !== 'dead'
 
 /** Explicit human attestation, scoped to the exact inspected record and evidence bytes. */
 export async function resolveDaemonCutover(commonDir: string, source: string, confirmNotRunning: boolean, note?: string, options: InspectOptions = {}): Promise<void> {
@@ -370,7 +386,7 @@ export async function resolveDaemonCutover(commonDir: string, source: string, co
   if (!source || path.isAbsolute(source) || source.split(/[\\/]/).includes('..')) throw new Error('--record must be relative to the git common dir')
   const state = await inspectDaemonCutover(commonDir, options)
   const client = state.clients.find(c => path.relative(state.commonDir, c.source) === source)
-  if (!client || !blockingClient(client)) throw new Error('Record is not currently blocking')
+  if (!client || !blockingClient(state, client)) throw new Error('Record is not currently blocking')
   if (client.liveness === 'alive') throw new Error('Cannot resolve a live process')
   if (!client.sha256 || state.issues.length) throw new Error('Cannot resolve with incomplete inspection evidence')
   const room = path.join(state.commonDir, 'room')

@@ -17686,7 +17686,8 @@ var init_messages = __esm({
       changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
       question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
       answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
-      conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
+      // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
+      conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
       note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || !m.to && m.priority === "interrupt" && !!w.me && messageForMe({ name: w.me }, m)), format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
@@ -24363,6 +24364,12 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
+    # Room's own writers remove files concurrently (atomic-write temps, consumed start tickets). A descendant that
+    # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
+    # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
+    function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };
+    function Vanished($path, $err) { if (NotFound $err.Exception) { return $true }; try { [IO.File]::GetAttributes($path) | Out-Null; $false } catch { NotFound $_.Exception } };
+    function Entries($dir) { try { @([IO.Directory]::EnumerateFileSystemEntries($dir)) } catch { if (Vanished $dir $_) { @() } else { throw } } };
     function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
     function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
     function Grants($acl) { @(Rules $acl | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value}) };
@@ -24395,9 +24402,9 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
     $children=[System.Collections.Generic.List[string]]::new();
     while ($pending.Count -gt 0) {
-      foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
+      foreach ($child in (Entries $pending.Pop())) {
         if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-        $attributes=[IO.File]::GetAttributes($child);
+        try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Vanished $child $_) { continue } else { throw } };
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $children.Add($child);
         if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
@@ -24413,6 +24420,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
     $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
     foreach ($child in $children) {
+      try {
         if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
         $childAcl=ReadAcl $child; $rules=Rules $childAcl;
         # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
@@ -24428,6 +24436,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
         };
         if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
             @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
+      } catch { if (Vanished $child $_) { continue } else { throw } }
     };` : ""}
     # SIDs and booleans only, so the report is built without ConvertTo-Json.
     $bool={ param($v) if ($v) { 'true' } else { 'false' } };
@@ -25575,6 +25584,20 @@ function discovery(commonDir2) {
   if (v.lead !== void 0 && v.lead !== true && (!v.lead || typeof v.lead !== "object" || !Number.isInteger(v.lead.pid) || v.lead.pid < 1 || typeof v.lead.startTime !== "string" || !v.lead.startTime || typeof v.lead.executable !== "string" || !v.lead.executable)) throw new Error("invalid discovery process identity; preserve and repair the record");
   return v;
 }
+function issueStartAdmission(commonDir2, now = Date.now()) {
+  const dir = admissionDir(commonDir2);
+  privateStateDirectory(dir);
+  for (const name of fs13.readdirSync(dir)) {
+    const stale = path11.join(dir, name);
+    try {
+      if (now - fs13.lstatSync(stale).mtimeMs > STARTUP_HARD_CAP_MS) fs13.rmSync(stale, { force: true });
+    } catch {
+    }
+  }
+  const token = crypto2.randomBytes(32).toString("hex"), file = admissionFile(commonDir2, token);
+  writeAtomic(file, { v: 1, at: now, pid: process.pid });
+  return { token, file };
+}
 function startupLog(commonDir2) {
   const file = path11.join(commonDir2, "room", "daemon.log");
   let fd;
@@ -25629,7 +25652,7 @@ function daemonChildEnvironment(source = process.env, platform = process.platfor
   }
   return env;
 }
-function ensureLocalDaemon(commonDir2, room, opts = {}) {
+function ensureLocalDaemon(commonDir2, room, opts) {
   const canonical = fs13.realpathSync.native(commonDir2);
   const running = flights.get(canonical);
   if (running) return running.then(() => ensure(canonical, room, opts));
@@ -25676,16 +25699,25 @@ async function ensure(commonDir2, room, opts) {
   if (existing) return existing;
   const info = discovery(commonDir2);
   if (info?.lead && info.lead !== true && liveness(info.lead) !== "dead") throw new Error(`local daemon pid ${info.pid} is live or has unknown identity; retry without taking over`);
+  await opts.admitStart();
   const entry = opts.entryPath ?? fileURLToPath(new URL("./room-daemon.mjs", import.meta.url));
   if (!path11.isAbsolute(entry) || !fs13.statSync(entry).isFile()) throw new Error("local daemon entry must be an absolute installed bundle path");
   const env = daemonChildEnvironment();
   const reportDir = path11.join(os2.tmpdir(), `room-daemon-start-${crypto2.randomBytes(12).toString("hex")}`);
   privateStateDirectory(reportDir);
   const report = path11.join(reportDir, "error");
+  let ticket;
   try {
+    const admission = issueStartAdmission(commonDir2);
+    ticket = admission.file;
+    fs13.writeFileSync(path11.join(reportDir, "admission"), admission.token, { flag: "wx", mode: 384 });
     return await launch();
   } finally {
-    fs13.rmSync(reportDir, { recursive: true, force: true });
+    try {
+      fs13.rmSync(reportDir, { recursive: true, force: true });
+    } finally {
+      if (ticket) fs13.rmSync(ticket, { force: true });
+    }
   }
   async function launch() {
     const child = spawn2(process.execPath, [...opts.execArgv ?? [], entry, "--common-dir", commonDir2, "--room", room, "--startup-report", report], { cwd: commonDir2, env, shell: false, detached: true, windowsHide: true, stdio: "ignore" });
@@ -25719,7 +25751,7 @@ async function ensure(commonDir2, room, opts) {
     throw startupFailure(commonDir2, child.pid, Date.now() >= hardUntil ? "startup hard cap reached" : "startup phase stalled", report);
   }
 }
-var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights;
+var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, admissionDir, admissionFile, STARTUP_LOG_BYTES, flights;
 var init_daemon = __esm({
   "packages/relay/src/daemon.ts"() {
     "use strict";
@@ -25733,6 +25765,8 @@ var init_daemon = __esm({
     LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
     STARTUP_PHASE_WAIT_MS = 25e3;
     STARTUP_HARD_CAP_MS = 6e4;
+    admissionDir = (commonDir2) => path11.join(commonDir2, "room", "admissions");
+    admissionFile = (commonDir2, token) => path11.join(admissionDir(commonDir2), `${crypto2.createHash("sha256").update(token).digest("hex")}.json`);
     STARTUP_LOG_BYTES = 1024;
     flights = /* @__PURE__ */ new Map();
   }
@@ -31536,17 +31570,72 @@ function codexHooksRoot(marketplaces, name, io = defaultInstallIO) {
   }
   return path21.resolve(root, entry ?? path21.join("plugins", "room"));
 }
+function contractEvidence(root) {
+  return [["compat.json", 4096], ["room-mcp.mjs", 64 * 1024 * 1024]].map(([name, limit]) => {
+    const file = path21.join(root, name);
+    const stat4 = fs22.statSync(file, { bigint: true });
+    if (!stat4.isFile() || stat4.size > BigInt(limit)) throw new Error("invalid installed contract file");
+    fs22.accessSync(file, fs22.constants.R_OK);
+    return `${stat4.dev}:${stat4.ino}:${stat4.size}:${stat4.mtimeNs}:${stat4.ctimeNs}`;
+  }).join("|");
+}
+function selectionEvidence(home, env) {
+  const files4 = /* @__PURE__ */ new Set([path21.join(home, "config.toml")]);
+  if (process.platform === "win32") {
+    const programData = env.ProgramData ?? env.PROGRAMDATA;
+    if (!programData) return void 0;
+    files4.add(path21.join(programData, "OpenAI", "Codex", "config.toml"));
+  } else files4.add("/etc/codex/config.toml");
+  for (let dir = process.cwd(); ; ) {
+    files4.add(path21.join(dir, ".codex", "config.toml"));
+    const parent = path21.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  try {
+    const versions2 = path21.join(home, "plugins", "cache", "room", "room");
+    const inputs = [...files4, versions2];
+    return inputs.map((file) => {
+      let stat4;
+      try {
+        stat4 = fs22.statSync(file, { bigint: true });
+      } catch (error2) {
+        if (file !== path21.join(home, "config.toml") && file !== versions2 && error2.code === "ENOENT") return `${file}:absent`;
+        throw error2;
+      }
+      if (file === versions2 ? !stat4.isDirectory() : !stat4.isFile()) throw new Error("invalid selection evidence");
+      fs22.accessSync(file, fs22.constants.R_OK);
+      return `${file}:${stat4.dev}:${stat4.ino}:${stat4.size}:${stat4.mtimeNs}:${stat4.ctimeNs}`;
+    }).join("|");
+  } catch {
+    return void 0;
+  }
+}
 function installedCodexRoomContract(env = process.env) {
+  const home = path21.resolve(env.CODEX_HOME || path21.join(os7.homedir(), ".codex"));
+  const key2 = JSON.stringify([home, env.PATH, process.cwd()]);
+  const selection = selectionEvidence(home, env);
+  try {
+    if (selection !== void 0 && verifiedContract?.key === key2 && verifiedContract.selection === selection && contractEvidence(verifiedContract.root) === verifiedContract.evidence)
+      return structuredClone(verifiedContract.contract);
+  } catch {
+  }
+  verifiedContract = void 0;
   try {
     const listing = JSON.parse(execFileSync4("codex", ["plugin", "list", "--json"], { env, encoding: "utf8", timeout: 2500, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] }));
     const entries = listing.installed?.filter((row) => row.pluginId === "room@room" && row.enabled !== false);
     if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return void 0;
-    const root = path21.join(env.CODEX_HOME || path21.join(os7.homedir(), ".codex"), "plugins", "cache", "room", "room", entries[0].version, "server");
-    if (fs22.statSync(path21.join(root, "compat.json")).size > 4096 || fs22.statSync(path21.join(root, "room-mcp.mjs")).size > 64 * 1024 * 1024) return void 0;
+    const root = path21.join(home, "plugins", "cache", "room", "room", entries[0].version, "server");
+    const evidence = contractEvidence(root);
     const raw = fs22.readFileSync(path21.join(root, "compat.json"), "utf8");
     const descriptor = JSON.parse(raw);
     if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash7("sha256").update(fs22.readFileSync(path21.join(root, "room-mcp.mjs"))).digest("hex")) return void 0;
-    return { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
+    const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
+    if (contractEvidence(root) !== evidence) return void 0;
+    const after = selectionEvidence(home, env);
+    if (selection !== void 0 && after !== selection) return void 0;
+    if (selection !== void 0) verifiedContract = { key: key2, root, evidence, selection, contract };
+    return structuredClone(contract);
   } catch {
     return void 0;
   }
@@ -31583,7 +31672,7 @@ function createCodexInstall(env = process.env, io = defaultInstallIO) {
   };
   return { inspectInstall };
 }
-var CODEX_ROOM_HOOK_HASHES;
+var CODEX_ROOM_HOOK_HASHES, verifiedContract;
 var init_codex_install = __esm({
   "packages/room-mcp/src/hosts/codex-install.ts"() {
     "use strict";
@@ -33357,7 +33446,7 @@ import { execFile as execFile8 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 async function inspectDaemonCutover(commonDir2, options = {}) {
   commonDir2 = fs29.realpathSync(commonDir2);
-  const state = { commonDir: commonDir2, worktrees: [], clients: [], issues: [], blocked: false, drainRecorded: false, manual: [...manual] };
+  const state = { commonDir: commonDir2, worktrees: [], clients: [], issues: [], blocked: false, drainRecorded: false, daemonOwns: false, manual: [...manual] };
   const currentPid = options.currentPid ?? process.pid;
   const hashes = /* @__PURE__ */ new Map();
   const chains = /* @__PURE__ */ new Map();
@@ -33434,6 +33523,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
         pid: identity4.pid,
         ...discovery2 ? { port: discovery2.port } : {},
         ...typeof health?.release === "string" ? { release: health.release } : {},
+        authenticated: !!health,
         runtime: health ? String(health.runtime ?? "session-relay") : String(discovery2?.runtime ?? "session-relay"),
         liveness: health ? "alive" : status,
         identity: identity4
@@ -33534,7 +33624,8 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
       }, identity4);
     }
   }
-  state.blocked = state.issues.length > 0 || !!(state.owner && state.owner.liveness !== "dead" && state.owner.runtime !== "daemon") || state.clients.some((c) => !c.skipped && c.runtime === "legacy" && !c.bindingOnly && c.liveness !== "dead");
+  state.daemonOwns = !options.forStart && state.owner?.runtime === "daemon" && state.owner.authenticated === true && state.owner.liveness === "alive";
+  state.blocked = state.issues.length > 0 || !!(state.owner && state.owner.liveness !== "dead" && state.owner.runtime !== "daemon") || state.clients.some((c) => blockingClient(state, c));
   return state;
 }
 function daemonCutoverRows(state) {
@@ -33543,11 +33634,11 @@ function daemonCutoverRows(state) {
   const rows = [`${state.blocked ? "FAIL" : "INFO"}  local daemon cutover: ${state.blocked ? refusal : owner?.runtime === "daemon" && owner.liveness === "alive" ? "authenticated daemon" : "recorded legacy processes drained"}; ${state.worktrees.length} worktree(s); drain record ${state.drainRecorded ? "present" : "not yet written"}`];
   if (owner) rows.push(`INFO  local owner: pid ${owner.pid}, port ${owner.port ?? "unknown"}, ${owner.runtime}, ${owner.liveness}${owner.release ? `, release ${owner.release}` : ""}`);
   const resolved = (c) => !!c.skipped && !!c.reason?.startsWith("resolved by operator");
-  for (const c of state.clients.filter((c2) => blockingClient(c2) || resolved(c2))) {
-    rows.push(`${blockingClient(c) ? "FAIL" : "INFO"}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ""}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? "binding only; no process evidence" : `pid ${c.pid ?? "unknown"}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ""}${c.reason && !c.skipped ? `; ${c.reason}` : ""}; ${c.source}`);
+  for (const c of state.clients.filter((c2) => blockingClient(state, c2) || resolved(c2))) {
+    rows.push(`${blockingClient(state, c) ? "FAIL" : "INFO"}  cutover ${c.kind}: ${c.label}${c.host ? ` (${c.host})` : ""}; ${c.skipped ? `${c.reason}; skipped` : c.bindingOnly ? "binding only; no process evidence" : `pid ${c.pid ?? "unknown"}, ${c.liveness}`}, ${c.runtime}${c.cwd ? `; ${c.cwd}` : ""}${c.reason && !c.skipped ? `; ${c.reason}` : ""}; ${c.source}`);
   }
   const counts = /* @__PURE__ */ new Map();
-  for (const c of state.clients.filter((c2) => !blockingClient(c2) && !resolved(c2))) {
+  for (const c of state.clients.filter((c2) => !blockingClient(state, c2) && !resolved(c2))) {
     const verdict = c.skipped ? "previously drained" : c.runtime === "daemon-client" ? "current client" : c.bindingOnly ? "binding only" : c.liveness;
     const byKind = counts.get(c.kind) ?? /* @__PURE__ */ new Map();
     byKind.set(verdict, (byKind.get(verdict) ?? 0) + 1);
@@ -33557,9 +33648,11 @@ function daemonCutoverRows(state) {
     const total = [...byKind.values()].reduce((sum, n) => sum + n, 0);
     rows.push(`INFO  cutover ${kind} records: ${total} not blocking (${[...byKind].map(([verdict, n]) => `${n} ${verdict}`).join(", ")})`);
   }
+  const liveLegacy = state.daemonOwns ? state.clients.filter((c) => !c.skipped && c.runtime === "legacy" && !c.bindingOnly && c.liveness !== "dead").length : 0;
+  if (liveLegacy) rows.push(`INFO  cutover: ${liveLegacy} live client record(s) without daemon-client evidence do not block; the authenticated daemon refuses old writers before document sync`);
   const bundle = fileURLToPath4(new URL("../../../plugins/room/server/room-mcp.mjs", import.meta.url));
   const entry = import.meta.url.endsWith("/room-mcp.mjs") ? fileURLToPath4(import.meta.url) : bundle;
-  for (const c of state.clients.filter(blockingClient)) {
+  for (const c of state.clients.filter((c2) => blockingClient(state, c2))) {
     const record2 = path30.relative(state.commonDir, c.source);
     const args2 = [entry, "cutover-resolve", "--dir", state.worktrees[0] ?? state.commonDir, "--record", record2, "--confirm-not-running"];
     rows.push(`FIX   ${c.label}: ${c.checks ?? "Check the recorded process and host session; save and exit it if running"}. Record ${JSON.stringify(record2)}. After verifying it is not running, run (${process.platform === "win32" ? "PowerShell" : "sh"}): ${cutoverResolveCommand(args2)}`);
@@ -33571,7 +33664,7 @@ function daemonCutoverRows(state) {
 async function requireDaemonRuntime(commonDir2, options = {}) {
   const state = await inspectDaemonCutover(commonDir2, options);
   if (state.blocked) throw new Error(daemonCutoverRows(state).join("\n"));
-  if (state.drainRecorded) return;
+  if (state.drainRecorded || state.daemonOwns) return;
   privateStateDirectory(path30.join(state.commonDir, "room"));
   writeAtomic(path30.join(state.commonDir, "room", "daemon-cutover.json"), {
     v: 1,
@@ -33656,7 +33749,7 @@ async function resolveDaemonCutover(commonDir2, source, confirmNotRunning, note,
   if (!source || path30.isAbsolute(source) || source.split(/[\\/]/).includes("..")) throw new Error("--record must be relative to the git common dir");
   const state = await inspectDaemonCutover(commonDir2, options);
   const client = state.clients.find((c) => path30.relative(state.commonDir, c.source) === source);
-  if (!client || !blockingClient(client)) throw new Error("Record is not currently blocking");
+  if (!client || !blockingClient(state, client)) throw new Error("Record is not currently blocking");
   if (client.liveness === "alive") throw new Error("Cannot resolve a live process");
   if (!client.sha256 || state.issues.length) throw new Error("Cannot resolve with incomplete inspection evidence");
   const room = path30.join(state.commonDir, "room");
@@ -33692,7 +33785,7 @@ var init_daemon_cutover = __esm({
     ];
     RESOLUTIONS = "daemon-cutover-resolutions.json";
     MAX_AUTHORITATIVE_BYTES = 1024 * 1024;
-    blockingClient = (c) => !c.skipped && c.runtime === "legacy" && !c.bindingOnly && c.liveness !== "dead";
+    blockingClient = (state, c) => !state.daemonOwns && !c.skipped && c.runtime === "legacy" && !c.bindingOnly && c.liveness !== "dead";
   }
 });
 
@@ -40199,16 +40292,18 @@ async function currentDaemonClient(dir) {
   return { currentSessionId: bound?.id, currentWorkerId };
 }
 async function ensureDaemon(common, room, dir, log2) {
-  await requireDaemonRuntime(common, await currentDaemonClient(dir)).catch((error2) => {
+  const client = await currentDaemonClient(dir);
+  const gate = (forStart) => requireDaemonRuntime(common, { ...client, forStart }).catch((error2) => {
     throw new RoomdError(error2 instanceof Error ? error2.message : String(error2), 2);
   });
+  await gate(false);
   const here = dirname3(fileURLToPath5(import.meta.url));
   const bundled = join4(here, "room-daemon.mjs");
   const launch = existsSync3(bundled) ? { entryPath: bundled } : {
     entryPath: resolve3(here, "../../relay/src/daemon-bin.ts"),
     execArgv: ["--import", import.meta.resolve("tsx")]
   };
-  return inPhase("daemon", () => ensureLocalDaemon(common, room, { ...launch, log: log2 }).catch((error2) => {
+  return inPhase("daemon", () => ensureLocalDaemon(common, room, { ...launch, log: log2, admitStart: () => gate(true) }).catch((error2) => {
     throw error2 instanceof LocalRelayCompatibilityError ? new RoomdError(error2.message, 2) : error2;
   }));
 }
@@ -47201,8 +47296,8 @@ var init_worker_file_store = __esm({
         await this.update(id3, (old) => ({ ...old, runs: old.runs.map((value5) => value5.n === n ? { ...value5, posted: posted.id } : value5), seq: old.seq + 1 }));
         return true;
       }
-      async beginStop(id3, reason) {
-        return this.update(id3, (old) => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1).n }, seq: old.seq + 1 }));
+      async beginStop(id3, reason, cause) {
+        return this.update(id3, (old) => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1).n, ...cause ? { cause } : {} }, seq: old.seq + 1 }));
       }
       async beginCollect(id3) {
         return this.update(id3, (old) => ({ ...old, phase: "collecting", interrupted: void 0, seq: old.seq + 1 }));
@@ -57887,6 +57982,86 @@ init_checkout_publication();
 // packages/room-mcp/src/tools/workers.ts
 init_worker_store();
 
+// packages/room-mcp/src/worker-restart-notices.ts
+init_git();
+init_worker_registry();
+init_worker_store();
+
+// packages/room-mcp/src/inbox-budget.ts
+var INBOX_BUDGET = 6e3;
+var rank = { interrupt: 0, notify: 1, fyi: 2 };
+var inboxOrder = (m) => m.priority === "interrupt" ? 0 : m.type === "question" ? 1 : 2 + rank[m.priority];
+function selectWithin(ledger2, sources, batch, budget, cost, atLeastOne = false, filter) {
+  const all2 = sources.flatMap((s) => ledger2.available(s, batch, filter?.(s)).map((m) => ({ s, m })));
+  all2.sort((a, b) => inboxOrder(a.m) - inboxOrder(b.m) || a.m.at - b.m.at);
+  const chosen = [];
+  let used = 0;
+  for (const c of all2) {
+    const size2 = cost(c);
+    if (used + size2 > budget && !(atLeastOne && !chosen.length)) break;
+    chosen.push(c);
+    used += size2;
+  }
+  for (const s of sources) {
+    const ids = new Set(chosen.filter((c) => c.s === s).map((c) => c.m.id));
+    if (ids.size) ledger2.select(s, batch, (m) => ids.has(m.id));
+  }
+  return { chosen, more: all2.length - chosen.length };
+}
+var moreLine = (more) => `${more} more: call room_state`;
+
+// packages/room-mcp/src/worker-restart-notices.ts
+function workerStopDescription(cause) {
+  switch (cause) {
+    case "stdin closed":
+      return "the host closed the lead MCP's stdin (reconnect or host exit; Room cannot distinguish them)";
+    case "stdin/transport closed":
+      return "the lead MCP's transport closed (the host's reason is unknown)";
+    case "explicit leave":
+      return "the lead left the room (explicit leave)";
+    case "SIGTERM":
+    case "SIGINT":
+      return `the lead MCP received ${cause}`;
+    default:
+      return "Room recorded lead-session-ended (specific cause was not recorded)";
+  }
+}
+function createWorkerRestartNotices(ledger2, log2) {
+  const prepared = /* @__PURE__ */ new WeakMap();
+  return (s) => {
+    const pending = prepared.get(s);
+    if (pending) return pending;
+    const prepare = async () => {
+      const snapshot2 = requireWorkerEvidence(workerEvidence(await (await openWorkerReader(s.dir)).snapshot()));
+      const stopped = snapshot2.workers.map((facts) => facts.record).filter((record2) => record2.lead.participant === s.me.name && record2.lead.room === s.roomName && record2.capabilities.resume && record2.hostSessionId && record2.stop?.reason === "lead-session-ended" && record2.stop.run === record2.runs.at(-1)?.n && snapshotStatus(snapshot2, record2.id)?.status === "stopped").sort((a, b) => a.id.localeCompare(b.id));
+      if (!stopped.length) return;
+      const lines2 = [];
+      const deadline = Date.now() + 5e3;
+      for (const record2 of stopped) {
+        let work = "unknown (worktree missing, unreadable, or Git status failed)";
+        try {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) work = "unknown (startup status check budget exhausted)";
+          else work = (await git(record2.dir, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"], Math.min(2e3, remaining))).trim() ? "yes (tracked or non-ignored untracked changes)" : "no tracked or non-ignored untracked changes";
+        } catch {
+        }
+        const stop = record2.stop;
+        const date3 = new Date(stop.at);
+        const when = Number.isFinite(date3.getTime()) ? date3.toISOString() : "an unknown time";
+        lines2.push({ text: `- ${record2.name}: stopped; stop recorded at ${when} because ${workerStopDescription(stop.cause)}; uncommitted work: ${work}. Request resume: room_send(to=${JSON.stringify(record2.name)}, type="note", text="Continue your task and report remaining work.").`, identity: `${record2.id}:${stop.run}:${stop.at}` });
+      }
+      const header = "[room] Stopped workers with retained sessions; Room has not resumed them automatically.";
+      ledger2.noticeEvents("worker-restart", header, lines2, INBOX_BUDGET);
+    };
+    const promise = prepare().catch((error2) => {
+      prepared.delete(s);
+      log2(`worker restart notice unavailable: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    });
+    prepared.set(s, promise);
+    return promise;
+  };
+}
+
 // packages/room-mcp/src/prompt.ts
 init_config();
 
@@ -58227,10 +58402,6 @@ init_disk_text();
 init_worker_registry();
 import fs58 from "node:fs";
 import { createHash as createHash21, randomUUID as randomUUID7 } from "node:crypto";
-var mergeTurns = (result2, prev) => {
-  const turns = (prev?.mergeTurns ?? 0) + (result2.status === "conflict" && prev?.settled === "conflict" && !result2.merges !== !prev.merges ? 1 : 0);
-  return turns ? { mergeTurns: turns } : {};
-};
 var hash = (value5) => createHash21("sha256").update(value5).digest("hex");
 var slotKey = (owner, kind, other, path74, subject = "") => [owner, kind, other, path74, subject].join("\0");
 var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
@@ -58314,7 +58485,7 @@ var ConflictSlots = class {
     const changedFact = result2.status === "conflict" || result2.status === "possible" ? prev?.settled !== result2.status || prev.factId !== result2.factId : false;
     const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0);
     const settled = result2.status === "unknown" ? prev?.settled ?? "none" : result2.status;
-    const episode = result2.kind === "edit-in-claim" ? this.joinPossibleEpisode(key2, result2, settled, prev) : {};
+    const possibleEpisode = result2.kind === "edit-in-claim" ? this.joinPossibleEpisode(key2, result2, settled, prev) : {};
     const unknownCount = result2.status === "unknown" ? Math.min(3, prev?.status === "unknown" ? Math.max(0, retryMinutes.findIndex((m) => (prev.retryAt ?? 0) - prev.checkedAt <= m * 6e4)) + 1 : 0) : 0;
     const slot = {
       ...result2,
@@ -58323,16 +58494,14 @@ var ConflictSlots = class {
       epoch,
       fence,
       checkedAt: now,
-      ...episode,
-      ...result2.kind === "contract" && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID7() } : {},
+      ...possibleEpisode,
+      ...(result2.kind === "contract" || result2.kind === "edit-in-claim") && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID7() } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       // A cleared slot re-checked clean (or unreadable) keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...(result2.status === "clean" || result2.status === "unknown") && prev?.settled === "clean" && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {},
       // What cleared was an overlap that merged, not a CONFLICT; an unreadable pass keeps what was last known.
       ...(result2.status === "clean" || result2.status === "unknown") && prev?.merges && (prev.settled === "conflict" || prev.settled === "clean" && prev.clearedFrom) ? { merges: prev.merges } : {},
-      ...result2.kind === "edit-in-claim" ? mergeTurns(result2, prev) : {},
-      ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {},
-      ...result2.kind === "edit-in-claim" && result2.status === "conflict" ? { burstAt: prev?.status === "conflict" ? prev.burstAt ?? now : now } : {}
+      ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {}
     };
     const peerTurn = peerMerge(result2) && (changedFact && settled === "conflict" || prev?.settled === "conflict" && settled !== "conflict");
     if (peerMerge(result2)) {
@@ -58405,7 +58574,7 @@ var ConflictSlots = class {
   claimGroup(key2, slot) {
     return this.owned(slot.owner).filter(([k, s]) => k !== key2 && s.kind === "edit-in-claim" && s.other === slot.other && s.path === slot.path);
   }
-  /** Join the open possible episode of this holder and path, or open a new one; a clean slot keeps the episode it clears. */
+  /** Approximate evidence cannot distinguish claims: keep one possible notice until the last clears. */
   joinPossibleEpisode(key2, result2, settled, prev) {
     if (settled !== "possible") return prev?.possibleEpisode !== void 0 ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {};
     if (prev?.settled === "possible" && prev.possibleEpisode !== void 0) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined };
@@ -58438,11 +58607,10 @@ var ConflictSlots = class {
       if (slot.settled === "possible" && (replay ? open3.some(([k]) => k < key2) : slot.possibleJoined)) return;
       if (slot.settled === "clean" && open3.length) return;
     }
-    const workerBurst = slot.kind === "edit-in-claim" && slot.status === "conflict" && workerView2?.lead === slot.owner ? Math.min(...this.owned(slot.owner).filter(([, other]) => other.kind === "edit-in-claim" && other.other === slot.other && other.path === slot.path && other.status === "conflict").map(([, other]) => other.burstAt ?? other.checkedAt)) : void 0;
-    const id3 = episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : workerBurst !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join("\0"))}:worker${slot.mergeTurns ? `:${slot.mergeTurns}` : ""}` : noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
+    const id3 = episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
     const status = slot.settled;
     const ownWorker = workerView2?.lead === slot.owner;
-    const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" && !ownWorker ? "interrupt" : "notify";
+    const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" && !ownWorker ? defaultPriority({ type: "conflict", merges: slot.merges }) : "notify";
     const held = this.room.openClaims().filter((c) => c.by === slot.other && c.path === slot.path && !c.path.endsWith("/"));
     const claimed = (claims) => `${slot.other}'s claim${claims.length > 1 ? "s" : ""}${claims.length ? ` at line${claims.length > 1 || claims[0].from !== claims[0].to ? "s" : ""} ${claims.sort((a, b) => a.from - b.from).map((c) => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(", ")}` : ""}`;
     const ownClaim = () => claimed(held.filter((c) => c.id === slot.subject));
@@ -58461,7 +58629,7 @@ var ConflictSlots = class {
       if (!current2()) return;
       try {
         const holderText = slot.earlierSha !== void 0 ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps your new claim` : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ""}`;
-        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: "notify", text: holderText + mergeNote }, { id: `${noticeId(key2, slot.epoch)}:holder`, auto: true });
+        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: "notify", text: holderText + mergeNote }, { id: `${noticeId(key2, slot.epoch, slot.episode)}:holder`, auto: true });
         if (!holder.ok) this.log(`conflict holder notice ${id3}: ${holder.text}`);
       } catch (e) {
         this.log(`conflict holder notice ${id3}: ${String(e)}`);
@@ -59445,6 +59613,24 @@ var ConflictSet = class _ConflictSet {
     for (const path74 of paths) {
       await this.fileTurn();
       if (path74.endsWith("/")) continue;
+      const prior = this.slots.owned(this.owner).filter(([, s]) => s.kind === "edit-in-claim" && s.other === other && s.path === path74).sort(([ak, a], [bk, b]) => Number(b.settled === "conflict") - Number(a.settled === "conflict") || Number(b.settled === "possible") - Number(a.settled === "possible") || ak.localeCompare(bk));
+      const key2 = prior[0]?.[0] ?? slotKey(this.owner, "edit-in-claim", other, path74);
+      seen.add(key2);
+      for (const [oldKey] of prior.slice(1)) await this.drop(oldKey);
+      const claims = theirClaims.filter((c) => claimsOverlap(c, { path: path74, from: 1, to: Number.MAX_SAFE_INTEGER })).sort((a, b) => a.id.localeCompare(b.id));
+      const inputs = hash(JSON.stringify([
+        mine.head.semRev,
+        theirs.head.semRev,
+        mergeBase2,
+        claims.map((c) => [c.id, c.from, c.to, c.claimedHash, c.at]),
+        sideInput(mine, path74),
+        sideInput(theirs, path74)
+      ]));
+      const base = { owner: this.owner, other, kind: "edit-in-claim", path: path74, inputs };
+      if (!claims.length) {
+        await this.settle(key2, { ...base, status: "clean", factId: "" });
+        continue;
+      }
       const [ownV, theirV] = await Promise.all([read2(mine, path74), read2(theirs, path74)]);
       const ownText = asText(ownV), theirText = asText(theirV);
       let ancestor;
@@ -59452,47 +59638,58 @@ var ConflictSet = class _ConflictSet {
         ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path74) ?? "";
       } catch {
       }
-      for (const claim2 of theirClaims.filter((c) => claimsOverlap(c, { path: path74, from: 1, to: Number.MAX_SAFE_INTEGER }))) {
-        const key2 = slotKey(this.owner, "edit-in-claim", other, path74, claim2.id);
-        seen.add(key2);
-        const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase2, claim2.id, claim2.from, claim2.to, claim2.claimedHash, sideInput(mine, path74), sideInput(theirs, path74)]));
-        if (ownText === void 0 || ancestor === void 0) {
-          await this.settle(key2, { owner: this.owner, other, kind: "edit-in-claim", path: path74, subject: claim2.id, status: "unknown", inputs, factId: "", why: "cannot map claim" });
-          continue;
-        }
-        const mapped = claim2.path.endsWith("/") ? { from: 1, to: Math.max(1, ownText.split("\n").length), approximate: false } : claimInMyLines(claim2, theirText, ownText);
-        const identicalCopy = mine.name !== theirs.name && ownText === theirText;
-        const ranges = changed.has(path74) && !identicalCopy ? changedRanges(ancestor, ownText) : [];
-        const hit = ranges.find((r) => claimsOverlap({ path: path74, ...mapped }, { path: path74, ...r }) && !ownClaims.some((c) => claimsOverlap(c, { path: path74, ...r })));
-        let earlierSha;
-        let merges;
-        if (hit && !mapped.approximate && theirText !== void 0) {
-          await this.budget();
-          const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: "base", theirs: other });
-          if (!merged.conflicts.length) merges = "clean";
-        }
-        if (hit) {
-          const entryAt = mine.entries.get(path74)?.at;
-          if (entryAt !== void 0 && entryAt <= claim2.at) earlierSha = null;
-          else if (entryAt === void 0) {
-            const last2 = await git(this.team.dir, ["log", "-1", "--format=%H:%ct", mine.head.base, "--", path74]).catch(() => "");
-            const match = /^([0-9a-f]{40,64}):(\d+)/.exec(last2.trim());
-            if (match && Number(match[2]) * 1e3 <= claim2.at) earlierSha = match[1].slice(0, 7);
-          }
-        }
-        await this.settle(key2, {
-          owner: this.owner,
-          other,
-          kind: "edit-in-claim",
-          path: path74,
-          subject: claim2.id,
-          status: hit ? mapped.approximate ? "possible" : "conflict" : "clean",
-          inputs,
-          // Whether it merges is part of the fact: an overlap that stops merging is a new notice, a CONFLICT.
-          factId: hit ? hash(JSON.stringify([claim2.id, hit, mapped, ...merges ? [merges] : []])) : "",
-          ...hit ? { lines: [hit.from], why: mapped.approximate ? "approximate range" : claim2.intent, ...earlierSha !== void 0 ? { earlierSha } : {}, ...merges ? { merges } : {} } : {}
-        });
+      if (ownText === void 0 || ancestor === void 0) {
+        await this.settle(key2, { ...base, subject: claims[0].id, status: "unknown", factId: "", why: "cannot map claim" });
+        continue;
       }
+      const identicalCopy = mine.name !== theirs.name && ownText === theirText;
+      const ranges = changed.has(path74) && !identicalCopy ? changedRanges(ancestor, ownText).filter((r) => !ownClaims.some((c) => claimsOverlap(c, { path: path74, ...r }))) : [];
+      const overlaps = claims.map((claim3) => {
+        const mapped = claim3.path.endsWith("/") ? { from: 1, to: Math.max(1, ownText.split("\n").length), approximate: false } : claimInMyLines(claim3, theirText, ownText);
+        return { claim: claim3, mapped, hits: ranges.filter((r) => claimsOverlap({ path: path74, ...mapped }, { path: path74, ...r })) };
+      }).filter((c) => c.hits.length);
+      const exact = overlaps.filter((c) => !c.mapped.approximate);
+      const relevant = exact.length ? exact : overlaps;
+      const representative = relevant[0];
+      if (!representative) {
+        await this.settle(key2, { ...base, status: "clean", factId: "" });
+        continue;
+      }
+      const hits = ranges.filter((r) => relevant.some((c) => c.hits.includes(r)));
+      const { claim: claim2 } = representative;
+      let earlierSha;
+      let revision = gitBlobHash(ownText);
+      let merges;
+      let conflicts;
+      if (exact.length && theirText !== void 0) {
+        await this.budget();
+        const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: "base", theirs: other });
+        conflicts = merged.conflicts;
+        if (!conflicts.length) merges = "clean";
+      }
+      const entryAt = mine.entries.get(path74)?.at;
+      if (entryAt !== void 0 && entryAt <= claim2.at) earlierSha = null;
+      else if (entryAt === void 0) {
+        const last2 = await git(this.team.dir, ["log", "-1", "--format=%H:%ct", mine.head.base, "--", path74]).catch(() => "");
+        const match = /^([0-9a-f]{40,64}):(\d+)/.exec(last2.trim());
+        if (match) {
+          revision = match[1];
+          if (Number(match[2]) * 1e3 <= claim2.at) earlierSha = revision.slice(0, 7);
+        }
+      }
+      await this.settle(key2, {
+        ...base,
+        subject: claim2.id,
+        status: exact.length ? "conflict" : "possible",
+        // Claim IDs, timestamps and range padding are inputs, not new overlap facts. Actual
+        // conflicting regions matter even when the merge verdict stays "conflict"; another
+        // rewrite of the peer's text inside the same region does not change that verdict.
+        factId: hash(JSON.stringify([revision, merges ? [] : hits, conflicts?.map((c) => [c.from, c.o])])),
+        lines: hits.map((r) => r.from),
+        why: exact.length ? claim2.intent : "approximate range",
+        ...earlierSha !== void 0 ? { earlierSha } : {},
+        ...merges ? { merges } : {}
+      });
     }
     for (const a of ownClaims) for (const b of theirClaims) {
       if (!coversPath(a.path, b.path)) continue;
@@ -60449,20 +60646,32 @@ function createWorkerRuntime(deps) {
     rooms.remove(ws);
   };
   const runningWorkers = async (s) => await registryRunningWorkers(s, rooms);
-  const dismissWorker = async (s, w, why, stopReason, cancelled) => {
+  const dismissWorker = async (s, w, why, stopReason, notify = async (send) => {
+    await send();
+  }, progress = () => {
+  }) => {
+    progress("opening registry");
     const registry2 = await registryForDir(s.dir);
+    progress("verifying local capability");
     const trusted = await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag);
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`;
     let acquired;
+    progress("acquiring stop operation");
     try {
       acquired = await registry2.beginOperation(w.id, "stop");
     } catch {
       return `error: ${w.tag} is already being handled; not signalled`;
     }
+    let stopRecorded = !!trusted.record.stop;
     try {
-      const alreadyStopping = !!trusted.record.stop;
+      const alreadyStopping = stopRecorded;
       const reason = stopReason ?? (why === "discarded by the lead" ? "discarded" : "lead-session-ended");
-      await registry2.beginStop(w.id, reason);
+      const cause = reason === "lead-session-ended" ? why === "the lead left the room" ? "explicit leave" : ctx.shutdownCause : void 0;
+      if (cause) why = workerStopDescription(cause);
+      progress("writing durable stop intent; host not yet signalled");
+      await registry2.beginStop(w.id, reason, cause);
+      stopRecorded = true;
+      progress("verifying process and worktree ownership; stop intent recorded");
       w = realStateInput(trusted.record, trusted.status);
       const proc = rooms.handle(s, w.id);
       if (!proc) {
@@ -60470,7 +60679,8 @@ function createWorkerRuntime(deps) {
         if (processState.process === "not-ours" && pidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`;
         if (processState.process === "unknown") {
           const message2 = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
-          await s.post(s.me, { type: "note", to: w.lead, priority: "interrupt", text: message2 }, { auto: true });
+          progress("delivering unverifiable-process notification; host not signalled");
+          await notify(() => s.post(s.me, { type: "note", to: w.lead, priority: "interrupt", text: message2 }, { auto: true }));
           return message2;
         }
         if (processState.process !== "ours") return `pid ${w.pid} not signalled: the process is gone; worker record kept`;
@@ -60488,10 +60698,12 @@ function createWorkerRuntime(deps) {
         }
       };
       const cleanupText = () => (stopped.length ? `; stopped processes: ${stopped.join(", ")}` : "") + (cleanupError ? `; ${cleanupError}` : "");
+      progress("cleaning child processes before host signal; stop intent recorded");
       await stopCwdProcesses();
       if (proc && alreadyStopping && why !== "discarded by the lead") {
         return `pid ${w.pid} already signalled; waiting for exit${cleanupText()}`;
       }
+      progress("signalling host; stop intent recorded");
       let how, signalled;
       if (proc) {
         signalled = proc.kill();
@@ -60504,14 +60716,18 @@ function createWorkerRuntime(deps) {
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`;
       }
       if (!signalled && pidPresent(w.pid, ctx.probe)) how = proc ? `pid ${w.pid} not signalled: worker process is still alive` : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
+      progress(`cleaning child processes after host signal attempt (${signalled ? "signal sent" : "no signal sent"}); stop intent recorded`);
       await stopCwdProcesses();
       if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc);
-      if (cancelled?.aborted) return how + cleanupText();
       if (stopReason && cleanupError) throw new Error(cleanupError);
-      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === "discarded by the lead" && w.lead === s.me.name)) await s.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true });
+      progress(`delivering notification (${signalled ? "signal sent" : "no signal sent"}); stop intent recorded`);
+      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === "discarded by the lead" && w.lead === s.me.name)) await notify(() => s.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true }));
       return how + cleanupText();
     } finally {
-      if (acquired) await registry2.finishOperation(w.id);
+      if (acquired) {
+        progress(`releasing stop operation; ${stopRecorded ? "stop intent recorded" : "stop intent not confirmed"}`);
+        await registry2.finishOperation(w.id);
+      }
     }
   };
   const startWorkersBridge = (lead, s) => {
@@ -62287,31 +62503,6 @@ function createPrs(deps) {
 init_worker_store();
 init_src();
 import fs65 from "node:fs";
-
-// packages/room-mcp/src/inbox-budget.ts
-var INBOX_BUDGET = 6e3;
-var rank = { interrupt: 0, notify: 1, fyi: 2 };
-var inboxOrder = (m) => m.priority === "interrupt" ? 0 : m.type === "question" ? 1 : 2 + rank[m.priority];
-function selectWithin(ledger2, sources, batch, budget, cost, atLeastOne = false, filter) {
-  const all2 = sources.flatMap((s) => ledger2.available(s, batch, filter?.(s)).map((m) => ({ s, m })));
-  all2.sort((a, b) => inboxOrder(a.m) - inboxOrder(b.m) || a.m.at - b.m.at);
-  const chosen = [];
-  let used = 0;
-  for (const c of all2) {
-    const size2 = cost(c);
-    if (used + size2 > budget && !(atLeastOne && !chosen.length)) break;
-    chosen.push(c);
-    used += size2;
-  }
-  for (const s of sources) {
-    const ids = new Set(chosen.filter((c) => c.s === s).map((c) => c.m.id));
-    if (ids.size) ledger2.select(s, batch, (m) => ids.has(m.id));
-  }
-  return { chosen, more: all2.length - chosen.length };
-}
-var moreLine = (more) => `${more} more: call room_state`;
-
-// packages/room-mcp/src/tools/messaging.ts
 init_prs();
 init_names2();
 init_context();
@@ -64155,7 +64346,7 @@ var Ledger = class {
     if (batch.notices.length) {
       const delivered = this.deliveredNotices();
       for (const n of batch.notices) {
-        delivered[n.id] = { at: Date.now(), via: batch.kind === "hook" ? "hook" : "reply" };
+        for (const id3 of n.receiptIds ?? [n.id]) delivered[id3] = { at: Date.now(), via: batch.kind === "hook" ? "hook" : "reply" };
         this.pendingNotices.delete(n.id);
       }
       this.persistNotices();
@@ -64210,6 +64401,30 @@ var Ledger = class {
     }
     return n;
   }
+  /** Offer event-keyed advice in bounded presentation chunks. Only confirmed events get receipts. */
+  noticeEvents(kind, header, events, budget) {
+    const delivered = this.deliveredNotices();
+    const queued = new Set([...this.pendingNotices.values()].flatMap((n) => n.receiptIds ?? [n.id]));
+    let text2 = header, receiptIds = [];
+    const offer = () => {
+      const n = { id: noticeId2(`${kind}:chunk`, receiptIds.join(",")), text: text2, receiptIds };
+      this.pendingNotices.set(n.id, n);
+      this.o.onSettled?.();
+    };
+    for (const event of events) {
+      const id3 = noticeId2(kind, event.identity);
+      if (delivered[id3] || queued.has(id3)) continue;
+      if (receiptIds.length && text2.length + event.text.length + 2 > budget) {
+        offer();
+        text2 = header;
+        receiptIds = [];
+      }
+      text2 += "\n" + event.text;
+      receiptIds.push(id3);
+      queued.add(id3);
+    }
+    if (receiptIds.length) offer();
+  }
   fireDelivered(id3) {
     const fn = this.onDelivered.get(id3);
     this.onDelivered.delete(id3);
@@ -64228,11 +64443,13 @@ var Ledger = class {
     this.pendingNotices.delete(id3);
   }
   /** Pending notices no live batch holds, reserved into `batch`. */
-  notices(batch) {
+  notices(batch, budget = Infinity) {
     if (batch.settled) return [];
     const out = [];
     for (const n of this.pendingNotices.values()) {
       if (this.noticeReservations.has(n.id) || batch.notices.some((x) => x.id === n.id)) continue;
+      if (n.text.length + 1 > budget) continue;
+      budget -= n.text.length + 1;
       this.lease(batch);
       batch.notices.push(n);
       out.push(n);
@@ -64667,10 +64884,12 @@ function createHandlerState(ctx) {
     upgraded,
     attachHooks: (s) => rooms.add(s, "primary"),
     clearStale: (s) => state.cleanupMine(s, "stale from an earlier session"),
-    async shutdown() {
+    async shutdown(progress = () => {
+    }) {
       preserveBridgeFacts = true;
       wakes.stop();
       for (const joined of rooms.all()) {
+        progress(`releasing lease for ${joined.roomName}`);
         try {
           await joined.lease?.end();
         } catch (error2) {
@@ -64682,38 +64901,48 @@ function createHandlerState(ctx) {
         }
       }
       const s = ctx.getSession();
+      progress("discovering running workers");
       if (!s) {
+        progress("closing workers room");
         await state.closeWorkersRoom(true).catch(() => {
         });
         return;
       }
       const running = (await Promise.all((await state.runningWorkers(s)).map(async (r) => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter((r) => r.action === "stop");
-      const cancellation = new AbortController();
-      const pending = new Set(running.map((r) => r.w.tag));
-      const stops = running.map(async (r) => {
+      const pending = new Map(running.map((r) => [r, "starting dismissal"]));
+      const describePending = () => progress([...pending].map(([r, phase]) => `worker ${r.w.tag}: ${phase}`).join("; "));
+      await Promise.all(running.map(async (r) => {
+        const workerProgress = (phase) => {
+          pending.set(r, phase);
+          describePending();
+        };
+        workerProgress("opening registry");
+        const notify = async (send) => {
+          let timer;
+          try {
+            const delivered = await Promise.race([Promise.resolve().then(send).then(() => true), new Promise((resolve6) => {
+              timer = setTimeout(() => resolve6(false), 1800);
+              timer.unref();
+            })]);
+            if (!delivered) log2(`shutdown notification timed out for ${r.w.tag}; worker stop already attempted`);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        };
         try {
-          await state.dismissWorker(r.s, r.w, "the lead's session ended", "lead-session-ended", cancellation.signal);
+          await state.dismissWorker(r.s, r.w, "the lead's session ended", "lead-session-ended", notify, workerProgress);
         } catch (e) {
           log2(`shutdown dismissal failed for ${r.w.tag}: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
-          pending.delete(r.w.tag);
+          pending.delete(r);
+          describePending();
         }
-      });
-      if (stops.length) {
-        let timer;
-        const completed = await Promise.race([Promise.all(stops).then(() => true), new Promise((resolve6) => {
-          timer = setTimeout(() => resolve6(false), 1800);
-          timer.unref();
-        })]);
-        if (timer) clearTimeout(timer);
-        if (!completed) {
-          cancellation.abort();
-          for (const tag of pending) log2(`shutdown dismissal timed out for ${tag}; worker record kept for restart`);
-        }
-      }
+      }));
+      progress("closing workers room");
       await state.closeWorkersRoom(true).catch(() => {
       });
       rooms.remove(s);
+      progress(`leaving ${s.roomName}`);
       await doLeave(s);
     },
     async drop(s, reason) {
@@ -65838,6 +66067,13 @@ function createTools(ctx) {
   let waits = 0;
   const handlers10 = Object.assign({}, handlers6(state), handlers5(state), handlers2(state), handlers3(state), handlers8(state), handlers4(state), handlers9(state), handlers7(state), handlers(state));
   const { ledger: ledger2 } = state;
+  const prepareNotices = createWorkerRestartNotices(ledger2, state.log);
+  const finishReply = (batch, text2, signal, handoff2) => {
+    if (signal?.aborted) ledger2.release(batch);
+    else if (handoff2) handoff2({ text: text2, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
+    else ledger2.commit(batch);
+    return text2;
+  };
   let startup;
   const withdrawStartup = () => {
     if (startup && ctx.getSession()) {
@@ -65918,6 +66154,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       if (WORKER_OPS.has(name) || process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts();
       const unread = s2 && name !== "room_join" && name !== "room_create" ? state.inbox(s2, batch) : "";
       if (s2) await offerTeamSharingDisclosure(s2, ledger2);
+      if (s2) await prepareNotices(s2);
       withdrawStartup();
       const notices = ledger2.notices(batch).map((n) => n.text + "\n\n").join("");
       if (s2) await greeted(s2.hub);
@@ -65942,12 +66179,16 @@ not done: ${name} writes under your name, and coordination is paused; retry once
     list: () => DEFS,
     ledger: ledger2,
     attachHooks: state.attachHooks,
+    prepareNotices,
     clearStale: state.clearStale,
     setAutoJoin(a) {
       autoJoin = a;
     },
     drop: state.drop,
-    shutdown: state.shutdown,
+    async shutdown(cause, progress) {
+      ctx.shutdownCause = cause;
+      await state.shutdown(progress);
+    },
     flushConflicts: state.flushConflicts,
     waiting: () => waits > 0,
     joinedSessions: () => state.rooms.all(),
@@ -65961,16 +66202,24 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       withdrawStartup();
       const s = ctx.getSession();
       const ws = state.rooms.workers();
-      const notices = ledger2.notices(batch).map((n) => n.text);
+      const notices = ledger2.notices(batch, budget).map((n) => n.text);
+      const moreNotices = ledger2.noticeCount() - notices.length;
       if (s?.rejected) notices.unshift(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`);
       const line = ({ s: source, m }) => `${source === s ? "" : "[workers room] "}${formatMsg(m)}`;
       const room = budget - notices.reduce((n, text2) => n + text2.length + 1, 0);
       const { chosen, more } = s ? selectWithin(ledger2, [s, ...ws && ws !== s ? [ws] : []], batch, room, (c) => line(c).length + 3, false, state.audible) : { chosen: [], more: 0 };
       const items = chosen.map((c) => ({ id: c.m.id, priority: c.m.priority, line: line(c) }));
-      return { batch, items, notices, more };
+      return { batch, items, notices, more: more + moreNotices };
     },
     async call(name, args2, signal, handoff2) {
-      if (name === "room_state" && args2?.check === true) return handlers10.room_state(args2);
+      if (name === "room_state" && args2?.check === true) {
+        const body = await handlers10.room_state(args2);
+        const batch = ledger2.open("reply");
+        const s = ctx.getSession();
+        const sameSession = !ctx.binding || !!s?.lease && s.lease.sessionId === ctx.binding.bound()?.id;
+        const notices = sameSession ? ledger2.notices(batch).map((n) => n.text + "\n\n").join("") : "";
+        return finishReply(batch, notices + body, signal, handoff2);
+      }
       let release;
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++;
@@ -66018,10 +66267,7 @@ ${body}` : body;
           const warning = name === "room_state" ? staleVersionWarning() : void 0;
           const text2 = warning ? `${warning}
 ${result2}` : result2;
-          if (signal?.aborted) ledger2.release(batch);
-          else if (handoff2) handoff2({ text: text2, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
-          else ledger2.commit(batch);
-          return text2;
+          return finishReply(batch, text2, signal, handoff2);
         } catch (e) {
           ledger2.release(batch);
           throw e;
@@ -66129,13 +66375,11 @@ function retryable(e) {
   if (e instanceof NoRoom || e instanceof NotLoggedIn) return false;
   return !(e instanceof RoomdError) || e.code === 1;
 }
-function joinFailureLine(e, local, attempts) {
+function joinFailureLine(e, local, attempts, retryAfterMs) {
   if (e instanceof NotLoggedIn) return "Room is not connected: not logged in; use room_login.";
   const phase = phaseOf(e);
   const head = `Room could not join${local ? " the local room" : ""}${attempts > 1 ? ` after ${attempts} attempts` : ""}${phase ? ` (${phase})` : ""}: ${e instanceof Error ? e.message : String(e)}`;
-  if (local && retryable(e)) return `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1e3} s); room_join to retry now.`;
-  if (local) return `${head}; room_join to retry now.${baseRecovery(e)}`;
-  return `${head}; use room_join.${baseRecovery(e)}`;
+  return `${head}. Room tries again on the next Room tool call (at most every ${retryAfterMs / 1e3} s); room_join to retry now.${baseRecovery(e)}`;
 }
 var AutoJoin = class {
   constructor(o) {
@@ -66240,10 +66484,7 @@ var AutoJoin = class {
           this.recheck = true;
           return;
         }
-        if (!retryable(e)) {
-          this.permanent = true;
-          break;
-        }
+        if (!retryable(e)) break;
         const wait2 = this.delays[Math.min(attempts - 1, this.delays.length - 1)];
         if (this.now() + wait2 >= deadline) break;
         this.o.log(`join attempt ${attempts} failed ${causeOf(e)}; retrying in ${Math.round(wait2 / 1e3)}s`);
@@ -66253,7 +66494,7 @@ var AutoJoin = class {
     }
     this.o.log(`join attempt ${attempts} failed ${causeOf(last2)}; giving up for now`);
     const first = this.failure === void 0 || hadNoRepository;
-    this.failure = joinFailureLine(last2, this.target ? !!this.target.local : this.o.local, attempts);
+    this.failure = joinFailureLine(last2, this.target ? !!this.target.local : this.o.local, attempts, this.retryAfterMs);
     if (first) this.o.report(this.failure);
   }
   /** The attempt, unless the deadline or a cancel comes first; a session that arrives later is left. */
@@ -67122,6 +67363,7 @@ async function main() {
       });
       const adopt = async (s, clearStale = true) => {
         await offerTeamSharingDisclosure(s, tools.ledger);
+        await tools.prepareNotices(s);
         session = s;
         joined(s);
         tools.attachHooks(s);
@@ -67262,11 +67504,16 @@ async function main() {
       });
       tools.setAutoJoin(autoJoin);
       if (!signal.aborted) void autoJoin.ensure();
-      const runtime = { call, shutdown: async (signal2) => {
+      const runtime = { call, shutdown: async (reason, progress = () => {
+      }) => {
         presence.stop();
         autoJoin.cancel({ explicitLeave: false });
-        if (!signal2) await autoJoin.settle();
-        await tools.shutdown();
+        if (reason !== "SIGTERM" && reason !== "SIGINT") {
+          progress("settling auto-join");
+          await autoJoin.settle();
+        }
+        await tools.shutdown(reason, progress);
+        progress("closing arbitration");
         await arbitration.close();
       } };
       initialized = { dir, call };
@@ -67285,7 +67532,7 @@ async function main() {
         const active = initialized;
         if (active) {
           const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)]);
-          if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal), error: void 0 };
+          if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal, (settle) => transport.expect(extra.requestId, settle)), error: void 0 };
         }
         return { value: await runDoctor(dir), error: void 0 };
       }
@@ -67293,13 +67540,19 @@ async function main() {
     });
     return { content: [{ type: "text", text: result2.error ?? result2.value }], ...result2.error ? { isError: true } : {} };
   });
+  const shutdownInterrupt = new AbortController();
   const bye = async (reason) => {
-    if (closing) return;
+    if (closing) {
+      if (reason === "SIGINT" || reason === "SIGTERM") shutdownInterrupt.abort(reason);
+      return;
+    }
     closing = true;
     watchdog.stop();
-    await finishSignalShutdown(reason, async () => {
-      await (await binding.close())?.shutdown(reason === "SIGTERM" || reason === "SIGINT");
-    }, log, () => process.exit(0));
+    const cause = reason === "stdin closed" || reason === "stdin/transport closed" || reason === "SIGTERM" || reason === "SIGINT" ? reason : void 0;
+    await finishSignalShutdown(reason, async (progress) => {
+      progress("closing runtime binding");
+      await (await binding.close())?.shutdown(cause, progress);
+    }, log, () => process.exit(0), shutdownInterrupt.signal);
   };
   process.on("SIGINT", () => {
     void bye("SIGINT");
@@ -67308,7 +67561,7 @@ async function main() {
     void bye("SIGTERM");
   });
   mcp.onclose = () => {
-    void bye("stdin/transport closed");
+    void bye(process.stdin.readableEnded ? "stdin closed" : "stdin/transport closed");
   };
   process.stdin.on("end", () => {
     void bye("stdin closed");
@@ -67320,20 +67573,34 @@ async function main() {
     if (!closing) log(`startup failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
   }
 }
-async function finishSignalShutdown(reason, leave, report, exit, limitMs = 4e3) {
+async function finishSignalShutdown(reason, leave, report, exit, force) {
   report(`stopping: ${reason}`);
-  let timer;
+  let pending = "session cleanup", timer;
+  let interrupt;
+  const interrupted = new Promise((resolve6) => {
+    interrupt = () => resolve6("forced");
+  });
+  force?.addEventListener("abort", interrupt, { once: true });
+  if (force?.aborted) interrupt();
   try {
-    const completed = await Promise.race([leave().then(() => true), new Promise((resolve6) => {
-      timer = setTimeout(() => resolve6(false), limitMs);
-    })]);
-    if (!completed) report(`shutdown timed out after ${limitMs}ms: ${reason}`);
-  } catch (error2) {
-    report(`shutdown error: ${error2 instanceof Error ? error2.message : String(error2)}`);
+    const result2 = await Promise.race([
+      Promise.resolve().then(() => leave((phase) => {
+        pending = phase;
+      })).then(() => "complete", (error2) => ({ error: error2 })),
+      new Promise((resolve6) => {
+        timer = setTimeout(() => resolve6("timeout"), 4e3);
+      }),
+      interrupted
+    ]);
+    if (result2 === "complete") report(`stopped: ${reason}`);
+    else if (result2 === "timeout" || result2 === "forced") {
+      const cause = result2 === "timeout" ? "timed out after 4000ms" : `forced by ${String(force?.reason)}`;
+      report(`shutdown ${cause}: ${reason}; pending: ${pending}; stop records retained for recovery`);
+    } else report(`shutdown error: ${result2.error instanceof Error ? result2.error.message : String(result2.error)}; pending: ${pending}`);
   } finally {
     if (timer) clearTimeout(timer);
+    force?.removeEventListener("abort", interrupt);
   }
-  report(`stopped: ${reason}`);
   exit();
 }
 var isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1]);

@@ -902,8 +902,8 @@ export class FileWorkerStore {
     return true
   }
 
-  async beginStop(id: string, reason: NonNullable<WorkerRecord['stop']>['reason']): Promise<WorkerRecord> {
-    return this.update(id, old => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1)!.n }, seq: old.seq + 1 }))
+  async beginStop(id: string, reason: NonNullable<WorkerRecord['stop']>['reason'], cause?: NonNullable<WorkerRecord['stop']>['cause']): Promise<WorkerRecord> {
+    return this.update(id, old => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1)!.n, ...(cause ? { cause } : {}) }, seq: old.seq + 1 }))
   }
 
   async beginCollect(id: string): Promise<WorkerRecord> {

@@ -2,7 +2,7 @@
 /** Self-contained packaged entry. Detached stdio must never retain the launching host's pipes. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { startLocalDaemon, stopLocalDaemon } from './daemon.js'
+import { consumeStartAdmission, startLocalDaemon, stopLocalDaemon } from './daemon.js'
 import { primePrivateState, privateStateDirectory, verifyPrivatePath } from './private-state.js'
 
 const args = process.argv.slice(2)
@@ -19,7 +19,11 @@ try {
     await stopLocalDaemon(commonDir)
     process.stdout.write('Daemon saved and process exit verified.\n')
   } else {
-  if (args[0] && !args[0].startsWith('--') && args[0] !== 'start') throw new Error('usage: room-daemon.mjs [start|stop] --common-dir <absolute git common directory> [--room <room>]')
+  // Starting is launcher-only: ensureLocalDaemon runs the cutover admission, then hands this child a one-time
+  // ticket. Operators stop a daemon with `stop`; Room starts one on the next join.
+  if (args[0] && !args[0].startsWith('--')) throw new Error('usage: room-daemon.mjs stop --common-dir <absolute git common directory> (Room starts the daemon itself on join)')
+  const ticket = (() => { try { return fs.readFileSync(path.join(path.dirname(value('--startup-report')), 'admission'), 'utf8') } catch { return '' } })()
+  consumeStartAdmission(commonDir, ticket)
   await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
   const file = path.join(commonDir, 'room', 'daemon.log')

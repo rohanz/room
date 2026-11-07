@@ -48,18 +48,80 @@ export function codexHooksRoot(marketplaces: unknown, name: string | undefined, 
 }
 export interface WorkerContract { release: string; compat: CompatAdvertisement; workerRecordSchema: number }
 
+/** Only successful verifications are cached; a new home/CLI or changed executable evidence must reverify. */
+let verifiedContract: { key: string; root: string; evidence: string; selection: string; contract: WorkerContract } | undefined
+function contractEvidence(root: string): string {
+  return ([['compat.json', 4096], ['room-mcp.mjs', 64 * 1024 * 1024]] as const).map(([name, limit]) => {
+    const file = path.join(root, name)
+    const stat = fs.statSync(file, { bigint: true })
+    if (!stat.isFile() || stat.size > BigInt(limit)) throw new Error('invalid installed contract file')
+    // The executable must still be readable, as at verification. ctime changes with any permission change or
+    // rewrite, including a same-size rewrite whose mtime was restored.
+    fs.accessSync(file, fs.constants.R_OK)
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+  }).join('|')
+}
+
+/** Codex 0.166.0: config.toml supplies enablement; core-plugin-common/src/installed.rs selects
+ * the active version from the plugin's directory entries. Track both, without implementing its selector.
+ * Include ancestor project configs because the listing loads Codex's effective configuration stack.
+ * Unknown/unreadable inputs disable caching; a fresh CLI verification remains available. */
+function selectionEvidence(home: string, env: NodeJS.ProcessEnv): string | undefined {
+  const files = new Set([path.join(home, 'config.toml')])
+  if (process.platform === 'win32') {
+    const programData = env.ProgramData ?? env.PROGRAMDATA
+    if (!programData) return undefined
+    files.add(path.join(programData, 'OpenAI', 'Codex', 'config.toml'))
+  } else files.add('/etc/codex/config.toml')
+  for (let dir = process.cwd();;) {
+    files.add(path.join(dir, '.codex', 'config.toml'))
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  try {
+    const versions = path.join(home, 'plugins', 'cache', 'room', 'room')
+    const inputs = [...files, versions]
+    return inputs.map(file => {
+      let stat: fs.BigIntStats
+      try { stat = fs.statSync(file, { bigint: true }) }
+      catch (error) {
+        // Missing optional system/project config is evidence too: its later creation invalidates this key.
+        if (file !== path.join(home, 'config.toml') && file !== versions && (error as NodeJS.ErrnoException).code === 'ENOENT') return `${file}:absent`
+        throw error
+      }
+      if (file === versions ? !stat.isDirectory() : !stat.isFile()) throw new Error('invalid selection evidence')
+      fs.accessSync(file, fs.constants.R_OK)
+      return `${file}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+    }).join('|')
+  } catch { return undefined }
+}
+
 /** Resolve the installed entry selected by Codex, then authenticate its descriptor against its executable. */
 export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env): WorkerContract | undefined {
+  const home = path.resolve(env.CODEX_HOME || path.join(os.homedir(), '.codex'))
+  const key = JSON.stringify([home, env.PATH, process.cwd()])
+  const selection = selectionEvidence(home, env)
+  try {
+    if (selection !== undefined && verifiedContract?.key === key && verifiedContract.selection === selection && contractEvidence(verifiedContract.root) === verifiedContract.evidence)
+      return structuredClone(verifiedContract.contract)
+  } catch { /* Missing or unreadable evidence invalidates the verification too. */ }
+  verifiedContract = undefined
   try {
     const listing = JSON.parse(execFileSync('codex', ['plugin', 'list', '--json'], { env, encoding: 'utf8', timeout: 2500, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })) as { installed?: { pluginId?: string; version?: string; enabled?: boolean }[] }
     const entries = listing.installed?.filter(row => row.pluginId === 'room@room' && row.enabled !== false)
     if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return undefined
-    const root = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'plugins', 'cache', 'room', 'room', entries[0].version, 'server')
-    if (fs.statSync(path.join(root, 'compat.json')).size > 4096 || fs.statSync(path.join(root, 'room-mcp.mjs')).size > 64 * 1024 * 1024) return undefined
+    const root = path.join(home, 'plugins', 'cache', 'room', 'room', entries[0].version, 'server')
+    const evidence = contractEvidence(root)
     const raw = fs.readFileSync(path.join(root, 'compat.json'), 'utf8')
     const descriptor = JSON.parse(raw)
     if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return undefined
-    return { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
+    const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
+    if (contractEvidence(root) !== evidence) return undefined
+    const after = selectionEvidence(home, env)
+    if (selection !== undefined && after !== selection) return undefined
+    if (selection !== undefined) verifiedContract = { key, root, evidence, selection, contract }
+    return structuredClone(contract)
   } catch { return undefined }
 }
 

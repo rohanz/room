@@ -67,8 +67,8 @@ it('malformed discovery blocks launch without echoing private discovery contents
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-daemon-invalid-')); dirs.push(dir)
   fs.mkdirSync(path.join(dir, 'room'), { mode: 0o700 })
   fs.writeFileSync(path.join(dir, 'room/relay.json'), 'PRIVATE-CLONE-KEY malformed', { mode: 0o600 })
-  await expect(ensureLocalDaemon(dir, 'local/test')).rejects.toThrow(/preserve and repair/)
-  await expect(ensureLocalDaemon(dir, 'local/test')).rejects.not.toThrow(/PRIVATE-CLONE-KEY/)
+  await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {} })).rejects.toThrow(/preserve and repair/)
+  await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {} })).rejects.not.toThrow(/PRIVATE-CLONE-KEY/)
 })
 
 it('initializes the private root idempotently before any client/preflight/daemon writer', async () => {

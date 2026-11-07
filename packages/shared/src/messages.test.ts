@@ -51,6 +51,22 @@ describe('claim release text', () => {
 describe('MessageKinds', () => {
   afterEach(() => { delete MessageKinds.ping })
 
+  it('defaults clean claim overlaps to notify and actual claim conflicts to interrupt', () => {
+    const room = new RoomDoc()
+    try {
+      const body = { type: 'conflict' as const, claimId: 'c', otherClaimId: '', path: 'x', to: 'A', text: 'earlier change overlaps a new claim' }
+      const clean = hubAppend<ConflictMsg>(room, { name: 'room', kind: 'agent' }, { ...body, merges: 'clean' })
+      const conflict = hubAppend<ConflictMsg>(room, { name: 'room', kind: 'agent' }, body)
+      expect(clean.priority).toBe('notify')
+      expect(conflict.priority).toBe('interrupt')
+      expect(formatMsg(clean)).toContain('[notify] overlap on x:')
+      expect(formatMsg(conflict)).toContain('[interrupt] CONFLICT on x:')
+      expect(messageForMe({ name: 'A' }, clean)).toBe(true)
+      expect(shouldWakeOnMsg({ name: 'A', kind: 'agent' }, clean).wake).toBe(true)
+      expect(shouldWakeOnMsg({ name: 'elsewhere', kind: 'agent' }, clean).wake).toBe(false)
+    } finally { room.doc.destroy() }
+  })
+
   it('renders a possible merge notice without a certified conflict label', () => {
     const room = new RoomDoc()
     const msg = hubAppend<MergeConflictMsg>(room, { name: 'room', kind: 'agent' }, { type: 'merge-conflict', path: 'x', to: 'A', priority: 'fyi', text: 'A changed x outside their declared area; Room cannot check this merge' })

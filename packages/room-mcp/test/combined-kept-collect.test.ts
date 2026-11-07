@@ -1,3 +1,4 @@
+import { preparedTest } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { fixture, git, gitOracle, names, put, rooms, roots, sharedText, source } from './combined-kept-preview-fixture.js'
@@ -23,9 +24,11 @@ import { publishFixture } from './fixtures/manifest.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { registerWorkers } from './registry-fixture.js'
 
-it('real collect matches the independent repeated-line Git oracle and the full preview', async () => {
+preparedTest('real collect matches the independent repeated-line Git oracle and the full preview', async () => {
   const t = await fixture({ shared: 'repeated' })
   await gitOracle(t)
+  return t
+}, async t => {
   const before = t.snapshot(), result = await t.preview('lead', names.slice(1))
   expect(result.complete, result.out.join('\n')).toBe(true)
   expect(result.conflictingPaths.size, result.out.join('\n')).toBe(0)

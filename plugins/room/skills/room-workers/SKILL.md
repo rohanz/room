@@ -75,6 +75,16 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    observes Room dependencies only: call it for a specific dependency (a questionId or
    claimId), one room_wait at a time, and use host task completion for your own commands,
    including one the host moved to the background.
+   Reconnecting or restarting the lead's Room MCP stops its running workers. Their
+   worktrees and retained sessions remain; message each worker with room_send to resume.
+   On restart, the first hook or tool reply offers an owed notice with worker names,
+   recorded stop causes and times, uncommitted-work status and resume commands. Read it
+   and choose which workers to resume; Room never resumes them automatically. Stdin
+   closure alone does not prove whether the host exited or reconnected.
+   A headless lead (claude -p or codex exec) must not end its turn with background
+   commands or agents pending: run them in the foreground or wait for completion and
+   inspect the actual results. This includes rescue jobs and host-managed agents;
+   verified background lifetime does not replace awaiting completion before finishing.
    The exception is a headless lead, which has no turn to return to: it must stay alive
    until supervision is complete, continuing independent work pending results and using
    short room_wait calls (at most 100 seconds) when blocked or ready for results, as

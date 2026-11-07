@@ -5,7 +5,7 @@
 // file, the test and the commands the worker is waiting on, and kills those commands so the blocked call throws and
 // the test fails in the ordinary way. A worker that is still blocked after that, or a file that runs past
 // `fileLimitMs`, is killed itself: vitest reports the lost worker and the run ends.
-import { Worker } from 'node:worker_threads'
+import { Worker, type WorkerOptions } from 'node:worker_threads'
 
 export interface WatchdogOptions {
   /** How long the event loop may stand still. The slowest synchronous git calls in the suite take about 35 s on a loaded machine. */
@@ -19,6 +19,17 @@ export interface WatchdogOptions {
   reportFile?: string
   /** False keeps a blocked process alive after the report (the watchdog's own test). */
   killSelf?: boolean
+  /** Test the heartbeat/shared-memory handoff with a controlled thread. */
+  createWorker?: (source: string, options: WorkerOptions) => Pick<Worker, 'unref' | 'terminate'>
+}
+
+/** One poll of the watchdog policy, independent of thread scheduling. */
+export function watchdogTick(state: { seen: number; still: number; elapsed: number }, beat: number,
+  limits: { pollMs: number; stallMs: number; fileLimitMs: number }) {
+  const changed = beat !== state.seen
+  const still = changed ? 0 : state.still + limits.pollMs
+  const elapsed = state.elapsed + limits.pollMs
+  return { seen: beat, still, elapsed, changed, stalled: still >= limits.stallMs, overLimit: elapsed >= limits.fileLimitMs }
 }
 
 const thread = `
@@ -48,23 +59,22 @@ const descendants = () => {
   } catch { return [] }
 }
 const kill = processes => { for (const child of [...processes].reverse()) { try { process.kill(child.pid, 'SIGKILL') } catch { /* it exited */ } } }
-let seen = Atomics.load(beats, 0), still = 0, elapsed = 0, killedChildren = false
+const tick = ${watchdogTick.toString()}
+let state = { seen: Atomics.load(beats, 0), still: 0, elapsed: 0 }, killedChildren = false
 for (;;) {
   Atomics.wait(sleeper, 0, 0, pollMs)
   if (Atomics.load(beats, 2)) break
-  elapsed += pollMs
-  const now = Atomics.load(beats, 0)
-  if (now !== seen) { seen = now; still = 0; killedChildren = false }
-  else still += pollMs
-  const overLimit = elapsed >= fileLimitMs
-  if (still < stallMs && !overLimit) continue
+  state = tick(state, Atomics.load(beats, 0), { pollMs, stallMs, fileLimitMs })
+  if (state.changed) killedChildren = false
+  const { still, elapsed, stalled, overLimit } = state
+  if (!stalled && !overLimit) continue
   if (!overLimit && !killedChildren) {
     const waiting = descendants()
     say(what() + ': the event loop has been blocked for ' + Math.round(still / 1000) + ' s' + (waiting.length
       ? '; killing what it waits on: ' + waiting.filter(child => child.parent === pid).map(child => child.command + ' (pid ' + child.pid + ')').join('; ')
       : '; it waits on no child process'))
     kill(waiting)
-    if (waiting.length) { killedChildren = true; still = Math.max(0, stallMs - 4 * pollMs); continue }
+    if (waiting.length) { killedChildren = true; state.still = Math.max(0, stallMs - 4 * pollMs); continue }
   }
   say(what() + (overLimit ? ': the file has run for ' + Math.round(elapsed / 1000) + ' s' : ': still blocked') + '; ending this test worker')
   // Whatever the worker started goes with it, deepest first: a survivor would keep the worker's output pipe open.
@@ -90,7 +100,8 @@ export function startWatchdog(options: WatchdogOptions = {}): { beat: () => void
   // A real interval: created before any test installs fake timers, it keeps running under them.
   const timer = setInterval(turn, Math.min(1000, pollMs))
   timer.unref()
-  const worker = new Worker(thread, { eval: true, workerData: {
+  const createWorker = options.createWorker ?? ((source: string, opts: WorkerOptions) => new Worker(source, opts))
+  const worker = createWorker(thread, { eval: true, workerData: {
     beat, label, pid: process.pid, pollMs, stallMs: options.stallMs ?? 120_000, fileLimitMs: options.fileLimitMs ?? 15 * 60_000,
     killSelf: options.killSelf ?? true, reportFile: options.reportFile,
   } })

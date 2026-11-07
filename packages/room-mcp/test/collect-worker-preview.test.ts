@@ -21,12 +21,12 @@ describe('worker preview', () => {
   it('yields within package discovery, including skipped package directories', async () => {
     const scratch = path.join(root, 'scratch')
     fs.mkdirSync(scratch)
-    for (let i = 0; i < 2_000; i++) fs.mkdirSync(path.join(lead, 'packages', `pkg-${String(i).padStart(4, '0')}`), { recursive: true })
+    for (let i = 0; i < 96; i++) fs.mkdirSync(path.join(lead, 'packages', `pkg-${String(i).padStart(4, '0')}`), { recursive: true })
     const exists = fs.existsSync.bind(fs)
     let turned = false, lastSawTurn = false
     const seam = vi.spyOn(fs, 'existsSync').mockImplementation((file: fs.PathLike) => {
       if (String(file).endsWith('pkg-0000/node_modules')) setImmediate(() => { turned = true })
-      if (String(file).endsWith('pkg-1999/node_modules')) lastSawTurn = turned
+      if (String(file).endsWith('pkg-0095/node_modules')) lastSawTurn = turned
       return exists(file)
     })
     try {

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
@@ -21,10 +21,47 @@ describe('roomd presence shutdown', () => {
       line => events.push(line), () => events.push('exit'))
     expect(events).toEqual(['stopping: SIGTERM', 'lease ended', 'presence cleared', 'stopped: SIGTERM', 'exit'])
   })
-  it('bounds a stuck SIGTERM shutdown and exits', async () => {
+  it('bounds stalled cleanup and reports its pending stage without claiming completion', async () => {
     const events: string[] = []
-    await finishSignalShutdown('SIGTERM', () => new Promise<void>(() => {}), line => events.push(line), () => events.push('exit'), 20)
-    expect(events).toEqual(['stopping: SIGTERM', 'shutdown timed out after 20ms: SIGTERM', 'stopped: SIGTERM', 'exit'])
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    vi.useFakeTimers()
+    const stopping = finishSignalShutdown('SIGTERM', async progress => {
+      progress('worker slow: writing durable stop intent; host not yet signalled')
+      await gate
+    }, line => events.push(line), () => events.push('exit'))
+    try {
+      await vi.advanceTimersByTimeAsync(3999)
+      expect(events).toEqual(['stopping: SIGTERM'])
+      await vi.advanceTimersByTimeAsync(1)
+      await stopping
+      expect(events).toEqual(['stopping: SIGTERM',
+        'shutdown timed out after 4000ms: SIGTERM; pending: worker slow: writing durable stop intent; host not yet signalled; stop records retained for recovery', 'exit'])
+    } finally { release(); await stopping; vi.useRealTimers() }
+  })
+  it.each(['SIGINT', 'SIGTERM'])('a second %s forces exit while cleanup is pending', async signal => {
+    const events: string[] = [], force = new AbortController()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    vi.useFakeTimers()
+    const stopping = finishSignalShutdown('SIGTERM', async progress => {
+      progress('closing runtime binding')
+      await gate
+    }, line => events.push(line), () => events.push('exit'), force.signal)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      force.abort(signal)
+      await stopping
+      expect(events).toEqual(['stopping: SIGTERM',
+        `shutdown forced by ${signal}: SIGTERM; pending: closing runtime binding; stop records retained for recovery`, 'exit'])
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { release(); await stopping; vi.useRealTimers() }
+  })
+  it('reports a cleanup error before exiting', async () => {
+    const events: string[] = []
+    await finishSignalShutdown('SIGTERM', async () => { throw new Error('cleanup failed') },
+      line => events.push(line), () => events.push('exit'))
+    expect(events).toEqual(['stopping: SIGTERM', 'shutdown error: cleanup failed; pending: session cleanup', 'exit'])
   })
   it('publishes a null awareness state before disconnecting', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-presence-stop-'))

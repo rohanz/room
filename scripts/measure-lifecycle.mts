@@ -136,8 +136,9 @@ if (args[0] === '--child') {
       for (let sample = 0; sample < samples; sample++) {
         const root = path.join(temp, `${count}-${sample}`)
         const common = fixture(root, count)
+        // This harness reports elapsed time and operation counts; it has no latency pass/fail threshold.
         const run = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), '--child', common, String(count)],
-          { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 120_000 })
+          { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
         if (run.status !== 0 || run.error) {
           console.log(JSON.stringify({ kind: 'failure', workers: count, sample, status: run.status, signal: run.signal, error: String(run.error ?? ''), stderr: run.stderr }))
           process.exitCode = 1

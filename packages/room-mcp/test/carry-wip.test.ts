@@ -1,3 +1,4 @@
+import { preparedTest } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
@@ -62,7 +63,7 @@ beforeEach(() => {
   git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'base'); head = git(repo, 'rev-parse', 'HEAD')
   // roomd adds Room's directory to the private exclude file when a session joins.
   fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '.room/\n')
-})
+}, 0) // fixture construction has no behavioral deadline
 afterEach(async ({ task }) => {
   const timings: Record<string, number> = {}
   const profile = Object.assign(task.meta, { cleanupPhase: 'tools', cleanupTimings: timings })
@@ -84,7 +85,7 @@ afterEach(async ({ task }) => {
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
   profile.cleanupPhase = 'finished'
-})
+}, 0)
 
 /** Tracked (unstaged), staged modification, staged addition, deletion, untracked and executable untracked WIP, plus ignored and Room files. */
 function leadWip() {
@@ -306,15 +307,18 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(patch).toContain('diff --git a/.gitignore b/.gitignore')
     expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/keep.txt b/keep.txt'])
   })
-  it('runs no git in finished worktrees when spawning, however much ignored output they hold', async () => {
+  preparedTest('runs no git in finished worktrees when spawning, however much ignored output they hold', async () => {
     // Guard for the databricks report (a spawn stalled with five finished worktrees, each with a .venv).
     fs.appendFileSync(path.join(repo, '.gitignore'), '.venv/\n'); git(repo, 'commit', '-qam', 'ignore venv')
     const t = world()
     for (const tag of ['one', 'two']) {
       const { dir } = await t.spawn(tag)
-      for (let d = 0; d < 20; d++) for (let f = 0; f < 50; f++) put(dir, `.venv/lib/pkg${d}/m${f}.py`, 'x\n')
+      // Zero calls is a stronger invariant than a timing threshold on a large .venv.
+      put(dir, '.venv/lib/pkg/module.py', 'x\n')
       await t.finish(tag)
     }
+    return t
+  }, async t => {
     const bin = path.join(root, 'bin'), calls = path.join(root, 'git-calls')
     const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
     put(root, 'bin/git', `#!/bin/sh\npwd >> '${calls}'\nexec '${realGit}' "$@"\n`, 0o755)

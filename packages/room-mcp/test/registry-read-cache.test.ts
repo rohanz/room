@@ -1,6 +1,8 @@
+import { preparedTest } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { describe, expect, it, vi } from 'vitest'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -112,14 +114,14 @@ it('memoizes a supplied carried callback separately from production baseline acq
 })
 
 describe('worker registry read cache', () => {
-  it('keeps startup, status and admission close to the pre-facade filesystem budgets at 50 and 500 workers', () => {
+  preparedTest('keeps startup, status and admission close to the pre-facade filesystem budgets at 50 and 500 workers', () => {
     // Reuse the baseline's fresh-process fixtures and fs/fs-promises instrumentation, including failed
     // calls. Freshly written files exercise the racy-cache path; no artificial aging or warmed cache.
-    const measured = spawnSync(process.execPath, ['--import', 'tsx',
+    return promisify(execFile)(process.execPath, ['--import', 'tsx',
       fileURLToPath(new URL('../../../scripts/measure-lifecycle.mts', import.meta.url)), '50', '500', '--samples=1'],
-    { encoding: 'utf8', timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })
-    expect(measured.error).toBeUndefined()
-    expect(measured.status, measured.stderr).toBe(0)
+    { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
+  }, measured => {
+    // execFile rejects on a failed child; awaiting it leaves the fixture hook responsive.
     const summaries = measured.stdout.trim().split('\n').map(line => JSON.parse(line))
       .filter(row => row.kind === 'summary' && ['startup', 'status', 'admission'].includes(row.phase))
     expect(summaries).toHaveLength(6)

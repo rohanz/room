@@ -24,6 +24,57 @@ const session = (room: RoomDoc, name = 'pat'): Session => ({ room, me: { name, k
 const ledger = (sessionDir?: string) => new Ledger({ sessionId: () => 'host-1', sessionDir: () => sessionDir, route: () => ({}) })
 const ids = (messages: readonly Msg[]) => messages.map(m => m.id)
 
+describe('event receipts in notice chunks', () => {
+  it('persists each confirmed event and does not replay it when status text changes chunk boundaries', () => {
+    const sessionDir = join(dir, 'notice-events')
+    const events = ['a', 'b', 'c'].map(name => ({ identity: `w_${name}:1:100`, text: name.repeat(30) }))
+    const first = ledger(sessionDir)
+    first.noticeEvents('worker-restart', 'Recovery', events, 80)
+    const batch = first.open('hook')
+    expect(first.notices(batch, 80).map(n => n.text)).toEqual(['Recovery\n' + 'a'.repeat(30) + '\n' + 'b'.repeat(30)])
+    first.commit(batch)
+    const receipts = JSON.parse(readFileSync(join(sessionDir, 'notices.json'), 'utf8'))
+    expect(Object.keys(receipts)).toHaveLength(2)
+    expect(Object.keys(receipts).every(id => id.startsWith('n:worker-restart:') && !id.includes(':chunk:'))).toBe(true)
+    const changed = events.map(e => ({ ...e, text: e.text.repeat(2) }))
+    const second = ledger(sessionDir)
+    second.noticeEvents('worker-restart', 'Recovery', changed, 80)
+    const remaining = second.open('hook')
+    expect(second.notices(remaining, 80).map(n => n.text)).toEqual(['Recovery\n' + 'c'.repeat(60)])
+    second.commit(remaining)
+    const third = ledger(sessionDir)
+    third.noticeEvents('worker-restart', 'Recovery', changed, 80)
+    expect(third.noticeCount()).toBe(0)
+    // A subsequent run or another recorded stop is a distinct event for the same worker.
+    third.noticeEvents('worker-restart', 'Recovery', [
+      { identity: 'w_a:2:100', text: 'new run' }, { identity: 'w_a:2:101', text: 'new stop' },
+    ], 80)
+    const newer = third.open('reply')
+    expect(third.notices(newer).map(n => n.text)).toEqual(['Recovery\nnew run\nnew stop'])
+    third.commit(newer)
+  })
+
+  it('keeps unconfirmed events owed and does not queue them twice under a changed presentation', () => {
+    const sessionDir = join(dir, 'notice-events-retry')
+    const events = [{ identity: 'w_a:1:100', text: 'clean' }, { identity: 'w_b:1:100', text: 'dirty' }]
+    const first = ledger(sessionDir)
+    first.noticeEvents('worker-restart', 'Recovery', events, 80)
+    const abandoned = first.open('hook')
+    expect(first.notices(abandoned)).toHaveLength(1)
+    first.discard(abandoned)
+    first.commit(abandoned)
+    expect(existsSync(join(sessionDir, 'notices.json'))).toBe(false)
+    first.noticeEvents('worker-restart', 'Recovery', events.map(e => ({ ...e, text: 'unknown' })), 20)
+    expect(first.noticeCount()).toBe(1)
+    const retry = first.open('reply')
+    expect(first.notices(retry)).toHaveLength(1)
+    first.commit(retry)
+    const replacement = ledger(sessionDir)
+    replacement.noticeEvents('worker-restart', 'Recovery', events, 80)
+    expect(replacement.noticeCount()).toBe(0)
+  })
+})
+
 /** Post a broadcast through a hub, as a client's `post` request does (hub §2.3). */
 function post(hub: Hub, id: string): number {
   const conn = {}

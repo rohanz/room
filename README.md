@@ -74,6 +74,10 @@ Ask your agent to change a file while a teammate works nearby. It can declare it
 
 For substantial parallel work, say **“use a couple of Room workers for this”** and name separate tasks; they may share files. Generic requests for another agent or background work use your host’s normal delegation. Each Room worker gets its own Git worktree, scopes and claims its work, then reports completion. The spawn reply names its host, model and effort when known; a request or worker environment setting can select them, otherwise the host chooses.
 
+**Reconnecting or restarting the lead's Room MCP stops its running workers.** Their worktrees and retained conversations remain; send each worker a message with `room_send` to request resumption. On restart, Room offers an owed notice on the first hook or tool reply naming stopped workers, the recorded stop time and cause, their uncommitted-work status, and the resume command. It does not resume them automatically. A closed MCP stdin does not tell Room whether the host exited or reconnected.
+
+**A headless lead (`claude -p`, `codex exec`) must not end its turn with background commands or agents pending.** Run commands in the foreground or wait for their completion and inspect the results before finishing. Stay alive while supervising Room workers. Host-managed background behavior varies by host and version; pending work can be lost when the process exits.
+
 Ask your agent to **preview the merge and run the relevant checks**. `room_preview_merge` combines current work in a scratch tree. When you ask to collect, `room_collect` brings finished output into your tree **uncommitted and unstaged**. A conflict leaves your files untouched and names the conflicting paths. You decide when to commit or push.
 
 Coordination messages are advisory: delivering a requested pause does not guarantee the agent follows it. For a requested precollection review, a reviewer can establish an explicit [collection hold](docs/reference.md#workers-and-previews); ordinary batches need no hold. See [wake paths and diagnostics](docs/reference.md#wake-paths) if a message seems missing.

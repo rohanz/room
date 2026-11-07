@@ -1,10 +1,11 @@
+import { preparedTest, preparedEach } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, expect, vi } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
 import { handlers } from '../src/tools/collect.js'
@@ -71,8 +72,7 @@ async function batch(leadPatch: Partial<FixtureWorker> = {}, withCat = true) {
   return { root, lead, cat, room, registry, leadWorker, catWorker }
 }
 
-it('keeps a live lead-worker responsible for its finished grand-worker, including tagged apply, copy, and discard', async () => {
-  const { root, cat, room } = await batch({ status: 'running' })
+preparedTest('keeps a live lead-worker responsible for its finished grand-worker, including tagged apply, copy, and discard', () => batch({ status: 'running' }), async ({ root, cat, room }) => {
   const humanCollect = collect(room, root, 'rohanz', w => w.tag === 'lead')
   const all = await humanCollect({})
   expect(all).not.toContain('Changes from cat:')
@@ -92,8 +92,7 @@ it('keeps a live lead-worker responsible for its finished grand-worker, includin
   expect(fs.existsSync(cat.dir)).toBe(true)
 })
 
-it('force discards a vanished lead and its nested records, but requires force first', async () => {
-  const { root, lead, room, registry } = await batch()
+preparedTest('force discards a vanished lead and its nested records, but requires force first', () => batch(), async ({ root, lead, room, registry }) => {
   fs.rmSync(lead.dir, { recursive: true, force: true })
   const run = collect(room, root, 'rohanz')
   expect(await run({ tag: 'lead', discard: true })).toContain('lead has nested workers: cat; collect or discard them first, or repeat with force=true')
@@ -122,8 +121,7 @@ async function orphanBatch(withCat = true) {
   return { ...b, run }
 }
 
-it.each([false, true])('force discards same-human orphan workers with nested children=%s', async withCat => {
-  const { root, lead, cat, registry, run } = await orphanBatch(withCat)
+preparedEach([false, true], 'force discards same-human orphan workers with nested children=%s', withCat => orphanBatch(withCat), async ({ root, lead, cat, registry, run }, withCat) => {
   const result = await run()({ tag: 'lead', discard: true, force: true })
   expect(result).toContain('discarded lead')
   if (withCat) expect(result).toContain('discarded cat')
@@ -136,38 +134,33 @@ it.each([false, true])('force discards same-human orphan workers with nested chi
   if (withCat) expect(patches.some(patch => patch.includes('finished cat'))).toBe(true)
 })
 
-it('refuses same-human orphan discard without force and leaves apply/copy unchanged', async () => {
-  const { root, run } = await orphanBatch()
+preparedTest('refuses same-human orphan discard without force and leaves apply/copy unchanged', () => orphanBatch(), async ({ root, run }) => {
   for (const args of [{ discard: true }, { force: true }, { mode: 'copy', paths: ['lead.txt'], force: true }]) {
     expect(await run()({ tag: 'lead', ...args })).toBe('error: no worker lead owned by you')
   }
   expect((await localWorkers(root))).toHaveLength(2)
 })
 
-it('refuses force discard of another human\'s orphan workers in a team room', async () => {
-  const { root, lead, run } = await orphanBatch()
+preparedTest('refuses force discard of another human\'s orphan workers in a team room', () => orphanBatch(), async ({ root, lead, run }) => {
   expect(await run('someone-else')({ tag: 'lead', discard: true, force: true })).toBe('error: no worker lead owned by you')
   expect((await localWorkers(root))).toHaveLength(2)
   expect(read(lead.dir, 'lead.txt')).toBe('partial lead\n')
 })
 
-it('refuses orphan recovery while an intermediate lead still has a live handle', async () => {
-  const { root, run } = await orphanBatch()
+preparedTest('refuses orphan recovery while an intermediate lead still has a live handle', () => orphanBatch(), async ({ root, run }) => {
   const result = await run('rohanz', w => w.tag === 'lead')({ tag: 'cat', discard: true, force: true })
   expect(result).toMatch(/^error:/)
   expect((await localWorkers(root))).toHaveLength(2)
 })
 
-it('refuses orphan recovery while the original lead session process is still alive', async () => {
-  const { root, registry, run } = await orphanBatch()
+preparedTest('refuses orphan recovery while the original lead session process is still alive', () => orphanBatch(), async ({ root, registry, run }) => {
   const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'lead')!
   await mutateWorkerFixture(registry, record.id, old => ({ ...old, lead: { ...old.lead, instance: registry.instance }, seq: old.seq + 1 }))
   expect(await run()({ tag: 'lead', discard: true, force: true })).toMatch(/^error:/)
   expect((await localWorkers(root))).toHaveLength(2)
 })
 
-it('force discards a same-human orphan whose lead and child directories have vanished', async () => {
-  const { root, lead, run } = await orphanBatch()
+preparedTest('force discards a same-human orphan whose lead and child directories have vanished', () => orphanBatch(), async ({ root, lead, run }) => {
   fs.rmSync(lead.dir, { recursive: true, force: true })
   const result = await run()({ tag: 'lead', discard: true, force: true })
   expect(result).toContain('discarded lead; its worktree was already gone')
@@ -175,8 +168,8 @@ it('force discards a same-human orphan whose lead and child directories have van
   expect((await localWorkers(root))).toEqual([])
 })
 
-it.each([false, true])('force discards three worker levels with missing directories=%s', async missing => {
-  const { root, lead, cat, room, registry } = await batch()
+preparedEach([false, true], 'force discards three worker levels with missing directories=%s', async () => {
+  const b = await batch(), { root, cat, room } = b
   const kitten = await prepareWorktree(cat.dir, 'kitten', 'rohanz+cat')
   put(kitten.dir, 'cat.txt', 'third-level output\n')
   await registerWorkers(session(room, root, 'rohanz'), [{
@@ -184,6 +177,8 @@ it.each([false, true])('force discards three worker levels with missing director
     dir: kitten.dir, branch: kitten.branch, base: kitten.base, pid: -1, startedAt: 1,
     status: 'done', finishedAt: 2, exitCode: 0,
   }])
+  return b
+}, async ({ root, lead, cat, room, registry }, missing) => {
   if (missing) fs.rmSync(lead.dir, { recursive: true, force: true })
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
   for (const tag of ['lead', 'cat', 'kitten']) expect(result).toContain(`discarded ${tag}`)
@@ -195,24 +190,21 @@ it.each([false, true])('force discards three worker levels with missing director
   }
 })
 
-it('denies direct orphaned grand-worker collect and explains the parent discard path', async () => {
-  const { root, room } = await batch({ status: 'running' })
+preparedTest('denies direct orphaned grand-worker collect and explains the parent discard path', () => batch({ status: 'running' }), async ({ root, room }) => {
   const out = await collect(room, root, 'rohanz')({ tag: 'cat' })
   expect(out).toContain('cat belongs to rohanz+lead')
   expect(out).toContain('room_collect tag=lead discard=true force=true')
   expect(read(root, 'cat.txt')).toBe('base cat\n')
 })
 
-it('uses the lead-worker PID when its process handle is unavailable', async () => {
-  const { root, room } = await batch({ status: 'running', pid: process.pid })
+preparedTest('uses the lead-worker PID when its process handle is unavailable', () => batch({ status: 'running', pid: process.pid }), async ({ root, room }) => {
   const humanCollect = collect(room, root, 'rohanz')
   expect(await humanCollect({})).not.toContain('Changes from cat:')
   expect(await humanCollect({ tag: 'cat' })).toContain('cat belongs to rohanz+lead, which is still running')
   expect(read(root, 'cat.txt')).toBe('base cat\n')
 })
 
-it.each(['running', 'dismissed'] as const)('skips a %s worker stopped mid-task in collect-all, but accepts an explicit tag', async status => {
-  const { root, room, registry } = await batch({ status, stopReason: 'lead-session-ended', pid: 7777, finishedAt: undefined, exitCode: undefined })
+preparedEach(['running', 'dismissed'] as const, 'skips a %s worker stopped mid-task in collect-all, but accepts an explicit tag', status => batch({ status, stopReason: 'lead-session-ended', pid: 7777, finishedAt: undefined, exitCode: undefined }), async ({ root, room, registry }, status) => {
   const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === 'lead')!
   if (!record.stop) await registry.beginStop(record.id, 'lead-session-ended')
   const humanCollect = collect(room, root, 'rohanz')
@@ -231,15 +223,14 @@ it.each(['running', 'dismissed'] as const)('skips a %s worker stopped mid-task i
   expect(read(root, 'lead.txt')).toBe('partial lead\n')
 })
 
-it('copies named partial edits from a stopped worker when explicitly tagged', async () => {
-  const { root, room } = await batch({ status: 'dismissed', stopReason: 'lead-session-ended', pid: 7777 }, false)
+preparedTest('copies named partial edits from a stopped worker when explicitly tagged', () => batch({ status: 'dismissed', stopReason: 'lead-session-ended', pid: 7777 }, false), async ({ root, room }) => {
   const out = await collect(room, root, 'rohanz')({ tag: 'lead', mode: 'copy', paths: ['lead.txt'] })
   expect(out).toContain('copied lead.txt')
   expect(read(root, 'lead.txt')).toBe('partial lead\n')
   expect((await workerByTag(root, 'lead'))).toBeDefined()
 })
 
-it('collects grand-worker edits through a lead once while preserving the human carry bytes and clearing both levels', async () => {
+preparedTest('collects grand-worker edits through a lead once while preserving the human carry bytes and clearing both levels', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-collect-'))); temp.push(root)
   const top = path.join(root, 'top'); fs.mkdirSync(top)
   git(top, 'init', '-q', '-b', 'shop'); git(top, 'config', 'user.name', 'Human'); git(top, 'config', 'user.email', 'human@example.test')
@@ -260,6 +251,8 @@ it('collects grand-worker edits through a lead once while preserving the human c
     pid: -1, startedAt: 1, finishedAt: 2, exitCode: 0, status: 'done',
   })
   await registerWorkers(session(room, top, 'rohanz'), [mk('lead', 'rohanz', lead), mk('cat', 'rohanz+lead', cat)])
+  return { root, top, lead, cat, room, humanTracked, humanUntracked }
+}, async ({ root, top, lead, cat, room, humanTracked, humanUntracked }) => {
   const childResult = await collect(room, lead.dir, 'rohanz+lead')({ tag: 'cat' })
   expect(childResult).toContain('Changes from cat:')
   expect(read(lead.dir, 'catalog.py')).toContain('Return the product price.')
@@ -282,8 +275,7 @@ it('collects grand-worker edits through a lead once while preserving the human c
   }
 })
 
-it('keeps both worker levels available, then collects only the grand-worker follow-up through its lead', async () => {
-  const { root, lead, cat, room, registry } = await batch()
+preparedTest('keeps both worker levels available, then collects only the grand-worker follow-up through its lead', () => batch(), async ({ root, lead, cat, room, registry }) => {
   const leadCollect = collect(room, lead.dir, 'rohanz+lead')
   const humanCollect = collect(room, root, 'rohanz')
   expect(await leadCollect({ tag: 'cat', keep: true })).toContain('Changes from cat:')
@@ -303,7 +295,7 @@ it('keeps both worker levels available, then collects only the grand-worker foll
   expect(fs.existsSync(cat.dir)).toBe(false)
 })
 
-it('recovers the intentional shutdown reason for both worker levels after the relay disappears', async () => {
+preparedTest('recovers the intentional shutdown reason for both worker levels after the relay disappears', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-stop-reason-'))); temp.push(root)
   git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
   put(root, '.gitignore', '.room/\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
@@ -312,6 +304,8 @@ it('recovers the intentional shutdown reason for both worker levels after the re
   const room = new RoomDoc(new Y.Doc())
   const registry = await registerWorkers(session(room, root, 'rohanz'), ([['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const).map(([tag, owner, prepared]) => (
     { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'running' } as FixtureWorker)))
+  return { root, lead, cat, room, registry }
+}, async ({ root, lead, cat, room, registry }) => {
   for (const tag of ['lead', 'cat']) {
     const record = (requireWorkerInventory(await registry.list())).find(record => record.tag === tag)!
     await registry.beginStop(record.id, 'lead-session-ended')
@@ -320,7 +314,7 @@ it('recovers the intentional shutdown reason for both worker levels after the re
   }
 })
 
-it('force discard of a lead detaches a grand-worker that borrows another grand-worker checkout', async () => {
+preparedTest('force discard of a lead detaches a grand-worker that borrows another grand-worker checkout', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-borrower-'))); temp.push(root)
   git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
   put(root, '.gitignore', '.room/\n'); put(root, 'catalog.py', 'base\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
@@ -335,6 +329,8 @@ it('force discard of a lead detaches a grand-worker that borrows another grand-w
     // catreview was spawned with dir= inside cat's checkout, as a review of cat's work.
     { ...worker('catreview', 'rohanz+lead', cat.dir, cat.branch, cat.base), sharedWith: 'w_rohanz_lead_cat_1' },
   ])
+  return { root, lead, cat, room }
+}, async ({ root, lead, cat, room }) => {
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
   expect(result).not.toContain('error')
   expect(result).toContain('detached catreview; the worktree belongs to cat')
@@ -344,7 +340,7 @@ it('force discard of a lead detaches a grand-worker that borrows another grand-w
   expect(fs.existsSync(lead.dir)).toBe(false)
 })
 
-it('force discard saves a grand-worker patch and removes both levels of Git bookkeeping', async () => {
+preparedTest('force discard saves a grand-worker patch and removes both levels of Git bookkeeping', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-discard-'))); temp.push(root)
   git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
   put(root, '.gitignore', '.room/\n'); put(root, 'catalog.py', 'base\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
@@ -354,6 +350,8 @@ it('force discard saves a grand-worker patch and removes both levels of Git book
   const room = new RoomDoc(new Y.Doc())
   await registerWorkers(session(room, root, 'rohanz'), ([['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const).map(([tag, owner, prepared]): FixtureWorker => (
     { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: -1, startedAt: 1, status: 'running' })))
+  return { root, lead, cat, room }
+}, async ({ root, lead, cat, room }) => {
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
   expect(result).toContain('discarded cat')
   expect(result).toContain('discarded lead')

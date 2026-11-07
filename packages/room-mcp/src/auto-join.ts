@@ -56,20 +56,18 @@ const baseRecovery = (e: unknown): string => e instanceof RoomdError && (/^room 
   ? ' If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).'
   : ''
 
-/** Failures a human must act on (open the repo, log in, fix the clone) are not retried. */
+/** Refusals end this run immediately; later tool calls recheck after the backoff (the cause may be fixed externally). */
 function retryable(e: unknown): boolean {
   if (e instanceof NoRoom || e instanceof NotLoggedIn) return false
   return !(e instanceof RoomdError) || e.code === 1
 }
 
 /** The one line the agent sees when the automatic join gave up. */
-function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
+function joinFailureLine(e: unknown, local: boolean, attempts: number, retryAfterMs: number): string {
   if (e instanceof NotLoggedIn) return 'Room is not connected: not logged in; use room_login.'
   const phase = phaseOf(e)
   const head = `Room could not join${local ? ' the local room' : ''}${attempts > 1 ? ` after ${attempts} attempts` : ''}${phase ? ` (${phase})` : ''}: ${e instanceof Error ? e.message : String(e)}`
-  if (local && retryable(e)) return `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.`
-  if (local) return `${head}; room_join to retry now.${baseRecovery(e)}`
-  return `${head}; use room_join.${baseRecovery(e)}`
+  return `${head}. Room tries again on the next Room tool call (at most every ${retryAfterMs / 1000} s); room_join to retry now.${baseRecovery(e)}`
 }
 
 export class AutoJoin {
@@ -168,7 +166,7 @@ export class AutoJoin {
           this.recheck = true
           return
         }
-        if (!retryable(e)) { this.permanent = true; break }
+        if (!retryable(e)) break
         const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)]
         if (this.now() + wait >= deadline) break
         this.o.log(`join attempt ${attempts} failed ${causeOf(e)}; retrying in ${Math.round(wait / 1000)}s`)
@@ -178,7 +176,7 @@ export class AutoJoin {
     }
     this.o.log(`join attempt ${attempts} failed ${causeOf(last)}; giving up for now`)
     const first = this.failure === undefined || hadNoRepository
-    this.failure = joinFailureLine(last, this.target ? !!this.target.local : this.o.local, attempts)
+    this.failure = joinFailureLine(last, this.target ? !!this.target.local : this.o.local, attempts, this.retryAfterMs)
     if (first) this.o.report(this.failure)
   }
 

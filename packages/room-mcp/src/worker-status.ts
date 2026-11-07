@@ -2,6 +2,9 @@
 import type { RetiredWorker, ShareLevel, WorkerStatus, WorkerStopReason, WorkerView } from '@room/shared'
 import type { InstanceToken, Liveness, ProcessIdentity } from './leases.js'
 
+/** Observed MCP shutdown evidence; a closed transport alone does not prove a host session ended. */
+export type WorkerStopCause = 'stdin closed' | 'stdin/transport closed' | 'SIGTERM' | 'SIGINT' | 'explicit leave'
+
 export interface Run {
   n: number; mode: 'fresh' | 'resume'; intentAt: number; nonce: string
   /** The lead's highest hub seq at intent: the worker's ledger frontier seed (ledger "Cursor"). */
@@ -62,7 +65,7 @@ export interface WorkerRecord {
   skippedCarry?: { path: string; reason: string }[]; port?: number; hostSessionId?: string
   capabilities: { resume: boolean; signal: boolean; collect: 'delta' | 'copy' | 'none' }
   phase: 'intent' | 'preparing' | 'prepared' | 'active' | 'collecting' | 'discarding' | 'retiring' | 'retired' | 'abandoned'
-  runs: Run[]; stop?: { reason: WorkerStopReason; at: number; run: number }
+  runs: Run[]; stop?: { reason: WorkerStopReason; at: number; run: number; cause?: WorkerStopCause }
   discard?: DiscardPlan; interrupted?: { op: 'collect' | 'discard'; at: number; detail: string }
   cleanup?: Record<string, 'pending' | 'done'>; keptWorktree?: string
   /** A `local` worker's team room, where the lead's bridge projects it (registry §13). */
