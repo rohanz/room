@@ -92,10 +92,31 @@ const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const yieldTurn = () => new Promise<void>(resolve => setImmediate(resolve))
 const guardBusy = (error: unknown) => error instanceof Error && error.message.startsWith('lease guard busy')
 
+/** Native spelling, including missing relocation sources via their nearest existing ancestor. */
+function canonicalLocation(location: string, allowMissing = true): string {
+  try { return fs.realpathSync.native(location) }
+  catch (error) {
+    if (!allowMissing || (error as NodeJS.ErrnoException).code !== 'ENOENT' || path.dirname(location) === location) throw error
+    return path.join(canonicalLocation(path.dirname(location)), path.basename(location))
+  }
+}
+
+/** Existing directories must agree by exact identity; missing historical paths compare canonically. */
+function sameLocation(a: string, b: string): boolean {
+  if (!path.isAbsolute(a) || !path.isAbsolute(b)) return false
+  try {
+    const left = fs.statSync(a, { bigint: true }), right = fs.statSync(b, { bigint: true })
+    return left.isDirectory() && right.isDirectory() && left.ino !== 0n && left.dev === right.dev && left.ino === right.ino
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false
+    try { return canonicalLocation(a) === canonicalLocation(b) } catch { return false }
+  }
+}
+
 /** Canonical common directory with HEAD; throws `unavailable` before any write otherwise. */
 export function canonicalCommonDir(commonDir: string): string {
   let canonical: string
-  try { canonical = fs.realpathSync.native(commonDir) }
+  try { canonical = canonicalLocation(commonDir, false) }
   catch (error) { throw new StorageRefused('unavailable', `common directory unreadable: ${(error as NodeJS.ErrnoException).code ?? error}`) }
   if (!path.isAbsolute(canonical) || !fs.existsSync(path.join(canonical, 'HEAD')))
     throw new StorageRefused('unavailable', 'not a Git common directory (no HEAD)')
@@ -103,7 +124,7 @@ export function canonicalCommonDir(commonDir: string): string {
 }
 
 export function openStorageGate(commonDir: string, options: GateOptions = {}): StorageGate {
-  const gate = new FileStorageGate(canonicalCommonDir(commonDir), options)
+  const gate = new FileStorageGate(commonDir, options)
   // Functions cannot be structured-cloned. Keep the deterministic unit-test seams in this thread;
   // callers without injected functions (including process/integration tests) always use the worker.
   if (options.now || options.liveness) return gate
@@ -136,7 +157,10 @@ export class FileStorageGate implements StorageGate {
   /** Last observation, keyed by the gate file's identity. Every publication renames a new file into place. */
   private observed?: { key: string; value: ReadValidation; gate: StorageGateRecord }
 
-  constructor(readonly commonDir: string, options: GateOptions) {
+  readonly commonDir: string
+
+  constructor(commonDir: string, options: GateOptions) {
+    this.commonDir = commonDir = canonicalCommonDir(commonDir)
     this.now = options.now ?? Date.now
     this.alive = options.liveness ?? (identity => processLiveness(identity))
     this.limits = { registrations: GATE_LIMITS.registrations, tickets: GATE_LIMITS.tickets, scanBatch: GATE_LIMITS.scanBatch, ...options.limits }
@@ -174,7 +198,7 @@ export class FileStorageGate implements StorageGate {
     let gate: StorageGateRecord
     try { gate = parseGate(raw) }
     catch (error) { throw new StorageRefused('unavailable', bounded(`storage gate invalid: ${(error as Error).message}`), 'preserve room/storage-gate.json and repair it; Room never reinitializes it') }
-    if (!allowForeign && gate.commonDir !== this.commonDir) throw this.locationMismatch(gate.commonDir)
+    if (!allowForeign && gate.commonDir !== this.commonDir && !this.sameDirectory(gate.commonDir)) throw this.locationMismatch(gate.commonDir)
     return gate
   }
 
@@ -264,6 +288,7 @@ export class FileStorageGate implements StorageGate {
       const aside = copied ? `room.copied-${this.now()}-${randomBytes(6).toString('hex')}` : undefined
       const fresh = copied ? { cloneId: randomBytes(16).toString('hex'), relocationNonce: randomBytes(16).toString('hex') } : undefined
       // Intent is outside room/, durable before any rename. Replay is idempotent after a crash.
+      // Keep the source gate as evidence (including legacy spellings used in path hashes).
       writeAtomic(path.join(this.commonDir, 'room-location-pending.json'), { v: 1, gate, current: this.commonDir, copied, aside, fresh, sourceDigest })
       this.completeRelocation()
     }, true)
@@ -273,7 +298,7 @@ export class FileStorageGate implements StorageGate {
     const journal = path.join(this.commonDir, 'room-location-pending.json')
     const raw = readRecord(journal, MAX_GATE_BYTES)
     if (raw === undefined) return false
-    if (!object(raw) || raw.v !== 1 || raw.current !== this.commonDir || typeof raw.copied !== 'boolean'
+    if (!object(raw) || raw.v !== 1 || typeof raw.current !== 'string' || !sameLocation(raw.current, this.commonDir) || typeof raw.copied !== 'boolean'
       || raw.copied && (typeof raw.aside !== 'string' || !/^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(raw.aside)))
       throw this.relocationRefused('invalid relocation journal; preserve it for inspection')
     let original: StorageGateRecord
@@ -283,24 +308,25 @@ export class FileStorageGate implements StorageGate {
     if (raw.copied && (!object(fresh) || typeof fresh.cloneId !== 'string' || !/^[a-f0-9]{32}$/.test(fresh.cloneId)
       || typeof fresh.relocationNonce !== 'string' || !/^[a-f0-9]{32}$/.test(fresh.relocationNonce)))
       throw this.relocationRefused('invalid relocation journal destination identity')
-    const old = original.commonDir
-    if (!path.isAbsolute(old) || old === this.commonDir) throw this.relocationRefused('invalid relocation journal source location')
+    if (!path.isAbsolute(original.commonDir)) throw this.relocationRefused('invalid relocation journal source location')
+    const old = canonicalLocation(original.commonDir)
+    if (sameLocation(original.commonDir, this.commonDir)) throw this.relocationRefused('invalid relocation journal source location')
     const room = path.join(this.commonDir, 'room')
     const aside = raw.copied ? path.join(this.commonDir, raw.aside as string) : undefined
     const matches = (gate: StorageGateRecord | undefined, rebound = false) => gate
       && gate.cloneId === original.cloneId && gate.generation === original.generation
-      && gate.phase === 'legacy' && (gate.commonDir === old || rebound && gate.commonDir === this.commonDir)
+      && gate.phase === 'legacy' && (sameLocation(gate.commonDir, old) || rebound && sameLocation(gate.commonDir, this.commonDir))
     if (original.phase !== 'legacy') throw this.relocationRefused('relocation requires legacy phase')
     const current = this.readGate(true)
     const ownDestination = !!(raw.copied && object(fresh) && current && current.cloneId === fresh.cloneId
-      && current.relocationNonce === fresh.relocationNonce && current.commonDir === this.commonDir)
+      && current.relocationNonce === fresh.relocationNonce && sameLocation(current.commonDir, this.commonDir))
     if (mode && (mode === 'copied') !== raw.copied) {
       const archived = !!aside && fs.existsSync(aside)
       const untouched = matches(current) && !archived && (raw.copied ||
         typeof raw.sourceDigest === 'string' && raw.sourceDigest === this.relocationDigest(room))
       if (!untouched) {
         const state = archived ? (ownDestination ? 'copy archive and fresh gate published' : 'copy archive renamed')
-          : current?.commonDir === this.commonDir ? 'move gate published'
+          : current && sameLocation(current.commonDir, this.commonDir) ? 'move gate published'
           : raw.sourceDigest ? 'move records changed' : 'move progress cannot be verified (older journal)'
         throw this.relocationRefused(`cannot switch relocation mode: ${state}; resume with --confirm-${raw.copied ? 'copied' : 'moved'} before choosing another operation`)
       }
@@ -326,7 +352,7 @@ export class FileStorageGate implements StorageGate {
     if (inspect) {
       const stage = aside
         ? fs.existsSync(aside) ? ownDestination ? 'copy archive and fresh gate published' : 'copy archive renamed' : 'copy archive not yet renamed'
-        : current?.commonDir === this.commonDir ? 'move gate published'
+        : current && sameLocation(current.commonDir, this.commonDir) ? 'move gate published'
         : typeof raw.sourceDigest === 'string'
           ? raw.sourceDigest === this.relocationDigest(room) ? 'move source unchanged' : 'move records changed'
           : 'move progress cannot be verified (older journal)'
@@ -342,8 +368,8 @@ export class FileStorageGate implements StorageGate {
       if (!ownDestination) this.initialize('not-needed', fresh as { cloneId: string; relocationNonce: string })
     } else {
       this.checkRelocationRoots(old)
-      if (current?.commonDir !== this.commonDir) {
-        this.planRebindRecords(old)()
+      if (!current || !sameLocation(current.commonDir, this.commonDir)) {
+        this.planRebindRecords(original.commonDir)()
         this.publish({ ...original, commonDir: this.commonDir })
       }
     }
@@ -399,12 +425,7 @@ export class FileStorageGate implements StorageGate {
     const from = path.basename(old) === '.git' ? path.dirname(old) : old
     const to = path.basename(old) === '.git' ? path.dirname(this.commonDir) : this.commonDir
     const normalize = (root: string): string => {
-      let resolved: string
-      try { resolved = fs.realpathSync(root) }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || path.dirname(root) === root) throw error
-        resolved = path.join(normalize(path.dirname(root)), path.basename(root))
-      }
+      const resolved = canonicalLocation(root)
       return process.platform === 'win32' ? resolved.toLowerCase() : resolved
     }
     const a = normalize(from), b = normalize(to)
@@ -509,9 +530,12 @@ export class FileStorageGate implements StorageGate {
   /** Validate the complete rewrite before returning any mutations. */
   private planRebindRecords(old: string): () => void {
     const room = path.join(this.commonDir, 'room')
-    const oldRoot = path.basename(old) === '.git' ? path.dirname(old) : old
+    const oldRoot = canonicalLocation(path.basename(old) === '.git' ? path.dirname(old) : old)
     const newRoot = path.basename(old) === '.git' ? path.dirname(this.commonDir) : this.commonDir
-    const relocate = (value: string) => value === oldRoot ? newRoot : value.startsWith(oldRoot + path.sep) ? newRoot + value.slice(oldRoot.length) : value
+    const relocate = (value: string) => {
+      const canonical = canonicalLocation(value)
+      return canonical === oldRoot ? newRoot : canonical.startsWith(oldRoot + path.sep) ? newRoot + canonical.slice(oldRoot.length) : canonical
+    }
     const hash = (value: string) => createHash('sha256').update(value).digest('hex')
     const fields = new Set(['dir', 'commonDir', 'worktree', 'keptWorktree', 'leadDir', 'cwd', 'gitDir', 'sessionDir', 'logDir', 'logFile', 'reportFile', 'exitFile', 'path'])
     const visit = (value: unknown): unknown => {
@@ -957,6 +981,7 @@ export class FileStorageGate implements StorageGate {
     }
     const maintenance = gate.phase !== 'legacy'
     return { state: 'present', gate, ...counts(), legacyImport, maintenanceRequired: maintenance,
+      ...(gate.commonDir !== this.commonDir ? { locationUpdate: { recorded: gate.commonDir, canonical: this.commonDir } } : {}),
       ...(maintenance ? { refusal: { reason: 'maintenance' as const, detail: `generation ${gate.generation} is ${gate.phase}`, remedy: REMEDY } } : {}) }
   }
 

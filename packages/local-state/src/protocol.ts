@@ -251,6 +251,8 @@ export interface GateStatus {
   legacyImport: 'done' | 'pending' | 'absent' | 'unreadable'
   /** True when this build cannot be admitted now; `refusal` says why. */
   maintenanceRequired: boolean
+  /** Same directory; registration will persist its canonical spelling. Status never writes. */
+  locationUpdate?: { recorded: string; canonical: string }
   refusal?: { reason: StorageRefusalReason; detail: string; remedy?: string }
 }
 

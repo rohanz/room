@@ -34,12 +34,12 @@
   "workerRecordSchema": 1,
   "bundleSha256": {
     "room-mcp.mjs": "eaf5b7572389781550e60509da680473064a8208c8eed6c437cdf98548d8a28c",
-    "room-mcp-app.mjs": "58dba0fb97b9e1bf37e004b94f48a1355abc2fad6aea28b58fdda9e9a3531242",
+    "room-mcp-app.mjs": "211831cb776da71cc6a518f4b129d683cf5b2f7d73ef0a03850e33b40a815529",
     "room-daemon.mjs": "f140e89829cd6ce1f6d4a8ec01f27048e7f2c9231a42b25fa16b1e30221afdec",
     "room-daemon-app.mjs": "d8559e207a87e6f39979b009274b65a216cff1fd054c659e1e5eb3b97a5d4f36",
     "room-state.mjs": "d160de29af16ea12f81b79f7c7c18e0deb80b88c41a88401570c919b6164b808",
-    "room-state-app.mjs": "4dcececb97479d107f5b4e8b6cdd29fcb893bd1394235ed959311d02a8d399df",
+    "room-state-app.mjs": "78458d5ead4eadaeaae18493304215dceac74569fd0b6176e9c7ec1a8ae96272",
     "parse-worker.mjs": "4917110c2ffde900f3f283857445f8f4e25d0d51af1570e63997803579588faa",
-    "gate-worker.mjs": "052b4f4004d2f5dc6c8b1e1445c22de100deeea3ad7fd423bad66fc8223bf264"
+    "gate-worker.mjs": "062439eeb1a828261a62336c0f028f4d80d383edd63e1b85f044ae8459040787"
   }
 }

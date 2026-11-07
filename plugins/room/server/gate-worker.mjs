@@ -769,18 +769,40 @@ function parseTicket(value, holder, id) {
 var pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 var yieldTurn = () => new Promise((resolve) => setImmediate(resolve));
 var guardBusy = (error) => error instanceof Error && error.message.startsWith("lease guard busy");
-var FileStorageGate = class {
-  constructor(commonDir, options) {
-    this.commonDir = commonDir;
-    this.now = options.now ?? Date.now;
-    this.alive = options.liveness ?? ((identity) => liveness(identity));
-    this.limits = { registrations: GATE_LIMITS.registrations, tickets: GATE_LIMITS.tickets, scanBatch: GATE_LIMITS.scanBatch, ...options.limits };
-    this.gateFile = path6.join(commonDir, STORAGE_PATHS.gate);
-    this.registrationDir = path6.join(commonDir, STORAGE_PATHS.registrations);
-    this.ticketDir = path6.join(commonDir, STORAGE_PATHS.tickets);
-    this.resolutionDir = path6.join(commonDir, STORAGE_PATHS.resolutions);
+function canonicalLocation(location, allowMissing = true) {
+  try {
+    return fs5.realpathSync.native(location);
+  } catch (error) {
+    if (!allowMissing || error.code !== "ENOENT" || path6.dirname(location) === location) throw error;
+    return path6.join(canonicalLocation(path6.dirname(location)), path6.basename(location));
   }
-  commonDir;
+}
+function sameLocation(a, b) {
+  if (!path6.isAbsolute(a) || !path6.isAbsolute(b)) return false;
+  try {
+    const left = fs5.statSync(a, { bigint: true }), right = fs5.statSync(b, { bigint: true });
+    return left.isDirectory() && right.isDirectory() && left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
+  } catch (error) {
+    if (error.code !== "ENOENT") return false;
+    try {
+      return canonicalLocation(a) === canonicalLocation(b);
+    } catch {
+      return false;
+    }
+  }
+}
+function canonicalCommonDir(commonDir) {
+  let canonical;
+  try {
+    canonical = canonicalLocation(commonDir, false);
+  } catch (error) {
+    throw new StorageRefused("unavailable", `common directory unreadable: ${error.code ?? error}`);
+  }
+  if (!path6.isAbsolute(canonical) || !fs5.existsSync(path6.join(canonical, "HEAD")))
+    throw new StorageRefused("unavailable", "not a Git common directory (no HEAD)");
+  return canonical;
+}
+var FileStorageGate = class {
   now;
   alive;
   gateFile;
@@ -790,6 +812,17 @@ var FileStorageGate = class {
   limits;
   /** Last observation, keyed by the gate file's identity. Every publication renames a new file into place. */
   observed;
+  commonDir;
+  constructor(commonDir, options) {
+    this.commonDir = commonDir = canonicalCommonDir(commonDir);
+    this.now = options.now ?? Date.now;
+    this.alive = options.liveness ?? ((identity) => liveness(identity));
+    this.limits = { registrations: GATE_LIMITS.registrations, tickets: GATE_LIMITS.tickets, scanBatch: GATE_LIMITS.scanBatch, ...options.limits };
+    this.gateFile = path6.join(commonDir, STORAGE_PATHS.gate);
+    this.registrationDir = path6.join(commonDir, STORAGE_PATHS.registrations);
+    this.ticketDir = path6.join(commonDir, STORAGE_PATHS.tickets);
+    this.resolutionDir = path6.join(commonDir, STORAGE_PATHS.resolutions);
+  }
   // ---- primitives ------------------------------------------------------------------------------------------
   /** Short synchronous critical section on the gate guard; waits only outside it, bounded by guardWaitMs. */
   async guarded(fn, repairing = false) {
@@ -823,7 +856,7 @@ var FileStorageGate = class {
     } catch (error) {
       throw new StorageRefused("unavailable", bounded(`storage gate invalid: ${error.message}`), "preserve room/storage-gate.json and repair it; Room never reinitializes it");
     }
-    if (!allowForeign && gate.commonDir !== this.commonDir) throw this.locationMismatch(gate.commonDir);
+    if (!allowForeign && gate.commonDir !== this.commonDir && !this.sameDirectory(gate.commonDir)) throw this.locationMismatch(gate.commonDir);
     return gate;
   }
   relocationCommand() {
@@ -917,7 +950,7 @@ var FileStorageGate = class {
     const journal = path6.join(this.commonDir, "room-location-pending.json");
     const raw = readRecord(journal, MAX_GATE_BYTES);
     if (raw === void 0) return false;
-    if (!object(raw) || raw.v !== 1 || raw.current !== this.commonDir || typeof raw.copied !== "boolean" || raw.copied && (typeof raw.aside !== "string" || !/^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(raw.aside)))
+    if (!object(raw) || raw.v !== 1 || typeof raw.current !== "string" || !sameLocation(raw.current, this.commonDir) || typeof raw.copied !== "boolean" || raw.copied && (typeof raw.aside !== "string" || !/^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(raw.aside)))
       throw this.relocationRefused("invalid relocation journal; preserve it for inspection");
     let original;
     try {
@@ -928,19 +961,20 @@ var FileStorageGate = class {
     const fresh = raw.fresh;
     if (raw.copied && (!object(fresh) || typeof fresh.cloneId !== "string" || !/^[a-f0-9]{32}$/.test(fresh.cloneId) || typeof fresh.relocationNonce !== "string" || !/^[a-f0-9]{32}$/.test(fresh.relocationNonce)))
       throw this.relocationRefused("invalid relocation journal destination identity");
-    const old = original.commonDir;
-    if (!path6.isAbsolute(old) || old === this.commonDir) throw this.relocationRefused("invalid relocation journal source location");
+    if (!path6.isAbsolute(original.commonDir)) throw this.relocationRefused("invalid relocation journal source location");
+    const old = canonicalLocation(original.commonDir);
+    if (sameLocation(original.commonDir, this.commonDir)) throw this.relocationRefused("invalid relocation journal source location");
     const room = path6.join(this.commonDir, "room");
     const aside = raw.copied ? path6.join(this.commonDir, raw.aside) : void 0;
-    const matches = (gate, rebound = false) => gate && gate.cloneId === original.cloneId && gate.generation === original.generation && gate.phase === "legacy" && (gate.commonDir === old || rebound && gate.commonDir === this.commonDir);
+    const matches = (gate, rebound = false) => gate && gate.cloneId === original.cloneId && gate.generation === original.generation && gate.phase === "legacy" && (sameLocation(gate.commonDir, old) || rebound && sameLocation(gate.commonDir, this.commonDir));
     if (original.phase !== "legacy") throw this.relocationRefused("relocation requires legacy phase");
     const current = this.readGate(true);
-    const ownDestination = !!(raw.copied && object(fresh) && current && current.cloneId === fresh.cloneId && current.relocationNonce === fresh.relocationNonce && current.commonDir === this.commonDir);
+    const ownDestination = !!(raw.copied && object(fresh) && current && current.cloneId === fresh.cloneId && current.relocationNonce === fresh.relocationNonce && sameLocation(current.commonDir, this.commonDir));
     if (mode && mode === "copied" !== raw.copied) {
       const archived = !!aside && fs5.existsSync(aside);
       const untouched = matches(current) && !archived && (raw.copied || typeof raw.sourceDigest === "string" && raw.sourceDigest === this.relocationDigest(room));
       if (!untouched) {
-        const state = archived ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : current?.commonDir === this.commonDir ? "move gate published" : raw.sourceDigest ? "move records changed" : "move progress cannot be verified (older journal)";
+        const state = archived ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : current && sameLocation(current.commonDir, this.commonDir) ? "move gate published" : raw.sourceDigest ? "move records changed" : "move progress cannot be verified (older journal)";
         throw this.relocationRefused(`cannot switch relocation mode: ${state}; resume with --confirm-${raw.copied ? "copied" : "moved"} before choosing another operation`);
       }
       fs5.unlinkSync(journal);
@@ -963,7 +997,7 @@ var FileStorageGate = class {
       this.checkRelocationHolders(room);
     }
     if (inspect) {
-      const stage = aside ? fs5.existsSync(aside) ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : "copy archive not yet renamed" : current?.commonDir === this.commonDir ? "move gate published" : typeof raw.sourceDigest === "string" ? raw.sourceDigest === this.relocationDigest(room) ? "move source unchanged" : "move records changed" : "move progress cannot be verified (older journal)";
+      const stage = aside ? fs5.existsSync(aside) ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : "copy archive not yet renamed" : current && sameLocation(current.commonDir, this.commonDir) ? "move gate published" : typeof raw.sourceDigest === "string" ? raw.sourceDigest === this.relocationDigest(room) ? "move source unchanged" : "move records changed" : "move progress cannot be verified (older journal)";
       throw new StorageRefused(
         "incompatible",
         `pending relocation requires recovery: ${raw.copied ? "copied" : "moved"}; old path: ${old}; new path: ${this.commonDir}${aside ? `; archive: ${aside}` : ""}; stage: ${stage}`,
@@ -978,8 +1012,8 @@ var FileStorageGate = class {
       if (!ownDestination) this.initialize("not-needed", fresh);
     } else {
       this.checkRelocationRoots(old);
-      if (current?.commonDir !== this.commonDir) {
-        this.planRebindRecords(old)();
+      if (!current || !sameLocation(current.commonDir, this.commonDir)) {
+        this.planRebindRecords(original.commonDir)();
         this.publish({ ...original, commonDir: this.commonDir });
       }
     }
@@ -1030,13 +1064,7 @@ var FileStorageGate = class {
     const from = path6.basename(old) === ".git" ? path6.dirname(old) : old;
     const to = path6.basename(old) === ".git" ? path6.dirname(this.commonDir) : this.commonDir;
     const normalize = (root) => {
-      let resolved;
-      try {
-        resolved = fs5.realpathSync(root);
-      } catch (error) {
-        if (error.code !== "ENOENT" || path6.dirname(root) === root) throw error;
-        resolved = path6.join(normalize(path6.dirname(root)), path6.basename(root));
-      }
+      const resolved = canonicalLocation(root);
       return process.platform === "win32" ? resolved.toLowerCase() : resolved;
     };
     const a = normalize(from), b = normalize(to);
@@ -1137,9 +1165,12 @@ var FileStorageGate = class {
   /** Validate the complete rewrite before returning any mutations. */
   planRebindRecords(old) {
     const room = path6.join(this.commonDir, "room");
-    const oldRoot = path6.basename(old) === ".git" ? path6.dirname(old) : old;
+    const oldRoot = canonicalLocation(path6.basename(old) === ".git" ? path6.dirname(old) : old);
     const newRoot = path6.basename(old) === ".git" ? path6.dirname(this.commonDir) : this.commonDir;
-    const relocate = (value) => value === oldRoot ? newRoot : value.startsWith(oldRoot + path6.sep) ? newRoot + value.slice(oldRoot.length) : value;
+    const relocate = (value) => {
+      const canonical = canonicalLocation(value);
+      return canonical === oldRoot ? newRoot : canonical.startsWith(oldRoot + path6.sep) ? newRoot + canonical.slice(oldRoot.length) : canonical;
+    };
     const hash = (value) => createHash2("sha256").update(value).digest("hex");
     const fields = /* @__PURE__ */ new Set(["dir", "commonDir", "worktree", "keptWorktree", "leadDir", "cwd", "gitDir", "sessionDir", "logDir", "logFile", "reportFile", "exitFile", "path"]);
     const visit = (value) => {
@@ -1700,6 +1731,7 @@ var FileStorageGate = class {
       ...counts(),
       legacyImport,
       maintenanceRequired: maintenance,
+      ...gate.commonDir !== this.commonDir ? { locationUpdate: { recorded: gate.commonDir, canonical: this.commonDir } } : {},
       ...maintenance ? { refusal: { reason: "maintenance", detail: `generation ${gate.generation} is ${gate.phase}`, remedy: REMEDY } } : {}
     };
   }

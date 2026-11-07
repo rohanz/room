@@ -312,7 +312,10 @@ There is a crash window between durable notice publication and stderr output:
 the audit record remains authoritative if terminal output is lost.
 
 
-Status is read-only even for same-directory aliases and pending relocation. It
+Status is read-only even for same-directory aliases and pending relocation. An
+exact device/inode match reports a harmless canonical-path update pending the next
+registration, without a location refusal or maintenance requirement. JSON includes
+`locationUpdate` with the recorded and canonical paths. For pending relocation it
 reports the journaled move/copy choice, old/new paths, archive path when applicable,
 observable stage and exact resume command, or why the journal cannot be verified.
 Registration or `repair-location` performs recovery. Readable maintenance gates

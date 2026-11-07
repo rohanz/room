@@ -15,7 +15,7 @@ const input = () => ({ instance: { pid: 99999999, startTime: 'gone', executable:
 const gate = (dir: string) => new FileStorageGate(dir, {})
 const record = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, STORAGE_PATHS.gate), 'utf8'))
 async function fixture(copy = false) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-relocation-'))); roots.push(root)
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'room-relocation-'))); roots.push(root)
   const old = path.join(root, 'old', '.git'), current = path.join(root, 'new', '.git')
   fs.mkdirSync(old, { recursive: true }); fs.writeFileSync(path.join(old, 'HEAD'), 'ref: refs/heads/main\n')
   await gate(old).register(input())
@@ -143,9 +143,9 @@ it('rebinds a case-only alias on a case-insensitive filesystem', async () => {
   const old = current.replace('/new/', '/NEW/')
   fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: old }))
   // Simulate case-insensitive lookup on every test platform; retain real inode evidence.
-  const stat = fs.statSync, real = fs.realpathSync
+  const stat = fs.statSync, real = fs.realpathSync.native
   vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, ...args: unknown[]) => (stat as Function)(String(p) === old ? current : p, ...args)) as typeof fs.statSync)
-  vi.spyOn(fs, 'realpathSync').mockImplementation(((p: fs.PathLike, ...args: unknown[]) => (real as Function)(String(p) === old ? current : p, ...args)) as typeof fs.realpathSync)
+  vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike, ...args: unknown[]) => (real as Function)(String(p) === old ? current : p, ...args)) as typeof fs.realpathSync)
   await gate(current).repairLocation()
   expect(record(current).cloneId).toBe(before.cloneId)
   expect(fs.readdirSync(current).some(n => n.startsWith('room.copied-'))).toBe(false)
@@ -284,8 +284,8 @@ it.runIf(process.platform === 'win32')('refuses case-normalized overlapping root
 it('refuses overlapping roots after case normalization on a case-insensitive volume', async () => {
   const { current, before } = await fixture()
   const root = path.dirname(path.dirname(current)), variant = root.toUpperCase()
-  const real = fs.realpathSync
-  vi.spyOn(fs, 'realpathSync').mockImplementation(((p: fs.PathLike, ...args: unknown[]) =>
+  const real = fs.realpathSync.native
+  vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike, ...args: unknown[]) =>
     (real as Function)(String(p) === variant ? root : p, ...args)) as typeof fs.realpathSync)
   fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: path.join(variant, '.git') }))
   await expect(gate(current).repairLocation('moved')).rejects.toThrow('overlapping relocation roots')
@@ -322,7 +322,7 @@ it('refuses lifecycle cleanup at a mismatched location without deleting records'
 
 it.each(['dev', 'ino'])('does not collapse large bigint %s identities or fall back to realpath', async field => {
   const { old, current, before } = await fixture(true)
-  const stat = fs.statSync, real = fs.realpathSync
+  const stat = fs.statSync, real = fs.realpathSync.native
   const large = 2n ** 54n
   expect(Number(large)).toBe(Number(large + 1n))
   vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, options: unknown) => {
@@ -332,7 +332,7 @@ it.each(['dev', 'ino'])('does not collapse large bigint %s identities or fall ba
     }
     return (stat as Function)(p, options)
   }) as typeof fs.statSync)
-  vi.spyOn(fs, 'realpathSync').mockImplementation(((p: fs.PathLike) => String(p) === old ? current : real(p)) as typeof fs.realpathSync)
+  vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike) => String(p) === old ? current : real(p)) as typeof fs.realpathSync)
   await expect(gate(current).repairLocation()).rejects.toThrow('--confirm-copied')
   expect(record(current)).toEqual(before)
 })
@@ -529,7 +529,7 @@ it('status leaves a same-directory alias untouched', async () => {
   const { old, current, before } = await fixture()
   fs.rmdirSync(path.dirname(old))
   fs.symlinkSync(path.dirname(current), path.dirname(old), 'dir')
-  expect((await gate(current).status()).maintenanceRequired).toBe(true)
+  expect(await gate(current).status()).toMatchObject({ maintenanceRequired: false, locationUpdate: { recorded: old, canonical: current } })
   expect(record(current)).toEqual(before)
   expect(fs.existsSync(path.join(current, 'room-storage-location.guard'))).toBe(false)
 })
@@ -548,4 +548,37 @@ it.each(['malformed', 'foreign', 'archive'])('status explains unverifiable %s jo
   expect(status.refusal?.detail).toContain(kind === 'archive' ? 'archive source cannot be verified' : kind === 'foreign' ? 'invalid relocation journal' : 'JSON')
   expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
   expect(record(current)).toEqual(before)
+})
+
+it.each(['source', 'bundle'])('treats a symlinked temp ancestor consistently through %s CLI status and repair', async route => {
+  const { current, before } = await interruptedCopy()
+  const root = path.dirname(path.dirname(current)), alias = root + '-alias'
+  roots.push(alias)
+  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  const aliased = path.join(alias, 'new', '.git')
+  const journal = path.join(current, 'room-location-pending.json')
+  const intent = JSON.parse(fs.readFileSync(journal, 'utf8'))
+  // Simulate a journal from a writer using the alternate spelling, including its source.
+  intent.current = aliased
+  intent.gate.commonDir = path.join(alias, 'old', '.git')
+  fs.writeFileSync(journal, JSON.stringify(intent))
+  const bytes = fs.readFileSync(journal, 'utf8')
+  const entry = fileURLToPath(new URL(route === 'source' ? '../../room-mcp/src/offline/entry.ts' : '../../../plugins/room/server/room-state.mjs', import.meta.url))
+  const cli = (...args: string[]) => promisify(execFile)(process.execPath, ['--import', 'tsx', entry, ...args, '--common-dir', aliased], { timeout: 15000 })
+  await expect(cli('status', '--json')).rejects.toMatchObject({
+    code: 1, stdout: expect.stringContaining('pending relocation requires recovery: copied'),
+  })
+  expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
+  await cli('repair-location', '--confirm-copied')
+  const fresh = record(current)
+  expect(fresh.commonDir).toBe(fs.realpathSync.native(aliased))
+  expect(fresh.cloneId).not.toBe(before.cloneId)
+  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...fresh, commonDir: aliased }))
+  const status = JSON.parse((await cli('status', '--json')).stdout)
+  expect(status).toMatchObject({ maintenanceRequired: false, locationUpdate: { recorded: aliased, canonical: current } })
+  expect(status.refusal).toBeUndefined()
+  expect(record(current).commonDir).toBe(aliased)
+  expect((await cli('status')).stdout).toContain('same directory; canonical path update pending next registration')
+  await gate(aliased).register(input())
+  expect(record(current)).toEqual(fresh)
 })

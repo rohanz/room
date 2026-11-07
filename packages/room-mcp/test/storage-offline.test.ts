@@ -10,7 +10,7 @@ import { closeStorageAdmissions } from '../src/storage-admission.js'
 
 const roots: string[] = []
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-storage-offline-')); roots.push(root)
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'room-storage-offline-'))); roots.push(root)
   execFileSync('git', ['init', '-q', root])
   const common = path.join(root, '.git')
   const source: LegacySource = { key: 'worktree:old', tag: 'old', dir: path.join(root, '.room/workers/old'), branch: 'room/old', host: 'codex' }

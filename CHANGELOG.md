@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Treat Windows short paths and directory aliases consistently in storage gates and relocation journals. Read-only status reports same-directory spelling changes as pending automatic updates without blocking admission.
+
 - Keep ticket and registration reconciliation evidence visible during maintenance; read-only relocation status validates the journal and reports its recovery choice, paths, observed stage and exact resume command.
 
 - Validate move rebinding before journaling; allow mode changes only while source state is provably untouched. Status reports relocation recovery without writes. Document controlled offline recovery for locks with unknown owners.
