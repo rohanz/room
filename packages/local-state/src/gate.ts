@@ -304,7 +304,10 @@ export class FileStorageGate implements StorageGate {
     const ticket: Ticket = { v: 1, id: randomBytes(16).toString('hex'), holder, identity: effectOwner,
       kind, generation, ...(parent ? { parent: parent.id } : {}), admittedAt: this.now() }
     const file = this.ticketFile(holder, ticket.id)
-    if (!createExclusive(file, ticket, { durable: false })) throw new StorageRefused('unavailable', 'ticket id collision')
+    // Published by atomic rename: readers never see a partial ticket. This relies on the holder nonce plus 128 random
+    // bits being unique; an exclusive hard-link create would only add cost (APFS links are several times slower than
+    // a rename) to guard a collision of negligible probability.
+    writeAtomic(file, ticket, { durable: false })
     try {
       const after = this.requireGate()
       if (after.generation !== before.generation || after.phase !== before.phase) {

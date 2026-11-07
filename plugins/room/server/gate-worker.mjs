@@ -977,7 +977,7 @@ var FileStorageGate = class {
       admittedAt: this.now()
     };
     const file = this.ticketFile(holder, ticket.id);
-    if (!createExclusive(file, ticket, { durable: false })) throw new StorageRefused("unavailable", "ticket id collision");
+    writeAtomic(file, ticket, { durable: false });
     try {
       const after = this.requireGate();
       if (after.generation !== before.generation || after.phase !== before.phase) {

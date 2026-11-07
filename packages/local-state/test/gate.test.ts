@@ -454,10 +454,10 @@ describe('lock-free admission', () => {
     const dir = commonDir(), gate = openStorageGate(dir, world())
     const reg = await gate.register({ instance: token(), kind: 'mcp', release: 'x' })
     const owner = await maintenance(gate, dir)
-    const link = fs.linkSync.bind(fs)
+    const rename = fs.renameSync.bind(fs)
     let drained = false
-    const spy = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
-      link(from, to)
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      rename(from, to)
       // The ticket is now visible; a drain lands before the admitter re-reads the gate.
       if (!drained && String(to).includes(`${path.sep}tickets${path.sep}`)) {
         drained = true
