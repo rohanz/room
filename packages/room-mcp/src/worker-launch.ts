@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
 import { setImmediate as yieldTurn, setTimeout as pause } from 'node:timers/promises'
@@ -6,8 +7,9 @@ import { processToken } from './names.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcessNow, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
-import { leadClaudePluginDir, hostWorkerEffort, WORKER_EFFORTS, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
-import { workerShellEnvWarnings } from './worker-shell-env.js'
+import { workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
+import { WORKER_EFFORTS } from './hosts/types.js'
+import { leadClaudePluginDir } from './hosts/claude-install.js'
 import { writeWorkerArtifacts } from './worker-artifacts.js'
 import { workerAdapter } from './hosts/index.js'
 import { DEFAULT_CLAUDE_CHANNEL as defaultChannel } from './hosts/claude-binding.js'
@@ -130,10 +132,10 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     if (policy.effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(policy.effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
     if (command.mode === 'resume' && !command.sessionId) throw new Error('resuming a worker requires its host session id')
     const plan = await worker.plan({ tag, sessionId: command.sessionId, mode: command.mode, prompt,
-      runtime: { model: policy.model, effort: hostWorkerEffort(policy.host, policy.effort) },
+      runtime: { model: policy.model, effort: workerAdapter(policy.host).normalizeRuntime({ effort: policy.effort }).effort },
       cwd: policy.dir, logDir: s.dir, env: process.env, inheritedShellEnvFile: worker.inheritedShellEnvFile,
       claudeChannel: policy.claudeChannel === undefined ? defaultChannel : policy.claudeChannel,
-      maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir() : undefined })
+      maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir(process.env, fileURLToPath(import.meta.url)) : undefined })
     const written = writeWorkerArtifacts(s.dir, plan)
     Object.assign(env, written.envPatch)
     const priority = workerPriority({ cmd: plan.cmd, args: plan.args }, niceEnv)
@@ -161,7 +163,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     if ((policy.platform ?? process.platform) === 'win32' && !exited && !host.aborted() && proc.isRunning?.() !== false && !identity) {
       throw new WorkerLaunchError('start', 'could not verify the Windows worker process identity; stopping its retained child handle')
     }
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: [...plan.warnings, ...plan.artifactWarnings(written.outcomes), ...await workerShellEnvWarnings(policy.host, {})],
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: [...plan.warnings, ...plan.artifactWarnings(written.outcomes), ...await workerAdapter(policy.host).shellWarnings({})],
       startedAt: (policy.at ?? Date.now)(), processStartTime: identity?.startTime, processExecutable: identity?.executable }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)

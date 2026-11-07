@@ -52,16 +52,16 @@ it.runIf(process.platform === 'win32').each(['protected directory', 'explicit fi
 }, 90_000)
 
 it.runIf(process.platform === 'win32')('Windows priming skips descendants removed by Room writers during the walk', async () => {
-  const { root, room } = fixture(), tickets = path.join(room, 'admissions')
-  fs.mkdirSync(tickets, { recursive: true })
-  const names = Array.from({ length: 300 }, (_, i) => path.join(tickets, `${String(i).padStart(64, '0')}.json`))
+  const { root, room } = fixture(), records = path.join(room, 'records')
+  fs.mkdirSync(records, { recursive: true })
+  const names = Array.from({ length: 300 }, (_, i) => path.join(records, `${String(i).padStart(64, '0')}.json`))
   for (const name of names) fs.writeFileSync(name, '{}')
   // Explicit grants make every descendant need an icacls reset, so the walk runs long after enumeration.
-  execFileSync('icacls', [path.join(tickets, '*'), '/grant', '*S-1-1-0:R'], { stdio: 'pipe' })
+  execFileSync('icacls', [path.join(records, '*'), '/grant', '*S-1-1-0:R'], { stdio: 'pipe' })
   const prime = primePrivateState(root)
-  // Checkpoint: the walk enumerates the whole subtree before repairing any descendant, so once the first ticket
-  // has been reset, every name is already in its list. The same probe confirms the last ticket is not yet repaired,
-  // and the walk repairs in enumeration order (one icacls process per ticket, seconds for the remaining 150), so
+  // Checkpoint: the walk enumerates the whole subtree before repairing any descendant, so once the first record
+  // has been reset, every name is already in its list. The same probe confirms the last record is not yet repaired,
+  // and the walk repairs in enumeration order (one icacls process per record, seconds for the remaining 150), so
   // the deletion that follows within milliseconds lands on names the walk still has to repair.
   let settled = false
   prime.then(() => { settled = true }, () => { settled = true })

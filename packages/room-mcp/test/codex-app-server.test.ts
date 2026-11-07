@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocketServer } from 'ws'
-import { codexControlSocket, postCodexToolOutput, readCodexThreadStatus } from '../src/codex-app-server.js'
+import { codexControlSocket, postCodexToolOutput, readCodexThreadStatus } from '../src/hosts/codex-app-server.js'
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })

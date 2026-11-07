@@ -15,8 +15,6 @@ import { boundSession, readSessionRecord, type Session } from './session.js'
 import { openWorkerReader } from './worker-registry.js'
 import { IdleClaimsJournal } from './idle-claims.js'
 import type { NoteMsg } from '@room/shared'
-import { parentCommand, type ParentCommandReader } from './workspace.js'
-import { presenceKind } from './hosts/selection.js'
 
 export type HostKind = 'shared-app-server' | 'interactive'
 
@@ -70,9 +68,6 @@ export async function joinedPresenceWorkers(sessions: readonly Session[], hasWri
 }
 
 /** A Codex MCP under a shared `codex app-server` cannot see its thread end (registry §18); every other host is a stdio child. */
-export function hostKind(env: NodeJS.ProcessEnv = process.env, readParent: ParentCommandReader = parentCommand): HostKind {
-  return presenceKind(env, readParent)
-}
 
 /** H1 (registry §18): release this session's own claims and scope after eight idle hours, journaled so a crash replays once. */
 export async function releaseIdleHeld(s: Session, idleEpoch: string, idleMs: number, monotonicMs: () => number, pendingOnly = false): Promise<boolean> {

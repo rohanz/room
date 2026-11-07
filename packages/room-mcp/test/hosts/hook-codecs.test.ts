@@ -1,3 +1,4 @@
+import { nativeExecutableName } from '../../src/hosts/claude-hook-codec.js'
 import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { builtinModules } from 'node:module'
@@ -95,4 +96,10 @@ it.each(['source', 'shipped'])('%s transcript reducer preserves lag, cache, part
   expect(codec.reduceRuntime(event, { ...cached, transcript: { ...transcript, tail: JSON.stringify({ message: { model: 'x'.repeat(100) } }), startsMidFile: false } }).model).toBe('x'.repeat(100))
   expect(evidence.previousRuntime).toEqual({ extra: 1 })
   expect(transcript.tail).toContain('switched-model')
+})
+
+it('recognizes native versioned executable paths without guessing other hosts', () => {
+  expect(nativeExecutableName('/home/user/.local/share/claude/versions/2.1.286')).toBe('claude')
+  expect(nativeExecutableName('/usr/bin/node')).toBeUndefined()
+  expect(nativeExecutableName()).toBeUndefined()
 })

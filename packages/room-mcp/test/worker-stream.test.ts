@@ -1,8 +1,10 @@
+import { workerInput } from './fixtures/worker-input.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { workerCommand } from '../src/worker-config.js'
+import { workerAdapter } from '../src/hosts/index.js'
+import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { followUpAnswer, resumeAccepted, unawaitedBackgroundTasks, workerLogTail } from '../src/worker-process.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'room-worker-stream-'))
@@ -25,9 +27,13 @@ describe('Claude stream-json worker runs', () => {
     expect(resumeAccepted(recorded(fixture), 'claude', sid, 0)).toBe(accepted)
   })
 
-  it.each([false, true])('passes stream-json and verbose on resume=%s', resume => {
-    const args = workerCommand('claude', undefined, 'prompt', undefined, undefined,
-      { resume, sessionId: sid }).args
+  it.each([false, true])('passes stream-json and verbose on resume=%s', async resume => {
+    const args = (await workerAdapter('claude').plan(workerInput({
+      sessionId: sid,
+      mode: resume ? 'resume' : 'fresh',
+      prompt: 'prompt',
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    }))).args
     expect(args).toContain('--output-format')
     expect(args[args.indexOf('--output-format') + 1]).toBe('stream-json')
     expect(args).toContain('--verbose')

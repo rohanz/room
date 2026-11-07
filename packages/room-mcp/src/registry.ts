@@ -17,7 +17,8 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { LOCAL, type Session } from './session.js'
 import { defaultSpawner, pidPresent, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './worker-process.js'
 import { decideResume, workerRealState } from './worker-state.js'
-import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
+import { resolveConfig } from './config.js'
+import { DEFAULT_CLAUDE_CHANNEL as defaultChannel } from './hosts/claude-binding.js'
 import { launchWorkerProcess, WorkerLaunchError } from './worker-launch.js'
 import { openWorkerReader, registryForDir } from './worker-registry.js'
 import { postWorkerMessage } from './post.js'
@@ -263,7 +264,7 @@ export class Rooms {
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
   async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, options: ResumeWorkerOptions = {}): Promise<string | DeliveredResume> {
-    const { spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log = console.error, at = Date.now,
+    const { spawner = defaultSpawner, claudeChannel = defaultChannel, maxWorkers, log = console.error, at = Date.now,
       exitWaitMs = 30_000, beforeLaunch } = options
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)

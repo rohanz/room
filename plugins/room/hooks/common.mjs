@@ -1,3 +1,4 @@
+import { nativeExecutableName } from './claude-hook-codec.mjs'
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
 import { initializePrivateDirectory, privateDirectoryPath } from './private-core.mjs'
@@ -384,7 +385,8 @@ export function linuxProcessName(files) {
   }
   if (name && !/^\d+(?:\.\d+)+/.test(name)) return name
   const exe = read(files.exe)?.replace(/ \(deleted\)$/, '')
-  if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return 'claude'
+  const native = nativeExecutableName(exe)
+  if (native) return native
   return name ?? (exe ? path.basename(exe) : undefined)
 }
 

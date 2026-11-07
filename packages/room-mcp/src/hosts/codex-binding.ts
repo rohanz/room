@@ -1,3 +1,4 @@
+import { parentCommand } from './parent-command.js'
 import type { Env, HostAdapter } from './types.js'
 
 const value = (env: Env, key: string) => env[key]?.trim() || undefined
@@ -23,7 +24,7 @@ export const codexPreBinding: HostAdapter['preBinding'] = {
 }
 
 /** Keep the existing early returns: do not probe a parent for workers, other hosts or Windows. */
-export function deferWorkspace(env: Env, readParent: () => string, platform: string): boolean {
+export function deferWorkspace(env: Env, readParent: () => string = parentCommand, platform: string = process.platform): boolean {
   if (env.ROOM_HOST !== 'codex' || value(env, 'ROOM_DIR')) return false
   if (platform === 'win32') return true
   try {

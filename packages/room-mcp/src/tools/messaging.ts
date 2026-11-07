@@ -1,3 +1,4 @@
+import { idleWakeAdvice } from '../hosts/prompt.js'
 import { requireWorkerEvidence } from '../worker-store.js'
 import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
@@ -410,9 +411,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           // Standalone handler callers may not have installed inbox delivery.
           const unread = state.inbox?.(s, batch) ?? ''
           const health = state.deliveryHealth?.()
-          const wakeAdvice = !questionId && !claimId && health?.host === 'claude' && health.path?.availability === 'configured' && health.degraded === undefined
-            ? 'Nothing owed; this session is woken when a worker finishes or asks you something, so end your turn instead of calling room_wait again. Call room_wait only with a questionId or claimId. A command of your own (including one the host moved to the background) reports through the host, not through room_wait.'
-            : undefined
+          const wakeAdvice = !questionId && !claimId ? idleWakeAdvice(health) : undefined
           const facts = unread
             ? `timeout after ${timeoutMs}ms: unread messages delivered above.`
             : running.length

@@ -3,7 +3,8 @@ import { execFileSync } from 'node:child_process'
 import fs, { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveSessionHost, resolveSessionRuntime, resolveConfig, LOCAL } from '../src/config.js'
+import { resolveSessionRuntime, resolveConfig, LOCAL } from '../src/config.js'
+import { sessionHost } from '../src/hosts/selection.js'
 import { writeChoice } from '../src/choice.js'
 
 const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); execFileSync('git', ['-C', dir, 'init', '-q']); return dir }
@@ -132,10 +133,10 @@ it('overlays SessionStart values with a newer runtime.json from the before-edit 
 })
 
 it('identifies the host from the environment and the parent process only', () => {
-  expect(resolveSessionHost({ CLAUDE_CODE_SESSION_ID: 'current' }, () => 'node')).toBe('claude')
+  expect(sessionHost({ CLAUDE_CODE_SESSION_ID: 'current' }, () => 'node')).toBe('claude')
   // A Claude Bash subprocess launching Codex is a Codex session.
-  expect(resolveSessionHost({ CLAUDE_CODE_SESSION_ID: 'claude-parent' }, () => 'codex')).toBe('codex')
-  expect(resolveSessionHost({ CLAUDE_CODE_SESSION_ID: 'claude-parent', ROOM_HOST: 'codex' }, () => 'node')).toBe('codex')
+  expect(sessionHost({ CLAUDE_CODE_SESSION_ID: 'claude-parent' }, () => 'codex')).toBe('codex')
+  expect(sessionHost({ CLAUDE_CODE_SESSION_ID: 'claude-parent', ROOM_HOST: 'codex' }, () => 'node')).toBe('codex')
 })
 
 it.each(['decalred', '', 'ful'])('never widens invalid sharing %j from arguments or environment', async raw => {

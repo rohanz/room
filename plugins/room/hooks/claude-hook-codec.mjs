@@ -78,6 +78,10 @@ var claudeHookCodec = {
   command: hookCommand,
   pathFields: hookPathFields
 };
+function nativeExecutableName(exe) {
+  if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return "claude";
+}
 export {
-  claudeHookCodec
+  claudeHookCodec,
+  nativeExecutableName
 };

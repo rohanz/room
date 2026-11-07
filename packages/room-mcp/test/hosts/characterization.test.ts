@@ -1,16 +1,23 @@
+import { workerInput } from '../fixtures/worker-input.js'
+import { runLogFacts } from '../../src/run-log-facts.js'
+const missingClaudeLogSession = (file: string, id: string, start: number) => { const f = runLogFacts(file, start).get('claude')!; return f.missingSessions.has(id) && !f.acceptedSessions.has(id) }
+import { CODEX_SHELL_FILTER } from '../../src/hosts/codex-shell.js'
+import { codexPreBinding as callMetadata, deferWorkspace } from '../../src/hosts/codex-binding.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { workerCommand } from '../../src/worker-config.js'
-import { createWakeSender, createMidTurnSender } from '../../src/wake-path.js'
+import { workerAdapter } from '../../src/hosts/index.js'
+import { createMidTurnSender } from '../../src/hosts/codex-wake.js'
+import { createWakeSender } from '../../src/hosts/wake.js'
 import { evaluateDoctor } from '../../src/doctor.js'
-import * as claude from '../../src/hosts/claude.js'
-import * as codex from '../../src/hosts/codex.js'
+import { claudePlugin, leadClaudePluginDir } from '../../src/hosts/claude-install.js'
+import { claudeWakeAvailable } from '../../src/hosts/claude-wake.js'
+import * as codex from '../../src/hosts/codex-install.js'
 import { createLogDecoder } from '../../src/hosts/index.js'
-import { followUpAnswer, resumeAccepted, missingClaudeSession } from '../../src/worker-process.js'
+import { followUpAnswer, resumeAccepted } from '../../src/worker-process.js'
 import { sessionDirectory } from '../../src/session.js'
 import { argvFixtures, hookEnvelopes, toolEnvelopes, portExamples, sessionId } from './fixtures.js'
 // The shipped hook helper is deliberately plain ESM, with no MCP process dependency.
@@ -30,23 +37,34 @@ function hook(script: string, event: object, args: readonly string[] = []): Prom
 }
 
 describe('current worker argv (no native host invocation)', () => {
-  it.each(argvFixtures)('$host $mode', fixture => {
-    expect(workerCommand(fixture.host, 'fixture-model', 'fixture task', '', 'minimal', {
-      tag: 'fixture', sessionId, resume: fixture.mode === 'resume', maxBudgetUsd: '2.50',
-    })).toEqual({ cmd: fixture.host, args: fixture.args })
+  it.each(argvFixtures)('$host $mode', async fixture => {
+    expect((await workerAdapter(fixture.host).plan(workerInput({
+      tag: 'fixture',
+      sessionId,
+      maxBudgetUsd: '2.50',
+      mode: fixture.mode,
+      runtime: workerAdapter(fixture.host).normalizeRuntime({ model: 'fixture-model', effort: 'minimal' }),
+      prompt: 'fixture task',
+    })))).toMatchObject({ cmd: fixture.host, args: fixture.args })
   })
-  it('keeps explicit empty channel, development plugin settings and shell hook opt-in', () => {
-    const plain = workerCommand('claude', undefined, 'task', '', undefined, { wakeChannels: true })
+  it('keeps explicit empty channel, development plugin settings and shell hook opt-in', async () => {
+    const plain = (await workerAdapter('claude').plan(workerInput({
+      wakeChannels: true,
+    })))
     expect(plain.args).not.toContain('--dangerously-load-development-channels')
-    const configured = workerCommand('claude', undefined, 'task', 'plugin:room@room', undefined, { pluginDir: '/fixture/plugin', wakeChannels: true, shellEnvHook: true })
+    const configured = (await workerAdapter('claude').plan(workerInput({
+      shellEnvHook: true,
+      wakeChannels: true,
+      pluginDir: '/fixture/plugin',
+      claudeChannel: 'plugin:room@room',
+    })))
     expect(configured.args.slice(0, 3)).toEqual(['--plugin-dir', '/fixture/plugin', '--settings'])
     const settings = JSON.parse(configured.args[3])
     expect(settings.enabledPlugins).toEqual({ 'room@room': false })
     expect(settings.hooks.PreToolUse[0]).toMatchObject({ matcher: 'PowerShell', hooks: [{ type: 'command', command: 'node', timeout: 5 }] })
     expect(configured.args.slice(4, 6)).toEqual(['--dangerously-load-development-channels', 'plugin:room@room'])
-    expect(() => workerCommand('codex', undefined, 'task', '', undefined, { resume: true })).toThrow('host session id')
-    expect(claude.leadClaudePluginDir({ CLAUDE_PLUGIN_ROOT: '/fixture/plugin', CLAUDE_CONFIG_DIR: temp() })).toBe('/fixture/plugin')
-    expect(codex.CODEX_SHELL_FILTER).toBe('shell_environment_policy.filters={"ROOM_*"="exclude"}')
+    expect(leadClaudePluginDir({ CLAUDE_PLUGIN_ROOT: '/fixture/plugin', CLAUDE_CONFIG_DIR: temp() }, import.meta.filename)).toBe('/fixture/plugin')
+    expect(CODEX_SHELL_FILTER).toBe('shell_environment_policy.filters={"ROOM_*"="exclude"}')
   })
 })
 
@@ -110,7 +128,7 @@ describe('installation evidence compatibility exports', () => {
   it('Claude directory marketplace reads live files and preserves stale bookkeeping separately', () => {
     const dir = temp(), plugin = path.join(dir, 'plugins/room')
     write(path.join(plugin, '.claude-plugin/plugin.json'), { version: '0.17.33' })
-    const actual = claude.claudePlugin({ version: '0.17.1', installPath: '/fixture/cache' }, [{ name: 'room', source: 'directory', path: dir }])
+    const actual = claudePlugin({ version: '0.17.1', installPath: '/fixture/cache' }, [{ name: 'room', source: 'directory', path: dir }])
     expect(actual).toEqual({ version: '0.17.33', recordedVersion: '0.17.1', root: plugin, cached: false })
     expect(evaluateDoctor({ repo: true, claudeCli: true, codexCli: false, claude: actual }, '0.17.33').some(row => row.name === 'Claude Code install record')).toBe(false)
   })
@@ -137,7 +155,7 @@ describe('installation evidence compatibility exports', () => {
 describe('current wake outcomes never imply a receipt', () => {
   it('Claude socket write and admitted fallback preserve outcome evidence', async () => {
     const env = { CLAUDE_CODE_MESSAGING_SOCKET: '/fixture/socket' }
-    expect(claude.claudeWakeAvailable({ host: 'claude', env })).toBe(true)
+    expect(claudeWakeAvailable({ host: 'claude', env })).toBe(true)
     const send = createWakeSender({ env, notify: vi.fn(), post: async () => {} })
     expect(await send({ host: 'claude', id: sessionId }, 'pointer')).toBe('socket')
     expect(send.lastAttempt?.()).toMatchObject({ via: 'socket', outcome: 'written' })
@@ -159,7 +177,7 @@ describe('current wake outcomes never imply a receipt', () => {
     expect(await send({ host: 'codex', id: sessionId }, 'pointer')).toBe('queue')
     expect(queue).toHaveBeenCalledWith(sessionId, 'pointer')
     expect(send.lastAttempt?.()).toMatchObject({ via: 'queue', outcome: 'queued' })
-    expect(codex.codexThreadFromMeta({ _meta: { 'x-codex-turn-metadata': { thread_id: sessionId } } })).toBe(sessionId)
+    expect(callMetadata.decodeCall({ _meta: { 'x-codex-turn-metadata': { thread_id: sessionId } } }._meta).toolSessionId).toBe(sessionId)
   })
   it.each([
     [{ kind: 'joined', turnId: 'turn' }, 'turn', 'submitted'],
@@ -199,7 +217,7 @@ describe('log acceptance/final facts and typed evidence', () => {
   it('pins Claude assistant acceptance, zero-turn missing session and final-result precedence', () => {
     const file = path.join(temp(), 'run.jsonl')
     fs.writeFileSync(file, JSON.stringify({ type: 'result', session_id: sessionId, subtype: 'error_during_execution', is_error: true, num_turns: 0 }) + '\n')
-    expect(missingClaudeSession(file, sessionId, 0)).toBe(true)
+    expect(missingClaudeLogSession(file, sessionId, 0)).toBe(true)
     expect(resumeAccepted(file, 'claude', sessionId, 0)).toBe(false)
     fs.appendFileSync(file, [{ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: 'interim' }] } }, { type: 'result', result: 'final' }].map(e => JSON.stringify(e) + '\n').join(''))
     expect(resumeAccepted(file, 'claude', sessionId, 0)).toBe(true)

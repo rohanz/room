@@ -1,3 +1,5 @@
+import { workerInput } from './fixtures/worker-input.js'
+import { workerRuntimeForHost } from '../src/hosts/selection.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -5,7 +7,8 @@ import { afterEach, expect, it } from 'vitest'
 import type { Identity } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { resolveDisplayedName, type NameContext } from '../src/tools/names.js'
-import { hostDefaultRuntime, workerCommand, workerRuntime } from '../src/worker-config.js'
+import { workerAdapter } from '../src/hosts/index.js'
+import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -46,19 +49,24 @@ it('includes a running worker in owner ambiguity but ignores a done worker', asy
     .toEqual({ name: 'cy+codex' })
 })
 
-it('uses request, per-host, generic and then host worker defaults in that order', () => {
+it('uses request, per-host, generic and then host worker defaults in that order', async () => {
   const env = { ROOM_WORKER_MODEL: 'generic', ROOM_WORKER_EFFORT: 'low', ROOM_CODEX_WORKER_MODEL: 'codex-model', ROOM_CODEX_WORKER_EFFORT: 'high' }
-  expect(workerRuntime('codex', 'named', 'medium', env)).toEqual({ model: 'named', effort: 'medium' })
-  expect(workerRuntime('codex', undefined, undefined, env)).toEqual({ model: 'codex-model', effort: 'high' })
-  expect(workerRuntime('claude', undefined, undefined, env)).toEqual({ model: 'generic', effort: 'low' })
-  expect(workerRuntime('codex', undefined, undefined, {})).toEqual({ model: undefined, effort: undefined })
+  expect(workerRuntimeForHost('codex', { model: 'named', effort: 'medium' }, env)).toEqual({ model: 'named', effort: 'medium' })
+  expect(workerRuntimeForHost('codex', { model: undefined, effort: undefined }, env)).toEqual({ model: 'codex-model', effort: 'high' })
+  expect(workerRuntimeForHost('claude', { model: undefined, effort: undefined }, env)).toEqual({ model: 'generic', effort: 'low' })
+  expect(workerRuntimeForHost('codex', { model: undefined, effort: undefined }, {})).toEqual({ model: undefined, effort: undefined })
   for (const host of ['codex', 'claude'] as const) {
-    const command = workerCommand(host, undefined, 'task', undefined, undefined)
+    const command = (await workerAdapter(host).plan(workerInput({
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    })))
     expect(command.args).not.toContain('-m')
     expect(command.args).not.toContain('--model')
     expect(command.args).not.toContain('--effort')
     expect(command.args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false)
-    const named = workerCommand(host, 'named', 'task', undefined, 'high').args
+    const named = (await workerAdapter(host).plan(workerInput({
+      runtime: workerAdapter(host).normalizeRuntime({ model: 'named', effort: 'high' }),
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    }))).args
     expect(named).toContain('named')
     expect(named).toContain(host === 'codex' ? 'model_reasoning_effort=high' : '--effort')
   }
@@ -71,7 +79,7 @@ it('reads top-level Codex settings and project Claude settings for host-default 
   fs.writeFileSync(path.join(codex, 'config.toml'), 'model = "configured-codex"\nmodel_reasoning_effort = "high"\n[profile.other]\nmodel = "ignored"\n')
   fs.writeFileSync(path.join(claude, 'settings.json'), JSON.stringify({ model: 'configured-claude' }))
   fs.writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ model: 'project-claude' }))
-  expect(hostDefaultRuntime('codex', project, { CODEX_HOME: codex })).toEqual({ model: 'configured-codex', effort: 'high' })
-  expect(hostDefaultRuntime('claude', project, { CLAUDE_CONFIG_DIR: claude })).toEqual({ model: 'project-claude' })
-  expect(hostDefaultRuntime('codex', project, { CODEX_HOME: path.join(dir, 'missing') })).toEqual({})
+  expect(workerAdapter('codex', { CODEX_HOME: codex }).defaults(project)).toEqual({ model: 'configured-codex', effort: 'high' })
+  expect(workerAdapter('claude', { CLAUDE_CONFIG_DIR: claude }).defaults(project)).toEqual({ model: 'project-claude' })
+  expect(workerAdapter('codex', { CODEX_HOME: path.join(dir, 'missing') }).defaults(project)).toEqual({})
 })

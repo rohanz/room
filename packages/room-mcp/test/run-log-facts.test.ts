@@ -1,10 +1,11 @@
+const missingClaudeLogSession = (file: string, id: string, start: number) => { const f = runLogFacts(file, start).get('claude')!; return f.missingSessions.has(id) && !f.acceptedSessions.has(id) }
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { clearRunLogFactsForTests, runLogFacts, scanRunLog, runLogIdentity } from '../src/run-log-facts.js'
 import { retainedSessionMissing } from '../src/hosts/lifecycle.js'
-import { followUpAnswer, missingClaudeSession, resumeAccepted } from '../src/worker-process.js'
+import { followUpAnswer, resumeAccepted } from '../src/worker-process.js'
 
 let dir: string
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-run-log-')); clearRunLogFactsForTests() })
@@ -22,12 +23,12 @@ it('derives acceptance, missing-session and answer facts over the whole run, not
   const start = Buffer.byteLength(earlier)
   expect(resumeAccepted(file, 'claude', 'S', start)).toBe(true)
   expect(resumeAccepted(file, 'claude', 'other', start)).toBe(false)
-  expect(missingClaudeSession(file, 'S', start)).toBe(false)
+  expect(missingClaudeLogSession(file, 'S', start)).toBe(false)
   expect(followUpAnswer(file, 'claude', start)).toBe('final')
 
   const missing = path.join(dir, 'm.log')
   fs.writeFileSync(missing, line({ type: 'result', session_id: 'S', subtype: 'error_during_execution', is_error: true, num_turns: 0 }))
-  expect(missingClaudeSession(missing, 'S', 0)).toBe(true)
+  expect(missingClaudeLogSession(missing, 'S', 0)).toBe(true)
   expect(resumeAccepted(missing, 'claude', 'S', 0)).toBe(false)
 
   const codex = path.join(dir, 'c.log')

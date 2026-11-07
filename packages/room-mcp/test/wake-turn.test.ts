@@ -11,9 +11,10 @@ import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
 import { createRelevance } from '../src/relevance.js'
 import type { WakeReconcilerOptions } from '../src/wake-reconciler.js'
-import { createMidTurnSender, createWakeSender } from '../src/wake-path.js'
+import { createMidTurnSender } from '../src/hosts/codex-wake.js'
+import { createWakeSender } from '../src/hosts/wake.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
-import { CodexTurnProbe } from '../src/codex-turn.js'
+import { CodexTurnProbe } from '../src/hosts/codex-turn.js'
 import { formatDeliveryHealth } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -58,7 +59,7 @@ function appendItems(rollout: string, count = 1_300) {
 }
 
 it('queues a standalone idle thread when the daemon explicitly reports it not loaded', async () => {
-  const r = rig(false, { codexTurn: new CodexTurnProbe({ status: async () => ({ kind: 'unknown', reason: 'notLoaded' }) }) })
+  const r = rig(false, { turnProbe: new CodexTurnProbe({ status: async () => ({ kind: 'unknown', reason: 'notLoaded' }) }) })
   try {
     r.note()
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
@@ -85,7 +86,7 @@ it('does not retry uncertain mid-turn submissions or count them as confirmed wak
 it('treats active-to-idle between probes as a normal race with no degraded notice', async () => {
   let active = true
   const post = vi.fn(async () => { active = false; return { kind: 'idle' as const } })
-  const r = rig(true, { codexTurn: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
+  const r = rig(true, { turnProbe: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
   try {
     r.note()
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
@@ -98,7 +99,7 @@ it('treats active-to-idle between probes as a normal race with no degraded notic
 it('backs off unknown host probes even when unrelated document changes reconcile', async () => {
   vi.useFakeTimers()
   const state = vi.fn(async () => ({ kind: 'unknown' as const, source: 'host' as const, reason: 'status-unavailable' }))
-  const r = rig(false, { codexTurn: { state, busy: async () => true } })
+  const r = rig(false, { turnProbe: { state, busy: async () => true } })
   try {
     r.note()
     await vi.advanceTimersByTimeAsync(0)
@@ -123,7 +124,7 @@ it('offers a bounded notice for a new degradation reason and withdraws it on rec
     if (result === 'throw') throw new Error('private host error')
     return result === 'joined' ? { kind: 'joined' as const, turnId: 'turn' } : { kind: 'unavailable' as const, reason: 'private error' }
   })
-  const r = rig(true, { codexTurn: { busy: async () => true }, midTurn: createMidTurnSender({ env: {}, post }), busyPollMs: 1000 })
+  const r = rig(true, { turnProbe: { busy: async () => true }, midTurn: createMidTurnSender({ env: {}, post }), busyPollMs: 1000 })
   try {
     r.note()
     await vi.advanceTimersByTimeAsync(0)
@@ -549,7 +550,7 @@ it('rechecks the bound session after a busy probe', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
   let bound = { id: 'initial', host: 'codex' as const }
-  const r = rig(true, { midTurn, bound: () => bound, codexTurn: { busy: async () => { bound = { id: bound.id === 'initial' ? 'replacement' : 'initial', host: 'codex' }; return true } }, pollMs: 1000 })
+  const r = rig(true, { midTurn, bound: () => bound, turnProbe: { busy: async () => { bound = { id: bound.id === 'initial' ? 'replacement' : 'initial', host: 'codex' }; return true } }, pollMs: 1000 })
   try {
     r.note()
     await vi.advanceTimersByTimeAsync(80)
@@ -611,5 +612,50 @@ it('uses kind priorities for legacy messages with no explicit priority', async (
     r.event('task_complete')
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
     expect(r.texts[0]).toContain('worker finished')
+  } finally { r.close() }
+})
+
+it.each(['joined', 'uncertain', 'idle'] as const)('replays a turn finishing during an awaited %s send without receipts or duplicate wakes', async outcome => {
+  vi.useFakeTimers()
+  let active = true
+  let finish!: () => void
+  const post = vi.fn(async () => {
+    await new Promise<void>(resolve => { finish = resolve })
+    return outcome === 'joined' ? { kind: outcome, turnId: 'ending-turn' }
+      : outcome === 'uncertain' ? { kind: outcome, reason: 'lost after write' } : { kind: outcome }
+  })
+  const r = rig(true, { turnProbe: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
+  try {
+    const message = r.note()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(post).toHaveBeenCalledOnce()
+    r.wakes.reconcile() // a document update while the transport awaits
+    active = false
+    finish()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(post).toHaveBeenCalledOnce()
+    expect(r.texts).toHaveLength(1)
+    expect(r.ledger.candidates(r.s).map(m => m.id)).toContain(message.id)
+    expect(r.wakes.health().handedToHost).toBe(0)
+    r.wakes.reconcile()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(r.texts).toHaveLength(1)
+  } finally { r.close() }
+})
+
+it('takes delivery status from the bound host wake facet, for health and for off suppression', async () => {
+  const describe = (availability: 'configured' | 'off') => () => ({ mode: availability === 'off' ? 'off' as const : 'auto' as const, transport: availability === 'off' ? 'none' as const : 'turn/queue' as const, availability })
+  const texts: string[] = []
+  const send = Object.assign(async (_target: unknown, text: string) => { texts.push(text); return 'queue' as const }, { describe: describe('configured') })
+  const r = rig(false, { send })
+  try {
+    // Only the Codex facet adds its limitation, so its presence proves health came through the facet.
+    expect(r.wakes.health().path).toEqual({ mode: 'auto', transport: 'turn/queue', availability: 'configured', limitation: 'Submission is not a receipt.' })
+    send.describe = describe('off')
+    r.note()
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(texts).toEqual([])
+    expect(r.wakes.health().path).toMatchObject({ availability: 'off', limitation: 'Submission is not a receipt.' })
+    expect(r.wakes.health().degraded).toBeUndefined()
   } finally { r.close() }
 })

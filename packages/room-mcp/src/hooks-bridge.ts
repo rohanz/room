@@ -1,3 +1,4 @@
+import { missingPreEditGuidance, hookWarningPolicy } from './hosts/hook-guidance.js'
 /**
  * The fenced `room/sessions/<sid>/state.json` writer (ledger "Local files"): counts and coordination for
  * the plugin hooks while this session holds its participant, never message content. The hooks take content
@@ -10,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { claimInMyLines, coordinationPaths, digestPath, gitBlobHash, neighbours, participantsView, displayName, formatPlans, manifestPaths, snapshotPath, snapshotStillCurrent, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
-import { resolveSessionHost } from './config.js'
+import { sessionHost } from './hosts/selection.js'
 import { writeAtomic } from './leases.js'
 import { workerText } from './tools/context.js'
 import { DISK_TEXT_LIMIT, readBoundedHistoricalText } from './tools/disk-text.js'
@@ -199,12 +200,6 @@ function newHookHealth(now: number): HookHealth {
   return { since: now, calls: 0, noted: false, observed: false, joinNoted: false, scopeNoted: false }
 }
 
-function missingPreEditGuidance(s: Session): string {
-  const host = resolveSessionHost()
-  if (host === 'claude') return "Room has not seen its before-edit hook run in this session although its tools are in use: the plugin's hooks may not be running; reinstall or re-enable the plugin."
-  if (host === 'codex') return 'Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.'
-  return 'Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.'
-}
 
 /**
  * Diagnose Claude only after this process has seen the bound host session change its own tree.
@@ -227,21 +222,21 @@ export function hookHealthNote(s: Session, sessionDir: string | undefined, expec
   if (!expected || health.observed || health.noted) return ''
   // Only Codex can skip an unapproved hook silently, so only Codex is told up front. Elsewhere the hook is silent
   // while the agent is alone, which an agent cannot tell from a missing hook: wait for the evidence below instead.
-  const upFront = team && resolveSessionHost() === 'codex'
+  const upFront = team && hookWarningPolicy(sessionHost()).upFront
   if (upFront && tool === 'room_join' && !health.joinNoted && !health.scopeNoted) {
     health.joinNoted = true
-    return missingPreEditGuidance(s)
+    return missingPreEditGuidance(sessionHost())
   }
   if (upFront && tool === 'room_scope' && !health.scopeNoted) {
     health.scopeNoted = true
-    return missingPreEditGuidance(s)
+    return missingPreEditGuidance(sessionHost())
   }
   if (health.joinNoted || health.scopeNoted) return ''
   if (!health.calls) health.since = now
   health.calls++
   if (health.calls < 2 || now - health.since < 30_000) return ''
-  if (resolveSessionHost() === 'claude' &&
+  if (hookWarningPolicy(sessionHost()).requiresEdit &&
       !(manifestPaths(s.room, s.me.name).length && (s.room.manifestHead.get(s.me.name)?.scannedAt ?? -Infinity) >= sessionStartedAt)) return ''
   health.noted = true
-  return missingPreEditGuidance(s)
+  return missingPreEditGuidance(sessionHost())
 }

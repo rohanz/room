@@ -15,10 +15,12 @@ import { isAgentic, manifestPaths, defaultPriority, parseClaimRelease, shouldWak
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
-import { claudeWakeUnavailable } from './prompt.js'
+import { wakeUnavailable } from './hosts/prompt.js'
 import { waitConsumesMessage } from './tools/messaging.js'
-import type { SendMidTurn, SendWake, WakeTarget, WakeVia, WakeAttempt, WakePathStatus } from './wake-path.js'
-import { CodexTurnProbe, type CodexWakeProbe } from './codex-turn.js'
+import type { SendMidTurn, SendWake, WakeTarget, WakeVia, WakeAttempt, WakePathStatus } from './hosts/wake-types.js'
+import type { WakeFacetOptions } from './hosts/wake.js'
+import { createWakeFacets, type WakeFacet } from './hosts/wake.js'
+import type { HostId, Target, TurnState as HostTurnState } from './hosts/types.js'
 
 /** Failed idle sends retry in bursts of three, then cool down before trying again. */
 const BACKOFF_MS = [1_000, 3_000]
@@ -37,9 +39,9 @@ const MAX_ATTEMPTS = 3
 const RETRY_COOLDOWN_MS = 60_000
 const UNKNOWN_BACKOFF_MS = [2_000, 5_000, 30_000]
 const HEALTH_SAMPLE_LIMIT = 1_000
-type TurnState = Awaited<ReturnType<CodexTurnProbe['state']>>
+type TurnState = Exclude<HostTurnState, { kind: 'unneeded' }> & { reason?: string }
 export interface DeliveryHealth {
-  host: 'codex' | 'claude' | 'unbound'
+  host: HostId | 'unbound'
   path?: WakePathStatus
   state?: TurnState
   attempt?: WakeAttempt
@@ -74,7 +76,7 @@ export interface WakeReconcilerOptions {
   windowMs?: number
   pollMs?: number
   busyPollMs?: number
-  codexTurn?: CodexWakeProbe
+  turnProbe?: WakeFacetOptions['probe']
 }
 
 export class WakeReconciler {
@@ -104,18 +106,20 @@ export class WakeReconciler {
   private state?: TurnState
   private degraded?: DeliveryHealth['degraded']
   private degradedNotice?: string
-  private readonly codexTurn: CodexWakeProbe
+  private readonly facet: (host: HostId) => WakeFacet
   private readonly releaseChecks = new Map<string, { own: boolean; at: number }>()
   /** Messages already logged as held back while alone (one line each). */
   private readonly held = new Set<string>()
 
-  constructor(private readonly o: WakeReconcilerOptions) { this.codexTurn = o.codexTurn ?? new CodexTurnProbe() }
+  /** Status comes from the bound host's wake facet, the same facet that sends. */
+  private describe(target: WakeTarget) { return this.facet(target.host).describe({ ...target, surface: 'interactive' }) }
+  constructor(private readonly o: WakeReconcilerOptions) { this.facet = createWakeFacets({ send: o.send, midTurn: o.midTurn, probe: o.turnProbe }) }
 
   /** Aggregate the retained ledger, not a second history. No names, ids, payloads or host errors escape. */
   health(): DeliveryHealth {
     const target = this.o.bound()
     const current = target && this.bindingKey === `${target.host}\0${target.id}`
-    const health: DeliveryHealth = { host: target?.host ?? 'unbound', path: target && this.o.send.describe?.(target),
+    const health: DeliveryHealth = { host: target?.host ?? 'unbound', path: target && this.describe(target),
       state: current ? this.state : undefined, degraded: this.degradation(), retainedAddressed: 0, pendingAddressed: 0, handedToHost: 0, answersRecorded: 0, wakeRecorded: 0, uncertainWakeRecorded: 0 }
     health.attempt = target && [this.o.send.lastAttempt?.(target), this.o.midTurn?.lastAttempt?.(target)]
       .filter((a): a is WakeAttempt => !!a).sort((a, b) => b.at - a.at)[0]
@@ -160,7 +164,7 @@ export class WakeReconciler {
   degradation(): DeliveryHealth['degraded'] {
     const target = this.o.bound()
     if (!target) return this.degraded === 'unbound' ? 'unbound' : undefined
-    return target && this.bindingKey === `${target.host}\0${target.id}` && this.o.send.describe?.(target).availability !== 'off'
+    return target && this.bindingKey === `${target.host}\0${target.id}` && this.describe(target)?.availability !== 'off'
       ? this.degraded : undefined
   }
 
@@ -173,7 +177,7 @@ export class WakeReconciler {
   /** Watch a joined room: any change to it (bus, receipts, outcomes, claims) reconciles. */
   attach(s: Session): void {
     if (this.sessions.has(s)) return
-    s.awareness.setLocalStateField('wakeUnavailable', claudeWakeUnavailable(s.dir))
+    s.awareness.setLocalStateField('wakeUnavailable', wakeUnavailable(s.dir))
     const kick = () => this.reconcile()
     s.room.doc.on('update', kick)
     this.sessions.set(s, () => s.room.doc.off('update', kick))
@@ -261,24 +265,22 @@ export class WakeReconciler {
       this.retryAfter.clear(); this.unknownFailures = 0; this.unknownNextAt = 0
       this.midTurnNextAt = 0; this.sendNextAt = 0
     }
-    if (this.o.send.describe?.(target).availability === 'off') { this.recover(); return }
-    let busy = false
-    if (target.host === 'codex') {
-      if (this.codexTurn.state) {
-        if (this.now() < this.unknownNextAt) { this.arm(this.unknownNextAt - this.now()); return }
-        this.state = await this.codexTurn.state(target.id)
-        if (this.state.kind === 'unknown') {
-          const delay = UNKNOWN_BACKOFF_MS[Math.min(this.unknownFailures++, UNKNOWN_BACKOFF_MS.length - 1)]
-          this.unknownNextAt = this.now() + delay
-          this.degrade('host-state-unknown')
-          this.arm(delay)
-          return
-        }
-        this.unknownFailures = 0; this.unknownNextAt = 0
-        if (this.degraded === 'host-state-unknown') this.recover()
-        busy = this.state.kind === 'active'
-      } else busy = await this.codexTurn.busy(target.id)
+    if (this.describe(target)?.availability === 'off') { this.recover(); return }
+    const facet = this.facet(target.host)
+    const facetTarget: Target = { ...target, surface: 'interactive' }
+    if (this.now() < this.unknownNextAt) { this.arm(this.unknownNextAt - this.now()); return }
+    const state = await facet.state(facetTarget)
+    if (facet.reportsState && state.kind !== 'unneeded') this.state = state
+    if (state.kind === 'unknown') {
+      const delay = UNKNOWN_BACKOFF_MS[Math.min(this.unknownFailures++, UNKNOWN_BACKOFF_MS.length - 1)]
+      this.unknownNextAt = this.now() + delay
+      this.degrade('host-state-unknown')
+      this.arm(delay)
+      return
     }
+    this.unknownFailures = 0; this.unknownNextAt = 0
+    if (this.degraded === 'host-state-unknown') this.recover()
+    const busy = state.kind === 'active'
     const windowMs = this.o.windowMs ?? WINDOW_MS
     const since = this.lastSentAt === undefined ? Infinity : this.now() - this.lastSentAt
     if (since < windowMs) { this.arm(windowMs - since); return }
@@ -303,7 +305,8 @@ export class WakeReconciler {
         this.midTurnNextAt = this.now() + (this.o.busyPollMs ?? BUSY_POLL_MS)
         for (const item of urgent) { const key = deliveryKey(item); this.midTurnAttempts.set(key, (this.midTurnAttempts.get(key) ?? 0) + 1) }
         try {
-          const via = await this.o.midTurn(target, this.pointer(urgent))
+          const result = await facet.send(facetTarget, this.pointer(urgent), 'active')
+          const via = result.kind === 'submitted' ? result.via : result.kind === 'uncertain' ? 'uncertain-turn' : result.kind === 'idle' ? 'idle' : undefined
           if (this.stopped) return
           if (via === 'turn' || via === 'uncertain-turn') {
             this.midTurnFailure = undefined
@@ -313,7 +316,7 @@ export class WakeReconciler {
             const wakes = this.wakes(), at = this.now()
             for (const { s, m } of urgent) (wakes[s.roomName] ??= {})[m.id] = { via: 'turn', at, ...(via === 'uncertain-turn' && { uncertain: true }) }
             this.persist()
-            this.o.log?.(`wake: ${via === 'turn' ? 'submitted' : 'uncertain submission of'} mid-turn pointer to codex session ${target.id} via turn for ${urgent.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
+            this.o.log?.(`wake: ${via === 'turn' ? 'submitted' : 'uncertain submission of'} mid-turn pointer to ${target.host} session ${target.id} via turn for ${urgent.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
           } else if (via === 'idle') {
             this.recover()
             for (const item of urgent) this.midTurnAttempts.delete(deliveryKey(item))
@@ -321,7 +324,7 @@ export class WakeReconciler {
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e)
           const key = `${target.id}\0${reason}`
-          if (this.midTurnFailure !== key) this.o.log?.(`wake: mid-turn failed for codex session ${target.id}: ${reason}`)
+          if (this.midTurnFailure !== key) this.o.log?.(`wake: mid-turn failed for ${target.host} session ${target.id}: ${reason}`)
           this.midTurnFailure = key
           this.degrade('transport-failed')
         }
@@ -345,7 +348,10 @@ export class WakeReconciler {
       if (count === MAX_ATTEMPTS) this.retryAfter.set(key, this.now() + RETRY_COOLDOWN_MS)
     }
     let via: WakeVia | undefined
-    try { via = await this.o.send(target, this.pointer(due)) }
+    try {
+      const result = await facet.send(facetTarget, this.pointer(due), 'idle')
+      via = result.kind === 'submitted' ? result.via : undefined
+    }
     catch (e) {
       this.degrade('transport-failed')
       const delays = this.o.backoffMs ?? BACKOFF_MS

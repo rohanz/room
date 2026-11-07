@@ -1,3 +1,4 @@
+import type { CodexWakeProbe as TurnProbe } from '../hosts/codex-turn.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Version } from '@room/shared'
@@ -51,10 +52,10 @@ export interface ToolCtx {
   /** Collection exit grace period; injectable for tests. */
   sleep?: (ms: number) => Promise<void>
   /** How a content-free wake reaches the bound host session (default: the Codex queue or Claude Code's inbox socket). */
-  wake?: import('../wake-path.js').SendWake
-  midTurn?: import('../wake-path.js').SendMidTurn
+  wake?: import('../hosts/wake-types.js').SendWake
+  midTurn?: import('../hosts/wake-types.js').SendMidTurn
   /** Prefer supported host status; a bounded legacy probe is available for older/standalone hosts. */
-  wakeProbe?: import('../codex-turn.js').CodexWakeProbe
+  wakeProbe?: TurnProbe
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
   /** Pull-request integration; injectable for tests. */

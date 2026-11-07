@@ -22,9 +22,9 @@ function command(input: WorkerCommandInput) {
     : ['exec', '-s', 'workspace-write', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
 }
 
-export function createCodexWorker(env: Env = process.env): Pick<NonNullable<HostAdapter['worker']>, 'capabilities' | 'freshSessionId' | 'defaults' | 'normalizeRuntime' | 'command'> & WorkerShellIsolation {
+export function createCodexWorker(env: Env = process.env): Pick<NonNullable<HostAdapter['worker']>, 'capabilities' | 'freshSessionId' | 'defaults' | 'normalizeRuntime'> & WorkerShellIsolation {
   return { capabilities: { resume: true }, freshSessionId: () => undefined,
-    defaults: () => defaults(env), normalizeRuntime: runtime => runtime, command,
+    defaults: () => defaults(env), normalizeRuntime: runtime => runtime,
     launchOptions: { shellEnvHook: false, developmentPlugin: false },
     shellEnv: () => ({}), shellWarnings: codexShellWarnings,
     plan: async input => ({ ...command(input), envPatch: {}, artifacts: [], artifactEnv: [], warnings: [], artifactWarnings: () => [] }),

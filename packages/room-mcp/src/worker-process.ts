@@ -1,3 +1,4 @@
+import type { HostId } from './hosts/types.js'
 /** Worker host processes, logs, identity, and termination. */
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -5,7 +6,6 @@ import path from 'node:path'
 import type { LocalWorker } from './worker-status.js'
 import { workerEnv, type WorkerHost } from './worker-config.js'
 import { readBackgroundTasks, readLogFailure, readLogTail, runLogFacts, runLogSuffix, type RunLogIdentity } from './run-log-facts.js'
-import { missingClaudeLogSession as missingLogSession } from './hosts/lifecycle.js'
 import type { NormalizedHostFailure } from './hosts/types.js'
 
 export interface SpawnSpec {
@@ -43,9 +43,6 @@ export function resumeAccepted(file: string, host: WorkerHost, hostSessionId: st
   return facts.get(host)!.acceptedSessions.has(hostSessionId)
 }
 
-export function missingClaudeSession(file: string, hostSessionId: string, logStart: number): boolean {
-  return missingLogSession(file, hostSessionId, logStart)
-}
 
 /** Final answer from this run; Claude result wins over interim assistant text. */
 export function followUpAnswer(file: string, host: WorkerHost, logStart: number, identity?: RunLogIdentity): string {
@@ -91,7 +88,7 @@ export function hostFailure(logFile: string, host: WorkerHost, logStart = 0, ide
 const FAILURE_TEXT_MAX = 300
 
 /** One line for the lead: the host's error and, when transient, how to retry it. */
-export function hostFailureLine(failure: HostFailure, host: 'claude' | 'codex', resumable: boolean): string {
+export function hostFailureLine(failure: HostFailure, host: HostId, resumable: boolean): string {
   const text = failure.text.replace(/\s+/g, ' ').trim()
   const clipped = text.length > FAILURE_TEXT_MAX ? `${text.slice(0, FAILURE_TEXT_MAX - 1)}…` : text
   if (!failure.transient) return `${host}: ${clipped}`

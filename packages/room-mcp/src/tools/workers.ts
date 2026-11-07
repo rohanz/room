@@ -1,9 +1,12 @@
+import { workerRuntimeForHost } from '../hosts/selection.js'
+import { workerContractWarning } from '../hosts/codex-worker-warning.js'
 import { requireWorkerInventory } from '../worker-store.js'
 import { workerStopDescription } from '../worker-restart-notices.js'
-import { claudeWakeNote } from '../prompt.js'
+import { sessionWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
-import { WORKER_EFFORTS, workerPortsInUse } from '../worker-config.js'
+import { workerPortsInUse } from '../worker-config.js'
+import { WORKER_EFFORTS } from '../hosts/types.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
 import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
@@ -21,7 +24,7 @@ import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
 import { LOCAL, browserViewLine, type Session } from '../session.js'
-import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomCompatibilityMismatch, installedCodexRoomContract, type WorkerHost } from '../worker-config.js'
+import { workerBudget, validTag, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
 import { localWorkerView } from '../worker-projector.js'
@@ -182,13 +185,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!task) return 'error: task is required'
       if (a.host !== undefined && a.host !== 'codex' && a.host !== 'claude') return 'error: host must be codex or claude'
       const host: WorkerHost = workerHost(a.host)
-      if (host === 'codex' && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
-        const mismatch = codexRoomCompatibilityMismatch(undefined, installedCodexRoomContract(), state.log)
-        if (mismatch) return `error: ${mismatch}`
-      }
-      const runtime = workerRuntime(host, typeof a.model === 'string' ? a.model : undefined, requestedEffort)
+      const mismatch = workerContractWarning(host, state.log)
+      if (mismatch) return `error: ${mismatch}`
+      const runtime = workerRuntimeForHost(host, { model: typeof a.model === 'string' ? a.model : undefined, effort: requestedEffort }, process.env)
       if (runtime.effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(runtime.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
-      const effort = hostWorkerEffort(host, runtime.effort)
+      const effort = workerAdapter(host).normalizeRuntime({ effort: runtime.effort }).effort
       const model = runtime.model
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
       const max = config.maxWorkers
@@ -236,7 +237,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           : { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
-      const hostSessionId = workerAdapter(host).freshSessionId()
+      const worker = workerAdapter(host)
+      const hostSessionId = worker.freshSessionId()
       const usedPorts = workerPortsInUse((requireWorkerInventory(await registry.list())))
       const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
       const record: WorkerRecord = {
@@ -244,7 +246,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
         host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
         dir, outside, branch, prep, hostSessionId, logFile: path.join(s.dir, '.room', 'workers', `${tag}.log`), ...(sharedOwner ? { sharedWith: sharedOwner.id } : {}),
-        capabilities: { resume: true, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
+        capabilities: { resume: worker.capabilities.resume, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
         runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
         createdAt: now(), seq: 1,
       }
@@ -321,12 +323,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const { proc, port, env, nice, logFile } = launched
         await s.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
-        const defaults = hostDefaultRuntime(host, dir)
+        const defaults = workerAdapter(host, process.env).defaults(dir)
         const shownModel = model ?? (defaults.model ? `(host default: ${defaults.model})` : '(host default)')
         const shownEffort = effort ?? (defaults.effort ? `(host default: ${defaults.effort})` : '(host default)')
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
         out.push(`model ${shownModel} · effort ${shownEffort}; name a model or effort in the request, or set ROOM_WORKER_MODEL / ROOM_WORKER_EFFORT.`)
-        const wakeNote = claudeWakeNote(lead, 'spawn')
+        const wakeNote = sessionWakeNote(lead, 'spawn')
         if (wakeNote) out.unshift(wakeNote)
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)

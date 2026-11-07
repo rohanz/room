@@ -6,7 +6,7 @@
  * stops for good when the human leaves (room_leave, room_close) or the process shuts down.
  */
 import type { Session } from './session.js'
-import { NoRoom, NotLoggedIn } from './session.js'
+import { initialSessionJoinWaitMs, NoRoom, NotLoggedIn } from './session.js'
 import { RoomdError } from '@room/roomd'
 import { NotARepository } from './repository.js'
 
@@ -68,6 +68,12 @@ function joinFailureLine(e: unknown, local: boolean, attempts: number, retryAfte
   const phase = phaseOf(e)
   const head = `Room could not join${local ? ' the local room' : ''}${attempts > 1 ? ` after ${attempts} attempts` : ''}${phase ? ` (${phase})` : ''}: ${e instanceof Error ? e.message : String(e)}`
   return `${head}. Room tries again on the next Room tool call (at most every ${retryAfterMs / 1000} s); room_join to retry now.${baseRecovery(e)}`
+}
+
+/** Production wiring: the host supplies the grace; this shared scheduler owns the wait. */
+export function createSessionAutoJoin(options: AutoJoinOptions, binding: { bound(): unknown }, env: NodeJS.ProcessEnv = process.env): AutoJoin {
+  const ms = initialSessionJoinWaitMs(env)
+  return new AutoJoin({ ...options, ...(ms > 0 ? { bindWait: { bound: () => !!binding.bound(), ms } } : {}) })
 }
 
 export class AutoJoin {

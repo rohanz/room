@@ -5,7 +5,6 @@
  * (`<git common dir>/room-choice.json`) > default.
  */
 import os from 'node:os'
-import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gitCommonDir } from '@room/roomd'
@@ -13,11 +12,9 @@ import { mainWorktree } from '@room/roomd/local'
 import { parseShare, type ShareLevel } from '@room/roomd'
 import { legacyLocalBranchRoom } from './room-name.js'
 import { claudeChannel as resolveChannel } from './hosts/claude-binding.js'
-import { sessionHost } from './hosts/selection.js'
 
 const TEAM_SERVER_REQUIRED = 'No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.'
 export const LOCAL = 'local'
-export { DEFAULT_CLAUDE_CHANNEL } from './hosts/claude-binding.js'
 const DEFAULT_MAX_WORKERS = 8
 /** Display only (room_state's stale-claim label). Deletion is the hub's fixed expiry (ROOM_STALE_MS in @room/shared). */
 const DEFAULT_STALE_DAYS = 7
@@ -144,11 +141,6 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     room: explicitRoom ?? (whereRule === 'remembered' && where === LOCAL ? rememberedChoice.room : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
     ...(where === LOCAL && rememberedChoice.legacy ? { legacyLocalRoom: rememberedChoice.legacy } : {}),
   }
-}
-
-/** Explicit worker host wins, then static plugin env and the parent process; 'agent' when none says. */
-export function resolveSessionHost(env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } })): string {
-  return sessionHost(env, parentCommand)
 }
 
 /**

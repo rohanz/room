@@ -15246,7 +15246,7 @@ function windowsAclScript(protectNew, createDirectory, repair) {
     $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
     function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
     function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
-    # Room's own writers remove files concurrently (atomic-write temps, consumed start tickets). A descendant that
+    # Room's own writers remove files concurrently (atomic-write temporaries, retired records). A descendant that
     # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
     # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
     function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };
@@ -18263,27 +18263,6 @@ async function openPreferred(port, open, ownerAnswers) {
     return open(0);
   }
 }
-var STARTUP_HARD_CAP_MS = 6e4;
-var admissionDir = (commonDir) => path10.join(commonDir, "room", "admissions");
-var admissionFile = (commonDir, token) => path10.join(admissionDir(commonDir), `${crypto6.createHash("sha256").update(token).digest("hex")}.json`);
-function consumeStartAdmission(commonDir, token, now = Date.now()) {
-  const refuse = (why) => new Error(`daemon start not admitted (${why}); Room starts the daemon itself on join`);
-  if (!/^[0-9a-f]{64}$/.test(token)) throw refuse("no launcher ticket");
-  const file = admissionFile(commonDir, token);
-  let record;
-  try {
-    verifyPrivatePath(file);
-    record = JSON.parse(fs9.readFileSync(file, "utf8"));
-  } catch {
-    throw refuse("no matching ticket");
-  }
-  try {
-    fs9.unlinkSync(file);
-  } catch {
-    throw refuse("ticket already used");
-  }
-  if (record.v !== 1 || typeof record.at !== "number" || now - record.at > STARTUP_HARD_CAP_MS || record.at > now + 5e3) throw refuse("stale ticket");
-}
 async function stopLocalDaemon(commonDir, timeoutMs = 15e3, expectedNonce) {
   const canonical = fs9.realpathSync.native(commonDir);
   const info = discovery(canonical);
@@ -18327,15 +18306,7 @@ try {
     await stopLocalDaemon(commonDir);
     process.stdout.write("Daemon saved and process exit verified.\n");
   } else {
-    if (args2[0] && !args2[0].startsWith("--")) throw new Error("usage: room-daemon.mjs stop --common-dir <absolute git common directory> (Room starts the daemon itself on join)");
-    const ticket = (() => {
-      try {
-        return fs10.readFileSync(path11.join(path11.dirname(value("--startup-report")), "admission"), "utf8");
-      } catch {
-        return "";
-      }
-    })();
-    consumeStartAdmission(commonDir, ticket);
+    if (args2[0] && !args2[0].startsWith("--") || !args2.includes("--startup-report")) throw new Error("usage: room-daemon.mjs stop --common-dir <absolute git common directory> (Room starts the daemon itself on join)");
     await primePrivateState(commonDir);
     privateStateDirectory(path11.join(commonDir, "room"));
     const file = path11.join(commonDir, "room", "daemon.log");

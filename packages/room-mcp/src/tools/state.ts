@@ -151,7 +151,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
     prepare: s => refreshWorkerFacts(s),
     send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
-    codexTurn: ctx.wakeProbe,
+    turnProbe: ctx.wakeProbe,
     midTurn: ctx.midTurn,
     ownWorkers: s => ownWorkers(s),
     audible: s => solo.audible(s),

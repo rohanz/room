@@ -1,4 +1,6 @@
 #!/usr/bin/env tsx
+import { workspaceAdapter } from './hosts/selection.js'
+import { codexPreBinding as callMetadata, deferWorkspace } from './hosts/codex-binding.js'
 import fs from 'node:fs'
 import { parseArgs } from 'node:util'
 import path from 'node:path'
@@ -10,27 +12,28 @@ import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
-import { AutoJoin } from './auto-join.js'
+import { createSessionAutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
-import { createMidTurnSender, createWakeSender } from './wake-path.js'
-import { CodexTurnProbe } from './codex-turn.js'
+import { createMidTurnSender } from './hosts/codex-wake.js'
+import { createWakeSender } from './hosts/wake.js'
+import { createProductionWakeProbe } from './hosts/wake.js'
 import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import type { WorkerStopCause } from './worker-status.js'
 import { FlushedStdioTransport } from './transport.js'
-import { admitCodexThread } from './session.js'
-import { CODEX_WORKER_BIND_WAIT_MS, createSessionBinding, isCodexExecWorker } from './binding.js'
+import { admitCallSessions } from './session.js'
+import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
-import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
-import { PresenceEnd, attachingParentReader, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
+import { admittedWorkspace, createWorkspaceBinding } from './workspace.js'
+import { PresenceEnd, attachingParentReader, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
+import { presenceKind } from './hosts/selection.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
 import { admitWorkerEnvironment, admittedWorker } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
-import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
 import { channelCapabilities } from './hosts/claude-binding.js'
 import { resolveDaemonCutover } from './daemon-cutover.js'
 
@@ -100,7 +103,7 @@ async function main() {
   )
   let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
-    deferred: deferForSharedCodex(process.env), fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
+    deferred: deferWorkspace(process.env), fallbackDir: () => workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir,
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
     logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
     initialize: async (dir: string, signal: AbortSignal) => {
@@ -119,7 +122,7 @@ async function main() {
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION })
-      const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION })
+      const wakeProbe = createProductionWakeProbe(() => presence?.idleMs(), RELEASE_VERSION)
       let startupReplica = startup.server === LOCAL ? createLocalReplica() : undefined
       const tools = createTools({ join: async opts => {
         if (!session && opts.server === LOCAL) {
@@ -154,7 +157,7 @@ async function main() {
 
       // Presence ends once the host session has finished (registry §18): its process gone, or the idle lease.
       // Host kind, parent and lease come from this process's parent and environment, which never change while it lives.
-      const presenceHostKind = hostKind()
+      const presenceHostKind = presenceKind()
       const attachingParent = attachingParentReader()
       const idleLeaseMs = resolveIdleLeaseMs(process.env.ROOM_IDLE_LEASE_MS)
       presence = new PresenceEnd({
@@ -226,11 +229,9 @@ async function main() {
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.
       const chosen = startup.server
       log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
-      const autoJoin = new AutoJoin({
+      const autoJoin = createSessionAutoJoin({
         local: chosen === LOCAL,
         log,
-        // Joining before the thread id is known would rebind (leave and rejoin) as soon as it arrives.
-        ...(isCodexExecWorker() ? { bindWait: { bound: () => !!sessionBinding.bound(), ms: CODEX_WORKER_BIND_WAIT_MS } } : {}),
         async attempt(target) {
           const root = await joinableRoot(dir)
           if (session?.local) {
@@ -260,7 +261,7 @@ async function main() {
           tools.startupNotice(line)
           log(line)
         },
-      })
+      }, sessionBinding)
       tools.setAutoJoin(autoJoin)
       if (!signal.aborted) void autoJoin.ensure()
 
@@ -280,12 +281,11 @@ async function main() {
   // The reply's ledger batch commits when its bytes reach the host's pipe (FlushedStdioTransport).
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const threadId = callMetadata.decodeCall(req.params._meta).toolSessionId
-    if (threadId) admitCodexThread(threadId)
+    admitCallSessions(req.params._meta)
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {
       if (req.params.name === 'room_state' && req.params.arguments?.check === true) {
-        const dir = codexWorkspace(req.params) ?? fallbackWorkspace(process.env, process.cwd())
+        const dir = admittedWorkspace(callMetadata.decodeCall(req.params._meta).workspaceCandidates) ?? workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir
         const active = initialized
         if (active) {
           const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)])

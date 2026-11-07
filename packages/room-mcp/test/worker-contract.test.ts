@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { CURRENT_COMPAT } from '@room/hub-core'
 const { listing } = vi.hoisted(() => ({ listing: vi.fn() }))
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), execFileSync: listing }))
-import { installedCodexRoomContract } from '../src/worker-config.js'
+import { installedCodexRoomContract } from '../src/hosts/codex-install.js'
 const dirs: string[] = []
 function selectionEnv(dir: string): NodeJS.ProcessEnv {
   return { CODEX_HOME: dir, ProgramData: join(dir, 'system') }

@@ -7,7 +7,7 @@ import { sharingDescription, sharingHumanChoices } from '../config.js'
 import { runDoctor, hookCompatibilityWarning, formatDeliveryHealth, formatDeliveryDegradation } from '../doctor.js'
 import { formatProcessHealth } from '../cpu-watchdog.js'
 import { checkoutPublisher, publisherLine } from './share.js'
-import { claudeWakeNote } from '../prompt.js'
+import { sessionWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
 import { coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestNames, manifestPaths, snapshotMetadata } from '@room/shared'
@@ -159,7 +159,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const delivery = formatDeliveryDegradation(state.deliveryDegradation())
       if (delivery) out.push(delivery)
       if (state.hasCompany(s).company) {
-        const wakeNote = claudeWakeNote(s, 'company')
+        const wakeNote = sessionWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)
       }
       const hookWarning = hookCompatibilityWarning(createSessionBinding(s.dir).dir())

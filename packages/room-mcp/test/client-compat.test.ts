@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { CURRENT_COMPAT, selectContract } from '@room/hub-core'
 import { compatibilityFromHealth, compatibilityFloor, validateSelection } from '../src/client-compat.js'
 import { checkTeamAdmission } from '../src/session.js'
-import { codexRoomCompatibilityMismatch } from '../src/worker-config.js'
+import { codexRoomCompatibilityMismatch } from '../src/hosts/codex-worker-warning.js'
 
 const selection = { bootstrap: 1 as const, hub: 1, schema: 2, capabilities: { 'room.generation': 1, 'room.manifest': 1, 'room.ledger': 1 } }
 describe('client compatibility', () => {

@@ -1,3 +1,4 @@
+import type { WakePathStatus } from './wake-types.js'
 /** Host evidence ports. Behavior-preserving extraction contract; no adapter is constructed here.
  * Lifetimes: pre-binding/fences per MCP, transports per target, log decoders per run/scope,
  * hook codecs per invocation, installation evidence per environment. */
@@ -22,7 +23,9 @@ export type StartupFacts = {
 };
 export type CallFacts = { toolSessionId?: string; workspaceCandidates: readonly string[] };
 export type BindingEvidence = {
-  cwd: string; env: Env; parent?: ProcessIdentity; parentArgs?: string;
+  cwd?: string; env: Env; parent?: ProcessIdentity; parentArgs?: string;
+  /** Lazy shared repository discovery; omitted evidence denotes an available repository. */
+  repositoryAvailable?: boolean; appServer?: boolean;
   records: readonly unknown[]; // existing reader acceptance, not a new full validator
   workerId?: string; workerSessionId?: string;
   toolSessionId?: string; logSessionId?: string;
@@ -39,11 +42,8 @@ export type WakeResult =
   | { kind: 'submitted' | 'uncertain'; via: WakeVia }
   | { kind: 'idle' } // raced with turn end; caller may try idle path
   | { kind: 'off' | 'unavailable' | 'failed'; reason?: string };
-export type WakeStatus = {
-  mode: 'auto' | 'socket' | 'channels' | 'off'; transport: string;
-  availability: 'configured' | 'unknown' | 'off' | 'unavailable';
-  limitation: string;
-};
+/** The shared path status, plus what this host's delivery cannot prove. */
+export type WakeStatus = WakePathStatus & { limitation: string };
 export type WorkerInput = {
   mode: 'fresh' | 'resume'; sessionId?: string; prompt: string;
   runtime: Runtime; tag: string; cwd: string; logDir: string;
@@ -99,7 +99,8 @@ export interface HostAdapter {
   identify(evidence: BindingEvidence): IdentityResult;
   admitToolSession(id: string): void; // validates, first-id fence where appropriate
   readonly wake?: {
-    describe(target: Target): WakeStatus;
+    /** Undefined when the sender reports no path (an unobserved transport). */
+    describe(target: Target): WakeStatus | undefined;
     state(target: Target): Promise<TurnState>;
     send(target: Target, pointer: string, phase: 'idle' | 'active'): Promise<WakeResult>;
   };
@@ -108,7 +109,6 @@ export interface HostAdapter {
     freshSessionId(): string | undefined;
     defaults(cwd: string): Runtime; // synchronous public-config reader via injected filesystem
     normalizeRuntime(runtime: Runtime): Runtime;
-    command(input: WorkerCommandInput): Pick<WorkerPlan, 'cmd' | 'args'>; // pure, sync wrapper seam
     plan(input: WorkerInput): Promise<WorkerPlan>;
   };
   readonly hooks?: {
@@ -130,7 +130,7 @@ export type WorkerLaunchPlan = WorkerPlan & {
   artifactWarnings(outcomes: readonly WorkerArtifactOutcome[]): string[];
 };
 
-/** The extracted worker facet plus temporary shell compatibility entry points. */
+/** Worker shell isolation capabilities. */
 export type WorkerShellIsolation = {
   plan(input: WorkerInput): Promise<WorkerLaunchPlan>;
   launchOptions: { shellEnvHook: boolean; developmentPlugin: boolean };
@@ -156,3 +156,5 @@ export interface HostLogDecoder {
   acceptsLine(line: string): boolean
   push(raw: unknown): readonly NormalizedLogFact[]
 }
+
+export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const

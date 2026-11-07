@@ -1,3 +1,4 @@
+import type { HostId } from './hosts/types.js'
 /**
  * This MCP's host session (registry §17), re-evaluated on use: a new SessionStart after Claude /clear
  * rebinds. The parent's identity and command line never change for a process, so they are read once.
@@ -5,13 +6,14 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { admitCodexThread, admittedCodexThread, boundSession, sessionDirectory, syntheticSessionId } from './session.js'
+import { boundSession, sessionDirectory, syntheticSessionId } from './session.js'
+import { admittedIdentityKey } from './hosts/selection.js'
 import { probeOwnProcess, probeProcessNow, type ProcessInfo } from './worker-process.js'
 import { migrateLocalState } from './local-migration.js'
 
 export interface SessionBinding {
   /** The bound host session, or undefined until the shared Codex app-server supplies its thread ID. */
-  bound(): { id: string; host: 'claude' | 'codex' } | undefined
+  bound(): { id: string; host: HostId } | undefined
   /** The session receipts name: the bound one, else this process's synthetic `mcp:<pid>:<startTime>`. */
   id(): string
   /** `<common>/room/sessions/<sid>/` of the bound session. */
@@ -21,20 +23,13 @@ export interface SessionBinding {
 
 const RECHECK_MS = 1_000
 
-/** A `codex exec` Room worker: its own MCP process, never an app-server thread. */
-export function isCodexExecWorker(env: NodeJS.ProcessEnv = process.env): boolean {
-  return !!env.ROOM_WORKER_ID && env.ROOM_WORKER_HOST === 'codex'
-}
 
-/** How long a Codex worker's first automatic join waits for its thread id (SessionStart hook or first tool call). */
-export const CODEX_WORKER_BIND_WAIT_MS = 5_000
-
-export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding & { admitCodexThread(id: string): void } {
+export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding {
   let commonDir: string | null | undefined
   let commonCheckedAt = -Infinity
   let parent: ReturnType<typeof identity> | null | undefined
   let parentArgs: string | undefined
-  let cached: { at: number; codexThreadId?: string; value: ReturnType<SessionBinding['bound']> } | undefined
+  let cached: { at: number; identityKey?: string; value: ReturnType<SessionBinding['bound']> } | undefined
   let ownGitDir: string | undefined
   const migrated = new Set<string>()
   // A repository found once never moves. A folder that is not one yet (git init after the session started) is
@@ -51,8 +46,8 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   }
   const self = identity(probeOwnProcess(), process.pid)
   const bound = () => {
-    const codexThreadId = admittedCodexThread()
-    if (cached && cached.codexThreadId === codexThreadId && now() - cached.at < RECHECK_MS) return cached.value
+    const identityKey = admittedIdentityKey()
+    if (cached && cached.identityKey === identityKey && now() - cached.at < RECHECK_MS) return cached.value
     if (parent === undefined) {
       // Read once for the session: the cached probe answers a Windows miss as pending, which would fix it as unknown.
       parent = identity(probeProcessNow(process.ppid), process.ppid) ?? null
@@ -60,11 +55,10 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
     }
     const dir = common()
     const value = dir ? boundSession({ commonDir: dir, cwd, env, ...(parent ? { parent } : {}), parentArgs }) : undefined
-    cached = { at: now(), value, codexThreadId }
+    cached = { at: now(), value, identityKey }
     return value
   }
   return {
-    admitCodexThread,
     bound,
     id: () => bound()?.id ?? syntheticSessionId(self ?? { pid: process.pid, startTime: '', executable: '' }),
     dir: () => {

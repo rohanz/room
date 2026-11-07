@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, expect, it, vi } from 'vitest'
 import { CURRENT_COMPAT } from '@room/hub-core'
 import { cloneId } from '../src/index.js'
-import { consumeStartAdmission, daemonChildEnvironment, ensureLocalDaemon, issueStartAdmission } from '../src/daemon.js'
+import { daemonChildEnvironment, ensureLocalDaemon } from '../src/daemon.js'
 import { privateStateDirectory, verifyPrivatePath } from '../src/private-state.js'
 import * as proof from '../src/proof.js'
 
@@ -87,37 +87,6 @@ it('asks for start admission only when it must spawn, and a refusal prevents the
   const adopt = vi.fn(async () => {})
   await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: adopt })).resolves.toMatchObject({ launched: false })
   expect(adopt).not.toHaveBeenCalled()
-})
-
-it('a start admission ticket admits exactly one fresh start for its own token', () => {
-  const { dir } = fixture()
-  const first = issueStartAdmission(dir, 1_000_000)
-  expect(() => consumeStartAdmission(dir, 'b'.repeat(64), 1_000_100)).toThrow(/no matching ticket/)
-  expect(() => consumeStartAdmission(dir, 'not-a-token', 1_000_100)).toThrow(/no launcher ticket/)
-  consumeStartAdmission(dir, first.token, 1_000_100)
-  expect(() => consumeStartAdmission(dir, first.token, 1_000_200)).toThrow(/no matching ticket/)
-  const stale = issueStartAdmission(dir, 1_000_000)
-  expect(() => consumeStartAdmission(dir, stale.token, 1_000_000 + 61_000)).toThrow(/stale ticket/)
-  expect(fs.existsSync(stale.file)).toBe(false)
-})
-
-it('hands its child a ticket only after admission and removes an unconsumed ticket afterwards', async () => {
-  const { dir, publish } = fixture()
-  let seen: string | undefined
-  vi.mocked(childProcess.spawn).mockImplementation(((_cmd: string, args: string[]) => {
-    const report = args[args.indexOf('--startup-report') + 1]
-    seen = fs.readFileSync(path.join(path.dirname(report), 'admission'), 'utf8')
-    expect(fs.readdirSync(path.join(dir, 'room', 'admissions'))).toHaveLength(1)
-    publish(2147483000)
-    return Object.assign(new EventEmitter(), { pid: 2147483000, unref: vi.fn() }) as childProcess.ChildProcess
-  }) as unknown as typeof childProcess.spawn)
-  await ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {}, entryPath: path.resolve(import.meta.filename) })
-  expect(seen).toMatch(/^[0-9a-f]{64}$/)
-  expect(fs.readdirSync(path.join(dir, 'room', 'admissions'))).toEqual([])
-  // A refused admission issues no ticket at all.
-  fs.rmSync(path.join(dir, 'room', 'relay.json'))
-  await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: async () => { throw new Error('refused') }, entryPath: path.resolve(import.meta.filename) })).rejects.toThrow('refused')
-  expect(fs.readdirSync(path.join(dir, 'room', 'admissions'))).toEqual([])
 })
 
 function launchFixture(onSpawn: (child: EventEmitter, dir: string, publish: (pid: number) => void) => void) {

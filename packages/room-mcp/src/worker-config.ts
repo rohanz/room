@@ -1,29 +1,12 @@
+import { workerAdapter } from './hosts/index.js'
+import { workerHostInstructions, hostWorkerEnvironmentKeys } from './hosts/instructions.js'
 import fs from 'node:fs'
-import { CURRENT_COMPAT, selectContract } from '@room/hub-core'
-import { WORKER_RECORD_SCHEMA } from '@room/shared'
 import path from 'node:path'
 import os from 'node:os'
-import { fileURLToPath } from 'node:url'
-import { leadClaudePluginDir as adapterLeadClaudePluginDir } from './hosts/claude-install.js'
-import { installedCodexRoomContract as adapterInstalledCodexRoomContract, type WorkerContract } from './hosts/codex-install.js'
-export type { WorkerContract } from './hosts/codex-install.js'
-import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
-import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { normalizeExplicitRoomName } from './room-name.js'
-import { workerAdapter } from './hosts/index.js'
 import type { HostId as WorkerHost } from './hosts/types.js'
-import { workerRuntimeForHost } from './hosts/selection.js'
 
 export type { HostId as WorkerHost } from './hosts/types.js'
-
-export function workerRuntime(host: WorkerHost, model?: string, effort?: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
-  return workerRuntimeForHost(host, { model, effort }, env)
-}
-
-/** Read only public model settings; neither host's credential files are inspected. */
-export function hostDefaultRuntime(host: WorkerHost, dir: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
-  return workerAdapter(host, env).defaults(dir)
-}
 
 export const WORKER_PORT_START = 4400
 export const WORKER_PORT_END = 4499
@@ -134,8 +117,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; write only inside it, never into the lead's checkout or another worker's worktree: outputs the lead needs come back through collection. The lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
     `Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.`,
-    `On Claude Code with documented background-command lifetime and completion delivery (verified on 2.1.300), use host-managed background commands when responsiveness matters; await completion and inspect the actual result before room_done. On unverified hosts, including Codex, use foreground commands until background lifetime and completion delivery are verified. See room-etiquette for host limits; process exit can terminate unmanaged jobs.`,
-    `Room workers run as plain \`codex exec\` / \`claude -p\` processes too (ROOM_WORKER_ID in their environment marks them): stop jobs you started by their own pid, never by a pattern such as \`pkill -f codex\`.`,
+    ...workerHostInstructions,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
@@ -146,48 +128,6 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     '',
     `TASK: ${task}`,
   ].join('\n')
-}
-
-export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
-export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return workerAdapter(host).normalizeRuntime({ effort }).effort }
-
-export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string; shellEnvHook?: boolean }
-
-/** The bundle path identifies the plugin Claude actually loaded, even when its root env is absent. */
-export function leadClaudePluginDir(env: NodeJS.ProcessEnv = process.env, modulePath = fileURLToPath(import.meta.url), installedPath?: string): string | undefined {
-  return adapterLeadClaudePluginDir(env, modulePath, installedPath)
-}
-
-/** Resolve the installed entry selected by Codex, then authenticate its descriptor against its executable. */
-export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env): WorkerContract | undefined {
-  return adapterInstalledCodexRoomContract(env)
-}
-
-export function codexRoomCompatibilityMismatch(
-  lead: WorkerContract = { release: pluginManifest.version, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA },
-  installed: WorkerContract | undefined = undefined,
-  diagnostic?: (line: string) => void,
-): string | undefined {
-  if (arguments.length < 2) installed = installedCodexRoomContract()
-  if (!installed) return "Codex's installed Room executable contract is unverified; update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker"
-  const selected = selectContract(installed.compat, lead.compat, { activeSchema: 2 })
-  if (selected.ok && installed.workerRecordSchema === lead.workerRecordSchema) {
-    if (installed.release !== lead.release) diagnostic?.(`Codex Room ${installed.release} and lead Room ${lead.release} have compatible protocol and worker record contracts`)
-    return undefined
-  }
-  const newer = installed.release.localeCompare(lead.release, undefined, { numeric: true }) > 0
-  const reason = installed.workerRecordSchema !== lead.workerRecordSchema
-    ? `worker record schemas differ (lead ${lead.workerRecordSchema}, Codex ${installed.workerRecordSchema})`
-    : selected.ok ? '' : selected.error.text
-  return `Codex has Room ${installed.release}, but this lead runs Room ${lead.release}: ${reason}; ${newer ? 'reconnect Room with /mcp or restart the session to load the installed Room contract' : 'update Room for Codex to a compatible protocol and worker record schema'}`
-}
-export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string, options: WorkerCommandOptions = {}): { cmd: string; args: string[] } {
-  if (effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
-  effort = hostWorkerEffort(host, effort)
-  if (options.resume && !options.sessionId) throw new Error('resuming a worker requires its host session id')
-  return workerAdapter(host).command({ ...options, mode: options.resume ? 'resume' : 'fresh',
-    runtime: { model, effort }, prompt, claudeChannel, tag: options.tag ?? '',
-    shellEnvHook: options.shellEnvHook ?? false, wakeChannels: options.wakeChannels ?? false })
 }
 
 export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -204,7 +144,7 @@ export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | 
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
  * ROOM_OWNER, ROOM_SHARE, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_CODEX_WORKER_MODEL', 'ROOM_CODEX_WORKER_EFFORT', 'ROOM_CLAUDE_WORKER_MODEL', 'ROOM_CLAUDE_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
+const LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, 'ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

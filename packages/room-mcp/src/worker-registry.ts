@@ -1,3 +1,5 @@
+import type { HostId } from './hosts/types.js'
+import { workerEnvironmentSession, registryEnvironmentSession } from './hosts/selection.js'
 /** Async lifecycle facade. A display snapshot never grants operation authority. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -77,18 +79,18 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
 }
 
 async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
-  bound?: { id: string; host: 'claude' | 'codex' }): Promise<void> {
+  bound?: { id: string; host: HostId }): Promise<void> {
   const id = env.ROOM_WORKER_ID
   if (!id) return
   const room = env.ROOM_ROOM ?? ''
   if (!id.startsWith('w_')) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: update the Room plugin for the lead\'s host')
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
-  const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)
+  const registry = await registryForDir(dir, registryEnvironmentSession(env))
   const record = await registry.read(id)
   if (!room || record?.room !== room) throw new Error('this worker run was collected, discarded or superseded')
   if (bound && bound.host !== record.host) throw new Error('worker host session mismatch')
-  const hostSessionId = bound?.id ?? (record.host === 'claude' ? env.CLAUDE_CODE_SESSION_ID : env.CODEX_THREAD_ID)
+  const hostSessionId = bound?.id ?? workerEnvironmentSession(record.host, env)
   if (env.ROOM_REGISTRY && fs.realpathSync(path.resolve(env.ROOM_REGISTRY)) !== fs.realpathSync(registry.root)) throw new Error('this worker run was collected, discarded or superseded')
   // The parent is recorded as this worker's host process: read it definitively, once per admission.
   const processInfo = probeOwnProcess()

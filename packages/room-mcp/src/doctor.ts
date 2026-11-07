@@ -3,41 +3,18 @@ import fs from 'node:fs'
 import { compatibilityFromHealth } from './client-compat.js'
 import { createSessionBinding } from './binding.js'
 import path from 'node:path'
-import { createClaudeInstall, claudePlugin as adapterClaudePlugin } from './hosts/claude-install.js'
-import { createCodexInstall, codexPlugin as adapterCodexPlugin, codexHooksRoot as adapterCodexHooksRoot, codexRoomHookTrustStatus as adapterCodexRoomHookTrustStatus, codexRoomHooksTrusted as adapterCodexRoomHooksTrusted } from './hosts/codex-install.js'
-import { hookVersion as adapterHookVersion, installCommand as command, type InstalledPlugin } from './hosts/install-io.js'
 import { fileURLToPath } from 'node:url'
 import { resolveConfig } from './config.js'
 import { credentialsPath, getCredential } from './credentials.js'
-import { createStaleVersionWarning } from './stale-version.js'
-import { claudeWakeAvailable, wakePathStatus, type WakePathStatus } from './wake-path.js'
 import type { DeliveryHealth } from './wake-reconciler.js'
 import { canonicalRelayWarning, cloneId, deterministicPort, legacyRelayRunning, readRelayInfo, relayFile, relayIdentity } from '@room/relay'
 import { gitCommonDir } from '@room/roomd'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
 const minimumGit = [2, 31, 0] // git rev-parse --path-format=absolute
-export { CODEX_ROOM_HOOK_HASHES, CODEX_ROOM_HOOKS_FILE_SHA256 } from './hosts/codex-install.js'
 /** INFO states context that proves no problem; it never carries a fix. */
-type Result = { level: 'PASS' | 'INFO' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
-/** `cached`: Claude loads this plugin from the install record's cache path (not a directory marketplace). */
-type Plugin = InstalledPlugin
-export interface DoctorFacts {
-  node?: string; git?: string; repo: boolean; claudeCli: boolean; codexCli: boolean
-  claudeListOk?: boolean; codexListOk?: boolean
-  claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
-  claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
-  /** The host running this Room session, when the check runs inside one. */
-  sessionHost?: 'claude' | 'codex'
-  /** Whether this MCP has identified its host session (binding.ts); false means no wake can be addressed. */
-  sessionBound?: boolean
-  deliveryPath?: WakePathStatus
-  deliveryHost?: string
-  server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string; serverCompat?: unknown
-  credential?: boolean; credentialError?: string; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
-  hookCompatibility?: string; relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
-}
-
+export type Result = { level: 'PASS' | 'INFO' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
+import { hostDoctorRows, hostDoctorFacts, deliveryLimitation, type DoctorFacts } from './hosts/diagnostics.js'
 /** Counts refer only to retained ledger entries. Handoff means host content, never model comprehension. */
 export function formatDeliveryHealth(h?: DeliveryHealth): string {
   if (!h) return ''
@@ -46,8 +23,7 @@ export function formatDeliveryHealth(h?: DeliveryHealth): string {
   const state = h.state ? `; last state ${h.state.kind} (${h.state.source}${h.state.reason ? `: ${h.state.reason}` : ''})` : ''
   const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1000))}s ago${h.attempt.fallback ? ` (${h.attempt.fallback})` : ''}` : 'none observed'
   const pending = `${h.pendingAddressed}${h.oldestPendingMs === undefined ? '' : ` (oldest ${Math.floor(h.oldestPendingMs / 1000)}s)`}`
-  const limitation = h.host === 'claude' ? 'socket/channel writes do not confirm acceptance; inbound hold/refuse may prevent receipt'
-    : 'exec/--no-daemon and disconnected apps may need tool/hook handoff; no tool interruption'
+  const limitation = deliveryLimitation(h.host)
   return [
     `${h.degraded || status?.availability === 'unavailable' ? 'WARN' : 'INFO'}  delivery: ${h.host}; ${mode}${state}${h.degraded ? `; ${h.degraded}` : ''}`,
     `INFO  delivery evidence: retained addressed ${h.retainedAddressed}${h.sampled ? ' (sample capped at 1000 entries)' : ''}; pending ${pending}; retained wake records: submitted ${h.wakeRecorded}, uncertain ${h.uncertainWakeRecorded} (pruned after handoff); content handed to host ${h.handedToHost}; answers from requested recipients ${h.answersRecorded}; last wake attempt ${attempt}`,
@@ -69,66 +45,13 @@ function atLeast(raw: string | undefined, min: number[]): boolean {
   for (let i = 0; i < 3; i++) if (got[i] !== min[i]) return got[i] > min[i]
   return true
 }
-export function hookVersion(text?: string): string | undefined { return adapterHookVersion(text) }
-export function codexRoomHooksTrusted(toml?: string): boolean { return adapterCodexRoomHooksTrusted(toml) }
-export function codexRoomHookTrustStatus(toml?: string): 'trusted' | 'modified' | 'absent' { return adapterCodexRoomHookTrustStatus(toml) }
 export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Result[] {
   const rows: Result[] = []
   const add = (level: Result['level'], name: string, finding: string, fix?: string) => rows.push({ level, name, finding, fix })
   add(atLeast(f.node, [22, 0, 0]) ? 'PASS' : 'FAIL', 'Node', f.node ? `${f.node} (need 22+)` : 'not found', 'Install Node 22 or newer')
   add(atLeast(f.git, minimumGit) ? 'PASS' : 'FAIL', 'Git', f.git ? `${f.git} (need 2.31+)` : 'not found', 'Install Git 2.31 or newer')
   add(f.repo ? 'PASS' : 'FAIL', 'repository', f.repo ? 'Git checkout with a commit' : 'not a Git checkout with a commit', 'Run this from a committed Git checkout')
-  const installed = [f.claude, f.codex].filter((p): p is Plugin => !!p)
-  // "Not installed anywhere" needs evidence from every present CLI: a failed listing is not absence,
-  // and a running Room session proves its host loaded Room (perhaps via --plugin-dir, which no list shows).
-  const listed = (!f.claudeCli || f.claudeListOk !== false) && (!f.codexCli || f.codexListOk !== false)
-  const absent = !installed.length && listed && !f.sessionHost
-  if (absent) add('WARN', 'Room hosts', 'Room is not installed in Claude Code or Codex', 'Install room@room from rohanz/room')
-  for (const [name, host, cli, listOk, plugin] of [['Claude Code', 'claude', f.claudeCli, f.claudeListOk, f.claude], ['Codex', 'codex', f.codexCli, f.codexListOk, f.codex]] as const) {
-    if (!cli) { add('PASS', name, 'not installed'); continue }
-    // Room ran the listing itself; a timeout or error proves nothing about the plugin and gives the
-    // user no command to run. Say what went unchecked, and that this session's Room is still checked.
-    if (listOk === false) {
-      add('INFO', name, `plugin list did not answer within 2.5 s or failed; Room's version and hooks for ${name} were not checked${f.sessionHost === host ? " (this session's Room is checked under running session)" : ''}`)
-      continue
-    }
-    if (!plugin) { add(absent ? 'WARN' : 'PASS', name, 'Room not installed', 'Install room@room from rohanz/room'); continue }
-    const reinstall = name === 'Claude Code'
-      ? 'claude plugin marketplace update room && claude plugin update room@room'
-      : 'codex plugin marketplace upgrade room && codex plugin add room@room'
-    const match = plugin.version === version
-    add(match ? 'PASS' : 'FAIL', name, `loaded Room ${plugin.version ?? 'unknown'}; bundle ${version}${name === 'Claude Code' && plugin.cached === false ? ' (directory marketplace)' : ''}`, reinstall)
-    // installed_plugins.json is bookkeeping. Claude loads a directory marketplace from its checkout, so a
-    // stale record there changes nothing that runs and gets no row (a 2026-11-03 lead blamed a missing wake
-    // on it). Only when Claude loads from the recorded cache path can the record disagree with what runs;
-    // a mismatched cache manifest already fails the row above, so this covers a record that lags its cache.
-    if (name === 'Claude Code' && match && plugin.cached && plugin.recordedVersion && plugin.recordedVersion !== version)
-      add('WARN', 'Claude Code install record', `cache records Room ${plugin.recordedVersion}; its files are Room ${version}`, 'claude plugin update room@room')
-    const stamp = hookVersion(name === 'Codex' ? f.codexHooks : f.claudeHooks)
-    add(stamp === version ? 'PASS' : 'FAIL', `${name} hooks`, stamp ? `${stamp}; bundle ${version}` : 'version stamp missing', reinstall)
-  }
-  if (f.codex) {
-    const trust = codexRoomHookTrustStatus(f.codexTrust)
-    add(trust === 'trusted' ? 'PASS' : trust === 'modified' ? 'WARN' : 'FAIL', 'Codex hook trust', trust === 'trusted' ? 'Room hooks trusted' : trust === 'modified' ? 'Room hooks changed since trust was granted' : 'Room hooks not trusted', trust === 'modified' ? "Codex will ask to trust Room's hooks again; accept it (or /hooks)" : 'Open Codex and accept the hooks prompt, or trust them in /hooks')
-  }
-  if (f.claude) {
-    const min = process.platform === 'win32' ? [2, 1, 234] : [2, 1, 224]
-    // An unreadable version is missing evidence, not an old Claude Code.
-    if (!triple(f.claudeVersion)) add('INFO', 'Claude wake', 'Claude Code version unknown; wake support not checked')
-    else add(atLeast(f.claudeVersion, min) ? 'PASS' : 'WARN', 'Claude wake', `Claude Code ${f.claudeVersion}`, `Update Claude Code to ${min.join('.')} or newer`)
-    if (f.wakeSession) {
-      const disabled = f.deliveryPath?.mode === 'off'
-      if (!disabled && f.sessionBound === false)
-        add('WARN', 'Claude inbox', 'wake path configured but this session is not bound: nothing can wake it', 'Start Claude inside the git repository (git init first), then restart the session')
-      else add(disabled || f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', disabled ? 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff' : f.wakeBound ? 'wake path configured' : 'wake path unavailable', disabled ? undefined : 'Check /status for a Peer address, or start claude-room')
-    }
-  }
-  if (f.deliveryPath) {
-    const p = f.deliveryPath
-    // Configuration only: the Claude inbox row and the runtime delivery lines carry the evidence and the WARN.
-    add('INFO', `${f.deliveryHost ?? 'Host'} delivery configuration`,
-      `${p.mode}; ${p.transport} ${p.availability}; configuration only, no receipt evidence${f.deliveryHost === 'Claude' ? '; inbound hold/refuse may prevent receipt' : '; exec/--no-daemon require tool/hook fallback when host state is unknown'}`)
-  }
+  rows.push(...hostDoctorRows(f, version))
   if (f.configError) add('FAIL', 'Room config', f.configError, 'Correct ROOM_SERVER or ROOM_URL, then retry')
   else if (f.server) {
     if (f.serverRedirect) add('WARN', 'team server', `server redirected /health (${f.serverRedirect}); check ROOM_SERVER`, 'Check ROOM_SERVER and server status')
@@ -163,16 +86,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
 export function formatDoctor(rows: Result[]): string {
   return rows.map(r => `${r.level}  ${r.name}: ${r.finding}${r.level !== 'PASS' && r.fix ? `\n      fix: ${r.fix}` : ''}`).join('\n')
 }
-export function claudePlugin(row: { version?: string; installPath?: string } | undefined, marketplaces: unknown): Plugin | undefined {
-  return adapterClaudePlugin(row, marketplaces)
-}
-export function codexPlugin(row: { version?: string; marketplaceName?: string } | undefined, marketplaces: unknown, codexHome: string): Plugin | undefined {
-  return adapterCodexPlugin(row, marketplaces, codexHome)
-}
 /** Codex runs hooks from the marketplace root (a local path or its Git snapshot), not from the plugin cache. */
-export function codexHooksRoot(marketplaces: unknown, name: string | undefined): string | undefined {
-  return adapterCodexHooksRoot(marketplaces, name)
-}
 export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string; schema?: number; hub?: number; storage?: string; compat?: unknown }> {
   try {
     const r = await fetcher(url, { signal: AbortSignal.timeout(3000), redirect: 'manual' })
@@ -207,24 +121,7 @@ export function hookCompatibilityWarning(dir?: string): string | undefined {
 
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
 async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
-  const [gitVersion, head, claudeInstall, codexInstall] = await Promise.all([
-    command('git', ['--version']), command('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD']),
-    createClaudeInstall().inspectInstall(), createCodexInstall().inspectInstall(),
-  ])
-  const claude = claudeInstall.record, codex = codexInstall.record
-  const f: DoctorFacts = {
-    node: process.version, git: gitVersion, repo: !!head, claudeCli: claudeInstall.cli !== 'absent', codexCli: codexInstall.cli !== 'absent',
-    claudeListOk: claudeInstall.listing === 'ok', codexListOk: codexInstall.listing === 'ok',
-    claude, codex, claudeVersion: claudeInstall.version, inSession, wakeSession: inSession && process.env.ROOM_HOST === 'claude',
-    wakeBound: claudeWakeAvailable({ host: 'claude' }),
-    ...(inSession && (process.env.ROOM_HOST === 'codex' || process.env.ROOM_HOST === 'claude') ? {
-      sessionHost: process.env.ROOM_HOST, deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }), deliveryHost: process.env.ROOM_HOST === 'claude' ? 'Claude' : 'Codex',
-    } : {}),
-    claudeHooks: claudeInstall.hooks,
-    codexHooks: codexInstall.hooks,
-    codexTrust: codexInstall.trust,
-    stale: inSession ? createStaleVersionWarning(fileURLToPath(import.meta.url))() : undefined,
-  }
+  const f = await hostDoctorFacts(dir, inSession, fileURLToPath(import.meta.url))
   try {
     const config = selected ?? await resolveConfig({ dir })
     if (config.server !== 'local') {

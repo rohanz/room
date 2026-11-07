@@ -37,3 +37,7 @@ export const claudeHookCodec: HookCodec = {
   context: hookContext,
   tool: hookTool, command: hookCommand, pathFields: hookPathFields,
 }
+
+export function nativeExecutableName(exe?: string): string | undefined {
+  if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return 'claude'
+}

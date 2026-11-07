@@ -1,3 +1,5 @@
+import { workspaceAdapter } from '../src/hosts/selection.js'
+import { codexPreBinding as callMetadata, deferWorkspace } from '../src/hosts/codex-binding.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -6,7 +8,7 @@ import path from 'node:path'
 import { AutoJoin } from '../src/auto-join.js'
 import { deriveRoomName } from '../src/session.js'
 import type { Session } from '../src/session.js'
-import { codexThreadFromMeta, codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from '../src/workspace.js'
+import { admittedWorkspace, createWorkspaceBinding } from '../src/workspace.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -22,24 +24,24 @@ const call = (dir?: string) => dir ? { _meta: { 'x-codex-turn-metadata': { works
 
 it('defers for a shared or unknown Codex parent, but not Claude, workers or ordinary Codex', () => {
   const codex = { ROOM_HOST: 'codex', PWD: '/wrong/repo' }
-  expect(deferForSharedCodex(codex, () => 'codex app-server --listen unix:// --managed-daemon', 'darwin')).toBe(true)
-  expect(deferForSharedCodex(codex, () => { throw new Error('ps failed') }, 'darwin')).toBe(true)
-  expect(deferForSharedCodex(codex, () => 'codex', 'win32')).toBe(true)
-  expect(deferForSharedCodex(codex, () => 'codex exec', 'darwin')).toBe(false)
-  expect(deferForSharedCodex({ ...codex, ROOM_DIR: '/worker' }, () => 'codex app-server', 'darwin')).toBe(false)
-  expect(deferForSharedCodex({ ROOM_HOST: 'claude' }, () => 'codex app-server', 'darwin')).toBe(false)
+  expect(deferWorkspace(codex, () => 'codex app-server --listen unix:// --managed-daemon', 'darwin')).toBe(true)
+  expect(deferWorkspace(codex, () => { throw new Error('ps failed') }, 'darwin')).toBe(true)
+  expect(deferWorkspace(codex, () => 'codex', 'win32')).toBe(true)
+  expect(deferWorkspace(codex, () => 'codex exec', 'darwin')).toBe(false)
+  expect(deferWorkspace({ ...codex, ROOM_DIR: '/worker' }, () => 'codex app-server', 'darwin')).toBe(false)
+  expect(deferWorkspace({ ROOM_HOST: 'claude' }, () => 'codex app-server', 'darwin')).toBe(false)
 })
 
 it('reads the daemon thread metadata without requiring workspaces', () => {
   const id = '01a119cb-010e-7883-a11e-04bf44b77f04'
-  expect(codexThreadFromMeta({ _meta: {
+  expect(callMetadata.decodeCall({ _meta: {
     progressToken: 1, callId: 'exec-probe',
     'x-codex-turn-metadata': { session_id: id, thread_id: id, reasoning_effort: 'low', turn_id: '01a119cb-0141-7fd1-938b-04e5a748c086', model: 'gpt-6.1-sol', sandbox: 'seatbelt', sandbox_mode: 'workspace-write', turn_started_at_unix_ms: 1791434096967, codex_version: '0.161.0' },
     threadId: 'fallback-thread', sessionId: id, windowId: `${id}:0`, itemId: 'ctc-probe',
-  } })).toBe(id)
-  expect(codexThreadFromMeta({ _meta: { threadId: id } })).toBeUndefined()
-  expect(codexThreadFromMeta({ _meta: { 'x-codex-turn-metadata': { thread_id: 1 }, threadId: id } })).toBeUndefined()
-  for (const params of [{}, { _meta: null }, { _meta: 'bad' }, { _meta: { 'x-codex-turn-metadata': {} } }, { _meta: { threadId: 1 } }]) expect(codexThreadFromMeta(params)).toBeUndefined()
+  } }._meta).toolSessionId).toBe(id)
+  expect(callMetadata.decodeCall({ _meta: { threadId: id } }._meta).toolSessionId).toBeUndefined()
+  expect(callMetadata.decodeCall({ _meta: { 'x-codex-turn-metadata': { thread_id: 1 }, threadId: id } }._meta).toolSessionId).toBeUndefined()
+  for (const params of [{}, { _meta: null }, { _meta: 'bad' }, { _meta: { 'x-codex-turn-metadata': {} } }, { _meta: { threadId: 1 } }]) expect(callMetadata.decodeCall(params._meta).toolSessionId).toBeUndefined()
 })
 
 it('selects one real worktree, deduplicating aliases and nested paths', () => {
@@ -51,27 +53,27 @@ it('selects one real worktree, deduplicating aliases and nested paths', () => {
   dirs.push(alias)
   const realTarget = fs.realpathSync(target)
   const rootOf = (dir: string) => dir === realTarget || dir === fs.realpathSync(nested) ? realTarget : undefined
-  expect(codexWorkspace(call(target), rootOf)).toBe(realTarget)
-  expect(codexWorkspace({ _meta: { 'x-codex-turn-metadata': { workspaces: { [alias]: {}, [nested]: {} } } } }, rootOf)).toBe(realTarget)
-  expect(codexWorkspace(call())).toBeUndefined()
+  expect(admittedWorkspace(callMetadata.decodeCall(call(target)._meta).workspaceCandidates, rootOf)).toBe(realTarget)
+  expect(admittedWorkspace(callMetadata.decodeCall({ _meta: { 'x-codex-turn-metadata': { workspaces: { [alias]: {}, [nested]: {} } } } }._meta).workspaceCandidates, rootOf)).toBe(realTarget)
+  expect(admittedWorkspace(callMetadata.decodeCall(call()._meta).workspaceCandidates)).toBeUndefined()
 })
 
 it('refuses multiple distinct valid worktrees', () => {
   const first = repo('first')
   const second = repo('second')
   const params = { _meta: { 'x-codex-turn-metadata': { workspaces: { [first]: {}, [second]: {} } } } }
-  expect(codexWorkspace(params, dir => dir)).toBeUndefined()
+  expect(admittedWorkspace(callMetadata.decodeCall(params._meta).workspaceCandidates, dir => dir)).toBeUndefined()
 })
 
 it('preserves the directory fallback order when Codex sends no metadata', () => {
   const codex = { ROOM_HOST: 'codex' }
-  expect(fallbackWorkspace({ ...codex, ROOM_DIR: '/worker', PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/worker')
-  expect(fallbackWorkspace({ ...codex, PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/pwd')
-  expect(fallbackWorkspace({ ...codex, INIT_CWD: '/init' }, '/process')).toBe('/init')
-  expect(fallbackWorkspace(codex, '/process')).toBe('/process')
+  expect(workspaceAdapter({ ...codex, ROOM_DIR: '/worker', PWD: '/pwd', INIT_CWD: '/init' }).startup({ env: { ...codex, ROOM_DIR: '/worker', PWD: '/pwd', INIT_CWD: '/init' }, processDir: '/process', platform: process.platform }).fallbackDir).toBe('/worker')
+  expect(workspaceAdapter({ ...codex, PWD: '/pwd', INIT_CWD: '/init' }).startup({ env: { ...codex, PWD: '/pwd', INIT_CWD: '/init' }, processDir: '/process', platform: process.platform }).fallbackDir).toBe('/pwd')
+  expect(workspaceAdapter({ ...codex, INIT_CWD: '/init' }).startup({ env: { ...codex, INIT_CWD: '/init' }, processDir: '/process', platform: process.platform }).fallbackDir).toBe('/init')
+  expect(workspaceAdapter(codex).startup({ env: codex, processDir: '/process', platform: process.platform }).fallbackDir).toBe('/process')
   // Other hosts start Room in the session's folder: an inherited PWD elsewhere is ignored.
-  expect(fallbackWorkspace({ ROOM_DIR: '/worker', PWD: '/pwd' }, '/process')).toBe('/worker')
-  expect(fallbackWorkspace({ ROOM_HOST: 'claude', PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/process')
+  expect(workspaceAdapter({ ROOM_DIR: '/worker', PWD: '/pwd' }).startup({ env: { ROOM_DIR: '/worker', PWD: '/pwd' }, processDir: '/process', platform: process.platform }).fallbackDir).toBe('/worker')
+  expect(workspaceAdapter({ ROOM_HOST: 'claude', PWD: '/pwd', INIT_CWD: '/init' }).startup({ env: { ROOM_HOST: 'claude', PWD: '/pwd', INIT_CWD: '/init' }, processDir: '/process', platform: process.platform }).fallbackDir).toBe('/process')
 })
 
 it('starts no join under shared hosting and first binds and joins the metadata repository, ignoring PWD', async () => {
@@ -79,7 +81,7 @@ it('starts no join under shared hosting and first binds and joins the metadata r
   const target = repo('target')
   const joins: string[] = []
   const binding = createWorkspaceBinding({
-    deferred: deferForSharedCodex({ ROOM_HOST: 'codex', PWD: wrong }, () => 'codex app-server --managed-daemon', 'darwin'),
+    deferred: deferWorkspace({ ROOM_HOST: 'codex', PWD: wrong }, () => 'codex app-server --managed-daemon', 'darwin'),
     fallbackDir: () => wrong, logFallback: () => { throw new Error('unexpected fallback') },
     initialize: async dir => {
       const auto = new AutoJoin({ local: false, log: () => {}, report: () => {}, joined: () => joins.length > 0,
@@ -105,7 +107,7 @@ it('keeps startup binding for non-shared Codex, Claude and workers with ROOM_DIR
     const dir = repo(host)
     const joins: string[] = []
     const binding = createWorkspaceBinding({
-      deferred: deferForSharedCodex({ ROOM_HOST: host === 'worker' ? 'codex' : host, ...(host === 'worker' ? { ROOM_DIR: dir } : {}) }, () => host === 'worker' ? 'codex app-server' : 'codex exec', 'darwin'),
+      deferred: deferWorkspace({ ROOM_HOST: host === 'worker' ? 'codex' : host, ...(host === 'worker' ? { ROOM_DIR: dir } : {}) }, () => host === 'worker' ? 'codex app-server' : 'codex exec', 'darwin'),
       fallbackDir: () => dir, logFallback: () => {},
       initialize: async target => { joins.push(target); return target },
     })
@@ -276,8 +278,8 @@ it('distinguishes sibling worktrees and a nested repository using real Git roots
   const nested = path.join(root, 'nested')
   fs.mkdirSync(nested)
   execFileSync('git', ['init', '-q', nested])
-  expect(codexWorkspace(call(sibling))).toBe(fs.realpathSync(sibling))
-  expect(codexWorkspace(call(nested))).toBe(fs.realpathSync(nested))
+  expect(admittedWorkspace(callMetadata.decodeCall(call(sibling)._meta).workspaceCandidates)).toBe(fs.realpathSync(sibling))
+  expect(admittedWorkspace(callMetadata.decodeCall(call(nested)._meta).workspaceCandidates)).toBe(fs.realpathSync(nested))
   const binding = createWorkspaceBinding({ deferred: false, fallbackDir: () => root, logFallback: () => {}, initialize: async dir => dir })
   await binding.start()
   expect((await binding.forCall(call(sibling))).error).toContain(`Room is attached to ${root}`)

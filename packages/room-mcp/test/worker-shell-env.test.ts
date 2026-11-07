@@ -1,11 +1,25 @@
+import { workerInput } from './fixtures/worker-input.js'
+import { workerAdapter } from '../src/hosts/index.js'
+import { claudeShellArtifacts } from '../src/hosts/claude-shell.js'
+import { writeWorkerArtifacts } from '../src/worker-artifacts.js'
+const shellWarnings = (host: 'claude' | 'codex', written: { file?: string; warning?: string }, version?: () => Promise<string | undefined>) => workerAdapter(host).shellWarnings(written, version)
+function writeWorkerShellEnv(lead: string, tag: string, inherited?: string) {
+const plan = claudeShellArtifacts(lead, tag, inherited)
+const written = writeWorkerArtifacts(lead, { ...plan, envPatch: {} })
+const outcome = written.outcomes[0]
+return outcome.written ? { file: outcome.path } : { warning: plan.artifactWarnings(written.outcomes)[0] }
+}
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { workerCommand, workerProcessEnv } from '../src/worker-config.js'
+import { workerProcessEnv } from '../src/worker-config.js'
+import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { cleanupWorkerLogs } from '../src/worker-git.js'
-import { CODEX_SHELL_FILTER, codexShellFilterWarning, workerShellEnvScript, workerShellEnvWarnings, writeWorkerShellEnv } from '../src/worker-shell-env.js'
+
+import { CODEX_SHELL_FILTER, codexShellFilterWarning } from '../src/hosts/codex-shell.js'
+import { workerShellEnvScript } from '../src/hosts/claude-shell.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -22,9 +36,12 @@ const options = { threads: 2, memGb: 1, server: 'local', room: 'local/repo', dir
   share: 'intent', run: 1, nonce: 'n', registry: '/repo/.git/room/registry', id: 'id', token: 'secret', logDir: '/repo', isWorker: true, port: 4414 }
 
 // Runs the hook exactly as a worker's settings install it: `node` with the exec-form args, event JSON on stdin.
+const powerShellSettings = JSON.parse((await workerAdapter('claude').plan(workerInput({
+  shellEnvHook: true,
+  claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+}))).args.find(a => a.includes('PreToolUse'))!)
 function powerShellHook(input: unknown) {
-  const settings = JSON.parse(workerCommand('claude', undefined, 'task', undefined, undefined, { shellEnvHook: true }).args.find(a => a.includes('PreToolUse'))!)
-  const hook = settings.hooks.PreToolUse[0].hooks[0]
+  const hook = powerShellSettings.hooks.PreToolUse[0].hooks[0]
   expect(hook.command).toBe('node')
   return spawnSync(process.execPath, hook.args, {
     input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', timeout: 5000,
@@ -86,10 +103,15 @@ it('denies malformed inputs and unsupported PowerShell declarations instead of r
   }
 })
 
-it('uses an exec-form inline worker hook on fresh/resumed Claude launches without replacing existing settings', () => {
+it('uses an exec-form inline worker hook on fresh/resumed Claude launches without replacing existing settings', async () => {
   for (const resume of [false, true]) for (const pluginDir of [undefined, 'C:\\plugin space']) {
-    const args = workerCommand('claude', undefined, 'task', undefined, undefined,
-      { resume, sessionId: resume ? 's' : undefined, pluginDir, shellEnvHook: true }).args
+    const args = (await workerAdapter('claude').plan(workerInput({
+      shellEnvHook: true,
+      sessionId: resume ? 's' : undefined,
+      pluginDir,
+      mode: resume ? 'resume' : 'fresh',
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    }))).args
     expect(args.filter(v => v === '--settings')).toHaveLength(1)
     expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({
       ...(pluginDir ? { enabledPlugins: { 'room@room': false } } : {}),
@@ -205,7 +227,7 @@ it('removes the env file with the worker logs, and hook files older versions lef
   expect(fs.existsSync(path.join(lead, '.room'))).toBe(false)
 })
 
-it('gives a Claude worker the env file and keeps PORT and thread caps; Codex filters its shell instead', () => {
+it('gives a Claude worker the env file and keeps PORT and thread caps; Codex filters its shell instead', async () => {
   const claude = workerProcessEnv({ ...options, host: 'claude', shellEnvFile: '/repo/.room/workers/w.env.sh' }, {})
   expect(claude.CLAUDE_ENV_FILE).toBe('/repo/.room/workers/w.env.sh')
   expect(claude.PORT).toBe('4414')
@@ -218,11 +240,17 @@ it('gives a Claude worker the env file and keeps PORT and thread caps; Codex fil
 
   expect(CODEX_SHELL_FILTER).toBe('shell_environment_policy.filters={"ROOM_*"="exclude"}')
   for (const resume of [false, true]) {
-    const args = workerCommand('codex', undefined, 'task', undefined, undefined, { resume, sessionId: resume ? 's' : undefined }).args
+    const args = (await workerAdapter('codex').plan(workerInput({
+      sessionId: resume ? 's' : undefined,
+      mode: resume ? 'resume' : 'fresh',
+      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+    }))).args
     expect(args[args.indexOf(CODEX_SHELL_FILTER) - 1]).toBe('-c')
     expect(args.at(-1)).toBe('task')
   }
-  expect(workerCommand('claude', undefined, 'task').args.join(' ')).not.toContain('shell_environment_policy')
+  expect((await workerAdapter('claude').plan(workerInput({
+    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
+  }))).args.join(' ')).not.toContain('shell_environment_policy')
 })
 
 it('warns when a host cannot apply the scrub', async () => {
@@ -232,10 +260,10 @@ it('warns when a host cannot apply the scrub', async () => {
   expect(codexShellFilterWarning('codex-cli 1.0.0-alpha.1')).toBeUndefined()
   // Unreadable versions are not a scrub failure: a codex that cannot print its version will not start the worker either.
   expect(codexShellFilterWarning(undefined)).toBeUndefined()
-  expect(await workerShellEnvWarnings('claude', { file: '/x' }, async () => undefined)).toEqual([])
-  expect(await workerShellEnvWarnings('claude', { warning: 'warning: x' }, async () => undefined)).toEqual(['warning: x'])
-  expect(await workerShellEnvWarnings('codex', {}, async () => 'codex-cli 0.140.0')).toHaveLength(1)
-  expect(await workerShellEnvWarnings('codex', {}, async () => 'codex-cli 0.159.2')).toEqual([])
+  expect(await shellWarnings('claude', { file: '/x' }, async () => undefined)).toEqual([])
+  expect(await shellWarnings('claude', { warning: 'warning: x' }, async () => undefined)).toEqual(['warning: x'])
+  expect(await shellWarnings('codex', {}, async () => 'codex-cli 0.140.0')).toHaveLength(1)
+  expect(await shellWarnings('codex', {}, async () => 'codex-cli 0.159.2')).toEqual([])
 })
 
 // rc11 rehearsal R4: the first spawn ran `codex --version` synchronously, stalling the lead's MCP (4.8 s in the
@@ -246,7 +274,7 @@ it.skipIf(process.platform === 'win32')('reads the installed Codex version witho
     fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nsleep 0.5\necho codex-cli 0.140.0\n', { mode: 0o755 })
     vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`)
     const started = performance.now()
-    const pending = workerShellEnvWarnings('codex', {})
+    const pending = shellWarnings('codex', {})
     expect(performance.now() - started).toBeLessThan(250)
     let timerRan = false
     setTimeout(() => { timerRan = true }, 10)

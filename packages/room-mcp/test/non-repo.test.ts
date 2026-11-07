@@ -1,3 +1,5 @@
+import { workspaceAdapter } from '../src/hosts/selection.js'
+import { codexPreBinding as callMetadata, deferWorkspace } from '../src/hosts/codex-binding.js'
 // Room in a folder that is not (yet) a usable git repository, and remembered state that belongs to another repository.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -10,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { AutoJoin } from '../src/auto-join.js'
 import { findRoomFile, startupJoinOptions, type Session } from '../src/session.js'
 import { NotARepository, repositoryProblem, repositoryRoot, type GitRun } from '../src/repository.js'
-import { codexWorkspace, fallbackWorkspace } from '../src/workspace.js'
+import { admittedWorkspace } from '../src/workspace.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -166,14 +168,14 @@ describe('remembered state is only used for the same repository', () => {
   it('ignores a PWD that names a different folder than the one Claude Code started Room in', () => {
     const cwd = tempDir('room-cwd-')
     const other = tempDir('room-pwd-')
-    expect(fallbackWorkspace({ PWD: other, ROOM_HOST: 'claude' }, cwd)).toBe(cwd)
-    expect(fallbackWorkspace({ PWD: other }, cwd)).toBe(cwd)
+    expect(workspaceAdapter({ PWD: other, ROOM_HOST: 'claude' }).startup({ env: { PWD: other, ROOM_HOST: 'claude' }, processDir: cwd, platform: process.platform }).fallbackDir).toBe(cwd)
+    expect(workspaceAdapter({ PWD: other }).startup({ env: { PWD: other }, processDir: cwd, platform: process.platform }).fallbackDir).toBe(cwd)
     // A PWD that spells the same folder (a symlinked path) is kept.
     const alias = path.join(tempDir('room-alias-'), 'link')
     fs.symlinkSync(cwd, alias)
-    expect(fallbackWorkspace({ PWD: alias }, cwd)).toBe(alias)
+    expect(workspaceAdapter({ PWD: alias }).startup({ env: { PWD: alias }, processDir: cwd, platform: process.platform }).fallbackDir).toBe(alias)
     // Codex starts Room in the plugin folder, so its PWD names the session's folder.
-    expect(fallbackWorkspace({ PWD: other, ROOM_HOST: 'codex' }, cwd)).toBe(other)
+    expect(workspaceAdapter({ PWD: other, ROOM_HOST: 'codex' }).startup({ env: { PWD: other, ROOM_HOST: 'codex' }, processDir: cwd, platform: process.platform }).fallbackDir).toBe(other)
   })
 
   it("never reads another repository's room metadata from a nested repository", () => {
@@ -200,6 +202,6 @@ describe('remembered state is only used for the same repository', () => {
   it('binds a Codex call whose only workspace is not a repository to that folder, not to a fallback repository', () => {
     const dir = tempDir('room-codex-')
     const params = { _meta: { 'x-codex-turn-metadata': { workspaces: { [dir]: {} } } } }
-    expect(codexWorkspace(params)).toBe(dir)
+    expect(admittedWorkspace(callMetadata.decodeCall(params._meta).workspaceCandidates)).toBe(dir)
   })
 })
