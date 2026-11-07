@@ -10,7 +10,7 @@ import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
-import { AutoJoin } from './auto-join.js'
+import { createSessionAutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
@@ -20,8 +20,8 @@ import { adoptLocalReplica, explicitLocalReplica, offerTeamSharingDisclosure, re
 import type { Settle } from './tools/index.js'
 import type { WorkerStopCause } from './worker-status.js'
 import { FlushedStdioTransport } from './transport.js'
-import { admitCodexThread } from './session.js'
-import { CODEX_WORKER_BIND_WAIT_MS, createSessionBinding, isCodexExecWorker } from './binding.js'
+import { admitCallSessions } from './session.js'
+import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import { PresenceEnd, attachingParentReader, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
@@ -30,7 +30,6 @@ import { runDoctor } from './doctor.js'
 import { admitWorkerEnvironment, admittedWorker } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
-import { codexPreBinding as callMetadata } from './hosts/codex-binding.js'
 import { channelCapabilities } from './hosts/claude-binding.js'
 import { resolveDaemonCutover } from './daemon-cutover.js'
 
@@ -226,11 +225,9 @@ async function main() {
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.
       const chosen = startup.server
       log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
-      const autoJoin = new AutoJoin({
+      const autoJoin = createSessionAutoJoin({
         local: chosen === LOCAL,
         log,
-        // Joining before the thread id is known would rebind (leave and rejoin) as soon as it arrives.
-        ...(isCodexExecWorker() ? { bindWait: { bound: () => !!sessionBinding.bound(), ms: CODEX_WORKER_BIND_WAIT_MS } } : {}),
         async attempt(target) {
           const root = await joinableRoot(dir)
           if (session?.local) {
@@ -260,7 +257,7 @@ async function main() {
           tools.startupNotice(line)
           log(line)
         },
-      })
+      }, sessionBinding)
       tools.setAutoJoin(autoJoin)
       if (!signal.aborted) void autoJoin.ensure()
 
@@ -280,8 +277,7 @@ async function main() {
   // The reply's ledger batch commits when its bytes reach the host's pipe (FlushedStdioTransport).
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const threadId = callMetadata.decodeCall(req.params._meta).toolSessionId
-    if (threadId) admitCodexThread(threadId)
+    admitCallSessions(req.params._meta)
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {
       if (req.params.name === 'room_state' && req.params.arguments?.check === true) {

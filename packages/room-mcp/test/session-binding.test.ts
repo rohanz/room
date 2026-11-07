@@ -37,6 +37,32 @@ describe('host session binding', () => {
       .toEqual({ id: 'admitted-no-pid', host: 'codex' })
   })
 
+  it('prefers the newest worker hook over log and tool evidence, then log over tool', () => {
+    const dir = common()
+    const options = { commonDir: dir, cwd: dir, host: 'codex' as const, workerId: 'worker',
+      codexLogSessionId: 'log', codexThreadId: 'tool', env: {} }
+    expect(boundSession(options)).toEqual({ id: 'log', host: 'codex' })
+    record(dir, 'old-hook', 'codex', 1, [child], 'worker')
+    record(dir, 'new-hook', 'codex', 2, [child], 'worker')
+    expect(boundSession(options)).toEqual({ id: 'new-hook', host: 'codex' })
+  })
+
+  it.each([
+    [{ ROOM_WORKER_HOST: 'codex', ROOM_HOST: 'claude' }, 'claude'],
+    [{ ROOM_WORKER_HOST: 'claude', ROOM_HOST: 'codex' }, 'claude'],
+    [{ ROOM_WORKER_HOST: 'codex', ROOM_HOST: 'invalid' }, 'codex'],
+    [{ ROOM_HOST: 'invalid' }, 'codex'],
+    [{}, 'codex'],
+  ])('preserves identity selection independently of naming and spawning: %j', (env, host) => {
+    const dir = common()
+    record(dir, 'claude-record', 'claude', 1, [child])
+    record(dir, 'codex-record', 'codex', 2, [child])
+    expect(boundSession({ commonDir: dir, parent: child, parentArgs: 'codex exec', env }))
+      .toEqual({ id: host + '-record', host })
+    expect(boundSession({ commonDir: dir, host: 'claude', parent: child, env }))
+      .toEqual({ id: 'claude-record', host: 'claude' })
+  })
+
   it('uses separate durable session directories', () => {
     const dir = common()
     record(dir, 'one', 'claude', 1, [parent])

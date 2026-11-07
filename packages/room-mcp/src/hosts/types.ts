@@ -22,7 +22,9 @@ export type StartupFacts = {
 };
 export type CallFacts = { toolSessionId?: string; workspaceCandidates: readonly string[] };
 export type BindingEvidence = {
-  cwd: string; env: Env; parent?: ProcessIdentity; parentArgs?: string;
+  cwd?: string; env: Env; parent?: ProcessIdentity; parentArgs?: string;
+  /** Lazy shared repository discovery; omitted evidence denotes an available repository. */
+  repositoryAvailable?: boolean; appServer?: boolean;
   records: readonly unknown[]; // existing reader acceptance, not a new full validator
   workerId?: string; workerSessionId?: string;
   toolSessionId?: string; logSessionId?: string;

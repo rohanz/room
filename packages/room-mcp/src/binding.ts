@@ -21,13 +21,7 @@ export interface SessionBinding {
 
 const RECHECK_MS = 1_000
 
-/** A `codex exec` Room worker: its own MCP process, never an app-server thread. */
-export function isCodexExecWorker(env: NodeJS.ProcessEnv = process.env): boolean {
-  return !!env.ROOM_WORKER_ID && env.ROOM_WORKER_HOST === 'codex'
-}
-
-/** How long a Codex worker's first automatic join waits for its thread id (SessionStart hook or first tool call). */
-export const CODEX_WORKER_BIND_WAIT_MS = 5_000
+export { isCodexExecWorker } from './hosts/codex-identity.js'
 
 export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding & { admitCodexThread(id: string): void } {
   let commonDir: string | null | undefined

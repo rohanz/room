@@ -1,4 +1,6 @@
-import { sessionHostIdentity } from './hosts/session-host.js'
+import { hostIds, identityAdapter, preBindingAdapter } from './hosts/index.js'
+import { bindingHost, initialJoinIdentity } from './hosts/selection.js'
+export { admittedCodexThread } from './hosts/codex-identity.js'
 import { sessionEntries } from './session-entries.js'
 import { requireDaemonRuntime } from './daemon-cutover.js'
 import { trackConnection } from './connection.js'
@@ -13,7 +15,7 @@ import { CURRENT_COMPAT, LEGACY_COMPAT, selectContract, type ContractSelection, 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
@@ -35,7 +37,6 @@ import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
 import { migrateLegacyLocalChoice, worktreePath } from './choice.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
-import { sameStartTime } from '@room/relay/process'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
@@ -43,7 +44,7 @@ import { HubClient, HubError, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 import { attachPublisher, publisherLease } from './publisher-lease.js'
 import { chooseName, NameRefused, ParticipantLease, processToken, type ChosenName } from './names.js'
-import { joinableRoot, sameFolder } from './repository.js'
+import { joinableRoot } from './repository.js'
 import type { HolderIn } from '@room/hub-core'
 import { currentToolTiming } from './timing.js'
 import { revokeLeadProjections } from './bridge.js'
@@ -208,15 +209,6 @@ function processIdentity(pid: number, probe: ProcessProbe): ProcessIdentity | un
   return info?.startTime && info.executable ? { pid, startTime: info.startTime, executable: info.executable } : undefined
 }
 
-function ownSession(record: SessionRecord, parent: ProcessIdentity): boolean {
-  const host = sessionHostIdentity(record)
-  return !!host && sameProcess(host, parent)
-}
-
-function sameProcess(a: ProcessIdentity, b: ProcessIdentity): boolean {
-  return a.pid === b.pid && sameStartTime(a.startTime, b.startTime) && a.executable === b.executable
-}
-
 function defaultCommonDir(cwd: string): string | undefined {
   try { return resolve(cwd, execFileSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()) }
   catch { return undefined }
@@ -227,80 +219,46 @@ function parentCommandLine(): string {
   catch { return '' }
 }
 
-/** Strip the known Codex executable, including an unquoted path containing spaces. */
-function codexArguments(parent: ProcessIdentity | undefined, commandLine: string): string | undefined {
-  if (!parent) return undefined
-  const known = parent.executable
-  const name = known.split(/[/\\]/).at(-1)
-  if (name !== 'codex' && name !== 'codex.exe') return undefined
-  const raw = commandLine.trim()
-  const after = (prefix: string): string | undefined => raw.startsWith(prefix) && (raw.length === prefix.length || /\s/.test(raw[prefix.length]))
-    ? raw.slice(prefix.length).trimStart() : undefined
-  for (const prefix of [known, `"${known}"`, `'${known}'`]) {
-    const args = after(prefix)
-    if (args !== undefined) return args
+/** Each host's decoder recognizes its own tool-session id in call metadata; that host's identity facet admits it. */
+export function admitCallSessions(rawMeta: unknown): void {
+  for (const host of hostIds) {
+    const id = preBindingAdapter(host).decodeCall(rawMeta).toolSessionId
+    if (id) identityAdapter(host).admitToolSession(id)
   }
-  if (raw[0] === '"' || raw[0] === "'") {
-    const end = raw.indexOf(raw[0], 1)
-    if (end > 0 && raw.slice(1, end).split(/[/\\]/).at(-1) === name) return after(raw.slice(0, end + 1))
-    return undefined
-  }
-  const direct = after(name)
-  if (direct !== undefined) return direct
-  for (const separator of ['/', '\\']) {
-    let index = raw.indexOf(`${separator}${name}`)
-    while (index >= 0) {
-      const args = after(raw.slice(0, index + 1 + name.length))
-      if (args !== undefined) return args
-      index = raw.indexOf(`${separator}${name}`, index + 1)
-    }
-  }
-  return undefined
 }
 
-// Each daemon thread owns its MCP process; every binding in that process shares this identity.
-let codexThreadId: string | undefined
+/** Compatibility entry point: metadata from this host uses its process-global admission fence. */
 export function admitCodexThread(id: string): void {
-  if (!/^[A-Za-z0-9-]{1,128}$/.test(id)) return
-  if (!codexThreadId) codexThreadId = id
-  else if (id !== codexThreadId) {
-    throw new Error('Room cannot share one MCP process across Codex chats (mcp_connection_sharing + mcp_2026_07_28); disable mcp_connection_sharing for Room, or wait for a Room release that supports pooling.')
-  }
+  identityAdapter('codex').admitToolSession(id)
 }
-export function admittedCodexThread(): string | undefined { return codexThreadId }
 
-/** Re-evaluate on every call: a new SessionStart after Claude /clear supersedes the prior ID. */
+/** Shared scheduling consumes the adapter's pending-identity policy. */
+export function initialSessionJoinWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const result = initialJoinIdentity(env)
+  return result?.kind === 'pending' ? result.initialJoinWaitMs : 0
+}
+
+/** Re-evaluate on every call; adapters interpret the shared evidence without caching records. */
 export function boundSession(options: SessionBindingOptions = {}): { id: string; host: 'claude' | 'codex' } | undefined {
   const env = options.env ?? process.env
   const parent = options.parent ?? processIdentity(process.ppid, options.probe ?? probeProcess)
-  const host = options.host ?? (env.ROOM_WORKER_HOST === 'claude' || env.ROOM_HOST === 'claude' ? 'claude'
-    : env.ROOM_WORKER_HOST === 'codex' || env.ROOM_HOST === 'codex' ? 'codex'
-      : parent && /claude/i.test(basename(parent.executable)) ? 'claude'
-        : parent && /codex/i.test(basename(parent.executable)) ? 'codex' : undefined)
+  const host = bindingHost(options.host, env, parent)
   if (!host) return undefined
-  const workerId = options.workerId ?? env.ROOM_WORKER_ID
-  if (workerId && host === 'claude' && options.workerSessionId) return { id: options.workerSessionId, host }
-  const commonDir = options.commonDir ?? defaultCommonDir(options.cwd ?? process.cwd())
-  if (!commonDir) return undefined
-  const records = sessionRecords(commonDir).filter(record => record.host === host)
-  if (workerId) {
-    const matching = records.filter(record => record.worker_id === workerId
-      && (!options.cwd || typeof record.cwd === 'string' && sameFolder(record.cwd, options.cwd)))
-      .sort((a, b) => b.at - a.at)[0]
-    // A Codex worker without its hook record yet is bound by the thread its first tool call names.
-    const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId ?? options.codexThreadId ?? admittedCodexThread() : undefined)
-    return id ? { id, host } : undefined
+  let common: string | undefined
+  let checked = false
+  const commonDir = () => {
+    if (!checked) { common = options.commonDir ?? defaultCommonDir(options.cwd ?? process.cwd()); checked = true }
+    return common
   }
-  if (host === 'codex') {
-    const id = options.codexThreadId ?? admittedCodexThread()
-    if (id) return { id, host }
-    const args = codexArguments(parent, options.parentArgs ?? parentCommandLine())
-    if (options.appServer || args?.match(/^\S+/)?.[0] === 'app-server') return undefined
-    if (args === undefined) return undefined
-  }
-  const matching = parent && records.filter(record => !record.worker_id && ownSession(record, parent)).sort((a, b) => b.at - a.at)[0]
-  if (matching) return { id: matching.session_id, host }
-  return host === 'claude' && env.CLAUDE_CODE_SESSION_ID ? { id: env.CLAUDE_CODE_SESSION_ID, host } : undefined
+  const result = identityAdapter(host).identify({
+    cwd: options.cwd, env, parent,
+    get parentArgs() { return options.parentArgs ?? parentCommandLine() },
+    get repositoryAvailable() { return !!commonDir() },
+    get records() { const dir = commonDir(); return dir ? sessionRecords(dir) : [] },
+    workerId: options.workerId ?? env.ROOM_WORKER_ID, workerSessionId: options.workerSessionId,
+    toolSessionId: options.codexThreadId, logSessionId: options.codexLogSessionId, appServer: options.appServer,
+  })
+  return result.kind === 'bound' ? { id: result.target.id, host: result.target.host } : undefined
 }
 
 /** Used by the name lease while a Codex app-server request has no bound thread. */
