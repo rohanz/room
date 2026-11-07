@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { rm } from 'node:fs/promises'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
@@ -28,7 +29,7 @@ const workerGitFacts = async (dir: string, w: FixtureWorker) => {
   const state = await workerRealState(dir, w, { git: true, leadName: w.lead })
   return { merged: state.merged ?? false, clean: state.clean ?? false, ahead: state.ahead, ...(state.uncommitted !== undefined ? { uncommitted: state.uncommitted } : {}) }
 }
-const worker = (dir: string): FixtureWorker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: -1, startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
+const worker = (dir: string): FixtureWorker => ({ id: 'lead/w#1', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/w', pid: exitedPid(), startedAt: 1, status: 'done', summary: 'done', exitCode: 0 })
 const dirs: string[] = []
 const maintenanceDirs = new Set<string>()
 afterEach(async () => {

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { allocateWorkerPort, workerPortsInUse, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
 import { cleanupWorker } from '../src/worker-git.js'
-import { signalWorker, terminateWorktreeProcesses } from '../src/worker-process.js'
+import { pidPresent, workerProcessLive, signalWorker, terminateWorktreeProcesses } from '../src/worker-process.js'
 import { RoomDoc } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { handlers as joinHandlers } from '../src/tools/join.js'
@@ -250,4 +250,22 @@ describe('worker lifecycle cleanup', () => {
       expect((await workerByTag(root, 'running'))).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
     } finally { room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
   })
+})
+
+it('treats view sentinel zero as no recorded process', () => {
+  const probe = vi.fn(() => ({}))
+  expect(pidPresent(0, probe)).toBe(false)
+  expect(workerProcessLive(0, { host: 'codex' }, probe)).toBe(false)
+  expect(probe).not.toHaveBeenCalled()
+})
+
+it('never probes or signals malformed worktree pids during TERM or KILL', async () => {
+  const signal = vi.fn(), probe = vi.fn(() => ({}))
+  const invalid = [0, -1, 1.5, 2147483648, NaN, '123' as unknown as number]
+  await terminateWorktreeProcesses('/repo/worker', {
+    list: () => [...invalid, 123].map(pid => ({ pid, cwd: '/repo/worker', command: 'test' })),
+    signal, probe, sleep: async () => {},
+  })
+  expect(signal.mock.calls).toEqual([[123, 'SIGTERM'], [123, 'SIGKILL']])
+  expect(probe.mock.calls.every(([pid]) => pid === 123)).toBe(true)
 })

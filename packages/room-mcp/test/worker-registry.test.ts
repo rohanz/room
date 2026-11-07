@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -262,7 +263,7 @@ describe('WorkerRegistry durable store', () => {
   it('waits for a live migration guard before recovering a dead migration lock', async () => {
     const dir = common(), lock = path.join(dir, 'room', 'registry', 'migration.lock')
     fs.mkdirSync(path.dirname(lock), { recursive: true })
-    fs.writeFileSync(lock, JSON.stringify({ ...token, pid: -1 }))
+    fs.writeFileSync(lock, JSON.stringify({ ...token, pid: exitedPid() }))
     const child = await holdGuard(lock)
     const store = await openRegistry(dir, { sources: () => [] })
     expect((requireWorkerInventory(await store.list()))).toEqual([])

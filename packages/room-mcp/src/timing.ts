@@ -1,3 +1,4 @@
+import { pidAlive } from '@room/relay/process'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
 import fs from 'node:fs'
@@ -135,8 +136,7 @@ export function countOtherPreviewChecks(ownMarker: string, markerDir: string, no
           const stat = readStat(file)
           if (!stat.isFile()) continue
           if (stat.mtimeMs > now + 1_000 || now - stat.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS) continue
-          try { process.kill(Number(match[1]), 0) }
-          catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') continue }
+          if (!pidAlive(Number(match[1]))) continue
           count++
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue // Another check removed its marker after the directory read.

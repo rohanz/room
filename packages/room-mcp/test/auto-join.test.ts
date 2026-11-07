@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { recordTestDaemon, stopTestDaemon } from './daemon-fixture.js'
 import { describe, it, expect, afterEach, vi } from 'vitest'
@@ -193,7 +194,7 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(await first.call('room_share', { level: 'intent' })).toContain('only your plans')
     await first.close()
     await mutateWorkerFixture(registry, record.id, old => ({ ...old, phase: 'active', seq: old.seq + 1,
-      runs: [...old.runs, { ...run, n: 2, mode: 'resume', nonce: 'privacy-run-2', launch: { outcome: 'launched', pid: 0 } }] }))
+      runs: [...old.runs, { ...run, n: 2, mode: 'resume', nonce: 'privacy-run-2', launch: { outcome: 'launched', pid: exitedPid() } }] }))
     const retained = await startMcp(workerDir, { ...env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: 'privacy-run-2' })
     await retained.waitFor(/^room-mcp: ready$/, 30_000)
     expect(await retained.call('room_share')).toContain('only your plans')

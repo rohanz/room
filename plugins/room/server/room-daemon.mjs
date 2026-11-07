@@ -15455,13 +15455,16 @@ function windowsProcessCommand(pid) {
 import { execFile as execFile2, execFileSync as execFileSync2 } from "node:child_process";
 import fs3 from "node:fs";
 import path4 from "node:path";
+function validPid(pid) {
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+}
 function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
+  if (!validPid(pid)) return true;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return e.code === "EPERM";
+    return e.code !== "ESRCH";
   }
 }
 var systemProcessReaders = {
@@ -15522,7 +15525,7 @@ function probeProcess(pid, readers) {
   return readers ? probeUncached(pid, readers) : systemProbe(pid);
 }
 function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-n", "kern.boottime"])) {
-  if (!pid || pid <= 0) return void 0;
+  if (!validPid(pid)) return {};
   const unreadable = () => pidAlive(pid) ? {} : void 0;
   try {
     if (readers.platform === "linux") {
@@ -15623,7 +15626,8 @@ function createProcessProbe(readers, options = {}) {
   };
   const probe = (pid) => {
     const hit = cache.get(pid);
-    if (!pid || pid <= 0 || !alive(pid)) {
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) {
       cache.delete(pid);
       return void 0;
     }
@@ -15637,7 +15641,8 @@ function createProcessProbe(readers, options = {}) {
     return info?.pending ? readInBackground(pid) : info;
   };
   const confirm = (pid, recorded) => {
-    if (!pid || pid <= 0 || !alive(pid)) return void 0;
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) return void 0;
     const key = `${pid}\0${recorded.startTime ?? ""}\0${recorded.executable ?? ""}`;
     const hit = confirmed.get(key);
     if (hit && now() < hit.until) return hit.info;
@@ -15670,6 +15675,7 @@ function liveness(identity, probe = probeProcess) {
   return verdict === "dead" && probe === probeProcess && pidAlive(identity.pid) ? livenessBy(identity, (pid) => probeProcessConfirm(pid, identity)) : verdict;
 }
 function livenessBy(identity, probe) {
+  if (!validPid(identity.pid)) return "unknown";
   const observed = probe(identity.pid);
   if (!observed) return "dead";
   if (observed.startTime && identity.startTime && !sameStartTime(observed.startTime, identity.startTime)) return "dead";
@@ -15712,6 +15718,7 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
     const match = tempPattern.exec(name);
     if (!match) continue;
     const pid = Number(match[1]);
+    if (!validPid(pid)) continue;
     const observed = probe(pid);
     if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
     if (pidAlive(pid)) continue;
@@ -16333,7 +16340,7 @@ var legacyDir = (common) => path8.join(common, "room-local");
 function oldRunning(common, probe) {
   try {
     const info = JSON.parse(fs7.readFileSync(path8.join(common, "room-local.json"), "utf8"));
-    const observed = probe(Number(info.pid));
+    const observed = probe(info.pid);
     if (!observed) return false;
     if (info.startTime && observed.startTime && !sameStartTime(info.startTime, observed.startTime)) return false;
     if (info.executable && observed.executable && info.executable !== observed.executable) return false;

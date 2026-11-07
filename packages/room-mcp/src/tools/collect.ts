@@ -1,3 +1,4 @@
+import { validPid } from '@room/relay/process'
 import { requireWorkerInventory } from '../worker-store.js'
 import { requireWorkerEvidence } from '../worker-store.js'
 import { asyncFilter } from '../async-filter.js'
@@ -280,7 +281,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const leadName = record.lead.participant
       // The terminal lead is often an ordinary session, not a worker. Its durable
       // instance still protects it; an unreadable but present PID also blocks recovery.
-      if (pidPresent(record.lead.instance.pid, state.ctx?.probe)) return false
+      if (!validPid(record.lead.instance.pid) || pidPresent(record.lead.instance.pid, state.ctx?.probe)) return false
       const parent = live.find(parent => parent.name === leadName)
       if (parent && (state.workerAlive(s, parent) || pidPresent(parent.pid, state.ctx?.probe))) return false
       record = records.find(parent => parent.name === leadName)

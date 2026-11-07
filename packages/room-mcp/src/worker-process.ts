@@ -116,7 +116,7 @@ export function unawaitedBackgroundTasks(logFile: string, logStart: number, host
  * afresh: the shared probe may hold an exited worker's identity for a pid already reused.
  */
 export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: CwdProcessLister = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
-  if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
+  if (!validPid(pid) || pid === process.pid || pid === process.ppid) return false
   if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
   try { process.kill(pid, signal); return true } catch { return false }
@@ -153,13 +153,20 @@ export const defaultSpawner: Spawner = spec => {
     onError: cb => { child.once('error', cb) },
     kill: () => { try { return child.kill('SIGTERM') } catch { return false } },
     killForce: () => { try { return child.kill('SIGKILL') } catch { return false } },
-    isRunning: () => {
-      if (process.platform !== 'win32') return child.exitCode === null && child.signalCode === null
-      // libuv's Windows signal 0 checks the retained HANDLE, even while JS exit
-      // callbacks are queued behind a synchronous CIM query. Do not use child.killed.
-      try { return child.kill(0) } catch { return false }
-    },
+    isRunning: () => process.platform === 'win32' ? windowsChildRunning(child) : child.exitCode === null && child.signalCode === null,
   }
+}
+
+/**
+ * Windows: whether a spawned child still runs, even while its JS exit callbacks are queued behind a synchronous CIM
+ * query. Probe by pid, not `child.kill(0)`: ChildProcess reports EPERM by emitting 'error' (the spawn-failure channel)
+ * and returning false. libuv opens the process and reads its exit code, so an exited child is ESRCH while our handle
+ * keeps it. Only ESRCH means exited; EPERM and any other error leave it running.
+ */
+export function windowsChildRunning(child: { pid?: number; exitCode: number | null; signalCode: NodeJS.Signals | null }, probe: (pid: number, signal: 0) => unknown = process.kill): boolean {
+  if (child.exitCode !== null || child.signalCode !== null) return false
+  if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0) return true
+  try { probe(child.pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
 }
 
 /** Shared bounded host stop: TERM, five seconds to exit, KILL, five seconds to exit. */
@@ -184,10 +191,10 @@ export async function stopWorkerWithEscalation(options: {
 }
 
 export { pidAlive, parsePsLstartUtc, probeOwnProcess, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
-import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+import { validPid, pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
-  return pid > 0 && probe(pid) !== undefined
+  return pid !== 0 && (!validPid(pid) || probe(pid) !== undefined)
 }
 
 type WorkerIdentity = Pick<LocalWorker, 'processStartTime' | 'host'>
@@ -205,7 +212,8 @@ export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: Pr
 }
 
 function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): ProcessOwnership {
-  if (!pid || pid <= 0) return 'not-ours'
+  if (pid === 0) return 'not-ours'
+  if (!validPid(pid)) return 'unknown'
   const info = probe(pid)
   if (!info) return 'not-ours'
   if (!w.processStartTime) return 'unknown'
@@ -219,9 +227,9 @@ export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: ProcessPro
   return workerProcessOwnership(pid, w, probe) === 'ours'
 }
 
-/** Ours, or a live pid whose identity the shared probe is still reading (Windows): an unread identity is not an exit. */
+/** Ours or unknown: unreadable identity is not an exit; zero is the view sentinel. */
 export function workerProcessLive(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): boolean {
-  return pidIsOurWorker(pid, w, probe) || probe(pid)?.pending === true
+  return pid !== 0 && workerProcessOwnership(pid, w, probe) !== 'not-ours'
 }
 
 interface CwdProcess { pid: number; cwd: string; command: string }
@@ -280,7 +288,7 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   const list = options.list ?? listCwdProcesses
   const insideWorktree = (p: CwdProcess) => {
     const cwd = resolved(p.cwd)
-    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path.sep))
+    return validPid(p.pid) && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path.sep))
   }
   const targets = list().filter(insideWorktree)
   if (!targets.length) return []

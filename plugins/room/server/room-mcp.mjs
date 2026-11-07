@@ -24638,13 +24638,16 @@ var init_windows_process_core = __esm({
 import { execFile as execFile4, execFileSync as execFileSync3 } from "node:child_process";
 import fs10 from "node:fs";
 import path8 from "node:path";
+function validPid(pid) {
+  return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+}
 function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
+  if (!validPid(pid)) return true;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return e.code === "EPERM";
+    return e.code !== "ESRCH";
   }
 }
 function readWindowsProcessTable(readers, pid, timeout = 3e3) {
@@ -24686,7 +24689,7 @@ function probeProcess(pid, readers) {
   return readers ? probeUncached(pid, readers) : systemProbe(pid);
 }
 function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-n", "kern.boottime"])) {
-  if (!pid || pid <= 0) return void 0;
+  if (!validPid(pid)) return {};
   const unreadable2 = () => pidAlive(pid) ? {} : void 0;
   try {
     if (readers.platform === "linux") {
@@ -24780,7 +24783,8 @@ function createProcessProbe(readers, options = {}) {
   };
   const probe = (pid) => {
     const hit = cache2.get(pid);
-    if (!pid || pid <= 0 || !alive(pid)) {
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) {
       cache2.delete(pid);
       return void 0;
     }
@@ -24794,7 +24798,8 @@ function createProcessProbe(readers, options = {}) {
     return info?.pending ? readInBackground(pid) : info;
   };
   const confirm = (pid, recorded) => {
-    if (!pid || pid <= 0 || !alive(pid)) return void 0;
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) return void 0;
     const key2 = `${pid}\0${recorded.startTime ?? ""}\0${recorded.executable ?? ""}`;
     const hit = confirmed.get(key2);
     if (hit && now() < hit.until) return hit.info;
@@ -24868,7 +24873,7 @@ function legacyRelayRunning(common, probe = probeProcess) {
 function oldRunning(common, probe) {
   try {
     const info = JSON.parse(fs11.readFileSync(path9.join(common, "room-local.json"), "utf8"));
-    const observed = probe(Number(info.pid));
+    const observed = probe(info.pid);
     if (!observed) return false;
     if (info.startTime && observed.startTime && !sameStartTime(info.startTime, observed.startTime)) return false;
     if (info.executable && observed.executable && info.executable !== observed.executable) return false;
@@ -25254,6 +25259,7 @@ function liveness(identity4, probe = probeProcess) {
   return verdict === "dead" && probe === probeProcess && pidAlive(identity4.pid) ? livenessBy(identity4, (pid) => probeProcessConfirm(pid, identity4)) : verdict;
 }
 function livenessBy(identity4, probe) {
+  if (!validPid(identity4.pid)) return "unknown";
   const observed = probe(identity4.pid);
   if (!observed) return "dead";
   if (observed.startTime && identity4.startTime && !sameStartTime(observed.startTime, identity4.startTime)) return "dead";
@@ -25294,6 +25300,7 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
     const match = tempPattern.exec(name);
     if (!match) continue;
     const pid = Number(match[1]);
+    if (!validPid(pid)) continue;
     const observed = probe(pid);
     if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
     if (pidAlive(pid)) continue;
@@ -32170,7 +32177,7 @@ function unawaitedBackgroundTasks(logFile, logStart, host2, identity4) {
   return evidence.kind === "observed" ? evidence.count : 0;
 }
 function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
-  if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
+  if (!validPid(pid) || pid === process.pid || pid === process.ppid) return false;
   if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false;
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
   try {
@@ -32178,6 +32185,16 @@ function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProces
     return true;
   } catch {
     return false;
+  }
+}
+function windowsChildRunning(child, probe = process.kill) {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
+  if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0) return true;
+  try {
+    probe(child.pid, 0);
+    return true;
+  } catch (error2) {
+    return error2.code !== "ESRCH";
   }
 }
 async function stopWorkerWithEscalation(options) {
@@ -32194,14 +32211,15 @@ async function stopWorkerWithEscalation(options) {
   return wait();
 }
 function pidPresent(pid, probe = probeProcess) {
-  return pid > 0 && probe(pid) !== void 0;
+  return pid !== 0 && (!validPid(pid) || probe(pid) !== void 0);
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
   const verdict = ownershipBy(pid, w, probe);
   return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, (p) => probeProcessConfirm(p, { startTime: w.processStartTime })) : verdict;
 }
 function ownershipBy(pid, w, probe) {
-  if (!pid || pid <= 0) return "not-ours";
+  if (pid === 0) return "not-ours";
+  if (!validPid(pid)) return "unknown";
   const info = probe(pid);
   if (!info) return "not-ours";
   if (!w.processStartTime) return "unknown";
@@ -32214,7 +32232,7 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
   return workerProcessOwnership(pid, w, probe) === "ours";
 }
 function workerProcessLive(pid, w, probe = probeProcess) {
-  return pidIsOurWorker(pid, w, probe) || probe(pid)?.pending === true;
+  return pid !== 0 && workerProcessOwnership(pid, w, probe) !== "not-ours";
 }
 function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
   const resolved = (p) => {
@@ -32277,7 +32295,7 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   const list = options.list ?? listCwdProcesses;
   const insideWorktree = (p) => {
     const cwd = resolved(p.cwd);
-    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path26.sep));
+    return validPid(p.pid) && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path26.sep));
   };
   const targets = list().filter(insideWorktree);
   if (!targets.length) return [];
@@ -32397,14 +32415,7 @@ var init_worker_process = __esm({
             return false;
           }
         },
-        isRunning: () => {
-          if (process.platform !== "win32") return child.exitCode === null && child.signalCode === null;
-          try {
-            return child.kill(0);
-          } catch {
-            return false;
-          }
-        }
+        isRunning: () => process.platform === "win32" ? windowsChildRunning(child) : child.exitCode === null && child.signalCode === null
       };
     };
   }
@@ -38228,11 +38239,7 @@ function countOtherPreviewChecks(ownMarker, markerDir, now = Date.now(), readSta
           const stat4 = readStat(file);
           if (!stat4.isFile()) continue;
           if (stat4.mtimeMs > now + 1e3 || now - stat4.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS) continue;
-          try {
-            process.kill(Number(match[1]), 0);
-          } catch (error2) {
-            if (error2.code === "ESRCH") continue;
-          }
+          if (!pidAlive(Number(match[1]))) continue;
           count++;
         } catch (error2) {
           if (error2.code === "ENOENT") continue;
@@ -38317,6 +38324,7 @@ var SLOW_TOOL_MS, EVENT_LOOP_SAMPLE_MS, EVENT_LOOP_LAG_MS, PREVIEW_CHECK_MAX_AGE
 var init_timing = __esm({
   "packages/room-mcp/src/timing.ts"() {
     "use strict";
+    init_process();
     init_git();
     SLOW_TOOL_MS = 2e3;
     EVENT_LOOP_SAMPLE_MS = 500;
@@ -43836,6 +43844,7 @@ async function readProcessGroupTable() {
   return (await readTable("pgid")).map(({ key: key2, stat: stat4 }) => ({ pgid: key2, stat: stat4 }));
 }
 async function processGroupAlive(pgid, table = readProcessGroupTable) {
+  if (!validPid(pgid)) return true;
   let rows;
   try {
     rows = await table();
@@ -43843,8 +43852,8 @@ async function processGroupAlive(pgid, table = readProcessGroupTable) {
     try {
       process.kill(-pgid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (error2) {
+      return error2.code !== "ESRCH";
     }
   }
   return rows.some((row) => row.pgid === pgid && !row.stat.startsWith("Z"));
@@ -43854,8 +43863,8 @@ async function tryPreviewLock(entry) {
   const command3 = lockUnavailableForTests ? void 0 : process.platform === "darwin" ? "lockf" : process.platform === "linux" ? "flock" : void 0;
   if (!command3) return void 0;
   await fs51.promises.mkdir(path50.dirname(file), { recursive: true, mode: 448 });
-  const helper = `printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { kill -0 "-$1" 2>/dev/null; return; }; printf "%s\\n" "$t" | awk -v g="$1" '$1==g && $2 !~ /^Z/ {f=1} END {exit !f}'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done`;
-  const args2 = command3 === "lockf" ? ["-t", "0", file, "sh", "-c", helper] : ["-n", file, "sh", "-c", helper];
+  const helper = `node="$1"; printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { "$node" -e 'const p=Number(process.argv[1]); if (!Number.isInteger(p) || p<=0 || p>2147483647) process.exit(0); try { process.kill(-p,0) } catch(e) { if(e.code==="ESRCH") process.exit(42) }' "$1"; result=$?; [ "$result" -ne 42 ]; return; }; printf "%s\\n" "$t" | awk -v g="$1" '$1==g && $2 !~ /^Z/ {f=1} END {exit !f}'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done`;
+  const args2 = command3 === "lockf" ? ["-t", "0", file, "sh", "-c", helper, "room-preview", process.execPath] : ["-n", file, "sh", "-c", helper, "room-preview", process.execPath];
   return new Promise((resolve6) => {
     const child = spawn4(command3, args2, { stdio: ["pipe", "pipe", "ignore"] });
     let settled = false;
@@ -43872,7 +43881,7 @@ async function tryPreviewLock(entry) {
         child.stdin.end();
         if (child.exitCode === null) await new Promise((done) => child.once("close", () => done()));
       }, { trackProcess(pid) {
-        if (!Number.isSafeInteger(pid) || pid <= 0 || !child.stdin.writable) return Promise.reject(new Error("preview lock lost before process registration"));
+        if (!validPid(pid) || !child.stdin.writable) return Promise.reject(new Error("preview lock lost before process registration"));
         return new Promise((done, fail) => child.stdin.write(`${pid}
 `, (error2) => error2 ? fail(error2) : done()));
       } }));
@@ -44014,6 +44023,7 @@ var lockUnavailableForTests, previewQuarantinePath, cwdsForTests, LINUX_CLK_TCK,
 var init_preview_cache = __esm({
   "packages/room-mcp/src/preview-cache.ts"() {
     "use strict";
+    init_process();
     lockUnavailableForTests = false;
     previewQuarantinePath = (entry) => `${entry}.quarantine`;
     LINUX_CLK_TCK = 100;
@@ -44764,6 +44774,7 @@ async function processCommand(file, args2) {
   }));
 }
 async function probePreviewStart(pid) {
+  if (!validPid(pid)) return void 0;
   if (processProbeForTests) return boundedProbe(processProbeForTests(pid)).catch(() => void 0);
   if (!pidAlive(pid)) return null;
   try {
@@ -46219,6 +46230,7 @@ var safeId, safeTag, object5, tokenShape, processShape, runShape, keptPublicatio
 var init_worker_codecs = __esm({
   "packages/room-mcp/src/worker-codecs.ts"() {
     "use strict";
+    init_process();
     init_types2();
     safeId = (value5) => /^w_[A-Za-z0-9_-]{1,64}$/.test(value5);
     safeTag = (value5) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value5) && value5 !== "..";
@@ -46231,7 +46243,7 @@ var init_worker_codecs = __esm({
       if (!object5(value5.launch)) return false;
       switch (value5.launch.outcome) {
         case "launched":
-          return Number.isSafeInteger(value5.launch.pid) && (value5.launch.process === void 0 || processShape(value5.launch.process));
+          return validPid(value5.launch.pid) && (value5.launch.process === void 0 || processShape(value5.launch.process) && validPid(value5.launch.process.pid));
         case "never":
           return typeof value5.launch.error === "string";
         case "ambiguous":
@@ -64994,6 +65006,7 @@ init_session();
 init_context();
 
 // packages/room-mcp/src/tools/collect.ts
+init_process();
 init_worker_store();
 init_worker_store();
 init_async_filter();
@@ -65312,7 +65325,7 @@ function handlers9(state) {
       if (record2.name !== `${human}+${record2.tag}` || record2.lead.room !== s.roomName || record2.legacy?.unowned) return false;
       visited.add(record2.id);
       const leadName = record2.lead.participant;
-      if (pidPresent(record2.lead.instance.pid, state.ctx?.probe)) return false;
+      if (!validPid(record2.lead.instance.pid) || pidPresent(record2.lead.instance.pid, state.ctx?.probe)) return false;
       const parent = live.find((parent2) => parent2.name === leadName);
       if (parent && (state.workerAlive(s, parent) || pidPresent(parent.pid, state.ctx?.probe))) return false;
       record2 = records.find((parent2) => parent2.name === leadName);

@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { requireWorkerEvidence } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 /**
@@ -124,7 +125,7 @@ describe('projectable(lead, roomKey) and the joined-room projector', () => {
       done: { at: 3, summary: 'original task done', changed: ['app.py'] } })
     await registry.writeExit(w.id, { run: 1, code: 0, at: 4, witnessed: true })
     await mutateWorkerFixture(registry, w.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', nonce: 'next',
-      launch: { outcome: 'launched', pid: 0 }, logStart: 0 }], seq: old.seq + 1 }))
+      launch: { outcome: 'launched', pid: exitedPid() }, logStart: 0 }], seq: old.seq + 1 }))
     await registry.writeExit(w.id, { run: 2, code: 0, at: 5, witnessed: true })
     const logFile = join(dir, '.room', 'workers', 'follow-up.log')
     mkdirSync(join(dir, '.room', 'workers'), { recursive: true })
@@ -156,7 +157,7 @@ describe('projectable(lead, roomKey) and the joined-room projector', () => {
     mkdirSync(join(dir, '.room', 'workers'), { recursive: true })
     writeFileSync(join(dir, '.room', 'workers', 'failed-follow-up.log'), previous + current)
     await mutateWorkerFixture(registry, w.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', nonce: 'next',
-      launch: { outcome: 'launched', pid: 0 }, logStart: Buffer.byteLength(previous) }], seq: old.seq + 1 }))
+      launch: { outcome: 'launched', pid: exitedPid() }, logStart: Buffer.byteLength(previous) }], seq: old.seq + 1 }))
     await registry.writeExit(w.id, { run: 2, code: 1, at: 5, witnessed: true })
     const s = session(LOCAL, 'lead-s1')
     await projectWorkers(s, registry, lead.name, 'joined')

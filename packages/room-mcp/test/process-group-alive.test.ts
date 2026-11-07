@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { processAlive, processGroupAlive, readProcessGroupTable } from '../src/preview-cache.js'
+import { windowsChildRunning } from '../src/worker-process.js'
 
 describe('process group liveness treats zombies as gone', () => {
   const table = (rows: { pgid: number; stat: string }[]) => async () => rows
@@ -32,5 +33,45 @@ describe('process group liveness treats zombies as gone', () => {
     const rows = await readProcessGroupTable()
     expect(rows.length).toBeGreaterThan(0)
     expect(await processGroupAlive(process.pid)).toBe((() => { try { process.kill(-process.pid, 0); return true } catch { return false } })())
+  })
+})
+
+it.each(['EINVAL', 'EPERM', 'EIO', 'ESRCH'])('only ESRCH proves death when ps fails: %s', async code => {
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error(code), { code }) })
+  const table = async () => { throw new Error('unreadable') }
+  try {
+    expect(await processAlive(123, table)).toBe(code !== 'ESRCH')
+    expect(await processGroupAlive(123, table)).toBe(code !== 'ESRCH')
+  } finally { kill.mockRestore() }
+})
+it('does not probe malformed process or group IDs', async () => {
+  const table = vi.fn(async () => [])
+  const kill = vi.spyOn(process, 'kill')
+  try {
+    for (const pid of [0, -1, 1.5, 2147483648]) {
+      expect(await processAlive(pid, table)).toBe(true)
+      expect(await processGroupAlive(pid, table)).toBe(true)
+    }
+    expect(table).not.toHaveBeenCalled()
+    expect(kill).not.toHaveBeenCalled()
+  } finally { kill.mockRestore() }
+})
+
+describe('windowsChildRunning', () => {
+  const live = { pid: 4242, exitCode: null, signalCode: null }
+  const fails = (code: string) => () => { throw Object.assign(new Error(code), { code }) }
+  it('treats only ESRCH as exited; EPERM and other probe errors leave the child running', () => {
+    expect(windowsChildRunning(live, fails('ESRCH'))).toBe(false)
+    expect(windowsChildRunning(live, fails('EPERM'))).toBe(true)
+    expect(windowsChildRunning(live, fails('EINVAL'))).toBe(true)
+    expect(windowsChildRunning(live, () => true)).toBe(true)
+  })
+  it('reports an observed exit without probing, and never probes a missing or invalid pid', () => {
+    const probe = vi.fn()
+    expect(windowsChildRunning({ ...live, exitCode: 0 }, probe)).toBe(false)
+    expect(windowsChildRunning({ ...live, signalCode: 'SIGTERM' }, probe)).toBe(false)
+    expect(windowsChildRunning({ pid: undefined, exitCode: null, signalCode: null }, probe)).toBe(true)
+    expect(windowsChildRunning({ pid: -1, exitCode: null, signalCode: null }, probe)).toBe(true)
+    expect(probe).not.toHaveBeenCalled()
   })
 })
