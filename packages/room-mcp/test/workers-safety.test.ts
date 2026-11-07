@@ -39,7 +39,7 @@ describe('worker safety', () => {
     expect(workerProcessOwnership(process.pid, { ...rec, processStartTime: undefined }, () => info)).toBe('unknown')
     expect(workerProcessOwnership(process.pid, rec, () => ({}))).toBe('unknown')
     expect(workerProcessOwnership(process.pid, rec, () => undefined)).toBe('not-ours')
-    expect(workerProcessOwnership(-1, rec, () => info)).toBe('not-ours')
+    expect(workerProcessOwnership(-1, rec, () => info)).toBe('unknown')
   })
 
   it('ignores prompt and session text even when they contain the worker session id', () => {

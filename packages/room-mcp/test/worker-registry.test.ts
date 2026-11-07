@@ -1,3 +1,4 @@
+import { exitedProcessPid } from './fixtures/exited-process.js'
 import { closeAdmittedRegistries, openAdmittedRegistry } from './fixtures/storage-admission.js'
 import { runLegacyImport } from '../src/offline/room-state.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
@@ -268,7 +269,9 @@ describe('WorkerRegistry durable store', () => {
   it('waits for a live migration guard before recovering a dead migration lock', async () => {
     const dir = common(), lock = path.join(dir, 'room', 'registry', 'migration.lock')
     fs.mkdirSync(path.dirname(lock), { recursive: true })
-    fs.writeFileSync(lock, JSON.stringify({ ...token, pid: -1 }))
+    // A malformed PID is unknown. Use an actually exited process for death evidence.
+    const pid = exitedProcessPid() // verifies ESRCH before supplying death evidence
+    fs.writeFileSync(lock, JSON.stringify({ ...token, pid }))
     const child = await holdGuard(lock)
     const store = await openRegistry(dir, { sources: () => [] })
     expect((requireWorkerInventory(await store.list()))).toEqual([])
@@ -507,6 +510,30 @@ describe('WorkerRegistry durable store', () => {
     expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
     expect(fs.existsSync(path.join(dir, 'room', 'registry', 'tags', 'tests.json'))).toBe(true)
     await expect(reopened.writeIntent({ ...intent(), id: 'w_02' })).rejects.toThrow(/blocked.*w_01/)
+  })
+
+  it.each(['pid', 'process.pid'])('blocks persisted malformed launch %s before lifecycle projection and operations', async field => {
+    for (const pid of [0, -1, 1.5, 2147483648, '42', null]) {
+      const dir = common(), store = await openRegistry(dir, { migrate: false })
+      const record = { ...intent(), phase: 'active' as const, hostSessionId: 'session' }
+      await store.writeIntent(record)
+      const launch = { outcome: 'launched', pid: 42, process: { pid: 42, startTime: 'start', executable: 'codex' } }
+      if (field === 'pid') Object.assign(launch, { pid })
+      else Object.assign(launch.process, { pid })
+      const file = path.join(dir, 'room', 'registry', 'workers', 'w_01.json')
+      fs.writeFileSync(file, JSON.stringify({ ...record, runs: [{ ...record.runs[0], launch }] }))
+      const reopened = await openRegistry(dir, { migrate: false, liveness: () => 'dead' })
+      // Rejected evidence cannot produce a lifecycle view with the no-process sentinel.
+      await expect(reopened.status('w_01')).rejects.toMatchObject({ reason: 'blocked' })
+      await expect(reopened.beginCollect('w_01')).rejects.toMatchObject({ reason: 'blocked' })
+      await expect(reopened.resume('w_01', 10, { nonce: 'next', busFrontier: 0, logStart: 0 })).rejects.toMatchObject({ reason: 'blocked' })
+      await expect(reopened.beginRetirement('w_01', {
+        id: 'w_01', name: record.name, lead: 'lead', host: 'codex', task: 'tests',
+        startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'dismissed',
+      })).rejects.toMatchObject({ reason: 'blocked' })
+      expect(fs.existsSync(path.join(dir, 'room', 'registry', 'tags', 'tests.json'))).toBe(true)
+      expect(fs.readdirSync(path.join(dir, 'room', 'registry', 'quarantine'))).toHaveLength(1)
+    }
   })
 
   it('quarantines structurally corrupt records without aborting healthy recovery (S4)', async () => {

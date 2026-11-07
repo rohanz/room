@@ -443,3 +443,13 @@ describe('event loop watchdog', () => {
     release(); await work
   })
 })
+
+it('counts malformed marker owners as unknown without probing invalid PIDs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-invalid-pid-'))
+  const kill = vi.spyOn(process, 'kill').mockReturnValue(true)
+  try {
+    for (const pid of ['0', '2147483648', '999999999999999999999']) fs.writeFileSync(path.join(root, pid + '-aa'), '')
+    expect(countOtherPreviewChecks(path.join(root, 'own'), root)).toBe(3)
+    expect(kill).not.toHaveBeenCalled()
+  } finally { kill.mockRestore(); fs.rmSync(root, { recursive: true, force: true }) }
+})

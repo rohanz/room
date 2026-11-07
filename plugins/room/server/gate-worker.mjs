@@ -5,8 +5,9 @@ import { parentPort } from "node:worker_threads";
 
 // packages/local-state/src/gate.ts
 import fs5 from "node:fs";
+import { fileURLToPath } from "node:url";
 import path6 from "node:path";
-import { randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { randomBytes, randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
 
 // packages/local-state/src/leases.ts
 import fs4 from "node:fs";
@@ -259,13 +260,16 @@ function windowsProcessCommand(pid) {
 import { execFile as execFile2, execFileSync as execFileSync2 } from "node:child_process";
 import fs3 from "node:fs";
 import path4 from "node:path";
+function validPid(pid) {
+  return Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+}
 function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
+  if (!validPid(pid)) return true;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return e.code === "EPERM";
+    return e?.code !== "ESRCH";
   }
 }
 var systemProcessReaders = {
@@ -326,7 +330,7 @@ function probeProcess(pid, readers) {
   return readers ? probeUncached(pid, readers) : systemProbe(pid);
 }
 function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-n", "kern.boottime"])) {
-  if (!pid || pid <= 0) return void 0;
+  if (!validPid(pid)) return {};
   const unreadable = () => pidAlive(pid) ? {} : void 0;
   try {
     if (readers.platform === "linux") {
@@ -427,7 +431,8 @@ function createProcessProbe(readers, options = {}) {
   };
   const probe = (pid) => {
     const hit = cache.get(pid);
-    if (!pid || pid <= 0 || !alive(pid)) {
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) {
       cache.delete(pid);
       return void 0;
     }
@@ -441,7 +446,8 @@ function createProcessProbe(readers, options = {}) {
     return info?.pending ? readInBackground(pid) : info;
   };
   const confirm = (pid, recorded) => {
-    if (!pid || pid <= 0 || !alive(pid)) return void 0;
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) return void 0;
     const key = `${pid}\0${recorded.startTime ?? ""}\0${recorded.executable ?? ""}`;
     const hit = confirmed.get(key);
     if (hit && now() < hit.until) return hit.info;
@@ -474,6 +480,7 @@ function liveness(identity, probe = probeProcess) {
   return verdict === "dead" && probe === probeProcess && pidAlive(identity.pid) ? livenessBy(identity, (pid) => probeProcessConfirm(pid, identity)) : verdict;
 }
 function livenessBy(identity, probe) {
+  if (!validPid(identity.pid)) return "unknown";
   const observed = probe(identity.pid);
   if (!observed) return "dead";
   if (observed.startTime && identity.startTime && !sameStartTime(observed.startTime, identity.startTime)) return "dead";
@@ -516,6 +523,7 @@ function cleanupOrphanTemps(dir, probe = probeProcess, durable = true) {
     const match = tempPattern.exec(name);
     if (!match) continue;
     const pid = Number(match[1]);
+    if (!validPid(pid) || String(pid) !== match[1]) continue;
     const observed = probe(pid);
     if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
     if (pidAlive(pid)) continue;
@@ -682,7 +690,7 @@ var STORAGE_PATHS = {
   /** Activation evidence. Any of these without a readable gate refuses operation; slice 2 never creates them. */
   database: "room/state.sqlite",
   activationMarker: "room/state.active.json",
-  /** Private preflight scratch; each probe uses and removes only its own `<nonce>` subdirectory. */
+  /** Private preflight scratch; each probe uses and removes only its own `p<pid>-n<nonce>` subdirectory. */
   preflightScratch: "room/preflight"
 };
 var StorageRefused = class extends Error {
@@ -784,11 +792,14 @@ var FileStorageGate = class {
   observed;
   // ---- primitives ------------------------------------------------------------------------------------------
   /** Short synchronous critical section on the gate guard; waits only outside it, bounded by guardWaitMs. */
-  async guarded(fn) {
+  async guarded(fn, repairing = false) {
     const deadline = performance.now() + GATE_LIMITS.guardWaitMs;
     for (let attempt = 0; ; attempt++) {
       try {
-        return withGuard(this.gateFile, fn, void 0, { durable: false });
+        return withGuard(path6.join(this.commonDir, "room-storage-location"), () => {
+          if (!repairing) this.readGate();
+          return fn();
+        }, void 0, { durable: false });
       } catch (error) {
         if (error instanceof StorageRefused) throw error;
         if (!guardBusy(error)) throw new StorageRefused("unavailable", bounded(`storage gate I/O failed: ${error.message ?? error}`), REMEDY);
@@ -798,7 +809,7 @@ var FileStorageGate = class {
       }
     }
   }
-  readGate() {
+  readGate(allowForeign = false) {
     let raw;
     try {
       raw = readRecord(this.gateFile, MAX_GATE_BYTES);
@@ -812,8 +823,402 @@ var FileStorageGate = class {
     } catch (error) {
       throw new StorageRefused("unavailable", bounded(`storage gate invalid: ${error.message}`), "preserve room/storage-gate.json and repair it; Room never reinitializes it");
     }
-    if (gate.commonDir !== this.commonDir) throw new StorageRefused("incompatible", "storage gate belongs to another clone location", "this Git directory was copied or moved; repair before use");
+    if (!allowForeign && gate.commonDir !== this.commonDir) throw this.locationMismatch(gate.commonDir);
     return gate;
+  }
+  relocationCommand() {
+    const entry = fileURLToPath(new URL(import.meta.url.endsWith(".mjs") ? "./room-state.mjs" : "../../../plugins/room/server/room-state.mjs", import.meta.url));
+    const quote = (value) => process.platform === "win32" ? "'" + value.replaceAll("'", "''") + "'" : "'" + value.replaceAll("'", "'\\''") + "'";
+    return `node ${quote(entry)} repair-location --common-dir ${quote(this.commonDir)}`;
+  }
+  locationMessage(old) {
+    const command = this.relocationCommand();
+    return `This repository's Room state was recorded at \`${old}\`; it is now at \`${this.commonDir}\`. If you moved it, run: \`${command} --confirm-moved\`. If it is a copy, run: \`${command} --confirm-copied\`.`;
+  }
+  locationMismatch(old) {
+    return new StorageRefused("incompatible", this.locationMessage(old));
+  }
+  relocationRefused(detail) {
+    const old = this.readGate(true)?.commonDir ?? "the recorded location";
+    return new StorageRefused("incompatible", detail, this.locationMessage(old));
+  }
+  sameDirectory(old) {
+    try {
+      const source = fs5.statSync(old, { bigint: true }), current = fs5.statSync(this.commonDir, { bigint: true });
+      return source.isDirectory() && current.isDirectory() && source.ino !== 0n && source.dev === current.dev && source.ino === current.ino;
+    } catch {
+      return false;
+    }
+  }
+  checkLocationChoice(old, cloneId, copied) {
+    if (this.sameDirectory(old)) {
+      if (copied) throw this.relocationRefused("--confirm-copied refused: recorded and current paths are the same directory");
+      return;
+    }
+    if (!copied) {
+      let source;
+      try {
+        source = parseGate(readRecord(path6.join(old, STORAGE_PATHS.gate), MAX_GATE_BYTES));
+      } catch {
+      }
+      if (source?.cloneId === cloneId)
+        throw this.relocationRefused("--confirm-moved refused: a different directory at the recorded path holds the same cloneId, evidence of a copy; use --confirm-copied");
+    }
+  }
+  /** Explicit confirmation resolves location ambiguity, never process ownership or storage phase. */
+  async repairLocation(mode) {
+    await this.guarded(() => {
+      if (this.completeRelocation(mode)) return;
+      const gate = this.readGate(true);
+      if (!gate) return;
+      const old = gate.commonDir;
+      const alias = this.sameDirectory(old);
+      if (mode === "copied" && alias) this.checkLocationChoice(old, gate.cloneId, true);
+      if (old === this.commonDir) return;
+      if (!mode && !alias) throw this.locationMismatch(old);
+      if (mode && gate.phase !== "legacy") throw this.relocationRefused(`relocation requires legacy phase; found ${gate.phase}`);
+      if (alias && !mode) {
+        writeAtomic(this.gateFile, { ...gate, commonDir: this.commonDir });
+        process.stderr.write(`Room location alias: ${old} -> ${this.commonDir}
+`);
+        return;
+      }
+      const copied = mode === "copied";
+      this.checkLocationChoice(old, gate.cloneId, copied);
+      if (!copied) this.checkRelocationRoots(old);
+      for (const name of this.registrationNames()) {
+        const registration = this.readRegistration(name.slice(0, -5));
+        if (registration && this.alive(registration.instance) !== "dead")
+          throw this.relocationRefused("relocation blocked by a live or unknown registration");
+      }
+      for (const name of this.ticketNames()) {
+        const [, holder, id] = TICKET_FILE.exec(name);
+        const ticket = parseTicket(readRecord(path6.join(this.ticketDir, name), MAX_RECORD_BYTES), holder, id);
+        if (this.alive(ticket.identity) !== "dead") throw this.relocationRefused("relocation blocked by a live or unknown ticket");
+      }
+      if (gate.owner && this.alive(gate.owner.instance) !== "dead") throw this.relocationRefused("relocation blocked by a live or unknown maintenance owner");
+      const room = path6.join(this.commonDir, "room");
+      this.checkRelocationHolders(room);
+      if (alias) {
+        writeAtomic(this.gateFile, { ...gate, commonDir: this.commonDir });
+        process.stderr.write(`Room location alias: ${old} -> ${this.commonDir}
+`);
+        return;
+      }
+      if (!copied) this.planRebindRecords(old);
+      const sourceDigest = copied ? void 0 : this.relocationDigest(room);
+      const aside = copied ? `room.copied-${this.now()}-${randomBytes(6).toString("hex")}` : void 0;
+      const fresh = copied ? { cloneId: randomBytes(16).toString("hex"), relocationNonce: randomBytes(16).toString("hex") } : void 0;
+      writeAtomic(path6.join(this.commonDir, "room-location-pending.json"), { v: 1, gate, current: this.commonDir, copied, aside, fresh, sourceDigest });
+      this.completeRelocation();
+    }, true);
+  }
+  completeRelocation(mode, inspect = false) {
+    const journal = path6.join(this.commonDir, "room-location-pending.json");
+    const raw = readRecord(journal, MAX_GATE_BYTES);
+    if (raw === void 0) return false;
+    if (!object(raw) || raw.v !== 1 || raw.current !== this.commonDir || typeof raw.copied !== "boolean" || raw.copied && (typeof raw.aside !== "string" || !/^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(raw.aside)))
+      throw this.relocationRefused("invalid relocation journal; preserve it for inspection");
+    let original;
+    try {
+      original = parseGate(raw.gate);
+    } catch {
+      throw this.relocationRefused("invalid relocation journal source");
+    }
+    const fresh = raw.fresh;
+    if (raw.copied && (!object(fresh) || typeof fresh.cloneId !== "string" || !/^[a-f0-9]{32}$/.test(fresh.cloneId) || typeof fresh.relocationNonce !== "string" || !/^[a-f0-9]{32}$/.test(fresh.relocationNonce)))
+      throw this.relocationRefused("invalid relocation journal destination identity");
+    const old = original.commonDir;
+    if (!path6.isAbsolute(old) || old === this.commonDir) throw this.relocationRefused("invalid relocation journal source location");
+    const room = path6.join(this.commonDir, "room");
+    const aside = raw.copied ? path6.join(this.commonDir, raw.aside) : void 0;
+    const matches = (gate, rebound = false) => gate && gate.cloneId === original.cloneId && gate.generation === original.generation && gate.phase === "legacy" && (gate.commonDir === old || rebound && gate.commonDir === this.commonDir);
+    if (original.phase !== "legacy") throw this.relocationRefused("relocation requires legacy phase");
+    const current = this.readGate(true);
+    const ownDestination = !!(raw.copied && object(fresh) && current && current.cloneId === fresh.cloneId && current.relocationNonce === fresh.relocationNonce && current.commonDir === this.commonDir);
+    if (mode && mode === "copied" !== raw.copied) {
+      const archived = !!aside && fs5.existsSync(aside);
+      const untouched = matches(current) && !archived && (raw.copied || typeof raw.sourceDigest === "string" && raw.sourceDigest === this.relocationDigest(room));
+      if (!untouched) {
+        const state = archived ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : current?.commonDir === this.commonDir ? "move gate published" : raw.sourceDigest ? "move records changed" : "move progress cannot be verified (older journal)";
+        throw this.relocationRefused(`cannot switch relocation mode: ${state}; resume with --confirm-${raw.copied ? "copied" : "moved"} before choosing another operation`);
+      }
+      fs5.unlinkSync(journal);
+      syncDirectoryQuietly(this.commonDir);
+      return false;
+    }
+    if (aside && fs5.existsSync(aside)) {
+      if (!fs5.lstatSync(aside).isDirectory()) throw this.relocationRefused("relocation archive is not a directory");
+      let archived;
+      try {
+        archived = parseGate(readRecord(path6.join(aside, "storage-gate.json"), MAX_GATE_BYTES));
+      } catch {
+        throw this.relocationRefused("relocation archive source cannot be verified");
+      }
+      if (!matches(archived)) throw this.relocationRefused("relocation archive source mismatch");
+      this.checkRelocationHolders(aside);
+      if (current && !ownDestination) throw this.relocationRefused("relocation archive already exists alongside a foreign gate; inspect journal");
+    } else {
+      if (!matches(current, !aside)) throw this.relocationRefused("stale or foreign relocation journal");
+      this.checkRelocationHolders(room);
+    }
+    if (inspect) {
+      const stage = aside ? fs5.existsSync(aside) ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : "copy archive not yet renamed" : current?.commonDir === this.commonDir ? "move gate published" : typeof raw.sourceDigest === "string" ? raw.sourceDigest === this.relocationDigest(room) ? "move source unchanged" : "move records changed" : "move progress cannot be verified (older journal)";
+      throw new StorageRefused(
+        "incompatible",
+        `pending relocation requires recovery: ${raw.copied ? "copied" : "moved"}; old path: ${old}; new path: ${this.commonDir}${aside ? `; archive: ${aside}` : ""}; stage: ${stage}`,
+        `${this.relocationCommand()} --confirm-${raw.copied ? "copied" : "moved"}`
+      );
+    }
+    if (aside && fs5.existsSync(aside) && !ownDestination) this.cleanRelocationDestination(room);
+    if (!ownDestination) this.checkLocationChoice(old, original.cloneId, raw.copied);
+    if (aside) {
+      if (!fs5.existsSync(aside)) fs5.renameSync(room, aside);
+      privateStateDirectory(room);
+      if (!ownDestination) this.initialize("not-needed", fresh);
+    } else {
+      this.checkRelocationRoots(old);
+      if (current?.commonDir !== this.commonDir) {
+        this.planRebindRecords(old)();
+        this.publish({ ...original, commonDir: this.commonDir });
+      }
+    }
+    const notice = `Room ${raw.copied ? "copied" : "moved"}: ${old} -> ${this.commonDir}${aside ? `; previous state preserved at ${aside}` : ""}${fs5.existsSync(path6.join(this.commonDir, "worktrees")) ? "; linked worktrees may require git worktree repair" : ""}`;
+    const noticeFile = path6.join(room, "location-notice.json");
+    const previous = readRecord(noticeFile, MAX_GATE_BYTES);
+    if (!object(previous) || previous.notice !== notice) {
+      writeAtomic(noticeFile, { v: 1, old, current: this.commonDir, copied: raw.copied, aside, notice });
+      process.stderr.write(`${notice}
+`);
+    }
+    fs5.unlinkSync(journal);
+    syncDirectoryQuietly(this.commonDir);
+    return true;
+  }
+  /** Only reclaim known scratch with a verified-gone writer; unknown evidence stays for inspection. */
+  cleanRelocationDestination(room) {
+    if (!fs5.existsSync(room)) return;
+    const refuse = () => {
+      throw this.relocationRefused("relocation destination is not empty");
+    };
+    if (!fs5.lstatSync(room).isDirectory()) refuse();
+    const scratch = path6.join(room, "preflight");
+    const children = [];
+    for (const entry of fs5.readdirSync(room, { withFileTypes: true })) {
+      if (entry.name === "preflight" && entry.isDirectory()) {
+        for (const child of fs5.readdirSync(scratch, { withFileTypes: true })) {
+          const match = /^p([1-9][0-9]*)-n[a-f0-9]{16}$/.exec(child.name);
+          const pid = match ? Number(match[1]) : NaN;
+          if (!child.isDirectory() || !Number.isSafeInteger(pid) || pidAlive(pid)) refuse();
+          const dir = path6.join(scratch, child.name);
+          for (const file of fs5.readdirSync(dir, { withFileTypes: true })) {
+            if (!file.isFile() || !["probe.sqlite", "probe.sqlite-wal", "probe.sqlite-shm"].includes(file.name)) refuse();
+          }
+          children.push(dir);
+        }
+      } else if (!entry.isFile()) refuse();
+    }
+    cleanupOrphanTemps(room);
+    for (const dir of children) {
+      for (const name of fs5.readdirSync(dir)) fs5.unlinkSync(path6.join(dir, name));
+      fs5.rmdirSync(dir);
+    }
+    if (fs5.readdirSync(room, { withFileTypes: true }).some((entry) => entry.name !== "preflight" || !entry.isDirectory())) refuse();
+  }
+  /** Disjoint prefixes make every location rewrite a fixed point, including crash replay. */
+  checkRelocationRoots(old) {
+    const from = path6.basename(old) === ".git" ? path6.dirname(old) : old;
+    const to = path6.basename(old) === ".git" ? path6.dirname(this.commonDir) : this.commonDir;
+    const normalize = (root) => {
+      let resolved;
+      try {
+        resolved = fs5.realpathSync(root);
+      } catch (error) {
+        if (error.code !== "ENOENT" || path6.dirname(root) === root) throw error;
+        resolved = path6.join(normalize(path6.dirname(root)), path6.basename(root));
+      }
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    const a = normalize(from), b = normalize(to);
+    if (a !== b && (a.startsWith(b + path6.sep) || b.startsWith(a + path6.sep)))
+      throw this.relocationRefused("overlapping relocation roots; use --confirm-copied to preserve state aside");
+  }
+  checkRelocationHolders(dir) {
+    const dead = (identity) => {
+      if (!identityShape(identity) || this.alive(identity) !== "dead")
+        throw this.relocationRefused("relocation blocked by a live or unknown recorded process");
+    };
+    const hasPid = (value) => Array.isArray(value) ? value.some(hasPid) : object(value) && Object.entries(value).some(([key, item]) => /pid$/i.test(key) || hasPid(item));
+    const check = (value, name) => {
+      if (name.endsWith(".report.json")) {
+        if (!object(value) || !Array.isArray(value.chain)) dead(void 0);
+        const report = value;
+        const chain = report.chain;
+        dead(chain[0]);
+        dead(report.hostProcess !== void 0 ? report.hostProcess : chain[1]);
+      } else if (name === "session.json") {
+        if (!object(value)) dead(void 0);
+        const session = value;
+        const interpreter = /^(?:sh|bash|dash|zsh|fish|cmd|powershell|pwsh)(?:\.exe)?$/i;
+        if ("chain" in session) {
+          const chain = Array.isArray(session.chain) ? session.chain : [];
+          const first = chain[0];
+          const host = identityShape(first) && interpreter.test(first.executable) ? chain[1] : first;
+          if (!identityShape(host) || !host.executable || interpreter.test(host.executable))
+            throw this.relocationRefused("cannot verify session host identity");
+          dead(host);
+        } else dead({ pid: session.hostPid, startTime: "", executable: "" });
+      } else if (object(value) && name === "storage-gate.json") {
+        if (object(value.owner)) dead(value.owner.instance);
+      } else if (object(value) && dir === this.registrationDir) {
+        dead(value.instance);
+      } else if (object(value) && /storage-gate[/\\](registrations|tickets)$/.test(dir)) {
+        dead(value.instance ?? value.identity);
+      } else if (object(value) && /[/\\]workers$/.test(dir) && name.endsWith(".json")) {
+        if (!object(value.lead) || !Array.isArray(value.runs)) dead(void 0);
+        dead(value.lead.instance);
+        for (const run of value.runs) {
+          dead(run.launcher);
+          if (object(run.launch) && run.launch.outcome === "launched")
+            dead(run.launch.process ?? { pid: run.launch.pid, startTime: "", executable: "" });
+          else if (object(run.launch) && run.launch.outcome === "ambiguous") dead(void 0);
+        }
+      } else if (object(value) && (name.endsWith(".op") || name.endsWith(".writer") || name.endsWith(".lock") || name.endsWith(".guard") || /[/\\](publishers|collect|tags|adoptions)$/.test(dir))) {
+        dead(value.holder ?? value);
+        if (object(value.requested)) dead(value.requested.holder);
+      } else if (object(value) && (name === "relay.json" || value.runtime === "daemon-client")) {
+        dead(value);
+        if (object(value.worker)) dead(value.worker.host);
+      } else if (hasPid(value)) {
+        throw this.relocationRefused(`relocation blocked by a live or unknown record kind: ${name}`);
+      }
+    };
+    for (const entry of fs5.readdirSync(dir, { withFileTypes: true })) {
+      const file = path6.join(dir, entry.name);
+      if (entry.isSymbolicLink()) throw this.relocationRefused(`cannot relocate symbolic link ${entry.name}`);
+      if (entry.isDirectory()) this.checkRelocationHolders(file);
+      else if (entry.name.endsWith(".json") || entry.name.endsWith(".lock") || entry.name.endsWith(".op") || entry.name.endsWith(".writer") || entry.name.endsWith(".guard")) {
+        try {
+          check(readRecord(file, 16 * 1024 * 1024), entry.name);
+        } catch (error) {
+          if (error instanceof StorageRefused) throw error;
+          throw this.relocationRefused(`cannot verify relocation record ${entry.name}`);
+        }
+      }
+    }
+  }
+  /** Fingerprint source bytes and names to prove an intent has not changed state. */
+  relocationDigest(dir) {
+    const hash = createHash2("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const walk = (root) => {
+      for (const entry of fs5.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const file = path6.join(root, entry.name);
+        hash.update(JSON.stringify([path6.relative(dir, file), entry.isDirectory()]));
+        if (entry.isDirectory()) walk(file);
+        else if (entry.isFile()) {
+          const content = createHash2("sha256"), fd = fs5.openSync(file, "r");
+          try {
+            for (; ; ) {
+              const size = fs5.readSync(fd, buffer, 0, buffer.length, null);
+              if (!size) break;
+              content.update(buffer.subarray(0, size));
+            }
+          } finally {
+            fs5.closeSync(fd);
+          }
+          hash.update(content.digest());
+        } else throw this.relocationRefused("cannot verify relocation source entry");
+      }
+    };
+    walk(dir);
+    return hash.digest("hex");
+  }
+  /** Validate the complete rewrite before returning any mutations. */
+  planRebindRecords(old) {
+    const room = path6.join(this.commonDir, "room");
+    const oldRoot = path6.basename(old) === ".git" ? path6.dirname(old) : old;
+    const newRoot = path6.basename(old) === ".git" ? path6.dirname(this.commonDir) : this.commonDir;
+    const relocate = (value) => value === oldRoot ? newRoot : value.startsWith(oldRoot + path6.sep) ? newRoot + value.slice(oldRoot.length) : value;
+    const hash = (value) => createHash2("sha256").update(value).digest("hex");
+    const fields = /* @__PURE__ */ new Set(["dir", "commonDir", "worktree", "keptWorktree", "leadDir", "cwd", "gitDir", "sessionDir", "logDir", "logFile", "reportFile", "exitFile", "path"]);
+    const visit = (value) => {
+      if (Array.isArray(value)) return value.map(visit);
+      if (!object(value)) return value;
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+        key.startsWith("worktree:") ? `worktree:${relocate(key.slice(9))}` : key,
+        typeof item === "string" && fields.has(key) && path6.isAbsolute(item) ? relocate(item) : key === "clone" && item === hash(old) ? hash(this.commonDir) : visit(item)
+      ]));
+    };
+    const actions = [];
+    const targets = /* @__PURE__ */ new Set();
+    const reserve = (target, detail) => {
+      if (fs5.existsSync(target) || targets.has(target)) throw this.relocationRefused(detail);
+      targets.add(target);
+    };
+    const walk = (dir) => {
+      for (const entry of fs5.readdirSync(dir, { withFileTypes: true })) {
+        const file = path6.join(dir, entry.name);
+        if (entry.isSymbolicLink()) throw this.relocationRefused(`cannot relocate symbolic link ${path6.relative(room, file)}`);
+        if (entry.isDirectory()) {
+          walk(file);
+          continue;
+        }
+        if (!entry.name.endsWith(".json") || file === this.gateFile || entry.name === "location-notice.json") continue;
+        const raw = readRecord(file, 16 * 1024 * 1024);
+        const next = visit(raw);
+        if (JSON.stringify(raw) !== JSON.stringify(next)) actions.push(() => writeAtomic(file, next));
+        if (["publishers", "collect"].includes(path6.basename(dir)) && object(next) && typeof next.worktree === "string") {
+          const target = path6.join(dir, `${hash(next.worktree)}.json`);
+          if (target !== file) {
+            reserve(target, "lease relocation target already exists");
+            actions.push(() => {
+              fs5.renameSync(file, target);
+              syncDirectoryQuietly(dir);
+            });
+          }
+        }
+      }
+    };
+    const destinations = /* @__PURE__ */ new Map([[hash(oldRoot), hash(newRoot)], [hash(newRoot), hash(newRoot)]]);
+    const collectPaths = (value) => {
+      if (Array.isArray(value)) value.forEach(collectPaths);
+      else if (object(value)) for (const [key, item] of Object.entries(value)) {
+        if (fields.has(key) && typeof item === "string" && path6.isAbsolute(item)) {
+          destinations.set(hash(item), hash(relocate(item)));
+          if (item === newRoot || item.startsWith(newRoot + path6.sep)) destinations.set(hash(oldRoot + item.slice(newRoot.length)), hash(item));
+        }
+        collectPaths(item);
+      }
+    };
+    const scan = (dir) => {
+      for (const entry of fs5.readdirSync(dir, { withFileTypes: true })) {
+        const file = path6.join(dir, entry.name);
+        if (entry.isDirectory()) scan(file);
+        else if (entry.isFile() && entry.name.endsWith(".json")) collectPaths(readRecord(file, 16 * 1024 * 1024));
+      }
+    };
+    scan(room);
+    const holds = path6.join(room, "registry", "collection-reviews");
+    const renames = [];
+    for (const name of this.names(holds)) {
+      if (!name.endsWith(".json")) continue;
+      const source = path6.join(holds, name), key = name.slice(0, -5), mapped = destinations.get(key);
+      const value = readRecord(source, MAX_GATE_BYTES);
+      if (!mapped && !(Array.isArray(value) && value.length === 0))
+        throw this.relocationRefused("collection review destination cannot be proven; use --confirm-copied to preserve state aside");
+      if (mapped && mapped !== key) {
+        const target = path6.join(holds, `${mapped}.json`);
+        reserve(target, "collection review relocation target already exists");
+        renames.push([source, target]);
+      }
+    }
+    walk(room);
+    return () => {
+      for (const action of actions) action();
+      for (const [source, target] of renames) fs5.renameSync(source, target);
+      if (renames.length) syncDirectoryQuietly(holds);
+    };
   }
   requireGate() {
     const gate = this.readGate();
@@ -859,12 +1264,13 @@ var FileStorageGate = class {
     writeAtomic(this.gateFile, next);
     return next;
   }
-  initialize(preRegistryImport) {
+  initialize(preRegistryImport, fresh) {
     if (this.activationEvidence()) throw new StorageRefused("unavailable", "storage activation evidence exists without a storage gate", "preserve room/state.sqlite and the activation marker; repair the gate with the offline command");
     privateStateDirectory(path6.join(this.commonDir, "room"));
     const gate = {
       v: 1,
       cloneId: randomBytes(16).toString("hex"),
+      ...fresh,
       commonDir: this.commonDir,
       generation: 1,
       phase: "legacy",
@@ -900,6 +1306,7 @@ var FileStorageGate = class {
   async register(input) {
     if (!tokenShape(input.instance)) throw new StorageRefused("unavailable", "invalid instance identity");
     if (!KINDS.includes(input.kind)) throw new StorageRefused("unavailable", "invalid registration kind");
+    await this.repairLocation();
     const build = input.build ?? STORAGE_BUILD;
     const attempt = () => this.guarded(() => {
       const gate = this.readGate() ?? this.initialize(input.preRegistryImport ?? "required");
@@ -1006,6 +1413,7 @@ var FileStorageGate = class {
     return current;
   }
   async finish(ticket) {
+    this.readGate();
     const file = this.ticketFile(ticket.holder, ticket.id);
     try {
       fs5.unlinkSync(file);
@@ -1252,6 +1660,18 @@ var FileStorageGate = class {
     }
     let gate;
     try {
+      if (fs5.existsSync(path6.join(this.commonDir, "room-location-pending.json"))) {
+        try {
+          this.completeRelocation(void 0, true);
+        } catch (error) {
+          if (error instanceof StorageRefused && error.detail.startsWith("pending relocation requires recovery:")) throw error;
+          throw new StorageRefused(
+            "incompatible",
+            `pending relocation cannot be verified: ${error instanceof StorageRefused ? error.detail : error.message}`,
+            "preserve the relocation journal and source state for inspection"
+          );
+        }
+      }
       gate = this.readGate();
     } catch (error) {
       const refused = error;
@@ -1284,6 +1704,7 @@ var FileStorageGate = class {
     };
   }
   async listTickets(limit = this.limits.scanBatch) {
+    this.readGate();
     const names = this.ticketNames().sort();
     const bound = Math.max(0, Math.min(limit, this.limits.scanBatch));
     const tickets = [], gone = /* @__PURE__ */ new Set();

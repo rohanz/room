@@ -67,7 +67,7 @@ export const STORAGE_PATHS = {
   /** Activation evidence. Any of these without a readable gate refuses operation; slice 2 never creates them. */
   database: 'room/state.sqlite',
   activationMarker: 'room/state.active.json',
-  /** Private preflight scratch; each probe uses and removes only its own `<nonce>` subdirectory. */
+  /** Private preflight scratch; each probe uses and removes only its own `p<pid>-n<nonce>` subdirectory. */
   preflightScratch: 'room/preflight',
 } as const
 
@@ -81,6 +81,8 @@ export type GatePhase = 'legacy' | 'draining' | 'staging' | 'db-complete' | 'act
 export interface GateOwner { instance: InstanceToken; token: string }
 
 export interface StorageGateRecord {
+  /** Confirms ownership of a fresh destination during interrupted copy recovery. */
+  relocationNonce?: string
   v: 1
   /** Random at initialization; a copied clone's gate names another clone and refuses (`incompatible`). */
   cloneId: string

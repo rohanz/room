@@ -1,7 +1,7 @@
 /** Explicit legacy maintenance owner. Runtime preflight belongs to the executable entry wrapper. */
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { openStorageGate } from '@room/local-state/gate'
+import { openStorageGate, FileStorageGate, canonicalCommonDir } from '@room/local-state/gate'
 import { compareAndRelease, createExclusive, recover, type InstanceToken } from '@room/local-state/leases'
 import { GATE_LIMITS, STORAGE_PATHS, StorageRefused, type GateOwner, type StorageGate } from '@room/local-state/protocol'
 import { storageInstance } from '../storage-admission.js'
@@ -13,7 +13,7 @@ export async function legacyStatus(commonDir: string) {
   const gate = openStorageGate(commonDir), status = await gate.status()
   const required = legacyImportRequired(gate.commonDir, status.legacyImport, status.gate)
   return { ...status, maintenanceRequired: status.maintenanceRequired || required,
-    ...(required ? { remedy: legacyImportRemedy(gate.commonDir) } : status.refusal?.remedy ? { remedy: status.refusal.remedy } : {}) }
+    ...(status.refusal ? { remedy: status.refusal.remedy ?? status.refusal.detail } : required ? { remedy: legacyImportRemedy(gate.commonDir) } : {}) }
 }
 
 /** Keep migration ownership through final reopen; timeout intentionally leaves a draining gate. */
@@ -82,21 +82,28 @@ export async function runLegacyImport(commonDir: string, options: { sources?: (c
 export async function main(argv: string[]): Promise<number> {
   try {
     const [command, ...args] = argv
-    const allowed = new Set(['--common-dir', ...(command === 'status' ? ['--json'] : []), ...(command === 'resolve-ticket' ? ['--ticket', '--note'] : [])])
+    const allowed = new Set(['--common-dir', ...(command === 'status' ? ['--json'] : []), ...(command === 'repair-location' ? ['--confirm-moved', '--confirm-copied'] : []), ...(command === 'resolve-ticket' ? ['--ticket', '--note'] : [])])
     const flags = new Map<string, string>()
     for (let i = 0; i < args.length; i++) {
       const key = args[i]
       if (!allowed.has(key) || flags.has(key)) throw new Error('invalid or repeated option')
-      if (key === '--json') flags.set(key, 'true')
+      if (['--json', '--confirm-moved', '--confirm-copied'].includes(key)) flags.set(key, 'true')
       else { const value = args[++i]; if (!value || value.startsWith('--')) throw new Error('missing option value'); flags.set(key, value) }
     }
     const common = flags.get('--common-dir')
-    if (!common || !['status', 'import-legacy', 'resolve-ticket', 'reopen'].includes(command))
-      throw new Error('usage: room-state.mjs status|import-legacy|resolve-ticket|reopen --common-dir <dir>')
+    if (!common || !['status', 'import-legacy', 'resolve-ticket', 'reopen', 'repair-location'].includes(command))
+      throw new Error('usage: room-state.mjs status|import-legacy|resolve-ticket|reopen|repair-location --common-dir <dir>')
+    if (command === 'repair-location') {
+      if (flags.has('--confirm-moved') === flags.has('--confirm-copied')) throw new StorageRefused('unavailable', 'repair-location requires exactly one of --confirm-moved or --confirm-copied')
+      await new FileStorageGate(canonicalCommonDir(common), {}).repairLocation(flags.has('--confirm-copied') ? 'copied' : 'moved')
+      return 0
+    }
     if (command === 'status') {
-      const status = { ...await legacyStatus(common), ticketListing: await openStorageGate(common).listTickets() }
+      const inspected = await legacyStatus(common)
+      const status = { ...inspected, ticketListing: inspected.refusal && inspected.refusal.reason !== 'maintenance'
+        ? { tickets: [], truncated: inspected.tickets > 0 } : await openStorageGate(common).listTickets() }
       process.stdout.write(flags.has('--json') ? `${JSON.stringify(status)}\n`
-        : `storage: ${status.gate?.phase ?? status.state}; generation ${status.gate?.generation ?? 0}; registrations ${status.registrations}; tickets ${status.tickets}; legacy import ${status.legacyImport}; maintenance ${status.maintenanceRequired ? 'required' : 'not required'}${status.remedy ? `\nremedy: ${status.remedy}` : ''}\n${status.ticketListing.tickets.map(ticket => `ticket ${ticket.id}: ${ticket.kind}; generation ${ticket.generation}; pid ${ticket.pid}; ${ticket.holderState}`).join('\n')}${status.ticketListing.truncated ? '\nticket listing truncated' : ''}\n`)
+        : `storage: ${status.gate?.phase ?? status.state}; generation ${status.gate?.generation ?? 0}; registrations ${status.registrations}; tickets ${status.tickets}; legacy import ${status.legacyImport}; maintenance ${status.maintenanceRequired ? 'required' : 'not required'}${status.refusal && status.refusal.detail !== status.remedy ? `\nrefusal: ${status.refusal.detail}` : ''}${status.remedy ? `\nremedy: ${status.remedy}` : ''}\n${status.ticketListing.tickets.map(ticket => `ticket ${ticket.id}: ${ticket.kind}; generation ${ticket.generation}; pid ${ticket.pid}; ${ticket.holderState}`).join('\n')}${status.ticketListing.truncated ? '\nticket listing truncated' : ''}\n`)
       return status.maintenanceRequired ? 1 : 0
     }
     if (command === 'import-legacy') await runLegacyImport(common)

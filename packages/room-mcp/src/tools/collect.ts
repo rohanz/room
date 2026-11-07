@@ -11,7 +11,7 @@ import { git, gitWholeTree } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, saveWorkerScratch, workerOwnedPaths, CARRY_FILE_LIMIT, type WorkerCleanupPreservation } from '../worker-git.js'
-import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
+import { signalWorker, pidPresent, workerPidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree, scratchCollectNote } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
@@ -233,7 +233,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     return state.rooms.all().find(room => record?.room === room.roomName) ?? from
   }
   const unverifiedLive = async (s: Session, w: LocalWorker): Promise<string | undefined> => {
-    if (!pidPresent(w.pid, state.ctx?.probe)) return undefined
+    if (!workerPidPresent(w.pid, state.ctx?.probe)) return undefined
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe })
     // 'not-ours' means the worker's process has exited and another process now holds its pid:
     // nothing of ours is running, so nothing is left behind. Only an unreadable identity blocks.
@@ -260,7 +260,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (lead === s.me.name) return { owned: true, liveLead }
       visited.add(lead)
       const active = live.find(parent => parent.name === lead)
-      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidPresent(active.pid, state.ctx?.probe))) liveLead = lead
+      if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || workerPidPresent(active.pid, state.ctx?.probe))) liveLead = lead
       lead = known.find(parent => parent.name === lead)?.lead ?? ''
     }
     return { owned: false }
@@ -283,7 +283,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // instance still protects it; an unreadable but present PID also blocks recovery.
       if (pidPresent(record.lead.instance.pid, state.ctx?.probe)) return false
       const parent = live.find(parent => parent.name === leadName)
-      if (parent && (state.workerAlive(s, parent) || pidPresent(parent.pid, state.ctx?.probe))) return false
+      if (parent && (state.workerAlive(s, parent) || workerPidPresent(parent.pid, state.ctx?.probe))) return false
       record = records.find(parent => parent.name === leadName)
       if (!record) return leadName === human || leadName.startsWith(human + '+')
     }
@@ -421,9 +421,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const beforeStop = await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe })
       const verifiedProcess = decideStop(beforeStop).host === 'signal'
       const terminated = borrowed ? [] : await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, (await ownershipRecords(s)), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
-      if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
+      if (state.workerAlive(s, w) || workerPidPresent(w.pid, state.ctx?.probe)) {
         const how = await state.dismissWorker(s, w, 'discarded by the lead')
-        if ((await localWorkers(s.dir, record => record.id === w.id))[0]?.status === 'running' && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) {
+        if ((await localWorkers(s.dir, record => record.id === w.id))[0]?.status === 'running' && (state.workerAlive(s, w) || workerPidPresent(w.pid, state.ctx?.probe))) {
           await registry.interruptDiscard(lock, `could not discard ${w.tag}: ${how}`)
           return 'could not discard ' + w.tag + ': ' + how + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
         }
@@ -521,7 +521,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     let w = candidate
     const unsafe = await unverifiedLive(s, w)
     if (unsafe) { out.push(unsafe); return undefined }
-    const stopped = w.pid > 0 && !state.workerAlive(s, w) && !pidPresent(w.pid, state.ctx?.probe)
+    const stopped = w.pid > 0 && !state.workerAlive(s, w) && !workerPidPresent(w.pid, state.ctx?.probe)
     const decision = decideCollect(await workerRealState(lead.dir, w), !!a.tag, stopped)
     if (decision === 'skip-status') { out.push('skipped ' + w.tag + ': ' + w.status + (w.status === 'failed' ? ` (${failureReason(w)})` : '')); return undefined }
     if (decision === 'skip-partial') {
@@ -809,7 +809,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // pending cleanup with a kept baseline; a refusal leaves it pending.
         if (a.mode !== 'copy' && a.keep !== true && (await (await openWorkerReader(s.dir)).read(w.id))?.collectPending) {
           out.push(await finishPendingCollect(s, rooms, w.id, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses,
-            alive: x => state.workerAlive(s, x) || pidPresent(x.pid, state.ctx?.probe) }) ?? `skipped ${w.tag}: changed while waiting`)
+            alive: x => state.workerAlive(s, x) || workerPidPresent(x.pid, state.ctx?.probe) }) ?? `skipped ${w.tag}: changed while waiting`)
           continue
         }
         // A worker that reported done is running until its host exits; the done notice promises this wait.

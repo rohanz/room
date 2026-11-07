@@ -170,3 +170,107 @@ it('bounds every Git subprocess by the remaining absolute attempt budget', () =>
   now = 4000
   expect(() => budget.gitTimeout()).toThrow('exceeded 10 minutes')
 })
+
+it('repair-location requires confirmation and rebinds through the CLI', async () => {
+  const { common } = fixture()
+  fs.mkdirSync(path.join(common, 'room'))
+  const previous = { v: 1, cloneId: 'a'.repeat(32), commonDir: path.join(path.dirname(common), 'missing-other'), generation: 7,
+    phase: 'legacy', minReader: 1, minWriter: 1, preRegistryImport: 'not-needed', updatedAt: 0 }
+  const file = path.join(common, 'room/storage-gate.json')
+  fs.writeFileSync(file, JSON.stringify(previous))
+  const error = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+  expect(await main(['repair-location', '--common-dir', common])).toBe(1)
+  expect(error).toHaveBeenCalledWith('Room storage unavailable: repair-location requires exactly one of --confirm-moved or --confirm-copied\n')
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual(previous)
+  expect(await main(['repair-location', '--common-dir', common, '--confirm-moved'])).toBe(0)
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ cloneId: previous.cloneId, generation: 7, commonDir: fs.realpathSync(common) })
+})
+
+it('keeps both location commands visible over pending import advice', async () => {
+  const { common } = fixture()
+  fs.mkdirSync(path.join(common, 'room'))
+  const old = path.join(path.dirname(common), 'previous')
+  fs.writeFileSync(path.join(common, 'room/storage-gate.json'), JSON.stringify({ v: 1, cloneId: 'a'.repeat(32), commonDir: old, generation: 1,
+    phase: 'legacy', minReader: 1, minWriter: 1, preRegistryImport: 'required', updatedAt: 0 }))
+  const status = await legacyStatus(common)
+  expect(status.remedy).toBe(status.refusal?.detail)
+  expect(status.remedy).toContain(`recorded at \`${old}\``)
+  expect(status.remedy).toContain('--confirm-moved')
+  expect(status.remedy).toContain('--confirm-copied')
+  expect(status.remedy).not.toContain('<plugin>')
+  const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+  expect(await main(['status', '--common-dir', common, '--json'])).toBe(1)
+  expect(JSON.parse(String(output.mock.calls[0][0])).refusal.detail).toBe(status.refusal?.detail)
+  await expect(WorkerRegistry.open(common, { watch: false })).rejects.toThrow(status.refusal!.detail)
+})
+
+
+it('CLI can confirm copy after an unmappable move refusal without a stuck journal', async () => {
+  const { common } = fixture()
+  const holds = path.join(common, 'room/registry/collection-reviews')
+  fs.mkdirSync(holds, { recursive: true })
+  const previous = { v: 1, cloneId: 'a'.repeat(32), commonDir: path.join(path.dirname(common), 'missing-other'), generation: 7,
+    phase: 'legacy', minReader: 1, minWriter: 1, preRegistryImport: 'not-needed', updatedAt: 0 }
+  fs.writeFileSync(path.join(common, 'room/storage-gate.json'), JSON.stringify(previous))
+  fs.writeFileSync(path.join(holds, 'unknown.json'), '[{"owner":"reviewer"}]')
+  const error = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+  expect(await main(['repair-location', '--common-dir', common, '--confirm-moved'])).toBe(1)
+  expect(String(error.mock.calls[0][0])).toContain('collection review destination cannot be proven')
+  expect(fs.existsSync(path.join(common, 'room-location-pending.json'))).toBe(false)
+  expect(await main(['repair-location', '--common-dir', common, '--confirm-copied'])).toBe(0)
+  expect(JSON.parse(fs.readFileSync(path.join(common, 'room/storage-gate.json'), 'utf8')).cloneId).not.toBe(previous.cloneId)
+})
+
+it('JSON and text status retain unresolved tickets and registration-only evidence while draining', async () => {
+  const { common } = fixture()
+  const { FileStorageGate } = await import('@room/local-state/gate')
+  const { randomUUID } = await import('node:crypto')
+  const gate = new FileStorageGate(fs.realpathSync(common), {})
+  const register = () => gate.register({ instance: { pid: 99999999, startTime: 'gone', executable: '/gone', sessionId: 'test', nonce: randomUUID() }, kind: 'mcp', release: 'test', preRegistryImport: 'not-needed' })
+  const holder = await register(), orphan = await register()
+  const ticket = await gate.admit(holder, 'collect')
+  const finished = await gate.admit(orphan, 'preview')
+  await gate.finish(finished)
+  const file = path.join(common, 'room/storage-gate.json')
+  const previous = JSON.parse(fs.readFileSync(file, 'utf8'))
+  fs.writeFileSync(file, JSON.stringify({ ...previous, phase: 'draining', generation: 2, drainingFrom: 1, owner: { instance: holder.instance, token: 'interrupted' } }))
+  const listing = await gate.listTickets()
+  const evidence = listing.tickets.find(item => item.id.startsWith('registration:') && item.pid === orphan.instance.pid)!
+  expect(evidence).toBeDefined()
+  const out = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+  expect(await main(['status', '--common-dir', common, '--json'])).toBe(1)
+  const status = JSON.parse(String(out.mock.calls.at(-1)?.[0]))
+  expect(status.refusal.reason).toBe('maintenance')
+  expect(status.ticketListing.tickets).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: ticket.id, holderState: 'dead' }),
+    expect.objectContaining({ id: evidence.id, kind: 'reconcile', holderState: 'dead' }),
+  ]))
+  expect(await main(['status', '--common-dir', common])).toBe(1)
+  const text = String(out.mock.calls.at(-1)?.[0])
+  expect(text).toContain(`ticket ${ticket.id}: collect; generation 1; pid 99999999; dead`)
+  expect(text).toContain(`ticket ${evidence.id}: reconcile; generation 1; pid 99999999; dead`)
+})
+
+it.each([false, true])('JSON and text status show the verified relocation choice (copied=%s)', async copied => {
+  const { common } = fixture()
+  const current = fs.realpathSync(common), old = path.join(path.dirname(current), 'missing')
+  const original = { v: 1, cloneId: 'a'.repeat(32), commonDir: old, generation: 1,
+    phase: 'legacy', minReader: 1, minWriter: 1, preRegistryImport: 'not-needed', updatedAt: 0 }
+  fs.mkdirSync(path.join(current, 'room'))
+  fs.writeFileSync(path.join(current, 'room/storage-gate.json'), JSON.stringify(original))
+  const intent = { v: 1, gate: original, current, copied, aside: copied ? 'room.copied-1-abcdefabcdef' : undefined,
+    fresh: copied ? { cloneId: 'c'.repeat(32), relocationNonce: 'd'.repeat(32) } : undefined }
+  const journal = path.join(current, 'room-location-pending.json'), bytes = JSON.stringify(intent)
+  fs.writeFileSync(journal, bytes)
+  const out = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+  expect(await main(['status', '--common-dir', common, '--json'])).toBe(1)
+  const status = JSON.parse(String(out.mock.calls.at(-1)?.[0]))
+  expect(status.refusal.detail).toContain(`recovery: ${copied ? 'copied' : 'moved'}; old path: ${old}; new path: ${current}`)
+  expect(status.refusal.detail).toContain('stage:')
+  expect(status.remedy).toContain(`repair-location --common-dir '${current}' --confirm-${copied ? 'copied' : 'moved'}`)
+  expect(await main(['status', '--common-dir', common])).toBe(1)
+  const text = String(out.mock.calls.at(-1)?.[0])
+  expect(text).toContain(status.refusal.detail)
+  expect(text).toContain(status.remedy)
+  expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
+})

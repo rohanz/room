@@ -107,3 +107,15 @@ Room began as an [“Agents leaving the chatbox” hackathon](RULES.md) entry. I
 For a checkout, run `npm ci` and `npm run build:plugin`. Add the checkout as a local marketplace with `claude plugin marketplace add /path/to/room` or `codex plugin marketplace add /path/to/room`; Claude Code can also load it with `--plugin-dir /path/to/room/plugins/room`, and its Claude workers then load the same directory. Codex has no such option: Codex sessions and Codex workers run the installed plugin, so reinstall `room@room` after each `npm run build:plugin`. See [AGENTS.md](AGENTS.md) for the repository layout and test commands, and [local development](docs/reference.md#local-development) for the server and sample.
 
 Room is released under the [PolyForm Noncommercial License 1.0.0](LICENSE). Personal use, research, modification and sharing are allowed; selling Room or running it as a paid service requires a commercial licence.
+
+### Moving or copying a repository
+
+Stop Room before moving or copying a folder. Room never guesses which happened:
+when the recorded location differs, it refuses operations and prints both exact
+repair commands. Ask the user once whether the folder was moved or copied; the
+agent can then run the corresponding `--confirm-moved` or `--confirm-copied` command.
+Copies preserve the entire old `room/` in `.git/room.copied-<timestamp>-<suffix>/`
+and start fresh. Only verified aliases of the same directory update automatically,
+changing the recorded path text with a log line. Explicit repair requires legacy
+phase and no live or unknown holders. Linked worktrees may need `git worktree repair`.
+See [location repair](docs/reference.md#repository-location-repair).

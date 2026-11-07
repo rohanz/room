@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { ROOM_DOC_MAX_BYTES, RoomDoc, isLegacyBranchNotice, isRoomNotice, type Claim, type Msg, type Scope } from '@room/shared'
-import { probeProcess, sameStartTime, type ProcessProbe } from '@room/local-state/process'
+import { validPid, probeProcess, sameStartTime, type ProcessProbe } from '@room/local-state/process'
 import { saveMemory } from './memory.js'
 
 interface Ledger { messages: string[]; claims: string[]; scopes: string[]; scopeSnapshots: Record<string, string>; sources: Record<string, number>; messageSources: Record<string, string>; identities: Record<string, string[]>; complete: boolean }
@@ -18,7 +18,9 @@ export function legacyRelayRunning(common: string, probe: ProcessProbe = probePr
 function oldRunning(common: string, probe: ProcessProbe): boolean {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(common, 'room-local.json'), 'utf8')) as { pid?: number; startTime?: string; executable?: string }
-    const observed = probe(Number(info.pid))
+    // Discovery records require a process PID; malformed evidence cannot prove exit.
+    if (!info || typeof info !== 'object' || !validPid(info.pid as number)) return true
+    const observed = probe(info.pid!)
     if (!observed) return false
     // Older discovery files carry only a pid. An unreadable identity is indeterminate,
     // so keep catching up until disappearance can be established.

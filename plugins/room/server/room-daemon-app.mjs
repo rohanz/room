@@ -13757,7 +13757,7 @@ var STORAGE_PATHS = {
   /** Activation evidence. Any of these without a readable gate refuses operation; slice 2 never creates them. */
   database: "room/state.sqlite",
   activationMarker: "room/state.active.json",
-  /** Private preflight scratch; each probe uses and removes only its own `<nonce>` subdirectory. */
+  /** Private preflight scratch; each probe uses and removes only its own `p<pid>-n<nonce>` subdirectory. */
   preflightScratch: "room/preflight"
 };
 
@@ -14321,7 +14321,7 @@ async function preflight(surface, options = {}) {
           const scratchRoot = path4.join(options.commonDir, STORAGE_PATHS.preflightScratch);
           privateStateDirectory(scratchRoot);
           check();
-          const dir = path4.join(scratchRoot, randomBytes(8).toString("hex"));
+          const dir = path4.join(scratchRoot, `p${process.pid}-n${randomBytes(8).toString("hex")}`);
           privateStateDirectory(dir);
           check();
           const journal = await probe({ kind: "wal", dir });
@@ -15861,13 +15861,16 @@ function windowsProcessCommand(pid) {
 import { execFile as execFile3, execFileSync as execFileSync2 } from "node:child_process";
 import fs5 from "node:fs";
 import path6 from "node:path";
+function validPid(pid) {
+  return Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+}
 function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
+  if (!validPid(pid)) return true;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return e.code === "EPERM";
+    return e?.code !== "ESRCH";
   }
 }
 var systemProcessReaders = {
@@ -15928,7 +15931,7 @@ function probeProcess(pid, readers) {
   return readers ? probeUncached(pid, readers) : systemProbe(pid);
 }
 function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-n", "kern.boottime"])) {
-  if (!pid || pid <= 0) return void 0;
+  if (!validPid(pid)) return {};
   const unreadable = () => pidAlive(pid) ? {} : void 0;
   try {
     if (readers.platform === "linux") {
@@ -16029,7 +16032,8 @@ function createProcessProbe(readers, options = {}) {
   };
   const probe = (pid) => {
     const hit = cache.get(pid);
-    if (!pid || pid <= 0 || !alive(pid)) {
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) {
       cache.delete(pid);
       return void 0;
     }
@@ -16043,7 +16047,8 @@ function createProcessProbe(readers, options = {}) {
     return info?.pending ? readInBackground(pid) : info;
   };
   const confirm = (pid, recorded) => {
-    if (!pid || pid <= 0 || !alive(pid)) return void 0;
+    if (!validPid(pid)) return {};
+    if (!alive(pid)) return void 0;
     const key = `${pid}\0${recorded.startTime ?? ""}\0${recorded.executable ?? ""}`;
     const hit = confirmed.get(key);
     if (hit && now() < hit.until) return hit.info;
@@ -16076,6 +16081,7 @@ function liveness(identity, probe = probeProcess) {
   return verdict === "dead" && probe === probeProcess && pidAlive(identity.pid) ? livenessBy(identity, (pid) => probeProcessConfirm(pid, identity)) : verdict;
 }
 function livenessBy(identity, probe) {
+  if (!validPid(identity.pid)) return "unknown";
   const observed = probe(identity.pid);
   if (!observed) return "dead";
   if (observed.startTime && identity.startTime && !sameStartTime(observed.startTime, identity.startTime)) return "dead";
@@ -16118,6 +16124,7 @@ function cleanupOrphanTemps(dir, probe = probeProcess, durable = true) {
     const match = tempPattern.exec(name);
     if (!match) continue;
     const pid = Number(match[1]);
+    if (!validPid(pid) || String(pid) !== match[1]) continue;
     const observed = probe(pid);
     if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
     if (pidAlive(pid)) continue;
@@ -16740,7 +16747,8 @@ var legacyDir = (common) => path10.join(common, "room-local");
 function oldRunning(common, probe) {
   try {
     const info = JSON.parse(fs9.readFileSync(path10.join(common, "room-local.json"), "utf8"));
-    const observed = probe(Number(info.pid));
+    if (!info || typeof info !== "object" || !validPid(info.pid)) return true;
+    const observed = probe(info.pid);
     if (!observed) return false;
     if (info.startTime && observed.startTime && !sameStartTime(info.startTime, observed.startTime)) return false;
     if (info.executable && observed.executable && info.executable !== observed.executable) return false;

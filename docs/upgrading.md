@@ -216,3 +216,16 @@ For any setup problem, ask **“is Room set up right?”** or run `room-doctor` 
 ### 0.17.7 team destinations
 
 Room no longer supplies a default public server. Existing explicit server URLs remain remembered. Old `team`/`hosted` choices with no actual URL start locally; say “join the room at wss://your-server.example” to select a server. An explicit team join without a configured URL asks for one and makes no network request. See [self-hosting](../deploy/self-hosting.md). Operators can restrict repository registration with `ROOM_MANAGED_REPOS=true` and `ROOM_ADMINS`; existing rooms remain approved and collaborators keep their usual admission rules. Restart after changing it.
+
+## Moving or copying repositories
+
+The storage compatibility release asks once whether a changed location is a move
+or a copy. Operations refuse with both exact repair commands until the user chooses;
+an agent may run the chosen command after asking. Only verified same-directory
+aliases automatically update the gate's path text, with a log line. Keep older
+writers stopped: they do not honor the storage gate or its location guard.
+Confirmed copies preserve `room/` intact in a sibling archive and start fresh.
+Explicit repair requires legacy phase and no live or unknown holders. A confirmed
+move refuses a distinct same-id original; a confirmed copy refuses the same directory.
+See [repository location repair](reference.md#repository-location-repair) for
+recovery safeguards and linked worktree repair.

@@ -44,13 +44,13 @@ function repo(): string {
 }
 
 /** A real room-mcp process over stdio, as a host starts it; its stderr lines are collected. */
-async function startMcp(dir: string, workerEnv: Record<string, string> = {}, onLaunched?: (pid: number) => Promise<void>) {
+async function startMcp(dir: string, workerEnv: Record<string, string> = {}, onLaunched?: (pid: number) => Promise<void>, installedEntry?: string) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-home-'))
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('ROOM_')) env[k] = v
   Object.assign(env, { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), ROOM_DIR: dir }, workerEnv)
   const lines: string[] = []
-  const entry = path.join(ROOT, 'packages/room-mcp/src/index.ts')
+  const entry = installedEntry ?? path.join(ROOT, 'packages/room-mcp/src/index.ts')
   const ready = path.join(home, 'host-ready'), go = path.join(home, 'start-mcp')
   // A real parent host, held before MCP startup until its durable launch identity is recorded.
   // The barrier makes simultaneous-worker admission deterministic, without assuming CLI startup speed.
@@ -64,7 +64,7 @@ async function startMcp(dir: string, workerEnv: Record<string, string> = {}, onL
       child.on('exit', code => process.exit(code ?? 1));
     }, 10);`
   const transport = new StdioClientTransport({
-    command: onLaunched ? process.execPath : path.join(ROOT, 'node_modules/.bin/tsx'),
+    command: onLaunched || installedEntry ? process.execPath : path.join(ROOT, 'node_modules/.bin/tsx'),
     args: onLaunched ? ['-e', host] : [entry], env, cwd: dir, stderr: 'pipe',
   })
   transport.stderr?.on('data', d => { lines.push(...String(d).split('\n').filter(Boolean)) })
@@ -82,7 +82,7 @@ async function startMcp(dir: string, workerEnv: Record<string, string> = {}, onL
       fs.writeFileSync(go, '')
     } catch (error) { await client.close(); await connecting.catch(() => {}); throw error }
   }
-  await connecting
+  await connecting.catch(error => { throw new Error(String(error) + '\n' + lines.join('\n')) })
   if (readRelayInfo(initialCommon)?.nonce !== initialNonce) recordTestDaemon(initialCommon)
   const call = async (name: string, args: Record<string, unknown> = {}) => {
     const common = gitCommonDir(dir), before = readRelayInfo(common)?.nonce
@@ -193,8 +193,11 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(await first.call('room_share', { level: 'intent' })).toContain('only your plans')
     await first.close()
     await mutateWorkerFixture(registry, record.id, old => ({ ...old, phase: 'active', seq: old.seq + 1,
-      runs: [...old.runs, { ...run, n: 2, mode: 'resume', nonce: 'privacy-run-2', launch: { outcome: 'launched', pid: 0 } }] }))
-    const retained = await startMcp(workerDir, { ...env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: 'privacy-run-2' })
+      runs: [...old.runs, { ...run, n: 2, mode: 'resume', nonce: 'privacy-run-2' }] }))
+    // The launcher records the resumed run's real process, as worker launch does.
+    const retained = await startMcp(workerDir, { ...env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: 'privacy-run-2' }, pid =>
+      mutateWorkerFixture(registry, record.id, old => ({ ...old, seq: old.seq + 1,
+        runs: old.runs.map(r => r.n === 2 ? { ...r, launch: { outcome: 'launched' as const, pid } } : r) })))
     await retained.waitFor(/^room-mcp: ready$/, 30_000)
     expect(await retained.call('room_share')).toContain('only your plans')
     // An explicit tool argument remains a deliberate override of the persisted policy.
@@ -684,4 +687,35 @@ describe('room-mcp.log', () => {
     expect(fs.readdirSync(dir).sort()).toEqual(['room-mcp.log', 'room-mcp.log.1'])
     expect(fs.statSync(file).mode & 0o777).toBe(0o600)
   })
+})
+
+it('propagates relocation commands through MCP replies from an installed bundle', async () => {
+  const dir = repo(), common = path.join(dir, '.git'), old = path.join(dir, 'missing-original')
+  const installed = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-installed plugin-')))
+  cleanups.push(() => fs.rmSync(installed, { recursive: true, force: true }))
+  const server = path.join(installed, 'room', 'server')
+  fs.cpSync(path.join(ROOT, 'plugins/room/server'), server, { recursive: true })
+  fs.mkdirSync(path.join(common, 'room'))
+  fs.writeFileSync(path.join(common, 'room/storage-gate.json'), JSON.stringify({
+    v: 1, cloneId: 'a'.repeat(32), commonDir: old, generation: 1, phase: 'legacy',
+    minReader: 1, minWriter: 1, preRegistryImport: 'not-needed', updatedAt: 0,
+  }))
+  const mcp = await startMcp(dir, {}, undefined, path.join(server, 'room-mcp.mjs'))
+  const quote = (s: string) => "'" + s.replaceAll("'", process.platform === 'win32' ? "''" : "'\\''") + "'"
+  const entry = path.join(server, 'room-state.mjs')
+  const command = `node ${quote(entry)} repair-location --common-dir ${quote(common)}`
+  for (const [name, args] of [
+    ['room_state', {}],
+    ['room_join', { dir }],
+    ['room_collect', { tag: 'missing-worker' }],
+  ] as const) {
+    const reply = await mcp.call(name, args)
+    expect(reply).toContain(`recorded at \`${old}\``)
+    expect(reply).toContain(`${command} --confirm-moved`)
+    expect(reply).toContain(`${command} --confirm-copied`)
+  }
+  expect(fs.existsSync(entry)).toBe(true)
+  // The CLI's diagnostic command is its supported read-only equivalent of --help.
+  const result = execFileSync(process.execPath, [entry, 'preflight', '--json'], { encoding: 'utf8' })
+  expect(JSON.parse(result).ok).toBe(true)
 })

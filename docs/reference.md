@@ -233,3 +233,125 @@ node "<plugin>/server/room-state.mjs" reopen --common-dir "<common-dir>"
 `resolve-ticket` refuses live or unknown holders, records the resolution and leaves admission closed. `reopen` explicitly cancels a legacy-only drain and abandons that maintenance attempt; it requires no outstanding legacy import, so rerun `import-legacy` when import is pending. It does not certify completed reconciliation: live predecessor work continues, and dead or unknown evidence remains for later maintenance. Maintenance ownership can be recovered only from a verified-dead owner. Take the ticket identifier from `status`; there is no need to read the private gate records. Neither command authorizes replay of an ambiguous Git or filesystem effect.
 
 **Unmodified older binaries are not fenced by this gate.** A binary that never checks admission can still write files. Inventory and stop every old host, MCP, helper, worker and reconnect loop before maintenance; updating the plugin or seeing zero tickets cannot establish their absence. Existing daemon-cutover requirements still apply. This release provides no SQL migration command or activation window; see [upgrading](upgrading.md#storage-compatibility-release).
+
+## Repository location repair
+
+The storage gate has a random clone identity independent of the relay's SHA-256
+path identity. Room never infers whether a folder was moved or copied. Every
+location mismatch refuses lifecycle operations with the recorded and current paths
+and both exact runnable repair commands. This applies whether the old path is
+missing, unreadable, or holds the same or a different clone identity. Ask the user
+once which operation happened; the agent can then run the corresponding command.
+
+The only automatic exception is a verified same-directory alias: matching device
+and inode, compared as exact bigint values (including case-only spelling). Under the external
+guard (`<common-dir>/room-storage-location.guard`), Room updates only the recorded
+gate path text and emits a log line. It does not archive or rewrite other records.
+
+Explicit repair requires legacy phase and dead ownership verdicts for the
+recognized records below. A dead verdict means the shared process probe finds no
+process or a different process identity; unknown and live verdicts refuse.
+
+| Record kind | Ownership checked |
+| --- | --- |
+| Storage gate, registrations, tickets | Maintenance owner, registered instance, ticket identity |
+| Session record | Positional host (after at most one hook interpreter), or legacy host PID; later ancestors do not own the session |
+| Worker run report | MCP at chain[0] and explicit hostProcess, or legacy chain[1]; absent/null/unverifiable host refuses |
+| Worker record | Lead instance, run launchers and launched processes; ambiguous launch refuses |
+| Operation, writer, lock, publisher, collection, tag and adoption leases | Holder and any requested replacement holder |
+| Relay discovery and daemon-client records | Recorded process and any worker host |
+| Other records containing PID fields | Unknown ownership contract; refuses even if those PIDs are dead |
+
+The same checks apply to archived records during replay. Unknown/live holders and maintenance phases refuse.
+After stopping Room, explicitly confirm the intended operation with:
+
+```sh
+node "<plugin>/server/room-state.mjs" repair-location --common-dir "<git-common-dir>" --confirm-moved
+# Or preserve copied state aside and start fresh:
+node "<plugin>/server/room-state.mjs" repair-location --common-dir "<git-common-dir>" --confirm-copied
+```
+
+Confirmation handles missing or unreadable originals; it never bypasses process
+ownership or the legacy-only phase restriction. `--confirm-moved` refuses when
+the old path still holds the same cloneId in a different directory: that is evidence
+of a copy, and the refusal points to `--confirm-copied`. `--confirm-copied` refuses
+when both paths name the same directory; otherwise it archives the entire `room/`
+intact and starts fresh. Resolve maintenance at the original location before
+relocating. No Git metadata is repaired: linked worktrees may require
+`git worktree repair`.
+
+Location fields within the moved repository are rebound in JSON records (worker,
+checkout, sharing, session and patch paths); publisher filenames are re-keyed;
+collection leases and provable review-hold destinations are re-keyed; matching
+cutover path hashes and legacy import source keys are updated. Unmappable review
+holds refuse. Overlapping old/new roots refuse rebinding before mutation; use
+`--confirm-copied` to preserve state aside with a fresh identity instead. External paths and process identities
+are unchanged. Discovery endpoints retain their existing authentication and
+liveness validation; evidence digests invalidated by a rewrite must be validated
+again. Logs, patch bytes and transport snapshots are not rewritten.
+
+A durable `room-location-pending.json` outside `room/` allows interrupted rename
+or rebind to resume. Replay rechecks source identity, generation, legacy phase
+and process holders, including archived state. Foreign or stale journals refuse.
+Before archiving, the journal persists the intended fresh cloneId and recovery nonce.
+Repair and registration can resume after the archive rename, before fresh-gate
+publication, when the destination is absent or contains only an empty `preflight/`,
+recognized preflight children whose PID is verified gone (containing only probe SQLite
+files), or atomic-write temps reclaimable by Room's verified-dead-writer cleanup.
+The shared `preflight/` parent is retained so concurrent probes can create their children.
+Only an affirmative `ESRCH` signal probe proves a scratch or temp writer is gone;
+invalid PIDs and all other probe errors retain the files and refuse recovery.
+Unowned older preflight children, live or unknown owners, and other destination
+contents refuse. After fresh-gate publication, replay requires both journaled values
+to match the current gate. Both paths reverify the archive and its holders.
+The nonce correlates recovery; it is not authentication or tamper protection.
+The journal shares the gate's private-state trust boundary.
+A foreign destination gate still refuses for inspection. The resulting `room/location-notice.json` records old/new
+paths and any archive location; stderr emits the notice once on completion.
+There is a crash window between durable notice publication and stderr output:
+the audit record remains authoritative if terminal output is lost.
+
+
+Status is read-only even for same-directory aliases and pending relocation. It
+reports the journaled move/copy choice, old/new paths, archive path when applicable,
+observable stage and exact resume command, or why the journal cannot be verified.
+Registration or `repair-location` performs recovery. Readable maintenance gates
+retain ticket IDs, holder verdicts and registration-only reconciliation evidence.
+Move repair validates all records, review-hold mappings and rename targets before
+publishing intent. A different confirmation can replace an untouched intent under
+the location guard. For moves, the source fingerprint must still match; for copies,
+the archive rename must not have happened. After records change, the archive is
+renamed, or the destination gate is published, switching refuses with the observed
+state and the original confirmation flag to resume. Older move journals without a
+fingerprint cannot prove absence of changes and must resume their original mode.
+
+### Offline recovery of unknown lock ownership
+
+Invalid recorded PIDs and probe errors other than `ESRCH` do not prove death.
+Locks, guards, authority locks and remembered-choice locks may therefore remain
+blocked indefinitely. Do not delete them based on age or a failed PID probe.
+
+1. Stop every Room session for the clone and all linked worktrees, including host
+   sessions, workers, MCPs, daemons, relays and automatic restart/reconnect loops.
+   For a shared remembered-choice lock, stop sessions for every clone using it.
+2. Inspect the full process list, including parent PIDs and command lines. On macOS
+   and Linux run `ps -axww -o pid,ppid,user,args`. On Windows, in an elevated PowerShell
+   run `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | Format-List`.
+   Check Room scripts/bundles and their Node, Claude and Codex hosts, including
+   helpers whose command line does not contain “room”. Resolve every unidentified
+   relevant process; missing permissions, hidden command lines or an inaccessible
+   session are not evidence of absence. On shared storage check every machine that
+   can access the state. If absence cannot be established, leave the file in place.
+3. Once all relevant processes are stopped and restart sources disabled, preserve
+   a copy of the specific blocking file and record its absolute path and contents
+   privately. Remove only that lock or guard: macOS/Linux
+   `rm -- '/absolute/path/to/the/blocking.lock'`; Windows PowerShell
+   `Remove-Item -LiteralPath 'C:\absolute\path\to\the\blocking.lock'`.
+   Use the exact path from the diagnostic (a guard may end in `.guard`); never use
+   wildcards or remove the `room/` directory, journals, tickets or worker records.
+4. Run `room-state.mjs status --common-dir "<common-dir>" --json`, then retry the
+   original operation. Reconcile any reported maintenance or relocation separately.
+   Repeated blocking requires investigation, not repeated deletion.
+
+This is controlled offline operator recovery, not an automatic “unknown is dead”
+verdict. The CLI has no force-unlock command.

@@ -189,7 +189,9 @@ export async function preflight(surface: PreflightSurface, options: PreflightOpt
           const scratchRoot = path.join(options.commonDir, STORAGE_PATHS.preflightScratch)
           privateStateDirectory(scratchRoot)
           check()
-          const dir = path.join(scratchRoot, randomBytes(8).toString('hex'))
+          // Retain the shared parent: another probe may be between parent and child creation.
+          // PID-bearing child names allow recovery only after the owning process is gone.
+          const dir = path.join(scratchRoot, `p${process.pid}-n${randomBytes(8).toString('hex')}`)
           privateStateDirectory(dir)
           check()
           const journal = await probe({ kind: 'wal', dir })

@@ -1,3 +1,4 @@
+import { exitedProcessPid } from './fixtures/exited-process.js'
 import { preparedTest, preparedEach } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
@@ -62,7 +63,7 @@ async function batch(leadPatch: Partial<FixtureWorker> = {}, withCat = true) {
   room.setMeta({ base: git(root, 'rev-parse', 'HEAD'), branch: 'shop', repo: 'shop' })
   const worker = (tag: string, owner: string, prepared: typeof lead): FixtureWorker => ({
     id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag,
-    dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: -1, startedAt: 1,
+    dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: exitedProcessPid(), startedAt: 1,
     status: 'done', finishedAt: 2, exitCode: 0,
   })
   const leadWorker = { ...worker('lead', 'rohanz', lead), ...leadPatch }
@@ -114,7 +115,7 @@ async function orphanBatch(withCat = true) {
   const roomName = 'github.com/team/shop'
   for (const record of (requireWorkerInventory(await b.registry.list()))) await mutateWorkerFixture(b.registry, record.id, old => ({
     ...old, room: roomName, lead: { ...old.lead, room: roomName,
-      instance: { ...old.lead.instance, pid: 0, startTime: 'dead-session' } }, seq: old.seq + 1,
+      instance: { ...old.lead.instance, pid: exitedProcessPid(), startTime: 'dead-session' } }, seq: old.seq + 1,
   }))
   const run = (owner = 'rohanz', workerAlive: (w: LocalWorker) => boolean = () => false) =>
     collect(b.room, b.root, `${owner}+current`, workerAlive, { roomName, me: { name: `${owner}+current`, kind: 'agent', owner } })
@@ -174,7 +175,7 @@ preparedEach([false, true], 'force discards three worker levels with missing dir
   put(kitten.dir, 'cat.txt', 'third-level output\n')
   await registerWorkers(session(room, root, 'rohanz'), [{
     tag: 'kitten', name: 'rohanz+kitten', lead: 'rohanz+cat', host: 'codex', task: 'kitten',
-    dir: kitten.dir, branch: kitten.branch, base: kitten.base, pid: -1, startedAt: 1,
+    dir: kitten.dir, branch: kitten.branch, base: kitten.base, pid: exitedProcessPid(), startedAt: 1,
     status: 'done', finishedAt: 2, exitCode: 0,
   }])
   return b
@@ -248,7 +249,7 @@ preparedTest('collects grand-worker edits through a lead once while preserving t
   const mk = (tag: string, owner: string, prepared: typeof lead): FixtureWorker => ({
     id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag,
     dir: prepared.dir, branch: prepared.branch, base: prepared.base, carriedBase: prepared.carriedBase, carriedUntracked: prepared.carriedUntracked,
-    pid: -1, startedAt: 1, finishedAt: 2, exitCode: 0, status: 'done',
+    pid: exitedProcessPid(), startedAt: 1, finishedAt: 2, exitCode: 0, status: 'done',
   })
   await registerWorkers(session(room, top, 'rohanz'), [mk('lead', 'rohanz', lead), mk('cat', 'rohanz+lead', cat)])
   return { root, top, lead, cat, room, humanTracked, humanUntracked }
@@ -303,7 +304,7 @@ preparedTest('recovers the intentional shutdown reason for both worker levels af
   const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead')
   const room = new RoomDoc(new Y.Doc())
   const registry = await registerWorkers(session(room, root, 'rohanz'), ([['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const).map(([tag, owner, prepared]) => (
-    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'running' } as FixtureWorker)))
+    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, pid: exitedProcessPid(), startedAt: 1, status: 'running' } as FixtureWorker)))
   return { root, lead, cat, room, registry }
 }, async ({ root, lead, cat, room, registry }) => {
   for (const tag of ['lead', 'cat']) {
@@ -322,7 +323,7 @@ preparedTest('force discard of a lead detaches a grand-worker that borrows anoth
   const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', { linkExclusions: [] })
   const room = new RoomDoc(new Y.Doc())
   const worker = (tag: string, owner: string, dir: string, branch: string, base: string): FixtureWorker => (
-    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir, branch, base, pid: -1, startedAt: 1, status: 'done' })
+    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir, branch, base, pid: exitedProcessPid(), startedAt: 1, status: 'done' })
   await registerWorkers(session(room, root, 'rohanz'), [
     worker('lead', 'rohanz', lead.dir, lead.branch, lead.base),
     worker('cat', 'rohanz+lead', cat.dir, cat.branch, cat.base),
@@ -349,7 +350,7 @@ preparedTest('force discard saves a grand-worker patch and removes both levels o
   put(cat.dir, 'catalog.py', 'grand-worker output\n')
   const room = new RoomDoc(new Y.Doc())
   await registerWorkers(session(room, root, 'rohanz'), ([['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const).map(([tag, owner, prepared]): FixtureWorker => (
-    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: -1, startedAt: 1, status: 'running' })))
+    { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: exitedProcessPid(), startedAt: 1, status: 'running' })))
   return { root, lead, cat, room }
 }, async ({ root, lead, cat, room }) => {
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })

@@ -3,7 +3,7 @@ import { requireWorkerInventory } from '../worker-store.js'
 import { workerStopDescription } from '../worker-restart-notices.js'
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
+import { workerPidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
 import { WORKER_EFFORTS, workerPortsInUse } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
@@ -452,7 +452,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       const proc = rooms.handle(s, w.id)
       if (!proc) {
         const processState = await workerRealState(s.dir, w, { process: true, probe: ctx.probe })
-        if (processState.process === 'not-ours' && pidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`
+        if (processState.process === 'not-ours' && workerPidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`
         if (processState.process === 'unknown') {
           const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
           progress('delivering unverifiable-process notification; host not signalled')
@@ -490,16 +490,16 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
         signalled = false
         how = `pid ${w.pid} not signalled: it is not alive, or not a process started for this worker (this session did not spawn it)`
       }
-      if (!signalled && pidPresent(w.pid, ctx.probe)) how = proc
+      if (!signalled && workerPidPresent(w.pid, ctx.probe)) how = proc
         ? `pid ${w.pid} not signalled: worker process is still alive`
         : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
       progress(`cleaning child processes after host signal attempt (${signalled ? 'signal sent' : 'no signal sent'}); stop intent recorded`)
       await stopCwdProcesses()
-      if (proc && !pidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc)
+      if (proc && !workerPidPresent(w.pid, ctx.probe)) releaseWorkerProcessPort(proc)
       // The stop fact was committed before any signal.
       if (stopReason && cleanupError) throw new Error(cleanupError)
       progress(`delivering notification (${signalled ? 'signal sent' : 'no signal sent'}); stop intent recorded`)
-      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await notify(() => s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true }))
+      if ((signalled || proc || workerPidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await notify(() => s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true }))
       return how + cleanupText()
       } finally { if (acquired) { progress(`releasing stop operation; ${stopRecorded ? 'stop intent recorded' : 'stop intent not confirmed'}`); await registry.finishOperation(w.id!) } }
     })

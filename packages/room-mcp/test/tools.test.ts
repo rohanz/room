@@ -1,3 +1,4 @@
+import { exitedProcessPid } from './fixtures/exited-process.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { rm } from 'node:fs/promises'
@@ -1099,7 +1100,7 @@ describe('scope, claims, plans, ledger', () => {
   it('uses live scope wording in a worker last-message line', async () => {
     const t = setup()
     const worker = { name: 'Rohan+review', kind: 'agent' as const }
-    await registerWorkers(t.session!, [{ tag: 'review', name: worker.name, lead: 'Rohan', host: 'codex', task: 'review', dir, branch: 'room/review', pid: -1, startedAt: 1, status: 'done' }])
+    await registerWorkers(t.session!, [{ tag: 'review', name: worker.name, lead: 'Rohan', host: 'codex', task: 'review', dir, branch: 'room/review', pid: exitedProcessPid(), startedAt: 1, status: 'done' }])
     try {
       t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'review code', paths: ['app.py'] })
       hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'review code', paths: ['app.py'] })

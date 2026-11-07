@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep ticket and registration reconciliation evidence visible during maintenance; read-only relocation status validates the journal and reports its recovery choice, paths, observed stage and exact resume command.
+
+- Validate move rebinding before journaling; allow mode changes only while source state is provably untouched. Status reports relocation recovery without writes. Document controlled offline recovery for locks with unknown owners.
+
+- Process-liveness checks treat only ESRCH as proof of exit. Malformed required launch PIDs quarantine the worker record; lifecycle pid 0 remains the no-process sentinel. Worktree termination validates PIDs before signalling, preview markers never probe invalid PIDs, and relocation recovery preserves the shared preflight directory.
+
+- Ask once whether a repository was moved or copied: location mismatches refuse with exact `room-state.mjs repair-location --confirm-moved` and `--confirm-copied` commands. Agents may run the chosen command after asking the user. Only exact bigint device/inode aliases update automatically. Interrupted copy repairs recover before or after fresh-gate publication through repair or registration, reclaiming only recognized scratch from verified-gone writers. Confirmed repairs retain legacy-phase, holder and recovery safeguards; copies archive Room state intact and start fresh.
+
 - **SQLite slice 2: compatibility bootstrap and whole-operation storage gate.** File storage remains authoritative; operations, nested work and detached helpers participate in maintenance admission and draining. Pre-registry imports move to the offline maintenance command. MCP, daemon and maintenance entry points verify the official Node 22.x runtime (minimum 22.22.3) and local filesystem before loading storage code. No SQLite activation occurs in this slice.
 
 ## 0.17.41

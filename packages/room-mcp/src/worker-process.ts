@@ -116,7 +116,7 @@ export function unawaitedBackgroundTasks(logFile: string, logStart: number, host
  * afresh: the shared probe may hold an exited worker's identity for a pid already reused.
  */
 export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: CwdProcessLister = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
-  if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
+  if (!validPid(pid) || pid === process.pid || pid === process.ppid) return false
   if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
   try { process.kill(pid, signal); return true } catch { return false }
@@ -184,10 +184,20 @@ export async function stopWorkerWithEscalation(options: {
 }
 
 export { pidAlive, parsePsLstartUtc, probeOwnProcess, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/local-state/process'
-import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/local-state/process'
+import { validPid, pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/local-state/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
-  return pid > 0 && probe(pid) !== undefined
+  return !validPid(pid) || probe(pid) !== undefined
+}
+
+/** Lifecycle worker views use zero (and legacy absent/null fields) for no recorded process.
+ * This is record interpretation, not evidence that a required process identity is dead. */
+function noWorkerProcess(pid: unknown): pid is 0 | undefined | null {
+  return pid === 0 || pid === undefined || pid === null
+}
+
+export function workerPidPresent(pid: number | undefined | null, probe: ProcessProbe = probeProcess): boolean {
+  return !noWorkerProcess(pid) && pidPresent(pid, probe)
 }
 
 type WorkerIdentity = Pick<LocalWorker, 'processStartTime' | 'host'>
@@ -199,13 +209,14 @@ export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
  * confirmation.
  */
 export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): ProcessOwnership {
+  if (noWorkerProcess(pid)) return 'not-ours'
   const verdict = ownershipBy(pid, w, probe)
   return verdict === 'not-ours' && probe === probeProcess && pidAlive(pid)
     ? ownershipBy(pid, w, p => probeProcessConfirm(p, { startTime: w.processStartTime })) : verdict
 }
 
 function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): ProcessOwnership {
-  if (!pid || pid <= 0) return 'not-ours'
+  if (!validPid(pid)) return 'unknown'
   const info = probe(pid)
   if (!info) return 'not-ours'
   if (!w.processStartTime) return 'unknown'
@@ -221,7 +232,7 @@ export function pidIsOurWorker(pid: number, w: WorkerIdentity, probe: ProcessPro
 
 /** Ours, or a live pid whose identity the shared probe is still reading (Windows): an unread identity is not an exit. */
 export function workerProcessLive(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): boolean {
-  return pidIsOurWorker(pid, w, probe) || probe(pid)?.pending === true
+  return !noWorkerProcess(pid) && (pidIsOurWorker(pid, w, probe) || validPid(pid) && probe(pid)?.pending === true)
 }
 
 interface CwdProcess { pid: number; cwd: string; command: string }
@@ -280,14 +291,14 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   const list = options.list ?? listCwdProcesses
   const insideWorktree = (p: CwdProcess) => {
     const cwd = resolved(p.cwd)
-    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path.sep))
+    return validPid(p.pid) && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path.sep))
   }
   const targets = list().filter(insideWorktree)
   if (!targets.length) return []
   const beforeTerm = new Set(list().filter(insideWorktree).map(p => p.pid))
   const named: string[] = []
   for (const p of targets) {
-    if (!beforeTerm.has(p.pid) || !pidPresent(p.pid, options.probe)) continue
+    if (!validPid(p.pid) || !beforeTerm.has(p.pid) || !pidPresent(p.pid, options.probe)) continue
     const name = p.command || processName(p.pid)
     try { signal(p.pid, 'SIGTERM'); named.push(`${name} (pid ${p.pid})`) }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
@@ -295,7 +306,7 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   if (!named.length) return []
   await sleep(300)
   const stillInside = new Set(list().filter(insideWorktree).map(p => p.pid))
-  for (const p of targets) if (stillInside.has(p.pid) && pidPresent(p.pid, options.probe)) {
+  for (const p of targets) if (validPid(p.pid) && stillInside.has(p.pid) && pidPresent(p.pid, options.probe)) {
     try { signal(p.pid, 'SIGKILL') }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
   }

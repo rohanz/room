@@ -1,3 +1,4 @@
+import { exitedProcessPid } from './fixtures/exited-process.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -74,7 +75,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
       id: `rohanz/${tag}#1`, tag, name: `rohanz+${tag}`, lead: 'rohanz', host: 'claude',
       hostSessionId: '550e8400-e29b-41d4-a716-446655440000',
       budget: { threads: 1, memGb: 1, nice: 0 }, task: 'test', dir: workerDir,
-      branch: `room/${tag}`, pid: -1, startedAt: 1, status: 'done', exitCode: 0, ...patch,
+      branch: `room/${tag}`, pid: exitedProcessPid(), startedAt: 1, status: 'done', exitCode: 0, ...patch,
     }])
   }
   /** The worker's registry record under a tag (spawned or seeded), for run facts the lifecycle view does not carry. */

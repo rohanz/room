@@ -1,3 +1,4 @@
+import { exitedProcessPid } from './fixtures/exited-process.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { base, createTools, dir, fakeSession, ignore, lead, pair, realRepo, reportDone, setFixtureRepo, setupLead, workerId } from './workers-fixture.js'
@@ -1140,7 +1141,7 @@ describe('retirement integration', () => {
     await registryForDir(dir)
     const prepared = await prepareWorktree(dir, 'finished', 'rohanz')
     writeFileSync(join(prepared.dir, 'uncommitted-retirement-check'), 'dirty')
-    await registerWorkers(t.session!, [{ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 }])
+    await registerWorkers(t.session!, [{ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: exitedProcessPid(), startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 }])
     await t.leadTools.call('room_preview_merge', {})
     expect(t.a.retiredWorkers()).toEqual([])
     expect((await workerByTag(dir, 'finished'))).toBeDefined()

@@ -1,3 +1,4 @@
+import { exitedProcessPid } from './fixtures/exited-process.js'
 import { withDirectoryAdmission } from '../src/storage-admission.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
@@ -45,7 +46,7 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
   }
   await registry.writeIntent(record)
   const active = await mutateWorkerFixture(registry, id, old => ({ ...old, prep: { step: 'prepared' }, phase: 'active',
-    runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 0 } }], seq: old.seq + 1 }))
+    runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: exitedProcessPid() } }], seq: old.seq + 1 }))
   await registry.finishOperation(id)
   return { registry, record: active }
 
@@ -100,9 +101,10 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
       }
       try { await registry.writeIntent(initial) }
       catch { continue }
+      // A view sentinel is not a required launch claim; no signal capability still projects pid 0.
       const process = w.pid ? fixtureProcess(w.pid, w.processStartTime ?? `fixture:${id}`, w.host, w.status === 'running') : undefined
       record = await mutateWorkerFixture(registry, id, old => ({ ...old, phase: 'active',
-        runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: w.pid ?? 0,
+        runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: w.pid || exitedProcessPid(),
           ...(process ? { process } : {}) } }], seq: old.seq + 1 }))
       await registry.finishOperation(id)
     }

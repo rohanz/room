@@ -50,7 +50,7 @@ var STORAGE_PATHS = {
   /** Activation evidence. Any of these without a readable gate refuses operation; slice 2 never creates them. */
   database: "room/state.sqlite",
   activationMarker: "room/state.active.json",
-  /** Private preflight scratch; each probe uses and removes only its own `<nonce>` subdirectory. */
+  /** Private preflight scratch; each probe uses and removes only its own `p<pid>-n<nonce>` subdirectory. */
   preflightScratch: "room/preflight"
 };
 
@@ -597,7 +597,7 @@ async function preflight(surface, options = {}) {
           const scratchRoot = path4.join(options.commonDir, STORAGE_PATHS.preflightScratch);
           privateStateDirectory(scratchRoot);
           check();
-          const dir = path4.join(scratchRoot, randomBytes(8).toString("hex"));
+          const dir = path4.join(scratchRoot, `p${process.pid}-n${randomBytes(8).toString("hex")}`);
           privateStateDirectory(dir);
           check();
           const journal = await probe({ kind: "wal", dir });

@@ -109,3 +109,11 @@ describe('Linux process naming (relay probeProcess and hooks processChain share 
     expect(boundSession({ commonDir, parent: { pid: 42, startTime: startTime!, executable: executable! }, env: {} })).toEqual({ id: 'native-claude', host: 'claude' })
   })
 })
+
+it('treats the lifecycle view pid 0 sentinel as no recorded process', () => {
+  expect(workerProcessOwnership(0, { host: 'claude' }, () => { throw new Error('must not probe') })).toBe('not-ours')
+})
+
+it.each([-1, 1.5, 2147483648])('keeps invalid worker pid %s unknown', pid => {
+  expect(workerProcessOwnership(pid, { processStartTime: 'old', host: 'claude' }, () => undefined)).toBe('unknown')
+})

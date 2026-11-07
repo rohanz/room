@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { privateStateDirectory } from './private-state.js'
 import { privateDirectoryPath } from './private-core.js'
-import { pidAlive, probeOwnProcess, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
+import { validPid, pidAlive, probeOwnProcess, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
 export interface InstanceToken extends ProcessIdentity { sessionId: string; nonce: string }
@@ -23,6 +23,7 @@ export function liveness(identity: ProcessIdentity, probe: ProcessProbe = probeP
 }
 
 function livenessBy(identity: ProcessIdentity, probe: ProcessProbe): Liveness {
+  if (!validPid(identity.pid)) return 'unknown'
   const observed = probe(identity.pid)
   if (!observed) return 'dead'
   if (observed.startTime && identity.startTime && !sameStartTime(observed.startTime, identity.startTime)) return 'dead'
@@ -77,6 +78,7 @@ export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProce
     const match = tempPattern.exec(name)
     if (!match) continue
     const pid = Number(match[1])
+    if (!validPid(pid) || String(pid) !== match[1]) continue
     const observed = probe(pid)
     if (observed && (match[2] === 'u' || !observed.startTime || startMarker(observed.startTime) === match[2])) continue
     // A mismatched or absent probe is not proof of death: the writer might still

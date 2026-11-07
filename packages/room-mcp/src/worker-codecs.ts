@@ -1,4 +1,5 @@
 /** Legacy lifecycle codecs shared by the file store and offline importer. */
+import { validPid } from '@room/local-state/process'
 import { isHostId } from './hosts/types.js'
 import type { InstanceToken } from './leases.js'
 import type { WorkerRecord, RunReport, ExitObservation } from './worker-status.js'
@@ -18,7 +19,9 @@ const runShape = (value: unknown): boolean => {
   if (value.launch === undefined) return true
   if (!object(value.launch)) return false
   switch (value.launch.outcome) {
-    case 'launched': return Number.isSafeInteger(value.launch.pid) && (value.launch.process === undefined || processShape(value.launch.process))
+    // Required launch claims must never become the lifecycle view's no-process sentinel.
+    case 'launched': return typeof value.launch.pid === 'number' && validPid(value.launch.pid) && (value.launch.process === undefined
+      || processShape(value.launch.process) && object(value.launch.process) && typeof value.launch.process.pid === 'number' && validPid(value.launch.process.pid))
     case 'never': return typeof value.launch.error === 'string'
     case 'ambiguous': return typeof value.launch.at === 'number'
     case 'imported': return true

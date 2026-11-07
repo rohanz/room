@@ -1,3 +1,4 @@
+import { validPid } from '@room/local-state/process'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
 import fs from 'node:fs'
@@ -135,7 +136,9 @@ export function countOtherPreviewChecks(ownMarker: string, markerDir: string, no
           const stat = readStat(file)
           if (!stat.isFile()) continue
           if (stat.mtimeMs > now + 1_000 || now - stat.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS) continue
-          try { process.kill(Number(match[1]), 0) }
+          // Malformed owner evidence remains an unknown overlap; never probe a process group.
+          const pid = Number(match[1])
+          try { if (validPid(pid)) process.kill(pid, 0) }
           catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') continue }
           count++
         } catch (error) {

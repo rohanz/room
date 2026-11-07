@@ -4,14 +4,20 @@ import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
+/** Positive PIDs representable by Node's signed 32-bit process.kill API. */
+export function validPid(pid: number): boolean {
+  return Number.isInteger(pid) && pid > 0 && pid <= 0x7fffffff
+}
+
+/** May be alive: only ESRCH proves absence. Invalid PIDs and probe errors never prove death. */
 export function pidAlive(pid: number): boolean {
-  if (!pid || pid <= 0) return false
-  try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
+  if (!validPid(pid)) return true
+  try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException)?.code !== 'ESRCH' }
 }
 
 /** `pending`: a live pid whose identity is being read in the background (Windows); like `{}`, never evidence of death. */
 export interface ProcessInfo { startTime?: string; executable?: string; pending?: true }
-/** Undefined means the pid is gone; an empty object means it is live but its identity is unreadable. */
+/** Undefined means the pid is gone; an empty object means its liveness or identity is unknown. */
 export type ProcessProbe = (pid: number) => ProcessInfo | undefined
 export interface ProcessReaders {
   platform: NodeJS.Platform
@@ -99,7 +105,7 @@ export function probeProcess(pid: number, readers?: ProcessReaders): ProcessInfo
 }
 
 function probeUncached(pid: number, readers: ProcessReaders, boottime = () => readers.exec('sysctl', ['-n', 'kern.boottime'])): ProcessInfo | undefined {
-  if (!pid || pid <= 0) return undefined
+  if (!validPid(pid)) return {}
   const unreadable = () => pidAlive(pid) ? {} : undefined
   try {
     if (readers.platform === 'linux') {
@@ -219,7 +225,8 @@ export function createProcessProbe(readers: ProcessReaders & { alive?(pid: numbe
   }
   const probe = (pid: number): ProcessInfo | undefined => {
     const hit = cache.get(pid)
-    if (!pid || pid <= 0 || !alive(pid)) { cache.delete(pid); return undefined }
+    if (!validPid(pid)) return {}
+    if (!alive(pid)) { cache.delete(pid); return undefined }
     if (hit && now() < hit.until) return hit.info
     if (readers.platform !== 'win32') return fresh(pid)
     void readInBackground(pid)
@@ -230,7 +237,8 @@ export function createProcessProbe(readers: ProcessReaders & { alive?(pid: numbe
     return info?.pending ? readInBackground(pid) : info
   }
   const confirm = (pid: number, recorded: { startTime?: string; executable?: string }) => {
-    if (!pid || pid <= 0 || !alive(pid)) return undefined
+    if (!validPid(pid)) return {}
+    if (!alive(pid)) return undefined
     const key = `${pid}\0${recorded.startTime ?? ''}\0${recorded.executable ?? ''}`
     const hit = confirmed.get(key)
     if (hit && now() < hit.until) return hit.info

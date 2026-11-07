@@ -6,7 +6,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { catchUpLocal, forgetLegacyLocal } from '../src/local-migrate.js'
+import { catchUpLocal, forgetLegacyLocal, legacyRelayRunning } from '../src/local-migrate.js'
 import { loadMemory, memoryFile } from '../src/memory.js'
 import { owed } from '@room/shared'
 import { probeProcess } from '@room/local-state/process'
@@ -489,4 +489,11 @@ it('defers snapshots past the per-pass file and byte budgets to later passes wit
   for (const name of ['x']) legacySnapshot('local/bytes', name, `m-${name}`)
   expect(catchUpLocal(common, 'local/bytes', other.doc, () => {}, probeProcess, bytes)).toBe(true)
   expect(other.bus.length).toBe(0)
+})
+
+it.each([0, null, undefined, -1, 1.5, 2147483648, '42'])('retains legacy relay with malformed required PID %s', pid => {
+  fs.writeFileSync(path.join(common, 'room-local.json'), JSON.stringify({ pid }))
+  const probe = vi.fn(() => undefined)
+  expect(legacyRelayRunning(common, probe)).toBe(true)
+  expect(probe).not.toHaveBeenCalled()
 })
