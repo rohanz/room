@@ -165,7 +165,7 @@ export const defaultSpawner: Spawner = spec => {
  */
 export function windowsChildRunning(child: { pid?: number; exitCode: number | null; signalCode: NodeJS.Signals | null }, probe: (pid: number, signal: 0) => unknown = process.kill): boolean {
   if (child.exitCode !== null || child.signalCode !== null) return false
-  if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0) return true
+  if (child.pid === undefined || !validPid(child.pid)) return true
   try { probe(child.pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
 }
 

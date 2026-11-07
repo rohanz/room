@@ -72,6 +72,7 @@ describe('windowsChildRunning', () => {
     expect(windowsChildRunning({ ...live, signalCode: 'SIGTERM' }, probe)).toBe(false)
     expect(windowsChildRunning({ pid: undefined, exitCode: null, signalCode: null }, probe)).toBe(true)
     expect(windowsChildRunning({ pid: -1, exitCode: null, signalCode: null }, probe)).toBe(true)
+    expect(windowsChildRunning({ pid: 2147483648, exitCode: null, signalCode: null }, probe)).toBe(true)
     expect(probe).not.toHaveBeenCalled()
   })
 })
