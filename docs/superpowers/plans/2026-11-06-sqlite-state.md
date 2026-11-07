@@ -186,7 +186,12 @@ Each worker claims its files/symbols, asks the returned owning peer directly for
 
 1. Accepted: the daemon owns the database (online daemon ownership with a bounded DB thread, offline CLI for migration/DDL), with the amendments above.
 2. Accepted: first qualification is local single-host filesystems only — APFS, ext4 and NTFS. Network, sync and unknown filesystems are refused until tested.
-3. Accepted: hooks must be no slower than the measured baseline; worker lifecycle and other operations may be at most 20% slower than baseline. The purpose of the change is correctness under concurrency, not speed.
+3. Accepted, revised 2026-11-07: Room is infrastructure in the background of someone else's work, so budgets describe what users and agents experience, not a percentage of a release-to-release delta. The original "other operations at most 20% slower" was an arbitrary figure; on a 2 ms call it forbade any constant-cost safety work (slice 2's `room_done` measured +0.83 ms, +38%, after its ticket publication was profiled and fixed).
+   - **Hooks:** no slower than the measured baseline. They run on every edit, so their cost accumulates.
+   - **Coordination tool calls** (`room_state`, `room_send`, `room_done`, `room_scope`, `room_claim`, `room_release`, non-blocking reads): p95 under 100 ms on a normal repository, well inside an agent's turn.
+   - **Git- and process-bound operations** (spawn, collect, preview, refresh): judged by the Git/process work they perform; storage changes add only a constant cost to them.
+   - **Constant over time:** no operation's cost may grow with history, worker count, retained records or session length. Bounded retention and soak evidence (memory, CPU, file counts and latency levelling off over hours) carry this budget.
+   - Waste is removed when profiling finds it, not tolerated because a budget passes. The purpose of the change is correctness under concurrency, not speed. Once the daemon owns storage, admission moves into daemon memory and the per-operation ticket file goes away.
 4. Deferred: the activation migration window is scheduled when slice 4 exists. The runtime prerequisite is met: this maintainer machine runs official Node 22.23.4 (checked 2026-11-06; `node:sqlite` loads with an ExperimentalWarning that slice 2 must keep out of hook output and logs).
 
 Runtime floor, first-domain scope, dependency-free hooks, five-minute daemon idle policy, backup minimum, whole-operation drain and no fallback are already decided. Do not reopen them as routine implementation questions. No source, release assets or live state are changed by this plan.
