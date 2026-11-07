@@ -53,7 +53,7 @@ function validReceipt(value: unknown): boolean {
  * When those protected roots alone exceed `maxBytes`, it returns the smallest achievable snapshot, which
  * is over `maxBytes`, and says "still over"; the caller decides what to do with it.
  */
-export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }: { maxBytes?: number; log?: (line: string) => void } = {}): Uint8Array {
+export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log, onShed }: { maxBytes?: number; log?: (line: string) => void; onShed?: () => void } = {}): Uint8Array {
   const { publications, copyRevisionsTo } = workerMemory(doc)
   const arrays = new Map<string, unknown[]>(), maps = new Map<string, [string, unknown][]>()
   const seenMaps = new Map<string, [string, unknown][]>()
@@ -89,6 +89,8 @@ export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }:
     if (spent + r.size > RECEIPTS_BYTES) break
     keep(r.map, r.id, r.value); spent += r.size; keptBroadcasts.push(r)
   }
+  // Receipts over their own budget are dropped here, before any size shedding: report that as shedding too.
+  if (keptBroadcasts.length < broadcasts.length) onShed?.()
 
   const build = (): Uint8Array => {
     const copy = new Y.Doc()
@@ -118,6 +120,7 @@ export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }:
     return dropped
   }
   const publicationsDropped = shed(publications, value => value.size, () => {})
+  if (publicationsDropped) onShed?.()
   if (publicationsDropped) log?.(`snapshot over ${maxBytes} bytes: dropped ${publicationsDropped} completed worker publications`)
   const archive = (maps.get('archive') ?? []).sort(([a, x], [b, y]) => ((x as unknown[])[2] as number) - ((y as unknown[])[2] as number) || compare(a, b))
   const archiveDropped = shed(archive, ([id, value]) => entrySize(id, value), () => {})
@@ -127,6 +130,7 @@ export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }:
     const gone = new Set(items)
     arrays.set('bus', (arrays.get('bus') as BusValue[]).filter(m => !gone.has(m)))
   })
+  if (archiveDropped || receiptsDropped || busDropped) onShed?.()
   log?.(`snapshot over ${maxBytes} bytes: dropped ${archiveDropped} archive entries, ${receiptsDropped} broadcast receipts, ${busDropped} bus broadcasts${update.byteLength > maxBytes ? '; still over' : ''}`)
   return update
 }

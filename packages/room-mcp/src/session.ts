@@ -330,6 +330,7 @@ export function detachCheckout(s: Session): CheckoutReuse {
     reuse = { watcher: s.daemon?.takeWatcher?.(), graph: s.graph?.baseSeed?.(), ...(s.localReplica ? { replica: s.localReplica } : {}) }
     detachedCheckouts.set(s, reuse)
   }
+  if (s.stale) delete reuse.replica
   return reuse
 }
 
@@ -1221,12 +1222,6 @@ export function watchClosed(s: Session, log?: (line: string) => void, startupClo
       if (s.stale || s.closed) return
       if (retry) clearTimeout(retry)
       if (verify) clearTimeout(verify)
-      if (s.local) {
-        s.closed = { reason: `${close.reason || STALE_REPLICA_REASON}; local replica retained: resolve the daemon generation mismatch before explicitly leaving` }
-        try { p.disconnect?.() } catch { /* already gone */ }
-        log?.(`${s.roomName}: ${s.closed.reason}`)
-        return
-      }
       s.stale = { reason: close.reason || STALE_REPLICA_REASON }
       try { p.disconnect?.() } catch { /* already gone */ }
       log?.(`${s.roomName}: ${s.stale.reason}`)
@@ -1403,7 +1398,7 @@ export async function leaveSession(s: Session, options: { preserveReplica?: bool
     await detachedCheckouts.get(s)?.watcher?.dispose()
     detachedCheckouts.delete(s)
   }
-  if (s.local && options.preserveReplica === false) {
+  if (s.local && (options.preserveReplica === false || s.stale)) {
     if (s.localReplica) disposeLocalReplica(s.localReplica)
     else if (!s.room.doc.isDestroyed) s.room.doc.destroy()
   }

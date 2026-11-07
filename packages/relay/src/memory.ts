@@ -97,11 +97,23 @@ export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = st
 }
 
 /** saveMemory, returning why the snapshot was not saved (undefined when it was). */
-function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: string) => void, warnings: WarningLimiter, failure?: (kind: 'capacity' | 'io', cause: string) => void): string | undefined {
+function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: string) => void, warnings: WarningLimiter, failure?: (kind: 'capacity' | 'io', cause: string) => void, generation?: string): string | undefined {
   const file = memoryFile(commonDir, room)
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`
   try {
-    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: line => warnings.warn(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log) })
+    let shed = false
+    let update = memorySnapshot(doc, { onShed: () => { shed = true }, maxBytes: MAX_MEMORY_BYTES, log: line => warnings.warn(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log) })
+    if (generation !== undefined && shed) return 'snapshot would shed content'
+    // Only a planned compaction's final save fences survivors. Never change the live
+    // replica: failed pre-rename saves retain the generation survivors can resync into.
+    if (generation !== undefined) {
+      const copy = new Y.Doc()
+      try {
+        Y.applyUpdate(copy, update)
+        copy.getMap('meta').set('generation', generation)
+        update = Y.encodeStateAsUpdate(copy)
+      } finally { copy.destroy() }
+    }
     if (update.byteLength > ROOM_DOC_MAX_BYTES) {
       const cause = `snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling`
       warnings.warn(`${file}\0over`, () => `local room memory: skipping ${room}: ${cause}; keeping the last good file`, log)
@@ -120,7 +132,7 @@ function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: st
     fs.renameSync(temp, file)
     syncDirectory(path.dirname(file))
     return undefined
-  } catch (e) { const cause = e instanceof Error ? e.message : String(e); failure?.('io', cause); warnings.warn(`${file}\0io`, () => `local room memory: cannot save ${file}: ${e}; keeping the replica and retrying`, log); return cause }
+  } catch (e) { const cause = e instanceof Error ? e.message : String(e); failure?.('io', cause); if (generation === undefined) warnings.warn(`${file}\0io`, () => `local room memory: cannot save ${file}: ${e}; keeping the replica and retrying`, log); return cause }
   finally { try { fs.unlinkSync(temp) } catch { /* no temp file */ } }
 }
 
@@ -174,22 +186,32 @@ export class RoomMemory {
   }
   flush(): void { this.save() }
   /** Save now; returns why the snapshot was not saved, or undefined (also once forgotten: nothing is owed). */
-  save(): string | undefined {
+  save(generation?: string): string | undefined {
+    if (generation !== undefined) { clearTimeout(this.retry); this.retry = undefined }
     clearTimeout(this.debounce); clearTimeout(this.deadline)
     this.debounce = this.deadline = undefined
     if (this.forgotten) return undefined
-    const cause = writeMemory(this.commonDir, this.room, this.doc, this.log, this.warnings, (kind, why) => { this.state[kind] = why })
+    const cause = writeMemory(this.commonDir, this.room, this.doc, this.log, this.warnings, (kind, why) => { this.state[kind] = why }, generation)
     if (cause === undefined) {
       this.state.savedGeneration = this.state.dirtyGeneration
       this.state.lastSavedAt = Date.now()
       delete this.state.capacity; delete this.state.io
       clearTimeout(this.retry); this.retry = undefined; this.retryDelay = 1000
-    } else if (!this.retry) {
+    } else if (generation === undefined && !this.retry) {
       this.retry = setTimeout(() => { this.retry = undefined; this.save() }, this.retryDelay)
       this.retry.unref?.()
       this.retryDelay = Math.min(60_000, this.retryDelay * 2)
     }
+    if (generation !== undefined && cause !== undefined) {
+      this.log(`local room memory: planned compaction save failed for ${this.room}: ${cause}; exiting without reopening`)
+    }
     return cause
+  }
+  /** Compute the real budgeted snapshot before committing to a generation change. */
+  canCompact(): boolean {
+    let shed = false
+    memorySnapshot(this.doc, { onShed: () => { shed = true } })
+    return !shed
   }
   /** Stop saving on updates. Call only after a final save() succeeded, or the room's latest state is lost. */
   detach(): void { clearTimeout(this.retry); clearTimeout(this.debounce); clearTimeout(this.deadline); this.doc.off('update', this.schedule); this.warnings.clear() }
@@ -229,11 +251,17 @@ export class FinalSaveError extends Error {
 /**
  * Save every memory in one synchronous pass, retrying the whole pass after each delay until all succeed.
  * On success the caller can tear down in the same tick, so no update lands between the save and teardown.
- * Throws FinalSaveError naming each cause once the delays are exhausted; nothing is detached either way.
+ * Ordinary shutdown throws FinalSaveError after exhausted retries. Planned compaction makes one pass,
+ * logs each failure and returns so the caller always tears down; nothing is detached here.
  */
-export async function finalSave(memories: () => readonly RoomMemory[], delays: readonly number[] = FINAL_SAVE_RETRY_MS): Promise<void> {
+export async function finalSave(memories: () => readonly RoomMemory[], delays: readonly number[] = FINAL_SAVE_RETRY_MS, generation?: string): Promise<void> {
+  if (generation !== undefined) {
+    // Never retry under the old live generation after any file may have been replaced.
+    for (const memory of memories()) memory.save(generation)
+    return
+  }
   for (let attempt = 0; ; attempt++) {
-    const causes = memories().map(m => m.save()).filter((cause): cause is string => cause !== undefined)
+    const causes = memories().map(m => m.save(generation)).filter((cause): cause is string => cause !== undefined)
     if (!causes.length) return
     if (attempt >= delays.length) throw new FinalSaveError([...new Set(causes)])
     await new Promise(resolve => setTimeout(resolve, delays[attempt]))

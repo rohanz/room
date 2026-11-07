@@ -1,5 +1,8 @@
 // A session the server refused before its join returned (4409 captured at startup) is replaced once that join
 // settles, as index.ts wires the auto-join (review round 1).
+import { EventEmitter } from 'node:events'
+import * as Y from 'yjs'
+import { detachCheckout, leaveSession, watchClosed } from '../src/session.js'
 import { expect, it } from 'vitest'
 import { AutoJoin } from '../src/auto-join.js'
 import { StaleReplacement, rejoinWhenStale } from '../src/compacted.js'
@@ -41,4 +44,19 @@ it('a late stale callback cannot resume an automatic join cancelled by shutdown 
   await new Promise(resolve => setTimeout(resolve, 20))
   await autoJoin.settle()
   expect(attempts).toBe(0)
+})
+
+it('local 4409 uses stale replacement and never hands the refused replica to the next join', async () => {
+  const doc = new Y.Doc()
+  const provider = Object.assign(new EventEmitter(), { disconnect() {} })
+  const old = Object.assign(session('ada'), { local: { stop: async () => {} }, localReplica: { doc },
+    provider, daemon: { stop: async () => {} } }) as unknown as Session
+  expect(detachCheckout(old).replica?.doc).toBe(doc)
+  watchClosed(old)
+  provider.emit('connection-close', { code: 4409, reason: 'compacted' })
+  expect(old.stale).toEqual({ reason: 'compacted' })
+  expect(old.closed).toBeUndefined()
+  expect(detachCheckout(old).replica).toBeUndefined()
+  await leaveSession(old)
+  expect(doc.isDestroyed).toBe(true)
 })

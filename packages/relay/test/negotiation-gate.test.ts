@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { RoomMemory } from '../src/memory.js'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { WebSocket } from 'ws'
@@ -26,7 +30,7 @@ function connect(query = '&negotiate=1', options: Partial<Parameters<typeof rela
   const send = (frame: Uint8Array) => conn.emit('message', secure.encrypt(frame), true)
   const next = () => secure.decrypt(conn.frames.shift()!)
   const hello = () => send(encodeFrame({ v: 1, id: 'h', op: 'compat-hello', sessionId: 'session', offer } as never))
-  cleanups.push(() => { conn.close(); for (const doc of docs.values()) { doc.awareness.destroy(); doc.doc.destroy() } })
+  cleanups.push(() => { conn.close(); for (const doc of docs.values()) { doc.memory?.detach(); doc.awareness.destroy(); doc.doc.destroy() } })
   return { conn, docs, send, next, hello }
 }
 
@@ -173,4 +177,30 @@ it('fences the selected pending ACK and counts no writer during draining', async
   c.send(encodeFrame({ v: 1, id: 'a', op: 'compat-ack', selectionId: selected.selectionId } as never))
   expect(c.conn.code).toBe(1013)
   expect(c.docs.values().next().value!.conns.size).toBe(0)
+})
+
+it.each(['fresh', 'current', 'stale', 'absent'])('gates a loaded value copy before sync (%s)', async kind => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-generation-'))
+  const memory = new RoomMemory(dir, 'local/test')
+  const previous = memory.doc.getMap('meta').get('generation')
+  expect(memory.save('current')).toBeUndefined(); memory.detach(); memory.doc.destroy()
+  const c = connect(kind === 'absent' ? '' : `&gen=${kind === 'current' ? 'current' : kind}`, {
+    commonDir: dir,
+    loaded: (_room, doc) => {
+      expect(doc.getMap('meta').get('generation')).toBeTypeOf('string')
+      expect(doc.getMap('meta').get('generation')).not.toBe(previous)
+      expect(doc.getMap('meta').get('generation')).toBe('current')
+    },
+  })
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
+  // Encrypted legacy sync step 1: generation refusal must precede attachment or sync output.
+  c.send(Uint8Array.of(0, 0, 1, 0))
+  if (kind === 'fresh' || kind === 'current') {
+    expect(c.conn.code).toBeUndefined()
+    expect(c.docs.values().next().value!.conns.size).toBe(1)
+  } else {
+    expect(c.conn.code).toBe(kind === 'absent' ? 4403 : 4409)
+    expect(c.docs.values().next().value!.conns.size).toBe(0)
+    expect(c.conn.frames).toHaveLength(0)
+  }
 })

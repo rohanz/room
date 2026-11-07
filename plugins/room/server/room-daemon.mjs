@@ -14056,7 +14056,7 @@ function validReceipt(value2) {
   const r = value2;
   return !!r && typeof r === "object" && typeof r.s === "string" && typeof r.via === "string" && typeof r.at === "number" && Number.isFinite(r.at);
 }
-function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2 } = {}) {
+function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2, onShed } = {}) {
   const { publications, copyRevisionsTo } = workerMemory(doc);
   const arrays = /* @__PURE__ */ new Map(), maps = /* @__PURE__ */ new Map();
   const seenMaps = /* @__PURE__ */ new Map();
@@ -14096,6 +14096,7 @@ function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2 } = {}) {
     spent += r.size;
     keptBroadcasts.push(r);
   }
+  if (keptBroadcasts.length < broadcasts.length) onShed?.();
   const build = () => {
     const copy2 = new Doc();
     try {
@@ -14126,6 +14127,7 @@ function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2 } = {}) {
   };
   const publicationsDropped = shed(publications, (value2) => value2.size, () => {
   });
+  if (publicationsDropped) onShed?.();
   if (publicationsDropped) log2?.(`snapshot over ${maxBytes} bytes: dropped ${publicationsDropped} completed worker publications`);
   const archive = (maps.get("archive") ?? []).sort(([a, x], [b, y]) => x[2] - y[2] || compare2(a, b));
   const archiveDropped = shed(archive, ([id2, value2]) => entrySize(id2, value2), () => {
@@ -14138,6 +14140,7 @@ function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2 } = {}) {
     const gone = new Set(items);
     arrays.set("bus", arrays.get("bus").filter((m) => !gone.has(m)));
   });
+  if (archiveDropped || receiptsDropped || busDropped) onShed?.();
   log2?.(`snapshot over ${maxBytes} bytes: dropped ${archiveDropped} archive entries, ${receiptsDropped} broadcast receipts, ${busDropped} bus broadcasts${update.byteLength > maxBytes ? "; still over" : ""}`);
   return update;
 }
@@ -14256,6 +14259,7 @@ var docGeneration = (doc) => {
   const value2 = doc.getMap("meta").get(GENERATION_KEY);
   return typeof value2 === "string" && value2 ? value2 : void 0;
 };
+var GENERATION_PARAM = "gen";
 var FRESH_GENERATION = "fresh";
 var UNCOMPACTED = "0";
 var STALE_REPLICA_CODE = 4409;
@@ -14265,6 +14269,19 @@ function generationGate(stated, current) {
   const room = current ?? UNCOMPACTED;
   if (stated === null) return room === UNCOMPACTED ? "accept" : "update";
   return stated === FRESH_GENERATION || stated === room ? "accept" : "stale";
+}
+function historyOf(doc) {
+  let structs = 0, deleted = 0;
+  for (const list of doc.store.clients.values()) {
+    structs += list.length;
+    for (const struct of list) if (struct.deleted) deleted++;
+  }
+  return { structs, deleted };
+}
+function compactMinDeleted(raw) {
+  if (raw === void 0 || raw === "") return 1e4;
+  const n = Number(raw);
+  return raw === "off" || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 1e4;
 }
 
 // packages/hub-core/src/hub.ts
@@ -16156,11 +16173,25 @@ function loadMemory(commonDir, room, log2 = stderr) {
 function saveMemory(commonDir, room, doc, log2 = stderr, warnings = sharedWarnings) {
   return writeMemory(commonDir, room, doc, log2, warnings) === void 0;
 }
-function writeMemory(commonDir, room, doc, log2, warnings, failure) {
+function writeMemory(commonDir, room, doc, log2, warnings, failure, generation) {
   const file = memoryFile(commonDir, room);
   const temp = `${file}.${process.pid}-${crypto2.randomBytes(6).toString("hex")}.tmp`;
   try {
-    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: (line) => warnings.warn(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log2) });
+    let shed = false;
+    let update = memorySnapshot(doc, { onShed: () => {
+      shed = true;
+    }, maxBytes: MAX_MEMORY_BYTES, log: (line) => warnings.warn(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log2) });
+    if (generation !== void 0 && shed) return "snapshot would shed content";
+    if (generation !== void 0) {
+      const copy2 = new Doc();
+      try {
+        applyUpdate(copy2, update);
+        copy2.getMap("meta").set("generation", generation);
+        update = encodeStateAsUpdate(copy2);
+      } finally {
+        copy2.destroy();
+      }
+    }
     if (update.byteLength > ROOM_DOC_MAX_BYTES) {
       const cause = `snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling`;
       warnings.warn(`${file}\0over`, () => `local room memory: skipping ${room}: ${cause}; keeping the last good file`, log2);
@@ -16186,7 +16217,7 @@ function writeMemory(commonDir, room, doc, log2, warnings, failure) {
   } catch (e) {
     const cause = e instanceof Error ? e.message : String(e);
     failure?.("io", cause);
-    warnings.warn(`${file}\0io`, () => `local room memory: cannot save ${file}: ${e}; keeping the replica and retrying`, log2);
+    if (generation === void 0) warnings.warn(`${file}\0io`, () => `local room memory: cannot save ${file}: ${e}; keeping the replica and retrying`, log2);
     return cause;
   } finally {
     try {
@@ -16252,14 +16283,18 @@ var RoomMemory = class {
     this.save();
   }
   /** Save now; returns why the snapshot was not saved, or undefined (also once forgotten: nothing is owed). */
-  save() {
+  save(generation) {
+    if (generation !== void 0) {
+      clearTimeout(this.retry);
+      this.retry = void 0;
+    }
     clearTimeout(this.debounce);
     clearTimeout(this.deadline);
     this.debounce = this.deadline = void 0;
     if (this.forgotten) return void 0;
     const cause = writeMemory(this.commonDir, this.room, this.doc, this.log, this.warnings, (kind, why) => {
       this.state[kind] = why;
-    });
+    }, generation);
     if (cause === void 0) {
       this.state.savedGeneration = this.state.dirtyGeneration;
       this.state.lastSavedAt = Date.now();
@@ -16268,7 +16303,7 @@ var RoomMemory = class {
       clearTimeout(this.retry);
       this.retry = void 0;
       this.retryDelay = 1e3;
-    } else if (!this.retry) {
+    } else if (generation === void 0 && !this.retry) {
       this.retry = setTimeout(() => {
         this.retry = void 0;
         this.save();
@@ -16276,7 +16311,18 @@ var RoomMemory = class {
       this.retry.unref?.();
       this.retryDelay = Math.min(6e4, this.retryDelay * 2);
     }
+    if (generation !== void 0 && cause !== void 0) {
+      this.log(`local room memory: planned compaction save failed for ${this.room}: ${cause}; exiting without reopening`);
+    }
     return cause;
+  }
+  /** Compute the real budgeted snapshot before committing to a generation change. */
+  canCompact() {
+    let shed = false;
+    memorySnapshot(this.doc, { onShed: () => {
+      shed = true;
+    } });
+    return !shed;
   }
   /** Stop saving on updates. Call only after a final save() succeeded, or the room's latest state is lost. */
   detach() {
@@ -16320,9 +16366,13 @@ var FinalSaveError = class extends Error {
   }
   causes;
 };
-async function finalSave(memories, delays = FINAL_SAVE_RETRY_MS) {
+async function finalSave(memories, delays = FINAL_SAVE_RETRY_MS, generation) {
+  if (generation !== void 0) {
+    for (const memory of memories()) memory.save(generation);
+    return;
+  }
   for (let attempt = 0; ; attempt++) {
-    const causes = memories().map((m) => m.save()).filter((cause) => cause !== void 0);
+    const causes = memories().map((m) => m.save(generation)).filter((cause) => cause !== void 0);
     if (!causes.length) return;
     if (attempt >= delays.length) throw new FinalSaveError([...new Set(causes)]);
     await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
@@ -17268,6 +17318,7 @@ function getDoc(docs, name, opts) {
     const buf = toUint8Array(enc);
     for (const c of d.conns.keys()) send(c, buf);
   });
+  opts.loaded?.(decodeURIComponent(name), doc);
   docs.set(name, d);
   if (opts.seed && name === encodeURIComponent(opts.seed.room)) applyUpdate(doc, opts.seed.update);
   if (opts.hub) startRoomHub(d, decodeURIComponent(name), opts.hub, opts.commonDir, opts.log ?? (() => {
@@ -17370,6 +17421,7 @@ function attach(docs, conn, req, opts) {
       conn.off("message", handshake);
       if (safeUrl(req.url).searchParams.get("negotiate") === "1") attachNegotiating(docs, conn, name, req, opts, first);
       else {
+        if (!relayGeneration(conn, req, getDoc(docs, name, opts))) return;
         if (opts.daemon && !opts.readOnly) {
           conn.close(4406, "daemon lifecycle negotiation required; update Room");
           return;
@@ -17564,7 +17616,7 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
   void receivePlain(first).catch(() => refuse("relay compatibility unavailable; reconnect Room"));
 }
 function relayGeneration(conn, req, d) {
-  const decision = generationGate(safeUrl(req.url).searchParams.get("gen"), docGeneration(d.doc));
+  const decision = generationGate(safeUrl(req.url).searchParams.get(GENERATION_PARAM), docGeneration(d.doc));
   if (decision === "accept") return true;
   conn.close(decision === "stale" ? STALE_REPLICA_CODE : 4403, decision === "stale" ? STALE_REPLICA_REASON : COMPACTED_UPDATE_REASON);
   return false;
@@ -17776,6 +17828,7 @@ function startRelay(port, opts = {}) {
     let draining = false;
     const writers = /* @__PURE__ */ new Set(), viewers = /* @__PURE__ */ new Set();
     const docOptions = {
+      loaded: opts.daemon?.loaded,
       daemon: !!opts.daemon,
       compat: opts.daemon ? { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, "room.daemon": [1] } } : CURRENT_COMPAT,
       accepting: () => !draining,
@@ -18043,12 +18096,12 @@ Connection: close\r
       ;
       close().catch((error) => opts.log?.(`local relay: room state could not be saved on stop: ${error instanceof Error ? error.message : String(error)}`));
     };
-    const close = (saved) => closing ??= (async () => {
+    const close = (saved, generation) => closing ??= (async () => {
       if (opts.daemon) {
         for (const d of docs.values()) await d.hubReady;
         await Promise.all([...docs.values()].flatMap((d) => d.hub ? [d.hub.flushLeases()] : []));
       }
-      await finalSave(() => [...docs.values()].flatMap((d) => d.memory ? [d.memory] : []), opts.finalSaveRetryMs);
+      await finalSave(() => [...docs.values()].flatMap((d) => d.memory ? [d.memory] : []), opts.finalSaveRetryMs, generation);
       saved?.();
       await teardown();
     })().catch((error) => {
@@ -18090,6 +18143,8 @@ Connection: close\r
         get connections() {
           return { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size };
         },
+        canCompact: () => [...docs.values()].every((d) => !d.memory || d.memory.canCompact()),
+        history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted })),
         setDraining(value2) {
           draining = value2;
         },
@@ -18183,10 +18238,14 @@ async function startLocalDaemon(opts) {
     if (!own?.startTime || !own.executable) throw new Error("cannot establish daemon process birth identity");
     const identity = { pid: process.pid, startTime: own.startTime, executable: own.executable };
     const clock = new WriterIdleClock(opts.now ?? Date.now, opts.idleMs);
+    const minDeleted = compactMinDeleted(process.env.ROOM_COMPACT_MIN_DELETED);
+    const now = opts.now ?? Date.now;
+    let nextHistoryCheck = now() + 6e4, compactionBlocked = false;
     const startedAt = Date.now();
     const nonce = crypto6.randomUUID();
     let ready = false;
     let stopRequested = false;
+    let compactionGeneration;
     let draining = false, stopping, failure;
     let nextRetry = 0, retryMs = opts.retryMs ?? 1e3;
     let resolveClosed;
@@ -18199,7 +18258,7 @@ async function startLocalDaemon(opts) {
       if (stopping) return stopping;
       draining = true;
       relay.setDraining(true);
-      stopping = relay.close(saved).then(() => {
+      stopping = relay.close(saved, compactionGeneration).then(() => {
         if (timer) clearInterval(timer);
         resolveClosed();
       }).catch((error) => {
@@ -18221,7 +18280,14 @@ async function startLocalDaemon(opts) {
       hub: { lock },
       log: log2,
       finalSaveRetryMs: opts.finalSaveRetryMs,
-      daemon: { health, onSignal: () => {
+      daemon: { loaded: (room, doc) => {
+        if (!Number.isFinite(minDeleted)) return;
+        const deleted = historyOf(doc).deleted;
+        if (deleted >= minDeleted) {
+          compactionBlocked = true;
+          log2(`local daemon compaction disabled for this process: ${room} loaded with ${deleted} deleted structs`);
+        }
+      }, health, onSignal: () => {
         void close().catch(() => {
         });
       }, writersChanged: (count) => clock.changed(count), stop: async (pid, expectedNonce, saved) => {
@@ -18249,6 +18315,18 @@ async function startLocalDaemon(opts) {
     relay.setDraining(false);
     phase("ready");
     timer = setInterval(() => {
+      if (Number.isFinite(minDeleted) && !draining && !stopRequested && !compactionBlocked && now() >= nextHistoryCheck) {
+        nextHistoryCheck = now() + 6e4;
+        const over = relay.history().find((room) => room.deleted >= minDeleted);
+        if (over && !relay.canCompact()) {
+          compactionBlocked = true;
+          log2("local daemon compaction disabled for this process: snapshot would shed content");
+        } else if (over) {
+          log2(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted})`);
+          compactionGeneration = crypto6.randomUUID();
+          stopRequested = true;
+        }
+      }
       if (!draining && (stopRequested || clock.expired()) && Date.now() >= nextRetry) void close(false).catch(() => {
       });
     }, opts.idleCheckMs ?? 1e3);

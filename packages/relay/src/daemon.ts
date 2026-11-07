@@ -6,6 +6,7 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { CURRENT_COMPAT, parseAdvertisement, selectContract } from '@room/hub-core'
+import { compactMinDeleted, historyOf } from '@room/shared'
 import { AuthorityLock } from './hub.js'
 import { liveness, writeAtomic, type ProcessIdentity } from './leases.js'
 import { pidAlive, probeOwnProcess } from './process.js'
@@ -102,10 +103,14 @@ export async function startLocalDaemon(opts: {
     if (!own?.startTime || !own.executable) throw new Error('cannot establish daemon process birth identity')
     const identity: ProcessIdentity = { pid: process.pid, startTime: own.startTime, executable: own.executable }
     const clock = new WriterIdleClock(opts.now ?? Date.now, opts.idleMs)
+    const minDeleted = compactMinDeleted(process.env.ROOM_COMPACT_MIN_DELETED)
+    const now = opts.now ?? Date.now
+    let nextHistoryCheck = now() + 60_000, compactionBlocked = false
     const startedAt = Date.now()
     const nonce = crypto.randomUUID()
     let ready = false
     let stopRequested = false
+    let compactionGeneration: string | undefined
     let draining = false, stopping: Promise<void> | undefined, failure: string | undefined
     let nextRetry = 0, retryMs = opts.retryMs ?? 1000
     let resolveClosed!: () => void
@@ -116,7 +121,7 @@ export async function startLocalDaemon(opts: {
       // Fence synchronously in the idle callback, before lease flush/final-save awaits.
       if (stopping) return stopping
       draining = true; relay!.setDraining(true)
-      stopping = relay!.close(saved).then(() => {
+      stopping = relay!.close(saved, compactionGeneration).then(() => {
         if (timer) clearInterval(timer)
         resolveClosed()
       }).catch(error => {
@@ -130,7 +135,14 @@ export async function startLocalDaemon(opts: {
     }
     const health = (authenticated = false) => ({ ready, nonce, release, uptimeMs: Date.now() - startedAt, idleMs: clock.idleMs, draining, ...(failure ? { stopFailure: authenticated ? failure : failure.match(/\b(?:ENOSPC|EACCES|EIO|EPERM)\b/)?.[0] ?? 'save-blocked' } : {}) })
     const open = (port: number) => startRelay(port, { commonDir, key, hub: { lock }, log, finalSaveRetryMs: opts.finalSaveRetryMs,
-      daemon: { health, onSignal: () => { void close().catch(() => {}) }, writersChanged: count => clock.changed(count), stop: async (pid, expectedNonce, saved) => {
+      daemon: { loaded: (room, doc) => {
+        if (!Number.isFinite(minDeleted)) return
+        const deleted = historyOf(doc).deleted
+        if (deleted >= minDeleted) {
+          compactionBlocked = true
+          log(`local daemon compaction disabled for this process: ${room} loaded with ${deleted} deleted structs`)
+        }
+      }, health, onSignal: () => { void close().catch(() => {}) }, writersChanged: count => clock.changed(count), stop: async (pid, expectedNonce, saved) => {
         if (pid !== process.pid || expectedNonce !== nonce) throw new Error('local daemon identity changed; reread discovery before stopping')
         if (draining) throw new Error('local daemon is already draining; inspect status and retry')
         await close(false, saved)
@@ -154,6 +166,18 @@ export async function startLocalDaemon(opts: {
     relay.setDraining(false)
     phase('ready')
     timer = setInterval(() => {
+      if (Number.isFinite(minDeleted) && !draining && !stopRequested && !compactionBlocked && now() >= nextHistoryCheck) {
+        nextHistoryCheck = now() + 60_000
+        const over = relay!.history().find(room => room.deleted >= minDeleted)
+        if (over && !relay!.canCompact()) {
+          compactionBlocked = true
+          log('local daemon compaction disabled for this process: snapshot would shed content')
+        } else if (over) {
+          log(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted})`)
+          compactionGeneration = crypto.randomUUID()
+          stopRequested = true
+        }
+      }
       if (!draining && (stopRequested || clock.expired()) && Date.now() >= nextRetry) void close(false).catch(() => {})
     }, opts.idleCheckMs ?? 1000)
     return { info, relay, closed, close }
@@ -256,10 +280,10 @@ function startupFailure(commonDir: string, pid: number | undefined, reason: stri
 }
 
 const flights = new Map<string, Promise<LocalDaemon>>()
-/** Keep only OS/runtime basics. No ROOM_*, host-session identities, NODE_OPTIONS or credentials. */
+/** Keep OS/runtime basics and the compaction threshold. No session ROOM_*, host-session identities, NODE_OPTIONS or credentials. */
 export function daemonChildEnvironment(source: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ']) if (source[name] !== undefined) env[name] = source[name]
+  for (const name of ['ROOM_COMPACT_MIN_DELETED', 'PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ']) if (source[name] !== undefined) env[name] = source[name]
   // Windows PowerShell and its standard modules need OS locations and machine/account names for native setup:
   // SystemDrive: OS drive; ProgramData: shared application data; ProgramFiles/ProgramFiles(x86)/ProgramW6432:
   // native, x86 and 64-bit program locations; CommonProgramFiles: shared components; ComSpec: command processor;

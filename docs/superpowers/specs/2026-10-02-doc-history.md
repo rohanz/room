@@ -312,14 +312,19 @@ than a process restart does; it closes the same gap for both. It is on the roadm
 
 ### 5.7 Local relay rooms
 
-The relay is unchanged, and ignores `gen`:
-- **It already restarts from a value copy.** A relay's documents are saved as value copies
-  (`memorySnapshot`, `relay/src/memory.ts`), so a relay restart already loads a compacted document: history
-  stays bounded across restarts without this change.
-- **Known gap, unchanged.** A survivor reconnecting with pre-snapshot identities is the relay's existing,
-  documented gap (deduped by id). A relay takeover seeds the successor from a live replica, keeping its IDs.
-- **Later:** the same gate (a generation stamped at each snapshot load) would close that gap. It is a
-  follow-up with its own tests.
+The relay saves value copies (`memorySnapshot`). Only a planned compaction restart stamps its
+final saved copy with a new random `meta.generation`; every load and ordinary save preserves it. The shared §5.3 gate refuses old replicas with 4409 and
+clients without `gen` with 4403. This closes the survivor history reintroduction gap.
+
+With a finite enabled threshold, the daemon checks each loaded room's deleted structs on its idle timer about every 60 seconds; a disabled threshold skips the scan entirely.
+At `ROOM_COMPACT_MIN_DELETED` (default 10,000; 0 or `off` disables), it logs the room and reason,
+then checks every loaded room’s budgeted snapshot. If any snapshot would shed content, it skips the restart and disables compaction for the process with one diagnostic. Compaction cannot shrink live content. Otherwise it fences writes and performs one final save per room, logging each failure and exiting even on partial failure. It never reopens after planned final saves begin. Ordinary shutdown retains its retry/reopen behavior. This is neither a crash nor a cutover. Existing client recovery
+starts the successor; ensure single-flight and the authority lock serialize contenders. If a loaded
+document already meets the threshold, compaction restarts are disabled for that process and logged.
+
+MCP clients use the existing fresh-replica auto-join after 4409, including leads and workers mid-task.
+Tools refuse while unsynced and callers retry. Successfully installed snapshots include acknowledged posts before old replicas are refused. A pre-rename save failure keeps that room’s previous file and generation: its surviving replicas resync acknowledged posts into the successor. A directory-fsync failure after rename may already have installed the new generation; exit is still mandatory. Crashes keep today’s behavior: the stored generation is unchanged, so
+survivors resync acknowledged unsaved posts. Restoring history after a rare crash is acceptable.
 
 ## 6. Costs
 

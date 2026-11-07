@@ -52,7 +52,7 @@ import { DOC_SIZE_CAP_CODE, HUB_ORIGIN, selectContract, LEGACY_COMPAT, legacyHel
   BOOTSTRAP_MAX_PENDING, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, BOOTSTRAP_MAX_BUFFERED_BYTES, BOOTSTRAP_MAX_BYTES,
   BOOTSTRAP_HELLO_TIMEOUT_MS, LEASE_TTL_MS, LEASE_RENEW_MS,
   type CompatAdvertisement, type CompatibilityRefusal, type Principal } from '@room/hub-core'
-import { COMPACTED_UPDATE_REASON, GENERATION_PARAM, STALE_REPLICA_CODE, STALE_REPLICA_REASON, docGeneration, generationGate } from '@room/shared'
+import { compactMinDeleted, COMPACTED_UPDATE_REASON, GENERATION_PARAM, STALE_REPLICA_CODE, STALE_REPLICA_REASON, docGeneration, generationGate } from '@room/shared'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, sendFile, staticFile, SERVER_COMPAT } from './http.js'
 import { beginNegotiation, boundNegotiationInput, recordConnectionContract } from './negotiation.js'
 
@@ -1005,12 +1005,7 @@ const droppedWrite = (room: string) => () => {
 /** Tombstones a stored room needs before its first load in a process compacts it (ROOM_COMPACT_MIN_DELETED,
  *  default 10,000, about 3 MB of heap; 0 or "off" disables). A compaction only adds, to the reconnect a restart
  *  already costs every client, a fresh replica; the threshold keeps it from running for negligible history. */
-const COMPACT_MIN_DELETED = (() => {
-  const raw = process.env.ROOM_COMPACT_MIN_DELETED
-  if (raw === undefined || raw === '') return 10_000
-  const n = Number(raw)
-  return raw === 'off' || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 10_000
-})()
+const COMPACT_MIN_DELETED = compactMinDeleted(process.env.ROOM_COMPACT_MIN_DELETED)
 /** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
 const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), leaseFile: room => serverLeaseFile(process.env.YPERSISTENCE, PORT, room), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) },

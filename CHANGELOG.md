@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound local daemon document history with periodic save-first compaction restarts. Skip planned restarts for the process if any snapshot would shed content. Once planned final saves begin, exit even on partial save or directory-fsync failure; saved rooms reject old replicas and unsaved rooms recover from survivors. Ordinary shutdown retains retry/reopen behavior. Only planned compaction changes the saved generation; crashes preserve today’s survivor resync behavior, including acknowledged unsaved posts.
+
 - Preserve files and worker records when PID liveness is unknown; reject malformed launch PIDs and validate process IDs before signalling.
 
 ## 0.17.41

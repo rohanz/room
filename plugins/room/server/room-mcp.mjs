@@ -25652,7 +25652,7 @@ ${tail}` : "no readable private daemon.log tail; inspect room/daemon.log and aut
 }
 function daemonChildEnvironment(source = process.env, platform = process.platform) {
   const env = {};
-  for (const name of ["PATH", "Path", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LOCALAPPDATA", "LANG", "LC_ALL", "TZ"]) if (source[name] !== void 0) env[name] = source[name];
+  for (const name of ["ROOM_COMPACT_MIN_DELETED", "PATH", "Path", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LOCALAPPDATA", "LANG", "LC_ALL", "TZ"]) if (source[name] !== void 0) env[name] = source[name];
   if (platform === "win32") {
     const basics = /* @__PURE__ */ new Set(["systemdrive", "programdata", "programfiles", "programfiles(x86)", "programw6432", "commonprogramfiles", "comspec", "pathext", "appdata", "processor_architecture", "number_of_processors", "os", "username", "userdomain", "computername"]);
     for (const [name, value5] of Object.entries(source)) if (basics.has(name.toLowerCase()) && value5 !== void 0) env[name] = value5;
@@ -25763,6 +25763,7 @@ var init_daemon = __esm({
   "packages/relay/src/daemon.ts"() {
     "use strict";
     init_src2();
+    init_src();
     init_hub2();
     init_leases();
     init_process();
@@ -32189,7 +32190,7 @@ function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProces
 }
 function windowsChildRunning(child, probe = process.kill) {
   if (child.exitCode !== null || child.signalCode !== null) return false;
-  if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0) return true;
+  if (child.pid === void 0 || !validPid(child.pid)) return true;
   try {
     probe(child.pid, 0);
     return true;
@@ -39546,6 +39547,7 @@ function detachCheckout(s) {
     reuse = { watcher: s.daemon?.takeWatcher?.(), graph: s.graph?.baseSeed?.(), ...s.localReplica ? { replica: s.localReplica } : {} };
     detachedCheckouts.set(s, reuse);
   }
+  if (s.stale) delete reuse.replica;
   return reuse;
 }
 async function serverAuthConfig(server, log2) {
@@ -40520,15 +40522,6 @@ function watchClosed(s, log2, startupClose) {
       if (s.stale || s.closed) return;
       if (retry) clearTimeout(retry);
       if (verify) clearTimeout(verify);
-      if (s.local) {
-        s.closed = { reason: `${close.reason || STALE_REPLICA_REASON}; local replica retained: resolve the daemon generation mismatch before explicitly leaving` };
-        try {
-          p.disconnect?.();
-        } catch {
-        }
-        log2?.(`${s.roomName}: ${s.closed.reason}`);
-        return;
-      }
       s.stale = { reason: close.reason || STALE_REPLICA_REASON };
       try {
         p.disconnect?.();
@@ -40702,7 +40695,7 @@ async function leaveSession(s, options = {}) {
     await detachedCheckouts.get(s)?.watcher?.dispose();
     detachedCheckouts.delete(s);
   }
-  if (s.local && options.preserveReplica === false) {
+  if (s.local && (options.preserveReplica === false || s.stale)) {
     if (s.localReplica) disposeLocalReplica(s.localReplica);
     else if (!s.room.doc.isDestroyed) s.room.doc.destroy();
   }
@@ -67479,12 +67472,12 @@ async function main() {
         ...isCodexExecWorker() ? { bindWait: { bound: () => !!sessionBinding.bound(), ms: CODEX_WORKER_BIND_WAIT_MS } } : {},
         async attempt(target) {
           const root = await joinableRoot(dir);
+          if (await replacement.begin(session)) return replacement.join();
           if (session?.local) {
             await session.recoverLocal?.();
             if (!session.provider.wsconnected || !session.provider.synced) throw new Error("local daemon is reconnecting; keeping this session and its replica");
             return session;
           }
-          if (await replacement.begin(session)) return replacement.join();
           if (target) {
             const reuse = session ? void 0 : detachCheckout(target);
             const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), localReplica: target.localReplica, reuse, log });

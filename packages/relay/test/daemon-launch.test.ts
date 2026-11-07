@@ -236,3 +236,7 @@ it('honors an explicitly shorter startup hard cap', async () => {
   await vi.advanceTimersByTimeAsync(600)
   expect((await failure as Error).message).toContain('startup hard cap reached')
 })
+
+it('passes the compaction threshold to the standalone process', () => {
+  expect(daemonChildEnvironment({ ROOM_COMPACT_MIN_DELETED: 'off' })).toEqual({ ROOM_COMPACT_MIN_DELETED: 'off' })
+})
