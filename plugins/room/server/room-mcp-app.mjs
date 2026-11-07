@@ -972,7 +972,7 @@ var init_gate_thread = __esm({
 import fs5 from "node:fs";
 import { fileURLToPath } from "node:url";
 import path6 from "node:path";
-import { randomBytes, randomUUID as randomUUID2, createHash as createHash2 } from "node:crypto";
+import { randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 function readRecord(file, max2) {
   let stat4;
   try {
@@ -1011,32 +1011,10 @@ function parseTicket(value5, holder, id3) {
     throw new Error("invalid storage ticket");
   return value5;
 }
-function canonicalLocation(location2, allowMissing = true) {
-  try {
-    return fs5.realpathSync.native(location2);
-  } catch (error2) {
-    if (!allowMissing || error2.code !== "ENOENT" || path6.dirname(location2) === location2) throw error2;
-    return path6.join(canonicalLocation(path6.dirname(location2)), path6.basename(location2));
-  }
-}
-function sameLocation(a, b) {
-  if (!path6.isAbsolute(a) || !path6.isAbsolute(b)) return false;
-  try {
-    const left = fs5.statSync(a, { bigint: true }), right = fs5.statSync(b, { bigint: true });
-    return left.isDirectory() && right.isDirectory() && left.ino !== 0n && left.dev === right.dev && left.ino === right.ino;
-  } catch (error2) {
-    if (error2.code !== "ENOENT") return false;
-    try {
-      return canonicalLocation(a) === canonicalLocation(b);
-    } catch {
-      return false;
-    }
-  }
-}
 function canonicalCommonDir(commonDir2) {
   let canonical;
   try {
-    canonical = canonicalLocation(commonDir2, false);
+    canonical = fs5.realpathSync.native(commonDir2);
   } catch (error2) {
     throw new StorageRefused("unavailable", `common directory unreadable: ${error2.code ?? error2}`);
   }
@@ -1189,151 +1167,103 @@ var init_gate = __esm({
           return false;
         }
       }
-      checkLocationChoice(old, cloneId2, copied) {
-        if (this.sameDirectory(old)) {
-          if (copied) throw this.relocationRefused("--confirm-copied refused: recorded and current paths are the same directory");
-          return;
-        }
-        if (!copied) {
-          let source;
-          try {
-            source = parseGate(readRecord(path6.join(old, STORAGE_PATHS.gate), MAX_GATE_BYTES));
-          } catch {
-          }
-          if (source?.cloneId === cloneId2)
-            throw this.relocationRefused("--confirm-moved refused: a different directory at the recorded path holds the same cloneId, evidence of a copy; use --confirm-copied");
-        }
-      }
-      /** Explicit confirmation resolves location ambiguity, never process ownership or storage phase. */
+      /** Confirmation changes only the gate, or archives the whole copy. */
       async repairLocation(mode2) {
         await this.guarded(() => {
-          if (this.completeRelocation(mode2)) return;
+          if (this.completeCopy(false, mode2)) return;
           const gate = this.readGate(true);
           if (!gate) return;
           const old = gate.commonDir;
           const alias = this.sameDirectory(old);
-          if (mode2 === "copied" && alias) this.checkLocationChoice(old, gate.cloneId, true);
+          if (mode2 === "copied" && alias)
+            throw this.relocationRefused("--confirm-copied refused: recorded and current paths are the same directory");
           if (old === this.commonDir) return;
           if (!mode2 && !alias) throw this.locationMismatch(old);
           if (mode2 && gate.phase !== "legacy") throw this.relocationRefused(`relocation requires legacy phase; found ${gate.phase}`);
-          if (alias && !mode2) {
-            writeAtomic(this.gateFile, { ...gate, commonDir: this.commonDir });
-            process.stderr.write(`Room location alias: ${old} -> ${this.commonDir}
-`);
-            return;
-          }
-          const copied = mode2 === "copied";
-          this.checkLocationChoice(old, gate.cloneId, copied);
-          if (!copied) this.checkRelocationRoots(old);
-          for (const name of this.registrationNames()) {
-            const registration = this.readRegistration(name.slice(0, -5));
-            if (registration && this.alive(registration.instance) !== "dead")
-              throw this.relocationRefused("relocation blocked by a live or unknown registration");
-          }
-          for (const name of this.ticketNames()) {
-            const [, holder, id3] = TICKET_FILE.exec(name);
-            const ticket = parseTicket(readRecord(path6.join(this.ticketDir, name), MAX_RECORD_BYTES), holder, id3);
-            if (this.alive(ticket.identity) !== "dead") throw this.relocationRefused("relocation blocked by a live or unknown ticket");
-          }
-          if (gate.owner && this.alive(gate.owner.instance) !== "dead") throw this.relocationRefused("relocation blocked by a live or unknown maintenance owner");
-          const room = path6.join(this.commonDir, "room");
-          this.checkRelocationHolders(room);
           if (alias) {
             writeAtomic(this.gateFile, { ...gate, commonDir: this.commonDir });
             process.stderr.write(`Room location alias: ${old} -> ${this.commonDir}
 `);
             return;
           }
-          if (!copied) this.planRebindRecords(old);
-          const sourceDigest = copied ? void 0 : this.relocationDigest(room);
-          const aside = copied ? `room.copied-${this.now()}-${randomBytes(6).toString("hex")}` : void 0;
-          const fresh = copied ? { cloneId: randomBytes(16).toString("hex"), relocationNonce: randomBytes(16).toString("hex") } : void 0;
-          writeAtomic(path6.join(this.commonDir, "room-location-pending.json"), { v: 1, gate, current: this.commonDir, copied, aside, fresh, sourceDigest });
-          this.completeRelocation();
+          const room = path6.join(this.commonDir, "room");
+          this.checkRelocationHolders(room);
+          if (mode2 === "moved") {
+            const remaining = this.pathBearingRecords(room);
+            if (remaining.length) throw this.relocationRefused(`finish (collect or discard) your workers and release review holds, then rerun; remaining: ${remaining.join(", ")}`);
+            writeAtomic(this.gateFile, { ...gate, commonDir: this.commonDir });
+            process.stderr.write(`Room moved: ${old} -> ${this.commonDir}${fs5.existsSync(path6.join(this.commonDir, "worktrees")) ? "; linked worktrees may require git worktree repair" : ""}
+`);
+          } else {
+            const aside = `room.copied-${this.now()}-${randomBytes(6).toString("hex")}`;
+            writeAtomic(path6.join(room, "copy-pending.json"), {
+              v: 1,
+              aside,
+              fresh: { cloneId: randomBytes(16).toString("hex"), relocationNonce: randomBytes(16).toString("hex") }
+            });
+            this.completeCopy(false);
+          }
         }, true);
       }
-      completeRelocation(mode2, inspect = false) {
-        const journal = path6.join(this.commonDir, "room-location-pending.json");
-        const raw = readRecord(journal, MAX_GATE_BYTES);
-        if (raw === void 0) return false;
-        if (!object(raw) || raw.v !== 1 || typeof raw.current !== "string" || !sameLocation(raw.current, this.commonDir) || typeof raw.copied !== "boolean" || raw.copied && (typeof raw.aside !== "string" || !/^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(raw.aside)))
-          throw this.relocationRefused("invalid relocation journal; preserve it for inspection");
-        let original;
-        try {
-          original = parseGate(raw.gate);
-        } catch {
-          throw this.relocationRefused("invalid relocation journal source");
-        }
-        const fresh = raw.fresh;
-        if (raw.copied && (!object(fresh) || typeof fresh.cloneId !== "string" || !/^[a-f0-9]{32}$/.test(fresh.cloneId) || typeof fresh.relocationNonce !== "string" || !/^[a-f0-9]{32}$/.test(fresh.relocationNonce)))
-          throw this.relocationRefused("invalid relocation journal destination identity");
-        if (!path6.isAbsolute(original.commonDir)) throw this.relocationRefused("invalid relocation journal source location");
-        const old = canonicalLocation(original.commonDir);
-        if (sameLocation(original.commonDir, this.commonDir)) throw this.relocationRefused("invalid relocation journal source location");
+      /** The marker travels with the archive; its identity recognises our fresh gate. */
+      completeCopy(inspect, mode2) {
         const room = path6.join(this.commonDir, "room");
-        const aside = raw.copied ? path6.join(this.commonDir, raw.aside) : void 0;
-        const matches2 = (gate, rebound = false) => gate && gate.cloneId === original.cloneId && gate.generation === original.generation && gate.phase === "legacy" && (sameLocation(gate.commonDir, old) || rebound && sameLocation(gate.commonDir, this.commonDir));
+        const candidates = ["room", ...this.names(this.commonDir).filter((n) => /^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(n))].filter((n) => fs5.existsSync(path6.join(this.commonDir, n, "copy-pending.json")));
+        if (!candidates.length) return false;
+        if (candidates.length !== 1) throw this.relocationRefused("multiple pending copy markers; preserve for inspection");
+        if (mode2 === "moved") throw this.relocationRefused("pending copy repair; rerun --confirm-copied");
+        const source = path6.join(this.commonDir, candidates[0]);
+        if (!fs5.lstatSync(source).isDirectory()) throw this.relocationRefused("copy source is not a directory");
+        const marker = readRecord(path6.join(source, "copy-pending.json"), MAX_GATE_BYTES);
+        if (!object(marker) || marker.v !== 1 || typeof marker.aside !== "string" || !/^room\.copied-[0-9]+-[a-f0-9]{12}$/.test(marker.aside) || !object(marker.fresh) || typeof marker.fresh.cloneId !== "string" || !/^[a-f0-9]{32}$/.test(marker.fresh.cloneId) || typeof marker.fresh.relocationNonce !== "string" || !/^[a-f0-9]{32}$/.test(marker.fresh.relocationNonce) || candidates[0] !== "room" && candidates[0] !== marker.aside)
+          throw this.relocationRefused("invalid copy marker; preserve for inspection");
+        const original = parseGate(readRecord(path6.join(source, "storage-gate.json"), MAX_GATE_BYTES));
         if (original.phase !== "legacy") throw this.relocationRefused("relocation requires legacy phase");
+        if (this.sameDirectory(original.commonDir)) throw this.relocationRefused("--confirm-copied refused: recorded and current paths are the same directory");
+        this.checkRelocationHolders(source);
+        const archived = candidates[0] !== "room";
         const current2 = this.readGate(true);
-        const ownDestination = !!(raw.copied && object(fresh) && current2 && current2.cloneId === fresh.cloneId && current2.relocationNonce === fresh.relocationNonce && sameLocation(current2.commonDir, this.commonDir));
-        if (mode2 && mode2 === "copied" !== raw.copied) {
-          const archived = !!aside && fs5.existsSync(aside);
-          const untouched = matches2(current2) && !archived && (raw.copied || typeof raw.sourceDigest === "string" && raw.sourceDigest === this.relocationDigest(room));
-          if (!untouched) {
-            const state = archived ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : current2 && sameLocation(current2.commonDir, this.commonDir) ? "move gate published" : raw.sourceDigest ? "move records changed" : "move progress cannot be verified (older journal)";
-            throw this.relocationRefused(`cannot switch relocation mode: ${state}; resume with --confirm-${raw.copied ? "copied" : "moved"} before choosing another operation`);
-          }
-          fs5.unlinkSync(journal);
+        const own2 = archived && current2?.cloneId === marker.fresh.cloneId && current2?.relocationNonce === marker.fresh.relocationNonce && current2?.commonDir === this.commonDir && current2?.phase === "legacy";
+        if (archived && current2 && !own2) throw this.relocationRefused("copy archive exists alongside a foreign gate");
+        if (inspect) throw new StorageRefused("incompatible", `pending copy repair: ${original.commonDir} -> ${this.commonDir}`, this.locationMessage(original.commonDir));
+        const aside = path6.join(this.commonDir, marker.aside);
+        if (!archived) {
+          if (fs5.existsSync(aside)) throw this.relocationRefused("copy archive already exists");
+          fs5.renameSync(room, aside);
           syncDirectoryQuietly(this.commonDir);
-          return false;
         }
-        if (aside && fs5.existsSync(aside)) {
-          if (!fs5.lstatSync(aside).isDirectory()) throw this.relocationRefused("relocation archive is not a directory");
-          let archived;
-          try {
-            archived = parseGate(readRecord(path6.join(aside, "storage-gate.json"), MAX_GATE_BYTES));
-          } catch {
-            throw this.relocationRefused("relocation archive source cannot be verified");
-          }
-          if (!matches2(archived)) throw this.relocationRefused("relocation archive source mismatch");
-          this.checkRelocationHolders(aside);
-          if (current2 && !ownDestination) throw this.relocationRefused("relocation archive already exists alongside a foreign gate; inspect journal");
-        } else {
-          if (!matches2(current2, !aside)) throw this.relocationRefused("stale or foreign relocation journal");
-          this.checkRelocationHolders(room);
+        if (!own2) {
+          this.cleanRelocationDestination(room);
+          this.initialize("not-needed", marker.fresh);
         }
-        if (inspect) {
-          const stage = aside ? fs5.existsSync(aside) ? ownDestination ? "copy archive and fresh gate published" : "copy archive renamed" : "copy archive not yet renamed" : current2 && sameLocation(current2.commonDir, this.commonDir) ? "move gate published" : typeof raw.sourceDigest === "string" ? raw.sourceDigest === this.relocationDigest(room) ? "move source unchanged" : "move records changed" : "move progress cannot be verified (older journal)";
-          throw new StorageRefused(
-            "incompatible",
-            `pending relocation requires recovery: ${raw.copied ? "copied" : "moved"}; old path: ${old}; new path: ${this.commonDir}${aside ? `; archive: ${aside}` : ""}; stage: ${stage}`,
-            `${this.relocationCommand()} --confirm-${raw.copied ? "copied" : "moved"}`
-          );
-        }
-        if (aside && fs5.existsSync(aside) && !ownDestination) this.cleanRelocationDestination(room);
-        if (!ownDestination) this.checkLocationChoice(old, original.cloneId, raw.copied);
-        if (aside) {
-          if (!fs5.existsSync(aside)) fs5.renameSync(room, aside);
-          privateStateDirectory(room);
-          if (!ownDestination) this.initialize("not-needed", fresh);
-        } else {
-          this.checkRelocationRoots(old);
-          if (!current2 || !sameLocation(current2.commonDir, this.commonDir)) {
-            this.planRebindRecords(original.commonDir)();
-            this.publish({ ...original, commonDir: this.commonDir });
-          }
-        }
-        const notice = `Room ${raw.copied ? "copied" : "moved"}: ${old} -> ${this.commonDir}${aside ? `; previous state preserved at ${aside}` : ""}${fs5.existsSync(path6.join(this.commonDir, "worktrees")) ? "; linked worktrees may require git worktree repair" : ""}`;
-        const noticeFile = path6.join(room, "location-notice.json");
-        const previous = readRecord(noticeFile, MAX_GATE_BYTES);
-        if (!object(previous) || previous.notice !== notice) {
-          writeAtomic(noticeFile, { v: 1, old, current: this.commonDir, copied: raw.copied, aside, notice });
-          process.stderr.write(`${notice}
+        fs5.unlinkSync(path6.join(aside, "copy-pending.json"));
+        syncDirectoryQuietly(aside);
+        process.stderr.write(`Room copied: ${original.commonDir} -> ${this.commonDir}; previous state preserved at ${aside}
 `);
-        }
-        fs5.unlinkSync(journal);
-        syncDirectoryQuietly(this.commonDir);
         return true;
+      }
+      /** Refuse path-bearing durable state; never rewrite records or their keys. */
+      pathBearingRecords(room) {
+        const remaining = [];
+        const paths = /* @__PURE__ */ new Set(["dir", "commonDir", "worktree", "keptWorktree", "leadDir", "cwd", "gitDir", "sessionDir", "logDir", "logFile", "reportFile", "exitFile", "transcript_path", "path"]);
+        const carriesPath = (value5) => Array.isArray(value5) ? value5.some(carriesPath) : object(value5) && Object.entries(value5).some(([key2, item]) => key2.startsWith("worktree:") || path6.isAbsolute(key2) || key2 === "clone" || paths.has(key2) && typeof item === "string" && path6.isAbsolute(item) || carriesPath(item));
+        const walk = (dir) => {
+          for (const entry of fs5.readdirSync(dir, { withFileTypes: true })) {
+            const file = path6.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              walk(file);
+              continue;
+            }
+            if (file === this.gateFile || !entry.name.endsWith(".json")) continue;
+            const value5 = readRecord(file, 16 * 1024 * 1024);
+            const review = path6.basename(dir) === "collection-reviews";
+            const worker2 = path6.basename(dir) === "workers" && object(value5);
+            const activeWorker = worker2 && (!["retired", "abandoned"].includes(String(value5.phase)) || !!value5.keptWorktree);
+            if (review ? !Array.isArray(value5) || value5.length > 0 : activeWorker || carriesPath(value5)) remaining.push(path6.relative(room, file));
+          }
+        };
+        walk(room);
+        return remaining;
       }
       /** Only reclaim known scratch with a verified-gone writer; unknown evidence stays for inspection. */
       cleanRelocationDestination(room) {
@@ -1364,18 +1294,6 @@ var init_gate = __esm({
           fs5.rmdirSync(dir);
         }
         if (fs5.readdirSync(room, { withFileTypes: true }).some((entry) => entry.name !== "preflight" || !entry.isDirectory())) refuse();
-      }
-      /** Disjoint prefixes make every location rewrite a fixed point, including crash replay. */
-      checkRelocationRoots(old) {
-        const from2 = path6.basename(old) === ".git" ? path6.dirname(old) : old;
-        const to2 = path6.basename(old) === ".git" ? path6.dirname(this.commonDir) : this.commonDir;
-        const normalize2 = (root) => {
-          const resolved = canonicalLocation(root);
-          return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-        };
-        const a = normalize2(from2), b = normalize2(to2);
-        if (a !== b && (a.startsWith(b + path6.sep) || b.startsWith(a + path6.sep)))
-          throw this.relocationRefused("overlapping relocation roots; use --confirm-copied to preserve state aside");
       }
       checkRelocationHolders(dir) {
         const dead = (identity4) => {
@@ -1440,122 +1358,6 @@ var init_gate = __esm({
             }
           }
         }
-      }
-      /** Fingerprint source bytes and names to prove an intent has not changed state. */
-      relocationDigest(dir) {
-        const hash3 = createHash2("sha256");
-        const buffer = Buffer.allocUnsafe(64 * 1024);
-        const walk = (root) => {
-          for (const entry of fs5.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-            const file = path6.join(root, entry.name);
-            hash3.update(JSON.stringify([path6.relative(dir, file), entry.isDirectory()]));
-            if (entry.isDirectory()) walk(file);
-            else if (entry.isFile()) {
-              const content = createHash2("sha256"), fd = fs5.openSync(file, "r");
-              try {
-                for (; ; ) {
-                  const size2 = fs5.readSync(fd, buffer, 0, buffer.length, null);
-                  if (!size2) break;
-                  content.update(buffer.subarray(0, size2));
-                }
-              } finally {
-                fs5.closeSync(fd);
-              }
-              hash3.update(content.digest());
-            } else throw this.relocationRefused("cannot verify relocation source entry");
-          }
-        };
-        walk(dir);
-        return hash3.digest("hex");
-      }
-      /** Validate the complete rewrite before returning any mutations. */
-      planRebindRecords(old) {
-        const room = path6.join(this.commonDir, "room");
-        const oldRoot = canonicalLocation(path6.basename(old) === ".git" ? path6.dirname(old) : old);
-        const newRoot = path6.basename(old) === ".git" ? path6.dirname(this.commonDir) : this.commonDir;
-        const relocate = (value5) => {
-          const canonical = canonicalLocation(value5);
-          return canonical === oldRoot ? newRoot : canonical.startsWith(oldRoot + path6.sep) ? newRoot + canonical.slice(oldRoot.length) : canonical;
-        };
-        const hash3 = (value5) => createHash2("sha256").update(value5).digest("hex");
-        const fields = /* @__PURE__ */ new Set(["dir", "commonDir", "worktree", "keptWorktree", "leadDir", "cwd", "gitDir", "sessionDir", "logDir", "logFile", "reportFile", "exitFile", "path"]);
-        const visit = (value5) => {
-          if (Array.isArray(value5)) return value5.map(visit);
-          if (!object(value5)) return value5;
-          return Object.fromEntries(Object.entries(value5).map(([key2, item]) => [
-            key2.startsWith("worktree:") ? `worktree:${relocate(key2.slice(9))}` : key2,
-            typeof item === "string" && fields.has(key2) && path6.isAbsolute(item) ? relocate(item) : key2 === "clone" && item === hash3(old) ? hash3(this.commonDir) : visit(item)
-          ]));
-        };
-        const actions = [];
-        const targets = /* @__PURE__ */ new Set();
-        const reserve = (target, detail) => {
-          if (fs5.existsSync(target) || targets.has(target)) throw this.relocationRefused(detail);
-          targets.add(target);
-        };
-        const walk = (dir) => {
-          for (const entry of fs5.readdirSync(dir, { withFileTypes: true })) {
-            const file = path6.join(dir, entry.name);
-            if (entry.isSymbolicLink()) throw this.relocationRefused(`cannot relocate symbolic link ${path6.relative(room, file)}`);
-            if (entry.isDirectory()) {
-              walk(file);
-              continue;
-            }
-            if (!entry.name.endsWith(".json") || file === this.gateFile || entry.name === "location-notice.json") continue;
-            const raw = readRecord(file, 16 * 1024 * 1024);
-            const next = visit(raw);
-            if (JSON.stringify(raw) !== JSON.stringify(next)) actions.push(() => writeAtomic(file, next));
-            if (["publishers", "collect"].includes(path6.basename(dir)) && object(next) && typeof next.worktree === "string") {
-              const target = path6.join(dir, `${hash3(next.worktree)}.json`);
-              if (target !== file) {
-                reserve(target, "lease relocation target already exists");
-                actions.push(() => {
-                  fs5.renameSync(file, target);
-                  syncDirectoryQuietly(dir);
-                });
-              }
-            }
-          }
-        };
-        const destinations = /* @__PURE__ */ new Map([[hash3(oldRoot), hash3(newRoot)], [hash3(newRoot), hash3(newRoot)]]);
-        const collectPaths = (value5) => {
-          if (Array.isArray(value5)) value5.forEach(collectPaths);
-          else if (object(value5)) for (const [key2, item] of Object.entries(value5)) {
-            if (fields.has(key2) && typeof item === "string" && path6.isAbsolute(item)) {
-              destinations.set(hash3(item), hash3(relocate(item)));
-              if (item === newRoot || item.startsWith(newRoot + path6.sep)) destinations.set(hash3(oldRoot + item.slice(newRoot.length)), hash3(item));
-            }
-            collectPaths(item);
-          }
-        };
-        const scan = (dir) => {
-          for (const entry of fs5.readdirSync(dir, { withFileTypes: true })) {
-            const file = path6.join(dir, entry.name);
-            if (entry.isDirectory()) scan(file);
-            else if (entry.isFile() && entry.name.endsWith(".json")) collectPaths(readRecord(file, 16 * 1024 * 1024));
-          }
-        };
-        scan(room);
-        const holds = path6.join(room, "registry", "collection-reviews");
-        const renames = [];
-        for (const name of this.names(holds)) {
-          if (!name.endsWith(".json")) continue;
-          const source = path6.join(holds, name), key2 = name.slice(0, -5), mapped = destinations.get(key2);
-          const value5 = readRecord(source, MAX_GATE_BYTES);
-          if (!mapped && !(Array.isArray(value5) && value5.length === 0))
-            throw this.relocationRefused("collection review destination cannot be proven; use --confirm-copied to preserve state aside");
-          if (mapped && mapped !== key2) {
-            const target = path6.join(holds, `${mapped}.json`);
-            reserve(target, "collection review relocation target already exists");
-            renames.push([source, target]);
-          }
-        }
-        walk(room);
-        return () => {
-          for (const action of actions) action();
-          for (const [source, target] of renames) fs5.renameSync(source, target);
-          if (renames.length) syncDirectoryQuietly(holds);
-        };
       }
       requireGate() {
         const gate = this.readGate();
@@ -1997,18 +1799,7 @@ var init_gate = __esm({
         }
         let gate;
         try {
-          if (fs5.existsSync(path6.join(this.commonDir, "room-location-pending.json"))) {
-            try {
-              this.completeRelocation(void 0, true);
-            } catch (error2) {
-              if (error2 instanceof StorageRefused && error2.detail.startsWith("pending relocation requires recovery:")) throw error2;
-              throw new StorageRefused(
-                "incompatible",
-                `pending relocation cannot be verified: ${error2 instanceof StorageRefused ? error2.detail : error2.message}`,
-                "preserve the relocation journal and source state for inspection"
-              );
-            }
-          }
+          this.completeCopy(true);
           gate = this.readGate();
         } catch (error2) {
           const refused = error2;
@@ -12615,14 +12406,14 @@ __export(manifest_node_exports, {
   digestPath: () => digestPath,
   gitBlobHash: () => gitBlobHash
 });
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function digestPath(roomSalt, path79) {
   if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error("invalid roomSalt");
-  return createHash3("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path79), "utf8").digest("hex");
+  return createHash2("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path79), "utf8").digest("hex");
 }
 function gitBlobHash(text2, format = "sha1") {
   const bytes = Buffer.from(text2);
-  return createHash3(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  return createHash2(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 var init_manifest_node = __esm({
   "packages/shared/src/manifest-node.ts"() {
@@ -15766,7 +15557,7 @@ var init_roomignore = __esm({
 });
 
 // packages/roomd/src/policy.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { setImmediate as setImmediate3 } from "node:timers/promises";
 function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher = true) {
   return Object.freeze({ level: clampShare(level, ceiling), requested: level, ceiling, textPrefixes: Object.freeze([...textPrefixes]), ending: Object.freeze([]), publisher });
@@ -15786,7 +15577,7 @@ function rulesFromText(text2, sizeCap, budget) {
     sizeCap,
     budget,
     unavailable: text2 === void 0,
-    id: createHash4("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
+    id: createHash3("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
   });
 }
 function publishesFiles(inputs) {
@@ -15810,7 +15601,7 @@ function* planSteps(inputs, disk, salt) {
     const hide2 = (reason) => {
       excludedPaths.push(p);
       excludedReasons.set(p, reason);
-      excluded.push(createHash4("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
+      excluded.push(createHash3("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
     };
     if (fact.excluded || fact.ignored || defaultExcludedPath(p) || defaultIgnoredPath(p) || inputs.rules.roomIgnore.ignores(p)) {
       if (changed) hide2(fact.exclusionReason ?? "ignore");
@@ -15895,7 +15686,7 @@ var init_policy = __esm({
 // packages/roomd/src/disk-scan.ts
 import fs17 from "node:fs";
 import path17 from "node:path";
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { setImmediate as setImmediate4 } from "node:timers/promises";
 async function ignoredTrackedPaths(dir, paths) {
   if (!paths.length) return /* @__PURE__ */ new Set();
@@ -16034,7 +15825,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
       continue;
     }
-    const hash3 = createHash5(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const hash3 = createHash4(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
     let text2;
     let binary = false;
     try {
@@ -18935,7 +18726,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net3 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes12, createHash: createHash27 } = __require("crypto");
+    var { randomBytes: randomBytes12, createHash: createHash26 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -19603,7 +19394,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash27("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash26("sha1").update(key2 + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -19972,7 +19763,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash27 } = __require("crypto");
+    var { createHash: createHash26 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -20279,7 +20070,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash27("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash26("sha1").update(key2 + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -22202,7 +21993,7 @@ ${reason}`);
 });
 
 // packages/roomd/src/reanchor.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { setImmediate as setImmediate7 } from "node:timers/promises";
 function claimDigest(text2, from2, to2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
@@ -22379,7 +22170,7 @@ var init_reanchor = __esm({
     init_libesm();
     DEFAULT_WORK_BUDGET = 4e6;
     BASE = 16777619;
-    digestLines = (lines2) => createHash6("sha256").update(lines2.join("\n"), "utf8").digest("hex");
+    digestLines = (lines2) => createHash5("sha256").update(lines2.join("\n"), "utf8").digest("hex");
     splitLines2 = (text2) => {
       const lines2 = text2.split("\n");
       if (text2.endsWith("\n")) lines2.pop();
@@ -24482,7 +24273,7 @@ __export(src_exports, {
 import fs23 from "node:fs";
 import path22 from "node:path";
 import os6 from "node:os";
-import { createHash as createHash7, randomBytes as randomBytes4 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes4 } from "node:crypto";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
@@ -24649,7 +24440,7 @@ var init_src4 = __esm({
           return () => clearTimeout(timer);
         });
         this.debounceMs = options.debounceMs ?? 300;
-        this.watchedDirectory = createHash7("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs23.realpathSync(this.dir)).digest("hex");
+        this.watchedDirectory = createHash6("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs23.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths, overflow) => {
           const work = this.enqueue(async () => {
             await this.pollHead();
@@ -26089,7 +25880,7 @@ import fs25 from "node:fs";
 import path24 from "node:path";
 import os8 from "node:os";
 import { execFileSync as execFileSync4 } from "node:child_process";
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 function codexRoomHookTrustStatus(toml) {
   if (!toml) return "absent";
   const sections = [...toml.matchAll(/^\[hooks\.state\."room@room:hooks\.json:([^"\]]+)"\]([\s\S]*?)(?=^\[|$(?![\s\S]))/gm)];
@@ -26237,7 +26028,7 @@ function verifyBundleDigests(root, descriptor) {
   const digest = (name) => {
     const file = path24.join(root, name);
     if (fs25.statSync(file).size > 64 * 1024 * 1024) throw new Error("executable exceeds bundle limit");
-    return createHash8("sha256").update(fs25.readFileSync(file)).digest("hex");
+    return createHash7("sha256").update(fs25.readFileSync(file)).digest("hex");
   };
   try {
     if (descriptor.v === 1) return !EXECUTABLE_BUNDLES.filter((name) => name.endsWith("-app.mjs")).some((name) => fs25.existsSync(path24.join(root, name))) && descriptor.bundleSha256 === digest("room-mcp.mjs");
@@ -35405,7 +35196,7 @@ var init_checkout_publication = __esm({
 });
 
 // packages/room-mcp/src/tools/reader-diff.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 function boundedTwoFilesPatch(p, before, after, person) {
   const a = before.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const b = after.match(/[^\n]*\n|[^\n]+$/g) ?? [];
@@ -35491,7 +35282,7 @@ function boundedTwoFilesPatch(p, before, after, person) {
   patch.hunks = hunks;
   return formatPatch(patch);
 }
-function diffPage(text2, cursor, digest = createHash9("sha256").update(text2).digest("hex")) {
+function diffPage(text2, cursor, digest = createHash8("sha256").update(text2).digest("hex")) {
   let start = 0;
   if (cursor !== void 0) {
     const match = typeof cursor === "string" && /^([a-f0-9]{64}):([1-9][0-9]*)$/.exec(cursor);
@@ -35517,7 +35308,7 @@ var init_reader_diff = __esm({
 });
 
 // packages/room-mcp/src/read-diff-cache.ts
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 var READ_DIFF_LIMITS, DIFF_RESTART, ReadDiffCache, readDiffCache;
 var init_read_diff_cache = __esm({
   "packages/room-mcp/src/read-diff-cache.ts"() {
@@ -35559,7 +35350,7 @@ var init_read_diff_cache = __esm({
         if (bytes > this.limits.entryBytes || bytes > this.limits.bytes)
           return "error: diff exceeds the bounded continuation cache; use room_state(all=true) to discover changed paths and room_read(diff=true, path=...) for individual files";
         while (this.entries.size >= this.limits.entries || this.bytes + bytes > this.limits.bytes) this.remove(this.entries.values().next().value);
-        const digest = createHash10("sha256").update(text2).digest("hex");
+        const digest = createHash9("sha256").update(text2).digest("hex");
         const entry = {
           owner: new WeakRef(owner),
           request,
@@ -35661,7 +35452,7 @@ var init_session_entries = __esm({
 import fs34 from "node:fs";
 import path35 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 import { execFile as execFile9 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 async function inspectDaemonCutover(commonDir2, options = {}) {
@@ -35688,7 +35479,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     if (folder(path35.dirname(file)) !== "present") return void 0;
     const bytes = readRegular(file, MAX_RECORD_BYTES2, state.issues);
     if (!bytes) return void 0;
-    hashes.set(file, createHash11("sha256").update(bytes).digest("hex"));
+    hashes.set(file, createHash10("sha256").update(bytes).digest("hex"));
     return parseObject(file, bytes, state.issues);
   };
   const entries = (dir) => {
@@ -35708,7 +35499,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   const fingerprint = (file, evidence) => {
     const own2 = hashes.get(file);
     if (own2 === void 0 || !evidence?.length) return own2;
-    return createHash11("sha256").update([file, ...evidence].map((f) => `${path35.relative(commonDir2, f)}:${hashes.get(f) ?? "absent"}`).join("\n")).digest("hex");
+    return createHash10("sha256").update([file, ...evidence].map((f) => `${path35.relative(commonDir2, f)}:${hashes.get(f) ?? "absent"}`).join("\n")).digest("hex");
   };
   const alive = (identity4) => identity4 ? liveness(identity4, options.probe) : "unknown";
   const add2 = (client, identity4, verdict) => {
@@ -35726,7 +35517,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   }
   const room = path35.join(commonDir2, "room");
   const discovery2 = read2(path35.join(room, "relay.json"));
-  if (typeof discovery2?.key === "string") state.keyFingerprint = createHash11("sha256").update(discovery2.key).digest("hex");
+  if (typeof discovery2?.key === "string") state.keyFingerprint = createHash10("sha256").update(discovery2.key).digest("hex");
   const lock = read2(path35.join(room, "hub", "authority.lock"));
   const lockIdentity = identityOf(lock);
   const discoveryIdentity = discovery2?.lead !== void 0 && discovery2.lead !== true ? identityOf(discovery2.lead) : identityOf(discovery2);
@@ -36057,7 +35848,7 @@ var init_connection = __esm({
 });
 
 // packages/room-mcp/src/client-compat.ts
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 import { existsSync as existsSync2, readFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 function compatibilityFromHealth(health, learned = false, client = CURRENT_COMPAT) {
@@ -36079,7 +35870,7 @@ function compatibilityFromHealth(health, learned = false, client = CURRENT_COMPA
   return { offer: LEGACY_COMPAT, legacy: true };
 }
 function compatibilityFloor(commonDir2, identity4, fingerprint) {
-  const file = join3(commonDir2, "room", "compat", `${createHash12("sha256").update(identity4).digest("hex")}.json`);
+  const file = join3(commonDir2, "room", "compat", `${createHash11("sha256").update(identity4).digest("hex")}.json`);
   return {
     learned() {
       if (!existsSync2(file)) return false;
@@ -39157,7 +38948,7 @@ var init_choice = __esm({
 // packages/room-mcp/src/policy-store.ts
 import fs42 from "node:fs";
 import path41 from "node:path";
-import { createHash as createHash13 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 async function legacyBaseline(dir) {
   const file = path41.join(await gitCommonDir(dir), "room", "sharing", "legacy-baseline.json");
   const choice = await choiceFile(dir);
@@ -39189,7 +38980,7 @@ async function legacyBaseline(dir) {
   });
 }
 async function sharingFile(dir, room, participant) {
-  const hash3 = createHash13("sha256").update(room).update("\0").update(participant).digest("hex");
+  const hash3 = createHash12("sha256").update(room).update("\0").update(participant).digest("hex");
   return path41.join(await gitCommonDir(dir), "room", "sharing", `${hash3}.json`);
 }
 var emptyGrant, levels, shareLevel, sorted, clean2, PolicyStore, CeilingSource;
@@ -39360,7 +39151,7 @@ var init_policy_store = __esm({
         return this.update((old) => ({ ...old, disclosed: { level, version: version3 }, updatedAt: Date.now() }), false);
       }
       static retire(dir, room, participant, server) {
-        const hash3 = createHash13("sha256").update(room).update("\0").update(participant).digest("hex");
+        const hash3 = createHash12("sha256").update(room).update("\0").update(participant).digest("hex");
         const file = path41.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash3}.json`);
         fs42.rmSync(file, { force: true });
         const privateGit = worktreeGitDirFromDotGit(dir);
@@ -39895,9 +39686,9 @@ var init_post = __esm({
 // packages/room-mcp/src/publisher-lease.ts
 import fs43 from "node:fs";
 import path42 from "node:path";
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 function publisherLeaseFile(commonDir2, worktree) {
-  return path42.join(commonDir2, "room", "publishers", `${createHash14("sha256").update(worktree).digest("hex")}.json`);
+  return path42.join(commonDir2, "room", "publishers", `${createHash13("sha256").update(worktree).digest("hex")}.json`);
 }
 async function guarded(fn) {
   const deadline = performance.now() + GUARD_WAIT_MS;
@@ -40089,9 +39880,9 @@ var init_publisher_lease = __esm({
 // packages/room-mcp/src/names.ts
 import fs44 from "node:fs";
 import path43 from "node:path";
-import { createHash as createHash15, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash14, randomUUID as randomUUID5 } from "node:crypto";
 function nameLeaseFile(commonDir2, roomKey2, name) {
-  return path43.join(commonDir2, "room", "names", `${createHash15("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
+  return path43.join(commonDir2, "room", "names", `${createHash14("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
 }
 function readLease(file) {
   try {
@@ -41691,7 +41482,7 @@ var init_bridge = __esm({
 
 // packages/room-mcp/src/session.ts
 import { existsSync as existsSync3, readFileSync as readFileSync2, statSync } from "node:fs";
-import { createHash as createHash16 } from "node:crypto";
+import { createHash as createHash15 } from "node:crypto";
 import { execFileSync as execFileSync9 } from "node:child_process";
 import { basename as basename3, dirname as dirname3, join as join4, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath6, pathToFileURL as pathToFileURL2 } from "node:url";
@@ -41709,7 +41500,7 @@ function localBrowserLink(roomUrl, name, view, viewerFile = findLocalViewer(), w
 }
 function sessionDirectory(commonDir2, sessionId) {
   if (!sessionId) throw new Error("session ID is required");
-  const sid = createHash16("sha256").update(sessionId).digest("hex").slice(0, 16);
+  const sid = createHash15("sha256").update(sessionId).digest("hex").slice(0, 16);
   return join4(commonDir2, "room", "sessions", sid);
 }
 function readSessionFile(commonDir2, sessionId, name) {
@@ -42049,7 +41840,7 @@ async function discoverCompatibility(server, dir, localKey, log2) {
   const url = new URL(server);
   const common = await realGitCommonDir(dir);
   const identity4 = localKey ? `local:${common}` : url.origin;
-  const floor2 = compatibilityFloor(common, identity4, localKey ? createHash16("sha256").update(localKey).digest("hex") : void 0);
+  const floor2 = compatibilityFloor(common, identity4, localKey ? createHash15("sha256").update(localKey).digest("hex") : void 0);
   let health;
   if (localKey) health = await relayHealth(Number(url.port), localKey);
   else try {
@@ -44676,7 +44467,7 @@ var init_share = __esm({
 // packages/room-mcp/src/kept-publication.ts
 import fs53 from "node:fs";
 import path52 from "node:path";
-import { createHash as createHash17 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 async function acknowledgeKeptPublication(s, previous, paths, written = [], timeoutMs2 = 5e3, retryNow = false) {
   const required2 = [.../* @__PURE__ */ new Set([...previous?.paths ?? [], ...paths])].sort();
   const publisher = checkoutPublisher(s) ?? s.me.name, head = manifestHeadOf(s.room, publisher);
@@ -44708,7 +44499,7 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
       admission.run(async () => {
         const [format, expectedHead] = (await git(s.dir, ["rev-parse", "--show-object-format", "HEAD"])).trim().split("\n");
         if (format !== "sha1" && format !== "sha256") return pending2;
-        const hash3 = (bytes2) => createHash17(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
+        const hash3 = (bytes2) => createHash16(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
         const required2 = /* @__PURE__ */ new Map();
         const root = fs53.realpathSync(s.dir);
         const diskHash = async (p) => {
@@ -44810,7 +44601,7 @@ var init_kept_publication = __esm({
 // packages/room-mcp/src/tools/combined-tree.ts
 import fs54 from "node:fs";
 import path53 from "node:path";
-import { createHash as createHash18 } from "node:crypto";
+import { createHash as createHash17 } from "node:crypto";
 function publicationInputs(snap, text2) {
   if (!snap) return void 0;
   const { head, record: record2 } = snap;
@@ -44847,7 +44638,7 @@ function publicationInputs(snap, text2) {
         entry.hash,
         entry.baseHash,
         entry.held,
-        value5 === void 0 ? void 0 : createHash18("sha256").update(value5).digest("hex")
+        value5 === void 0 ? void 0 : createHash17("sha256").update(value5).digest("hex")
       ])];
     }))
   };
@@ -46473,7 +46264,7 @@ __export(files_exports, {
 });
 import { execFile as execFile14, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage4 } from "node:async_hooks";
-import { createHash as createHash19, randomUUID as randomUUID7 } from "node:crypto";
+import { createHash as createHash18, randomUUID as randomUUID7 } from "node:crypto";
 import fs57 from "node:fs";
 import os13 from "node:os";
 import path56 from "node:path";
@@ -46527,7 +46318,7 @@ function handlers2(state) {
       const note = !worker2 && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
 ` : "";
       const label = (text2) => `${worker2 ? WORKTREE_NOTE + "\n" : ""}${note}${text2}`;
-      const fingerprint = createHash19("sha256");
+      const fingerprint = createHash18("sha256");
       const record2 = (...values) => {
         fingerprint.update(JSON.stringify(values));
       };
@@ -47039,7 +46830,7 @@ function canonicalPreviewClonePath(cloneDir) {
 }
 async function previewKeyPath(cloneDir, repoDir = cloneDir) {
   const common = await fs57.promises.realpath(await gitCommonDir(repoDir));
-  const key2 = createHash19("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
+  const key2 = createHash18("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
   const root = path56.join(common, "room-preview");
   await rejectPreviewLink(root);
   return path56.join(root, key2);
@@ -47349,7 +47140,7 @@ async function checkoutSettings(dir) {
   }
   const systemAttributes = await systemAttributePaths(dir);
   const relevant = [...values].filter(([key2]) => checkoutConfigKeys.has(key2) || /^filter\..+\.(smudge|clean|process|required)$/.test(key2)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const hash3 = createHash19("sha256").update(JSON.stringify(relevant)).update("\0");
+  const hash3 = createHash18("sha256").update(JSON.stringify(relevant)).update("\0");
   for (const [kind, identity4, file] of [
     ["info", infoAttributes, infoAttributes],
     ["user", userIdentity, userAttributes],
@@ -47609,7 +47400,7 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   return !!stat4;
 }
 function previewCheckKey(ancestor, merged, cmd, modes) {
-  const hash3 = createHash19("sha256").update(ancestor).update("\0").update(cmd);
+  const hash3 = createHash18("sha256").update(ancestor).update("\0").update(cmd);
   for (const rel of [...merged.keys()].sort()) {
     const text2 = merged.get(rel);
     hash3.update("\0").update(rel).update("\0").update(text2 === null ? "deleted" : `${modes.get(rel) ?? ""}:${text2}`);
@@ -47659,7 +47450,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let stage = "setup";
   const setupStart = performance4.now();
   let checkStart = 0, checkStartedAt = Date.now();
-  const inputHash = createHash19("sha256").update(ancestor);
+  const inputHash = createHash18("sha256").update(ancestor);
   for (const [rel, value5] of [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     inputHash.update(JSON.stringify([rel, value5, modes.get(rel) ?? 420]));
   }
@@ -48705,7 +48496,7 @@ var init_worker_git = __esm({
 // packages/room-mcp/src/worker-file-store.ts
 import fs59 from "node:fs";
 import path58 from "node:path";
-import { createHash as createHash20, randomBytes as randomBytes7 } from "node:crypto";
+import { createHash as createHash19, randomBytes as randomBytes7 } from "node:crypto";
 import { execFileSync as execFileSync10 } from "node:child_process";
 import { performance as performance5 } from "node:perf_hooks";
 function cached2(file, load2, slot = file, validate2 = false) {
@@ -49472,7 +49263,7 @@ var init_worker_file_store = __esm({
         });
       }
       #factRevision(query2) {
-        const hash3 = createHash20("sha256").update(this.commonDir).update(JSON.stringify(query2 ?? {}));
+        const hash3 = createHash19("sha256").update(this.commonDir).update(JSON.stringify(query2 ?? {}));
         const addFile = (file) => {
           let text2;
           try {
@@ -49618,7 +49409,7 @@ var init_worker_file_store = __esm({
         return withAdmission(this.commonDir, "collect", async () => {
           await this.ensureGeneration();
           const canonical = fs59.realpathSync(worktree);
-          const key2 = createHash20("sha256").update(canonical).digest("hex");
+          const key2 = createHash19("sha256").update(canonical).digest("hex");
           const file = path58.join(this.root, "collect", `${key2}.json`);
           const deadline = performance5.now() + GUARD_WAIT_MS3;
           for (; ; ) {
@@ -49950,7 +49741,7 @@ var init_worker_file_store = __esm({
         return withAdmission(this.commonDir, "reconcile", async () => {
           await this.ensureGeneration();
           const file = path58.join(this.root, "patches", `${id3}.patch`);
-          const sha256 = createHash20("sha256").update(bytes).digest("hex");
+          const sha256 = createHash19("sha256").update(bytes).digest("hex");
           const record2 = this.#read(id3);
           if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
           if (record2.discard.patch && record2.discard.patch.path !== file) throw new Error("discard patch path changed");
@@ -49968,7 +49759,7 @@ var init_worker_file_store = __esm({
             if (error2.code !== "ENOENT") throw error2;
           }
           if (existing) {
-            if (existing.isFile() && createHash20("sha256").update(fs59.readFileSync(file)).digest("hex") === sha256) return file;
+            if (existing.isFile() && createHash19("sha256").update(fs59.readFileSync(file)).digest("hex") === sha256) return file;
             this.quarantine(file, "discard patch hash mismatch");
           }
           const scratch = path58.join(this.root, "patches", `${id3}.${randomBytes7(8).toString("hex")}.tmp`);
@@ -50092,7 +49883,7 @@ var init_worker_file_store = __esm({
             if (published) {
               const expected = path58.join(this.root, "patches", `${id3}.patch`);
               if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-              const valid = fs59.existsSync(expected) && fs59.lstatSync(expected).isFile() && createHash20("sha256").update(fs59.readFileSync(expected)).digest("hex") === published.sha256;
+              const valid = fs59.existsSync(expected) && fs59.lstatSync(expected).isFile() && createHash19("sha256").update(fs59.readFileSync(expected)).digest("hex") === published.sha256;
               if (!valid) {
                 if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
                 await saveDiscardPatch(leadDir, own2, (bytes) => publishPatch(id3, bytes));
@@ -50358,7 +50149,7 @@ var init_worker_file_store = __esm({
 // packages/room-mcp/src/idle-claims.ts
 import fs60 from "node:fs";
 import path59 from "node:path";
-import { createHash as createHash21, randomBytes as randomBytes8 } from "node:crypto";
+import { createHash as createHash20, randomBytes as randomBytes8 } from "node:crypto";
 import { performance as performance6 } from "node:perf_hooks";
 async function guarded4(file, fn, deadline = performance6.now() + GUARD_WAIT_MS4) {
   for (; ; ) {
@@ -50433,7 +50224,7 @@ var init_idle_claims = __esm({
         return path59.join(this.commonDir, "room", "sessions", sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims");
       }
       idleClaimsFile(roomKey2, sessionId, idleEpoch) {
-        const key2 = createHash21("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
+        const key2 = createHash20("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
         return path59.join(this.idleClaimsDir(sessionId), `${key2}.json`);
       }
       pendingIdleClaims(roomKey2, sessionId, idleEpoch, participant) {
@@ -60946,8 +60737,8 @@ init_context();
 init_disk_text();
 init_worker_registry();
 import fs63 from "node:fs";
-import { createHash as createHash22, randomUUID as randomUUID8 } from "node:crypto";
-var hash = (value5) => createHash22("sha256").update(value5).digest("hex");
+import { createHash as createHash21, randomUUID as randomUUID8 } from "node:crypto";
+var hash = (value5) => createHash21("sha256").update(value5).digest("hex");
 var slotKey = (owner, kind, other, path79, subject = "") => [owner, kind, other, path79, subject].join("\0");
 var noticeId = (key2, epoch2, episode) => `cf:${hash(key2)}:${epoch2}${episode ? `:${episode}` : ""}`;
 var peerMerge = (slot) => slot.kind === "merge" && slot.path !== "*";
@@ -63327,7 +63118,7 @@ import path68 from "node:path";
 // packages/room-mcp/src/browser-open.ts
 init_private_state();
 import { spawn as spawn6 } from "node:child_process";
-import { createHash as createHash23, randomUUID as randomUUID10 } from "node:crypto";
+import { createHash as createHash22, randomUUID as randomUUID10 } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
 import path64 from "node:path";
 function launchBrowserHandler(command3, args2) {
@@ -63356,11 +63147,11 @@ async function openRoomBrowser(url, directory, options = {}) {
   const quoted = JSON.stringify(url).replace(/[<>&\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const escaped = url.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const script = `location.replace(${quoted})`;
-  const digest = createHash23("sha256").update(script).digest("base64");
+  const digest = createHash22("sha256").update(script).digest("base64");
   const html = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${digest}'; base-uri 'none'"><title>Opening Room</title><p>Opening your room. <a href="${escaped}">Continue to Room</a></p><script>${script}</script>`;
   privateStateDirectory(directory);
   const destination = new URLSearchParams(parsed.hash.slice(1)).get("room") ?? parsed.href.split("#")[0];
-  const name = createHash23("sha256").update(destination).digest("hex").slice(0, 24);
+  const name = createHash22("sha256").update(destination).digest("hex").slice(0, 24);
   const entry = path64.join(directory, `${name}.html`), temporary = path64.join(directory, `${randomUUID10()}.tmp`);
   try {
     await writeFile(temporary, html, { mode: 384, flag: "wx" });
@@ -65956,7 +65747,7 @@ init_disk_text();
 init_git();
 import fs71 from "node:fs";
 import path70 from "node:path";
-import { createHash as createHash24, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash23, randomUUID as randomUUID12 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -66115,7 +65906,7 @@ var HooksBridge = class {
 var hookHealth = /* @__PURE__ */ new WeakMap();
 var PROCESS_STARTED_AT = Date.now();
 function hookReceiptPath(sessionDir, sessionId) {
-  return path70.join(sessionDir, "..", "..", "hook-receipts", createHash24("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
+  return path70.join(sessionDir, "..", "..", "hook-receipts", createHash23("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
 }
 function readBoundedJson(file) {
   let fd;
@@ -66846,11 +66637,11 @@ init_leases2();
 init_worker_store();
 import fs74 from "node:fs";
 import path73 from "node:path";
-import { createHash as createHash25, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash24, randomUUID as randomUUID13 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text2) {
-  return `n:${kind}:${createHash25("sha256").update(text2).digest("hex").slice(0, 16)}`;
+  return `n:${kind}:${createHash24("sha256").update(text2).digest("hex").slice(0, 16)}`;
 }
 var Batch = class {
   constructor(id3, kind, leaseMs) {
@@ -67676,8 +67467,8 @@ init_timing();
 init_leases2();
 import fs75 from "node:fs";
 import path74 from "node:path";
-import { createHash as createHash26, randomBytes as randomBytes10 } from "node:crypto";
-var hash2 = (text2) => createHash26("sha256").update(text2).digest("hex");
+import { createHash as createHash25, randomBytes as randomBytes10 } from "node:crypto";
+var hash2 = (text2) => createHash25("sha256").update(text2).digest("hex");
 var CollectionReview = class {
   file;
   constructor(registryRoot, worktree) {

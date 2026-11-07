@@ -114,7 +114,9 @@ Stop Room before moving or copying a folder. Room never guesses which happened:
 when the recorded location differs, it refuses operations and prints both exact
 repair commands. Ask the user once whether the folder was moved or copied; the
 agent can then run the corresponding `--confirm-moved` or `--confirm-copied` command.
-Copies preserve the entire old `room/` in `.git/room.copied-<timestamp>-<suffix>/`
+Confirmed moves require no path-bearing state: finish workers (collect or discard),
+release review holds and stop all holders first. A move changes only the gate’s
+recorded path in one atomic write. Copies preserve the entire old `room/` in `.git/room.copied-<timestamp>-<suffix>/`
 and start fresh. Only verified aliases of the same directory update automatically,
 changing the recorded path text with a log line. Explicit repair requires legacy
 phase and no live or unknown holders. Linked worktrees may need `git worktree repair`.

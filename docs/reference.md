@@ -271,62 +271,39 @@ node "<plugin>/server/room-state.mjs" repair-location --common-dir "<git-common-
 node "<plugin>/server/room-state.mjs" repair-location --common-dir "<git-common-dir>" --confirm-copied
 ```
 
-Confirmation handles missing or unreadable originals; it never bypasses process
-ownership or the legacy-only phase restriction. `--confirm-moved` refuses when
-the old path still holds the same cloneId in a different directory: that is evidence
-of a copy, and the refusal points to `--confirm-copied`. `--confirm-copied` refuses
-when both paths name the same directory; otherwise it archives the entire `room/`
-intact and starts fresh. Resolve maintenance at the original location before
-relocating. No Git metadata is repaired: linked worktrees may require
-`git worktree repair`.
+Explicit repair requires legacy phase and no live or unknown holders. A move
+changes only the gate's recorded commonDir, in one atomic write under the external
+location guard. There is no move journal and no rewriting of records or keys.
+`--confirm-moved` refuses with “finish (collect or discard) your workers and release
+review holds, then rerun” and lists remaining path-bearing records. These include
+worker checkout/log/patch paths (including historical records that still contain
+absolute paths), retained worktrees, session cwd/transcript and checkout paths,
+publisher and collection lease worktrees, nonempty collection-review holds
+(keyed by destination path hash), legacy import `worktree:` source keys and
+cutover clone hashes. Stop holders before repairing; unresolved active workers
+must be collected or discarded. Empty review-hold arrays do not block.
 
-Location fields within the moved repository are rebound in JSON records (worker,
-checkout, sharing, session and patch paths); publisher filenames are re-keyed;
-collection leases and provable review-hold destinations are re-keyed; matching
-cutover path hashes and legacy import source keys are updated. Unmappable review
-holds refuse. Overlapping old/new roots refuse rebinding before mutation; use
-`--confirm-copied` to preserve state aside with a fresh identity instead. External paths and process identities
-are unchanged. Discovery endpoints retain their existing authentication and
-liveness validation; evidence digests invalidated by a rewrite must be validated
-again. Logs, patch bytes and transport snapshots are not rewritten.
+`--confirm-copied` refuses the same directory. Otherwise it renames the entire
+`room/` intact to `room.copied-<timestamp>-<suffix>` and initializes a fresh legacy
+gate. A copy marker written inside `room/` travels into the archive. If interrupted,
+repair or registration resumes: an archive with this marker and no gate creates
+the fresh gate; an existing gate must match the marker's fresh clone identity and
+nonce. Foreign gates refuse. The marker is removed on completion. Holders and
+legacy phase are checked again during recovery. No mode switching is supported.
 
-A durable `room-location-pending.json` outside `room/` allows interrupted rename
-or rebind to resume. Replay rechecks source identity, generation, legacy phase
-and process holders, including archived state. Foreign or stale journals refuse.
-Before archiving, the journal persists the intended fresh cloneId and recovery nonce.
-Repair and registration can resume after the archive rename, before fresh-gate
-publication, when the destination is absent or contains only an empty `preflight/`,
-recognized preflight children whose PID is verified gone (containing only probe SQLite
-files), or atomic-write temps reclaimable by Room's verified-dead-writer cleanup.
-The shared `preflight/` parent is retained so concurrent probes can create their children.
-Only an affirmative `ESRCH` signal probe proves a scratch or temp writer is gone;
-invalid PIDs and all other probe errors retain the files and refuse recovery.
-Unowned older preflight children, live or unknown owners, and other destination
-contents refuse. After fresh-gate publication, replay requires both journaled values
-to match the current gate. Both paths reverify the archive and its holders.
-The nonce correlates recovery; it is not authentication or tamper protection.
-The journal shares the gate's private-state trust boundary.
-A foreign destination gate still refuses for inspection. The resulting `room/location-notice.json` records old/new
-paths and any archive location; stderr emits the notice once on completion.
-There is a crash window between durable notice publication and stderr output:
-the audit record remains authoritative if terminal output is lost.
+Recovery tolerates only Room's empty preflight directory, recognised scratch
+children with verified-dead owners, and reclaimable atomic-write orphan temps.
+Only ESRCH proves PID death. The shared preflight parent remains in place; live,
+unknown or invalid owners and unrelated destination files refuse recovery.
 
-
-Status is read-only even for same-directory aliases and pending relocation. An
-exact device/inode match reports a harmless canonical-path update pending the next
-registration, without a location refusal or maintenance requirement. JSON includes
-`locationUpdate` with the recorded and canonical paths. For pending relocation it
-reports the journaled move/copy choice, old/new paths, archive path when applicable,
-observable stage and exact resume command, or why the journal cannot be verified.
-Registration or `repair-location` performs recovery. Readable maintenance gates
-retain ticket IDs, holder verdicts and registration-only reconciliation evidence.
-Move repair validates all records, review-hold mappings and rename targets before
-publishing intent. A different confirmation can replace an untouched intent under
-the location guard. For moves, the source fingerprint must still match; for copies,
-the archive rename must not have happened. After records change, the archive is
-renamed, or the destination gate is published, switching refuses with the observed
-state and the original confirmation flag to resume. Older move journals without a
-fingerprint cannot prove absence of changes and must resume their original mode.
+Status is read-only, including aliases and interrupted copies. Mismatches report
+both paths and both runnable repair commands. Exact bigint device/inode aliases
+report `locationUpdate` pending the next registration without refusing admission.
+Registration or repair updates only the path text under the guard. No Git metadata
+is repaired; linked worktrees may require `git worktree repair`, which successful
+move repair mentions when the common directory has linked worktree metadata.
+Readable maintenance gates retain ticket IDs, holder verdicts and registration-only
+reconciliation evidence.
 
 ### Offline recovery of unknown lock ownership
 

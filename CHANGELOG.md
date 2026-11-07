@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- Treat Windows short paths and directory aliases consistently in storage gates and relocation journals. Read-only status reports same-directory spelling changes as pending automatic updates without blocking admission.
+- Treat Windows short paths and directory aliases consistently in storage gates. Read-only status reports same-directory spelling changes as pending automatic updates without blocking admission.
 
-- Keep ticket and registration reconciliation evidence visible during maintenance; read-only relocation status validates the journal and reports its recovery choice, paths, observed stage and exact resume command.
+- Keep ticket and registration reconciliation evidence visible during maintenance; read-only relocation status reports mismatches and runnable repair commands.
 
-- Validate move rebinding before journaling; allow mode changes only while source state is provably untouched. Status reports relocation recovery without writes. Document controlled offline recovery for locks with unknown owners.
+- Simplify confirmed moves to a single atomic gate path update, refusing remaining path-bearing state and listing it. Remove record rebinding, move journals, fingerprints, mode switching and overlap checks. Interrupted copies recover using an archive marker and fresh gate identity. Status reports copy recovery without writes. Document controlled offline recovery for locks with unknown owners.
 
 - Process-liveness checks treat only ESRCH as proof of exit. Malformed required launch PIDs quarantine the worker record; lifecycle pid 0 remains the no-process sentinel. Worktree termination validates PIDs before signalling, preview markers never probe invalid PIDs, and relocation recovery preserves the shared preflight directory.
 

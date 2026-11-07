@@ -226,6 +226,13 @@ aliases automatically update the gate's path text, with a log line. Keep older
 writers stopped: they do not honor the storage gate or its location guard.
 Confirmed copies preserve `room/` intact in a sibling archive and start fresh.
 Explicit repair requires legacy phase and no live or unknown holders. A confirmed
-move refuses a distinct same-id original; a confirmed copy refuses the same directory.
+move requires no path-bearing state, including retained worker worktrees or active
+runs and nonempty collection-review holds. Finish workers (collect or discard)
+and release review holds first; refusals list the remaining records. It changes
+only the gate's path atomically. A confirmed copy refuses the same directory.
+Interrupted copies resume using the marker carried into the archive and its fresh
+gate identity. Only verified-dead Room scratch and orphan temps are reclaimed.
+Status remains read-only and prints both repair commands for location mismatches.
+Linked worktrees may require `git worktree repair`.
 See [repository location repair](reference.md#repository-location-repair) for
 recovery safeguards and linked worktree repair.

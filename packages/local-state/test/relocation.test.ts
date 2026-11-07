@@ -4,7 +4,7 @@ import { promisify } from 'node:util'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { afterEach, expect, it, vi } from 'vitest'
 import { FileStorageGate } from '../src/gate.js'
 import { STORAGE_PATHS } from '../src/protocol.js'
@@ -50,7 +50,7 @@ it('refuses unreadable original with executable repair remedy, then accepts conf
   await gate(current).repairLocation('moved')
   expect(record(current).cloneId).toBe(before.cloneId)
 })
-it('refuses maintenance even during confirmed rebind', async () => {
+it('refuses maintenance even during confirmed move', async () => {
   const { current, before } = await fixture()
   const maintained = { ...before, phase: 'draining', generation: 2, drainingFrom: 1, owner: { instance: input().instance, token: 'owner' } }
   fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify(maintained))
@@ -60,46 +60,8 @@ it('refuses maintenance even during confirmed rebind', async () => {
 })
 it('refuses live holders even with confirmation', async () => {
   const { current } = await fixture()
-  await expect(new FileStorageGate(current, { liveness: () => 'alive' }).repairLocation('moved')).rejects.toThrow('relocation blocked by a live or unknown registration')
+  await expect(new FileStorageGate(current, { liveness: () => 'alive' }).repairLocation('moved')).rejects.toThrow('live or unknown')
 })
-it('rebinds worker paths and cutover clone hashes without changing arbitrary text', async () => {
-  const { old, current } = await fixture()
-  const file = path.join(current, 'room', 'worker.json')
-  const hash = (s: string) => createHash('sha256').update(s).digest('hex')
-  fs.writeFileSync(file, JSON.stringify({ dir: path.join(path.dirname(old), 'worker'), clone: hash(old), prompt: old }))
-  await gate(current).repairLocation('moved')
-  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ dir: path.join(path.dirname(current), 'worker'), clone: hash(current), prompt: old })
-})
-
-it('recovers a copy interrupted after the archive rename', async () => {
-  const { current, before } = await fixture(true)
-  const aside = 'room.copied-1-abcdefabcdef'
-  fs.writeFileSync(path.join(current, 'room-location-pending.json'), JSON.stringify({ v: 1, gate: before, current, copied: true, aside, fresh: { cloneId: "c".repeat(32), relocationNonce: "d".repeat(32) } }))
-  fs.renameSync(path.join(current, 'room'), path.join(current, aside))
-  await gate(current).register(input())
-  expect(record(current).cloneId).not.toBe(before.cloneId)
-  expect(fs.existsSync(path.join(current, 'room-location-pending.json'))).toBe(false)
-  expect(fs.readdirSync(current).filter(n => n.startsWith('room.copied-'))).toEqual([aside])
-})
-
-
-it('rekeys publisher, collection leases and review holds, and preserves import assignments', async () => {
-  const { old, current } = await fixture()
-  const hash = (s: string) => createHash('sha256').update(s).digest('hex')
-  const from = path.dirname(old), to = path.dirname(current)
-  const room = path.join(current, 'room')
-  for (const family of ['publishers', 'registry/collect', 'registry/collection-reviews']) {
-    fs.mkdirSync(path.join(room, family), { recursive: true })
-    fs.writeFileSync(path.join(room, family, `${hash(from)}.json`), JSON.stringify(family.endsWith('collection-reviews') ? [{ owner: 'reviewer' }] : { worktree: from, holder: input().instance }))
-  }
-  fs.writeFileSync(path.join(room, 'registry/migration.json'), JSON.stringify({ sources: { [`worktree:${from}`]: { id: 'stable' } } }))
-  await gate(current).repairLocation('moved')
-  for (const family of ['publishers', 'registry/collect', 'registry/collection-reviews']) {
-    expect(fs.readdirSync(path.join(room, family))).toEqual([`${hash(to)}.json`])
-  }
-  expect(JSON.parse(fs.readFileSync(path.join(room, 'registry/migration.json'), 'utf8'))).toEqual({ sources: { [`worktree:${to}`]: { id: 'stable' } } })
-})
-
 it.runIf(process.platform !== 'win32')('serializes independent starter processes through real symlink aliases', async () => {
   const { current, before } = await fixture()
   const source = new URL('../src/gate.ts', import.meta.url).href
@@ -138,7 +100,7 @@ it('refuses copied confirmation for a symlink alias, then auto-updates path text
   expect(record(current).cloneId).toBe(before.cloneId)
   expect(fs.readdirSync(current).some(n => n.startsWith('room.copied-'))).toBe(false)
 })
-it('rebinds a case-only alias on a case-insensitive filesystem', async () => {
+it('updates a case-only alias on a case-insensitive filesystem', async () => {
   const { current, before } = await fixture()
   const old = current.replace('/new/', '/NEW/')
   fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: old }))
@@ -161,82 +123,6 @@ it('ignores a surviving ancestor shell but refuses a live positional host', asyn
   fs.writeFileSync(file, JSON.stringify({ chain: [{ pid: process.pid, startTime: '', executable: '' }] }))
   await expect(gate(current).repairLocation('copied')).rejects.toThrow('session host identity')
 })
-it.each(['generation', 'cloneId', 'archive', 'live'])('refuses %s journal evidence without mutation', async kind => {
-  const { current, before } = await fixture(true)
-  const aside = 'room.copied-1-abcdefabcdef'
-  const source = { ...before, ...(kind === 'generation' ? { generation: before.generation + 1 } : {}), ...(kind === 'cloneId' ? { cloneId: 'b'.repeat(32) } : {}) }
-  fs.writeFileSync(path.join(current, 'room-location-pending.json'), JSON.stringify({ v: 1, gate: source, current, copied: true, aside, fresh: { cloneId: "c".repeat(32), relocationNonce: "d".repeat(32) } }))
-  if (kind === 'archive') {
-    fs.mkdirSync(path.join(current, aside))
-    fs.writeFileSync(path.join(current, aside, 'storage-gate.json'), JSON.stringify({ ...before, cloneId: 'b'.repeat(32) }))
-  }
-  if (kind === 'live') fs.writeFileSync(path.join(current, 'room/live.json'), JSON.stringify({ pid: process.pid }))
-  await expect(gate(current).repairLocation('copied')).rejects.toThrow('repair-location')
-  expect(record(current)).toEqual(before)
-})
-it('replays an interrupted per-record rebind idempotently', async () => {
-  const { old, current, before } = await fixture()
-  const a = path.join(current, 'room/a.json'), b = path.join(current, 'room/b.json')
-  fs.writeFileSync(a, JSON.stringify({ cwd: path.dirname(old) }))
-  fs.writeFileSync(b, JSON.stringify({ cwd: path.dirname(old) }))
-  const rename = fs.renameSync
-  vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-    if (String(to) === b) throw new Error('interrupted record write')
-    return rename(from, to)
-  })
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('interrupted record write')
-  expect(JSON.parse(fs.readFileSync(a, 'utf8')).cwd).toBe(path.dirname(current))
-  vi.restoreAllMocks()
-  await gate(current).repairLocation()
-  for (const file of [a, b]) expect(JSON.parse(fs.readFileSync(file, 'utf8')).cwd).toBe(path.dirname(current))
-  expect(record(current).cloneId).toBe(before.cloneId)
-})
-it('rejects overlapping roots before journaling or rebinding', async () => {
-  const { current, before } = await fixture()
-  const old = path.join(path.dirname(path.dirname(current)), '.git')
-  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: old }))
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('overlapping relocation roots')
-  expect(fs.existsSync(path.join(current, 'room-location-pending.json'))).toBe(false)
-})
-
-it.each(['draining', 'staging', 'db-complete', 'active'])('refuses confirmation and journal replay in %s phase', async phase => {
-  const { current, before } = await fixture()
-  const source = { ...before, phase, generation: 2, drainingFrom: 1, owner: { instance: input().instance, token: 'owner' } }
-  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify(source))
-  for (const mode of ['moved', 'copied'] as const) await expect(gate(current).repairLocation(mode)).rejects.toThrow('legacy phase')
-  fs.writeFileSync(path.join(current, 'room-location-pending.json'), JSON.stringify({ v: 1, gate: before, current, copied: false }))
-  await expect(gate(current).repairLocation()).rejects.toThrow('stale or foreign')
-  expect(record(current)).toEqual(source)
-})
-it('refuses a live archived holder during replay', async () => {
-  const { current, before } = await fixture(true)
-  const aside = 'room.copied-1-abcdefabcdef'
-  fs.writeFileSync(path.join(current, 'room-location-pending.json'), JSON.stringify({ v: 1, gate: before, current, copied: true, aside, fresh: { cloneId: "c".repeat(32), relocationNonce: "d".repeat(32) } }))
-  fs.renameSync(path.join(current, 'room'), path.join(current, aside))
-  fs.writeFileSync(path.join(current, aside, 'live.json'), JSON.stringify({ pid: process.pid }))
-  await expect(gate(current).repairLocation('copied')).rejects.toThrow('live or unknown')
-  expect(fs.existsSync(path.join(current, 'room'))).toBe(false)
-})
-
-
-
-it.each([false, true])('blocks the legacy worker host, including archive replay=%s', async replay => {
-  const { current, before } = await fixture(true)
-  const aside = 'room.copied-1-abcdefabcdef'
-  let room = path.join(current, 'room')
-  if (replay) {
-    fs.writeFileSync(path.join(current, 'room-location-pending.json'), JSON.stringify({ v: 1, gate: before, current, copied: true, aside, fresh: { cloneId: "c".repeat(32), relocationNonce: "d".repeat(32) } }))
-    fs.renameSync(room, path.join(current, aside)); room = path.join(current, aside)
-  }
-  fs.writeFileSync(path.join(room, '1.report.json'), JSON.stringify({ run: 1, nonce: 'n', joinedAt: 1,
-    chain: [{ pid: 99999999, startTime: 'dead', executable: 'node' }, { pid: process.pid, startTime: 'host', executable: 'claude' }] }))
-  await expect(new FileStorageGate(current, { liveness: p => p.pid === process.pid ? 'alive' : 'dead' }).repairLocation('copied')).rejects.toThrow('live or unknown')
-})
-it.each([null, undefined])('refuses unverifiable worker host %s', async hostProcess => {
-  const { current } = await fixture()
-  fs.writeFileSync(path.join(current, 'room/1.report.json'), JSON.stringify({ chain: [input().instance], hostProcess }))
-  await expect(gate(current).repairLocation('copied')).rejects.toThrow('live or unknown')
-})
 it('refuses unknown record kinds even with dead pids', async () => {
   const { current } = await fixture()
   fs.writeFileSync(path.join(current, 'room/future.json'), JSON.stringify({ owner: input().instance }))
@@ -254,13 +140,6 @@ it('leaves unchanged location records and behavior intact', async () => {
   expect(fs.readFileSync(file, 'utf8')).toBe(text)
   await expect(gate(current).register(input())).resolves.toBeDefined()
 })
-it('refuses overlapping roots through a filesystem alias', async () => {
-  const { current, before } = await fixture()
-  const root = path.dirname(path.dirname(current)), alias = path.join(root, 'alias')
-  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir')
-  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: path.join(alias, '.git') }))
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('overlapping relocation roots')
-})
 it.runIf(process.platform === 'win32')('recognizes native junction aliases', async () => {
   const { old, current, before } = await fixture()
   fs.rmdirSync(path.dirname(old)); fs.symlinkSync(path.dirname(current), path.dirname(old), 'junction')
@@ -275,27 +154,6 @@ it.runIf(process.platform === 'win32')('recognizes native drive-letter case alia
   expect(record(current).cloneId).toBe(before.cloneId)
 })
 
-it.runIf(process.platform === 'win32')('refuses case-normalized overlapping roots on Windows', async () => {
-  const { current, before } = await fixture()
-  const old = path.join(path.dirname(path.dirname(current)).toUpperCase(), '.git')
-  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: old }))
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('overlapping relocation roots')
-})
-it('refuses overlapping roots after case normalization on a case-insensitive volume', async () => {
-  const { current, before } = await fixture()
-  const root = path.dirname(path.dirname(current)), variant = root.toUpperCase()
-  const real = fs.realpathSync.native
-  vi.spyOn(fs.realpathSync, 'native').mockImplementation(((p: fs.PathLike, ...args: unknown[]) =>
-    (real as Function)(String(p) === variant ? root : p, ...args)) as typeof fs.realpathSync)
-  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: path.join(variant, '.git') }))
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('overlapping relocation roots')
-})
-
-it('refuses a confirmed move when a distinct same-id original remains', async () => {
-  const { current, before } = await fixture(true)
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('evidence of a copy; use --confirm-copied')
-  expect(record(current)).toEqual(before)
-})
 it.each(['missing', 'same-id', 'different-id', 'unreadable'])('asks once for %s originals with exact runnable commands', async kind => {
   const { old, current, before } = await fixture(kind !== 'missing')
   if (kind === 'different-id') fs.writeFileSync(path.join(old, STORAGE_PATHS.gate), JSON.stringify({ ...before, cloneId: 'b'.repeat(32) }))
@@ -337,49 +195,6 @@ it.each(['dev', 'ino'])('does not collapse large bigint %s identities or fall ba
   expect(record(current)).toEqual(before)
 })
 
-it.each(['register', 'repair', 'foreign-clone', 'foreign-nonce', 'damaged-archive'])('recovers after fresh gate publication via %s, refusing foreign evidence', async route => {
-  const { current } = await fixture(true)
-  const journal = path.join(current, 'room-location-pending.json')
-  const unlink = fs.unlinkSync
-  vi.spyOn(fs, 'unlinkSync').mockImplementation(p => {
-    if (String(p) === journal) throw new Error('interrupted before journal removal')
-    unlink(p)
-  })
-  await expect(gate(current).repairLocation('copied')).rejects.toThrow('interrupted before journal removal')
-  vi.restoreAllMocks()
-  const fresh = record(current)
-  const intent = JSON.parse(fs.readFileSync(journal, 'utf8'))
-  expect(fresh).toMatchObject(intent.fresh)
-  if (route.startsWith('foreign')) {
-    fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...fresh,
-      [route === 'foreign-clone' ? 'cloneId' : 'relocationNonce']: 'e'.repeat(32) }))
-    await expect(gate(current).register(input())).rejects.toThrow('foreign gate')
-    expect(fs.existsSync(journal)).toBe(true)
-  } else if (route === 'damaged-archive') {
-    fs.writeFileSync(path.join(current, intent.aside, 'storage-gate.json'), '{}')
-    await expect(gate(current).repairLocation()).rejects.toThrow('archive source cannot be verified')
-    expect(fs.existsSync(journal)).toBe(true)
-  } else {
-    if (route === 'register') await gate(current).register(input())
-    else await gate(current).repairLocation()
-    expect(record(current)).toEqual(fresh)
-    expect(fs.existsSync(journal)).toBe(false)
-    expect(fs.readdirSync(current).filter(n => n.startsWith('room.copied-'))).toEqual([intent.aside])
-  }
-})
-
-async function interruptedCopy() {
-  const state = await fixture(true)
-  const rename = fs.renameSync
-  vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-    rename(from, to)
-    if (path.basename(String(to)).startsWith('room.copied-')) throw new Error('interrupted after archive rename')
-  })
-  await expect(gate(state.current).repairLocation('copied')).rejects.toThrow('interrupted after archive rename')
-  vi.restoreAllMocks()
-  return state
-}
-
 it.each(['source', 'bundle'])('recovers archive-rename interruption through the actual %s CLI entry and filesystem preflight', async route => {
   const { current } = await interruptedCopy()
   const entry = fileURLToPath(new URL(route === 'source' ? '../../room-mcp/src/offline/entry.ts' : '../../../plugins/room/server/room-state.mjs', import.meta.url))
@@ -404,11 +219,11 @@ it.each(['empty-preflight', 'dead-preflight', 'dead-temp', 'live-temp', 'live-pr
   if (['empty-preflight', 'dead-preflight', 'dead-temp'].includes(kind)) {
     await gate(current).repairLocation('copied')
     expect(record(current).commonDir).toBe(current)
-    expect(fs.readdirSync(room).sort()).toEqual(['location-notice.json', ...(kind.includes('preflight') ? ['preflight'] : []), 'storage-gate.json'])
+    expect(fs.readdirSync(room).sort()).toEqual([...(kind.includes('preflight') ? ['preflight'] : []), 'storage-gate.json'])
     if (kind.includes('preflight')) expect(fs.readdirSync(path.join(room, 'preflight'))).toEqual([])
   } else {
     await expect(gate(current).repairLocation('copied')).rejects.toThrow('destination is not empty')
-    expect(fs.existsSync(path.join(current, 'room-location-pending.json'))).toBe(true)
+    expect(fs.readdirSync(current).some(n => n.startsWith('room.copied-'))).toBe(true)
     expect(fs.existsSync(path.join(room, 'storage-gate.json'))).toBe(false)
   }
 })
@@ -445,86 +260,6 @@ it('retains the preflight parent checked by a concurrent starter', async () => {
 })
 
 
-it('validates unmappable review holds before journaling and allows confirmed copy afterward', async () => {
-  const { current, before } = await fixture()
-  const holds = path.join(current, 'room/registry/collection-reviews')
-  fs.mkdirSync(holds, { recursive: true })
-  fs.writeFileSync(path.join(holds, 'unknown.json'), '[{"owner":"reviewer"}]')
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('collection review destination cannot be proven')
-  expect(fs.existsSync(path.join(current, 'room-location-pending.json'))).toBe(false)
-  expect(record(current)).toEqual(before)
-  await gate(current).repairLocation('copied')
-  expect(record(current).cloneId).not.toBe(before.cloneId)
-})
-
-it('validates all lease targets before journaling or rewriting any record', async () => {
-  const { old, current } = await fixture()
-  const room = path.join(current, 'room'), publishers = path.join(room, 'publishers')
-  fs.mkdirSync(publishers)
-  const worktree = path.dirname(old)
-  for (const name of ['a', 'b']) fs.writeFileSync(path.join(publishers, name + '.json'), JSON.stringify({ worktree, holder: input().instance }))
-  const original = fs.readFileSync(path.join(publishers, 'a.json'), 'utf8')
-  await expect(gate(current).repairLocation('moved')).rejects.toThrow('lease relocation target already exists')
-  expect(fs.readFileSync(path.join(publishers, 'a.json'), 'utf8')).toBe(original)
-  expect(fs.existsSync(path.join(current, 'room-location-pending.json'))).toBe(false)
-})
-
-it.each(['move-intent', 'move-partial', 'move-published', 'copy-intent', 'copy-archived', 'copy-published', 'old-move'])('handles mode switch at %s', async stage => {
-  const { old, current, before } = await fixture()
-  const journal = path.join(current, 'room-location-pending.json')
-  const copied = stage.startsWith('copy')
-  fs.writeFileSync(path.join(current, 'room/a.json'), JSON.stringify({ cwd: path.dirname(old) }))
-  fs.writeFileSync(path.join(current, 'room/b.json'), JSON.stringify({ cwd: path.dirname(old) }))
-  const rename = fs.renameSync, unlink = fs.unlinkSync
-  vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-    if (stage.endsWith('intent') && String(to) === journal) { rename(from, to); throw new Error('stop') }
-    if (stage === 'move-partial' && String(to) === path.join(current, 'room/b.json')) throw new Error('stop')
-    rename(from, to)
-    if (stage === 'copy-archived' && path.basename(String(to)).startsWith('room.copied-')) throw new Error('stop')
-  })
-  vi.spyOn(fs, 'unlinkSync').mockImplementation(file => {
-    if (String(file) === journal) throw new Error('stop')
-    unlink(file)
-  })
-  await expect(gate(current).repairLocation(copied ? 'copied' : 'moved')).rejects.toThrow('stop')
-  vi.restoreAllMocks()
-  if (stage === 'old-move') {
-    fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify(before))
-    const intent = JSON.parse(fs.readFileSync(journal, 'utf8')); delete intent.sourceDigest
-    fs.writeFileSync(journal, JSON.stringify(intent))
-  }
-  const bytes = fs.readFileSync(journal, 'utf8')
-  const snapshot = () => fs.readdirSync(current, { recursive: true }).map(String).sort().map(name => {
-    const file = path.join(current, name); return [name, fs.statSync(file).isFile() ? fs.readFileSync(file).toString('base64') : null]
-  })
-  const untouched = snapshot()
-  const status = await gate(current).status()
-  expect(snapshot()).toEqual(untouched)
-  expect(status.refusal?.detail).toContain(`pending relocation requires recovery: ${copied ? 'copied' : 'moved'}`)
-  expect(status.refusal?.detail).toContain(`old path: ${old}; new path: ${current}`)
-  const stages: Record<string, string> = { 'move-intent': 'move source unchanged', 'move-partial': 'move records changed',
-    'move-published': 'move gate published', 'copy-intent': 'copy archive not yet renamed', 'copy-archived': 'copy archive renamed',
-    'copy-published': 'copy archive and fresh gate published', 'old-move': 'move progress cannot be verified (older journal)' }
-  expect(status.refusal?.detail).toContain(`stage: ${stages[stage]}`)
-  if (copied) expect(status.refusal?.detail).toContain(`archive: ${path.join(current, JSON.parse(bytes).aside)}`)
-  expect(status.refusal?.remedy).toContain(`repair-location --common-dir '${current}' --confirm-${copied ? 'copied' : 'moved'}`)
-  expect(status.refusal?.remedy).not.toContain('<plugin>')
-  expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
-  if (stage.endsWith('intent')) {
-    await gate(current).repairLocation(copied ? 'moved' : 'copied')
-    expect(fs.existsSync(journal)).toBe(false)
-    expect(record(current).cloneId === before.cloneId).toBe(copied)
-  } else {
-    const detail = stage === 'move-partial' ? 'move records changed' : stage === 'move-published' ? 'move gate published'
-      : stage === 'copy-archived' ? 'copy archive renamed' : stage === 'copy-published' ? 'copy archive and fresh gate published'
-      : 'move progress cannot be verified (older journal)'
-    await expect(gate(current).repairLocation(copied ? 'moved' : 'copied')).rejects.toThrow(detail)
-    expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
-    await gate(current).repairLocation(copied ? 'copied' : 'moved')
-    expect(fs.existsSync(journal)).toBe(false)
-  }
-})
-
 it('status leaves a same-directory alias untouched', async () => {
   const { old, current, before } = await fixture()
   fs.rmdirSync(path.dirname(old))
@@ -534,51 +269,132 @@ it('status leaves a same-directory alias untouched', async () => {
   expect(fs.existsSync(path.join(current, 'room-storage-location.guard'))).toBe(false)
 })
 
-it.each(['malformed', 'foreign', 'archive'])('status explains unverifiable %s journal without modifying it', async kind => {
-  const { current, before } = await fixture(true)
-  const journal = path.join(current, 'room-location-pending.json')
-  const aside = 'room.copied-1-abcdefabcdef'
-  const intent = { v: 1, gate: before, current: kind === 'foreign' ? '/foreign' : current, copied: true, aside,
-    fresh: { cloneId: 'c'.repeat(32), relocationNonce: 'd'.repeat(32) } }
-  fs.writeFileSync(journal, kind === 'malformed' ? '{broken' : JSON.stringify(intent))
-  if (kind === 'archive') { fs.mkdirSync(path.join(current, aside)); fs.writeFileSync(path.join(current, aside, 'storage-gate.json'), '{}') }
-  const bytes = fs.readFileSync(journal, 'utf8')
-  const status = await gate(current).status()
-  expect(status.refusal?.detail).toContain('pending relocation cannot be verified:')
-  expect(status.refusal?.detail).toContain(kind === 'archive' ? 'archive source cannot be verified' : kind === 'foreign' ? 'invalid relocation journal' : 'JSON')
-  expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
+
+it('moves clean state with only the gate bytes changed', async () => {
+  const { current, before } = await fixture()
+  const snapshot = () => fs.readdirSync(current, { recursive: true }).map(String).filter(n => fs.statSync(path.join(current, n)).isFile()).map(n => [n, fs.readFileSync(path.join(current, n), 'utf8')])
+  const prior = snapshot().filter(([n]) => n !== STORAGE_PATHS.gate)
+  await gate(current).repairLocation('moved')
+  expect(record(current)).toEqual({ ...before, commonDir: current })
+  expect(snapshot().filter(([n]) => n !== STORAGE_PATHS.gate)).toEqual(prior)
+})
+
+it('lists path-bearing records and review holds without changing them', async () => {
+  const { current, old, before } = await fixture()
+  const room = path.join(current, 'room')
+  fs.mkdirSync(path.join(room, 'registry/collection-reviews'), { recursive: true })
+  fs.writeFileSync(path.join(room, 'worker.json'), JSON.stringify({ dir: old, keptWorktree: old }))
+  fs.writeFileSync(path.join(room, 'registry/migration.json'), JSON.stringify({ sources: { [`worktree:${old}`]: {} } }))
+  fs.writeFileSync(path.join(room, 'registry/collection-reviews/hash.json'), '[{"owner":"reviewer"}]')
+  await expect(gate(current).repairLocation('moved')).rejects.toThrow('finish (collect or discard) your workers and release review holds, then rerun; remaining: registry/collection-reviews/hash.json, registry/migration.json, worker.json')
   expect(record(current)).toEqual(before)
 })
 
-it.each(['source', 'bundle'])('treats a symlinked temp ancestor consistently through %s CLI status and repair', async route => {
-  const { current, before } = await interruptedCopy()
-  const root = path.dirname(path.dirname(current)), alias = root + '-alias'
-  roots.push(alias)
-  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir')
-  const aliased = path.join(alias, 'new', '.git')
-  const journal = path.join(current, 'room-location-pending.json')
-  const intent = JSON.parse(fs.readFileSync(journal, 'utf8'))
-  // Simulate a journal from a writer using the alternate spelling, including its source.
-  intent.current = aliased
-  intent.gate.commonDir = path.join(alias, 'old', '.git')
-  fs.writeFileSync(journal, JSON.stringify(intent))
-  const bytes = fs.readFileSync(journal, 'utf8')
-  const entry = fileURLToPath(new URL(route === 'source' ? '../../room-mcp/src/offline/entry.ts' : '../../../plugins/room/server/room-state.mjs', import.meta.url))
-  const cli = (...args: string[]) => promisify(execFile)(process.execPath, ['--import', 'tsx', entry, ...args, '--common-dir', aliased], { timeout: 15000 })
-  await expect(cli('status', '--json')).rejects.toMatchObject({
-    code: 1, stdout: expect.stringContaining('pending relocation requires recovery: copied'),
+it.each(['marker', 'archive', 'fresh'])('recovers copy interrupted at %s', async step => {
+  const { current, before } = await fixture(true)
+  const rename = fs.renameSync, unlink = fs.unlinkSync
+  vi.spyOn(fs, 'renameSync').mockImplementation((a, b) => {
+    rename(a, b)
+    if (step === 'marker' && String(b).endsWith('copy-pending.json') || step === 'archive' && path.basename(String(b)).startsWith('room.copied-')) throw new Error('interrupted')
   })
-  expect(fs.readFileSync(journal, 'utf8')).toBe(bytes)
-  await cli('repair-location', '--confirm-copied')
-  const fresh = record(current)
-  expect(fresh.commonDir).toBe(fs.realpathSync.native(aliased))
-  expect(fresh.cloneId).not.toBe(before.cloneId)
-  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...fresh, commonDir: aliased }))
-  const status = JSON.parse((await cli('status', '--json')).stdout)
-  expect(status).toMatchObject({ maintenanceRequired: false, locationUpdate: { recorded: aliased, canonical: current } })
-  expect(status.refusal).toBeUndefined()
-  expect(record(current).commonDir).toBe(aliased)
-  expect((await cli('status')).stdout).toContain('same directory; canonical path update pending next registration')
-  await gate(aliased).register(input())
-  expect(record(current)).toEqual(fresh)
+  vi.spyOn(fs, 'unlinkSync').mockImplementation(p => {
+    if (step === 'fresh' && String(p).endsWith('copy-pending.json')) throw new Error('interrupted')
+    unlink(p)
+  })
+  await expect(gate(current).repairLocation('copied')).rejects.toThrow('interrupted')
+  vi.restoreAllMocks()
+  const status = await gate(current).status()
+  expect(status.refusal?.detail).toContain('pending copy repair')
+  await gate(current).repairLocation('copied')
+  expect(record(current).cloneId).not.toBe(before.cloneId)
+  expect(fs.readdirSync(current).filter(n => n.startsWith('room.copied-'))).toHaveLength(1)
+})
+
+it.each(['draining', 'staging', 'db-complete', 'active'])('refuses repair in %s phase', async phase => {
+  const { current, before } = await fixture()
+  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, phase, generation: 2, drainingFrom: 1, owner: { instance: input().instance, token: 'owner' } }))
+  for (const mode of ['moved', 'copied'] as const) await expect(gate(current).repairLocation(mode)).rejects.toThrow('legacy phase')
+})
+
+it.runIf(process.platform === 'win32')('recognises native Windows short and long directory spellings', async () => {
+  const { current, before } = await fixture()
+  const { stdout } = await promisify(execFile)('cmd.exe', ['/d', '/c', `for %I in ("${current}") do @echo %~sI`])
+  const short = stdout.trim()
+  const a = fs.statSync(short, { bigint: true }), b = fs.statSync(current, { bigint: true })
+  expect([a.dev, a.ino]).toEqual([b.dev, b.ino])
+  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ ...before, commonDir: short }))
+  await gate(current).repairLocation()
+  expect(record(current).commonDir).toBe(current)
+})
+
+async function interruptedCopy() {
+  const state = await fixture(true)
+  const rename = fs.renameSync
+  vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    rename(from, to)
+    if (path.basename(String(to)).startsWith('room.copied-')) throw new Error('interrupted after archive rename')
+  })
+  await expect(gate(state.current).repairLocation('copied')).rejects.toThrow('interrupted after archive rename')
+  vi.restoreAllMocks()
+  return state
+}
+
+it.each([null, undefined])('refuses unverifiable worker report host %s', async hostProcess => {
+  const { current } = await fixture()
+  fs.writeFileSync(path.join(current, 'room/1.report.json'), JSON.stringify({ chain: [input().instance], hostProcess }))
+  await expect(gate(current).repairLocation('copied')).rejects.toThrow('live or unknown')
+})
+it('uses worker report host fallback', async () => {
+  const { current } = await fixture()
+  fs.writeFileSync(path.join(current, 'room/1.report.json'), JSON.stringify({ chain: [input().instance, { ...input().instance, pid: process.pid }] }))
+  await expect(new FileStorageGate(current, { liveness: p => p.pid === process.pid ? 'alive' : 'dead' }).repairLocation('copied')).rejects.toThrow('live or unknown')
+})
+
+it.each(['ticket', 'guard', 'publisher'])('refuses a live %s holder in either repair mode', async kind => {
+  const { current } = await fixture()
+  const holder = { ...input().instance, pid: process.pid }
+  const file = kind === 'ticket' ? `room/storage-gate/tickets/${holder.nonce}.${'a'.repeat(32)}.json`
+    : kind === 'guard' ? 'room/some.guard' : 'room/publishers/key.json'
+  fs.mkdirSync(path.dirname(path.join(current, file)), { recursive: true })
+  fs.writeFileSync(path.join(current, file), JSON.stringify(kind === 'ticket' ? { identity: holder } : { holder }))
+  for (const mode of ['moved', 'copied'] as const)
+    await expect(new FileStorageGate(current, { liveness: p => p.pid === process.pid ? 'alive' : 'dead' }).repairLocation(mode)).rejects.toThrow('live or unknown')
+})
+
+it('does not overwrite a foreign fresh gate during interrupted copy recovery', async () => {
+  const { current } = await interruptedCopy()
+  fs.mkdirSync(path.join(current, 'room'))
+  fs.writeFileSync(path.join(current, STORAGE_PATHS.gate), JSON.stringify({ v: 1, cloneId: 'f'.repeat(32), commonDir: current,
+    generation: 1, phase: 'legacy', minReader: 1, minWriter: 1, updatedAt: 1 }))
+  const before = record(current)
+  await expect(gate(current).repairLocation('copied')).rejects.toThrow('foreign gate')
+  expect(record(current)).toEqual(before)
+})
+
+it('mentions Git repair for linked worktrees without touching their metadata', async () => {
+  const { current } = await fixture()
+  fs.mkdirSync(path.join(current, 'worktrees'))
+  const notice = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+  await gate(current).repairLocation('moved')
+  expect(notice).toHaveBeenCalledWith(expect.stringContaining('git worktree repair'))
+})
+
+it('permits empty review holds and path-free metadata', async () => {
+  const { current } = await fixture()
+  const holds = path.join(current, 'room/registry/collection-reviews')
+  fs.mkdirSync(holds, { recursive: true })
+  fs.writeFileSync(path.join(holds, 'old-path-hash.json'), '[]')
+  fs.writeFileSync(path.join(current, 'room/metadata.json'), '{"summary":"old path is historical text"}')
+  await gate(current).repairLocation('moved')
+  expect(fs.readFileSync(path.join(holds, 'old-path-hash.json'), 'utf8')).toBe('[]')
+})
+
+it.each(['worker', 'cutover', 'session'])('refuses remaining %s path state', async kind => {
+  const { current, old } = await fixture()
+  const file = kind === 'worker' ? 'registry/workers/retained.json' : kind === 'cutover' ? 'daemon-cutover.json' : 'sessions/old/session.json'
+  const value = kind === 'worker' ? { lead: { instance: input().instance }, runs: [], phase: 'active', dir: old, keptWorktree: old }
+    : kind === 'cutover' ? { clone: 'old-path-hash' } : { cwd: old, transcript_path: path.join(old, 'transcript'), chain: [{ ...input().instance, executable: 'claude' }] }
+  fs.mkdirSync(path.dirname(path.join(current, 'room', file)), { recursive: true })
+  fs.writeFileSync(path.join(current, 'room', file), JSON.stringify(value))
+  await expect(gate(current).repairLocation('moved')).rejects.toThrow(`remaining: ${file}`)
 })
