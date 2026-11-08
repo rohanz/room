@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.44
+
+- **Retired workers no longer keep conflict entries alive.** The hub keeps an ended worker's holder record as a name tombstone after the worker is collected or discarded (it rewrites the record whenever retirement deletes it), and participant views counted that tombstone as an offline participant. The lead's conflict checker therefore never dropped its slots against a retired worker: `room_state` listed "files that conflict with others' versions" for workers discarded days earlier, conflict notices kept firing for them, and a lead in this repository had accumulated 274 such slots against 126 retired workers. A holder whose worker id has no worker view is now not a visible participant; the checker drops those slots on its next pass and `room_state` stops listing them. Offline teammates and finished, uncollected workers stay visible as before.
+- Soak harness (`scripts/soak.mts`, daemon target): the observer now negotiates the local client contract with the daemon. Without it the daemon refused the observer socket (close 4406), the observer saw no bus traffic, and the report classified every message still owed at the stop as lost.
+
 ## 0.17.43
 
 - **Daemon starts no longer use a one-time ticket.** 0.17.41 had the launcher record a ticket in the clone's private Room state for its daemon child to consume. It guarded only someone starting Room's internal daemon program by hand with its internal flag, which is no stronger a boundary than Room's state files themselves. Every launcher still runs the cutover admission before spawning (a required argument), and `room-daemon.mjs` still refuses `start` and bare invocations and requires the launcher's internal `--startup-report` flag; `stop` is unchanged. An empty `room/admissions` folder left by 0.17.41 is unused and can be deleted.

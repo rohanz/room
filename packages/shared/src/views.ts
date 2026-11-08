@@ -48,11 +48,14 @@ export function participantsView(doc: RoomDoc, awareness: AwarenessView, now: nu
     const own = record?.holder ? presences.find(state => state.sessionId === record.holder?.sessionId) : undefined
     const fresh = !!own
     const observedMs = doc.expiry.get(name)?.observedMs ?? 0
+    // The hub keeps an ended worker holder as a name tombstone after retirement removed the worker's view
+    // (hub §4.4); the tombstone is not a participant, or the retired name would stay a neighbour forever.
+    const retired = !!record?.holder?.workerId && !doc.workerViews.has(record.holder.workerId)
     return {
       name,
       ...(record?.id?.kind ? { kind: record.id.kind } : presences[0]?.user?.kind ? { kind: presences[0].user.kind } : {}),
       fresh,
-      visible: fresh || (!!record && observedMs < ROOM_STALE_MS),
+      visible: fresh || (!!record && !retired && observedMs < ROOM_STALE_MS),
       ...(record?.holder ? { holder: record.holder } : {}),
       ...(record?.proj ? { projectedBy: record.proj.projectedBy } : {}),
       ...(typeof own?.idleMin === 'number' ? { idleMin: own.idleMin } : {}),

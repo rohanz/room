@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
 import { manifestKey } from './manifest.js'
+import { participantsView } from './views.js'
 import type { RetiredWorker, WorkerView } from './types.js'
 
 const ignore = () => {}
@@ -63,6 +64,25 @@ describe('retireWorker(id): retirement keyed by worker ID (registry §12)', () =
     room.retireWorker(r.id, r, ignore)
     expect(room.retiredWorkers()).toHaveLength(1)
     room.doc.destroy()
+  })
+
+  it('a retired worker whose ended holder the hub rewrote is no longer a visible participant', () => {
+    // The hub owns holder records and reasserts an ended lease's tombstone after retirement deletes it (hub §4.4),
+    // so the retired name must not count as a neighbour: its conflict slots were kept forever (2026-11-08).
+    const room = new RoomDoc(), r = record()
+    room.workerViews.set(r.id, view(r.id))
+    room.participants.set(`${r.name}\u0000holder`, holder(r.id))
+    room.retireWorker(r.id, r, ignore)
+    room.participants.set(`${r.name}\u0000holder`, { ...holder(r.id), ended: 'expired' })
+    const awareness = { getStates: () => new Map() }
+    expect(participantsView(room, awareness, 10).find(p => p.name === r.name)?.visible).toBe(false)
+    // A finished worker that still has its view, and an offline teammate (a holder with no worker id), stay visible.
+    const kept = record('w_kept', 'lead+kept')
+    room.workerViews.set(kept.id, view(kept.id, kept.name))
+    room.participants.set(`${kept.name}\u0000holder`, { ...holder(kept.id), ended: 'released' })
+    room.participants.set(`ada\u0000holder`, { ...holder(), ended: 'released' })
+    const visible = participantsView(room, awareness, 10).filter(p => p.visible).map(p => p.name)
+    expect(visible).toEqual(['ada', kept.name])
   })
 
   it('caps archive fields and drops oldest entries beyond 200', () => {
