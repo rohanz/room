@@ -835,8 +835,11 @@ function report(): void {
   // Every planned restart: when the command began and when /health answered again.
   const restarts = orch.filter(e => e.ev === 'restart-begin').map(b => ({ begin: b, healthy: orch.find(e => e.ev === 'restart-healthy' && e.t >= b.t) }))
     .filter((r): r is { begin: any; healthy: any } => !!r.healthy)
-  // A daemon's planned compaction restart (observer replaced with close 4409) is a restart window too.
-  const compactions = obs.filter(e => e.ev === 'observer-replaced').map(e => e.t as number)
+  // A daemon's planned compaction restart is a restart window too: the observer is replaced (close 4409), or, when the
+  // observer rejoined through a discovery-nonce refresh instead and saw no 4409, most of the roster goes stale together.
+  const staleTimes = Object.values(people).flatMap(evs => evs.filter(e => e.ev === 'stale').map(e => e.t as number)).sort((a, b) => a - b)
+  const rosterStale = staleTimes.filter(t => staleTimes.filter(x => Math.abs(x - t) <= 5_000).length >= Math.max(2, Math.ceil(ROSTER.length / 2)))
+  const compactions = [...obs.filter(e => e.ev === 'observer-replaced').map(e => e.t as number), ...rosterStale]
   const inRestart = (t: number, afterMs = 15_000) => restarts.some(r => t >= r.begin.t - 5_000 && t <= r.healthy.t + afterMs)
     || compactions.some(c => t >= c - 60_000 && t <= c + 60_000)
   const out: string[] = []
