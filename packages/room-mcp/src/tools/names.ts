@@ -26,12 +26,15 @@ export async function resolveDisplayedName(requested: string, context: NameConte
   const sessions = context.all()
   const known = new Set(sessions.flatMap(s => [...knownNames(s, context.presences)]))
   if (known.has(requested)) return { name: requested }
+  // A displayed name or owner label never means the caller: with two sessions under one owner, "<owner>'s agent"
+  // from the untagged one names the other (live check, 2026-11-08). Only the exact own name reaches the self-message error.
+  const self = caller.me.name
   const candidates = new Set<string>()
   const key = addressKey(requested)
-  for (const name of known) if (addressKey(name) === key) candidates.add(name)
+  for (const name of known) if (name !== self && addressKey(name) === key) candidates.add(name)
   for (const room of sessions) {
     for (const identity of [room.me, ...context.presences(room).map(p => p.user)]) {
-      if (addressKey(displayName(identity)) === key) candidates.add(identity.name)
+      if (identity.name !== self && addressKey(displayName(identity)) === key) candidates.add(identity.name)
     }
     for (const scope of room.room.allScopes()) {
       if (addressKey(displayName({ name: scope.by, kind: scope.byKind })) === key) candidates.add(scope.by)
@@ -48,7 +51,7 @@ export async function resolveDisplayedName(requested: string, context: NameConte
   // Presence is the active roster. Old scopes, mail and retired workers must not win this fallback.
   const active = new Map<string, Identity>()
   for (const room of sessions) for (const identity of [room.me, ...context.presences(room).map(p => p.user)]) {
-    if (identity.kind === 'agent') active.set(identity.name, identity)
+    if (identity.kind === 'agent' && identity.name !== self) active.set(identity.name, identity)
   }
   for (const room of sessions) for (const worker of room.room.acceptedWorkerViews()) {
     if (workerLive(worker.status) && !active.has(worker.name)) active.set(worker.name, { name: worker.name, kind: 'agent' })

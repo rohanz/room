@@ -3,6 +3,7 @@
 ## 0.17.45
 
 - **Retired workers' name tombstones expire.** The seven-day participant expiry skipped every holder that named a worker, so the tombstone the hub keeps for a collected or discarded worker outlived the worker for the life of the clone (126 of them here) and was pruned only at the hub's name cap. A worker holder whose worker view is gone now ages like a teammate's record and expires after seven days offline; a worker that still has its view (finished, uncollected) is still left to its projector.
+- **An owner label never names the caller.** With two sessions under one owner, `room_send(to: "<owner>'s agent")` from the untagged session resolved to itself and answered "you cannot message yourself" (live check, 2026-11-08). Displayed names and owner labels now exclude the caller, so the other session is meant; only the exact own name reaches that error.
 - **Stale local files are swept once an hour.** The hourly retention pass that already removes retired worker records now also removes publisher lease files whose holder process is dead and idle for an hour (21 of 23 in this clone were dead, the oldest from October), session cursor directories untouched for seven days (the participant expired at the same age), and atomic-write temporaries older than an hour under `room/relay` and `room/hub-leases` (6.8 MB of abandoned snapshots here). Unparsable files and holders of unknown liveness stay.
 
 ## 0.17.44

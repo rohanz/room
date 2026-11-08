@@ -43779,12 +43779,13 @@ async function resolveDisplayedName(requested, context2, caller) {
   const sessions = context2.all();
   const known = new Set(sessions.flatMap((s) => [...knownNames(s, context2.presences)]));
   if (known.has(requested)) return { name: requested };
+  const self = caller.me.name;
   const candidates = /* @__PURE__ */ new Set();
   const key2 = addressKey(requested);
-  for (const name of known) if (addressKey(name) === key2) candidates.add(name);
+  for (const name of known) if (name !== self && addressKey(name) === key2) candidates.add(name);
   for (const room of sessions) {
     for (const identity4 of [room.me, ...context2.presences(room).map((p) => p.user)]) {
-      if (addressKey(displayName(identity4)) === key2) candidates.add(identity4.name);
+      if (identity4.name !== self && addressKey(displayName(identity4)) === key2) candidates.add(identity4.name);
     }
     for (const scope of room.room.allScopes()) {
       if (addressKey(displayName({ name: scope.by, kind: scope.byKind })) === key2) candidates.add(scope.by);
@@ -43800,7 +43801,7 @@ async function resolveDisplayedName(requested, context2, caller) {
   const owner = key2.endsWith("'s agent") ? key2.slice(0, -"'s agent".length) : key2;
   const active = /* @__PURE__ */ new Map();
   for (const room of sessions) for (const identity4 of [room.me, ...context2.presences(room).map((p) => p.user)]) {
-    if (identity4.kind === "agent") active.set(identity4.name, identity4);
+    if (identity4.kind === "agent" && identity4.name !== self) active.set(identity4.name, identity4);
   }
   for (const room of sessions) for (const worker of room.room.acceptedWorkerViews()) {
     if (workerLive(worker.status) && !active.has(worker.name)) active.set(worker.name, { name: worker.name, kind: "agent" });
