@@ -1,4 +1,4 @@
-// Soak test of a Room server: simulated participants in two synthetic repos against one server for hours.
+// Soak test of a Room server or local daemon: simulated participants in two synthetic repos against one server for hours.
 //
 // Usage (from the repo root):
 //   npx tsx scripts/soak.mts run [--minutes 180] [--restart-at 90[,480]] [--participants 8]   # the soak (orchestrator)
@@ -7,6 +7,19 @@
 //   npx tsx scripts/soak.mts metrics                                                  # one server memory/CPU sample
 //   npx tsx scripts/soak.mts structs                                                  # Yjs struct counts of both rooms (observer login)
 //
+// Targets: SOAK_TARGET=team (default), with SOAK_LOCAL=1 for a source team server;
+//          SOAK_TARGET=daemon for one synthetic clone with linked participant worktrees.
+// Daemon mode uses source joinSession/createTools, no logins/room_create/Fly; restart-at calls
+// stopLocalDaemon (daemon-bin.ts stop --common-dir), and participant recovery starts the replacement.
+// No idle gaps are inserted. SOAK_COMPACT_MIN_DELETED also reaches the daemon as ROOM_COMPACT_MIN_DELETED.
+// Samples include daemon PID/RSS/CPU/fds, participant RSS, room subtree sizes, tool p50/p95,
+// and observer structs/deleted. Growth analysis reuses the local prototype: first/last thirds,
+// OLS after first-third warm-up, both later means rising; hourly threshold max(10% initial mean,
+// 1 MiB bytes, 2 counts, 10 ms latency, 1 CPU point). Requires >=9 samples spanning >=30 min.
+// GROWING exits 1; failed/incomplete exits 2; short smokes warn about insufficient data.
+// Use a fresh SOAK_DIR. Exit/signals stop children/server/daemon and remove synthetic work;
+// logs/events/report survive. If daemon cleanup cannot be verified, work is retained for inspection.
+// Example: SOAK_TARGET=daemon SOAK_SAMPLE_MIN=.25 SOAK_DIR=/tmp/room-soak-daemon npx tsx scripts/soak.mts run --minutes 3 --restart-at 1.5 --post-idle 0
 // Env: SOAK_SERVER (default https://room-rohanz-staging.fly.dev), SOAK_DIR (default /tmp/room-soak),
 //      SOAK_FLY_APP / SOAK_FLY_MACHINE (metrics over `flyctl ssh console`, read-only; the single restart at
 //      --restart-at uses `flyctl machine restart`). --restart-at takes a comma list of minutes (0 skips restarts); SOAK_FLY_APP= skips Fly.
@@ -29,23 +42,28 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { setTimeout as delay } from 'node:timers/promises'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 
 const run = promisify(execFile)
-const LOCAL = process.env.SOAK_LOCAL === '1'
+const DAEMON = process.env.SOAK_TARGET === 'daemon'
+if (process.env.SOAK_TARGET && !['daemon', 'team'].includes(process.env.SOAK_TARGET)) throw new Error('SOAK_TARGET must be team or daemon')
+const LOCAL = !DAEMON && process.env.SOAK_LOCAL === '1'
 const LOCAL_PORT = Number(process.env.SOAK_LOCAL_PORT ?? 1251)
 const HTTP = (LOCAL ? `http://127.0.0.1:${LOCAL_PORT}` : process.env.SOAK_SERVER ?? 'https://room-rohanz-staging.fly.dev').replace(/\/+$/, '')
 const WS = HTTP.replace(/^http/, 'ws')
 const DIR = process.env.SOAK_DIR ?? '/tmp/room-soak'
-const APP = LOCAL ? '' : process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
+const APP = LOCAL || DAEMON ? '' : process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
 const SAMPLE_MIN = Number(process.env.SOAK_SAMPLE_MIN ?? 10)
 const MACHINE = process.env.SOAK_FLY_MACHINE ?? '2879590f442648'
 if (APP === 'room-rohanz') throw new Error('refusing to run against the production app room-rohanz')
 if (!/^\/tmp\/|room-soak/.test(DIR)) throw new Error(`refusing SOAK_DIR ${DIR}: must be under /tmp or contain room-soak`)
 const EVENTS = path.join(DIR, 'events'), CREDS = path.join(DIR, 'creds'), WORK = path.join(DIR, 'work'), LOGS = path.join(DIR, 'logs')
 
-const REPOS = { alpha: 'github.com/soak/alpha', beta: 'github.com/soak/beta' } as const
+const COMMON = path.join(WORK, 'daemon-src', '.git')
+const REPOS = { alpha: DAEMON ? 'local/daemon-src' : 'github.com/soak/alpha', beta: DAEMON ? 'local/daemon-src' : 'github.com/soak/beta' }
+const roomsForTarget = () => [...new Set(Object.values(REPOS))]
 type RepoKey = keyof typeof REPOS
 const ROSTER: { name: string; repo: RepoKey; branch: string }[] = [
   { name: 'soak-a', repo: 'alpha', branch: 'main' }, { name: 'soak-b', repo: 'alpha', branch: 'main' },
@@ -92,7 +110,16 @@ function pyModule(i: number, lines: number): string {
   return out.join('\n') + '\n'
 }
 
-async function setupRepos(): Promise<void> {
+async function setupRepos(count: number): Promise<void> {
+  if (DAEMON) {
+    const src = path.dirname(COMMON)
+    fs.mkdirSync(path.join(src, 'app'), { recursive: true })
+    for (let i = 0; i < 12; i++) fs.writeFileSync(path.join(src, 'app', `mod_${i}.py`), pyModule(i, 180))
+    await git(src, 'init', '-q', '-b', 'main'); await git(src, 'add', '-A')
+    await git(src, '-c', 'user.email=soak@room', '-c', 'user.name=soak', 'commit', '-qm', 'synthetic daemon soak')
+    for (const p of ROSTER.slice(0, count)) await git(src, 'worktree', 'add', '-q', '-b', p.name, path.join(WORK, p.name))
+    return
+  }
   for (const repo of Object.keys(REPOS) as RepoKey[]) {
     const src = path.join(WORK, `${repo}-src`), bare = path.join(WORK, `${repo}.git`)
     if (!fs.existsSync(bare)) {
@@ -126,28 +153,33 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
   const { joinSession, leaveSession, whenStale } = await import('../packages/room-mcp/src/session.js')
   const { StaleReplacement } = await import('../packages/room-mcp/src/compacted.js')
   const { createTools } = await import('../packages/room-mcp/src/tools.js')
-  const { configureCredentials, setCredential } = await import('../packages/room-mcp/src/credentials.js')
+  const { setCredential } = await import('../packages/room-mcp/src/credentials.js')
   const emit = emitter(path.join(EVENTS, `${name}.jsonl`))
   const dir = path.join(WORK, name)
-  const { session: cred } = JSON.parse(fs.readFileSync(path.join(CREDS, `${name}.json`), 'utf8'))
+  const { session: cred } = DAEMON ? { session: '' } : JSON.parse(fs.readFileSync(path.join(CREDS, `${name}.json`), 'utf8'))
   // Always an explicit file under SOAK_DIR: joinSession re-configures credentials from its options.
   const credentialsPath = path.join(CREDS, `${name}.credentials.json`)
-  configureCredentials(credentialsPath)
-  setCredential(WS, { session: cred, login: name, at: Date.now() })
-  const peers = ROSTER.slice(0, count).filter(p => p.repo === repo && p.name !== name).map(p => p.name)
+  if (!DAEMON) setCredential(credentialsPath, WS, { session: cred, login: name, at: Date.now() })
+  const peers = ROSTER.slice(0, count).filter(p => (DAEMON || p.repo === repo) && p.name !== name).map(p => p.name)
   const log = (line: string) => { if (/error|fail|refus|lost|stale|paused|warn/i.test(line)) emit({ ev: 'log', line: line.slice(0, 300) }) }
   let s: any, tools: any, stopping = false, leaving = false
   // Neighbours in a room share a file, so claims overlap someone's scope and are really taken.
-  const idx = ROSTER.filter(p => p.repo === repo).findIndex(p => p.name === name)
+  const idx = ROSTER.filter(p => DAEMON || p.repo === repo).findIndex(p => p.name === name)
   const myFiles = () => [`app/mod_${idx % 4}.py`, `app/mod_${(idx + 1) % 4}.py`]
 
   const join = async (why: string) => {
     const t0 = Date.now()
     for (let attempt = 1; ; attempt++) {
-      try { s = await joinSession({ dir, server: WS, credentialsPath, connectTimeoutMs: 30_000, log }); break }
+      try { s = await joinSession({ dir, server: DAEMON ? 'local' : WS, ...(DAEMON ? { name } : {}), credentialsPath, connectTimeoutMs: 30_000, log }); break }
       catch (e) { emit({ ev: 'join-failed', why, attempt, error: String(e).slice(0, 300) }); if (stopping) return; await sleep(10_000) }
     }
     tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: dir, log })
+    const call = tools.call.bind(tools)
+    tools.call = async (tool: string, args: unknown) => {
+      const started = performance.now()
+      try { return await call(tool, args) }
+      finally { emit({ ev: 'latency', tool, ms: performance.now() - started }) }
+    }
     // As room-mcp does for every joined session: the hooks bridge and the conflict watcher (claims and merge
     // conflicts, the room's `conflicts` slots). Without it the load has no conflict detection at all.
     tools.attachHooks(s)
@@ -309,6 +341,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
   // One leave-and-rejoin under the same name, anywhere in the run but away from the hub restarts.
   let leaveAt = jitter(25, Math.max(60, Math.min(minutes - 20, 150 + (minutes - 180)))) * min
   for (const r of restarts) if (Math.abs(leaveAt - r * min) < 8 * min) leaveAt += 16 * min
+  if (minutes < 30) leaveAt = minutes * .35 * min
   setTimeout(async () => {
     while (replacing && !stopping) await sleep(1_000)
     if (stopping) return
@@ -368,7 +401,8 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
   let doc: Y.Doc, rd: InstanceType<typeof RoomDoc>, provider: WebsocketProvider
   const connect = () => {
     doc = new Y.Doc(); rd = new RoomDoc(doc)
-    provider = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, ...roomConnection(doc) })
+    const info = DAEMON ? discovery() : undefined
+    provider = new WebsocketProvider(info ? `ws://127.0.0.1:${info.port}` : WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket(info ? { key: info.key } : { session }) as any, ...roomConnection(doc) })
     provider.awareness.setLocalState(null)
     const current = rd
     rd.bus.observe(() => { for (const m of current.messages()) if (typeof m.seq === 'number' && seen.get(m.id) !== m.seq) { seen.set(m.id, m.seq); emit({ ev: 'bus', room, id: m.id, seq: m.seq, from: m.from, type: m.type }) } })
@@ -381,6 +415,11 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
     })
   }
   connect()
+  let nonce = DAEMON ? discovery()?.nonce : undefined
+  const refresh = DAEMON ? setInterval(() => {
+    const next = discovery()?.nonce
+    if (next && next !== nonce) { nonce = next; provider.destroy(); doc.destroy(); connect() }
+  }, 1000) : undefined
   let last = { structs: 0, deleted: 0 }
   const sample = () => {
     const names = new Set<string>()
@@ -396,7 +435,133 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
       structs: history.structs, deleted: history.deleted, generation: docGeneration(doc) ?? '0',
       hubSeq: meta.get('hubSeq'), hubEpoch: meta.get('hubEpoch'), hubIncarnation: meta.get('hubIncarnation') })
   }
-  return { sample, history: () => last, stop: () => { provider.destroy(); doc.destroy() } }
+  return { sample, history: () => last, stop: () => { clearInterval(refresh); provider.destroy(); doc.destroy() } }
+}
+
+
+// Local daemon control uses the same source function as daemon-bin.ts stop --common-dir.
+function discovery(): { pid: number; port: number; nonce: string; key: string } | undefined {
+  try { return JSON.parse(fs.readFileSync(path.join(COMMON, 'room/relay.json'), 'utf8')) } catch { return undefined }
+}
+const healthURL = () => DAEMON ? `http://127.0.0.1:${discovery()?.port ?? 0}` : HTTP
+async function stopDaemon() {
+  const { stopLocalDaemon } = await import('../packages/relay/src/daemon.js')
+  await stopLocalDaemon(COMMON)
+}
+async function cleanupDaemon() {
+  // Check for startup contenders as well as the published daemon before removing its repo.
+  const rows = (await run('ps', ['-ax', '-o', 'pid=,command='], { timeout: 5000 })).stdout.split('\n')
+  const pids = rows.flatMap(line => {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line)
+    return m && m[2].includes(COMMON) && /daemon-bin.ts|room-daemon.mjs/.test(m[2]) ? [Number(m[1])] : []
+  })
+  if (discovery()) await stopDaemon()
+  for (const pid of pids) {
+    try {
+      const command = (await run('ps', ['-p', String(pid), '-o', 'command='])).stdout
+      if (command.includes(COMMON) && /daemon-bin.ts|room-daemon.mjs/.test(command)) {
+        process.kill(pid, 'SIGTERM')
+        throw new Error(`daemon startup contender ${pid} still present; retained ${WORK}, retry cleanup`)
+      }
+    } catch (e) { if ((e as { code?: unknown }).code !== 1) throw e }
+  }
+}
+const cpu = new Map<number, { t: number; seconds: number }>()
+  function disk(dir: string): { files: number; dirs: number; bytes: number } {
+    const result = { files: 0, dirs: 0, bytes: 0 }
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        try {
+          const file = path.join(dir, name), st = fs.lstatSync(file)
+          if (st.isDirectory()) { const d = disk(file); result.dirs += 1 + d.dirs; result.files += d.files; result.bytes += d.bytes }
+          else { result.files++; result.bytes += st.size } // never follow symlinks
+        } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+      }
+    } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+    return result
+  }
+  async function processStats(pid: number, role: string) {
+    try {
+      const raw = (await run('ps', ['-p', String(pid), '-o', 'rss=,time='], { timeout: 5000 })).stdout.trim().split(/\s+/)
+      const time = raw[1].split('-'), days = time.length === 2 ? Number(time.shift()) : 0
+      const seconds = days * 86400 + time[0].split(':').reduce((s, v) => s * 60 + Number(v), 0)
+      let fds: number | null = null
+      try { fds = fs.readdirSync(`/proc/${pid}/fd`).length } catch {
+        try { fds = (await run('lsof', ['-nP', '-a', '-p', String(pid), '-Ff'], { timeout: 5000 })).stdout.split('\n').filter(l => /^f\d/.test(l)).length } catch { /* unavailable */ }
+      }
+      const prev = cpu.get(pid), t = Date.now(); cpu.set(pid, { t, seconds })
+      return { pid, role, rssBytes: Number(raw[0]) * 1024, cpuSeconds: seconds, fds,
+        cpuPercent: prev && seconds >= prev.seconds ? (seconds - prev.seconds) / (t - prev.t) * 100000 : null }
+    } catch (e) {
+      // ps exits 1 for a vanished PID; a denied/missing sampler is a run failure.
+      if ((e as { code?: unknown }).code === 1) return null
+      throw e
+    }
+  }
+
+let daemonPeak = { nonce: '', rssKb: 0 }
+async function daemonMetrics(): Promise<Record<string, number> | { error: string }> {
+  const info = discovery()
+  if (!info) return { error: 'daemon discovery unavailable' }
+  if (daemonPeak.nonce !== info.nonce) { daemonPeak = { nonce: info.nonce, rssKb: 0 }; cpu.delete(info.pid) }
+  const previous = cpu.get(info.pid)
+  const stats = await processStats(info.pid, 'daemon')
+  if (previous) cpu.set(info.pid, previous); else cpu.delete(info.pid)
+  if (stats) daemonPeak.rssKb = Math.max(daemonPeak.rssKb, stats.rssBytes / 1024)
+  return stats ? { pid: info.pid, rssKb: stats.rssBytes / 1024, cpuTicks: stats.cpuSeconds * 100, hwmKb: daemonPeak.rssKb } : { error: 'daemon exited during sample' }
+}
+let lastLatencySample = 0
+let previousServerSample: { t: number; pid: number; ticks: number; uptime: number } | undefined
+async function sampleGrowth(children: Map<string, ChildProcess>) {
+  const t = Date.now(), metrics: Record<string, number> = {}, latency: Record<string, unknown> = {}, trees: Record<string, unknown> = {}
+  const info = DAEMON ? discovery() : undefined
+  const processes = (await Promise.all([
+    ...(info ? [processStats(info.pid, 'daemon')] : []),
+    ...[...children.values()].filter(c => c.pid && c.exitCode === null && c.signalCode === null).map(c => processStats(c.pid!, 'participant')),
+  ])).filter(p => p !== null)
+  for (const pid of cpu.keys()) if (!processes.some(p => p.pid === pid)) cpu.delete(pid)
+  for (const role of ['daemon', 'participant']) for (const key of ['rssBytes', 'fds', 'cpuPercent'] as const) {
+    const values = processes.filter(p => p.role === role).map(p => p[key]).filter((v): v is number => v !== null)
+    if (values.length) {
+      metrics[`${role}.${key}.mean`] = values.reduce((a, b) => a + b, 0) / values.length
+      metrics[`${role}.${key}.max`] = Math.max(...values)
+    }
+  }
+  if (DAEMON) {
+    const room = path.join(COMMON, 'room')
+    const dirs = new Set(['registry', 'sessions', 'logs', 'preview', 'previews'])
+    for (const name of fs.readdirSync(room)) if (fs.lstatSync(path.join(room, name)).isDirectory()) dirs.add(name)
+    for (const [name, dir] of [['room', room], ...[...dirs].map(n => [`room/${n}`, path.join(room, n)])]) {
+      const d = disk(dir); trees[name] = d
+      for (const [k, v] of Object.entries(d)) metrics[`${name}.${k === 'bytes' ? 'Bytes' : k}`] = v
+    }
+  }
+  const timings: Record<string, number[]> = {}
+  for (const name of children.keys()) for (const e of readEvents(path.join(EVENTS, `${name}.jsonl`))) {
+    if (e.ev === 'latency' && e.t > lastLatencySample && e.t <= t) (timings[e.tool] ??= []).push(e.ms)
+  }
+  lastLatencySample = t
+  for (const [name, values] of Object.entries(timings)) {
+    values.sort((a, b) => a - b)
+    const p50 = values[Math.ceil(values.length * .5) - 1], p95 = values[Math.ceil(values.length * .95) - 1]
+    latency[name] = { count: values.length, p50, p95 }
+    metrics[`${name}.p50Ms`] = p50; metrics[`${name}.p95Ms`] = p95
+  }
+  const rooms = readEvents(path.join(EVENTS, 'observer.jsonl'))
+  for (const room of roomsForTarget()) {
+    const last = rooms.filter(e => e.ev === 'room' && e.room === room && e.synced).at(-1)
+    if (last) for (const key of ['structs', 'deleted', 'docBytes']) metrics[`${room}.${key}`] = last[key]
+  }
+  if (!DAEMON) {
+    const m = await metricsNow()
+    if ('error' in m) throw new Error(String(m.error))
+    metrics['server.rssBytes'] = m.rssKb * 1024
+    metrics['server.dataBytes'] = m.dataKb * 1024
+    const prev = previousServerSample
+    if (prev && prev.pid === m.pid && m.uptimeS >= prev.uptime && m.cpuTicks >= prev.ticks) metrics['server.cpuPercent'] = (m.cpuTicks - prev.ticks) / (t - prev.t) * 1000
+    previousServerSample = { t, pid: m.pid, ticks: m.cpuTicks, uptime: m.uptimeS }
+  }
+  emitter(path.join(EVENTS, 'orchestrator.jsonl'))({ ev: 'growth-sample', t, metrics, processes, trees, latency, daemonNonce: info?.nonce })
 }
 
 // ---------------------------------------------------------------- local server (SOAK_LOCAL=1): run, restart, sample
@@ -456,114 +621,161 @@ function localLogs(file: string): { lines: number; errors: string[] } {
   fs.appendFileSync(file, fresh.join('\n') + (fresh.length ? '\n' : ''))
   return { lines: fresh.length, errors: fresh.filter(l => /\b(error|exception|uncaught|fatal|out of memory|oom|killed|refused|failed|warn(ing)?)\b/i.test(l)) }
 }
-const metricsNow = () => LOCAL ? localMetrics() : flyMetrics()
-const logsSince = (file: string, since: number) => LOCAL ? Promise.resolve(localLogs(file)) : flyLogs(file, since)
+const metricsNow = () => DAEMON ? daemonMetrics() : LOCAL ? localMetrics() : flyMetrics()
+const logsSince = (file: string, since: number) => DAEMON ? Promise.resolve({ lines: 0, errors: [] as string[] }) : LOCAL ? Promise.resolve(localLogs(file)) : flyLogs(file, since)
 
 async function orchestrate(minutes: number, restarts: number[], count: number, postIdle: number): Promise<void> {
+  if (!Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(SAMPLE_MIN) || SAMPLE_MIN <= 0 || !Number.isInteger(count) || count < 2 || count > ROSTER.length) throw new Error('minutes/sample interval must be positive; participants must be 2..8')
   fs.mkdirSync(EVENTS, { recursive: true }); fs.mkdirSync(LOGS, { recursive: true })
   const emit = emitter(path.join(EVENTS, 'orchestrator.jsonl'))
-  if (LOCAL) await startLocalServer()
-  const health = await fetch(`${HTTP}/health`).then(r => r.json()) as { hub?: number }
-  const cfg = await fetch(`${HTTP}/auth/config`).then(r => r.json()) as { fake?: boolean }
-  if (health.hub !== 1 || !cfg.fake) throw new Error(`${HTTP} must run a 0.17 hub with the fake issuer (health ${JSON.stringify(health)})`)
-  await setupRepos()
-  const roster = ROSTER.slice(0, count)
-  const sessions: Record<string, string> = {}
-  for (const p of [...roster.map(p => p.name), 'soak-observer']) sessions[p] = await fakeLogin(p)
-  for (const room of Object.values(REPOS)) await openRoom(room, sessions['soak-observer'])
-  // The inventory needs ROOM_ADMINS; record whether this server lets the observer read it.
-  const inv = await fetch(`${HTTP}/admin/inventory`, { headers: { authorization: `Bearer ${sessions['soak-observer']}` } })
-  emit({ ev: 'inventory-probe', status: inv.status, body: (await inv.text()).slice(0, 200) })
-  const idle = await metricsNow()
-  emit({ ev: 'metrics', phase: 'pre-soak idle', ...idle })
-
-  const t0 = Date.now()
-  emit({ ev: 'start', minutes, restarts, participants: roster.map(p => p.name), server: HTTP })
   const children = new Map<string, ChildProcess>()
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ROOM_|CLAUDE_|CODEX_)/.test(k)))
-  for (const p of roster) {
-    const out = fs.openSync(path.join(LOGS, `${p.name}.log`), 'a')
-    const child = spawn(process.execPath, [...process.execArgv, new URL(import.meta.url).pathname, 'participant', p.name, p.repo, restarts.join(','), String(count), String(minutes)],
-      { env: { ...env, GIT_TERMINAL_PROMPT: '0', SOAK_DIR: DIR, SOAK_SERVER: HTTP }, stdio: ['ignore', out, out] })
-    child.on('exit', (code, signal) => emit({ ev: 'child-exit', name: p.name, code, signal }))
-    children.set(p.name, child)
-    await sleep(jitter(1_000, 4_000))
-  }
-  const observers = await Promise.all(Object.values(REPOS).map(room => observer(room, sessions['soak-observer'], emitter(path.join(EVENTS, 'observer.jsonl')))))
-  const obsTimer = setInterval(() => observers.forEach(o => o.sample()), Math.min(30_000, SAMPLE_MIN * 60_000))
-  const healthTimer = setInterval(async () => {
-    const t = Date.now()
-    try { const r = await fetch(`${HTTP}/health`, { signal: AbortSignal.timeout(8_000) }); emit({ ev: 'health', status: r.status, ms: Date.now() - t }) }
-    catch (e) { emit({ ev: 'health', status: 0, ms: Date.now() - t, error: String(e).slice(0, 120) }) }
-  }, 10_000)
-  const logFile = path.join(DIR, 'fly-logs.txt')
-  // One `flyctl logs --no-tail` returns only the last ~100 lines, so poll every minute and report per sample.
-  let pending = { lines: 0, errors: [] as string[] }
-  const pollLogs = async () => { const l = await logsSince(logFile, t0); pending = { lines: pending.lines + l.lines, errors: [...pending.errors, ...l.errors] } }
-  const logTimer = setInterval(() => void pollLogs(), 60_000)
-  const pendingRestarts = APP || LOCAL ? restarts.filter(r => r > 0).sort((a, b) => a - b) : []
-  // SOAK_RESTART_WHEN_DELETED=N: also restart once either room's observed deleted structs reach N, so restarts
-  // compact at the server's real threshold whatever the rate. At most SOAK_RESTART_MAX (default 3) such
-  // restarts, at least SOAK_RESTART_GAP_MIN (default 30) apart, none in the last 15 minutes.
-  const whenDeleted = Number(process.env.SOAK_RESTART_WHEN_DELETED ?? 0)
-  const restartMax = Number(process.env.SOAK_RESTART_MAX ?? 3), restartGap = Number(process.env.SOAK_RESTART_GAP_MIN ?? 30) * 60_000
-  let lastRestart = t0, adaptive = 0
-  const restartDue = () => {
-    if (pendingRestarts.length && Date.now() >= t0 + pendingRestarts[0] * 60_000) { pendingRestarts.shift(); return 'scheduled' }
-    if (!whenDeleted || adaptive >= restartMax || Date.now() - lastRestart < restartGap || Date.now() > t0 + (minutes - 15) * 60_000) return undefined
-    observers.forEach(o => o.sample())
-    const max = Math.max(...observers.map(o => o.history().deleted))
-    if (max < whenDeleted) return undefined
-    adaptive++
-    return `deleted ${max} >= ${whenDeleted}`
-  }
-  for (let tick = 1; Date.now() - t0 < minutes * 60_000; tick++) {
-    const next = t0 + tick * SAMPLE_MIN * 60_000
-    while (Date.now() < Math.min(next, t0 + minutes * 60_000)) {
-      const why = (APP || LOCAL) ? restartDue() : undefined
-      if (why) {
-        lastRestart = Date.now()
-        observers.forEach(o => o.sample())
-        emit({ ev: 'metrics', phase: 'before restart', ...await metricsNow() })
-        const r0 = Date.now()
-        emit({ ev: 'restart-begin', why })
-        try {
-          if (LOCAL) { await stopLocalServer(); await startLocalServer() }
-          else await run('flyctl', ['machine', 'restart', MACHINE, '-a', APP], { timeout: 300_000 })
-          emit({ ev: 'restart-command-done', ms: Date.now() - r0 })
-        }
-        catch (e) { emit({ ev: 'restart-command-failed', error: String(e).slice(0, 300) }) }
-        while (Date.now() - r0 < 300_000) {
-          try { if ((await fetch(`${HTTP}/health`, { signal: AbortSignal.timeout(3_000) })).ok) break } catch { /* down */ }
-          await sleep(500)
-        }
-        emit({ ev: 'restart-healthy', ms: Date.now() - r0 })
-        emit({ ev: 'metrics', phase: 'after restart', ...await metricsNow() })
-      }
-      await sleep(5_000)
+  const observers: Awaited<ReturnType<typeof observer>>[] = []
+  const timers: ReturnType<typeof setInterval>[] = []
+  const abort = new AbortController()
+  const pause = (ms: number) => delay(ms, undefined, { signal: abort.signal })
+  const interrupt = () => abort.abort(new Error('interrupted by signal'))
+  process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt)
+  let ownWork = false
+  try {
+    if (fs.existsSync(WORK)) throw new Error(`refusing existing soak work directory: ${WORK}; use a fresh SOAK_DIR`)
+    ownWork = true
+    if (LOCAL) await startLocalServer()
+    if (!DAEMON) {
+    const health = await fetch(`${HTTP}/health`).then(r => r.json()) as { hub?: number }
+    const cfg = await fetch(`${HTTP}/auth/config`).then(r => r.json()) as { fake?: boolean }
+    if (health.hub !== 1 || !cfg.fake) throw new Error(`${HTTP} must run a 0.17 hub with the fake issuer (health ${JSON.stringify(health)})`)
     }
+    await setupRepos(count)
+    const roster = ROSTER.slice(0, count)
+    const sessions: Record<string, string> = {}
+    if (!DAEMON) {
+    for (const p of [...roster.map(p => p.name), 'soak-observer']) sessions[p] = await fakeLogin(p)
+    for (const room of roomsForTarget()) await openRoom(room, sessions['soak-observer'])
+    // The inventory needs ROOM_ADMINS; record whether this server lets the observer read it.
+    const inv = await fetch(`${HTTP}/admin/inventory`, { headers: { authorization: `Bearer ${sessions['soak-observer']}` } })
+    emit({ ev: 'inventory-probe', status: inv.status, body: (await inv.text()).slice(0, 200) })
+    } else emit({ ev: 'team-steps-skipped', reason: 'local daemon: no login, room_create or admin inventory' })
+    const idle = DAEMON ? {} : await metricsNow()
+    emit({ ev: 'metrics', phase: 'pre-soak idle', ...idle })
+
+    const t0 = Date.now()
+    emit({ ev: 'start', minutes, restarts, participants: roster.map(p => p.name), server: DAEMON ? 'local daemon' : HTTP, target: DAEMON ? 'daemon' : 'team' })
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ROOM_|CLAUDE_|CODEX_)/.test(k)))
+    for (const p of roster) {
+      const out = fs.openSync(path.join(LOGS, `${p.name}.log`), 'a')
+      const child = spawn(process.execPath, [...process.execArgv, new URL(import.meta.url).pathname, 'participant', p.name, p.repo, restarts.join(','), String(count), String(minutes)],
+        { env: { ...env, GIT_TERMINAL_PROMPT: '0', SOAK_DIR: DIR, SOAK_SERVER: HTTP, ...(process.env.SOAK_COMPACT_MIN_DELETED ? { ROOM_COMPACT_MIN_DELETED: process.env.SOAK_COMPACT_MIN_DELETED } : {}) }, stdio: ['ignore', out, out] })
+      fs.closeSync(out)
+      child.on('exit', (code, signal) => emit({ ev: 'child-exit', name: p.name, code, signal }))
+      children.set(p.name, child)
+      await pause(jitter(1_000, 4_000))
+    }
+    if (DAEMON) {
+      for (let i = 0; !discovery(); i++) {
+        abort.signal.throwIfAborted()
+        if (i >= 60) throw new Error('daemon discovery did not appear within 60 seconds; inspect participant logs')
+        await pause(1000)
+      }
+    }
+    observers.push(...await Promise.all(roomsForTarget().map(room => observer(room, sessions['soak-observer'], emitter(path.join(EVENTS, 'observer.jsonl'))))))
+    const obsTimer = setInterval(() => observers.forEach(o => o.sample()), Math.min(30_000, SAMPLE_MIN * 60_000))
+    const healthTimer = setInterval(async () => {
+      const t = Date.now()
+      try { const r = await fetch(`${healthURL()}/health`, { signal: AbortSignal.timeout(8_000) }); emit({ ev: 'health', status: r.status, ms: Date.now() - t }) }
+      catch (e) { emit({ ev: 'health', status: 0, ms: Date.now() - t, error: String(e).slice(0, 120) }) }
+    }, 10_000)
+    const logFile = path.join(DIR, 'fly-logs.txt')
+    // One `flyctl logs --no-tail` returns only the last ~100 lines, so poll every minute and report per sample.
+    let pending = { lines: 0, errors: [] as string[] }
+    const pollLogs = async () => { const l = await logsSince(logFile, t0); pending = { lines: pending.lines + l.lines, errors: [...pending.errors, ...l.errors] } }
+    const logTimer = setInterval(() => void pollLogs(), 60_000)
+    timers.push(obsTimer, healthTimer, logTimer)
+    const pendingRestarts = APP || LOCAL || DAEMON ? restarts.filter(r => r > 0).sort((a, b) => a - b) : []
+    // SOAK_RESTART_WHEN_DELETED=N: also restart once either room's observed deleted structs reach N, so restarts
+    // compact at the server's real threshold whatever the rate. At most SOAK_RESTART_MAX (default 3) such
+    // restarts, at least SOAK_RESTART_GAP_MIN (default 30) apart, none in the last 15 minutes.
+    const whenDeleted = Number(process.env.SOAK_RESTART_WHEN_DELETED ?? 0)
+    const restartMax = Number(process.env.SOAK_RESTART_MAX ?? 3), restartGap = Number(process.env.SOAK_RESTART_GAP_MIN ?? 30) * 60_000
+    let lastRestart = t0, adaptive = 0
+    const restartDue = () => {
+      if (pendingRestarts.length && Date.now() >= t0 + pendingRestarts[0] * 60_000) { pendingRestarts.shift(); return 'scheduled' }
+      if (!whenDeleted || adaptive >= restartMax || Date.now() - lastRestart < restartGap || Date.now() > t0 + (minutes - 15) * 60_000) return undefined
+      observers.forEach(o => o.sample())
+      const max = Math.max(...observers.map(o => o.history().deleted))
+      if (max < whenDeleted) return undefined
+      adaptive++
+      return `deleted ${max} >= ${whenDeleted}`
+    }
+    for (let tick = 1; Date.now() - t0 < minutes * 60_000; tick++) {
+      const next = t0 + tick * SAMPLE_MIN * 60_000
+      while (Date.now() < Math.min(next, t0 + minutes * 60_000)) {
+        abort.signal.throwIfAborted()
+        const why = (APP || LOCAL || DAEMON) ? restartDue() : undefined
+        if (why) {
+          lastRestart = Date.now()
+          observers.forEach(o => o.sample())
+          emit({ ev: 'metrics', phase: 'before restart', ...await metricsNow() })
+          const r0 = Date.now()
+          emit({ ev: 'restart-begin', why })
+          try {
+            if (DAEMON) await stopDaemon()
+            else if (LOCAL) { await stopLocalServer(); await startLocalServer() }
+            else await run('flyctl', ['machine', 'restart', MACHINE, '-a', APP], { timeout: 300_000 })
+            emit({ ev: 'restart-command-done', ms: Date.now() - r0 })
+          }
+          catch (e) { emit({ ev: 'restart-command-failed', error: String(e).slice(0, 300) }); throw e }
+          let healthy = false
+          while (Date.now() - r0 < 300_000) {
+            abort.signal.throwIfAborted()
+            try { if ((await fetch(`${healthURL()}/health`, { signal: AbortSignal.timeout(3_000) })).ok) { healthy = true; break } } catch { /* down */ }
+            await pause(500)
+          }
+          if (!healthy) throw new Error('restart did not become healthy within 5 minutes')
+          emit({ ev: 'restart-healthy', ms: Date.now() - r0 })
+          emit({ ev: 'metrics', phase: 'after restart', ...await metricsNow() })
+        }
+        await pause(5_000)
+      }
+      observers.forEach(o => o.sample())
+      const m = await metricsNow()
+      await sampleGrowth(children)
+      await pollLogs()
+      const logs = pending; pending = { lines: 0, errors: [] }
+      emit({ ev: 'metrics', phase: 'soak', minute: Math.round((Date.now() - t0) / 60_000), ...m, logLines: logs.lines, errors: logs.errors })
+    }
+    for (const name of children.keys()) if (!readEvents(path.join(EVENTS, `${name}.jsonl`)).some(e => e.ev === 'joined')) throw new Error(`${name} never joined`)
+    emit({ ev: 'stopping-children' })
+    for (const c of children.values()) c.kill('SIGTERM')
+    await Promise.race([Promise.all([...children.values()].map(c => new Promise(r => c.exitCode !== null ? r(null) : c.once('exit', r)))), sleep(60_000)])
+    for (const c of children.values()) if (c.exitCode === null) c.kill('SIGKILL')
+    await pause(60_000) // leases released or expired
     observers.forEach(o => o.sample())
-    const m = await metricsNow()
-    await pollLogs()
-    const logs = pending; pending = { lines: 0, errors: [] }
-    emit({ ev: 'metrics', phase: 'soak', minute: Math.round((Date.now() - t0) / 60_000), ...m, logLines: logs.lines, errors: logs.errors })
+    clearInterval(obsTimer); clearInterval(healthTimer); clearInterval(logTimer)
+    // Idle after the soak: does the server's RSS come back down with the participants gone?
+    for (let i = 0; i < postIdle; i++) { emit({ ev: 'metrics', phase: 'post-soak idle', ...await metricsNow() }); await pause(120_000) }
+    const logs = await logsSince(logFile, t0)
+    emit({ ev: 'metrics', phase: 'final', logLines: logs.lines, errors: logs.errors })
+    observers.forEach(o => o.stop())
+    if (LOCAL) await stopLocalServer()
+    emit({ ev: 'end' })
+  } catch (e) { emit({ ev: 'failure', error: String(e) }); console.error(e); process.exitCode = 2 }
+  finally {
+    for (const timer of timers) clearInterval(timer)
+    observers.forEach(o => o.stop())
+    for (const c of children.values()) if (c.exitCode === null && c.signalCode === null) c.kill('SIGTERM')
+    await Promise.all([...children.values()].map(c => new Promise<void>(resolve => {
+      if (c.exitCode !== null || c.signalCode !== null) return resolve()
+      const timer = setTimeout(() => c.kill('SIGKILL'), 15000)
+      c.once('exit', () => { clearTimeout(timer); resolve() })
+    })))
+    try {
+      if (LOCAL) await stopLocalServer()
+      if (DAEMON && ownWork) await cleanupDaemon()
+      if (ownWork) fs.rmSync(WORK, { recursive: true, force: true })
+    } catch (e) { emit({ ev: 'failure', error: `cleanup: ${e}` }); console.error(e); process.exitCode = 2 }
+    process.off('SIGINT', interrupt); process.off('SIGTERM', interrupt)
   }
-  emit({ ev: 'stopping-children' })
-  for (const c of children.values()) c.kill('SIGTERM')
-  await Promise.race([Promise.all([...children.values()].map(c => new Promise(r => c.exitCode !== null ? r(null) : c.once('exit', r)))), sleep(60_000)])
-  for (const c of children.values()) if (c.exitCode === null) c.kill('SIGKILL')
-  await sleep(60_000) // leases released or expired
-  observers.forEach(o => o.sample())
-  clearInterval(obsTimer); clearInterval(healthTimer); clearInterval(logTimer)
-  // Idle after the soak: does the server's RSS come back down with the participants gone?
-  for (let i = 0; i < postIdle; i++) { emit({ ev: 'metrics', phase: 'post-soak idle', ...await metricsNow() }); await sleep(120_000) }
-  const logs = await logsSince(logFile, t0)
-  emit({ ev: 'metrics', phase: 'final', logLines: logs.lines, errors: logs.errors })
-  observers.forEach(o => o.stop())
-  if (LOCAL) await stopLocalServer()
-  emit({ ev: 'end' })
   report()
-  process.exit(0)
 }
 
 /** Sync each room read-only and count its Yjs structs: history (tombstones included) grows with every operation. */
@@ -571,7 +783,7 @@ async function structs(): Promise<void> {
   const { authorizedWebSocket } = await import('../packages/roomd/src/ws-auth.js')
   const { session } = JSON.parse(fs.readFileSync(path.join(CREDS, 'soak-observer.json'), 'utf8'))
   const emit = emitter(path.join(EVENTS, 'structs.jsonl'))
-  for (const room of Object.values(REPOS)) {
+  for (const room of roomsForTarget()) {
     const doc = new Y.Doc()
     const { roomConnection } = await import('@room/shared')
     const p = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, ...roomConnection(doc) })
@@ -603,6 +815,9 @@ function report(): void {
   const orch = readEvents(path.join(EVENTS, 'orchestrator.jsonl')), obs = readEvents(path.join(EVENTS, 'observer.jsonl'))
   const people = Object.fromEntries(ROSTER.map(p => [p.name, readEvents(path.join(EVENTS, `${p.name}.jsonl`))]))
   const start = orch.find(e => e.ev === 'start'), t0 = start?.t ?? 0
+  const daemon = start?.target === 'daemon'
+  const REPOS = { alpha: daemon ? 'local/daemon-src' : 'github.com/soak/alpha', beta: daemon ? 'local/daemon-src' : 'github.com/soak/beta' }
+  const roomsForTarget = () => [...new Set(Object.values(REPOS))]
   const min = (t: number) => Math.round((t - t0) / 60_000)
   // Every planned restart: when the command began and when /health answered again.
   const restarts = orch.filter(e => e.ev === 'restart-begin').map(b => ({ begin: b, healthy: orch.find(e => e.ev === 'restart-healthy' && e.t >= b.t) }))
@@ -625,7 +840,7 @@ function report(): void {
     // The room as sampled just before this metric (observers sample first at each tick).
     const near = (room: string) => rooms.filter(r => r.room === room && r.t <= m.t + 5_000 && m.t - r.t < 120_000).at(-1)
     const history = (r: any) => r?.structs !== undefined ? `${r.structs} (${r.deleted})` : '-'
-    const a = near(REPOS.alpha), b = near(REPOS.beta)
+    const a = near(REPOS.alpha), b = daemon ? undefined : near(REPOS.beta)
     const errs = (m.errors ?? []) as string[]
     errorsAll.push(...errs)
     rows.push({ m, cpu: cpu === '-' ? undefined : Number(cpu), steal: steal === '-' ? undefined : Number(steal), bus: a && b ? a.bus + b.bus : undefined, live: a && b ? a.live + b.live : undefined })
@@ -703,7 +918,7 @@ function report(): void {
 
   // Seqs: one id per seq, one seq per id, per room; epochs never repeat and rise per name.
   const seqProblems: string[] = []
-  for (const room of Object.values(REPOS)) {
+  for (const room of roomsForTarget()) {
     const bySeq = new Map<number, string>(), byId = new Map<string, number>()
     for (const e of obs.filter(e => e.ev === 'bus' && e.room === room)) {
       if (bySeq.has(e.seq) && bySeq.get(e.seq) !== e.id) seqProblems.push(`${room}: seq ${e.seq} names ${bySeq.get(e.seq)} and ${e.id}`)
@@ -837,7 +1052,7 @@ function report(): void {
     md.push('## Document history and memory around each restart', '', '| restart | room | structs (deleted) before | generation before | structs (deleted) after | generation after | RSS MB before | RSS MB after restart | RSS MB next sample |', '|---|---|---|---|---|---|---|---|---|')
     restarts.forEach((r, i) => {
       const rssBefore = metrics.filter(m => m.t <= r.begin.t).at(-1), rssAfter = metrics.find(m => m.t >= r.healthy.t && m.phase === 'after restart'), rssNext = metrics.find(m => m.t > r.healthy.t + 60_000 && m.phase === 'soak')
-      for (const room of Object.values(REPOS)) {
+      for (const room of roomsForTarget()) {
         const before = rooms.filter(x => x.room === room && x.t <= r.begin.t && x.structs !== undefined).at(-1)
         const after = rooms.find(x => x.room === room && x.t > r.healthy.t + 20_000 && x.synced && x.structs !== undefined)
         md.push(`| ${i + 1} (min ${min(r.begin.t)}) | ${room} | ${before ? `${before.structs} (${before.deleted})` : '-'} | ${before?.generation ?? '-'} | ${after ? `${after.structs} (${after.deleted})` : '-'} | ${after?.generation ?? '-'} | ${rssBefore ? (rssBefore.rssKb / 1024).toFixed(1) : '-'} | ${rssAfter ? (rssAfter.rssKb / 1024).toFixed(1) : '-'} | ${rssNext ? (rssNext.rssKb / 1024).toFixed(1) : '-'} |`)
@@ -871,6 +1086,31 @@ function report(): void {
   md.push(`  - other lines (${other.length}):${other.slice(0, 25).map(l => `\n    - \`${l.slice(0, 200).replace(/`/g, "'")}\``).join('')}`)
   const inv = orch.find(e => e.ev === 'inventory-probe')
   if (inv) md.push(`- Admin inventory probe: HTTP ${inv.status} (${String(inv.body).trim().slice(0, 80)}).`)
+  md.push('', '## Growth trends', '', 'First/last thirds; OLS on the last two thirds (warm-up excluded). Both later means must rise. Threshold/hour: max(10% first mean, 1 MiB bytes, 2 counts, 10 ms latency, 1 CPU percentage point). At least 9 samples and 30 minutes required; PASS is not proof of boundedness.', '', '| Metric | first third | last third | slope/hour | threshold/hour | result |', '|---|---|---|---|---|---|')
+  const samples: { t: number; metrics: Record<string, number> }[] = orch.filter(e => e.ev === 'growth-sample')
+  const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length
+  let growing = false
+  for (const key of [...new Set(samples.flatMap(s => Object.keys(s.metrics)))].sort()) {
+    const points = samples.filter(s => Number.isFinite(s.metrics[key]))
+    const n = Math.floor(points.length / 3)
+    if (!n) { md.push(`| ${key} | - | - | - | - | WARN insufficient samples |`); continue }
+    const a = mean(points.slice(0, n).map(s => s.metrics[key]))
+    const b = mean(points.slice(n, 2 * n).map(s => s.metrics[key]))
+    const c = mean(points.slice(-n).map(s => s.metrics[key]))
+    const tail = points.slice(n), xs = tail.map(s => (s.t - points[0].t) / 3600000)
+    const ys = tail.map(s => s.metrics[key]), xm = mean(xs), ym = mean(ys)
+    const variance = xs.reduce((v, x) => v + (x - xm) ** 2, 0)
+    const slope = variance ? xs.reduce((v, x, i) => v + (x - xm) * (ys[i] - ym), 0) / variance : 0
+    const floor = /Bytes/.test(key) ? 1048576 : /Ms/.test(key) ? 10 : /cpuPercent/.test(key) ? 1 : 2
+    const threshold = Math.max(Math.abs(a) * .1, floor)
+    const enough = points.length >= 9 && points.at(-1)!.t - points[0].t >= 30 * 60000
+    const rises = enough && slope > threshold && b > a && c > b
+    growing ||= rises
+    md.push(`| ${key} | ${a.toFixed(2)} | ${c.toFixed(2)} | ${slope.toFixed(2)} | ${threshold.toFixed(2)} | ${rises ? 'WARN GROWING' : enough ? 'PASS' : 'WARN insufficient duration/samples'} |`)
+  }
+  if (!samples.length) md.push('WARN no active samples')
+  if (growing) process.exitCode = Math.max(Number(process.exitCode ?? 0), 1)
+  if (orch.some(e => e.ev === 'failure') || !orch.some(e => e.ev === 'end')) { md.push('WARN failed/incomplete run'); process.exitCode = 2 }
   fs.writeFileSync(path.join(DIR, 'report.md'), md.join('\n') + '\n')
   console.log(md.join('\n'))
 }
@@ -882,7 +1122,7 @@ const flag = (n: string, d: number) => { const i = rest.indexOf(n); return i >= 
 const restartList = (v: string | undefined) => (v ?? '').split(',').map(Number).filter(n => Number.isFinite(n) && n > 0)
 if (mode === 'participant') await participant(rest[0], rest[1] as RepoKey, restartList(rest[2]), Number(rest[3] ?? ROSTER.length), Number(rest[4] ?? 180))
 else if (mode === 'run') { const i = rest.indexOf('--restart-at'); await orchestrate(flag('--minutes', 180), i >= 0 ? restartList(rest[i + 1]) : [90], flag('--participants', 8), flag('--post-idle', 3)) }
-else if (mode === 'metrics') console.log(JSON.stringify(await flyMetrics()))
+else if (mode === 'metrics') console.log(JSON.stringify(await metricsNow()))
 else if (mode === 'structs') { await structs(); process.exit(0) }
 else if (mode === 'report') report()
 else if (mode === 'cleanup') { fs.rmSync(CREDS, { recursive: true, force: true }); console.log(`removed ${CREDS}`) }
