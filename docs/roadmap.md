@@ -44,7 +44,7 @@ use broke and proposes the order of work.
 - **Same-checkout notifications — fixed in 0.17.2.** Separate connected participants count as company for presence and eligible notifications; shared file publication remains deduplicated. Join output and participant counts follow session presence.
 - **Immediate discovery.** Codex’s shared app-server still waits for the first Room tool call before binding a repository. Investigate safe startup discovery without guessing the session’s checkout.
 
-- **One local database.** Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
+- **One local database** (paused 2026-11-08; see the [storage comparison of 2026-11-09](superpowers/specs/2026-11-09-local-state-storage-comparison.md), which recommends keeping files and spending the budget on ownership rules and garbage collection). Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
 - **Host adapter layer.** Isolate Claude Code and Codex specifics behind one interface.
 - **Trim the large modules.** `worker-registry.ts` (about 1.28k lines) and `conflict-set.ts` (about 0.8k) after the database move.
 - **Threat model.** Write one for 0.17, and write threat models alongside future specs.
