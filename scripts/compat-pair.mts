@@ -246,7 +246,8 @@ async function pair(transport: string, authority: string, currentClient: string)
     await timed('teardown', async () => {
       if (peer) await stop(peer)
       await stop(server)
-      await fs.rm(dir, { recursive: true, force: true })
+      // Windows reports EBUSY while a just-stopped child's handles on its cwd drain; retry rather than fail a passed pair.
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
     })
   }
 }

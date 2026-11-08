@@ -234,7 +234,7 @@ async function main() {
     if (rows.some(row => row.status === 'FAIL')) process.exitCode = 1
   } finally {
     console.table(rows)
-    await timed('matrix cleanup', () => fs.rm(scratch, { recursive: true, force: true }))
+    await timed('matrix cleanup', () => fs.rm(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }))
   }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
