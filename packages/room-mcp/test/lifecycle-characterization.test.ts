@@ -37,6 +37,27 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     return registry
   }
 
+  it.each([0, -1, 1.5, 2147483648, '12'])('quarantines malformed launch pid %s and refuses lifecycle mutations', async pid => {
+    for (const field of ['pid', 'process'] as const) {
+      const registry = await open(), first = intent(registry.commonDir)
+      await registry.writeIntent(first)
+      await registry.finishOperation(first.id)
+      const archive = await registry.archiveOf(first, { summary: 'collected' })
+      const launch = { outcome: 'launched', pid: field === 'pid' ? pid : process.pid,
+        ...(field === 'process' ? { process: { pid, startTime: 'birth', executable: 'node' } } : {}) }
+      const file = path.join(registry.root, 'workers', first.id + '.json')
+      const bytes = JSON.stringify({ ...first, runs: [{ ...first.runs[0], launch }] })
+      fs.writeFileSync(file, bytes)
+      await expect(registry.resume(first.id, 1, { nonce: 'next', busFrontier: 0, logStart: 0 })).rejects.toThrow()
+      await expect(registry.beginCollect(first.id)).rejects.toThrow()
+      await expect(registry.beginRetirement(first.id, archive)).rejects.toThrow()
+      await registry.reconcile()
+      const files = fs.readdirSync(path.join(registry.root, 'quarantine'))
+      expect(files.some(name => fs.readFileSync(path.join(registry.root, 'quarantine', name), 'utf8') === bytes)).toBe(true)
+      expect(fs.existsSync(file)).toBe(false)
+    }
+  })
+
   it('reserves a tag until every retirement cleanup finishes, then reuses it without replacing history', async () => {
     const registry = await open(), first = intent(registry.commonDir)
     await registry.writeIntent(first)

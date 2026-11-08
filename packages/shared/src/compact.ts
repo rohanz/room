@@ -168,3 +168,10 @@ export function historyOf(doc: Y.Doc): { structs: number; deleted: number } {
   }
   return { structs, deleted }
 }
+
+/** Shared server/daemon tombstone threshold; zero or "off" disables compaction. */
+export function compactMinDeleted(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return 10_000
+  const n = Number(raw)
+  return raw === 'off' || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 10_000
+}

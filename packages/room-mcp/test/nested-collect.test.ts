@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { preparedTest, preparedEach } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
@@ -114,7 +115,7 @@ async function orphanBatch(withCat = true) {
   const roomName = 'github.com/team/shop'
   for (const record of (requireWorkerInventory(await b.registry.list()))) await mutateWorkerFixture(b.registry, record.id, old => ({
     ...old, room: roomName, lead: { ...old.lead, room: roomName,
-      instance: { ...old.lead.instance, pid: 0, startTime: 'dead-session' } }, seq: old.seq + 1,
+      instance: { ...old.lead.instance, pid: exitedPid(), startTime: 'dead-session' } }, seq: old.seq + 1,
   }))
   const run = (owner = 'rohanz', workerAlive: (w: LocalWorker) => boolean = () => false) =>
     collect(b.room, b.root, `${owner}+current`, workerAlive, { roomName, me: { name: `${owner}+current`, kind: 'agent', owner } })
@@ -132,6 +133,15 @@ preparedEach([false, true], 'force discards same-human orphan workers with neste
   const patches = fs.readdirSync(path.join(root, '.git/room/registry/patches')).map(name => read(root, '.git/room/registry/patches/' + name))
   expect(patches.some(patch => patch.includes('partial lead'))).toBe(true)
   if (withCat) expect(patches.some(patch => patch.includes('finished cat'))).toBe(true)
+})
+
+preparedEach([0, -1, 2147483648], 'refuses orphan recovery with malformed lead pid %s', () => orphanBatch(false), async ({ root, lead, registry, run }, pid) => {
+  for (const record of requireWorkerInventory(await registry.list())) await mutateWorkerFixture(registry, record.id, old => ({
+    ...old, lead: { ...old.lead, instance: { ...old.lead.instance, pid } }, seq: old.seq + 1,
+  }))
+  expect(await run()({ tag: 'lead', discard: true, force: true })).toBe('error: no worker lead owned by you')
+  expect(fs.existsSync(lead.dir)).toBe(true)
+  expect((await localWorkers(root))).toHaveLength(1)
 })
 
 preparedTest('refuses same-human orphan discard without force and leaves apply/copy unchanged', () => orphanBatch(), async ({ root, run }) => {

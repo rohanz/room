@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import fs from 'node:fs'
@@ -43,7 +44,7 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
   }
   await registry.writeIntent(record)
   const active = await mutateWorkerFixture(registry, id, old => ({ ...old, prep: { step: 'prepared' }, phase: 'active',
-    runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 0 } }], seq: old.seq + 1 }))
+    runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: exitedPid() } }], seq: old.seq + 1 }))
   await registry.finishOperation(id)
   return { registry, record: active }
 }
@@ -95,9 +96,10 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
       }
       try { await registry.writeIntent(initial) }
       catch { continue }
-      const process = w.pid ? fixtureProcess(w.pid, w.processStartTime ?? `fixture:${id}`, w.host, w.status === 'running') : undefined
+      const pid = w.pid > 0 ? w.pid : exitedPid()
+      const process = w.pid > 0 ? fixtureProcess(w.pid, w.processStartTime ?? `fixture:${id}`, w.host, w.status === 'running') : undefined
       record = await mutateWorkerFixture(registry, id, old => ({ ...old, phase: 'active',
-        runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: w.pid ?? 0,
+        runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid,
           ...(process ? { process } : {}) } }], seq: old.seq + 1 }))
       await registry.finishOperation(id)
     }

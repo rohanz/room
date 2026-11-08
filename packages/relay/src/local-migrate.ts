@@ -18,7 +18,7 @@ export function legacyRelayRunning(common: string, probe: ProcessProbe = probePr
 function oldRunning(common: string, probe: ProcessProbe): boolean {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(common, 'room-local.json'), 'utf8')) as { pid?: number; startTime?: string; executable?: string }
-    const observed = probe(Number(info.pid))
+    const observed = probe(info.pid as number)
     if (!observed) return false
     // Older discovery files carry only a pid. An unreadable identity is indeterminate,
     // so keep catching up until disappearance can be established.

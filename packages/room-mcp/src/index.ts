@@ -234,12 +234,12 @@ async function main() {
         log,
         async attempt(target) {
           const root = await joinableRoot(dir)
+          if (await replacement.begin(session)) return replacement.join()
           if (session?.local) {
             await session.recoverLocal?.()
             if (!session.provider.wsconnected || !session.provider.synced) throw new Error('local daemon is reconnecting; keeping this session and its replica')
             return session
           }
-          if (await replacement.begin(session)) return replacement.join()
           // Reconnect with the latest accepted session, including its current sharing choice.
           if (target) {
             const reuse = session ? undefined : detachCheckout(target)

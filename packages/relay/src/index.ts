@@ -20,7 +20,7 @@ import * as decoding from 'lib0/decoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { DOC_SIZE_CAP_CODE, DocSizeMeter, HUB_ORIGIN, MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, sizeCapReason, sizeCapRefusal, startHub, type DocSizeMeterOptions, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
-import { docGeneration, generationGate, STALE_REPLICA_CODE, STALE_REPLICA_REASON, COMPACTED_UPDATE_REASON, ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
+import { historyOf, GENERATION_PARAM, docGeneration, generationGate, STALE_REPLICA_CODE, STALE_REPLICA_REASON, COMPACTED_UPDATE_REASON, ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
 import { ProofVerifier, localProofHeader, localViewKey, relayIdentity, relayIdentityProbe, relayProof, relayMetadataProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
 import { RelayAdmission, type RelayAdmissionLimits } from './limits.js'
@@ -56,7 +56,7 @@ export interface RelayDocCap { maxBytes?: number; meter?: DocSizeMeterOptions }
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission; accepting?: () => boolean; attached?: (conn: WebSocket, readOnly: boolean) => void; daemon?: boolean; compat?: typeof CURRENT_COMPAT }
+interface DocOptions { loaded?: (room: string, doc: Y.Doc) => void; commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission; accepting?: () => boolean; attached?: (conn: WebSocket, readOnly: boolean) => void; daemon?: boolean; compat?: typeof CURRENT_COMPAT }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
 /** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
 export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
@@ -157,6 +157,7 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
     const buf = encoding.toUint8Array(enc)
     for (const c of d!.conns.keys()) send(c, buf)
   })
+  opts.loaded?.(decodeURIComponent(name), doc)
   docs.set(name, d)
   // Bare transport fixtures may supply an initial replica before the hub starts.
   if (opts.seed && name === encodeURIComponent(opts.seed.room)) Y.applyUpdate(doc, opts.seed.update)
@@ -221,6 +222,7 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
       conn.off('message', handshake)
       if (safeUrl(req.url).searchParams.get('negotiate') === '1') attachNegotiating(docs, conn, name, req, opts, first)
       else {
+        if (!relayGeneration(conn, req, getDoc(docs, name, opts))) return
         if (opts.daemon && !opts.readOnly) { conn.close(4406, 'daemon lifecycle negotiation required; update Room'); return }
         // Frozen baseline is selected before either direction of legacy automatic sync.
         const legacy = selectContract(LEGACY_COMPAT, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly })
@@ -327,7 +329,7 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
   void receivePlain(first).catch(() => refuse('relay compatibility unavailable; reconnect Room'))
 }
 function relayGeneration(conn: WebSocket, req: http.IncomingMessage, d: RelayDoc): boolean {
-  const decision = generationGate(safeUrl(req.url).searchParams.get('gen'), docGeneration(d.doc))
+  const decision = generationGate(safeUrl(req.url).searchParams.get(GENERATION_PARAM), docGeneration(d.doc))
   if (decision === 'accept') return true
   conn.close(decision === 'stale' ? STALE_REPLICA_CODE : 4403, decision === 'stale' ? STALE_REPLICA_REASON : COMPACTED_UPDATE_REASON)
   return false
@@ -598,19 +600,21 @@ export interface RelayOptions {
   /** Waits between final-save attempts on close; default FINAL_SAVE_RETRY_MS (memory.ts). */
   finalSaveRetryMs?: readonly number[]
   /** Standalone process lifecycle; omitted by bare transport fixtures. */
-  daemon?: { health: (authenticated?: boolean) => Record<string, unknown>; onSignal: () => void; writersChanged: (count: number) => void; stop?: (pid: number, nonce: string, saved: () => void) => Promise<void> }
+  daemon?: { loaded?: (room: string, doc: Y.Doc) => void; health: (authenticated?: boolean) => Record<string, unknown>; onSignal: () => void; writersChanged: (count: number) => void; stop?: (pid: number, nonce: string, saved: () => void) => Promise<void> }
 }
 export interface StartedRelay {
   port: number
   readonly connections: { writers: number; viewers: number; pending: number }
   /** Synchronous fence, including already-upgraded handshakes. Reopen only after a failed drain. */
   setDraining(value: boolean): void
+  history(): { room: string; deleted: number }[]
+  canCompact(): boolean
   initialize(room: string): Promise<void>
   /** Startup rollback only: rejects if any authenticated client was attached. */
   abortUnpublished(): Promise<void>
   /** Saves each room's memory, then stops. If the save still fails after FINAL_SAVE_RETRY_MS, rejects with
-   *  FinalSaveError and keeps serving: documents, clients and the authority lock stay until a later close or exit. */
-  close(saved?: () => void): Promise<void>
+   *  FinalSaveError and keeps serving. Planned compaction logs save failures and always tears down. */
+  close(saved?: () => void, generation?: string): Promise<void>
   /** A room's doc and its hub once started (tests drive hubs on fake clocks through this). */
   hubRoom(room: string): { doc: RoomDoc; hub?: Hub } | undefined
 }
@@ -627,6 +631,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     let draining = false
     const writers = new Set<WebSocket>(), viewers = new Set<WebSocket>()
     const docOptions: DocOptions = {
+      loaded: opts.daemon?.loaded,
       daemon: !!opts.daemon, compat: opts.daemon ? { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } } : CURRENT_COMPAT, accepting: () => !draining,
       attached: (conn, readOnly) => {
         const group = readOnly ? viewers : writers
@@ -786,14 +791,14 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     let closing: Promise<void> | undefined
     const onSignal = () => { if (opts.daemon) { opts.daemon.onSignal(); return }; close().catch(error => opts.log?.(`local relay: room state could not be saved on stop: ${error instanceof Error ? error.message : String(error)}`)) }
     // The relay holds the room's only current replica once the last writer has gone. Nothing is torn down
-    // until every room's memory is saved: on a failed save the relay keeps serving and holding the lock.
-    const close = (saved?: () => void): Promise<void> => closing ??= (async () => {
+    // until every room's memory is saved, except planned compaction must exit even on save failure.
+    const close = (saved?: () => void, generation?: string): Promise<void> => closing ??= (async () => {
       if (opts.daemon) {
         for (const d of docs.values()) await d.hubReady
         await Promise.all([...docs.values()].flatMap(d => d.hub ? [d.hub.flushLeases()] : []))
       }
       // Each pass re-reads the rooms: one opened during a retry is saved too.
-      await finalSave(() => [...docs.values()].flatMap(d => d.memory ? [d.memory] : []), opts.finalSaveRetryMs)
+      await finalSave(() => [...docs.values()].flatMap(d => d.memory ? [d.memory] : []), opts.finalSaveRetryMs, generation)
       saved?.()
       // Saved: tear down before any socket can deliver another update.
       await teardown()
@@ -820,6 +825,8 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       resolve({
         port: bound,
         get connections() { return { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size } },
+        canCompact: () => [...docs.values()].every(d => !d.memory || d.memory.canCompact()),
+        history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted })),
         setDraining(value) { draining = value },
         async abortUnpublished() {
           if (writers.size || viewers.size) throw new Error('cannot discard a published relay replica')

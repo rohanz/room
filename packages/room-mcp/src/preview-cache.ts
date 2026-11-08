@@ -1,3 +1,4 @@
+import { validPid, pidAlive } from '@room/relay/process'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -48,9 +49,10 @@ export async function readProcessGroupTable(): Promise<{ pgid: number; stat: str
  */
 /** Whether one process is still running (a zombie has exited and only awaits reaping). Same fallback as the group check. */
 export async function processAlive(pid: number, table: () => Promise<{ pid: number; stat: string }[]> = readProcessTable): Promise<boolean> {
+  if (!validPid(pid)) return true
   let rows: { pid: number; stat: string }[]
   try { rows = await table() }
-  catch { try { process.kill(pid, 0); return true } catch { return false } }
+  catch { return pidAlive(pid) }
   return rows.some(row => row.pid === pid && !row.stat.startsWith('Z'))
 }
 
@@ -59,9 +61,10 @@ async function readProcessTable(): Promise<{ pid: number; stat: string }[]> {
 }
 
 export async function processGroupAlive(pgid: number, table: () => Promise<{ pgid: number; stat: string }[]> = readProcessGroupTable): Promise<boolean> {
+  if (!validPid(pgid)) return true
   let rows: { pgid: number; stat: string }[]
   try { rows = await table() }
-  catch { try { process.kill(-pgid, 0); return true } catch { return false } }
+  catch { try { process.kill(-pgid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' } }
   return rows.some(row => row.pgid === pgid && !row.stat.startsWith('Z'))
 }
 
@@ -72,10 +75,10 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
   await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   // Read every process group while the owner is alive. EOF may mean normal
   // release or a killed owner; either way, wait for its children before unlock.
-  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { kill -0 "-$1" 2>/dev/null; return; }; printf "%s\\n" "$t" | awk -v g="$1" \'$1==g && $2 !~ /^Z/ {f=1} END {exit !f}\'; }; for pgid in $groups; do while alive "$pgid"; do sleep 0.2; done; done'
+  const helper = "node=\"$1\"; printf READY; groups=\"\"; while IFS= read -r pgid; do case \"$pgid\" in *[!0-9]*|\"\") continue;; esac; groups=\"$groups $pgid\"; done; alive() { t=$(ps -A -o pgid=,stat= 2>/dev/null) || { \"$node\" -e 'const p=Number(process.argv[1]); if (!Number.isInteger(p) || p<=0 || p>2147483647) process.exit(0); try { process.kill(-p,0) } catch(e) { if(e.code===\"ESRCH\") process.exit(42) }' \"$1\"; result=$?; [ \"$result\" -ne 42 ]; return; }; printf \"%s\\n\" \"$t\" | awk -v g=\"$1\" '$1==g && $2 !~ /^Z/ {f=1} END {exit !f}'; }; for pgid in $groups; do while alive \"$pgid\"; do sleep 0.2; done; done"
   const args = command === 'lockf'
-    ? ['-t', '0', file, 'sh', '-c', helper]
-    : ['-n', file, 'sh', '-c', helper]
+    ? ['-t', '0', file, 'sh', '-c', helper, 'room-preview', process.execPath]
+    : ['-n', file, 'sh', '-c', helper, 'room-preview', process.execPath]
   return new Promise(resolve => {
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'] })
     let settled = false
@@ -92,7 +95,7 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
         child.stdin.end()
         if (child.exitCode === null) await new Promise<void>(done => child.once('close', () => done()))
       }, { trackProcess(pid: number) {
-        if (!Number.isSafeInteger(pid) || pid <= 0 || !child.stdin.writable) return Promise.reject(new Error('preview lock lost before process registration'))
+        if (!validPid(pid) || !child.stdin.writable) return Promise.reject(new Error('preview lock lost before process registration'))
         return new Promise<void>((done, fail) => child.stdin.write(`${pid}\n`, error => error ? fail(error) : done()))
       } }))
     })

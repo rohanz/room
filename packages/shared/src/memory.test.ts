@@ -87,6 +87,22 @@ it('spends the receipt budget on mail and addressed receipts first, then the new
   expect(kept).toBeLessThanOrEqual(RECEIPTS_BYTES)
 })
 
+it('reports receipt-budget drops as shedding even when the snapshot is far under its byte limit', () => {
+  const source = new RoomDoc()
+  for (let i = 0; i < 2000; i++) source.bus.push([message()])
+  for (let p = 0; p < 20; p++) source.markSeen(`p${p}`, source.messages().map(m => m.id), SHOWN)
+  const onShed = vi.fn()
+  const update = memorySnapshot(source.doc, { onShed })
+  expect(update.byteLength).toBeLessThan(MAX_MEMORY_BYTES)
+  expect(onShed).toHaveBeenCalled()
+  const within = new RoomDoc()
+  within.bus.push([message()])
+  within.markSeen('p0', within.messages().map(m => m.id), SHOWN)
+  const quiet = vi.fn()
+  memorySnapshot(within.doc, { onShed: quiet })
+  expect(quiet).not.toHaveBeenCalled()
+})
+
 it('never exceeds the limit: drops archive oldest first, then broadcast receipts, then the oldest bus broadcasts (MF6)', () => {
   const log = vi.fn()
   const build = (siblingBytes: number) => {

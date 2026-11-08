@@ -1,3 +1,4 @@
+import { exitedPid } from '../../relay/test/exited-pid.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
 import { finishSignalShutdown } from '../src/index.js'
@@ -37,7 +38,8 @@ describe('worker safety', () => {
     expect(workerProcessOwnership(process.pid, { ...rec, processStartTime: undefined }, () => info)).toBe('unknown')
     expect(workerProcessOwnership(process.pid, rec, () => ({}))).toBe('unknown')
     expect(workerProcessOwnership(process.pid, rec, () => undefined)).toBe('not-ours')
-    expect(workerProcessOwnership(-1, rec, () => info)).toBe('not-ours')
+    expect(workerProcessOwnership(exitedPid(), rec)).toBe('not-ours')
+    expect(workerProcessOwnership(-1, rec, () => info)).toBe('unknown')
   })
 
   it('ignores prompt and session text even when they contain the worker session id', () => {

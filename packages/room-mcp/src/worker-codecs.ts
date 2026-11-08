@@ -1,3 +1,4 @@
+import { validPid } from '@room/relay/process'
 /** Legacy lifecycle codecs shared by the file store and offline importer. */
 import { isHostId } from './hosts/types.js'
 import type { InstanceToken } from './leases.js'
@@ -18,7 +19,7 @@ const runShape = (value: unknown): boolean => {
   if (value.launch === undefined) return true
   if (!object(value.launch)) return false
   switch (value.launch.outcome) {
-    case 'launched': return Number.isSafeInteger(value.launch.pid) && (value.launch.process === undefined || processShape(value.launch.process))
+    case 'launched': return validPid(value.launch.pid) && (value.launch.process === undefined || processShape(value.launch.process) && validPid((value.launch.process as Record<string, unknown>).pid))
     case 'never': return typeof value.launch.error === 'string'
     case 'ambiguous': return typeof value.launch.at === 'number'
     case 'imported': return true

@@ -27,7 +27,7 @@ import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
 import { clearPreviewQuarantine, evictPreviewLru, previewCapBytes, quarantinePreview, touchPreview, tryPreviewLock, type PreviewUnlock, processGroupAlive } from '../preview-cache.js'
-import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
+import { validPid, parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { leadsCheckout } from '../checkout-lead.js'
 
@@ -804,6 +804,7 @@ async function processCommand(file: string, args: string[]): Promise<string> {
 
 /** Kernel birth marker only; errors and timeouts preserve the owner's slot. */
 async function probePreviewStart(pid: number): Promise<string | null | undefined> {
+  if (!validPid(pid)) return undefined
   if (processProbeForTests) return boundedProbe(processProbeForTests(pid)).catch(() => undefined)
   if (!pidAlive(pid)) return null
   try {
