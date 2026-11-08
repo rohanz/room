@@ -21,14 +21,17 @@ export function knownNames(session: Session, presences: NameContext['presences']
 
 const addressKey = (name: string) => name.replace(/\u2019/g, "'").toLocaleLowerCase()
 
-/** Resolve a spoken participant name, including a lead's worker tag. Exact raw names win. */
-export async function resolveDisplayedName(requested: string, context: NameContext, caller: Session): Promise<{ name?: string; ambiguous?: string[] }> {
+/**
+ * Resolve a spoken participant name, including a lead's worker tag. Exact raw names win. With `excludeCaller`
+ * (message recipients), a displayed name or owner label never means the caller: with two sessions under one
+ * owner, "<owner>'s agent" from the untagged one names the other (live check, 2026-11-08); only the exact own
+ * name then reaches the self-message error. Previews keep the default and drop the caller themselves.
+ */
+export async function resolveDisplayedName(requested: string, context: NameContext, caller: Session, options: { excludeCaller?: boolean } = {}): Promise<{ name?: string; ambiguous?: string[] }> {
   const sessions = context.all()
   const known = new Set(sessions.flatMap(s => [...knownNames(s, context.presences)]))
   if (known.has(requested)) return { name: requested }
-  // A displayed name or owner label never means the caller: with two sessions under one owner, "<owner>'s agent"
-  // from the untagged one names the other (live check, 2026-11-08). Only the exact own name reaches the self-message error.
-  const self = caller.me.name
+  const self = options.excludeCaller ? caller.me.name : undefined
   const candidates = new Set<string>()
   const key = addressKey(requested)
   for (const name of known) if (name !== self && addressKey(name) === key) candidates.add(name)

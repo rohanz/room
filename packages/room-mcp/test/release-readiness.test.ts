@@ -13,14 +13,14 @@ import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
-function names(people: Identity[], requested: string, known: string[] = [], workers: { name: string; status: 'running' | 'done' }[] = [], me: Identity = { name: 'lead', kind: 'agent' }) {
+function names(people: Identity[], requested: string, known: string[] = [], workers: { name: string; status: 'running' | 'done' }[] = [], me: Identity = { name: 'lead', kind: 'agent' }, options: { excludeCaller?: boolean } = {}) {
   const room = { me, room: {
     colors: new Map(known.map(name => [name, 1])), scopes: new Map(), manifestHead: new Map(), openClaims: () => [],
     workerViews: new Map(), acceptedWorkerViews: () => workers, retiredWorkers: () => [], messages: () => [], mail: new Map(),
     doc: { getMap: () => new Map() }, allScopes: () => [],
   } } as unknown as Session
   const context: NameContext = { all: () => [room], presences: () => people.map(user => ({ user })), myWorkers: () => [] }
-  return resolveDisplayedName(requested, context, room)
+  return resolveDisplayedName(requested, context, room, options)
 }
 
 it('resolves a single tagged active agent from owner phrasing or bare owner', async () => {
@@ -53,11 +53,14 @@ it('never resolves an owner label to the caller: with two sessions under one own
   // Live check 2026-11-08: "rohanz's agent" from the untagged session resolved to itself ("you cannot message yourself").
   const me: Identity = { name: 'rohanz', owner: 'rohanz', kind: 'agent' }
   const other: Identity = { name: 'rohanz+claude', owner: 'rohanz', kind: 'agent' }
-  expect(await names([me, other], "rohanz's agent", ['rohanz', 'rohanz+claude'], [], me)).toEqual({ name: 'rohanz+claude' })
+  const recipient = { excludeCaller: true }
+  expect(await names([me, other], "rohanz's agent", ['rohanz', 'rohanz+claude'], [], me, recipient)).toEqual({ name: 'rohanz+claude' })
   // The exact own name still means the caller (the self-message error explains what to do).
-  expect(await names([me, other], 'rohanz', ['rohanz', 'rohanz+claude'], [], me)).toEqual({ name: 'rohanz' })
+  expect(await names([me, other], 'rohanz', ['rohanz', 'rohanz+claude'], [], me, recipient)).toEqual({ name: 'rohanz' })
   // Alone under the owner, the label names nobody else; only the exact own name reaches the self-message error.
-  expect(await names([me], "rohanz's agent", ['rohanz'], [], me)).toEqual({ name: undefined })
+  expect(await names([me], "rohanz's agent", ['rohanz'], [], me, recipient)).toEqual({ name: undefined })
+  // A preview resolves its own label and drops the caller itself.
+  expect(await names([me, other], "rohanz's agent", ['rohanz', 'rohanz+claude'], [], me)).toEqual({ name: 'rohanz' })
 })
 
 it('uses request, per-host, generic and then host worker defaults in that order', async () => {

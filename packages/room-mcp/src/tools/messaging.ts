@@ -122,7 +122,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
       const requestedToRaw = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
-      const resolvedDisplay = requestedToRaw ? (await resolveDisplayedName(requestedToRaw, names, lead)) : undefined
+      const resolvedDisplay = requestedToRaw ? (await resolveDisplayedName(requestedToRaw, names, lead, { excludeCaller: true })) : undefined
       if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(', ')}`
       const requestedTo = resolvedDisplay?.name ?? requestedToRaw
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.

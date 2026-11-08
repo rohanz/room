@@ -43775,11 +43775,11 @@ function knownNames(session, presences) {
     ...session.room.doc.getMap("aliases").values()
   ].filter((n) => !isPrName(n)));
 }
-async function resolveDisplayedName(requested, context2, caller) {
+async function resolveDisplayedName(requested, context2, caller, options = {}) {
   const sessions = context2.all();
   const known = new Set(sessions.flatMap((s) => [...knownNames(s, context2.presences)]));
   if (known.has(requested)) return { name: requested };
-  const self = caller.me.name;
+  const self = options.excludeCaller ? caller.me.name : void 0;
   const candidates = /* @__PURE__ */ new Set();
   const key2 = addressKey(requested);
   for (const name of known) if (name !== self && addressKey(name) === key2) candidates.add(name);
@@ -63332,7 +63332,7 @@ function handlers8(state) {
       const repliedNote = (a.type === "note" || a.type === "answer") && replied?.type === "note" ? replied : void 0;
       const sendType = repliedNote ? "note" : a.type;
       const requestedToRaw = typeof a.to === "string" && a.to ? a.to : sendType === "answer" ? question?.from : repliedNote?.from;
-      const resolvedDisplay = requestedToRaw ? await resolveDisplayedName(requestedToRaw, names, lead) : void 0;
+      const resolvedDisplay = requestedToRaw ? await resolveDisplayedName(requestedToRaw, names, lead, { excludeCaller: true }) : void 0;
       if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(", ")}`;
       const requestedTo = resolvedDisplay?.name ?? requestedToRaw;
       const wsr = rooms.workers();
