@@ -11285,11 +11285,12 @@ function participantsView(doc, awareness, now) {
     const own2 = record2?.holder ? presences.find((state) => state.sessionId === record2.holder?.sessionId) : void 0;
     const fresh = !!own2;
     const observedMs = doc.expiry.get(name)?.observedMs ?? 0;
+    const retired = !!record2?.holder?.workerId && !doc.workerViews.has(record2.holder.workerId);
     return {
       name,
       ...record2?.id?.kind ? { kind: record2.id.kind } : presences[0]?.user?.kind ? { kind: presences[0].user.kind } : {},
       fresh,
-      visible: fresh || !!record2 && observedMs < ROOM_STALE_MS,
+      visible: fresh || !!record2 && !retired && observedMs < ROOM_STALE_MS,
       ...record2?.holder ? { holder: record2.holder } : {},
       ...record2?.proj ? { projectedBy: record2.proj.projectedBy } : {},
       ...typeof own2?.idleMin === "number" ? { idleMin: own2.idleMin } : {}
@@ -33544,7 +33545,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.43",
+      version: "0.17.44",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
