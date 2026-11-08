@@ -143,7 +143,7 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 | `ROOM_WAKE` | `auto`, `socket`, `channels`, or `off`. |
 | `ROOM_TAG` | Your label when one login has several sessions. |
 | `ROOM_AUTO_FETCH` | Set to `0` to disable automatic missing-base fetches. |
-| `ROOM_STALE_DAYS` | Display only: days after which `room_state` marks an offline participant's claim `stale`; default 7. It deletes nothing. Deletion follows the hub's fixed policy: after seven days without a live lease, the hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state; owed ledger messages remain. |
+| `ROOM_STALE_DAYS` | Display only: days after which `room_state` marks an offline participant's claim `stale`; default 7. It deletes nothing. Deletion follows the hub's fixed policy: after seven days without a live lease, the hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state; owed ledger messages remain. The same seven days age out the hub's name tombstone of a retired worker, a session's cursor directory and (with the retired worker records) the clone's stale bookkeeping; a dead publisher's lease file and an abandoned atomic-write temporary go after an hour. |
 | `ROOM_WORKER_MODEL`, `ROOM_WORKER_EFFORT` | Your default worker model and effort; otherwise host defaults apply. |
 | `ROOM_CODEX_WORKER_MODEL`, `ROOM_CODEX_WORKER_EFFORT`, `ROOM_CLAUDE_WORKER_MODEL`, `ROOM_CLAUDE_WORKER_EFFORT` | Per-host worker defaults; they override the generic pair. |
 | `ROOM_WORKER_THREADS`, `ROOM_WORKER_MEM_GB`, `ROOM_WORKER_MAX_BUDGET_USD` | Worker compute budget and Claude cost cap. |

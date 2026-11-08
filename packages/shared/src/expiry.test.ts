@@ -100,10 +100,11 @@ describe('expiry authority (reporooms S5): observation epochs on the leader\'s o
     expect(room.expiry.get('ben')).toEqual({ observedMs: 6 * DAY, epoch: 'ep_mine' })
   })
 
-  it('measures only participants with a holder, and never workers (their projector retires them)', () => {
+  it('measures only participants with a holder, and never a worker that still has its view (its projector retires it)', () => {
     const room = new RoomDoc()
     room.participants.set('legacy\0git', { branch: 'main', head: 'h', base: 'h', anchored: true, rev: 1, fence: '' })
-    withRecord(room, 'lead+w', holder('w-s', 'w1'))
+    withRecord(room, 'lead+w', holder('w-s', 'w_w'))
+    room.workerViews.set('w_w', { id: 'w_w', tag: 'w', name: 'lead+w', lead: 'lead', mode: 'here', host: 'codex', task: 't', branch: 'room/w', status: 'done', run: 1, startedAt: 1, fence: 'lead-s' })
     withRecord(room, 'lead+x')
     room.workerViews.set('w_x', { id: 'w_x', tag: 'x', name: 'lead+x', lead: 'lead', mode: 'here', host: 'codex', task: 't', branch: 'room/x', status: 'running', run: 1, startedAt: 1, fence: 'lead-s' })
     const c = clock(0)
@@ -113,6 +114,21 @@ describe('expiry authority (reporooms S5): observation epochs on the leader\'s o
     c.advance(30 * DAY)
     expect(tenure.observe(room, view, undefined, ignore)).toEqual([])
     expect([...room.expiry.keys()]).toEqual([])
+  })
+
+  it('ages a retired worker\'s tombstone: a worker holder whose view is gone expires like a teammate', () => {
+    // The hub rewrites an ended worker holder after retirement deletes it (hub §4.4), so only expiry can end it.
+    const room = new RoomDoc()
+    room.participants.set('lead+gone\0holder', { ...holder('g-s', 'w_gone'), ended: 'released' })
+    const c = clock(0)
+    const tenure = new ExpiryTenure('ep_a', c.now)
+    const view = [absent('lead+gone')]
+    tenure.observe(room, view, undefined, ignore)
+    c.advance(ROOM_STALE_MS - 1)
+    expect(tenure.observe(room, view, undefined, ignore)).toEqual([])
+    c.advance(1)
+    expect(tenure.observe(room, view, undefined, ignore)).toEqual(['lead+gone'])
+    expect(room.participants.has('lead+gone\0holder')).toBe(false)
   })
 
   it('reads the participants view: a holder without its session in presence is absent', () => {

@@ -24,7 +24,9 @@ export class ExpiryTenure {
 
   /**
    * One leader tick. A participant is measured only when it has a `holder` (a lease-holding session that
-   * could be fresh) and is not a worker. A segment adds time only while `expiry[name]` still holds what
+   * could be fresh) and is not a worker with a view (its projector retires it). A worker holder whose view
+   * is gone is the hub's name tombstone of a retired or dead incarnation; it ages like a teammate's, or
+   * it would stay a participant until the hub's name cap. A segment adds time only while `expiry[name]` still holds what
    * this tenure last saw there, so a concurrent leader's write restarts the measurement instead of being
    * counted twice. Returns the names it expired; `post` appends their release notices.
    */
@@ -40,7 +42,7 @@ export class ExpiryTenure {
       for (const participant of view) {
         const { name } = participant
         const holder = participantRecord(room, name)?.holder
-        if (!holder || holder.workerId || room.workerViewOf(name)) continue
+        if (!holder || room.workerViewOf(name) || (holder.workerId && room.workerViews.has(holder.workerId))) continue
         measured.add(name)
         const raw = room.expiry.get(name)
         const current = raw && Number.isFinite(raw.observedMs) && raw.observedMs >= 0 && typeof raw.epoch === 'string' ? raw : undefined

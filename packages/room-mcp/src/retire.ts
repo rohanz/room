@@ -8,6 +8,8 @@ import { PolicyStore } from './policy-store.js'
 import type { Rooms } from './registry.js'
 import type { Session } from './session.js'
 import { registryForDir } from './worker-registry.js'
+import { sweepLocalState } from './local-state-sweep.js'
+import { gitCommonDir } from '@room/roomd'
 import { realStateInput, type LocalWorker, type WorkerRecord } from './worker-status.js'
 import { decideRetire, processExited, workerRealState } from './worker-state.js'
 import { cleanupWorker, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, uncollectedWorkerPaths, type WorkerCleanupPreservation } from './worker-git.js'
@@ -165,6 +167,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   const probe = rooms.probe.bind(rooms)
   // Retired records otherwise accumulate for the clone's lifetime; the room's archive entry outlives them.
   await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
+  await sweepClone(s.dir)
   for (const record of (requireWorkerInventory(await registry.list()))) {
     if (record.lead.participant !== s.me.name || record.room !== s.roomName) continue
     const processes: CollectedProcesses = { probe, list: rooms.listCwdProcesses, alive: async w =>
@@ -253,4 +256,16 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
       ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
     })))
   }
+}
+
+const SWEEP_EVERY_MS = 60 * 60 * 1000
+let sweptAt = 0
+/** Dead publisher leases, stale session cursors and abandoned temporaries: once an hour per process. */
+async function sweepClone(dir: string): Promise<void> {
+  if (Date.now() - sweptAt < SWEEP_EVERY_MS) return
+  sweptAt = Date.now()
+  try {
+    const removed = sweepLocalState(await gitCommonDir(dir))
+    if (removed.length) process.stderr.write(`[room] local state sweep removed ${removed.length} stale item${removed.length === 1 ? '' : 's'}\n`)
+  } catch (error) { process.stderr.write(`[room] local state sweep: ${error}\n`) }
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.45
+
+- **Retired workers' name tombstones expire.** The seven-day participant expiry skipped every holder that named a worker, so the tombstone the hub keeps for a collected or discarded worker outlived the worker for the life of the clone (126 of them here) and was pruned only at the hub's name cap. A worker holder whose worker view is gone now ages like a teammate's record and expires after seven days offline; a worker that still has its view (finished, uncollected) is still left to its projector.
+- **Stale local files are swept once an hour.** The hourly retention pass that already removes retired worker records now also removes publisher lease files whose holder process is dead and idle for an hour (21 of 23 in this clone were dead, the oldest from October), session cursor directories untouched for seven days (the participant expired at the same age), and atomic-write temporaries older than an hour under `room/relay` and `room/hub-leases` (6.8 MB of abandoned snapshots here). Unparsable files and holders of unknown liveness stay.
+
 ## 0.17.44
 
 - **Retired workers no longer keep conflict entries alive.** The hub keeps an ended worker's holder record as a name tombstone after the worker is collected or discarded (it rewrites the record whenever retirement deletes it), and participant views counted that tombstone as an offline participant. The lead's conflict checker therefore never dropped its slots against a retired worker: `room_state` listed "files that conflict with others' versions" for workers discarded days earlier, conflict notices kept firing for them, and a lead in this repository had accumulated 274 such slots against 126 retired workers. A holder whose worker id has no worker view is now not a visible participant; the checker drops those slots on its next pass and `room_state` stops listing them. Offline teammates and finished, uncollected workers stay visible as before.
