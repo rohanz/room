@@ -451,6 +451,16 @@ async function stopDaemon() {
   const { stopLocalDaemon } = await import('../packages/relay/src/daemon.js')
   await stopLocalDaemon(COMMON)
 }
+/**
+ * The scheduled restart stops the daemon the way an operator or the system would, with writers connected:
+ * SIGTERM (its signal path drains and saves), after which participant recovery starts the replacement.
+ * POST /daemon/stop refuses while writers are connected (409), so it fits cleanup, not a live restart.
+ */
+async function signalDaemon() {
+  const info = discovery()
+  if (!info) throw new Error('no daemon discovery file to restart')
+  process.kill(info.pid, 'SIGTERM')
+}
 async function cleanupDaemon() {
   // Check for startup contenders as well as the published daemon before removing its repo.
   const rows = (await run('ps', ['-ax', '-o', 'pid=,command='], { timeout: 5000 })).stdout.split('\n')
@@ -721,7 +731,7 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
           const r0 = Date.now()
           emit({ ev: 'restart-begin', why })
           try {
-            if (DAEMON) await stopDaemon()
+            if (DAEMON) await signalDaemon()
             else if (LOCAL) { await stopLocalServer(); await startLocalServer() }
             else await run('flyctl', ['machine', 'restart', MACHINE, '-a', APP], { timeout: 300_000 })
             emit({ ev: 'restart-command-done', ms: Date.now() - r0 })
@@ -825,7 +835,10 @@ function report(): void {
   // Every planned restart: when the command began and when /health answered again.
   const restarts = orch.filter(e => e.ev === 'restart-begin').map(b => ({ begin: b, healthy: orch.find(e => e.ev === 'restart-healthy' && e.t >= b.t) }))
     .filter((r): r is { begin: any; healthy: any } => !!r.healthy)
+  // A daemon's planned compaction restart (observer replaced with close 4409) is a restart window too.
+  const compactions = obs.filter(e => e.ev === 'observer-replaced').map(e => e.t as number)
   const inRestart = (t: number, afterMs = 15_000) => restarts.some(r => t >= r.begin.t - 5_000 && t <= r.healthy.t + afterMs)
+    || compactions.some(c => t >= c - 60_000 && t <= c + 60_000)
   const out: string[] = []
   const rows: { m: any; cpu?: number; steal?: number; bus?: number; live?: number }[] = []
 
