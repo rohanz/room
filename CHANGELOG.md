@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.43
 
 - **Daemon starts no longer use a one-time ticket.** 0.17.41 had the launcher record a ticket in the clone's private Room state for its daemon child to consume. It guarded only someone starting Room's internal daemon program by hand with its internal flag, which is no stronger a boundary than Room's state files themselves. Every launcher still runs the cutover admission before spawning (a required argument), and `room-daemon.mjs` still refuses `start` and bare invocations and requires the launcher's internal `--startup-report` flag; `stop` is unchanged. An empty `room/admissions` folder left by 0.17.41 is unused and can be deleted.
 - Host adapters, steps 7–9 of the extraction (no behavior or text change): session identity resolution and tool-call admission, wake delivery, wake status and the Codex turn probe now live in the per-host adapters, and the forwarding wrappers from earlier steps are deleted. Direct host names outside the adapters remain only at persisted formats, the `room_spawn` schema, registration and the frozen hook contracts, and the audit test now also catches host-named types such as `CodexTurnProbe`.
