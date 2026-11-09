@@ -8,7 +8,7 @@ import { PolicyStore } from './policy-store.js'
 import type { Rooms } from './registry.js'
 import type { Session } from './session.js'
 import { registryForDir } from './worker-registry.js'
-import { sweepLocalState } from './local-state-sweep.js'
+import { collectLocalState } from './local-state-gc.js'
 import { gitCommonDir } from '@room/roomd'
 import { realStateInput, type LocalWorker, type WorkerRecord } from './worker-status.js'
 import { decideRetire, processExited, workerRealState } from './worker-state.js'
@@ -258,14 +258,14 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   }
 }
 
-const SWEEP_EVERY_MS = 60 * 60 * 1000
-let sweptAt = 0
-/** Dead publisher leases, stale session cursors and abandoned temporaries: once an hour per process. */
+const GC_EVERY_MS = 60 * 60 * 1000
+let collectedAt = 0
+/** The local state collector (local-state-gc.ts): once an hour per process. */
 async function sweepClone(dir: string): Promise<void> {
-  if (Date.now() - sweptAt < SWEEP_EVERY_MS) return
-  sweptAt = Date.now()
+  if (Date.now() - collectedAt < GC_EVERY_MS) return
+  collectedAt = Date.now()
   try {
-    const removed = sweepLocalState(await gitCommonDir(dir))
-    if (removed.length) process.stderr.write(`[room] local state sweep removed ${removed.length} stale item${removed.length === 1 ? '' : 's'}\n`)
-  } catch (error) { process.stderr.write(`[room] local state sweep: ${error}\n`) }
+    const { removed } = collectLocalState(await gitCommonDir(dir))
+    if (removed.length) process.stderr.write(`[room] local state: removed ${removed.length} stale item${removed.length === 1 ? '' : 's'}\n`)
+  } catch (error) { process.stderr.write(`[room] local state collector: ${error}\n`) }
 }

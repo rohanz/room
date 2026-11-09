@@ -23457,9 +23457,9 @@ async function repositoryRoot(dir, git4 = run) {
   if (where.status !== 0) return where.status === 128 && /not a git repository/i.test(where.stderr) ? { problem: notRepository(dir) } : { root: dir };
   const [bare, inside2] = where.stdout.trim().split("\n");
   if (inside2 !== "true") return { problem: noWorkTree(dir, bare === "true") };
-  const top = await git4(dir, ["rev-parse", "--show-toplevel"]);
-  if (top.status !== 0) return { root: dir };
-  let root = top.stdout.trim() || dir;
+  const top2 = await git4(dir, ["rev-parse", "--show-toplevel"]);
+  if (top2.status !== 0) return { root: dir };
+  let root = top2.stdout.trim() || dir;
   try {
     if (fs17.realpathSync(dir) === fs17.realpathSync(root)) root = dir;
   } catch {
@@ -23846,8 +23846,8 @@ import path17 from "node:path";
 function defaults2(env) {
   try {
     const config2 = fs20.readFileSync(path17.join(env.CODEX_HOME || path17.join(os5.homedir(), ".codex"), "config.toml"), "utf8");
-    const top = config2.split(/^\s*\[/m, 1)[0];
-    const value5 = (key2) => top.match(new RegExp(`^\\s*${key2}\\s*=\\s*["']([^"']+)["']`, "m"))?.[1];
+    const top2 = config2.split(/^\s*\[/m, 1)[0];
+    const value5 = (key2) => top2.match(new RegExp(`^\\s*${key2}\\s*=\\s*["']([^"']+)["']`, "m"))?.[1];
     return { model: value5("model"), effort: value5("model_reasoning_effort") };
   } catch {
     return {};
@@ -41030,21 +41030,13 @@ var init_worker_launch = __esm({
   }
 });
 
-// packages/room-mcp/src/local-state-sweep.ts
+// packages/room-mcp/src/local-state-gc.ts
 import fs43 from "node:fs";
 import path43 from "node:path";
-function sweepLocalState(commonDir2, options = {}) {
+function collectLocalState(commonDir2, options = {}) {
   const now = options.now ?? Date.now;
-  const maxAgeMs = options.maxAgeMs ?? ROOM_STALE_MS;
   const root = path43.join(commonDir2, "room");
-  const removed = [];
-  const remove = (target, recursive2 = false) => {
-    try {
-      fs43.rmSync(target, { recursive: recursive2, force: true });
-      removed.push(target);
-    } catch {
-    }
-  };
+  const removed = [], unknown2 = [];
   const list = (dir) => {
     try {
       return fs43.readdirSync(dir, { withFileTypes: true });
@@ -41052,52 +41044,151 @@ function sweepLocalState(commonDir2, options = {}) {
       return [];
     }
   };
-  const mtime = (file) => {
+  const stat4 = (file) => {
     try {
-      return fs43.statSync(file).mtimeMs;
+      return fs43.statSync(file);
     } catch {
       return void 0;
     }
   };
-  for (const entry of list(path43.join(root, "publishers"))) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const file = path43.join(root, "publishers", entry.name);
-    let holder, lastActive;
+  const remove = (target, recursive2 = false) => {
+    if (options.dryRun) {
+      removed.push(target);
+      return;
+    }
     try {
-      const parsed = JSON.parse(fs43.readFileSync(file, "utf8"));
-      holder = parsed.holder;
-      lastActive = typeof parsed.lastActive === "number" ? parsed.lastActive : void 0;
+      fs43.rmSync(target, { recursive: recursive2, force: true });
+      removed.push(target);
     } catch {
+    }
+  };
+  const olderThan = (file, ms2) => {
+    const s = stat4(file);
+    return !!s && now() - s.mtimeMs >= ms2;
+  };
+  const deadHolderIdle = (file) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(fs43.readFileSync(file, "utf8"));
+    } catch {
+      return false;
+    }
+    const holder = leaseToken(parsed);
+    if (!holder || liveness(holder, options.probe) !== "dead") return false;
+    const lastActive = typeof parsed.lastActive === "number" ? parsed.lastActive : 0;
+    const idleSince = Math.max(lastActive, stat4(file)?.mtimeMs ?? now());
+    return now() - idleSince >= DEAD_HOLDER_IDLE_MS;
+  };
+  const orphanSharing = (file) => {
+    let record2;
+    try {
+      record2 = JSON.parse(fs43.readFileSync(file, "utf8"));
+    } catch {
+      return false;
+    }
+    if (typeof record2.worktree !== "string" || fs43.existsSync(record2.worktree)) return false;
+    return now() - Math.max(record2.updatedAt ?? 0, stat4(file)?.mtimeMs ?? 0) >= ROOM_STALE_MS;
+  };
+  const apply2 = (rule, target, isDir2) => {
+    const life = rule.lifetime;
+    switch (life.kind) {
+      case "keep":
+      case "owner":
+        return;
+      case "foreign":
+        return remove(target, true);
+      case "temp":
+        return olderThan(target, GC_TEMP_AGE_MS) ? remove(target) : void 0;
+      case "age":
+        return !isDir2 && olderThan(target, life.ms) ? remove(target) : void 0;
+      case "dead-holder":
+        return !isDir2 && deadHolderIdle(target) ? remove(target) : void 0;
+      case "orphan-sharing":
+        return !isDir2 && orphanSharing(target) ? remove(target) : void 0;
+      case "session-dir": {
+        const newest = Math.max(stat4(target)?.mtimeMs ?? 0, ...list(target).map((f) => stat4(path43.join(target, f.name))?.mtimeMs ?? 0));
+        return newest && now() - newest >= ROOM_STALE_MS ? remove(target, true) : void 0;
+      }
+    }
+  };
+  const judge = (key2, rel) => {
+    const rule = GC_RULES.find((r) => r.match(key2));
+    if (rule) apply2(rule, path43.join(root, rel), key2.isDir);
+    else unknown2.push(rel);
+  };
+  for (const entry of list(root)) {
+    if (!entry.isDirectory() || !GC_DIRECTORIES.includes(entry.name)) {
+      judge({ top: entry.name, isDir: entry.isDirectory() }, entry.name);
       continue;
     }
-    if (!holder || typeof holder.pid !== "number") continue;
-    const idleSince = Math.max(lastActive ?? 0, mtime(file) ?? now());
-    if (liveness(holder, options.probe) === "dead" && now() - idleSince >= PUBLISHER_DEAD_IDLE_MS) remove(file);
-  }
-  for (const entry of list(path43.join(root, "sessions"))) {
-    if (!entry.isDirectory()) continue;
-    const dir = path43.join(root, "sessions", entry.name);
-    const newest = Math.max(mtime(dir) ?? 0, ...list(dir).map((f) => mtime(path43.join(dir, f.name)) ?? 0));
-    if (newest && now() - newest >= maxAgeMs) remove(dir, true);
-  }
-  for (const sub of ["relay", "hub-leases"]) {
-    for (const entry of list(path43.join(root, sub))) {
-      if (!entry.isFile() || !entry.name.endsWith(".tmp")) continue;
-      const file = path43.join(root, sub, entry.name);
-      const at = mtime(file);
-      if (at !== void 0 && now() - at >= SWEEP_TEMP_AGE_MS) remove(file);
+    for (const child of list(path43.join(root, entry.name))) {
+      if (entry.name === "registry" && child.name === "quarantine" && child.isDirectory()) {
+        for (const bad of list(path43.join(root, "registry", "quarantine"))) judge({ top: "registry/quarantine", name: bad.name, isDir: bad.isDirectory() }, `registry/quarantine/${bad.name}`);
+        continue;
+      }
+      judge({ top: entry.name, name: child.name, isDir: child.isDirectory() }, `${entry.name}/${child.name}`);
     }
   }
-  return removed;
+  return { removed, unknown: unknown2 };
 }
-var SWEEP_TEMP_AGE_MS, PUBLISHER_DEAD_IDLE_MS;
-var init_local_state_sweep = __esm({
-  "packages/room-mcp/src/local-state-sweep.ts"() {
+var HOUR, DAY, GC_TEMP_AGE_MS, DEAD_HOLDER_IDLE_MS, top, inDir, isTemp, GC_DIRECTORIES, GC_RULES;
+var init_local_state_gc = __esm({
+  "packages/room-mcp/src/local-state-gc.ts"() {
     "use strict";
     init_src();
     init_leases2();
-    SWEEP_TEMP_AGE_MS = 60 * 60 * 1e3;
-    PUBLISHER_DEAD_IDLE_MS = 60 * 60 * 1e3;
+    HOUR = 60 * 60 * 1e3;
+    DAY = 24 * HOUR;
+    GC_TEMP_AGE_MS = HOUR;
+    DEAD_HOLDER_IDLE_MS = HOUR;
+    top = (names, opts = {}) => (e) => e.name === void 0 && names.includes(e.top) && (opts.isDir === void 0 || e.isDir === opts.isDir);
+    inDir = (dir, test) => (e) => e.top === dir && e.name !== void 0 && test(e.name, e.isDir);
+    isTemp = (name) => name.endsWith(".tmp");
+    GC_DIRECTORIES = ["relay", "hub", "hub-leases", "names", "publishers", "sessions", "hook-receipts", "sharing", "compat", "browser", "profiles", "registry"];
+    GC_RULES = [
+      {
+        path: "relay.json, hub/incarnation.json",
+        owner: "daemon",
+        lifetime: { kind: "keep" },
+        match: (e) => e.top === "relay.json" && e.name === void 0 || e.top === "hub" && e.name === "incarnation.json"
+      },
+      {
+        path: "relay/<room>.ydoc, relay/migrated-*.json",
+        owner: "daemon",
+        lifetime: { kind: "owner" },
+        match: inDir("relay", (n) => !isTemp(n))
+      },
+      { path: "*.tmp (any directory)", owner: "MCP session", lifetime: { kind: "temp" }, match: (e) => isTemp(e.name ?? e.top) },
+      { path: "hub/authority.lock", owner: "daemon", lifetime: { kind: "dead-holder" }, match: inDir("hub", (n) => n === "authority.lock") },
+      { path: "*.guard (any directory)", owner: "MCP session", lifetime: { kind: "dead-holder" }, match: (e) => (e.name ?? e.top).endsWith(".guard") },
+      { path: "hub-leases/<room>.json", owner: "daemon", lifetime: { kind: "keep" }, match: inDir("hub-leases", (n) => n.endsWith(".json")) },
+      { path: "daemon.log*", owner: "daemon", lifetime: { kind: "owner" }, match: (e) => e.name === void 0 && /^daemon\.log(\.\d+)?$/.test(e.top) },
+      {
+        path: "daemon-cutover.json, daemon-cutover-resolutions.json",
+        owner: "MCP session",
+        lifetime: { kind: "keep" },
+        match: top(["daemon-cutover.json", "daemon-cutover-resolutions.json"])
+      },
+      { path: "names/<hash>.json", owner: "MCP session", lifetime: { kind: "dead-holder" }, match: inDir("names", (n) => n.endsWith(".json")) },
+      { path: "publishers/<hash>.json", owner: "MCP session", lifetime: { kind: "dead-holder" }, match: inDir("publishers", (n) => n.endsWith(".json")) },
+      { path: "sessions/<session>/", owner: "MCP session", lifetime: { kind: "session-dir" }, match: inDir("sessions", (_n, isDir2) => isDir2) },
+      { path: "sessions/idle-episode.json", owner: "MCP session", lifetime: { kind: "age", ms: ROOM_STALE_MS }, match: inDir("sessions", (n) => n === "idle-episode.json") },
+      { path: "hook-receipts/<hash>.json", owner: "hooks", lifetime: { kind: "age", ms: ROOM_STALE_MS }, match: inDir("hook-receipts", (n) => n.endsWith(".json")) },
+      { path: "hook-receipts/.pruned, .prune-cursor", owner: "hooks", lifetime: { kind: "age", ms: ROOM_STALE_MS }, match: inDir("hook-receipts", (n) => n.startsWith(".")) },
+      { path: "sharing/<hash>.json", owner: "MCP session", lifetime: { kind: "orphan-sharing" }, match: inDir("sharing", (n) => /^[a-f0-9]{64}\.json$/.test(n)) },
+      { path: "sharing/legacy-baseline.json (+ .lock)", owner: "MCP session", lifetime: { kind: "keep" }, match: inDir("sharing", (n) => n.startsWith("legacy-baseline.json")) },
+      { path: "compat/<hash>.json", owner: "MCP session", lifetime: { kind: "age", ms: 30 * DAY }, match: inDir("compat", (n) => n.endsWith(".json")) },
+      { path: "browser/*.html", owner: "MCP session", lifetime: { kind: "age", ms: HOUR }, match: inDir("browser", (n) => n.endsWith(".html")) },
+      { path: "profiles/*.cpuprofile", owner: "MCP session", lifetime: { kind: "age", ms: ROOM_STALE_MS }, match: inDir("profiles", (n) => n.endsWith(".cpuprofile")) },
+      {
+        path: "registry/workers, tags, adoptions, runs, patches, collect, migration.*",
+        owner: "lead MCP",
+        lifetime: { kind: "owner" },
+        match: inDir("registry", (n) => n !== "quarantine")
+      },
+      { path: "registry/quarantine/*", owner: "MCP session", lifetime: { kind: "age", ms: 30 * DAY }, match: inDir("registry/quarantine", () => true) },
+      { path: "storage-gate.json, storage-gate/, preflight/", owner: "none", lifetime: { kind: "foreign" }, match: top(["storage-gate.json", "storage-gate", "preflight"]) }
+    ];
   }
 });
 
@@ -41353,18 +41444,18 @@ async function autoRetire(s, rooms) {
   }
 }
 async function sweepClone(dir) {
-  if (Date.now() - sweptAt < SWEEP_EVERY_MS) return;
-  sweptAt = Date.now();
+  if (Date.now() - collectedAt < GC_EVERY_MS) return;
+  collectedAt = Date.now();
   try {
-    const removed = sweepLocalState(await gitCommonDir(dir));
-    if (removed.length) process.stderr.write(`[room] local state sweep removed ${removed.length} stale item${removed.length === 1 ? "" : "s"}
+    const { removed } = collectLocalState(await gitCommonDir(dir));
+    if (removed.length) process.stderr.write(`[room] local state: removed ${removed.length} stale item${removed.length === 1 ? "" : "s"}
 `);
   } catch (error2) {
-    process.stderr.write(`[room] local state sweep: ${error2}
+    process.stderr.write(`[room] local state collector: ${error2}
 `);
   }
 }
-var LEGACY_UNCONFIRMED, SWEEP_EVERY_MS, sweptAt;
+var LEGACY_UNCONFIRMED, GC_EVERY_MS, collectedAt;
 var init_retire = __esm({
   "packages/room-mcp/src/retire.ts"() {
     "use strict";
@@ -41373,15 +41464,15 @@ var init_retire = __esm({
     init_src();
     init_policy_store();
     init_worker_registry();
-    init_local_state_sweep();
+    init_local_state_gc();
     init_src4();
     init_worker_status();
     init_worker_state();
     init_worker_git();
     init_git();
     LEGACY_UNCONFIRMED = "clean exit not confirmed";
-    SWEEP_EVERY_MS = 60 * 60 * 1e3;
-    sweptAt = 0;
+    GC_EVERY_MS = 60 * 60 * 1e3;
+    collectedAt = 0;
   }
 });
 
@@ -44476,10 +44567,10 @@ async function linkSharedDirs(cloneDir, scratchDir) {
   }
   if (fs52.existsSync(venv) && !fs52.existsSync(scratchVenv)) fs52.symlinkSync(venv, scratchVenv);
   const candidates = /* @__PURE__ */ new Set(["node_modules"]);
-  for (const top of ["packages", "apps", "libs"]) {
+  for (const top2 of ["packages", "apps", "libs"]) {
     await yieldTurn2();
     for (const root of [cloneDir, scratchDir]) {
-      const d = path51.join(root, top);
+      const d = path51.join(root, top2);
       try {
         if (!(await fs52.promises.lstat(d)).isDirectory()) continue;
       } catch (error2) {
@@ -44489,7 +44580,7 @@ async function linkSharedDirs(cloneDir, scratchDir) {
       let count = 0;
       for (const e of fs52.readdirSync(d, { withFileTypes: true })) {
         if (count++ % 32 === 0) await yieldTurn2();
-        if (e.isDirectory()) candidates.add(path51.join(top, e.name, "node_modules"));
+        if (e.isDirectory()) candidates.add(path51.join(top2, e.name, "node_modules"));
       }
     }
   }
@@ -45118,8 +45209,8 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
     const registration = await slotRegistration(cloneDir, dir);
     if (registration === "foreign") throw new Error("preview slot registration points outside this slot");
     if (registration === "valid") {
-      const top = (await gitSetup(dir, ["rev-parse", "--show-toplevel"])).trim();
-      if (path51.resolve(top) !== dir) throw new Error("preview cache is not its own worktree");
+      const top2 = (await gitSetup(dir, ["rev-parse", "--show-toplevel"])).trim();
+      if (path51.resolve(top2) !== dir) throw new Error("preview cache is not its own worktree");
     } else {
       if (!await removePreviewEntry(cloneDir, dir, true)) throw new Error("preview cache is malformed and could not be safely removed");
       stat4 = void 0;
@@ -60856,6 +60947,7 @@ init_config();
 init_credentials();
 init_src3();
 init_src4();
+init_local_state_gc();
 init_plugin();
 import fs63 from "node:fs";
 import path62 from "node:path";
@@ -61480,6 +61572,7 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
     else if (f.credentialStatus === "rejected") add2("WARN", "team login", "credential present; the server did not confirm it", "Deploy Room 0.17, then retry room doctor");
     else add2("WARN", "team login", "credential present (not verified)", "Check server connection, then retry room doctor");
   } else add2(f.relayFile ? f.relayHealth ? "PASS" : "WARN" : "PASS", "local relay", f.relayFile ? f.relayHealth ? "discovery and /health OK" : "discovery exists; /health unavailable" : "not started yet", "Join the local room to start its relay");
+  if (f.unknownLocalState?.length) add2("WARN", "local state", `${f.unknownLocalState.length} unlisted entr${f.unknownLocalState.length === 1 ? "y" : "ies"} under the clone's room directory: ${f.unknownLocalState.slice(0, 5).join(", ")}${f.unknownLocalState.length > 5 ? ", \u2026" : ""}`, "Room never removes files its table does not name (docs/reference.md, Local state); remove them by hand if they are leftovers");
   if (f.hookCompatibility) add2("WARN", "hook delivery contract", f.hookCompatibility, "Update the hook or reconnect Room (/mcp) or restart the session");
   if (f.legacyRelay) add2("WARN", "Room 0.16 session", "a Room 0.16 local relay is still running in this clone", "End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)");
   if (f.canonicalRelayWarning) add2("WARN", "canonical relay", f.canonicalRelayWarning, "Quit the older Room session or reconnect Room there");
@@ -61571,6 +61664,10 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
     f.configError = error2 instanceof Error ? error2.message : String(error2);
   }
   f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir());
+  if (f.repo) try {
+    f.unknownLocalState = collectLocalState(await gitCommonDir(dir), { dryRun: true }).unknown;
+  } catch {
+  }
   return f;
 }
 async function runDoctor(dir, { inSession = false, selected, sessionWarning, sessionBound } = {}) {
@@ -61697,8 +61794,8 @@ var CpuWatchdog = class {
       const profile = await (this.o.capture ?? captureCpuProfile)(CPU_PROFILE_MS);
       const file = await (this.o.write ?? writeCpuProfile)(dir, profile, (this.o.wallClock ?? (() => /* @__PURE__ */ new Date()))());
       this.lastProfile = file;
-      const top = topSelfFrames(profile).map((f) => `${f.frame} ${Math.round(f.ms)}ms`).join(", ");
-      this.o.log(`cpu high: ${percent}; ${CPU_PROFILE_MS / 1e3} s profile ${file}; top self time: ${top || "none sampled"}`);
+      const top2 = topSelfFrames(profile).map((f) => `${f.frame} ${Math.round(f.ms)}ms`).join(", ");
+      this.o.log(`cpu high: ${percent}; ${CPU_PROFILE_MS / 1e3} s profile ${file}; top self time: ${top2 || "none sampled"}`);
     } catch (error2) {
       this.o.log(`cpu high: ${percent}; profile failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
     } finally {

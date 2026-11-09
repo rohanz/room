@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.46
+
+- **One collector for the clone's local state.** `docs/reference.md` (Files Room writes, Local state) now lists every file Room keeps under the common Git directory's `room/`, its owner and its lifetime, and one hourly pass (`local-state-gc.ts`) applies that table; a test keeps the table and the code equal. It replaces the 0.17.45 sweep and the hooks' own receipt pruning, and newly ages out dead name leases, orphaned guard files and the relay authority lock of a dead daemon, sharing records of participants whose worktree is gone, old compatibility floors, browser link pages, CPU profiles, quarantined records, and the storage-gate and preflight files written by an unreleased SQLite branch. Anything the table does not name is left alone and listed by `room doctor` ("local state").
+
 ## 0.17.45
 
 - **Retired workers' name tombstones expire.** The seven-day participant expiry skipped every holder that named a worker, so the tombstone the hub keeps for a collected or discarded worker outlived the worker for the life of the clone (126 of them here) and was pruned only at the hub's name cap. A worker holder whose worker view is gone now ages like a teammate's record and expires after seven days offline; a worker that still has its view (finished, uncollected) is still left to its projector.

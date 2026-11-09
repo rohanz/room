@@ -136,7 +136,7 @@ function read(file: string): Record<string, unknown> | undefined {
 }
 
 /** Leases with payloads store a holder field; a run writer is itself the token. */
-function leaseToken(value: Record<string, unknown>): InstanceToken | undefined {
+export function leaseToken(value: Record<string, unknown>): InstanceToken | undefined {
   const candidate = (value.holder ?? value) as Partial<InstanceToken> | null
   return candidate && typeof candidate.pid === 'number' && typeof candidate.startTime === 'string'
     && typeof candidate.executable === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.nonce === 'string'

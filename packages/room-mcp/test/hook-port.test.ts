@@ -173,6 +173,14 @@ describe('before-edit receipts under the redesign local-state directory', () => 
     expect(fs.readdirSync(receiptsDir()).filter(name => name.endsWith('.tmp'))).toEqual([])
   })
 
+  it('caps receipt reads at 4 KB', async () => {
+    const { readReceipt } = await import(join(HOOKS, 'common.mjs'))
+    mkdirSync(receiptsDir(), { recursive: true })
+    const large = join(receiptsDir(), 'large.json')
+    writeFileSync(large, JSON.stringify({ at: 1, padding: 'x'.repeat(5000) }))
+    expect(readReceipt(large)).toBeUndefined()
+  })
+
   it('writes no receipt or activity for oversized and control-character session ids', async () => {
     const { writeHookReceipt, receiptSessionId } = await import(join(HOOKS, 'common.mjs'))
     expect(receiptSessionId('x'.repeat(256))).toBe('x'.repeat(256))
@@ -193,73 +201,6 @@ describe('before-edit receipts under the redesign local-state directory', () => 
     expect(JSON.parse(readFileSync(activity, 'utf8')).session_id).toBe(SID)
   })
 
-  it('caps receipt reads at 4 KB and advances pruning past 500 fresh names', async () => {
-    const { readReceipt, pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
-    mkdirSync(receiptsDir(), { recursive: true })
-    const large = join(receiptsDir(), 'large.json')
-    writeFileSync(large, JSON.stringify({ at: 1, padding: 'x'.repeat(5000) }))
-    expect(readReceipt(large)).toBeUndefined()
-    const now = Date.now(), old = new Date(now - 8 * 86400_000)
-    for (let i = 0; i < 500; i++) writeFileSync(join(receiptsDir(), `a-${String(i).padStart(3, '0')}.json`), '{}')
-    const stale = join(receiptsDir(), 'z-stale.json')
-    writeFileSync(stale, '{}'); fs.utimesSync(stale, old, old)
-    pruneHookReceipts(receiptsDir(), now)
-    expect(fs.existsSync(stale)).toBe(true)
-    fs.utimesSync(join(receiptsDir(), '.pruned'), old, old)
-    pruneHookReceipts(receiptsDir(), now)
-    expect(fs.existsSync(stale)).toBe(false)
-  })
-
-  it('preserves a refreshed receipt while pruning renames an old path', async () => {
-    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
-    mkdirSync(receiptsDir(), { recursive: true })
-    const now = Date.now(), file = join(receiptsDir(), 'old.json')
-    writeFileSync(file, '{"at":1}')
-    const old = new Date(now - 8 * 86400_000)
-    fs.utimesSync(file, old, old)
-    const rename = fs.renameSync.bind(fs)
-    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-      if (String(from) === file && String(to).includes('.pruning.')) writeFileSync(file, '{"at":2}')
-      return rename(from, to)
-    })
-    try { pruneHookReceipts(receiptsDir(), now) } finally { spy.mockRestore() }
-    expect(readFileSync(file, 'utf8')).toBe('{"at":2}')
-  })
-
-  it.each(['EPERM', 'EEXIST', 'COPY_EEXIST'])('cleans a fresh tombstone when restore encounters %s', async code => {
-    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
-    mkdirSync(receiptsDir(), { recursive: true })
-    const now = Date.now(), file = join(receiptsDir(), 'old.json')
-    writeFileSync(file, '{"at":1}')
-    const old = new Date(now - 8 * 86400_000)
-    fs.utimesSync(file, old, old)
-    const rename = fs.renameSync.bind(fs)
-    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-      rename(from, to)
-      if (String(from) === file && String(to).includes('.pruning.')) fs.utimesSync(to, new Date(now), new Date(now))
-    })
-    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((_from, to) => {
-      if (String(to) === file) {
-        if (code === 'EEXIST') writeFileSync(file, '{"at":2}')
-        const errorCode = code === 'EEXIST' ? 'EEXIST' : 'EPERM'
-        throw Object.assign(new Error(errorCode), { code: errorCode })
-      }
-      throw new Error('unexpected link')
-    })
-    const copy = fs.copyFileSync.bind(fs)
-    const copySpy = vi.spyOn(fs, 'copyFileSync').mockImplementation((from, to, flags) => {
-      expect(flags).toBe(fs.constants.COPYFILE_EXCL)
-      if (code === 'COPY_EEXIST') {
-        writeFileSync(file, '{"at":2}')
-        throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' })
-      }
-      return copy(from, to, flags)
-    })
-    try { expect(() => pruneHookReceipts(receiptsDir(), now)).not.toThrow() }
-    finally { copySpy.mockRestore(); linkSpy.mockRestore(); renameSpy.mockRestore() }
-    expect(readFileSync(file, 'utf8')).toBe(code === 'EPERM' ? '{"at":1}' : '{"at":2}')
-    expect(fs.readdirSync(receiptsDir()).filter(name => name.includes('.pruning.'))).toEqual([])
-  })
 })
 
 describe('bounded hook reads, replies and temp files', () => {
@@ -432,24 +373,4 @@ describe('bounded hook reads, replies and temp files', () => {
     } finally { await new Promise(r => server.close(r)) }
   })
 
-  it('reads a bounded directory batch and a bounded cursor when pruning', async () => {
-    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
-    const receipts = join(dir, '.git/room/hook-receipts')
-    mkdirSync(receipts, { recursive: true })
-    const now = Date.now(), old = new Date(now - 8 * 86400_000)
-    for (let i = 0; i < 40; i++) {
-      const file = join(receipts, `r-${String(i).padStart(2, '0')}.json`)
-      writeFileSync(file, '{}'); fs.utimesSync(file, old, old)
-    }
-    writeFileSync(join(receipts, '.prune-cursor'), 'z'.repeat(300))
-    pruneHookReceipts(receipts, now, 10)
-    const left = fs.readdirSync(receipts).filter(name => name.endsWith('.json')).length
-    expect(left).toBeLessThan(40)
-    expect(left).toBeGreaterThanOrEqual(30)
-    for (let pass = 0; pass < 10 && fs.readdirSync(receipts).some(name => name.endsWith('.json')); pass++) {
-      fs.utimesSync(join(receipts, '.pruned'), old, old)
-      pruneHookReceipts(receipts, now, 10)
-    }
-    expect(fs.readdirSync(receipts).filter(name => name.endsWith('.json'))).toEqual([])
-  })
 })

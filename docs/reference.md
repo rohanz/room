@@ -126,6 +126,35 @@ Room has **no default worker model or effort**. The model and effort named in th
 
 Room never writes a teammate's live edits into your working tree. It writes session bookkeeping in the worktree's Git directory (`room.json`, migrated from root `.room.json`) and choice, relay discovery, local snapshots and a rotating `room-mcp.log` in the common Git directory. The local browser link uses a read-only capability derived from the private key in `room/relay.json`, works only over loopback, and requires a running session. Local memory is saved in `room/relay/*.ydoc`; retained claims remain in local memory, while connected sessions republish current file text. Completed workers keep their final shared publication on normal exit, so `room_state` and the `room_spawn` reply name finished workers left uncollected for over an hour. Local snapshots also retain a bounded read cache of completed workers’ shared files; after a relay restart, these become readable when the live lead confirms the same retained worker and run. Current publications and sharing gaps take precedence. Collection or discard removes that worker’s cache; oldest completed publications are dropped first when the 5 MB snapshot target is exceeded. Cached files never restore live presence or publisher authority. Small revision records survive cache eviction so a stale replica cannot restore an older sharing policy after another restart. `room_leave` preserves memory. When the session that runs the relay leaves (or stops) and the final save fails, for example on a full disk, the relay retries for about 3 s (`FINAL_SAVE_RETRY_MS` in `packages/relay/src/memory.ts`); if the save still fails it keeps serving the room and holding the clone's relay authority until that process exits, and `room_leave` warns `local room state could not be saved: <cause>; the relay kept running until exit`. `room_close confirm=true` exports the ledger and closes the repository room for everyone; in a local room it also forgets saved memory. Exports go under `.room/ledger/`; worker worktrees and logs go under `.room/workers/`. Room adds `.room/` to Git's private `info/exclude`.
 
+### Local state
+
+Every file Room keeps under the clone's common Git directory, in `room/`, has one owner and one lifetime. The owner removes its file at the natural end (leave, release, retire); once an hour each Room process runs the collector (`packages/room-mcp/src/local-state-gc.ts`), which removes what the table ages out and nothing else. An entry the table does not name is reported by `room doctor` and left alone. Ages: `1 h` for anything a running process would have refreshed, `7 d` (`ROOM_STALE_DAYS`'s fixed policy) for anything that ends with a participant, `30 d` for records kept for a later operator look.
+
+| Path under `room/` | Owner | Collector |
+|---|---|---|
+| `relay.json, hub/incarnation.json` | daemon | keep: the clone's relay identity |
+| `relay/<room>.ydoc, relay/migrated-*.json` | daemon | owner: forgotten with the room (`room_close`) |
+| `*.tmp (any directory)` | MCP session | 1 h: an atomic write that never finished |
+| `hub/authority.lock` | daemon | holder dead and 1 h idle |
+| `*.guard (any directory)` | MCP session | holder dead and 1 h idle |
+| `hub-leases/<room>.json` | daemon | keep |
+| `daemon.log*` | daemon | owner: rotates at 1 MB, two generations |
+| `daemon-cutover.json, daemon-cutover-resolutions.json` | MCP session | keep: the clone's 0.17 cutover record |
+| `names/<hash>.json` | MCP session | holder dead and 1 h idle |
+| `publishers/<hash>.json` | MCP session | holder dead and 1 h idle |
+| `sessions/<session>/` | MCP session (hooks write `hook*.json`, `session.json`, `runtime.json`) | 7 d since the newest file |
+| `sessions/idle-episode.json` | MCP session | 7 d |
+| `hook-receipts/<hash>.json` | hooks | 7 d |
+| `hook-receipts/.pruned, .prune-cursor` | hooks | 7 d (markers of the pre-0.17.46 hook pruning) |
+| `sharing/<hash>.json` | MCP session | worktree gone and 7 d |
+| `sharing/legacy-baseline.json (+ .lock)` | MCP session | keep: the clone-wide sharing floor |
+| `compat/<hash>.json` | MCP session | 30 d |
+| `browser/*.html` | MCP session | 1 h |
+| `profiles/*.cpuprofile` | MCP session | 7 d |
+| `registry/workers, tags, adoptions, runs, patches, collect, migration.*` | lead MCP | owner: retired records go after 7 d under the registry's locks |
+| `registry/quarantine/*` | MCP session | 30 d |
+| `storage-gate.json, storage-gate/, preflight/` | none | remove: written by no shipped Room version |
+
 Credentials live in `~/.config/room/credentials.json`, subject to `XDG_CONFIG_HOME` or `ROOM_CREDENTIALS`. `ROOM_LOG_FILE` changes the log location. The log is mode 0600 and rotates at 1 MB with one older generation. Temporary merge directories use the OS temp directory.
 
 When a teammate pushes a commit on your branch, Room can show that your clone is behind. To catch up with uncommitted edits, run `git pull --ff-only --autostash`. If it refuses, get help before trying another Git history operation.
@@ -143,7 +172,7 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 | `ROOM_WAKE` | `auto`, `socket`, `channels`, or `off`. |
 | `ROOM_TAG` | Your label when one login has several sessions. |
 | `ROOM_AUTO_FETCH` | Set to `0` to disable automatic missing-base fetches. |
-| `ROOM_STALE_DAYS` | Display only: days after which `room_state` marks an offline participant's claim `stale`; default 7. It deletes nothing. Deletion follows the hub's fixed policy: after seven days without a live lease, the hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state; owed ledger messages remain. The same seven days age out the hub's name tombstone of a retired worker, a session's cursor directory and (with the retired worker records) the clone's stale bookkeeping; a dead publisher's lease file and an abandoned atomic-write temporary go after an hour. |
+| `ROOM_STALE_DAYS` | Display only: days after which `room_state` marks an offline participant's claim `stale`; default 7. It deletes nothing. Deletion follows the hub's fixed policy: after seven days without a live lease, the hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state; owed ledger messages remain. The same seven days age out the hub's name tombstone of a retired worker, a session's cursor directory and (with the retired worker records) the clone's stale bookkeeping; a dead publisher's or name lease file and an abandoned atomic-write temporary go after an hour (the full table: Files Room writes, Local state). |
 | `ROOM_WORKER_MODEL`, `ROOM_WORKER_EFFORT` | Your default worker model and effort; otherwise host defaults apply. |
 | `ROOM_CODEX_WORKER_MODEL`, `ROOM_CODEX_WORKER_EFFORT`, `ROOM_CLAUDE_WORKER_MODEL`, `ROOM_CLAUDE_WORKER_EFFORT` | Per-host worker defaults; they override the generic pair. |
 | `ROOM_WORKER_THREADS`, `ROOM_WORKER_MEM_GB`, `ROOM_WORKER_MAX_BUDGET_USD` | Worker compute budget and Claude cost cap. |

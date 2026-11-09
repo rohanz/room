@@ -684,12 +684,6 @@ export function receiptSessionId(id) {
 export function hookReceiptFile(stateDir, sessionId) {
   return path.join(stateDir, 'hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
 }
-const RECEIPT_MAX_AGE_MS = 7 * 86400_000
-const RECEIPT_PRUNE_EVERY_MS = 10 * 60_000
-const RECEIPT_PRUNE_SCAN = 500
-/** Directory entries read per pruning pass; only RECEIPT_PRUNE_SCAN of them are kept and statted. */
-const RECEIPT_PRUNE_LIST = 5000
-const RECEIPT_CURSOR_MAX_BYTES = 255
 const RECEIPT_MAX_BYTES = 4096
 /** Read only bounded receipt bytes, including files supplied by another local process. */
 export function readReceipt(file) {
@@ -703,8 +697,8 @@ export function readReceipt(file) {
 }
 /**
  * Record this session's before-edit receipt (throttled to one write per 5 s) with a temp file and a rename in
- * the receipts directory: no read-modify-write of shared state, no lock, no wait. At most every ten minutes,
- * remove receipts older than a week (pruneHookReceipts). Never throws.
+ * the receipts directory: no read-modify-write of shared state, no lock, no wait. Receipts older than a week
+ * are removed by the MCP's local state collector (packages/room-mcp/src/local-state-gc.ts). Never throws.
  */
 export function writeHookReceipt(stateDir, rawId, now = Date.now()) {
   const sessionId = receiptSessionId(rawId)
@@ -724,64 +718,5 @@ export function writeHookReceipt(stateDir, rawId, now = Date.now()) {
     try { fs.rmSync(temp, { force: true }) } catch { /* best effort */ }
     return false
   }
-  pruneHookReceipts(dir, now)
   return true
-}
-/**
- * One bounded pass: stream at most `listLimit` directory entries, keep the 500 smallest names after the
- * persisted cursor (wrapping to the start when none are left), stat only those, and advance the cursor.
- * A directory larger than `listLimit` is pruned within the entries each pass reads; deleting stale ones
- * brings the rest into reach.
- */
-export function pruneHookReceipts(dir, now = Date.now(), listLimit = RECEIPT_PRUNE_LIST) {
-  const marker = path.join(dir, '.pruned')
-  const cursorFile = path.join(dir, '.prune-cursor')
-  try { if (now - fs.statSync(marker).mtimeMs < RECEIPT_PRUNE_EVERY_MS) return } catch { /* never pruned */ }
-  try {
-    fs.writeFileSync(marker, '')
-    const cursorRead = readBoundedText(cursorFile, RECEIPT_CURSOR_MAX_BYTES)
-    const cursor = cursorRead?.text ?? ''
-    const after = [], wrapped = []
-    // Sorted, at most RECEIPT_PRUNE_SCAN long: insert in order, drop the largest.
-    const keep = (list, name) => {
-      if (list.length >= RECEIPT_PRUNE_SCAN && name >= list.at(-1)) return
-      let i = list.length
-      while (i > 0 && list[i - 1] > name) i--
-      list.splice(i, 0, name)
-      if (list.length > RECEIPT_PRUNE_SCAN) list.pop()
-    }
-    const handle = fs.opendirSync(dir)
-    try {
-      for (let read = 0, entry; read < listLimit && (entry = handle.readSync()) !== null; read++) {
-        if (!/\.(json|tmp)$/.test(entry.name)) continue
-        keep(entry.name > cursor ? after : wrapped, entry.name)
-      }
-    } finally { handle.closeSync() }
-    const batch = after.length ? after : wrapped
-    fs.writeFileSync(cursorFile, batch.at(-1) ?? '')
-    for (const name of batch) {
-      const file = path.join(dir, name)
-      const maxAge = name.endsWith('.tmp') ? 3600_000 : RECEIPT_MAX_AGE_MS
-      try {
-        const before = fs.statSync(file)
-        if (!before.isFile() || now - before.mtimeMs <= maxAge) continue
-        // Move the pathname away before the final age check. If another hook refreshed
-        // the receipt, preserve it, even if the refresh raced with the first stat.
-        const tomb = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.pruning.json`
-        fs.renameSync(file, tomb)
-        const moved = fs.statSync(tomb)
-        if (now - moved.mtimeMs > maxAge) fs.rmSync(tomb, { force: true })
-        else {
-          try { fs.linkSync(tomb, file); fs.rmSync(tomb, { force: true }) }
-          catch (error) {
-            if (error?.code === 'EEXIST') fs.rmSync(tomb, { force: true })
-            else {
-              try { fs.copyFileSync(tomb, file, fs.constants.COPYFILE_EXCL); fs.rmSync(tomb, { force: true }) }
-              catch (copyError) { if (copyError?.code === 'EEXIST') fs.rmSync(tomb, { force: true }) }
-            }
-          }
-        }
-      } catch { /* raced; pruning is best effort */ }
-    }
-  } catch { /* best effort */ }
 }

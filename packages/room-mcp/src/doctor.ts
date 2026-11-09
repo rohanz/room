@@ -9,6 +9,7 @@ import { credentialsPath, getCredential } from './credentials.js'
 import type { DeliveryHealth } from './wake-reconciler.js'
 import { canonicalRelayWarning, cloneId, deterministicPort, legacyRelayRunning, readRelayInfo, relayFile, relayIdentity } from '@room/relay'
 import { gitCommonDir } from '@room/roomd'
+import { collectLocalState } from './local-state-gc.js'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
 const minimumGit = [2, 31, 0] // git rev-parse --path-format=absolute
@@ -77,6 +78,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     else if (f.credentialStatus === 'rejected') add('WARN', 'team login', 'credential present; the server did not confirm it', 'Deploy Room 0.17, then retry room doctor')
     else add('WARN', 'team login', 'credential present (not verified)', 'Check server connection, then retry room doctor')
   } else add(f.relayFile ? f.relayHealth ? 'PASS' : 'WARN' : 'PASS', 'local relay', f.relayFile ? f.relayHealth ? 'discovery and /health OK' : 'discovery exists; /health unavailable' : 'not started yet', 'Join the local room to start its relay')
+  if (f.unknownLocalState?.length) add('WARN', 'local state', `${f.unknownLocalState.length} unlisted entr${f.unknownLocalState.length === 1 ? 'y' : 'ies'} under the clone's room directory: ${f.unknownLocalState.slice(0, 5).join(', ')}${f.unknownLocalState.length > 5 ? ', …' : ''}`, 'Room never removes files its table does not name (docs/reference.md, Local state); remove them by hand if they are leftovers')
   if (f.hookCompatibility) add('WARN', 'hook delivery contract', f.hookCompatibility, 'Update the hook or reconnect Room (/mcp) or restart the session')
   if (f.legacyRelay) add('WARN', 'Room 0.16 session', 'a Room 0.16 local relay is still running in this clone', 'End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)')
   if (f.canonicalRelayWarning) add('WARN', 'canonical relay', f.canonicalRelayWarning, 'Quit the older Room session or reconnect Room there')
@@ -158,6 +160,7 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     }
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
   f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir())
+  if (f.repo) try { f.unknownLocalState = collectLocalState(await gitCommonDir(dir), { dryRun: true }).unknown } catch { /* unreadable state directory: nothing to report */ }
   return f
 }
 export interface DoctorOptions {

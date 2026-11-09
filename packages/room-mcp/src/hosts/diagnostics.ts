@@ -10,6 +10,8 @@ import { createStaleVersionWarning } from '../stale-version.js'
 /** `cached`: Claude loads this plugin from the install record's cache path (not a directory marketplace). */
 type Plugin = InstalledPlugin
 export interface DoctorFacts {
+  /** Entries under `<common dir>/room/` that the local state table does not name; the collector leaves them. */
+  unknownLocalState?: string[]
   node?: string; git?: string; repo: boolean; claudeCli: boolean; codexCli: boolean
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
