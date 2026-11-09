@@ -176,6 +176,39 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
       catch (e) { emit({ ev: 'join-failed', why, attempt, error: String(e).slice(0, 300) }); if (stopping) return; await sleep(10_000) }
     }
     tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: dir, log })
+    const deliveredIds = new Set<string>()
+    ;(globalThis as any).__roomPruneLog = (info: Record<string, unknown>) => emit({ ev: 'receipt-prune', ...info })
+    // Who deletes my receipts? Observe my own receipt map: deleted keys, the transaction's origin and whether it was local.
+    const watchSeen = (sess: typeof s) => {
+      const map = sess.room.seen(sess.me.name)
+      map.observe((event: any, tx: any) => {
+        const deleted = [...event.changes.keys.entries()].filter(([, c]: any) => c.action === 'delete').map(([k]: any) => k)
+        if (!deleted.length) return
+        const origin = tx.origin, kind = origin === null ? 'null' : typeof origin === 'object' ? origin.constructor?.name ?? 'object' : String(origin)
+        emit({ ev: 'seen-delete', keys: deleted.length, sample: deleted.slice(0, 3), local: tx.local, origin: kind, bus: sess.room.bus.length, size: map.size, docId: sess.room.doc.clientID })
+      })
+    }
+    if (process.env.SOAK_WATCH_SEEN === '1') watchSeen(s)
+    // Trace every deletion of an item in my own receipt map at the Yjs level (integration-time demotion or an applied
+    // delete set), without touching the map itself. Patched once per process.
+    if (process.env.SOAK_ITEM_TRACE === '1' && !(globalThis as any).__roomItemTrace) {
+      (globalThis as any).__roomItemTrace = true
+      const Item = (Y as any).Item, origDelete = Item.prototype.delete
+      Item.prototype.delete = function (this: any, tx: any) {
+        try {
+          const parent = this.parent
+          if (parent && parent.doc && this.parentSub) {
+            const key = [...parent.doc.share.entries()].find(([, t]: any) => t === parent)?.[0] as string | undefined
+            if (key?.startsWith('seen:') && key === `seen:${encodeURIComponent(s?.me.name ?? '')}`) {
+              const o = tx?.origin
+              emit({ ev: 'item-delete', map: key, k: String(this.parentSub).slice(0, 24), writer: this.id.client, clock: this.id.clock, local: tx?.local, origin: o === null || o === undefined ? 'null' : typeof o === 'object' ? o.constructor?.name ?? 'object' : String(o), current: parent._map.get(this.parentSub) === this, hasRight: this.right !== null, alreadyDeleted: this.deleted, bus: s?.room.bus.length, mapSize: parent._map.size, stack: new Error().stack?.split('\n').slice(2, 7).map((l: string) => l.trim().replace(/^at /, '').replace(/\(.*\//, '(')).join(' < ') })
+            }
+          }
+        } catch { /* diagnostics only */ }
+        return origDelete.call(this, tx)
+      }
+    }
+    const walk = (item: any): number[] => { const out: number[] = []; for (let n = item; n && out.length < 2000; n = n.right) out.push(n.id.client); return out }
     const call = tools.call.bind(tools)
     tools.call = async (tool: string, args: unknown) => {
       const started = performance.now()
@@ -190,7 +223,16 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
     const commit = tools.ledger.commit.bind(tools.ledger)
     tools.ledger.commit = (batch: any) => {
       if (!batch.committed) for (const { m, via } of batch.items) {
-        emit({ ev: 'delivered', id: m.id, from: m.from, to: m.to, type: m.type, seq: m.seq, via })
+        // Diagnostics for a redelivery: what this replica knew when it handed the message off again.
+        const again = deliveredIds.has(m.id)
+        deliveredIds.add(m.id)
+        emit({ ev: 'delivered', id: m.id, from: m.from, to: m.to, type: m.type, seq: m.seq, via, ...(again ? { again: true,
+          receipt: s.room.seen(s.me.name).get(m.id) ?? null, seenSize: s.room.seen(s.me.name).size, seenMaps: [...s.room.doc.share.keys()].filter(k => k.startsWith('seen:')).length,
+          bus: s.room.bus.length, mail: s.room.mail.size, synced: s.provider.synced, docId: s.room.doc.clientID, epoch: s.lease?.epoch, me: s.me.name,
+          // Yjs internals of my receipt map: every key's current item, whether it is deleted and which client wrote it.
+          seenItems: [...((s.room.seen(s.me.name) as any)._map as Map<string, any>).entries()].slice(0, 6).map(([k, it]) => `${k.slice(0, 18)}:${it.deleted ? 'del' : 'live'}:${it.id.client}`),
+          seenItemCount: ((s.room.seen(s.me.name) as any)._map as Map<string, any>).size,
+          busClients: [...new Set([...(s.room.bus as any)._start ? walk((s.room.bus as any)._start) : []])].slice(0, 4) } : {}) })
         if (m.type === 'question' && m.to === s.me.name) setTimeout(() => void answer(m), jitter(3_000, 30_000))
       }
       return commit(batch)
@@ -218,7 +260,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
         for (let attempt = 1; !stopping; attempt++) {
           try {
             const fresh = await replacement.join()
-            await replacement.finish(fresh, async x => { s = x; tools.attachHooks(x) })
+            await replacement.finish(fresh, async x => { s = x; tools.attachHooks(x); if (process.env.SOAK_WATCH_SEEN === '1') watchSeen(x) })
             emit({ ev: 'replaced', sameName: s.me.name === before.name, name: s.me.name, epoch: s.lease?.epoch, prevEpoch: before.epoch, ms: Date.now() - t0, attempts: attempt })
             break
           } catch (e) { emit({ ev: 'replace-failed', attempt, error: String(e).slice(0, 300) }); await sleep(Math.min(20_000, 1_000 * 2 ** attempt)) }
@@ -438,7 +480,9 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
     emit({ ev: 'room', room, connected: provider.wsconnected, synced: provider.synced, holders, present,
       live: holders.filter(h => !h.ended).length, bus: rd.bus.length, mail: rd.mail.size, docBytes: Y.encodeStateAsUpdate(doc).length,
       structs: history.structs, deleted: history.deleted, generation: docGeneration(doc) ?? '0',
-      hubSeq: meta.get('hubSeq'), hubEpoch: meta.get('hubEpoch'), hubIncarnation: meta.get('hubIncarnation') })
+      hubSeq: meta.get('hubSeq'), hubEpoch: meta.get('hubEpoch'), hubIncarnation: meta.get('hubIncarnation'),
+      // Receipt map sizes per participant: the live document's view, to compare with the saved snapshot at a restart.
+      receipts: Object.fromEntries([...doc.share.keys()].filter(k => k.startsWith('seen:')).map(k => [decodeURIComponent(k.slice(5)), doc.getMap(k).size])) })
   }
   return { sample, history: () => last, stop: () => { clearInterval(refresh); provider.destroy(); doc.destroy() } }
 }
@@ -458,10 +502,28 @@ async function stopDaemon() {
  * SIGTERM (its signal path drains and saves), after which participant recovery starts the replacement.
  * POST /daemon/stop refuses while writers are connected (409), so it fits cleanup, not a live restart.
  */
+let restartCount = 0
+const sleepMs = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 async function signalDaemon() {
   const info = discovery()
   if (!info) throw new Error('no daemon discovery file to restart')
   process.kill(info.pid, 'SIGTERM')
+  // Keep what the daemon saved on its way out: the file a reload reads is the evidence for lost receipts.
+  const before = snapshotStamp(), until = Date.now() + 15_000
+  while (Date.now() < until && snapshotStamp() === before) await sleepMs(50)
+  copySnapshots(`restart-${++restartCount}`)
+}
+const relayDir = () => path.join(COMMON, 'room', 'relay')
+function snapshotStamp(): string {
+  try { return fs.readdirSync(relayDir()).filter(n => n.endsWith('.ydoc')).map(n => `${n}:${fs.statSync(path.join(relayDir(), n)).mtimeMs}`).join(',') } catch { return '' }
+}
+/** Copies of the daemon's saved room snapshots, for comparing the saved state with the live document afterwards. */
+function copySnapshots(label: string): void {
+  const keep = path.join(DIR, 'snapshots', label)
+  try {
+    fs.mkdirSync(keep, { recursive: true })
+    for (const name of fs.readdirSync(relayDir())) if (name.endsWith('.ydoc')) fs.copyFileSync(path.join(relayDir(), name), path.join(keep, name))
+  } catch (e) { console.error('snapshot copy failed:', e) }
 }
 async function cleanupDaemon() {
   // Check for startup contenders as well as the published daemon before removing its repo.
@@ -679,7 +741,7 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
     for (const p of roster) {
       const out = fs.openSync(path.join(LOGS, `${p.name}.log`), 'a')
       const child = spawn(process.execPath, [...process.execArgv, new URL(import.meta.url).pathname, 'participant', p.name, p.repo, restarts.join(','), String(count), String(minutes)],
-        { env: { ...env, GIT_TERMINAL_PROMPT: '0', SOAK_DIR: DIR, SOAK_SERVER: HTTP, ...(process.env.SOAK_COMPACT_MIN_DELETED ? { ROOM_COMPACT_MIN_DELETED: process.env.SOAK_COMPACT_MIN_DELETED } : {}) }, stdio: ['ignore', out, out] })
+        { env: { ...env, GIT_TERMINAL_PROMPT: '0', SOAK_DIR: DIR, SOAK_SERVER: HTTP, ...(process.env.SOAK_COMPACT_MIN_DELETED ? { ROOM_COMPACT_MIN_DELETED: process.env.SOAK_COMPACT_MIN_DELETED } : {}), ...(process.env.SOAK_BUS_KEEP ? { ROOM_BUS_KEEP: process.env.SOAK_BUS_KEEP } : {}) }, stdio: ['ignore', out, out] })
       fs.closeSync(out)
       child.on('exit', (code, signal) => emit({ ev: 'child-exit', name: p.name, code, signal }))
       children.set(p.name, child)
@@ -752,6 +814,7 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
         await pause(5_000)
       }
       observers.forEach(o => o.sample())
+      if (DAEMON) copySnapshots(`min-${String(Math.round((Date.now() - t0) / 60_000)).padStart(3, '0')}`)
       const m = await metricsNow()
       await sampleGrowth(children)
       await pollLogs()
@@ -786,7 +849,7 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
     try {
       if (LOCAL) await stopLocalServer()
       if (DAEMON && ownWork) await cleanupDaemon()
-      if (ownWork) fs.rmSync(WORK, { recursive: true, force: true })
+      if (ownWork && process.env.SOAK_KEEP_WORK !== '1') fs.rmSync(WORK, { recursive: true, force: true })
     } catch (e) { emit({ ev: 'failure', error: `cleanup: ${e}` }); console.error(e); process.exitCode = 2 }
     process.off('SIGINT', interrupt); process.off('SIGTERM', interrupt)
   }
