@@ -34,3 +34,17 @@ it('keeps all advertised tool names, descriptions and schemas within 9,500 chara
   const state = DEFS.find(d => d.name === 'room_state')!
   if ('check' in state.inputSchema.properties) expect(state.inputSchema.properties.check).toHaveProperty('description', 'setup check (room doctor)')
 })
+
+
+it('advertises separate review controls without retired send fields', () => {
+  const schema = (name: string) => DEFS.find(d => d.name === name)!.inputSchema
+  expect(DEFS).toHaveLength(22)
+  expect(schema('room_claim').properties).toHaveProperty('plans')
+  expect(schema('room_send').properties).not.toHaveProperty('message')
+  expect(schema('room_send').properties).not.toHaveProperty('symbols')
+  expect(schema('room_send').properties).toHaveProperty('refresh')
+  expect(Object.keys(schema('room_collect').properties)).toEqual(['tag', 'mode', 'discard', 'keep', 'paths', 'force'])
+  expect(schema('room_review').required).toEqual(['action'])
+  expect(schema('room_review').properties.action).toEqual({ type: 'string', enum: ['hold', 'release', 'status'] })
+  expect(schema('room_review')).toHaveProperty('additionalProperties', false)
+})

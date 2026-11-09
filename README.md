@@ -78,7 +78,7 @@ For substantial parallel work, say **“use a couple of Room workers for this”
 
 **A headless lead (`claude -p`, `codex exec`) must not end its turn with background commands or agents pending.** Run commands in the foreground or wait for their completion and inspect the results before finishing. Stay alive while supervising Room workers. Host-managed background behavior varies by host and version; pending work can be lost when the process exits.
 
-Ask your agent to **preview the merge and run the relevant checks**. `room_preview_merge` combines current work in a scratch tree. When you ask to collect, `room_collect` brings finished output into your tree **uncommitted and unstaged**. A conflict leaves your files untouched and names the conflicting paths. You decide when to commit or push.
+Ask your agent to **preview the merge and run the relevant checks**. `room_preview_merge` combines current work in a scratch tree. When you ask to collect, `room_collect` brings finished output into your tree **uncommitted and unstaged**. A conflict leaves your files untouched and names the conflicting paths. You decide when to commit or push. For an explicitly requested review before collection, use `room_review(action="hold", reason="...")`, then `action="status"` or `action="release"`; release never collects.
 
 Coordination messages are advisory: delivering a requested pause does not guarantee the agent follows it. For a requested precollection review, a reviewer can establish an explicit [collection hold](docs/reference.md#workers-and-previews); ordinary batches need no hold. See [wake paths and diagnostics](docs/reference.md#wake-paths) if a message seems missing.
 

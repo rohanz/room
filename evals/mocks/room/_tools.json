@@ -443,23 +443,12 @@
             "type": "string",
             "description": "text"
           },
-          "message": {
-            "type": "string",
-            "description": "alias for text"
-          },
           "paths": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "changed paths"
-          },
-          "symbols": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "changed symbols"
           },
           "inReplyTo": {
             "type": "string",
@@ -739,7 +728,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to \"bring in their work\" unstaged or discard. Defer until follow-ups end, or keep=true for resumption (apply only). Conflicts write nothing; checkpoint gates collection.",
+      "description": "Use to \"bring in their work\" unstaged, discard it, or keep the worker for resumption. Defer until follow-ups end. Conflicts write nothing.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object",
@@ -771,8 +760,24 @@
           "force": {
             "type": "boolean",
             "description": "overwrite copies; discard ignored files"
-          },
-          "checkpoint": {
+          }
+        }
+      }
+    },
+    {
+      "name": "room_review",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Hold collection for a requested review, release it, or list holds; never collects.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "action": {
             "type": "string",
             "enum": [
               "hold",
@@ -786,7 +791,10 @@
           "reviewToken": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "action"
+        ]
       }
     }
   ]

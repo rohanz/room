@@ -698,7 +698,7 @@ describe('session gating', () => {
   })
 
   it('lists the advertised tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect'])
+    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect', 'room_review'])
   })
 })
 
@@ -1129,6 +1129,15 @@ describe('scope, claims, plans, ledger', () => {
     } finally { vi.useRealTimers(); await t.tools.shutdown(); s.graph.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   })
 
+  it('accepts message for one release and silently ignores retired symbols', async () => {
+    const t = setup()
+    const reply = await t.tools.call('room_send', { type: 'changed', message: 'legacy text', paths: ['app.py'], symbols: ['validate'] })
+    expect(reply).toContain('message moved to text; accepted this release')
+    const changed = t.room.messages().find(m => m.type === 'changed')!
+    expect(changed).toMatchObject({ summary: 'legacy text', paths: ['app.py'] })
+    expect(changed).not.toHaveProperty('symbols')
+  })
+
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
     const t = setup()
     await t.session!.graph!.ready
@@ -1351,7 +1360,7 @@ describe('claim by symbol and read receipts', () => {
     await t.tools.call('room_state', {})
     expect(t.room.seenBy(q.id)).toEqual(['Rohan'])
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
-    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['app.py'], symbols: ['validate'] })
+    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['session.py'], symbols: ['validate'] })
     expect(out).toContain("notified Kieran's agent")
     expect(t.room.messages().filter(m => m.type === 'changed')).toHaveLength(2)
     const [orig, copy] = t.room.messages().filter(m => m.type === 'changed')

@@ -128,5 +128,5 @@ until default collection or discard. Defer collection while follow-ups or revisi
 or use `room_collect(keep=true)` to apply output and retain the worker for resumption.
 When follow-ups are done, use plain `room_collect()` (no tag, no keep) to apply remaining
 deltas and finish kept workers under the collection rules. `discard` abandons work;
-`reason` belongs to checkpoint holds. `refresh=true` rebases only a stopped worker:
+`reason` belongs to `room_review(action="hold")`. `refresh=true` rebases only a stopped worker:
 prefer peer previews for live dependencies. Keep bus messages brief and concrete.

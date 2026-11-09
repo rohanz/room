@@ -12299,20 +12299,20 @@ var init_graph = __esm({
     KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
     regexExtractor = (path75, text2) => {
       const ext = path75.slice(path75.lastIndexOf(".") + 1);
-      const defs10 = /* @__PURE__ */ new Set();
+      const defs11 = /* @__PURE__ */ new Set();
       if (ext === "py") {
-        for (const m of text2.matchAll(PY_DEF)) defs10.add(m[1]);
-        for (const m of text2.matchAll(PY_ASSIGN)) defs10.add(m[1]);
+        for (const m of text2.matchAll(PY_DEF)) defs11.add(m[1]);
+        for (const m of text2.matchAll(PY_ASSIGN)) defs11.add(m[1]);
       } else if (["js", "jsx", "ts", "tsx", "mjs", "mts", "cjs"].includes(ext)) {
-        for (const m of text2.matchAll(JS_DEF)) defs10.add(m[1] ?? m[2]);
+        for (const m of text2.matchAll(JS_DEF)) defs11.add(m[1] ?? m[2]);
       } else return void 0;
       const refs = /* @__PURE__ */ new Set();
       for (const m of text2.matchAll(WORD)) {
         const w = m[0];
-        if (w.length < 3 || KEYWORDS.has(w) || defs10.has(w)) continue;
+        if (w.length < 3 || KEYWORDS.has(w) || defs11.has(w)) continue;
         refs.add(w);
       }
-      return { defs: Array.from(defs10), refs: Array.from(refs) };
+      return { defs: Array.from(defs11), refs: Array.from(refs) };
     };
     bareSymbol = (symbol) => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? "";
     CONTRACT_TEXT_MAX_CHARS = 256 * 1024;
@@ -12386,8 +12386,8 @@ var init_graph = __esm({
       }
       /** Files that reference a symbol defined elsewhere (a definer that also references itself is excluded). */
       usersOf(symbol) {
-        const defs10 = this.definers.get(symbol) ?? /* @__PURE__ */ new Set();
-        return Array.from(this.users.get(symbol) ?? []).filter((path75) => !defs10.has(path75) && (defs10.size === 0 || this.resolvedDefiners(symbol, path75).length > 0)).sort();
+        const defs11 = this.definers.get(symbol) ?? /* @__PURE__ */ new Set();
+        return Array.from(this.users.get(symbol) ?? []).filter((path75) => !defs11.has(path75) && (defs11.size === 0 || this.resolvedDefiners(symbol, path75).length > 0)).sort();
       }
       /** Symbols a file uses that some other file defines. */
       dependenciesOf(path75) {
@@ -20493,8 +20493,8 @@ var init_handler = __esm({
         listener(val1, val2, val3);
       });
     };
-    setFsWatchListener = (path75, fullPath, options, handlers10) => {
-      const { listener, errHandler, rawEmitter } = handlers10;
+    setFsWatchListener = (path75, fullPath, options, handlers11) => {
+      const { listener, errHandler, rawEmitter } = handlers11;
       let cont = FsWatchInstances.get(fullPath);
       let watcher;
       if (!options.persistent) {
@@ -20555,8 +20555,8 @@ var init_handler = __esm({
       };
     };
     FsWatchFileInstances = /* @__PURE__ */ new Map();
-    setFsWatchFileListener = (path75, fullPath, options, handlers10) => {
-      const { listener, rawEmitter } = handlers10;
+    setFsWatchFileListener = (path75, fullPath, options, handlers11) => {
+      const { listener, rawEmitter } = handlers11;
       let cont = FsWatchFileInstances.get(fullPath);
       const copts = cont && cont.options;
       if (copts && (copts.persistent < options.persistent || copts.interval > options.interval)) {
@@ -21639,10 +21639,10 @@ var init_checkout_watch = __esm({
       suspended = false;
       closed = false;
       cancelReady;
-      constructor(dir, handlers10, files4 = /* @__PURE__ */ new Set()) {
+      constructor(dir, handlers11, files4 = /* @__PURE__ */ new Set()) {
         this.dir = path13.resolve(dir);
         this.root = fs15.statSync(dir);
-        this.handlers = handlers10;
+        this.handlers = handlers11;
         this.files = files4;
         this.watcher = esm_default.watch(dir, {
           ignoreInitial: true,
@@ -21691,8 +21691,8 @@ var init_checkout_watch = __esm({
           return false;
         }
       }
-      attach(handlers10) {
-        this.handlers = handlers10;
+      attach(handlers11) {
+        this.handlers = handlers11;
         this.suspended = false;
       }
       suspend() {
@@ -23264,7 +23264,7 @@ var init_src4 = __esm({
             this.log(`warn: watching ${watchedFiles.size} files; add generated or bulky paths to ${ROOMIGNORE}`);
           }
         };
-        const handlers10 = {
+        const handlers11 = {
           ignored: (absolute, stat4) => {
             const relpath = path14.relative(this.dir, absolute).split(path14.sep).join("/");
             if (relpath === "") return false;
@@ -23302,9 +23302,9 @@ var init_src4 = __esm({
           }
         };
         const reused = this.watcher;
-        const watcher = this.watcher = reused ?? new CheckoutWatch(this.dir, handlers10, watchedFiles);
+        const watcher = this.watcher = reused ?? new CheckoutWatch(this.dir, handlers11, watchedFiles);
         if (reused) {
-          watcher.attach(handlers10);
+          watcher.attach(handlers11);
           const currentIgnored = this.ignoredDirs;
           this.ignoredDirs = watcher.ignoredDirs;
           this.unwatchedDirs = watcher.unwatchedDirs;
@@ -28946,14 +28946,14 @@ var require_core = __commonJS({
           this.addFormat(name, format);
       }
     }
-    function addInitialKeywords(defs10) {
-      if (Array.isArray(defs10)) {
-        this.addVocabulary(defs10);
+    function addInitialKeywords(defs11) {
+      if (Array.isArray(defs11)) {
+        this.addVocabulary(defs11);
         return;
       }
       this.logger.warn("keywords option as map is deprecated, pass array");
-      for (const keyword in defs10) {
-        const def = defs10[keyword];
+      for (const keyword in defs11) {
+        const def = defs11[keyword];
         if (!def.keyword)
           def.keyword = keyword;
         this.addKeyword(def);
@@ -42318,7 +42318,7 @@ function retainedList(paths) {
 }
 function handlers(state) {
   const { S, shareLine } = state;
-  const handlers10 = {
+  const handlers11 = {
     async room_share(a) {
       const s = S();
       const before = s.daemon.share;
@@ -42341,7 +42341,7 @@ function handlers(state) {
       return out.join("\n");
     }
   };
-  return handlers10;
+  return handlers11;
 }
 function createShare() {
   const shareLine = (s) => {
@@ -44278,7 +44278,7 @@ function handlers2(state) {
     }
     return `${person}'s changes moved during the diff; re-run`;
   };
-  const handlers10 = {
+  const handlers11 = {
     async room_read(a) {
       const caller = S();
       if (typeof a.person === "string" && a.person && a.person !== caller.me.name) {
@@ -44535,7 +44535,7 @@ ${text2}--- end ${p} ---`);
       }
     }
   };
-  return handlers10;
+  return handlers11;
 }
 async function linkSharedDirs(cloneDir, scratchDir) {
   const yieldTurn2 = () => new Promise((resolve6) => setImmediate(resolve6));
@@ -48773,9 +48773,9 @@ function assignProp(target, prop, value5) {
     configurable: true
   });
 }
-function mergeDefs(...defs10) {
+function mergeDefs(...defs11) {
   const mergedDescriptors = {};
-  for (const def of defs10) {
+  for (const def of defs11) {
     const descriptors = Object.getOwnPropertyDescriptors(def);
     Object.assign(mergedDescriptors, descriptors);
   }
@@ -53228,14 +53228,14 @@ function finalize(ctx, schema) {
   const rootMetaId = ctx.metadataRegistry.get(schema)?.id;
   if (rootMetaId !== void 0 && result2.id === rootMetaId)
     delete result2.id;
-  const defs10 = ctx.external?.defs ?? {};
+  const defs11 = ctx.external?.defs ?? {};
   if (!ctx.external || ctx.sharedEmitDoneFor !== ctx.external) {
     for (const entry of ctx.seen.entries()) {
       const seen = entry[1];
       if (seen.def && seen.defId) {
         if (seen.def.id === seen.defId)
           delete seen.def.id;
-        assignProp(defs10, seen.defId, seen.def);
+        assignProp(defs11, seen.defId, seen.def);
       }
     }
   }
@@ -53243,11 +53243,11 @@ function finalize(ctx, schema) {
     ctx.sharedEmitDoneFor = ctx.external;
   if (ctx.external) {
   } else {
-    if (Object.keys(defs10).length > 0) {
+    if (Object.keys(defs11).length > 0) {
       if (ctx.target === "draft-2020-12") {
-        result2.$defs = defs10;
+        result2.$defs = defs11;
       } else {
-        result2.definitions = defs10;
+        result2.definitions = defs11;
       }
     }
   }
@@ -59864,7 +59864,7 @@ var defs3 = [
 ];
 function handlers3(state) {
   const { S, readText, baseText, lines: lines2, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state;
-  const handlers10 = {
+  const handlers11 = {
     async room_claim(a) {
       const s = S();
       if (typeof a.path !== "string" || !a.path) return "error: path is required";
@@ -59986,14 +59986,14 @@ function handlers3(state) {
       setPresence(s, next ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path}:${next.from}-${next.to} \u2014 ${next.intent}` } : { cursor: void 0, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name).area}` : "idle" });
       const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` \u2014 ${summary}` : ""}`, ...posted.ok ? [] : [`release notice ${posted.text}`]];
       if (unfulfilled.length) {
-        out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} \u2014 if you did them, room_send changed with symbols; if not, others were expecting them`);
+        out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} \u2014 if you did them, room_send type=changed with paths; if not, others were expecting them`);
         for (const pl2 of unfulfilled) out.push(...planChanged(s, c, pl2, "cancelled", summary ?? "released without doing it"));
       }
-      if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed symbols=[${c.plans.map((x) => x.symbol).join(", ")}] so users of those symbols are told`);
+      if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed paths=[${c.path}] so users of those symbols are told`);
       return out.join("\n");
     }
   };
-  return handlers10;
+  return handlers11;
 }
 async function claimMapInMyText(s, claim2, myText) {
   if (claim2.path.endsWith("/")) return (c) => ({ from: c.from, to: c.to, approximate: false });
@@ -60307,7 +60307,7 @@ function handlers4(state) {
   const headStartExplained = /* @__PURE__ */ new WeakSet();
   let reporting = Promise.resolve();
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state;
-  const handlers10 = {
+  const handlers11 = {
     async room_done(a) {
       const s = S();
       const summary = String(a.summary ?? "").trim();
@@ -60678,7 +60678,7 @@ function handlers4(state) {
       }
     }
   };
-  return handlers10;
+  return handlers11;
 }
 async function registryRunningWorkers(s, rooms) {
   const registry2 = await openWorkerReader(s.dir);
@@ -61930,7 +61930,7 @@ function handlers5(state) {
     return out.length ? `${p}:${r.from}-${r.to}
 ${out.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`;
   };
-  const handlers10 = {
+  const handlers11 = {
     async room_open() {
       const s = S(), url = await refreshBrowserUrl(s);
       if (!URL.canParse(url)) return "Browser viewer unavailable; build or reinstall the Room plugin.";
@@ -62192,7 +62192,7 @@ ${url}`;
       return a.all === true ? out.join("\n") : compactState(out, summarizedClaims);
     }
   };
-  return handlers10;
+  return handlers11;
 }
 function createAreas(deps) {
   const { ctx, log: log2, presences, others, shareOf, now, isMe } = deps;
@@ -62474,7 +62474,7 @@ function handlers6(state) {
     ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath, teamServer: config2.teamServer };
     return config2;
   }
-  const handlers10 = {
+  const handlers11 = {
     async room_login(a) {
       const config2 = await configureLogin(a);
       const server = serverOf(a, config2.server);
@@ -62515,7 +62515,7 @@ function handlers6(state) {
       return `${p.provider === "oidc" ? "Single sign-on" : "GitHub"} login for ${server}. Tell the user exactly this: ${codeLine(p)}`;
     },
     async room_create(a) {
-      return handlers10.room_join({ ...a, create: true });
+      return handlers11.room_join({ ...a, create: true });
     },
     async room_join(a) {
       if (a.takeover !== void 0 && typeof a.takeover !== "boolean") return "error: takeover must be true or false";
@@ -62791,7 +62791,7 @@ WARN: ${unsaved}` : ""}`;
       return `exported room ledger to ${ledger3.path} (${ledger3.lines} lines)`;
     }
   };
-  return handlers10;
+  return handlers11;
 }
 function createJoin(deps) {
   const { ctx } = deps;
@@ -62844,7 +62844,7 @@ var defs7 = [
 ];
 function handlers7(state) {
   const { S, refreshPrs, myPr, postLedger } = state;
-  const handlers10 = {
+  const handlers11 = {
     async room_pr_note(a) {
       const s = S();
       if (!s.roomName.startsWith("github.com/")) return "error: this room is not a GitHub repo; there are no pull requests to annotate";
@@ -62869,7 +62869,7 @@ function handlers7(state) {
       return postLedger(s, pr);
     }
   };
-  return handlers10;
+  return handlers11;
 }
 function createPrs(deps) {
   const { ctx, presences, log: log2, now } = deps;
@@ -63284,9 +63284,7 @@ var defs8 = [
       type: { type: "string", enum: ["changed", "question", "answer", "note"] },
       to: str2("recipient; default broadcast"),
       text: str2("text"),
-      message: str2("alias for text"),
       paths: strs("changed paths"),
-      symbols: strs("changed symbols"),
       inReplyTo: str2("question/note id"),
       priority: { type: "string", enum: ["fyi", "notify", "interrupt"], description: "urgency" },
       refresh: { type: "boolean", description: "rebase stopped worker on your HEAD" }
@@ -63353,7 +63351,7 @@ function handlers8(state) {
       return notice.text;
     });
   };
-  const handlers10 = {
+  const handlers11 = {
     async room_send(a) {
       const lead = S();
       let byQuestion = typeof a.inReplyTo === "string" && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : void 0;
@@ -63434,8 +63432,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`;
       }
       const paths = sendType === "changed" && Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
-      const symbols = sendType === "changed" && Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
-      const body = sendType === "changed" ? withPr({ type: "changed", paths, summary: text2, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text: text2, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: alias(s, question?.from ?? to2), inReplyTo: inferredQuestionId ?? a.inReplyTo, text: text2 }) : withPr({ type: "note", text: text2, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
+      const body = sendType === "changed" ? withPr({ type: "changed", paths, summary: text2, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text: text2, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: alias(s, question?.from ?? to2), inReplyTo: inferredQuestionId ?? a.inReplyTo, text: text2 }) : withPr({ type: "note", text: text2, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
       let posted;
       let baseNote;
       const sent = () => {
@@ -63545,11 +63542,12 @@ ${lines2.join("\n")}` };
         if (refused) return refused;
       }
       const msg = posted.msg;
-      if (msg.type === "changed") notes.push(...await upgrade(s, msg, paths, symbols));
+      if (msg.type === "changed") notes.push(...await upgrade(s, msg, paths, []));
       const notice = msg.to && !resumed ? await recipientNotice(s, msg.to) : void 0;
       if (notice) notes.push(msg.type === "question" && notice.terminal ? await unavailableQuestion(s, msg.id) ?? notice.text : notice.text);
       if (msg.type === "question" && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`);
       s.daemon.touch();
+      if (a.message !== void 0) notes.push("message moved to text; accepted this release");
       return [`sent [${msg.id}] ${formatMsg(msg)}${s !== lead ? " (in the workers room)" : ""}`, ...notes].join("\n");
     },
     async room_wait(a) {
@@ -63679,7 +63677,7 @@ ${lines2.join("\n")}` };
       else if (questionId) onRecipient();
     });
   };
-  return handlers10;
+  return handlers11;
 }
 function createInbox(deps) {
   const { rooms, log: log2, scheduleInboxWrite, msgInMyAreas, others, upgraded, readVersion } = deps;
@@ -65308,30 +65306,6 @@ init_timing();
 init_session();
 init_context();
 
-// packages/room-mcp/src/tools/collect.ts
-init_process();
-init_worker_store();
-init_worker_store();
-init_async_filter();
-init_src();
-init_git();
-init_baseline();
-init_src4();
-init_worker_git();
-init_worker_process();
-init_worker_state();
-init_combined_tree();
-init_files();
-import fs72 from "node:fs";
-import path71 from "node:path";
-import os18 from "node:os";
-import { setImmediate as setImmediate8 } from "node:timers/promises";
-init_context();
-init_retire();
-init_worker_registry();
-init_worker_status();
-init_timing();
-
 // packages/room-mcp/src/collection-review.ts
 init_leases2();
 import fs71 from "node:fs";
@@ -65358,7 +65332,7 @@ var CollectionReview = class {
   }
   status() {
     const holds = this.read();
-    return holds.length ? "collection held for review:\n" + holds.map((h) => `- ${h.reviewer}: ${h.reason}`).join("\n") + '\nThe reviewer must call room_collect checkpoint="release". force does not bypass a hold.' : "no collection review holds";
+    return holds.length ? "collection held for review:\n" + holds.map((h) => `- ${h.reviewer}: ${h.reason}`).join("\n") + '\nThe reviewer must call room_review action="release". force does not bypass a hold.' : "no collection review holds";
   }
   assertClear() {
     if (this.read().length) throw new Error(this.status());
@@ -65371,7 +65345,7 @@ var CollectionReview = class {
     holds.push({ owner, reviewer, reason, at: Date.now(), tokenHash: hash2(token) });
     writeAtomic(this.file, holds);
     return `collection review hold active for this checkout. New room_collect apply, copy and discard operations are blocked. This does not undo or interrupt an earlier collection, or freeze other lifecycle actions.
-Release after review with room_collect checkpoint="release" from this same session. For recovery from another session, keep this private reviewToken: ${token}`;
+Release after review with room_review action="release" from this same session. For recovery from another session, keep this private reviewToken: ${token}`;
   }
   release(session, token) {
     const holds = this.read();
@@ -65382,23 +65356,83 @@ Release after review with room_collect checkpoint="release" from this same sessi
   }
 };
 
-// packages/room-mcp/src/tools/collect.ts
+// packages/room-mcp/src/tools/review.ts
 init_binding();
-init_kept_publication();
+init_worker_registry();
+init_timing();
+init_context();
 var defs9 = [{
+  name: "room_review",
+  annotations: RW,
+  description: "Hold collection for a requested review, release it, or list holds; never collects.",
+  inputSchema: { ...{ additionalProperties: false }, type: "object", properties: {
+    action: { type: "string", enum: ["hold", "release", "status"] },
+    reason: { type: "string" },
+    reviewToken: { type: "string" }
+  }, required: ["action"] }
+}];
+function handlers9(state) {
+  return { room_review: async (a) => {
+    const session = state.S();
+    const unknown2 = Object.keys(a).find((key2) => !["action", "reason", "reviewToken"].includes(key2));
+    if (unknown2) return "error: unknown argument " + unknown2;
+    if (typeof a.action !== "string" || !["hold", "release", "status"].includes(a.action)) return "error: action must be hold, release or status";
+    if (a.reason !== void 0 && (a.action !== "hold" || typeof a.reason !== "string")) return "error: reason is only for hold";
+    if (a.reviewToken !== void 0 && (a.action !== "release" || typeof a.reviewToken !== "string" || !/^[a-f0-9]{64}$/.test(a.reviewToken))) return "error: reviewToken is only for release and must be the private recovery token";
+    if (a.action === "hold" && (typeof a.reason !== "string" || !a.reason.trim() || a.reason.length > 1e3)) return "error: hold requires a reason of 1\u20131000 characters";
+    const registry2 = await registryForDir(session.dir);
+    const endLease = currentToolTiming()?.begin("lease");
+    try {
+      return await registry2.withCollectLease(session.dir, async () => {
+        endLease?.();
+        const review = new CollectionReview(registry2.root, session.dir);
+        if (a.action === "status") return review.status();
+        const owner = (state.ctx.binding ?? createSessionBinding(session.dir)).id();
+        return a.action === "hold" ? review.hold(owner, session.me.name, a.reason.trim()) : review.release(owner, a.reviewToken);
+      });
+    } catch (error2) {
+      return `error: ${error2 instanceof Error ? error2.message : String(error2)}`;
+    } finally {
+      endLease?.();
+    }
+  } };
+}
+
+// packages/room-mcp/src/tools/collect.ts
+init_process();
+init_worker_store();
+init_worker_store();
+init_async_filter();
+init_src();
+init_git();
+init_baseline();
+init_src4();
+init_worker_git();
+init_worker_process();
+init_worker_state();
+init_combined_tree();
+init_files();
+import fs72 from "node:fs";
+import path71 from "node:path";
+import os18 from "node:os";
+import { setImmediate as setImmediate8 } from "node:timers/promises";
+init_context();
+init_retire();
+init_worker_registry();
+init_worker_status();
+init_timing();
+init_kept_publication();
+var defs10 = [{
   name: "room_collect",
   annotations: { ...RW, destructiveHint: true },
-  description: 'Use to "bring in their work" unstaged or discard. Defer until follow-ups end, or keep=true for resumption (apply only). Conflicts write nothing; checkpoint gates collection.',
+  description: 'Use to "bring in their work" unstaged, discard it, or keep the worker for resumption. Defer until follow-ups end. Conflicts write nothing.',
   inputSchema: { ...{ additionalProperties: false }, type: "object", properties: {
     tag: str2("worker tag"),
     mode: { type: "string", enum: ["apply", "copy"] },
     discard: { type: "boolean" },
     keep: { type: "boolean" },
     paths: strs("copy mode: repo-relative files or directories"),
-    force: { type: "boolean", description: "overwrite copies; discard ignored files" },
-    checkpoint: { type: "string", enum: ["hold", "release", "status"] },
-    reason: { type: "string" },
-    reviewToken: { type: "string" }
+    force: { type: "boolean", description: "overwrite copies; discard ignored files" }
   } }
 }];
 var split = (value5) => value5.split("\0").filter(Boolean);
@@ -65522,7 +65556,7 @@ async function keptSnapshot(w, root, head, paths, scratch = /* @__PURE__ */ new 
     fs72.rmSync(temp, { recursive: true, force: true });
   }
 }
-function handlers9(state) {
+function handlers10(state) {
   const cleanRetiredSharedOwner = async (s, borrower) => {
     const registry2 = await registryForDir(s.dir);
     const current2 = await registry2.read(borrower.id);
@@ -66317,23 +66351,15 @@ repeat with force=true to delete them`;
   };
   return { room_collect: async (a) => {
     const session = state.S();
-    const unknown2 = Object.keys(a).find((key2) => !["tag", "mode", "discard", "keep", "paths", "force", "checkpoint", "reason", "reviewToken"].includes(key2));
+    if (a.checkpoint !== void 0) return "error: checkpoint moved to room_review; use action hold, release or status";
+    const unknown2 = Object.keys(a).find((key2) => !["tag", "mode", "discard", "keep", "paths", "force"].includes(key2));
     if (unknown2) return "error: unknown argument " + unknown2;
-    if (a.checkpoint !== void 0 && (!["hold", "release", "status"].includes(String(a.checkpoint)) || ["tag", "mode", "discard", "keep", "paths", "force"].some((key2) => a[key2] !== void 0))) return "error: use checkpoint hold, release or status in a separate call without collection arguments";
-    if (a.reason !== void 0 && (a.checkpoint !== "hold" || typeof a.reason !== "string")) return "error: reason is only for checkpoint hold";
-    if (a.reviewToken !== void 0 && (a.checkpoint !== "release" || typeof a.reviewToken !== "string" || !/^[a-f0-9]{64}$/.test(a.reviewToken))) return "error: reviewToken is only for checkpoint release and must be the private recovery token";
-    if (a.checkpoint === "hold" && (typeof a.reason !== "string" || !a.reason.trim() || a.reason.length > 1e3)) return "error: checkpoint hold requires a reason of 1\u20131000 characters";
     const registry2 = await registryForDir(session.dir);
     const endLease = currentToolTiming()?.begin("lease");
     try {
       return await registry2.withCollectLease(session.dir, async () => {
         endLease?.();
         const review = new CollectionReview(registry2.root, session.dir);
-        if (a.checkpoint === "hold" || a.checkpoint === "release") {
-          const owner = (state.ctx.binding ?? createSessionBinding(session.dir)).id();
-          return a.checkpoint === "hold" ? review.hold(owner, session.me.name, a.reason.trim()) : review.release(owner, a.reviewToken);
-        }
-        if (a.checkpoint === "status") return review.status();
         review.assertClear();
         return roomCollect(a);
       });
@@ -66351,10 +66377,10 @@ init_share();
 init_files();
 init_src();
 var CHOOSES_ROOM = /* @__PURE__ */ new Set(["room_join", "room_create", "room_leave", "room_close"]);
-var WORKER_OPS = /* @__PURE__ */ new Set(["room_spawn", "room_send", "room_collect"]);
+var WORKER_OPS = /* @__PURE__ */ new Set(["room_spawn", "room_send", "room_collect", "room_review"]);
 var FENCED = /* @__PURE__ */ new Set(["room_scope", "room_claim", "room_release", "room_done"]);
-var ALL_DEFS = [...defs6, ...defs5, ...defs2, ...defs3, ...defs8, ...defs4, ...defs9, ...defs7, ...defs];
-var DEF_ORDER = ["room_login", "room_create", "room_join", "room_leave", "room_close", "room_export", "room_scope", "room_state", "room_open", "room_read", "room_claim", "room_release", "room_send", "room_wait", "room_done", "room_pr_note", "room_impact", "room_preview_merge", "room_share", "room_spawn", "room_collect"];
+var ALL_DEFS = [...defs6, ...defs5, ...defs2, ...defs3, ...defs8, ...defs4, ...defs10, ...defs9, ...defs7, ...defs];
+var DEF_ORDER = ["room_login", "room_create", "room_join", "room_leave", "room_close", "room_export", "room_scope", "room_state", "room_open", "room_read", "room_claim", "room_release", "room_send", "room_wait", "room_done", "room_pr_note", "room_impact", "room_preview_merge", "room_share", "room_spawn", "room_collect", "room_review"];
 var DEFS = DEF_ORDER.map((name) => ALL_DEFS.find((d) => d.name === name));
 function createTools(ctx) {
   const staleVersionWarning = ctx.staleVersionWarning ?? createStaleVersionWarning();
@@ -66381,7 +66407,7 @@ function createTools(ctx) {
   };
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}` : ctx.config?.server === LOCAL ? "error: not in the local room; room_join to join it." : "error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.";
   let waits = 0;
-  const handlers10 = Object.assign({}, handlers6(state), handlers5(state), handlers2(state), handlers3(state), handlers8(state), handlers4(state), handlers9(state), handlers7(state), handlers(state));
+  const handlers11 = Object.assign({}, handlers6(state), handlers5(state), handlers2(state), handlers3(state), handlers8(state), handlers4(state), handlers10(state), handlers9(state), handlers7(state), handlers(state));
   const { ledger: ledger2 } = state;
   const prepareNotices = createWorkerRestartNotices(ledger2, state.log);
   const finishReply = (batch, text2, signal, handoff2) => {
@@ -66399,7 +66425,7 @@ function createTools(ctx) {
   };
   const run2 = (name, args2, signal, batch) => withToolSignal(signal, async () => {
     if (toolCallAborted()) return "error: tool call cancelled";
-    const h = handlers10[name];
+    const h = handlers11[name];
     if (!h) return `error: unknown tool ${name}`;
     if (name === "room_done") {
       const completionDir = ctx.getSession()?.dir ?? ctx.cwd;
@@ -66438,7 +66464,7 @@ function createTools(ctx) {
     if (current2?.publicationActivity) await current2.publicationActivity();
     if (current2?.compatibilityRefusal && !["room_state", "room_leave"].includes(name)) return `error: ${current2.compatibilityRefusal}`;
     const closed = current2?.closed;
-    const offlineTool = name === "room_state" || name === "room_send" || name === "room_wait" || name === "room_collect";
+    const offlineTool = name === "room_state" || name === "room_send" || name === "room_wait" || name === "room_collect" || name === "room_review";
     if (closed && name !== "room_leave" && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith("logged out") ? "run room_login, then room_leave and room_join" : closed.reason.includes("revoked") ? "ask for access, then room_leave and room_join" : "room_leave, then room_create to reopen"}`;
     if (toolCallAborted()) return "error: tool call cancelled";
     const s = ctx.getSession();
@@ -66529,7 +66555,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
     },
     async call(name, args2, signal, handoff2) {
       if (name === "room_state" && args2?.check === true) {
-        const body = await handlers10.room_state(args2);
+        const body = await handlers11.room_state(args2);
         const batch = ledger2.open("reply");
         const s = ctx.getSession();
         const sameSession = !ctx.binding || !!s?.lease && s.lease.sessionId === ctx.binding.bound()?.id;

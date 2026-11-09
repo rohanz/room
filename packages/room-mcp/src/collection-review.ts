@@ -30,7 +30,7 @@ export class CollectionReview {
   status(): string {
     const holds = this.read()
     return holds.length ? 'collection held for review:\n' + holds.map(h => `- ${h.reviewer}: ${h.reason}`).join('\n')
-      + '\nThe reviewer must call room_collect checkpoint="release". force does not bypass a hold.'
+      + '\nThe reviewer must call room_review action="release". force does not bypass a hold.'
       : 'no collection review holds'
   }
   assertClear(): void {
@@ -45,7 +45,7 @@ export class CollectionReview {
     writeAtomic(this.file, holds)
     return 'collection review hold active for this checkout. New room_collect apply, copy and discard operations are blocked. '
       + 'This does not undo or interrupt an earlier collection, or freeze other lifecycle actions.\n'
-      + 'Release after review with room_collect checkpoint="release" from this same session. '
+      + 'Release after review with room_review action="release" from this same session. '
       + `For recovery from another session, keep this private reviewToken: ${token}`
   }
   release(session: string, token?: string): string {

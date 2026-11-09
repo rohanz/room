@@ -1,5 +1,5 @@
 ---
 type: tool_used
-tool: mcp__plugin_room_room__room_collect
+tool: mcp__plugin_room_room__room_review
 input_match: '"reason"\s*:\s*"[^"\s]'
 ---

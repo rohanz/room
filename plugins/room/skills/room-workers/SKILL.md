@@ -104,14 +104,14 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    a message from the lead resumes a finished worker.
 4. If the human explicitly requests a review checkpoint before collection, establish it
    before dispatch or collection: from the destination checkout call
-   `room_collect(checkpoint="hold", reason="<requested review>")` and wait for success.
+   `room_review(action="hold", reason="<requested review>")` and wait for success.
    A separate reviewer/controller should own the hold when its approval is required;
    it must use that same checkout, not its own worker worktree. Keep the returned private
    `reviewToken` for recovery; do not send it to the collecting lead. Messages alone do
    not establish holds. Preview, tests and worker follow-ups can continue while held.
-   After review, the creating session calls `room_collect(checkpoint="release")`;
+   After review, the creating session calls `room_review(action="release")`;
    a replacement reviewer can use `reviewToken` to release it. Release does not collect.
-   Check with `room_collect(checkpoint="status")`; all reviewers must release their holds.
+   Check with `room_review(action="status")`; all reviewers must release their holds.
    Do not establish a hold when no checkpoint was requested. This blocks new collection
    calls for that destination only; it does not cancel an already-running collection,
    freeze lifecycle recovery, or protect against explicit leave/ancestor discard.
@@ -149,7 +149,7 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    After keep, preview and collection use a private snapshot of the delivered worker tree as its base; delivered edits count as the lead's. Commit the collected output from all kept rounds and any uncommitted work carried into the worker at spawn before refreshing it. Room rebases only when Git proves the cumulative snapshot changes since a unique shared ancestor are contained in the lead's HEAD, then moves the base to that HEAD. If the worker already has that HEAD, refresh resumes it without rebasing or changing its kept snapshot or collection refs, even when collected output is still uncommitted. Otherwise snapshot changes absent from your HEAD, overlapping committed revisions or an unprovable shared ancestor refuse refresh. Committing a revision or removal of snapshot content does not establish containment; later kept rounds may still refuse refresh. Send without refresh to resume with the worker's existing copy intact. Committing only the latest round or only some hunks does not prove containment of earlier kept output or carried work.
    When follow-ups are done, finish kept workers with plain `room_collect()` (no tag,
    no keep): it applies remaining deltas, reports "already present" otherwise, and cleans
-   up under the rules below. `discard` abandons work; `reason` belongs to checkpoint holds.
+   up under the rules below. `discard` abandons work; `reason` belongs to `room_review(action="hold")`.
    Default collection ends resumption and brings every finished worker's changes into
    your working tree, uncommitted and unstaged. Conflicts write nothing: resolve them or
    collect one tag at a time. Running and failed workers are skipped. Fully collected workers

@@ -18,6 +18,7 @@ import { defs as joinDefs, handlers as joinHandlers, offerTeamSharingDisclosure 
 import { defs as scopeDefs, handlers as scopeHandlers } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, WAIT_SIGNAL } from './messaging.js'
+import { defs as reviewDefs, handlers as reviewHandlers } from './review.js'
 import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
 import { deferWorkerCompletion, defs as workerDefs, handlers as workerHandlers } from './workers.js'
@@ -75,12 +76,12 @@ export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<voi
 /** Tools that choose the room themselves: the automatic join pauses while one runs, and stays stopped unless it joined a room. */
 const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
 /** A move must not interleave with spawn, a send that resumes a worker, or collect. */
-const WORKER_OPS = new Set(['room_spawn', 'room_send', 'room_collect'])
+const WORKER_OPS = new Set(['room_spawn', 'room_send', 'room_collect', 'room_review'])
 /** Writes fenced by the name lease: refused while coordination is paused (hub §7). Posts are refused by the hub client. */
 const FENCED = new Set(['room_scope', 'room_claim', 'room_release', 'room_done'])
 
-const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
-const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect']
+const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...reviewDefs, ...prDefs, ...shareDefs]
+const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect', 'room_review']
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {
@@ -105,7 +106,7 @@ export function createTools(ctx: ToolCtx): Tools {
     : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
     : 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
   let waits = 0
-  const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), prHandlers(state), shareHandlers(state))
+  const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), reviewHandlers(state), prHandlers(state), shareHandlers(state))
 
   const { ledger } = state
   const prepareNotices = createWorkerRestartNotices(ledger, state.log)
@@ -157,7 +158,7 @@ export function createTools(ctx: ToolCtx): Tools {
       if (current?.publicationActivity) await current.publicationActivity()
       if (current?.compatibilityRefusal && !['room_state', 'room_leave'].includes(name)) return `error: ${current.compatibilityRefusal}`
       const closed = current?.closed
-      const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect'
+      const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect' || name === 'room_review'
       if (closed && name !== 'room_leave' && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith('logged out') ? 'run room_login, then room_leave and room_join' : closed.reason.includes('revoked') ? 'ask for access, then room_leave and room_join' : 'room_leave, then room_create to reopen'}`
       if (toolCallAborted()) return 'error: tool call cancelled'
       const s = ctx.getSession()

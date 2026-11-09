@@ -34,11 +34,12 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | `room_preview_merge` | Would your uncommitted changes and other people's combine cleanly? A lead can preview all its workers at once. |
 | `room_claim` | Claim what you are about to edit, saying what you will do: either a symbol (function/class name; the room resolves its line range) or a line range. |
 | `room_release` | Release a claim with a summary of what you did. |
-| `room_send` | Post to the bus. changed: paths + summary (+ symbols renamed/changed, which notifies whoever uses them). question: to a person's agent. answer: inReplyTo a question id. note: broadcast fyi. |
+| `room_send` | Post to the bus. changed: paths + text; Room detects changed definitions automatically. question: to a person's agent. answer: inReplyTo a question id. note: broadcast fyi. |
 | `room_wait` | Block until a claim is released, a question is answered, or an interrupt arrives for you; or until timeout (default 30s, max 120s). |
 | `room_done` | Mark your current task finished: releases any claims you still hold, clears your scope, and posts a one-line completion note. |
 | `room_spawn` | Dispatch a worker agent into this room to do a task in parallel with you. |
-| `room_collect` | Collect finished workers as unstaged edits, copy named artifacts, or discard one worker. |
+| `room_review` | Hold collection for an explicitly requested review (`action="hold", reason=...`), release your hold (`action="release", reviewToken?`), or list holds (`action="status"`). |
+| `room_collect` | Bring in finished work unstaged, discard it, or keep the worker for resumption. Defer until follow-ups end; conflicts write nothing. |
 | `room_pr_note` | Post (or update) ONE comment on a GitHub pull request with the branch's room story: who declared what, claims with plans and whether they were fulfilled, questions and answers, merge previews that passed, in bus order. |
 | `room_share` | Change how much of your clone the room sees, live. |
 

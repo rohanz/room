@@ -23,20 +23,17 @@ import { localWorkers, openWorkerReader, registryForDir } from '../worker-regist
 import { realStateInput, type LocalWorker } from '../worker-status.js'
 import { currentToolTiming } from '../timing.js'
 import { CollectionReview } from '../collection-review.js'
-import { createSessionBinding } from '../binding.js'
 import { acknowledgeKeptPublication } from '../kept-publication.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Use to "bring in their work" unstaged or discard. Defer until follow-ups end, or keep=true for resumption (apply only). Conflicts write nothing; checkpoint gates collection.',
+  description: 'Use to "bring in their work" unstaged, discard it, or keep the worker for resumption. Defer until follow-ups end. Conflicts write nothing.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
     keep: { type: 'boolean' },
     paths: strs('copy mode: repo-relative files or directories'),
     force: { type: 'boolean', description: 'overwrite copies; discard ignored files' },
-    checkpoint: { type: 'string', enum: ['hold', 'release', 'status'] },
-    reason: { type: 'string' }, reviewToken: { type: 'string' },
   } },
 }]
 
@@ -959,25 +956,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   }
   return { room_collect: async a => {
     const session = state.S()
-    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'keep', 'paths', 'force', 'checkpoint', 'reason', 'reviewToken'].includes(key))
+    if (a.checkpoint !== undefined) return 'error: checkpoint moved to room_review; use action hold, release or status'
+    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'keep', 'paths', 'force'].includes(key))
     if (unknown) return 'error: unknown argument ' + unknown
-    if (a.checkpoint !== undefined && (!['hold', 'release', 'status'].includes(String(a.checkpoint))
-      || ['tag', 'mode', 'discard', 'keep', 'paths', 'force'].some(key => a[key] !== undefined))) return 'error: use checkpoint hold, release or status in a separate call without collection arguments'
-    if (a.reason !== undefined && (a.checkpoint !== 'hold' || typeof a.reason !== 'string')) return 'error: reason is only for checkpoint hold'
-    if (a.reviewToken !== undefined && (a.checkpoint !== 'release' || typeof a.reviewToken !== 'string' || !/^[a-f0-9]{64}$/.test(a.reviewToken))) return 'error: reviewToken is only for checkpoint release and must be the private recovery token'
-    if (a.checkpoint === 'hold' && (typeof a.reason !== 'string' || !a.reason.trim() || a.reason.length > 1000)) return 'error: checkpoint hold requires a reason of 1–1000 characters'
     const registry = await registryForDir(session.dir)
     const endLease = currentToolTiming()?.begin('lease')
     try { return await registry.withCollectLease(session.dir, async () => {
       endLease?.()
       const review = new CollectionReview(registry.root, session.dir)
-      // Bound host IDs survive MCP restarts. The recovery token also serves unbound controllers.
-      if (a.checkpoint === 'hold' || a.checkpoint === 'release') {
-        const owner = (state.ctx.binding ?? createSessionBinding(session.dir)).id()
-        return a.checkpoint === 'hold' ? review.hold(owner, session.me.name, (a.reason as string).trim())
-          : review.release(owner, a.reviewToken as string | undefined)
-      }
-      if (a.checkpoint === 'status') return review.status()
       review.assertClear()
       return roomCollect(a)
     }) }

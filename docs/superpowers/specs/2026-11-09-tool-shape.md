@@ -1,6 +1,6 @@
 # Tool shape pass: fewer parameters, one job per tool
 
-Status: proposal 2026-11-09, for Rohan's decision before implementation. Follows the
+Status: approved 2026-11-09; changes 2 and 3 implemented (0.17.46). Change 1 deferred, see Outcome. Follows the
 0.17.46 local-state collector and the channels retirement; precedes the benchmark rerun,
 so the benchmark measures the tool we mean to ship.
 
@@ -54,3 +54,13 @@ untouched; `plans` are stored exactly as today.
 - Schema tests per tool; `tool-budget.test.ts`; `release-readiness` wording tests.
 - `npm run eval:mocks` and the `claude plugin eval` suite, since descriptions route behaviour.
 - Then the benchmark rerun (BullMQ, frozen spec, two matched trials) on the result.
+
+## Outcome (2026-11-09)
+
+Changes 2 and 3 landed. Change 1 did not: a plan is a property of a claim throughout the
+room document (`Claim.plans`), the messages (`ClaimMsg.plans`, `ReleaseMsg.unfulfilled`,
+`PlanMsg.claimId`), supersession and release accounting, and the web view (network model
+and panels). The first implementation stored scope plans by creating a whole-file claim on
+the scope's first path, which is a lock nobody asked for. Moving plans properly means a
+`Scope.plans` field with its own announcement, supersession and done-time accounting and a
+web change: a schema migration for a release of its own, if still wanted after the benchmark.

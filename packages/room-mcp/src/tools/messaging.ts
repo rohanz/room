@@ -42,9 +42,7 @@ export const defs: ToolDef[] = [
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
       to: str('recipient; default broadcast'),
       text: str('text'),
-      message: str('alias for text'),
       paths: strs('changed paths'),
-      symbols: strs('changed symbols'),
       inReplyTo: str('question/note id'),
       priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency' },
       refresh: { type: 'boolean', description: 'rebase stopped worker on your HEAD' },
@@ -205,8 +203,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
       }
       const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
-      const symbols = sendType === 'changed' && Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
-      const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
+      // Retired symbols are ignored; Room detects changed definitions automatically.
+      const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
         : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
         : sendType === 'answer' ? withPr({ type: 'answer', to: alias(s, (question?.from ?? to)!), inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
         : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
@@ -302,11 +300,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (refused) return refused
       }
       const msg = posted!.msg
-      if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
+      if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, []))
       const notice = msg.to && !resumed ? (await recipientNotice(s, msg.to)) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? (await unavailableQuestion(s, msg.id)) ?? notice.text : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()
+      if (a.message !== undefined) notes.push('message moved to text; accepted this release')
       return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
     },
     async room_wait(a) {

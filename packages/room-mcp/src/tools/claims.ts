@@ -151,10 +151,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         : { cursor: undefined, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name)!.area}` : 'idle' })
       const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` — ${summary}` : ''}`, ...posted.ok ? [] : [`release notice ${posted.text}`]]
       if (unfulfilled.length) {
-        out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} — if you did them, room_send changed with symbols; if not, others were expecting them`)
+        out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} — if you did them, room_send type=changed with paths; if not, others were expecting them`)
         for (const pl of unfulfilled) out.push(...planChanged(s, c, pl, 'cancelled', summary ?? 'released without doing it'))
       }
-      if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed symbols=[${c.plans.map(x => x.symbol).join(', ')}] so users of those symbols are told`)
+      if (c.plans?.length && !unfulfilled.length) out.push(`reminder: announce with room_send type=changed paths=[${c.path}] so users of those symbols are told`)
       return out.join('\n')
     }
   }
