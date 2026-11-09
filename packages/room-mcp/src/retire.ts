@@ -165,9 +165,7 @@ async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, p
 export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   const registry = await registryForDir(s.dir)
   const probe = rooms.probe.bind(rooms)
-  // Retired records otherwise accumulate for the clone's lifetime; the room's archive entry outlives them.
-  await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
-  await sweepClone(s.dir)
+  await sweepClone(s.dir, registry)
   for (const record of (requireWorkerInventory(await registry.list()))) {
     if (record.lead.participant !== s.me.name || record.room !== s.roomName) continue
     const processes: CollectedProcesses = { probe, list: rooms.listCwdProcesses, alive: async w =>
@@ -260,10 +258,15 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
 
 const GC_EVERY_MS = 60 * 60 * 1000
 let collectedAt = 0
-/** The local state collector (local-state-gc.ts): once an hour per process. */
-async function sweepClone(dir: string): Promise<void> {
+/**
+ * The clone's one retention pass, once an hour per process: the worker registry removes its expired records under
+ * its own locks (the room's archive entry is the durable copy), then the local state collector (local-state-gc.ts)
+ * applies the ownership table to everything else.
+ */
+async function sweepClone(dir: string, registry: Awaited<ReturnType<typeof registryForDir>>): Promise<void> {
   if (Date.now() - collectedAt < GC_EVERY_MS) return
   collectedAt = Date.now()
+  await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
   try {
     const { removed } = collectLocalState(await gitCommonDir(dir))
     if (removed.length) process.stderr.write(`[room] local state: removed ${removed.length} stale item${removed.length === 1 ? '' : 's'}\n`)

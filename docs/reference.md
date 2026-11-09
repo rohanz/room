@@ -151,7 +151,7 @@ Every file Room keeps under the clone's common Git directory, in `room/`, has on
 | `compat/<hash>.json` | MCP session | 30 d |
 | `browser/*.html` | MCP session | 1 h |
 | `profiles/*.cpuprofile` | MCP session | 7 d |
-| `registry/workers, tags, adoptions, runs, patches, collect, migration.*` | lead MCP | owner: retired records go after 7 d under the registry's locks |
+| `registry/workers, tags, adoptions, runs, patches, collect, migration.*` | lead MCP | owner: the same hourly pass asks the registry to remove retired records after 7 d under its locks |
 | `registry/quarantine/*` | MCP session | 30 d |
 | `storage-gate.json, storage-gate/, preflight/` | none | remove: written by no shipped Room version |
 

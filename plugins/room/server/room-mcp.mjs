@@ -41311,11 +41311,7 @@ async function adoptLegacyKept(s, rooms, record2, processes) {
 async function autoRetire(s, rooms) {
   const registry2 = await registryForDir(s.dir);
   const probe = rooms.probe.bind(rooms);
-  await registry2.pruneRetired(ROOM_STALE_MS).catch((error2) => {
-    process.stderr.write(`[room] retired record retention: ${error2}
-`);
-  });
-  await sweepClone(s.dir);
+  await sweepClone(s.dir, registry2);
   for (const record2 of requireWorkerInventory(await registry2.list())) {
     if (record2.lead.participant !== s.me.name || record2.room !== s.roomName) continue;
     const processes = { probe, list: rooms.listCwdProcesses, alive: async (w2) => rooms.hasHandle(s, w2) || !processExited(await workerRealState(s.dir, w2, { process: true, probe })) };
@@ -41429,9 +41425,13 @@ async function autoRetire(s, rooms) {
     }));
   }
 }
-async function sweepClone(dir) {
+async function sweepClone(dir, registry2) {
   if (Date.now() - collectedAt < GC_EVERY_MS) return;
   collectedAt = Date.now();
+  await registry2.pruneRetired(ROOM_STALE_MS).catch((error2) => {
+    process.stderr.write(`[room] retired record retention: ${error2}
+`);
+  });
   try {
     const { removed } = collectLocalState(await gitCommonDir(dir));
     if (removed.length) process.stderr.write(`[room] local state: removed ${removed.length} stale item${removed.length === 1 ? "" : "s"}
