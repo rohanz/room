@@ -17,7 +17,7 @@ it('exposes unneeded state for the inbox host and conservative state for a faile
 it.each(['joined', 'uncertain', 'idle', 'unavailable'] as const)('normalizes %s without manufacturing acceptance', async kind => {
   const post = vi.fn(async () => kind === 'joined' ? { kind, turnId: 'turn' } : kind === 'idle' ? { kind } : { kind, reason: 'reason' })
   const queue = vi.fn(async () => {})
-  const send = createWakeSender({ env: {}, notify: vi.fn(), queue })
+  const send = createWakeSender({ env: {}, queue })
   const facet = createWakeFacets({ send, midTurn: createMidTurnSender({ env: {}, post }) })('codex')
   const target = { host: 'codex' as const, id: 'thread', surface: 'shared-app-server' as const }
   expect(await facet.send(target, 'pointer', 'active')).toEqual(kind === 'joined' ? { kind: 'submitted', via: 'turn' }

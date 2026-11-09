@@ -533,7 +533,7 @@ it('ROOM_WAKE=off suppresses mid-turn transport', async () => {
   const env = { ROOM_WAKE: 'off' }
   const queue = vi.fn(async () => {})
   const midTurn = createMidTurnSender({ env, post })
-  const send = createWakeSender({ env, queue, notify: vi.fn() })
+  const send = createWakeSender({ env, queue })
   const r = rig(true, { midTurn, send })
   try {
     r.note()

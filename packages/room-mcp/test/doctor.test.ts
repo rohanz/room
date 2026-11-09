@@ -297,7 +297,7 @@ it('diagnostics keep recovery advice owed until the bound host session has joine
 
 it('room_state check includes bounded runtime delivery evidence even before join', async () => {
   const { createTools } = await import('../src/tools.js')
-  const wake = createWakeSender({ env: { ROOM_WAKE: 'off' }, notify: vi.fn() })
+  const wake = createWakeSender({ env: { ROOM_WAKE: 'off' } })
   const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: '/not/a/repository', wake,
     binding: { bound: () => ({ host: 'codex', id: 'private-thread' }), id: () => 'private-thread', dir: () => undefined, commonDir: () => undefined } })
   try {

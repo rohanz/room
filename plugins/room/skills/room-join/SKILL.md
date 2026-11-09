@@ -62,7 +62,5 @@ After joining, if the user has given you a task, immediately call
 "Stop sharing" / "leave the room" / "I'm done with Room": `room_leave`. This ends participation; "work locally" keeps Room coordination on this machine with `room_join(where="local")`.
 
 Plain `claude` on Claude Code 2.1.224 or later wakes through its messaging inbox with
-no launch flag (2.1.234 on native Windows). `ROOM_WAKE=socket|channels|off` selects
-the process wake path; automatic selection uses the socket first. `claude-room` is an
-optional channels fallback for older Claude Code. If inbound messages are held or
+no launch flag (2.1.234 on native Windows). `ROOM_WAKE=auto|socket|off` selects the process wake path; auto and socket use the inbox socket. Older Claude Code has no automatic wake; messages remain owed for Room tools and eligible hooks. If inbound messages are held or
 refused, room messages remain for the next turn. See [wake paths](../../../../docs/reference.md#wake-paths).

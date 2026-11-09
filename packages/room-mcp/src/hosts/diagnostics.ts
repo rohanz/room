@@ -38,7 +38,7 @@ function atLeast(raw: string | undefined, min: number[]): boolean {
   return true
 }
 export function deliveryLimitation(host: string): string {
-  return host === 'claude' ? 'socket/channel writes do not confirm acceptance; inbound hold/refuse may prevent receipt'
+  return host === 'claude' ? 'socket writes do not confirm acceptance; inbound hold/refuse may prevent receipt'
     : 'exec/--no-daemon and disconnected apps may need tool/hook handoff; no tool interruption'
 }
 export function hostDoctorRows(f: DoctorFacts, version: string): Result[] {
@@ -86,7 +86,7 @@ export function hostDoctorRows(f: DoctorFacts, version: string): Result[] {
       const disabled = f.deliveryPath?.mode === 'off'
       if (!disabled && f.sessionBound === false)
         add('WARN', 'Claude inbox', 'wake path configured but this session is not bound: nothing can wake it', 'Start Claude inside the git repository (git init first), then restart the session')
-      else add(disabled || f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', disabled ? 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff' : f.wakeBound ? 'wake path configured' : 'wake path unavailable', disabled ? undefined : 'Check /status for a Peer address, or start claude-room')
+      else add(disabled || f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', disabled ? 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff' : f.wakeBound ? 'wake path configured' : 'wake path unavailable', disabled ? undefined : 'Update Claude Code to 2.1.224+ (2.1.234+ on native Windows) and check /status for a Peer address')
     }
   }
   if (f.deliveryPath) {

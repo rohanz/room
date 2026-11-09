@@ -8,7 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, claimReleaseText, type Identity } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { claudeWakeAvailable } from '../src/hosts/claude-wake.js'
-import { createWakeSender } from '../src/hosts/wake.js'
+import { createWakeFacets, createWakeSender } from '../src/hosts/wake.js'
 import { type SendWake } from '../src/hosts/wake-types.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
 import { Ledger } from '../src/ledger.js'
@@ -16,7 +16,6 @@ import { createSessionBinding } from '../src/binding.js'
 import type { Session } from '../src/session.js'
 
 const pause = (ms = 60) => new Promise(resolve => setTimeout(resolve, ms))
-const flag = 'claude --dangerously-load-development-channels plugin:room@room'
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-socket-wake-'))
 const claude = { id: 'claude-1', host: 'claude' as const }
 const TEXT = '[room] 1 thing may need you: cat asked a question. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#1)'
@@ -26,13 +25,13 @@ afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers() })
 describe('wake paths (content-free; never a receipt)', () => {
   it('Codex: the queue, for the bound thread', async () => {
     const queue = vi.fn(async () => {})
-    expect(await createWakeSender({ notify: vi.fn(), queue })({ id: 'thread-1', host: 'codex' }, TEXT)).toBe('queue')
+    expect(await createWakeSender({ queue })({ id: 'thread-1', host: 'codex' }, TEXT)).toBe('queue')
     expect(queue).toHaveBeenCalledWith('thread-1', TEXT)
   })
   it('ROOM_WAKE=off sends no wake on either host', async () => {
     const queue = vi.fn(async () => {})
     const post = vi.fn(async () => {})
-    const send = createWakeSender({ env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/unused.sock' }, notify: vi.fn(), queue, post })
+    const send = createWakeSender({ env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/unused.sock' }, queue, post })
     expect(await send({ id: 'thread-1', host: 'codex' }, TEXT)).toBeUndefined()
     expect(await send({ id: 'session-1', host: 'claude' }, TEXT)).toBeUndefined()
     expect(queue).not.toHaveBeenCalled()
@@ -43,72 +42,36 @@ describe('wake paths (content-free; never a receipt)', () => {
     const dir = tmp(); const socketPath = path.join(dir, 'inbox.sock'); const lines: string[][] = []
     const server = net.createServer(c => { let data = ''; c.on('data', chunk => { data += chunk }); c.on('end', () => lines.push(data.trim().split('\n'))) })
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
-    const notify = vi.fn(async () => {})
+
     try {
-      const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath, CLAUDE_CODE_MESSAGING_TOKEN: 'token' }, parentArgs: flag, notify })
+      const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath, CLAUDE_CODE_MESSAGING_TOKEN: 'token' } })
       expect(await send(claude, TEXT)).toBe('socket')
       await vi.waitFor(() => expect(lines).toHaveLength(1))
       expect(JSON.parse(lines[0][0])).toEqual({ type: 'auth', token: 'token' })
       expect(JSON.parse(lines[0][1])).toEqual({ type: 'user', message: { role: 'user', content: TEXT } })
-      expect(notify).not.toHaveBeenCalled()
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('falls back to the channel only when it is admitted; otherwise the socket failure propagates', async () => {
-    const notify = vi.fn(async () => {})
-    const env = { CLAUDE_CODE_MESSAGING_SOCKET: '/missing/room.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }
-    expect(await createWakeSender({ env, parentArgs: flag, notify })(claude, TEXT)).toBe('channel')
-    expect(notify).toHaveBeenCalledWith({ method: 'notifications/claude/channel', params: { content: TEXT, meta: { type: 'room_wake' } } })
-    await expect(createWakeSender({ env, parentArgs: 'claude', notify })(claude, TEXT)).rejects.toThrow()
-    expect(notify).toHaveBeenCalledOnce()
+  it('an unavailable socket yields the wake unavailable outcome', async () => {
+    const send = createWakeSender({ env: {} })
+    expect(await send(claude, TEXT)).toBeUndefined()
+    expect(await createWakeFacets({ send })('claude').send({ ...claude, surface: 'interactive' }, TEXT, 'idle')).toEqual({ kind: 'unavailable' })
+    expect(send.describe?.(claude)).toEqual({ mode: 'auto', transport: 'none', availability: 'unavailable' })
+    expect(claudeWakeAvailable({ host: 'claude', env: {} })).toBe(false)
   })
-
-  it('falls back when a previously bound inbox refuses connections', async () => {
-    const dir = tmp(); const socketPath = path.join(dir, 'gone.sock')
-    const server = net.createServer()
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
-    await new Promise<void>(resolve => server.close(() => resolve()))
-    const notify = vi.fn(async () => {})
-    try {
-      expect(await createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath }, parentArgs: flag, notify })(claude, TEXT)).toBe('channel')
-    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  it.each(['auto', 'socket'])('ROOM_WAKE=%s preserves socket failure evidence', async mode => {
+    const send = createWakeSender({ env: { ROOM_WAKE: mode, CLAUDE_CODE_MESSAGING_SOCKET: '/unused' },
+      post: async () => { throw new Error('socket refused') } })
+    await expect(send(claude, TEXT)).rejects.toThrow('socket refused')
+    expect(send.lastAttempt?.()).toMatchObject({ via: 'socket', outcome: 'failed' })
   })
-
-  it('a channel failure rejects instead of being swallowed', async () => {
-    const notify = vi.fn(async () => { throw new Error('transport closed') })
-    const post = vi.fn(async () => { throw new Error('socket refused') })
-    await expect(createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, parentArgs: flag, notify, post })(claude, TEXT)).rejects.toThrow('transport closed')
-    await expect(createWakeSender({ env: { ROOM_WAKE: 'channels' }, parentArgs: flag, notify })(claude, TEXT)).rejects.toThrow('transport closed')
-  })
-
-  it('without a socket or an admitted channel there is no path: undefined, not an error', async () => {
-    const notify = vi.fn(async () => {})
-    expect(await createWakeSender({ env: {}, parentArgs: 'claude', notify })(claude, TEXT)).toBeUndefined()
-    expect(notify).not.toHaveBeenCalled()
-  })
-
-  it.each(['socket', 'channels', 'off'] as const)('honors ROOM_WAKE=%s', async mode => {
-    const notify = vi.fn(async () => {})
-    const send = createWakeSender({ env: { ROOM_WAKE: mode, CLAUDE_CODE_MESSAGING_SOCKET: '/missing/room.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }, parentArgs: flag, notify })
-    if (mode === 'socket') await expect(send(claude, TEXT)).rejects.toThrow()
-    else expect(await send(claude, TEXT)).toBe(mode === 'channels' ? 'channel' : undefined)
-    expect(notify).toHaveBeenCalledTimes(mode === 'channels' ? 1 : 0)
-  })
-
-  it('ROOM_WAKE=channels sends even when parent-args detection misses a wrapper', async () => {
-    const notify = vi.fn(async () => {})
-    expect(await createWakeSender({ env: { ROOM_WAKE: 'channels', CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, parentArgs: 'wrapper', notify })(claude, TEXT)).toBe('channel')
-  })
-
-  it('uses socket or channel flag for wake availability, with off disabling both', () => {
-    expect(claudeWakeAvailable({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: '/x' }, parentArgs: 'claude' })).toBe(true)
-    expect(claudeWakeAvailable({ host: 'claude', env: {}, parentArgs: flag })).toBe(true)
-    expect(claudeWakeAvailable({ host: 'claude', env: {}, parentArgs: 'claude' })).toBe(false)
-    expect(claudeWakeAvailable({ host: 'claude', env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/x' }, parentArgs: flag })).toBe(false)
+  it('uses the exported socket for availability unless wake is off', () => {
+    expect(claudeWakeAvailable({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: '/x' } })).toBe(true)
+    expect(claudeWakeAvailable({ host: 'claude', env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/x' } })).toBe(false)
   })
   it('reports a socket write without claiming acceptance, including held/refused messages', async () => {
     const post = vi.fn(async () => {}) // raw own-socket protocol cannot observe inbound hold/refuse
-    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/private/socket', CLAUDE_CODE_MESSAGING_TOKEN: 'private-token' }, notify: vi.fn(), post })
+    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/private/socket', CLAUDE_CODE_MESSAGING_TOKEN: 'private-token' }, post })
     expect(send.describe?.(claude)).toEqual({ mode: 'auto', transport: 'socket', availability: 'configured' })
     expect(send.lastAttempt?.()).toBeUndefined()
     await send(claude, 'private pointer')
@@ -117,12 +80,8 @@ describe('wake paths (content-free; never a receipt)', () => {
     expect(JSON.stringify(send.lastAttempt?.())).not.toMatch(/private|accepted|read|acted/)
   })
 
-  it('records the selected fallback path and keeps off free of attempts', async () => {
-    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused' }, parentArgs: flag,
-      post: async () => { throw new Error('secret host failure') }, notify: vi.fn() })
-    expect(await send(claude, TEXT)).toBe('channel')
-    expect(send.lastAttempt?.()).toMatchObject({ via: 'channel', outcome: 'written', fallback: 'socket-failed' })
-    const off = createWakeSender({ env: { ROOM_WAKE: 'off' }, notify: vi.fn() })
+  it('keeps off free of attempts', async () => {
+    const off = createWakeSender({ env: { ROOM_WAKE: 'off' } })
     await off(claude, TEXT)
     expect(off.describe?.(claude)).toMatchObject({ availability: 'off', transport: 'none' })
     expect(off.lastAttempt?.()).toBeUndefined()
@@ -146,7 +105,7 @@ describe('the reconciler: one pointer per host session', () => {
     const dir = tmp(); const socketPath = path.join(dir, 'inbox.sock'); const received: string[] = []
     const server = net.createServer(c => { let data = ''; c.on('data', chunk => { data += chunk }); c.on('end', () => received.push(data)) })
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
-    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath }, notify: vi.fn() })
+    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath } })
     const t = setup(send, 10, new Set(['cat']))
     try {
       t.ask('cat', 'note', { priority: 'notify' })
@@ -240,12 +199,14 @@ describe('the reconciler: one pointer per host session', () => {
 
   it('with no path for this host it sends nothing more and does not retry', async () => {
     vi.useFakeTimers()
-    const send = vi.fn(async () => undefined)
+    const sender = createWakeSender({ env: {} })
+    const send = Object.assign(vi.fn(sender), sender)
     const t = setup(send, 0)
     try {
       t.ask('cat')
       await vi.advanceTimersByTimeAsync(100)
       expect(send).toHaveBeenCalledOnce()
+      expect(t.wakes.health()).toMatchObject({ degraded: 'transport-unavailable', pendingAddressed: 1 })
     } finally { t.close() }
   })
 

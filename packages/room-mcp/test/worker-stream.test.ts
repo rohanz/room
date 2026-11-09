@@ -4,7 +4,6 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { workerAdapter } from '../src/hosts/index.js'
-import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { followUpAnswer, resumeAccepted, unawaitedBackgroundTasks, workerLogTail } from '../src/worker-process.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'room-worker-stream-'))
@@ -32,7 +31,6 @@ describe('Claude stream-json worker runs', () => {
       sessionId: sid,
       mode: resume ? 'resume' : 'fresh',
       prompt: 'prompt',
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     }))).args
     expect(args).toContain('--output-format')
     expect(args[args.indexOf('--output-format') + 1]).toBe('stream-json')

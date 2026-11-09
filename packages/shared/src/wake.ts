@@ -10,7 +10,7 @@ export interface WakeDecision {
   reason: string
 }
 
-/** Shared bus wake policy for both reactive runners and MCP channel notifications. */
+/** Shared bus wake policy for both reactive runners and host wake transports. */
 export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], hasUncommitted = false, ownWorkerNames?: ReadonlySet<string>): WakeDecision {
   if (m.type === 'plan' && m.priority === 'fyi') return { wake: false, mustAnswer: false, reason: 'ended plan' }
   if (m.from === me.name && m.fromKind !== 'human') return { wake: false, mustAnswer: false, reason: 'own message' }

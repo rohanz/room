@@ -7,14 +7,14 @@ const wakeNoted = new WeakSet<Session>()
 const workerWaitNoted = new WeakSet<Session>()
 
 /** One human note per session; a later first spawn still gets its worker wait instruction. */
-export function sessionWakeNote(session: Session, moment: 'alone' | 'company' | 'spawn', options: { host?: string; parentArgs?: string; shell?: string } = {}): string {
-  if (moment === 'alone' || !wakeUnavailable(session.dir, options.host, options.parentArgs)) return ''
+export function sessionWakeNote(session: Session, moment: 'alone' | 'company' | 'spawn', options: { host?: string } = {}): string {
+  if (moment === 'alone' || !wakeUnavailable(session.dir, options.host)) return ''
   const forWorkers = moment === 'spawn' && !workerWaitNoted.has(session)
   if (forWorkers) workerWaitNoted.add(session)
   const workerInstruction = 'Continue independent work while workers run. When blocked on an answer or claim, use room_wait(questionId/claimId); otherwise use short room_wait calls when ready for worker results. Keep headless leads alive until supervision is complete. A timeout is not an answer or approval.'
   if (wakeNoted.has(session)) return forWorkers ? workerInstruction : ''
   wakeNoted.add(session)
-  const humanNote = wakeText(options.shell ?? process.env.SHELL, process.env.ROOM_WAKE === 'off')
+  const humanNote = wakeText(process.env.ROOM_WAKE === 'off')
   return forWorkers ? `${workerInstruction}\n${humanNote}` : humanNote
 }
 

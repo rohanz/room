@@ -8,10 +8,8 @@ import os from 'node:os'
 import path from 'node:path'
 import baseline from './fixtures/host-binding-baseline.json' with { type: 'json' }
 import { type WorkerHost } from '../src/worker-config.js'
-import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { admittedWorkspace } from '../src/workspace.js'
 import { presenceKind } from '../src/hosts/selection.js'
-import { resolveConfig } from '../src/config.js'
 import { sessionHost } from '../src/hosts/selection.js'
 import { workerAdapter, preBindingAdapter } from '../src/hosts/index.js'
 import { workerHost } from '../src/hosts/selection.js'
@@ -27,7 +25,6 @@ it('retains the argv captured before extraction for fresh and resumed workers', 
       mode: input.options?.resume ? 'resume' : 'fresh',
       runtime: workerAdapter(input.host as WorkerHost).normalizeRuntime({ model: input.model, effort: input.effort }),
       prompt: input.prompt,
-      claudeChannel: input.channel ?? DEFAULT_CLAUDE_CHANNEL,
     })))).toMatchObject(output)
   }
 })
@@ -90,14 +87,10 @@ it('keeps Claude cwd spelling and synchronous public-config defaults', () => {
   expect(admittedWorkspace(callMetadata.decodeCall({ _meta: { 'x-codex-turn-metadata': { workspaces: { [real]: {} } } } }._meta).workspaceCandidates, () => undefined)).toBe(fs.realpathSync(real))
 })
 
-it('preserves explicit empty channels and omits thread-source flags', async () => {
+it('omits thread-source flags', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-adapter-config-')); dirs.push(dir)
-  expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: 'env' }, args: { claudeChannel: ' ' } })).claudeChannel).toBe('')
-  expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: '' } })).claudeChannel).toBe('')
-  expect((await resolveConfig({ dir, env: {} })).claudeChannel).toBe('plugin:room@room')
   for (const host of ['claude', 'codex'] as const) {
     expect((await workerAdapter(host).plan(workerInput({
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     }))).args).not.toContain('--thread-source')
   }
 })

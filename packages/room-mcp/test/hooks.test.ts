@@ -1062,7 +1062,6 @@ describe('hook health', () => {
 describe('wakes: capability presence and the lead\'s own workers', () => {
   it('publishes known unavailable Claude wake capability', () => {
     vi.stubEnv('ROOM_HOST', 'claude')
-    vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
     const s = session(new RoomDoc())
     const w = wakes(s)
     expect(s.awareness.getLocalState()).toMatchObject({ wakeUnavailable: true })
@@ -1071,7 +1070,6 @@ describe('wakes: capability presence and the lead\'s own workers', () => {
 
   it('publishes socket wake capability and honors ROOM_WAKE=off', () => {
     vi.stubEnv('ROOM_HOST', 'claude')
-    vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
     vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', '/tmp/claude-inbox.sock')
     const s = session(new RoomDoc())
     const w = wakes(s)

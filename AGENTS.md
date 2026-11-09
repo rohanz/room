@@ -110,7 +110,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 `plugins/room/hooks/claude.json` and does not hash-trust plugin hooks (verified on 2.1.281);
 0.15.0 adds `PowerShell` to its before-edit matcher. Keep behavior changes in hook scripts where possible.
 
-- Claude Code 2.1.224+ wakes through its cross-session messaging inbox with plain `claude` (2.1.234+ on native Windows). `plugins/room/bin/claude-room` is an optional channels fallback for older versions. Keep README, onboarding and the join skill aligned when wake behavior changes.
+- Claude Code 2.1.224+ wakes through its cross-session messaging inbox with plain `claude` (2.1.234+ on native Windows). Older versions have no automatic wake; messages remain owed for Room tools and eligible hooks. Keep README, onboarding and the join skill aligned when wake behavior changes.
 - Hosted server operations (deploy, secrets, opening/closing repos, incidents): `deploy/DEPLOYING.md`.
   Deploy with `--depot=false`; only server/web changes need a deploy, plugin changes need a bundle rebuild + push.
 

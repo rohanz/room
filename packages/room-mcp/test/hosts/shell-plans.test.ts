@@ -13,7 +13,7 @@ const roots: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 const temp = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-shell-plan-')); roots.push(root); return root }
 const input = (logDir: string): WorkerInput => ({ mode: 'fresh', prompt: 'task', runtime: {}, tag: 'w', cwd: logDir, logDir,
-  env: {}, claudeChannel: '', shellEnvHook: true, wakeChannels: true, inheritedShellEnvFile: "C:\\lead's dir\\env.sh" })
+  env: {}, shellEnvHook: true, inheritedShellEnvFile: "C:\\lead's dir\\env.sh" })
 
 it('retains the exact pre-extraction shell encodings and old-version warning', () => {
   // Captured from HEAD's worker-shell-env.ts before extraction; do not regenerate from adapters.

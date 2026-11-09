@@ -6,11 +6,9 @@ import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { resolveConfig } from '../src/config.js'
 import type { Session } from '../src/session.js'
 import { validTag, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
 import { workerAdapter } from '../src/hosts/index.js'
-import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { cleanupPreparedWorktree, prepareWorktree } from '../src/worker-git.js'
 
 describe('worker plumbing', () => {
@@ -19,12 +17,10 @@ describe('worker plumbing', () => {
     const c = (await workerAdapter('claude').plan(workerInput({
       runtime: workerAdapter('claude').normalizeRuntime({ model: 'claude-sonnet-5', effort: undefined }),
       prompt: 'do it',
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     })))
     expect(c.cmd).toBe('claude'); expect(c.args).toContain('--model'); expect(c.args.slice(0, 2)).toEqual(['-p', 'do it'])
     const x = (await workerAdapter('codex').plan(workerInput({
       prompt: 'do it',
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     })))
     expect(x.cmd).toBe('codex'); expect(x.args.slice(0, 3)).toEqual(['exec', '-s', 'workspace-write'])
     expect(x.args).toContain('--json')
@@ -42,24 +38,6 @@ describe('worker plumbing', () => {
       server: 'local', room: 'local/x', dir: '/tmp/w', tag: 'money', lead: 'rohanz', owner: 'rohanz', share: 'full', run: 1,
       nonce: 'n', registry: '/tmp/r', id: 'w_money', logDir: '/tmp', isWorker: false }, {}))
     expect(env).toMatchObject({ ROOM_WORKER_ID: 'w_money', HOME: '/home/x' })
-  })
-
-  it('uses the resolved channel override and supports disabling it', async () => {
-    for (const channel of ['plugin:custom@market', '']) {
-      const config = await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: channel } })
-      const c = (await workerAdapter('claude').plan(workerInput({
-        claudeChannel: config.claudeChannel ?? DEFAULT_CLAUDE_CHANNEL,
-      })))
-      expect(c.args.slice(0, 2)).toEqual(['-p', 'task'])
-      const channels = (await workerAdapter('claude').plan(workerInput({
-        wakeChannels: true,
-        claudeChannel: config.claudeChannel ?? DEFAULT_CLAUDE_CHANNEL,
-      })))
-      expect(channels.args.slice(0, channel ? 4 : 2)).toEqual(channel ? ['--dangerously-load-development-channels', channel, '-p', 'task'] : ['-p', 'task'])
-      expect((await workerAdapter('codex').plan(workerInput({
-        claudeChannel: config.claudeChannel ?? DEFAULT_CLAUDE_CHANNEL,
-      }))).args).not.toContain('--dangerously-load-development-channels')
-    }
   })
 
   it('creates a worktree on branch room/<tag> and refuses an unmanaged reuse', async () => {

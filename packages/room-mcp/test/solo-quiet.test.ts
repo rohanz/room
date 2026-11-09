@@ -1,6 +1,6 @@
 /**
  * Server-instructions rule 1: a room is silent while alone. A session with no company is never woken
- * (Claude inbox socket, channel, Codex queue) and its hooks deliver nothing; what it is owed stays in
+ * (Claude inbox socket, Codex queue) and its hooks deliver nothing; what it is owed stays in
  * room_state. A session's own workers are company only for their own notices.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'

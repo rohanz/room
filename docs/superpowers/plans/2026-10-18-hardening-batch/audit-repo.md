@@ -48,7 +48,7 @@ Raw knip output in this directory: knip.txt (CI config, clean), knip-strict.txt 
 1. Committed room-mcp.mjs bundle: 276 commits, 552 MB raw history (54 MB packed). Required by CI asset check and GitHub installs. Keep.
 2. grammars/*.wasm (29 MB): all 16 byte-identical to node_modules/tree-sitter-wasms; 15 languages shipped = 15 languages supported. Keep unless install size matters (cpp/kotlin/c_sharp/swift = 16 MB).
 3. logo.png 544 KB + favicon-512 144 KB duplicated in packages/web/public and plugins/room/web; viewer.html is 833 KB. Recompress at source.
-4. plugins/room/bin/claude-room + channel.ts (9 lines) + ROOM_WAKE=channels: documented in AGENTS.md:113, docs/reference.md:67, room-join SKILL.md:66. Claude Code 2.1.224 shipped 2026-08-07. Remove next minor.
+4. Claude channel fallback (retired in 0.17.46): documented in AGENTS.md:113, docs/reference.md:67, room-join SKILL.md:66. Claude Code 2.1.224 shipped 2026-08-07. Removed in 0.17.46.
 5. 0.16->0.17 migration code: 60+ legacy paths in room-mcp (local-migration.ts, policy-store.ts, worker-registry.ts, session.ts, config.ts, codex-turn.ts), relay/src/local-migrate.ts, scripts/room-inventory.mts. No TODO/FIXME/XXX anywhere in src. Pick a sunset version.
 6. packages/agent (roomagent, 659 lines, @openai/codex-sdk): hackathon-era driver; referenced by AGENTS, scripts/say.mts, roadmap.md:45. Retire with say.mts or do the roadmap item.
 7. scripts/{measure-room-perf,wake-e2e,load-repro,doc-history,soak,measure-idle-rss}.mts: cited only by dated reports; not in package.json/CI. Keep, optionally group under scripts/bench/.

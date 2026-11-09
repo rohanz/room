@@ -65,7 +65,7 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    they finish. Routine progress notes from
    your own workers do not wake you; addressed questions, worker completion (room_done),
    and eligible interrupts can. Claude Code uses its inbox (2.1.224+ on macOS/Linux,
-   2.1.234+ on Windows, or channels fallback); Codex leads on the shared app-server can
+   2.1.234+ on native Windows; older versions rely on Room tools and eligible hooks); Codex leads on the shared app-server can
    receive coalesced pointers for addressed questions, eligible interrupts and addressed
    completion from their own registered workers mid-turn as tool output. Delivery does
    not interrupt a running tool; idle `codex queue` remains a fallback. A wake is not

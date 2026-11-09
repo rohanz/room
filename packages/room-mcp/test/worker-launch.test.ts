@@ -36,7 +36,7 @@ async function launch(host: 'claude' | 'codex', mode: 'fresh' | 'resume', blockW
   const proc = { pid: 4242, started: Promise.resolve(), onExit: () => {}, kill: () => true, isRunning: () => true }
   const result = await launchWorkerProcess({ session: { dir: root, roomName: 'local/repo' } as Session,
     id: 'worker-id', tag: 'w', dir: root, lead: 'lead', owner: 'lead', host, effort: overrides.effort, share: 'intent', run: 1, nonce: 'nonce', registry: root,
-    budget: { threads: 2, memGb: 1, nice: 0 }, server: 'local', isWorker: true, token: 'test-token', claudeChannel: '',
+    budget: { threads: 2, memGb: 1, nice: 0 }, server: 'local', isWorker: true, token: 'test-token',
     spawner: value => { spec = value; return proc }, probe: () => ({ startTime: 'birth', executable: 'fixture' }), log: () => {} },
   mode === 'fresh' ? { mode, task: 'task', links: [], sessionId: overrides.sessionId ?? 'retained-id' } : { mode, sessionId: overrides.sessionId ?? 'retained-id', followUp: 'follow up', oldPort: 4417 },
   { setHandle: () => {}, watch: () => {}, aborted: () => false },

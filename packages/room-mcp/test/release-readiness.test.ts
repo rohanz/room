@@ -8,7 +8,6 @@ import type { Identity } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { resolveDisplayedName, type NameContext } from '../src/tools/names.js'
 import { workerAdapter } from '../src/hosts/index.js'
-import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -71,7 +70,6 @@ it('uses request, per-host, generic and then host worker defaults in that order'
   expect(workerRuntimeForHost('codex', { model: undefined, effort: undefined }, {})).toEqual({ model: undefined, effort: undefined })
   for (const host of ['codex', 'claude'] as const) {
     const command = (await workerAdapter(host).plan(workerInput({
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     })))
     expect(command.args).not.toContain('-m')
     expect(command.args).not.toContain('--model')
@@ -79,7 +77,6 @@ it('uses request, per-host, generic and then host worker defaults in that order'
     expect(command.args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false)
     const named = (await workerAdapter(host).plan(workerInput({
       runtime: workerAdapter(host).normalizeRuntime({ model: 'named', effort: 'high' }),
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     }))).args
     expect(named).toContain('named')
     expect(named).toContain(host === 'codex' ? 'model_reasoning_effort=high' : '--effort')

@@ -5,7 +5,7 @@ import { requireWorkerInventory } from './worker-store.js'
  * A process used to hold exactly one session; a lead in a team room that dispatches workers into a
  * local room holds two. Every tool that names a participant, a question, a claim or a worker asks
  * this registry which session holds it instead of guessing. The registry also owns the per-session
- * attachments (hooks bridge, conflict watcher, PR mirror, channel push, the lead-in-two-rooms
+ * attachments (hooks bridge, conflict watcher, PR mirror, wake delivery, the lead-in-two-rooms
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
@@ -18,7 +18,6 @@ import { LOCAL, type Session } from './session.js'
 import { defaultSpawner, pidPresent, probeProcess, type CwdProcessLister, type ProcessProbe, type SpawnedProcess, type Spawner } from './worker-process.js'
 import { decideResume, workerRealState } from './worker-state.js'
 import { resolveConfig } from './config.js'
-import { DEFAULT_CLAUDE_CHANNEL as defaultChannel } from './hosts/claude-binding.js'
 import { launchWorkerProcess, WorkerLaunchError } from './worker-launch.js'
 import { openWorkerReader, registryForDir } from './worker-registry.js'
 import { postWorkerMessage } from './post.js'
@@ -31,7 +30,6 @@ export type Role = 'primary' | 'workers'
 export interface DeliveredResume { delivered: true; reply: string }
 export interface ResumeWorkerOptions {
   spawner?: Spawner
-  claudeChannel?: string
   maxWorkers?: number | string
   log?: (line: string) => void
   at?: () => number
@@ -264,7 +262,7 @@ export class Rooms {
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
   async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, options: ResumeWorkerOptions = {}): Promise<string | DeliveredResume> {
-    const { spawner = defaultSpawner, claudeChannel = defaultChannel, maxWorkers, log = console.error, at = Date.now,
+    const { spawner = defaultSpawner, maxWorkers, log = console.error, at = Date.now,
       exitWaitMs = 30_000, beforeLaunch } = options
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
@@ -320,7 +318,7 @@ export class Rooms {
       const launched = await launchWorkerProcess({ session: s, id: record.id, tag: record.tag, dir: record.dir,
         lead: record.lead.participant, owner: s.me.owner ?? s.me.name, host: record.host, model: record.model,
         effort: record.effort, share: record.share, run: run.n, nonce: run.nonce, registry: registry.root,
-        budget: record.budget, server, isWorker, token: s.local ? undefined : s.token, claudeChannel,
+        budget: record.budget, server, isWorker, token: s.local ? undefined : s.token,
         preferredPort: record.port, spawner, probe: this.o.probe, log, at },
       { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt : followUp, oldPort: record.port },
       { setHandle: (id, proc) => this.setHandle(s, id, proc),

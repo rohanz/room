@@ -34,7 +34,6 @@ import { runDoctor } from './doctor.js'
 import { admitWorkerEnvironment, admittedWorker } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
-import { channelCapabilities } from './hosts/claude-binding.js'
 import { resolveDaemonCutover } from './daemon-cutover.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
@@ -99,7 +98,7 @@ async function main() {
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const mcp = new RoomMcpServer(
     { name: 'room', version: RELEASE_VERSION },
-    { capabilities: { tools: {}, experimental: channelCapabilities }, instructions: AGENT_INSTRUCTIONS() },
+    { capabilities: { tools: {} }, instructions: AGENT_INSTRUCTIONS() },
   )
   let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
@@ -118,8 +117,8 @@ async function main() {
       roomLogDir = () => sessionBinding.commonDir()
       let rebinding: Promise<void> | undefined
       let rebindHost: (sessionId: string) => Promise<void> = async () => {}
-      // Content-free wakes: Codex active-turn output or idle queue; Claude inbox or channel.
-      const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
+      // Content-free wakes: Codex active-turn output or idle queue; Claude inbox.
+      const wake = createWakeSender({})
       let presence: PresenceEnd | undefined
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION })
       const wakeProbe = createProductionWakeProbe(() => presence?.idleMs(), RELEASE_VERSION)

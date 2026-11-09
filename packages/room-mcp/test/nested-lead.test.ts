@@ -99,7 +99,7 @@ const prunable = () => git(top, 'worktree', 'list', '--porcelain').split('\n').f
 describe('nested lead: a worker that leads workers', () => {
   it('1: an addressed room_send note from the human ends the lead-worker\'s room_wait and wakes it', () => {
     // Steering the background lead is the point of the feature. room_send(type note, to <lead>) is an fyi note:
-    // it lands in the lead's inbox, but a lead blocked in room_wait keeps waiting (no endsWait) and a channel
+    // it lands in the lead's inbox, but a lead blocked in room_wait keeps waiting (no endsWait) and a socket wake
     // does not wake it (wakes only at interrupt). Live, the lead acted on it only because a question it asked
     // was answered, which ended the wait; the sender's echo ("[fyi] rohanz's agent: ...") does not show the recipient.
     const room = new RoomDoc(new Y.Doc())

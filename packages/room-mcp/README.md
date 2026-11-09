@@ -62,8 +62,7 @@ The plugin's hooks record the session so it can be woken and put unread inbox li
 teammate claims in front of the model before every edit, including edits made through the shell.
 
 Wake-ups differ by host. A Claude Code session receives interrupts and questions addressed
-to it through the MCP channel (`notifications/claude/channel`, a research-preview feature
-that needs an Anthropic login); a Codex thread is woken with `codex queue`, retried with
+to it through its cross-session messaging inbox socket with plain `claude` (2.1.224+, or 2.1.234+ on native Windows); a Codex thread is woken with `codex queue`, retried with
 backoff, using the thread id the SessionStart hook recorded. If neither path is available
 the pre-edit hook still shows the message before the next edit. Running the server by hand
 (`npm run mcp`) works for scripts and tests; `ROOM_ROOM` and `ROOM_DIR` name the room and
@@ -211,7 +210,7 @@ folds older ones into a compact per-area ledger archive (counts, last seen per p
 and open questions kept in full) every minute and whenever a post takes the bus past that bound.
 Ledgers, `room_pr_note` and `room_export` read the archive too.
 
-Wake-ups: interrupts and questions addressed to you reach an idle Codex thread through `codex queue` (retried with backoff; the thread id comes from the SessionStart hook) and a Claude Code session through the MCP channel notification.
+Wake-ups: interrupts and questions addressed to you reach an idle Codex thread through `codex queue` (retried with backoff; the thread id comes from the SessionStart hook) and a Claude Code session through its cross-session inbox socket (2.1.224+, or 2.1.234+ on native Windows).
 
 ## Workers: what a lead may and may not do
 
@@ -229,6 +228,6 @@ Wake-ups: interrupts and questions addressed to you reach an idle Codex thread t
   claims and change notices arrive at notify, at most once a minute per worker, path and
   type. When a worker's claim ends, the team gets a release naming any unfulfilled plans.
 
-## Claude Code and the channels flag
+## Claude Code wake-ups
 
-Wake-ups reach Claude Code through the MCP channel capability, which is a research preview with an Anthropic-curated allowlist. Room is not on it, so a Claude Code session must be started with `claude --dangerously-load-development-channels plugin:room@room` for wake-ups to arrive; the plugin ships `bin/claude-room` which does exactly that and nothing else. The flag bypasses the allowlist for that one entry; organisation policy still applies. Codex wakes through `codex queue` and needs no flag.
+Plain `claude` on Claude Code 2.1.224+ (2.1.234+ on native Windows) receives wake-ups through its cross-session messaging inbox socket, with no launch flag. `ROOM_WAKE=auto` (default) and `socket` use that socket; `off` disables wakes on both hosts. On older Claude Code, or when the socket is unavailable, messages remain owed and arrive through Room tools and eligible hooks; an idle session may need another turn. Codex wakes through `codex queue` and needs no flag.

@@ -52,8 +52,8 @@ export const portExamples: {
   identity: { kind: 'pending', reason: 'unbound', initialJoinWaitMs: 5000 }, turn: { kind: 'unknown', source: 'host', reason: 'unavailable' },
   via: 'socket', wake: { kind: 'uncertain', via: 'turn' },
   status: { mode: 'auto', transport: 'socket', availability: 'configured', limitation: 'write does not prove acceptance' },
-  worker: { mode: 'fresh', prompt: 'fixture task', runtime: {}, tag: 'fixture', cwd: '/fixture/repo', logDir: '/fixture/logs', env: {}, claudeChannel: '', shellEnvHook: false, wakeChannels: false },
-  command: { mode: 'resume', sessionId, prompt: 'fixture task', runtime: {}, tag: 'fixture', claudeChannel: '', shellEnvHook: false, wakeChannels: false },
+  worker: { mode: 'fresh', prompt: 'fixture task', runtime: {}, tag: 'fixture', cwd: '/fixture/repo', logDir: '/fixture/logs', env: {}, shellEnvHook: false },
+  command: { mode: 'resume', sessionId, prompt: 'fixture task', runtime: {}, tag: 'fixture', shellEnvHook: false },
   plan: { cmd: 'claude', args: ['-p', 'fixture task'], envPatch: {}, artifacts: [{ id: 'shell-env', path: '/fixture/logs/env.sh', content: '# fixture', mode: 0o600 }], artifactEnv: [{ artifactId: 'shell-env', key: 'CLAUDE_ENV_FILE' }], warnings: [] },
   hook: { event: 'before-tool', sessionId, cwd: '/fixture/repo', incomplete: false, subagent: false, runtime: {}, tool: { kind: 'shell', originalName: 'PowerShell', shellDialect: 'powershell', input: { command: 'Set-Content src/a.ts x' } } },
   logs: [

@@ -12,7 +12,6 @@ import { WORKER_EFFORTS } from './hosts/types.js'
 import { leadClaudePluginDir } from './hosts/claude-install.js'
 import { writeWorkerArtifacts } from './worker-artifacts.js'
 import { workerAdapter } from './hosts/index.js'
-import { DEFAULT_CLAUDE_CHANNEL as defaultChannel } from './hosts/claude-binding.js'
 import { realGitCommonDir } from '@room/roomd'
 import { workerLaunchOptions } from './hosts/selection.js'
 
@@ -31,7 +30,7 @@ interface Policy {
   session: Session; id: string; tag: string; dir: string; lead: string; owner: string
   host: WorkerHost; model?: string; effort?: string; share: string; run: number; nonce: string; registry: string
   budget: { threads: number; memGb: number; nice?: number }
-  server: string; isWorker: boolean; token?: string; claudeChannel?: string
+  server: string; isWorker: boolean; token?: string
   spawner?: Spawner; probe?: (pid: number) => ProcessInfo | undefined; log: (line: string) => void; at?: () => number
   usedPorts?: number[]; preferredPort?: number
   platform?: NodeJS.Platform
@@ -134,8 +133,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const plan = await worker.plan({ tag, sessionId: command.sessionId, mode: command.mode, prompt,
       runtime: { model: policy.model, effort: workerAdapter(policy.host).normalizeRuntime({ effort: policy.effort }).effort },
       cwd: policy.dir, logDir: s.dir, env: process.env, inheritedShellEnvFile: worker.inheritedShellEnvFile,
-      claudeChannel: policy.claudeChannel === undefined ? defaultChannel : policy.claudeChannel,
-      maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir(process.env, fileURLToPath(import.meta.url)) : undefined })
+      maxBudgetUsd, shellEnvHook: launchOptions.shellEnvHook, pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir(process.env, fileURLToPath(import.meta.url)) : undefined })
     const written = writeWorkerArtifacts(s.dir, plan)
     Object.assign(env, written.envPatch)
     const priority = workerPriority({ cmd: plan.cmd, args: plan.args }, niceEnv)

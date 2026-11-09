@@ -13,7 +13,7 @@ export function wakePathStatus(o: WakeAvailability): WakePathStatus {
   if (selected !== 'off' && o.host === 'codex') return codexWakeStatus(o)
   return claudeStatus(o)
 }
-/** Codex: the queue. Claude: the socket, then the channel if the socket fails and the channel is admitted. ROOM_WAKE=off sends nothing. */
+/** Codex: the queue. Claude: the inbox socket. ROOM_WAKE=off sends nothing. */
 export function createWakeSender(o: WakeSenderOptions): SendWake {
   let last: WakeAttempt | undefined
   let lastTarget: string | undefined
@@ -31,7 +31,7 @@ export function createWakeSender(o: WakeSenderOptions): SendWake {
     // ROOM_WAKE=off is the user's switch for every host; the ledger still owes the message.
     if (selected === 'off') return undefined
     if (target.host === 'codex') return sendCodexWake(o, target.id, text, attempt)
-    return sendClaudeWake(o, text, attempt, () => { if (last) last = { ...last, fallback: 'socket-failed' } })
+    return sendClaudeWake(o, text, attempt)
   }
   send.describe = target => wakePathStatus({ ...o, host: target.host })
   send.lastAttempt = target => (!target || `${target.host}\0${target.id}` === lastTarget) && last ? { ...last } : undefined

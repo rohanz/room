@@ -19,7 +19,6 @@ import { wakeUnavailable } from '../src/hosts/prompt.js'
 import type { Session } from '../src/session.js'
 import { workerBudget, workerEnv, workerPriority } from '../src/worker-config.js'
 import { workerAdapter } from '../src/hosts/index.js'
-import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { installedCodexRoomContract } from '../src/hosts/codex-install.js'
 import { cleanupPreparedWorktree, prepareWorkerLinks, prepareWorktree } from '../src/worker-git.js'
 import { defaultSpawner, pidAlive, probeProcess, workerLogTail, type SpawnSpec } from '../src/worker-process.js'
@@ -268,21 +267,6 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await tools.shutdown()
   })
 
-  it.each(['plugin:custom@market', ''])('passes ROOM_CLAUDE_CHANNEL only with ROOM_WAKE=channels (%s)', async channel => {
-    vi.stubEnv('ROOM_CLAUDE_CHANNEL', channel)
-    vi.stubEnv('ROOM_WAKE', 'channels')
-    vi.stubEnv('ROOM_WORKER_NICE', '0')
-    try {
-      const t = setup()
-      expect(await t.leadTools.call('room_spawn', { tag: 'channel', task: 'check channels' })).toContain('spawned channel')
-      const args = t.specs[0].args
-      expect(args).toContain('-p')
-      if (channel) expect(args[args.indexOf('--dangerously-load-development-channels') + 1]).toBe(channel)
-      else expect(args).not.toContain('--dangerously-load-development-channels')
-      await t.leadTools.shutdown()
-    } finally { vi.unstubAllEnvs() }
-  })
-
   it('reports carried file counts and records pending publication for each spawn', async () => {
     const t = setup(prepareWorktree)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
@@ -333,7 +317,6 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const priority = workerPriority((await workerAdapter('codex').plan(workerInput({
       runtime: workerAdapter('codex').normalizeRuntime({ model: 'gpt-5.6', effort: undefined }),
       prompt: 'unused',
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     }))))
     expect(t.specs[0].cmd).toBe(priority.cmd)
     if (priority.nice) expect(t.specs[0].args.slice(0, 3)).toEqual(['-n', '10', 'codex'])
@@ -1131,7 +1114,6 @@ it('passes documented effort and session flags to Claude and Codex', async () =>
   }))).args)
     .toEqual(['-p', 'task', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--effort', 'medium', '--name', 'money', '--session-id', '550e8400-e29b-41d4-a716-446655440000', '--max-budget-usd', '2.50'])
   expect((await workerAdapter('claude').plan(workerInput({
-    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
   }))).args).not.toContain('--effort')
   expect((await workerAdapter('claude').plan(workerInput({
     runtime: workerAdapter('claude').normalizeRuntime({ model: undefined, effort: 'minimal' }),
@@ -1140,7 +1122,6 @@ it('passes documented effort and session flags to Claude and Codex', async () =>
     runtime: workerAdapter('codex').normalizeRuntime({ model: undefined, effort: 'medium' }),
   }))).args).toContain('model_reasoning_effort=medium')
   expect((await workerAdapter('codex').plan(workerInput({
-    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
   }))).args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false)
   expect((await workerAdapter('claude').plan(workerInput({
     tag: 'money',
@@ -1265,18 +1246,16 @@ describe('spawn inputs and effort', () => {
   })
 
   it('guides a Claude lead only on the first spawn, after a silent solo room_state', async () => {
-    expect(wakeUnavailable(dir, 'claude', 'claude')).toBe(true)
-    expect(wakeUnavailable(dir, 'codex', 'codex')).toBe(false)
-    expect(wakeUnavailable(dir, 'claude', 'claude --dangerously-load-development-channels plugin:room@room')).toBe(false)
-    expect(wakeUnavailable(dir, 'claude', 'claude --channels plugin:unrelated@other')).toBe(true)
+    expect(wakeUnavailable(dir, 'claude')).toBe(true)
+    expect(wakeUnavailable(dir, 'codex')).toBe(false)
     vi.stubEnv('ROOM_HOST', 'claude')
-    vi.stubEnv('SHELL', '/bin/bash')
     const t = setupLead()
     expect(await t.leadTools.call('room_state', {})).not.toContain('For your human:')
     const reply = await t.leadTools.call('room_spawn', { tag: 'warning', task: 'x' })
     expect(reply.split('\n')[0]).toContain('Continue independent work while workers run.')
     expect(reply.split('\n')[1]).toMatch(/^For your human:/)
-    expect(reply).toContain('>> ~/.bashrc')
+    expect(reply).toContain('2.1.224 or later (2.1.234 or later on native Windows)')
+    expect(reply).toContain('Check /status for its Peer address')
     const second = await t.leadTools.call('room_spawn', { tag: 'another', task: 'y' })
     expect(second).not.toContain('For your human:')
     expect(second).not.toContain('Continue independent work while workers run.')

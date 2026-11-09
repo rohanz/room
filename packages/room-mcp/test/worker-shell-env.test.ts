@@ -15,7 +15,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { workerProcessEnv } from '../src/worker-config.js'
-import { DEFAULT_CLAUDE_CHANNEL } from '../src/hosts/claude-binding.js'
 import { cleanupWorkerLogs } from '../src/worker-git.js'
 
 import { CODEX_SHELL_FILTER, codexShellFilterWarning } from '../src/hosts/codex-shell.js'
@@ -38,7 +37,6 @@ const options = { threads: 2, memGb: 1, server: 'local', room: 'local/repo', dir
 // Runs the hook exactly as a worker's settings install it: `node` with the exec-form args, event JSON on stdin.
 const powerShellSettings = JSON.parse((await workerAdapter('claude').plan(workerInput({
   shellEnvHook: true,
-  claudeChannel: DEFAULT_CLAUDE_CHANNEL,
 }))).args.find(a => a.includes('PreToolUse'))!)
 function powerShellHook(input: unknown) {
   const hook = powerShellSettings.hooks.PreToolUse[0].hooks[0]
@@ -110,7 +108,6 @@ it('uses an exec-form inline worker hook on fresh/resumed Claude launches withou
       sessionId: resume ? 's' : undefined,
       pluginDir,
       mode: resume ? 'resume' : 'fresh',
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     }))).args
     expect(args.filter(v => v === '--settings')).toHaveLength(1)
     expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({
@@ -243,13 +240,11 @@ it('gives a Claude worker the env file and keeps PORT and thread caps; Codex fil
     const args = (await workerAdapter('codex').plan(workerInput({
       sessionId: resume ? 's' : undefined,
       mode: resume ? 'resume' : 'fresh',
-      claudeChannel: DEFAULT_CLAUDE_CHANNEL,
     }))).args
     expect(args[args.indexOf(CODEX_SHELL_FILTER) - 1]).toBe('-c')
     expect(args.at(-1)).toBe('task')
   }
   expect((await workerAdapter('claude').plan(workerInput({
-    claudeChannel: DEFAULT_CLAUDE_CHANNEL,
   }))).args.join(' ')).not.toContain('shell_environment_policy')
 })
 

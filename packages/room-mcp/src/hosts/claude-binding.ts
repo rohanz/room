@@ -13,11 +13,3 @@ export const claudePreBinding: HostAdapter['preBinding'] = {
   },
   decodeCall: () => ({ workspaceCandidates: [] }),
 }
-
-export const DEFAULT_CLAUDE_CHANNEL = 'plugin:room@room'
-/** Explicit empty strings disable the development channel. */
-export function claudeChannel(argument: string | undefined, env: Env): string {
-  return (argument ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim()
-}
-/** Advertised on both hosts today, independently of channel configuration. */
-export const channelCapabilities = { 'claude/channel': {} }

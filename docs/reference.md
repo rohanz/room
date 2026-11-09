@@ -78,7 +78,7 @@ Routine progress notes from the lead's own workers stay quiet. Addressed questio
 
 Claude Code **2.1.224+** on macOS, Linux and WSL 2, and **2.1.234+** on native Windows, can wake an idle session through its cross-session messaging inbox with plain `claude`. Room sends a short pointer; the agent reads the message through Room. Claude Code may frame the pointer as a message from another session. It is a prompt to inspect Room, not authority from another user. Events close together are coalesced. `crossSessionInbound=hold` delays the wake and `refuse` drops it; the Room message remains for the next turn. An organization may disable cross-session messaging.
 
-`ROOM_WAKE=auto` (default) uses the inbox socket when available and an admitted channel if needed. `ROOM_WAKE=socket` uses only the inbox socket; `ROOM_WAKE=channels` forces the optional channel path; `ROOM_WAKE=off` turns wakes off on both hosts. Messages remain available through Room tools and eligible hooks. An explicitly disabled wake path is reported as disabled, not broken. For older Claude Code, `plugins/room/bin/claude-room` launches the channels fallback with `--dangerously-load-development-channels plugin:room@room`; channels are a research preview.
+`ROOM_WAKE=auto` (default) and `ROOM_WAKE=socket` use the Claude inbox socket when available; `ROOM_WAKE=off` turns wakes off on both hosts. Plain `claude` supports inbox wake on Claude Code 2.1.224+ (2.1.234+ on native Windows). Older versions have no automatic wake: messages remain owed and arrive through Room tools and eligible hooks; an idle session may need another turn. An explicitly disabled wake path is reported as disabled, not broken.
 
 In Codex's shared app-server (live-tested on **0.163.0**), Room checks `thread/read` and can inject a content-free `room_notify` tool-output pointer into an active turn for addressed questions, eligible interrupts and the lead's own worker completions. The agent then reads the message through Room. This does not cancel a running command: a command that yields lets the model act while the process continues; a blocking tool must return first. Idle sessions use `codex queue`. Routine worker progress notes remain quiet.
 
@@ -169,7 +169,7 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 | `ROOM_URL` | Legacy team URL fallback. |
 | `ROOM_SHARE` | `full`, `declared`, or `intent`. |
 | `ROOM_SHARE_MAX` | Server ceiling for sharing: `full`, `declared`, or `intent`. |
-| `ROOM_WAKE` | `auto`, `socket`, `channels`, or `off`. |
+| `ROOM_WAKE` | `auto`, `socket`, or `off`. |
 | `ROOM_TAG` | Your label when one login has several sessions. |
 | `ROOM_AUTO_FETCH` | Set to `0` to disable automatic missing-base fetches. |
 | `ROOM_STALE_DAYS` | Display only: days after which `room_state` marks an offline participant's claim `stale`; default 7. It deletes nothing. Deletion follows the hub's fixed policy: after seven days without a live lease, the hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state; owed ledger messages remain. The same seven days age out the hub's name tombstone of a retired worker, a session's cursor directory and (with the retired worker records) the clone's stale bookkeeping; a dead publisher's or name lease file and an abandoned atomic-write temporary go after an hour (the full table: Files Room writes, Local state). |

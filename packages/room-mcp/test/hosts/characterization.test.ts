@@ -47,22 +47,16 @@ describe('current worker argv (no native host invocation)', () => {
       prompt: 'fixture task',
     })))).toMatchObject({ cmd: fixture.host, args: fixture.args })
   })
-  it('keeps explicit empty channel, development plugin settings and shell hook opt-in', async () => {
-    const plain = (await workerAdapter('claude').plan(workerInput({
-      wakeChannels: true,
-    })))
-    expect(plain.args).not.toContain('--dangerously-load-development-channels')
+  it('keeps development plugin settings and shell hook opt-in', async () => {
     const configured = (await workerAdapter('claude').plan(workerInput({
       shellEnvHook: true,
-      wakeChannels: true,
+
       pluginDir: '/fixture/plugin',
-      claudeChannel: 'plugin:room@room',
     })))
     expect(configured.args.slice(0, 3)).toEqual(['--plugin-dir', '/fixture/plugin', '--settings'])
     const settings = JSON.parse(configured.args[3])
     expect(settings.enabledPlugins).toEqual({ 'room@room': false })
     expect(settings.hooks.PreToolUse[0]).toMatchObject({ matcher: 'PowerShell', hooks: [{ type: 'command', command: 'node', timeout: 5 }] })
-    expect(configured.args.slice(4, 6)).toEqual(['--dangerously-load-development-channels', 'plugin:room@room'])
     expect(leadClaudePluginDir({ CLAUDE_PLUGIN_ROOT: '/fixture/plugin', CLAUDE_CONFIG_DIR: temp() }, import.meta.filename)).toBe('/fixture/plugin')
     expect(CODEX_SHELL_FILTER).toBe('shell_environment_policy.filters={"ROOM_*"="exclude"}')
   })
@@ -153,27 +147,25 @@ describe('installation evidence compatibility exports', () => {
 })
 
 describe('current wake outcomes never imply a receipt', () => {
-  it('Claude socket write and admitted fallback preserve outcome evidence', async () => {
+  it('Claude socket writes preserve outcome evidence', async () => {
     const env = { CLAUDE_CODE_MESSAGING_SOCKET: '/fixture/socket' }
     expect(claudeWakeAvailable({ host: 'claude', env })).toBe(true)
-    const send = createWakeSender({ env, notify: vi.fn(), post: async () => {} })
+    const send = createWakeSender({ env, post: async () => {} })
     expect(await send({ host: 'claude', id: sessionId }, 'pointer')).toBe('socket')
     expect(send.lastAttempt?.()).toMatchObject({ via: 'socket', outcome: 'written' })
-    const fallback = createWakeSender({ env, parentArgs: 'claude --channels plugin:room@room', notify: vi.fn(), post: async () => { throw Error('refused') } })
-    expect(await fallback({ host: 'claude', id: sessionId }, 'pointer')).toBe('channel')
-    expect(fallback.lastAttempt?.()).toMatchObject({ outcome: 'written', fallback: 'socket-failed' })
+
   })
   it.each(['claude', 'codex'] as const)('%s off has no attempt; failures remain failures', async host => {
-    const off = createWakeSender({ env: { ROOM_WAKE: 'off' }, notify: vi.fn() })
+    const off = createWakeSender({ env: { ROOM_WAKE: 'off' } })
     expect(await off({ host, id: sessionId }, 'pointer')).toBeUndefined()
     expect(off.lastAttempt?.()).toBeUndefined()
-    const send = createWakeSender({ env: { ROOM_WAKE: 'channels' }, notify: async () => { throw Error('failed') }, queue: async () => { throw Error('failed') } })
+    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/fixture/socket' }, post: async () => { throw Error('failed') }, queue: async () => { throw Error('failed') } })
     await expect(send({ host, id: sessionId }, 'pointer')).rejects.toThrow('failed')
     expect(send.lastAttempt?.()).toMatchObject({ outcome: 'failed' })
   })
   it('Codex queue uses exact thread; no metadata workspaces are needed to decode identity', async () => {
     const queue = vi.fn(async () => {})
-    const send = createWakeSender({ env: {}, queue, notify: vi.fn() })
+    const send = createWakeSender({ env: {}, queue })
     expect(await send({ host: 'codex', id: sessionId }, 'pointer')).toBe('queue')
     expect(queue).toHaveBeenCalledWith(sessionId, 'pointer')
     expect(send.lastAttempt?.()).toMatchObject({ via: 'queue', outcome: 'queued' })

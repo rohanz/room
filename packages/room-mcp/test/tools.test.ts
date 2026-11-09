@@ -678,14 +678,6 @@ describe('session gating', () => {
     expect(await t.tools.call('room_state', {})).not.toContain(note)
   })
 
-  it('omits Claude wake guidance when channels were explicitly disabled', async () => {
-    vi.stubEnv('ROOM_HOST', 'claude'); vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
-    try {
-      const t = setup({ joined: false })
-      expect(await t.tools.call('room_join', { where: 'local' })).not.toContain('Wake-ups')
-    } finally { vi.unstubAllEnvs() }
-  })
-
   it.each(['claude', 'codex', undefined])('keeps quiet joins free of wake-up guidance (%s)', async host => {
     vi.stubEnv('ROOM_SERVER', 'ws://127.0.0.1:9')
     const file = join(dir, '.git', 'room-session.json')
@@ -1810,11 +1802,11 @@ describe('merge preview scratch tree', () => {
    })
  })
 
- it('does not replay a channel or hook receipt into the next tool inbox', async () => {
+ it('does not replay a socket or hook receipt into the next tool inbox', async () => {
    const t = setup()
    try {
      await t.tools.call('room_state', {})
-     const msg = hubAppend(t.other, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'already delivered by channel' })
+     const msg = hubAppend(t.other, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'already delivered by socket' })
      t.room.markSeen('Rohan', [msg.id])
      const state = await t.tools.call('room_state', {})
      expect(state.startsWith('[inbox')).toBe(false)

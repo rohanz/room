@@ -11,7 +11,6 @@ import { gitCommonDir } from '@room/roomd'
 import { mainWorktree } from '@room/roomd/local'
 import { parseShare, type ShareLevel } from '@room/roomd'
 import { legacyLocalBranchRoom } from './room-name.js'
-import { claudeChannel as resolveChannel } from './hosts/claude-binding.js'
 
 const TEAM_SERVER_REQUIRED = 'No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.'
 export const LOCAL = 'local'
@@ -23,14 +22,14 @@ export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
 export interface ConfigArgs {
   server?: string; where?: string; name?: string; owner?: string; tag?: string; kind?: string
   share?: string; shareExplicit?: boolean; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
-  claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
+  maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
   dir: string; server: string; teamServer?: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareExplicit: boolean; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
-  claudeChannel: string; workerId?: string
+  workerId?: string
   /** A remembered Room 0.16 per-branch local room and its repository room; a join to that room migrates the choice. */
   legacyLocalRoom?: { from: string; to: string }
 }
@@ -129,8 +128,6 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const credentialsPath = resolveCredentialsPath(args, e)
   const explicitRoom = value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined)
   return {
-    // Empty explicitly disables development channels; do not discard it with value().
-    claudeChannel: resolveChannel(args.claudeChannel, e),
     workerId: value(e.ROOM_WORKER_ID),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where, teamServer), teamServer, where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),

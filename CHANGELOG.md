@@ -2,6 +2,8 @@
 
 ## 0.17.46
 
+- **Claude channels fallback retired.** Plain `claude` wakes through its cross-session messaging inbox on Claude Code 2.1.224+ (2.1.234+ on native Windows). Older versions no longer have automatic wake: messages remain owed and arrive through Room tools and eligible hooks; an idle session may need another turn. `ROOM_WAKE` retains `auto`, `socket`, and `off`.
+
 - **One collector for the clone's local state.** `docs/reference.md` (Files Room writes, Local state) now lists every file Room keeps under the common Git directory's `room/`, its owner and its lifetime, and one hourly pass (`local-state-gc.ts`) applies that table; a test keeps the table and the code equal. It replaces the 0.17.45 sweep and the hooks' own receipt pruning, and newly ages out dead name leases, orphaned guard files and the relay authority lock of a dead daemon, sharing records of participants whose worktree is gone, old compatibility floors, browser link pages, CPU profiles, quarantined records, and the storage-gate and preflight files written by an unreleased SQLite branch. Anything the table does not name is left alone and listed by `room doctor` ("local state").
 
 ## 0.17.45

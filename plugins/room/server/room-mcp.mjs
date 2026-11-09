@@ -23619,10 +23619,7 @@ var init_codex_identity = __esm({
 
 // packages/room-mcp/src/hosts/claude-binding.ts
 import fs18 from "node:fs";
-function claudeChannel(argument, env) {
-  return (argument ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim();
-}
-var value, samePlace, claudePreBinding, DEFAULT_CLAUDE_CHANNEL, channelCapabilities;
+var value, samePlace, claudePreBinding;
 var init_claude_binding = __esm({
   "packages/room-mcp/src/hosts/claude-binding.ts"() {
     "use strict";
@@ -23645,8 +23642,6 @@ var init_claude_binding = __esm({
       },
       decodeCall: () => ({ workspaceCandidates: [] })
     };
-    DEFAULT_CLAUDE_CHANNEL = "plugin:room@room";
-    channelCapabilities = { "claude/channel": {} };
   }
 });
 
@@ -23769,7 +23764,7 @@ function defaults(dir, env) {
   return { model };
 }
 function command(input) {
-  const { runtime: { model, effort }, prompt, claudeChannel: claudeChannel2 } = input;
+  const { runtime: { model, effort }, prompt } = input;
   const options = { ...input, resume: input.mode === "resume" };
   const settings = {
     ...options.pluginDir ? { enabledPlugins: { "room@room": false } } : {},
@@ -23779,7 +23774,7 @@ function command(input) {
   };
   return {
     cmd: "claude",
-    args: [...options.pluginDir ? ["--plugin-dir", options.pluginDir] : [], ...Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : [], ...options.wakeChannels && claudeChannel2 ? ["--dangerously-load-development-channels", claudeChannel2] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
+    args: [...options.pluginDir ? ["--plugin-dir", options.pluginDir] : [], ...Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
   };
 }
 function createClaudeWorker(env = process.env) {
@@ -31666,9 +31661,6 @@ var init_run_log_facts = __esm({
 function legacyWorkerHost(value5) {
   return value5 ?? "codex";
 }
-function resumeHostOptions(config2) {
-  return { claudeChannel: config2?.claudeChannel };
-}
 function retainedSessionMissing(record2, run2, file) {
   if (record2.host !== "claude" || run2.mode !== "resume" || !record2.hostSessionId) return false;
   const identity4 = record2.dir ? runLogIdentity({ ...record2, dir: record2.dir }, run2) : void 0;
@@ -36353,8 +36345,6 @@ async function resolveConfig({ env, args: args2 = {}, dir }) {
   const credentialsPath2 = resolveCredentialsPath(args2, e);
   const explicitRoom = value4(args2.room) ?? value4(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, "")) || void 0 : void 0);
   return {
-    // Empty explicitly disables development channels; do not discard it with value().
-    claudeChannel: claudeChannel(args2.claudeChannel, e),
     workerId: value4(e.ROOM_WORKER_ID),
     roomUrl,
     dir: path30.resolve(dir),
@@ -36408,7 +36398,6 @@ var init_config = __esm({
     init_local();
     init_src4();
     init_room_name();
-    init_claude_binding();
     TEAM_SERVER_REQUIRED = "No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.";
     LOCAL = "local";
     DEFAULT_MAX_WORKERS = 8;
@@ -40909,10 +40898,8 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       logDir: s.dir,
       env: process.env,
       inheritedShellEnvFile: worker.inheritedShellEnvFile,
-      claudeChannel: policy.claudeChannel === void 0 ? DEFAULT_CLAUDE_CHANNEL : policy.claudeChannel,
       maxBudgetUsd,
       shellEnvHook: launchOptions.shellEnvHook,
-      wakeChannels: process.env.ROOM_WAKE === "channels",
       pluginDir: launchOptions.developmentPlugin ? leadClaudePluginDir(process.env, fileURLToPath5(import.meta.url)) : void 0
     });
     const written = writeWorkerArtifacts(s.dir, plan2);
@@ -41011,7 +40998,6 @@ var init_worker_launch = __esm({
     init_claude_install();
     init_worker_artifacts();
     init_hosts();
-    init_claude_binding();
     init_src4();
     init_selection();
     WorkerLaunchError = class extends Error {
@@ -41503,7 +41489,6 @@ var init_registry = __esm({
     init_worker_process();
     init_worker_state();
     init_config();
-    init_claude_binding();
     init_worker_launch();
     init_worker_registry();
     init_post();
@@ -41728,7 +41713,6 @@ var init_registry = __esm({
       async resumeWorker(s, w, followUp, options = {}) {
         const {
           spawner = defaultSpawner,
-          claudeChannel: claudeChannel2 = DEFAULT_CLAUDE_CHANNEL,
           maxWorkers,
           log: log2 = console.error,
           at = Date.now,
@@ -41814,7 +41798,6 @@ var init_registry = __esm({
                 server,
                 isWorker,
                 token: s.local ? void 0 : s.token,
-                claudeChannel: claudeChannel2,
                 preferredPort: record2.port,
                 spawner,
                 probe: this.o.probe,
@@ -58346,13 +58329,11 @@ init_selection();
 // packages/room-mcp/src/hosts/wake-mode.ts
 function mode(env) {
   const value5 = env.ROOM_WAKE;
-  return value5 === "socket" || value5 === "channels" || value5 === "off" ? value5 : "auto";
+  return value5 === "socket" || value5 === "off" ? value5 : "auto";
 }
 
 // packages/room-mcp/src/hosts/claude-wake.ts
-init_claude_binding();
 import net from "node:net";
-import { execFileSync as execFileSync11 } from "node:child_process";
 
 // packages/room-mcp/src/hosts/wake-types.ts
 var wakeTarget = (t) => ({ id: t.id, host: t.host });
@@ -58364,47 +58345,20 @@ function sendResult(via) {
   return via ? { kind: "submitted", via } : { kind: "unavailable" };
 }
 
-// packages/room-mcp/src/hosts/claude-channel.ts
-async function sendChannelNotification(content, notify) {
-  await notify({ method: "notifications/claude/channel", params: { content, meta: { type: "room_wake" } } });
-}
-
 // packages/room-mcp/src/hosts/claude-wake.ts
 var SOCKET_POST_TIMEOUT_MS = 1500;
-var parentArgsCache;
-function claudeParentArgs() {
-  if (parentArgsCache !== void 0) return parentArgsCache;
-  try {
-    parentArgsCache = execFileSync11("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
-  } catch {
-    parentArgsCache = "";
-  }
-  return parentArgsCache;
-}
-function channelAdmitted(env, parentArgs, channel) {
-  const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL;
-  if (!entry) return false;
-  const admitted2 = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)];
-  return admitted2.some((m) => m[1].split(",").includes(entry));
-}
 function claudeWakeAvailable(o) {
   if (o.host !== "claude") return false;
   const env = o.env ?? process.env;
   const selected = mode(env);
   if (selected === "off") return false;
-  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
-  if (selected === "socket") return socket;
-  if (selected === "auto" && socket) return true;
-  const channel = channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
-  return selected === "channels" ? channel : socket || channel;
+  return !!env.CLAUDE_CODE_MESSAGING_SOCKET;
 }
 function wakePathStatus(o) {
   const env = o.env ?? process.env, selected = mode(env);
   if (selected === "off") return { mode: selected, transport: "none", availability: "off" };
   const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET;
-  if (selected !== "channels" && socket) return { mode: selected, transport: "socket", availability: "configured" };
-  if (selected === "channels" && o.channel !== "") return { mode: selected, transport: "channel", availability: "configured" };
-  if (selected === "auto" && channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)) return { mode: selected, transport: "channel", availability: "configured" };
+  if (socket) return { mode: selected, transport: "socket", availability: "configured" };
   return { mode: selected, transport: "none", availability: "unavailable" };
 }
 function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIMEOUT_MS) {
@@ -58443,41 +58397,24 @@ function createClaudeWakeFacet(o) {
     send: async (target, pointer, phase) => phase === "active" ? { kind: "unavailable" } : sendResult(await o.send(wakeTarget(target), pointer))
   };
 }
-async function sendClaudeWake(o, text2, attempt, fallback2) {
+async function sendClaudeWake(o, text2, attempt) {
   const env = o.env ?? process.env;
-  const selected = mode(env);
-  const admitted2 = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
-  const channel = () => attempt("channel", () => sendChannelNotification(text2, o.notify));
-  if (selected === "channels") return o.channel === "" ? void 0 : channel();
   const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
-  if (!socket) return selected === "auto" && admitted2() ? channel() : void 0;
-  try {
-    return await attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text2));
-  } catch (error2) {
-    if (selected === "auto" && admitted2()) {
-      try {
-        return await channel();
-      } finally {
-        fallback2();
-      }
-    }
-    throw error2;
-  }
+  if (!socket) return void 0;
+  return attempt("socket", () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text2));
 }
 
 // packages/room-mcp/src/hosts/prompt.ts
-function wakeUnavailable(dir, host2 = sessionHost(), parentArgs) {
+function wakeUnavailable(dir, host2 = sessionHost()) {
   if (host2 !== "claude") return false;
-  return !claudeWakeAvailable({ host: host2, parentArgs });
+  return !claudeWakeAvailable({ host: host2 });
 }
-function wakeText(shell, off = false) {
+function wakeText(off = false) {
   if (off) return "For your human: wake-ups are off in this process (ROOM_WAKE=off). Set ROOM_WAKE=auto to enable them.";
-  const rc = shell?.endsWith("bash") ? "~/.bashrc" : "~/.zshrc";
   return [
     "For your human: no wake path is available for this Claude Code session. Pending messages can arrive on Room tool replies and eligible edit hooks; an idle session may need another turn.",
     "First update Claude Code to 2.1.224 or later (2.1.234 or later on native Windows) so it can bind an inbox socket. Check /status for its Peer address.",
-    `If a socket is unavailable, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``,
-    "For claude-room channels on a claude.ai Team or Enterprise account, an Owner must enable channels; organization settings can also turn cross-session messaging off."
+    "Organization settings can turn cross-session messaging off. Messages remain owed until delivered through Room tools or eligible hooks."
   ].join("\n");
 }
 function idleWakeAdvice(health) {
@@ -58489,13 +58426,13 @@ init_src();
 var wakeNoted = /* @__PURE__ */ new WeakSet();
 var workerWaitNoted = /* @__PURE__ */ new WeakSet();
 function sessionWakeNote(session, moment, options = {}) {
-  if (moment === "alone" || !wakeUnavailable(session.dir, options.host, options.parentArgs)) return "";
+  if (moment === "alone" || !wakeUnavailable(session.dir, options.host)) return "";
   const forWorkers = moment === "spawn" && !workerWaitNoted.has(session);
   if (forWorkers) workerWaitNoted.add(session);
   const workerInstruction = "Continue independent work while workers run. When blocked on an answer or claim, use room_wait(questionId/claimId); otherwise use short room_wait calls when ready for worker results. Keep headless leads alive until supervision is complete. A timeout is not an answer or approval.";
   if (wakeNoted.has(session)) return forWorkers ? workerInstruction : "";
   wakeNoted.add(session);
-  const humanNote = wakeText(options.shell ?? process.env.SHELL, process.env.ROOM_WAKE === "off");
+  const humanNote = wakeText(process.env.ROOM_WAKE === "off");
   return forWorkers ? `${workerInstruction}
 ${humanNote}` : humanNote;
 }
@@ -60631,7 +60568,6 @@ function handlers4(state) {
               server,
               isWorker,
               token: s.local ? void 0 : s.token,
-              claudeChannel: config2.claudeChannel,
               usedPorts,
               spawner: ctx.spawner,
               probe: ctx.probe,
@@ -61328,9 +61264,7 @@ function createWakeSender(o) {
     const selected = mode(env);
     if (selected === "off") return void 0;
     if (target.host === "codex") return sendCodexWake(o, target.id, text2, attempt);
-    return sendClaudeWake(o, text2, attempt, () => {
-      if (last2) last2 = { ...last2, fallback: "socket-failed" };
-    });
+    return sendClaudeWake(o, text2, attempt);
   };
   send.describe = (target) => wakePathStatus2({ ...o, host: target.host });
   send.lastAttempt = (target) => (!target || `${target.host}\0${target.id}` === lastTarget) && last2 ? { ...last2 } : void 0;
@@ -61422,7 +61356,7 @@ function atLeast(raw, min2) {
   return true;
 }
 function deliveryLimitation(host2) {
-  return host2 === "claude" ? "socket/channel writes do not confirm acceptance; inbound hold/refuse may prevent receipt" : "exec/--no-daemon and disconnected apps may need tool/hook handoff; no tool interruption";
+  return host2 === "claude" ? "socket writes do not confirm acceptance; inbound hold/refuse may prevent receipt" : "exec/--no-daemon and disconnected apps may need tool/hook handoff; no tool interruption";
 }
 function hostDoctorRows(f, version3) {
   const rows = [];
@@ -61464,7 +61398,7 @@ function hostDoctorRows(f, version3) {
       const disabled = f.deliveryPath?.mode === "off";
       if (!disabled && f.sessionBound === false)
         add2("WARN", "Claude inbox", "wake path configured but this session is not bound: nothing can wake it", "Start Claude inside the git repository (git init first), then restart the session");
-      else add2(disabled || f.wakeBound ? "PASS" : "WARN", "Claude inbox", disabled ? "disabled (ROOM_WAKE=off); messages wait for tool/hook handoff" : f.wakeBound ? "wake path configured" : "wake path unavailable", disabled ? void 0 : "Check /status for a Peer address, or start claude-room");
+      else add2(disabled || f.wakeBound ? "PASS" : "WARN", "Claude inbox", disabled ? "disabled (ROOM_WAKE=off); messages wait for tool/hook handoff" : f.wakeBound ? "wake path configured" : "wake path unavailable", disabled ? void 0 : "Update Claude Code to 2.1.224+ (2.1.234+ on native Windows) and check /status for a Peer address");
     }
   }
   if (f.deliveryPath) {
@@ -61519,7 +61453,7 @@ function formatDeliveryHealth(h) {
   const status = h.path;
   const mode2 = status ? `${status.mode}; ${status.transport} ${status.availability}` : "transport unobserved";
   const state = h.state ? `; last state ${h.state.kind} (${h.state.source}${h.state.reason ? `: ${h.state.reason}` : ""})` : "";
-  const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1e3))}s ago${h.attempt.fallback ? ` (${h.attempt.fallback})` : ""}` : "none observed";
+  const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1e3))}s ago` : "none observed";
   const pending2 = `${h.pendingAddressed}${h.oldestPendingMs === void 0 ? "" : ` (oldest ${Math.floor(h.oldestPendingMs / 1e3)}s)`}`;
   const limitation = deliveryLimitation(h.host);
   return [
@@ -63329,7 +63263,6 @@ function refreshedCommits(commits) {
 init_worker_git();
 init_git();
 init_kept_publication();
-init_lifecycle();
 var mapReady = (value5, map2) => value5 instanceof Promise ? value5.then(map2) : map2(value5);
 var WAIT_DEFAULT = 3e4;
 var WAIT_MAX = 1e5;
@@ -63539,7 +63472,7 @@ ${baseNote}` };
       };
       let resumed = false;
       if (resume) {
-        const result2 = await rooms.resumeWorker(s, addressedWorker, text2, { spawner: state.ctx?.spawner, ...resumeHostOptions(state.ctx?.config), maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async (incarnation) => {
+        const result2 = await rooms.resumeWorker(s, addressedWorker, text2, { spawner: state.ctx?.spawner, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async (incarnation) => {
           if (refresh) {
             const tag = addressedWorker.tag;
             const registry2 = await registryForDir(s.dir);
@@ -64967,7 +64900,7 @@ function spawnFrontier(s, record2, name) {
 
 // packages/room-mcp/src/relevance.ts
 init_src();
-import { execFileSync as execFileSync12 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 var RECHECK_MS2 = 5e3;
 function createRelevance(now = Date.now) {
   const integrated = /* @__PURE__ */ new Map();
@@ -64978,7 +64911,7 @@ function createRelevance(now = Date.now) {
     if (!sha) return true;
     let head;
     try {
-      head = execFileSync12("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
+      head = execFileSync11("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
     } catch {
       return true;
     }
@@ -64987,7 +64920,7 @@ function createRelevance(now = Date.now) {
     if (known === true) return false;
     if (known !== void 0 && now() - known < RECHECK_MS2) return true;
     try {
-      execFileSync12("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
+      execFileSync11("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
       integrated.set(key2, true);
       return false;
     } catch {
@@ -67246,10 +67179,10 @@ var workspaceMismatch = (workspace, bound) => `This Codex session's workspace is
 // packages/room-mcp/src/workspace.ts
 init_src4();
 import fs74 from "node:fs";
-import { execFileSync as execFileSync13 } from "node:child_process";
+import { execFileSync as execFileSync12 } from "node:child_process";
 var worktreeRoot = (dir) => {
   try {
-    return execFileSync13("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+    return execFileSync12("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
   } catch {
     return void 0;
   }
@@ -67604,7 +67537,6 @@ init_selection();
 init_plugin();
 init_worker_registry();
 init_timing();
-init_claude_binding();
 init_daemon_cutover();
 init_session();
 init_credentials();
@@ -67678,7 +67610,7 @@ async function main() {
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? "");
   const mcp = new RoomMcpServer(
     { name: "room", version: RELEASE_VERSION },
-    { capabilities: { tools: {}, experimental: channelCapabilities }, instructions: AGENT_INSTRUCTIONS() }
+    { capabilities: { tools: {} }, instructions: AGENT_INSTRUCTIONS() }
   );
   let initialized;
   const binding = createWorkspaceBinding({
@@ -67697,7 +67629,7 @@ async function main() {
       let rebinding;
       let rebindHost = async () => {
       };
-      const wake = createWakeSender({ channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification) });
+      const wake = createWakeSender({});
       let presence;
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION });
       const wakeProbe = createProductionWakeProbe(() => presence?.idleMs(), RELEASE_VERSION);

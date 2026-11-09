@@ -1,31 +1,13 @@
 import { mode } from './wake-mode.js'
 import net from 'node:net'
-import { execFileSync } from 'node:child_process'
-import { DEFAULT_CLAUDE_CHANNEL } from './claude-binding.js'
-import type { WakeEnv, WakeAvailability, WakePathStatus } from './wake-types.js'
+import type { WakeAvailability, WakePathStatus } from './wake-types.js'
 import { wakeTarget } from './wake-types.js'
 import type { WakeFacet, WakeFacetOptions } from './wake.js'
 import { sendResult } from './wake-result.js'
-import { sendChannelNotification } from './claude-channel.js'
 import type { WakeSenderOptions, WakeVia } from './wake-types.js'
 import type { WakeAttemptRunner } from './wake.js'
 
 const SOCKET_POST_TIMEOUT_MS = 1_500
-
-let parentArgsCache: string | undefined
-function claudeParentArgs(): string {
-  if (parentArgsCache !== undefined) return parentArgsCache
-  try { parentArgsCache = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } }).trim() }
-  catch { parentArgsCache = '' }
-  return parentArgsCache
-}
-
-function channelAdmitted(env: WakeEnv, parentArgs: string, channel: string | undefined): boolean {
-  const entry = channel ?? env.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL
-  if (!entry) return false
-  const admitted = [...parentArgs.matchAll(/(?:^|\s)--(?:dangerously-load-development-channels|channels)(?:=|\s)(\S+)/g)]
-  return admitted.some(m => m[1].split(',').includes(entry))
-}
 
 /** Claude Code exports the socket only after binding its inbox (v2.1.224+); env-vars.md has no version variable. */
 export function claudeWakeAvailable(o: WakeAvailability): boolean {
@@ -33,11 +15,7 @@ export function claudeWakeAvailable(o: WakeAvailability): boolean {
   const env = o.env ?? process.env
   const selected = mode(env)
   if (selected === 'off') return false
-  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET
-  if (selected === 'socket') return socket
-  if (selected === 'auto' && socket) return true
-  const channel = channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)
-  return selected === 'channels' ? channel : socket || channel
+  return !!env.CLAUDE_CODE_MESSAGING_SOCKET
 }
 
 /** Configuration evidence only: this does not contact the host or prove acceptance. */
@@ -45,9 +23,7 @@ export function wakePathStatus(o: WakeAvailability): WakePathStatus {
   const env = o.env ?? process.env, selected = mode(env)
   if (selected === 'off') return { mode: selected, transport: 'none', availability: 'off' }
   const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET
-  if (selected !== 'channels' && socket) return { mode: selected, transport: 'socket', availability: 'configured' }
-  if (selected === 'channels' && o.channel !== '') return { mode: selected, transport: 'channel', availability: 'configured' }
-  if (selected === 'auto' && channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)) return { mode: selected, transport: 'channel', availability: 'configured' }
+  if (socket) return { mode: selected, transport: 'socket', availability: 'configured' }
   return { mode: selected, transport: 'none', availability: 'unavailable' }
 }
 
@@ -83,19 +59,9 @@ export function createClaudeWakeFacet(o: WakeFacetOptions): WakeFacet {
   }
 }
 
-export async function sendClaudeWake(o: WakeSenderOptions, text: string, attempt: WakeAttemptRunner, fallback: () => void): Promise<WakeVia | undefined> {
+export async function sendClaudeWake(o: WakeSenderOptions, text: string, attempt: WakeAttemptRunner): Promise<WakeVia | undefined> {
   const env = o.env ?? process.env
-  const selected = mode(env)
-  const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)
-  const channel = () => attempt('channel', () => sendChannelNotification(text, o.notify))
-  if (selected === 'channels') return o.channel === '' ? undefined : channel()
   const socket = env.CLAUDE_CODE_MESSAGING_SOCKET
-  if (!socket) return selected === 'auto' && admitted() ? channel() : undefined
-  try { return await attempt('socket', () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text)) }
-  catch (error) {
-    if (selected === 'auto' && admitted()) {
-      try { return await channel() } finally { fallback() }
-    }
-    throw error
-  }
+  if (!socket) return undefined
+  return attempt('socket', () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text))
 }

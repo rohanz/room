@@ -1,6 +1,6 @@
-// End-to-end check that Room wakes a real Claude Code session (cross-session inbox socket or channel).
+// End-to-end check that Room wakes a real Claude Code session (cross-session inbox socket).
 //
-// Usage:  npx tsx scripts/wake-e2e.mts [a b c d e f a2 | peek]   (default: a-f; exit 0 when all pass)
+// Usage:  npx tsx scripts/wake-e2e.mts [a b c d f a2 | peek]   (default: a b c d f; exit 0 when all pass)
 //   e.g.  nice -n 15 npx tsx scripts/wake-e2e.mts
 //         E2E_PLUGIN_DIR=/tmp/other-tree/plugins/room npx tsx scripts/wake-e2e.mts c d
 //
@@ -20,29 +20,26 @@
 // installed room@room plugin off so only --plugin-dir's copy loads (the script checks the MCP server path),
 // and allows the room tools and runs in dontAsk mode (anything else is denied) so no permission prompt blocks a turn. The script edits nothing under ~/.claude;
 // Claude Code itself still writes transcripts there and records folder trust per scratch clone in ~/.claude.json.
-// The folder-trust prompt (and the development-channels warning in case e) are answered; nothing else.
+// The folder-trust prompt is answered; nothing else.
 //
-// Room traffic in a-f is posted by this driver as synthetic workers (done/question/note messages on the local
+// Room traffic in a/b/c/d/f is posted by this driver as synthetic workers (done/question/note messages on the local
 // relay's Yjs doc, shaped exactly like room_done / room_send posts, with worker presence so the session has
 // company), not real `claude -p` workers, so each case is quick and deterministic. a2 is the real thing: the
 // session calls room_spawn for a Haiku worker (which runs your installed room@room plugin) and goes idle.
 // Evidence comes from the session transcript (~/.claude/projects/*/<id>.jsonl):
-// a socket wake is a user entry with origin.kind "peer"; a channel wake is a user entry holding
-// <channel source="plugin:room:room" ...>; every turn ends with a system turn_duration entry. Each session also
+// a socket wake is a user entry with origin.kind "peer"; every turn ends with a system turn_duration entry. Each session also
 // writes --debug-file <scratch>/<case>/claude-debug.txt, whose [uds-messaging] and [cross-session-inbound]
 // lines are Claude Code's own record of every post Room made to the inbox socket (and any refusal).
 //
 // Cases:
 //   a  idle session, one worker done addressed to it          -> one wake within 30s (socket window is 5 s) and the
-//      woken turn ends (within 120 s; it calls room tools). c and e wait for their woken turn the same way.
+//      woken turn ends (within 120 s; it calls room tools). c waits for their woken turn the same way.
 //   b  busy session (mid-turn, sleeping in Bash), worker question -> seen before the turn ends (hook inbox,
-//      socket message absorbed mid-turn, or channel)
+//      socket message absorbed mid-turn)
 //   c  five worker dones within ~1s                             -> exactly one socket post and one wake
 //   d  crossSessionInbound "refuse" via --settings              -> Room posts, host refuses, no wake, MCP server
 //      alive, and the next human turn still sees the message
-//   e  ROOM_WAKE=channels + --dangerously-load-development-channels plugin:room@inline (the --plugin-dir entry;
-//      ROOM_CLAUDE_CHANNEL names it for the server) -> channel wake, no socket post
-//   f  ROOM_WAKE=off                                            -> no socket post, no channel, no turn
+//   f  ROOM_WAKE=off                                            -> no socket post, no turn
 //   a2 (opt-in) real worker: the session spawns one Haiku worker and goes idle -> woken when it finishes
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -107,7 +104,7 @@ function prepareClone(name: string): string {
   return dir
 }
 
-async function startSession(name: string, opts: { settings?: Record<string, unknown>; env?: Record<string, string>; channel?: string } = {}): Promise<Session> {
+async function startSession(name: string, opts: { settings?: Record<string, unknown>; env?: Record<string, string> } = {}): Promise<Session> {
   const dir = prepareClone(name)
   const settingsFile = path.join(SCRATCH, name, 'settings.json')
   fs.writeFileSync(settingsFile, JSON.stringify({
@@ -117,7 +114,7 @@ async function startSession(name: string, opts: { settings?: Record<string, unkn
     ...opts.settings,
   }, null, 2))
   const env = { HOME: os.homedir(), USER: os.userInfo().username, PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color', LANG: 'en_US.UTF-8', SHELL: process.env.SHELL ?? '/bin/zsh', ...opts.env }
-  const args = [...(opts.channel ? ['--dangerously-load-development-channels', opts.channel] : []), '--plugin-dir', PLUGIN_DIR, '--settings', settingsFile, '--model', MODEL, '--debug-file', path.join(SCRATCH, name, 'claude-debug.txt')]
+  const args = ['--plugin-dir', PLUGIN_DIR, '--settings', settingsFile, '--model', MODEL, '--debug-file', path.join(SCRATCH, name, 'claude-debug.txt')]
   const script = path.join(SCRATCH, name, 'run-claude.sh')
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
   fs.writeFileSync(script, `#!/bin/sh\ncd ${q(dir)}\nexec env -i ${Object.entries(env).map(([k, v]) => `${k}=${q(v)}`).join(' ')} claude ${args.map(q).join(' ')}\n`, { mode: 0o755 })
@@ -155,7 +152,7 @@ function transcriptPath(sessionId: string): string {
   return ''
 }
 
-interface Entry { at: number; kind: 'socket-wake' | 'socket-absorbed' | 'channel-wake' | 'hook-context' | 'prompt' | 'tool-result' | 'turn-end' | 'enqueue' | 'other'; text: string }
+interface Entry { at: number; kind: 'socket-wake' | 'socket-absorbed' | 'hook-context' | 'prompt' | 'tool-result' | 'turn-end' | 'enqueue' | 'other'; text: string }
 
 function entries(s: Session): Entry[] {
   const file = s.transcript ||= transcriptPath(s.sessionId)
@@ -171,7 +168,6 @@ function entries(s: Session): Entry[] {
     else if (d.type === 'queue-operation' && d.reason === 'absorbed_mid_turn') out.push({ at, kind: 'socket-absorbed', text: `read mid-turn: ${d.content}` })
     else if (d.type === 'system' && d.subtype === 'turn_duration') out.push({ at, kind: 'turn-end', text: `${d.durationMs}ms` })
     else if (d.type === 'user' && d.origin?.kind === 'peer') out.push({ at, kind: 'socket-wake', text })
-    else if (d.type === 'user' && /<channel source="[^"]*room/.test(text)) out.push({ at, kind: 'channel-wake', text })
     else if (d.type === 'user' && Array.isArray(content) && content.some((c: any) => c.type === 'tool_result')) out.push({ at, kind: 'tool-result', text })
     else if (d.type === 'user' && !d.isMeta) out.push({ at, kind: 'prompt', text })
     else if (d.type === 'attachment' && d.attachment?.type === 'hook_additional_context' && JSON.stringify(d.attachment.content).includes('[room')) out.push({ at, kind: 'hook-context', text: [].concat(d.attachment.content).join('\n') })
@@ -264,8 +260,8 @@ async function caseA(env: Record<string, string> = {}): Promise<Result> {
   await sleep(3000)
   const t = Date.now(); const m = postDone(c.room, c.lead, 1)
   log(`a: posted done ${m.id} from ${m.from} to ${c.lead}`)
-  const w = await wokenTurn(s, t, ['socket-wake', 'channel-wake'], 20_000)
-  const wakes = since(s, t).filter(e => e.kind === 'socket-wake' || e.kind === 'channel-wake')
+  const w = await wokenTurn(s, t, ['socket-wake'], 20_000)
+  const wakes = since(s, t).filter(e => e.kind === 'socket-wake')
   c.close()
   return { pass: wakes.length === 1 && !!w.endAt, evidence: [`${clock(t)} done posted; ${w.timing}; wakes=${wakes.length}; woken turn called: ${toolsCalled(s, t)}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
 }
@@ -282,7 +278,7 @@ async function caseA2(): Promise<Result> {
   await waitFor('a2 worker done', 240_000, () => doneAt > 0)
   log(`a2: worker done on the bus ${clock(doneAt)}`)
   await sleep(20_000)
-  const wakes = since(s, doneAt - 1000).filter(e => e.kind === 'socket-wake' || e.kind === 'channel-wake')
+  const wakes = since(s, doneAt - 1000).filter(e => e.kind === 'socket-wake')
   c.close()
   return { pass: idleAt < doneAt && wakes.length === 1, evidence: [`${clock(idleAt)} session idle (spawn turn ended)`, `${clock(doneAt)} worker done on the bus; woken turn called: ${toolsCalled(s, doneAt)}`, ...since(s, idleAt + 1).filter(e => e.kind !== 'tool-result').map(show)] }
 }
@@ -299,7 +295,7 @@ async function caseB(): Promise<Result> {
   await waitFor('b turn end', 120_000, () => since(s, t, 'turn-end').length > 0)
   await sleep(8000)
   const after = since(s, t)
-  const saw = after.find(e => ['socket-absorbed', 'socket-wake', 'channel-wake', 'hook-context'].includes(e.kind) && (e.text.includes('x2.txt') || e.text.includes('asked a question')))
+  const saw = after.find(e => ['socket-absorbed', 'socket-wake', 'hook-context'].includes(e.kind) && (e.text.includes('x2.txt') || e.text.includes('asked a question')))
   c.close()
   return { pass: !!saw && saw.at <= (since(s, t, 'turn-end')[0]?.at ?? Infinity), evidence: [`${clock(t)} question posted`, ...uds(s, t), ...after.map(show)] }
 }
@@ -312,8 +308,8 @@ async function caseC(): Promise<Result> {
   const t = Date.now()
   for (let n = 1; n <= 5; n++) { postDone(c.room, c.lead, n); await sleep(200) }
   log('c: posted five dones over ~1s')
-  const w = await wokenTurn(s, t, ['socket-wake', 'channel-wake'], 30_000)
-  const wakes = since(s, t).filter(e => e.kind === 'socket-wake' || e.kind === 'channel-wake')
+  const w = await wokenTurn(s, t, ['socket-wake'], 30_000)
+  const wakes = since(s, t).filter(e => e.kind === 'socket-wake')
   c.close()
   return { pass: wakes.length === 1 && posts(s, t) <= 1, evidence: [`${clock(t)} five dones posted; ${w.timing}; socket posts=${posts(s, t)} wakes=${wakes.length} turns=${since(s, t, 'turn-end').length}; woken turn called: ${toolsCalled(s, t)}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
 }
@@ -325,7 +321,7 @@ async function caseD(): Promise<Result> {
   await sleep(3000)
   const t = Date.now(); postDone(c.room, c.lead, 4, 'wrote x4.txt (refuse case)')
   await sleep(15_000)
-  const wakes = since(s, t).filter(e => e.kind === 'socket-wake' || e.kind === 'channel-wake')
+  const wakes = since(s, t).filter(e => e.kind === 'socket-wake')
   const alive = (() => { try { process.kill(s.mcpPid, 0); return true } catch { return false } })()
   const t2 = await prompt(s, 'Check the room inbox with room_state and tell me in one line what finished.')
   await sleep(2000)
@@ -333,19 +329,6 @@ async function caseD(): Promise<Result> {
   const saw = later.some(e => e.text.includes('x4.txt'))
   c.close()
   return { pass: wakes.length === 0 && alive && saw && posts(s, t) >= 1, evidence: [`${clock(t)} done posted; socket posts=${posts(s, t)}; wakes in 15s=${wakes.length}; MCP server alive=${alive}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result' || e.text.includes('x4.txt')).map(show)] }
-}
-
-/** e: ROOM_WAKE=channels with the channel flag — channel wake only. */
-async function caseE(): Promise<Result> {
-  const channel = 'plugin:room@inline'
-  const s = await startSession('e', { env: { ROOM_WAKE: 'channels', ROOM_CLAUDE_CHANNEL: channel }, channel })
-  const c = await connect(s)
-  await sleep(3000)
-  const t = Date.now(); postDone(c.room, c.lead, 5)
-  const w = await wokenTurn(s, t, ['channel-wake'], 20_000)
-  const ch = since(s, t, 'channel-wake'), so = since(s, t, 'socket-wake')
-  c.close()
-  return { pass: ch.length >= 1 && so.length === 0 && posts(s, t) === 0, evidence: [`${clock(t)} done posted; ${w.timing}; channel wakes=${ch.length} socket posts=${posts(s, t)} socket wakes=${so.length}`, ...uds(s, t), ...since(s, t).filter(e => e.kind !== 'tool-result').map(show)] }
 }
 
 /** f: ROOM_WAKE=off — nothing wakes. */
@@ -367,8 +350,8 @@ async function peek(): Promise<void> {
   c.close()
 }
 
-const CASES: Record<string, () => Promise<Result>> = { a: () => caseA(), b: caseB, c: caseC, d: caseD, e: caseE, f: caseF, a2: caseA2 }
-const DEFAULT_CASES = ['a', 'b', 'c', 'd', 'e', 'f']
+const CASES: Record<string, () => Promise<Result>> = { a: () => caseA(), b: caseB, c: caseC, d: caseD, f: caseF, a2: caseA2 }
+const DEFAULT_CASES = ['a', 'b', 'c', 'd', 'f']
 const want = process.argv.slice(2)
 fs.mkdirSync(SCRATCH, { recursive: true })
 log(`scratch ${SCRATCH}; tmux -L ${TMUX}; plugin ${PLUGIN_DIR}; ${run('claude', ['--version']).trim()}; model ${MODEL}`)

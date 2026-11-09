@@ -37,7 +37,7 @@ export type TurnState =
   | { kind: 'active' | 'idle'; source: 'host' | 'legacy' | 'contact' }
   | { kind: 'unknown'; source: 'host' | 'legacy' | 'contact'; reason: string }
   | { kind: 'unneeded' }; // transport handles both idle and busy, e.g. Claude inbox
-export type WakeVia = 'queue' | 'socket' | 'channel' | 'turn';
+export type WakeVia = 'queue' | 'socket' | 'turn';
 export type WakeResult =
   | { kind: 'submitted' | 'uncertain'; via: WakeVia }
   | { kind: 'idle' } // raced with turn end; caller may try idle path
@@ -48,12 +48,12 @@ export type WorkerInput = {
   mode: 'fresh' | 'resume'; sessionId?: string; prompt: string;
   runtime: Runtime; tag: string; cwd: string; logDir: string;
   maxBudgetUsd?: string; env: Env;
-  claudeChannel: string; pluginDir?: string; shellEnvHook: boolean;
-  wakeChannels: boolean; inheritedShellEnvFile?: string;
+  pluginDir?: string; shellEnvHook: boolean;
+  inheritedShellEnvFile?: string;
 };
 export type WorkerCommandInput = Pick<WorkerInput,
   'mode' | 'sessionId' | 'prompt' | 'runtime' | 'tag' | 'maxBudgetUsd' |
-  'claudeChannel' | 'pluginDir' | 'shellEnvHook' | 'wakeChannels'>;
+  'pluginDir' | 'shellEnvHook'>;
 export type WorkerPlan = {
   cmd: string; args: string[]; envPatch: Record<string, string>;
   artifacts: readonly { id: string; path: string; content: string; mode: number }[];

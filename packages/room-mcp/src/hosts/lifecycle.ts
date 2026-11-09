@@ -6,10 +6,6 @@ import type { HostId } from './types.js'
 /** The legacy discovery path historically assigned Codex when no display evidence named a host. */
 export function legacyWorkerHost(value: HostId | undefined): HostId { return value ?? 'codex' }
 
-export function resumeHostOptions(config?: { claudeChannel?: string }): { claudeChannel?: string } {
-  return { claudeChannel: config?.claudeChannel }
-}
-
 export function retainedSessionMissing(record: Pick<WorkerRecord, 'host' | 'hostSessionId'> & Partial<Pick<WorkerRecord, 'id' | 'dir'>>,
   run: Pick<Run, 'mode' | 'logStart'> & Partial<Pick<Run, 'n'>>, file: string): boolean {
   if (record.host !== 'claude' || run.mode !== 'resume' || !record.hostSessionId) return false

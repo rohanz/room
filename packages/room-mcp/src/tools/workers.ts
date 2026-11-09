@@ -283,7 +283,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try {
           launched = await timed('launch', () => launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, run: 1, nonce, registry: registry.root, budget: { threads, memGb }, server,
-            isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
+            isWorker, token: s.local ? undefined : s.token,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
           { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, deps: deps.prompt, sessionId: hostSessionId },
           { setHandle: (workerId, proc) => rooms.setHandle(s, workerId, proc),

@@ -19,7 +19,7 @@ function defaults(dir: string, env: Env): Runtime {
 }
 
 function command(input: WorkerCommandInput) {
-  const { runtime: { model, effort }, prompt, claudeChannel } = input
+  const { runtime: { model, effort }, prompt } = input
   const options = { ...input, resume: input.mode === 'resume' }
   const settings = {
     ...(options.pluginDir ? { enabledPlugins: { 'room@room': false } } : {}),
@@ -29,7 +29,7 @@ function command(input: WorkerCommandInput) {
   }
   return {
     cmd: 'claude',
-    args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir] : []), ...(Object.keys(settings).length ? ['--settings', JSON.stringify(settings)] : []), ...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
+    args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir] : []), ...(Object.keys(settings).length ? ['--settings', JSON.stringify(settings)] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
   }
 }
 

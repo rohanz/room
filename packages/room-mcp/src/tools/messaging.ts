@@ -15,7 +15,6 @@ import { refreshRefusal, refreshWorkerBase, refreshedCommits, type RefreshOutcom
 import { collectHeadRef } from '../worker-git.js'
 import { git } from '@room/roomd/git'
 import { acknowledgeKeptPublication, keptPublicationMatches } from '../kept-publication.js'
-import { resumeHostOptions } from '../hosts/lifecycle.js'
 
 /** Preserve synchronous selection for supplied facts; only actual storage reads introduce an await. */
 const mapReady = <T, R>(value: T | Promise<T>, map: (value: T) => R): R | Promise<R> =>
@@ -241,7 +240,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       let resumed = false
       if (resume) {
-        const result = await rooms.resumeWorker(s, addressedWorker!, text, { spawner: state.ctx?.spawner, ...resumeHostOptions(state.ctx?.config), maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async incarnation => {
+        const result = await rooms.resumeWorker(s, addressedWorker!, text, { spawner: state.ctx?.spawner, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async incarnation => {
           // The previous run has exited and this call holds the worker's operation lease.
           if (refresh) {
             const tag = addressedWorker!.tag

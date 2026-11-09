@@ -44,9 +44,9 @@ use broke and proposes the order of work.
 - **Same-checkout notifications — fixed in 0.17.2.** Separate connected participants count as company for presence and eligible notifications; shared file publication remains deduplicated. Join output and participant counts follow session presence.
 - **Immediate discovery.** Codex’s shared app-server still waits for the first Room tool call before binding a repository. Investigate safe startup discovery without guessing the session’s checkout.
 
-- **One local database** (paused 2026-11-08; see the [storage comparison of 2026-11-09](superpowers/specs/2026-11-09-local-state-storage-comparison.md), which recommends keeping files and spending the budget on ownership rules and garbage collection). Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
+- **Local state stays in files; SQLite closed (2026-11-09).** Each file has one writer and uses temp-then-rename writes; one collector knows every file kind and its expiry. Fold the hourly sweep into that collector rather than retaining parallel cleanup paths. PR #15 is closed; branches remain for reference. Next: document the ownership table, align the code, add a long-run directory-growth test, and decide what to do with slice 1's shipped code. See the [storage comparison](superpowers/specs/2026-11-09-local-state-storage-comparison.md) and decisions entry.
 - **Host adapter layer.** Isolate Claude Code and Codex specifics behind one interface.
-- **Trim the large modules.** `worker-registry.ts` (about 1.28k lines) and `conflict-set.ts` (about 0.8k) after the database move.
+- **Trim the large modules.** `worker-registry.ts` (about 1.28k lines) and `conflict-set.ts` (about 0.8k) as ownership and collection are simplified.
 - **Threat model.** Write one for 0.17, and write threat models alongside future specs.
 - **Standalone local daemon.** Consider one instead of the relay living in the first session.
   Follow-up: a cold join racing large broadcasts can hit `stateRequestLimiter`'s 1 MiB queued-output cap and close with 1013 (`too many state requests`); make bounded initial sync reliable for large retained rooms.
@@ -520,9 +520,8 @@ the code pane re-runs the merge for the open file each time (542 ms for a 2,523-
   compatibility window yet ("Protocol version negotiation" above), so clients update together.
 - **Server operations.** One process, one machine, one volume; a deploy drops every connection.
   Needs room-to-node affinity or a Redis-backed sync layer, backups, metrics, rolling deploys.
-- **Done: Claude Code wake-ups no longer need a research-preview flag.** Claude Code 2.1.224+
-  wakes an idle session through its cross-session messaging inbox with plain `claude`; the
-  channels path remains only as a fallback for older versions. An organization can turn
+- **Done: Claude Code wake-ups no longer need a research-preview flag.** Claude Code 2.1.224+ (2.1.234+ on native Windows)
+  wakes an idle session through its cross-session messaging inbox with plain `claude`; older versions rely on Room tools and eligible hooks, with messages remaining owed until delivery. An organization can turn
   cross-session messaging off.
 - **Scale limits degrade by truncation.** File watcher on very large trees, the 8 MB sharing
   budget during a mass codemod, the graph cap. Scoping the daemon to the declared area of work

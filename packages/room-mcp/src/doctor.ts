@@ -22,7 +22,7 @@ export function formatDeliveryHealth(h?: DeliveryHealth): string {
   const status = h.path
   const mode = status ? `${status.mode}; ${status.transport} ${status.availability}` : 'transport unobserved'
   const state = h.state ? `; last state ${h.state.kind} (${h.state.source}${h.state.reason ? `: ${h.state.reason}` : ''})` : ''
-  const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1000))}s ago${h.attempt.fallback ? ` (${h.attempt.fallback})` : ''}` : 'none observed'
+  const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1000))}s ago` : 'none observed'
   const pending = `${h.pendingAddressed}${h.oldestPendingMs === undefined ? '' : ` (oldest ${Math.floor(h.oldestPendingMs / 1000)}s)`}`
   const limitation = deliveryLimitation(h.host)
   return [
