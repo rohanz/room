@@ -56,6 +56,8 @@ const WS = HTTP.replace(/^http/, 'ws')
 const DIR = process.env.SOAK_DIR ?? '/tmp/room-soak'
 const APP = LOCAL || DAEMON ? '' : process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
 const SAMPLE_MIN = Number(process.env.SOAK_SAMPLE_MIN ?? 10)
+/** SOAK_BIG_EDITS=0 turns off the 100–500 KB payload edits, to measure the daemon's memory without live-doc growth. */
+const BIG_EDITS = process.env.SOAK_BIG_EDITS !== '0'
 const MACHINE = process.env.SOAK_FLY_MACHINE ?? '2879590f442648'
 if (APP === 'room-rohanz') throw new Error('refusing to run against the production app room-rohanz')
 if (!/^\/tmp\/|room-soak/.test(DIR)) throw new Error(`refusing SOAK_DIR ${DIR}: must be under /tmp or contain room-soak`)
@@ -287,7 +289,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
   let bigCount = 0
   const edit = () => {
     const d = path.join(dir, 'data', name); fs.mkdirSync(d, { recursive: true })
-    if (Math.random() < 0.08) {
+    if (BIG_EDITS && Math.random() < 0.08) {
       const kb = Math.round(jitter(100, 500)), file = path.join(d, `big-${++bigCount % 3}.txt`)
       const line = `${name} large payload line `.padEnd(79, '.') + '\n'
       fs.writeFileSync(file, line.repeat(Math.ceil(kb * 1024 / 80)))
