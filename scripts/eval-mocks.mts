@@ -15,3 +15,12 @@ const json = JSON.stringify({ tools }, null, 2).replace(/[^\x00-\x7F]/g, charact
   `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
 fs.writeFileSync(mockPath, json)
 console.log(`Wrote ${tools.length} Room tool definitions to ${mockPath}`)
+
+// Every advertised tool needs a mock reply file next to _tools.json, or the eval agent cannot call it at all
+// (the suite then scores the tool as never used, which looks like a routing failure).
+const mockDir = fileURLToPath(new URL('../evals/mocks/room/', import.meta.url))
+const missing = tools.map(t => t.name).filter(name => !fs.existsSync(`${mockDir}${name}.md`))
+if (missing.length) {
+  console.error(`Missing mock reply file(s) in evals/mocks/room: ${missing.map(n => `${n}.md`).join(', ')}`)
+  process.exit(1)
+}
