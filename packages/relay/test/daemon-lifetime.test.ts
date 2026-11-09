@@ -8,6 +8,7 @@ import path from 'node:path'
 import http from 'node:http'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
+import { roomConnection, docGeneration } from '@room/shared'
 import { CURRENT_COMPAT } from '@room/hub-core'
 import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 import { stopLocalDaemon } from '../src/daemon.js'
@@ -44,9 +45,11 @@ async function start(dir: string, idleMs = 300000, clock = 'fake') {
   return { child, info, command, messages }
 }
 function connect(info: LocalRelayInfo, doc = new Y.Doc(), view = false, ticket?: string) {
+  const connection = roomConnection(doc)
+  Object.assign(connection.params, view ? { ticket: ticket! } : { negotiate: '1' })
   const p = new WebsocketProvider(`ws://127.0.0.1:${info.port}`, encodeURIComponent(room), doc, {
     WebSocketPolyfill: authorizedWebSocket({ ...(view ? { viewKey: localViewKey(info.key, room) } : { key: info.key, negotiation: { offer, sessionId: `test-${doc.clientID}` } }) }) as never,
-    params: { schema: '2', ...(view ? { ticket: ticket! } : { negotiate: '1' }) }, disableBc: true,
+    ...connection,
   })
   providers.push(p); return p
 }
@@ -80,6 +83,32 @@ it('the last writer leaves while a read-only viewer remains; viewers never reset
   await gone(child)
 })
 
+it('SIGTERM final save ends the generation, refuses a survivor, and syncs saved receipts to a fresh replica', async () => {
+  const dir = common(), first = await start(dir)
+  const survivor = connect(first.info); await synced(survivor)
+  const generation = docGeneration(survivor.doc)
+  const receipt = { at: 123, via: 'reply', s: 'ada' }
+  survivor.doc.getMap('mail').set('read-message', { id: 'read-message', type: 'note', from: 'bob', to: 'ada', text: 'already read', at: Date.now() })
+  survivor.doc.getMap('seen:ada').set('read-message', receipt)
+  const observer = connect(first.info); await synced(observer)
+  await vi.waitFor(() => expect(observer.doc.getMap('seen:ada').has('read-message')).toBe(true))
+  first.child.kill('SIGTERM'); await gone(first.child)
+  survivor.disconnect(); observer.disconnect()
+  const saved = new Y.Doc(); Y.applyUpdate(saved, fs.readFileSync(memoryFile(dir, room)))
+  expect(saved.getMap('seen:ada').get('read-message')).toEqual(receipt)
+  expect(docGeneration(saved)).toBeTruthy()
+  expect(docGeneration(saved)).not.toBe(generation)
+  const second = await start(dir)
+  let code: number | undefined
+  survivor.on('connection-close', (event: { code: number }) => { code = event.code })
+  survivor.connect()
+  await vi.waitFor(() => expect(code).toBe(4409))
+  const fresh = connect(second.info); await synced(fresh)
+  expect(docGeneration(fresh.doc)).toBe(docGeneration(saved))
+  expect(fresh.doc.getMap('seen:ada').toJSON()).toEqual(saved.getMap('seen:ada').toJSON())
+  saved.destroy()
+})
+
 it('crash with one surviving client replica resyncs an unsnapshotted fact after restart', async () => {
   const dir = common(), first = await start(dir)
   const p = connect(first.info); await synced(p)
@@ -98,6 +127,7 @@ it('crash with one surviving client replica resyncs an unsnapshotted fact after 
   expect(second.info.port).toBe(first.info.port)
   p.connect(); await synced(p)
   const after = connect(second.info); await synced(after)
+  expect(docGeneration(after.doc)).toBeUndefined()
   await vi.waitFor(() => expect(after.doc.getMap('meta').get('surviving-post')).toBe('acknowledged-in-memory'))
 })
 
@@ -124,6 +154,7 @@ it('a taken recorded port uses a fallback, preserves the key and the surviving r
 
 it('full-disk idle stop keeps serving and holding authority, then retries without another edit', async () => {
   const dir = common(), runtime = await start(dir)
+  await runtime.command('shed')
   const p = connect(runtime.info); await synced(p)
   await runtime.command('full', { full: true })
   p.doc.getMap('meta').set('latest', 'must survive')
@@ -226,8 +257,9 @@ it.each([{ args: ['start'] }, { args: [] }])('refuses a direct start ($args) tha
   expect(fs.existsSync(path.join(dir, 'room/hub/authority.lock'))).toBe(false)
 })
 
-it('maintenance save failure reports the cause, retains the live daemon, and permits an explicit retry', async () => {
+it('maintenance shedding-snapshot save failure reports the cause, retains the live daemon, and permits an explicit retry', async () => {
   const dir = common(), runtime = await start(dir)
+  await runtime.command('shed')
   await runtime.command('full', { full: true })
   await expect(stopLocalDaemon(dir)).rejects.toThrow(/ENOSPC/)
   expect((await relayHealth(runtime.info.port, runtime.info.key))?.draining).toBe(false)

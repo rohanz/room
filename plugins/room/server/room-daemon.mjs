@@ -9782,14 +9782,18 @@ var init_doc = __esm({
           for (const id2 of ids) if (!m.has(id2)) m.set(id2, value2);
         }, origin);
       }
-      /** Remove orphaned receipts only while this writer still holds its authority fence. */
+      /**
+       * Remove receipts only for messages proven ended, while this writer holds its fence: an outcome, or an archive
+       * entry with no mail copy (the trim archives every message that leaves the bus, and keeps the owed or answerable
+       * ones in mail as well). Absence from the bus is not proof: a replica mid-sync sees a partial bus. A receipt
+       * whose message left the archive too is dropped by the snapshot's receipt filter at the next save (memory.ts).
+       */
       pruneSeen(name, current) {
         if (!current()) return;
         this.doc.transact(() => {
           if (!current()) return;
-          const refs = /* @__PURE__ */ new Set([...this.messages().map((m) => m.id), ...this.mail.keys(), ...this.outcomes.keys()]);
           const seen = this.seen(name);
-          for (const id2 of seen.keys()) if (!refs.has(id2)) seen.delete(id2);
+          for (const id2 of seen.keys()) if (this.outcomes.has(id2) || this.archive.has(id2) && !this.mail.has(id2)) seen.delete(id2);
         });
       }
       seenBy(msgId) {
@@ -16314,7 +16318,7 @@ var RoomMemory = class {
       this.retryDelay = Math.min(6e4, this.retryDelay * 2);
     }
     if (generation !== void 0 && cause !== void 0) {
-      this.log(`local room memory: planned compaction save failed for ${this.room}: ${cause}; exiting without reopening`);
+      this.log(`local room memory: generation final save failed for ${this.room}: ${cause}; exiting without reopening`);
     }
     return cause;
   }
@@ -17214,6 +17218,7 @@ var RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024;
 var RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024;
 var socketBudgets = /* @__PURE__ */ new WeakMap();
 var sessions = /* @__PURE__ */ new WeakMap();
+var syncReplied = /* @__PURE__ */ new WeakSet();
 function boundRelayBootstrapInput(conn) {
   const receiver = conn._receiver;
   const maximum = receiver?._maxPayload;
@@ -17305,7 +17310,7 @@ function getDoc(docs, name, opts) {
     writeVarUint(enc, MSG_SYNC);
     writeUpdate(enc, update);
     const buf = toUint8Array(enc);
-    for (const c of d.conns.keys()) send(c, buf);
+    for (const c of d.conns.keys()) if (syncReplied.has(c)) send(c, buf);
   });
   awareness.on("update", ({ added, updated, removed }, origin) => {
     const changed = [...added, ...updated, ...removed];
@@ -17318,7 +17323,7 @@ function getDoc(docs, name, opts) {
     writeVarUint(enc, MSG_AWARENESS);
     writeVarUint8Array(enc, encodeAwarenessUpdate(awareness, changed));
     const buf = toUint8Array(enc);
-    for (const c of d.conns.keys()) send(c, buf);
+    for (const c of d.conns.keys()) if (syncReplied.has(c)) send(c, buf);
   });
   opts.loaded?.(decodeURIComponent(name), doc);
   docs.set(name, d);
@@ -17636,27 +17641,37 @@ function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
   const allowState = stateRequestLimiter();
   const allowPresence = d.presence.connection((reason) => conn.close(4429, reason));
   conn.binaryType = "arraybuffer";
-  conn.on("message", (raw) => {
-    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN || opts.accepting && !opts.accepting()) return;
-    let buf;
-    try {
-      buf = raw === first ? first : sessions.get(conn).decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw);
-    } catch {
-      conn.close(1008, "invalid secure frame");
-      return;
-    }
-    if (negotiated && buf[0] === MSG_HUB) {
+  let pendingStep1;
+  let cancelResume;
+  const receive = (buf) => {
+    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return;
+    if (opts.accepting && !opts.accepting()) {
+      const dec = createDecoder(buf);
       try {
-        const frame = decodeFrame(buf);
-        if (frame.op === "compat-hello" || frame.op === "compat-ack") {
-          conn.close(4406, "selection is immutable; reconnect Room");
-          return;
-        }
+        if (readVarUint(dec) !== MSG_SYNC || readVarUint(dec) !== messageYjsSyncStep1) return;
       } catch {
+        return;
       }
-    }
-    if (!allowState(buf, conn.bufferedAmount)) {
-      conn.close(1013, "too many state requests");
+      if (buf.byteLength > RELAY_STATE_QUEUE_BYTES) {
+        full(conn);
+        return;
+      }
+      if (pendingStep1) stateReservation -= pendingStep1.byteLength;
+      pendingStep1 = void 0;
+      if (!capacityFor(buf.byteLength, conn)) {
+        full(conn);
+        return;
+      }
+      pendingStep1 = buf;
+      stateReservation += buf.byteLength;
+      cancelResume ??= opts.whenAccepting?.(() => {
+        cancelResume?.();
+        cancelResume = void 0;
+        const pending = pendingStep1;
+        pendingStep1 = void 0;
+        if (pending) stateReservation -= pending.byteLength;
+        if (pending) receive(pending);
+      });
       return;
     }
     const { cap } = d;
@@ -17689,6 +17704,16 @@ function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
             if (step1) stateReservation -= RELAY_SOCKET_QUEUE_BYTES;
           }
           if (length(enc2) > 1) send(conn, toUint8Array(enc2));
+          if (step1) {
+            syncReplied.add(conn);
+            const states = d.awareness.getStates();
+            if (states.size) {
+              const aenc = createEncoder();
+              writeVarUint(aenc, MSG_AWARENESS);
+              writeVarUint8Array(aenc, encodeAwarenessUpdate(d.awareness, Array.from(states.keys())));
+              send(conn, toUint8Array(aenc));
+            }
+          }
           break;
         case MSG_AWARENESS:
           if (opts.readOnly) break;
@@ -17701,8 +17726,36 @@ function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
       }
     } catch {
     }
+  };
+  conn.on("message", (raw) => {
+    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return;
+    let buf;
+    try {
+      buf = raw === first ? first : sessions.get(conn).decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw);
+    } catch {
+      conn.close(1008, "invalid secure frame");
+      return;
+    }
+    if (negotiated && buf[0] === MSG_HUB) {
+      try {
+        const frame = decodeFrame(buf);
+        if (frame.op === "compat-hello" || frame.op === "compat-ack") {
+          conn.close(4406, "selection is immutable; reconnect Room");
+          return;
+        }
+      } catch {
+      }
+    }
+    if (!allowState(buf, conn.bufferedAmount)) {
+      conn.close(1013, "too many state requests");
+      return;
+    }
+    receive(buf);
   });
   const bye = () => {
+    cancelResume?.();
+    if (pendingStep1) stateReservation -= pendingStep1.byteLength;
+    pendingStep1 = void 0;
     if (!d.conns.has(conn)) return;
     const ids = d.conns.get(conn);
     d.conns.delete(conn);
@@ -17717,13 +17770,6 @@ function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
   writeVarUint(enc, MSG_SYNC);
   writeSyncStep1(enc, d.doc);
   send(conn, toUint8Array(enc));
-  const states = d.awareness.getStates();
-  if (states.size) {
-    const aenc = createEncoder();
-    writeVarUint(aenc, MSG_AWARENESS);
-    writeVarUint8Array(aenc, encodeAwarenessUpdate(d.awareness, Array.from(states.keys())));
-    send(conn, toUint8Array(aenc));
-  }
 }
 function relayConnectionHandler(docs, opts) {
   opts = { ...opts, awareness: awarenessLimits(opts.awareness) };
@@ -17827,6 +17873,7 @@ function startRelay(port, opts = {}) {
   return new Promise((resolve, reject) => {
     parseAdvertisement(CURRENT_COMPAT);
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir");
+    const acceptingWaiters = /* @__PURE__ */ new Set();
     let draining = false;
     const writers = /* @__PURE__ */ new Set(), viewers = /* @__PURE__ */ new Set();
     const docOptions = {
@@ -17834,6 +17881,12 @@ function startRelay(port, opts = {}) {
       daemon: !!opts.daemon,
       compat: opts.daemon ? { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, "room.daemon": [1] } } : CURRENT_COMPAT,
       accepting: () => !draining,
+      whenAccepting: (resume) => {
+        acceptingWaiters.add(resume);
+        return () => {
+          acceptingWaiters.delete(resume);
+        };
+      },
       attached: (conn, readOnly) => {
         const group = readOnly ? viewers : writers;
         group.add(conn);
@@ -18149,6 +18202,7 @@ Connection: close\r
         history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted })),
         setDraining(value2) {
           draining = value2;
+          if (!value2) for (const resume of [...acceptingWaiters]) resume();
         },
         async abortUnpublished() {
           if (writers.size || viewers.size) throw new Error("cannot discard a published relay replica");
@@ -18260,10 +18314,15 @@ async function startLocalDaemon(opts) {
       if (stopping) return stopping;
       draining = true;
       relay.setDraining(true);
+      if (!compactionGeneration) {
+        if (relay.canCompact()) compactionGeneration = crypto6.randomUUID();
+        else log2("local daemon graceful stop preserves generation: snapshot would shed content");
+      }
       stopping = relay.close(saved, compactionGeneration).then(() => {
         if (timer) clearInterval(timer);
         resolveClosed();
       }).catch((error) => {
+        compactionGeneration = void 0;
         draining = false;
         relay.setDraining(false);
         stopping = void 0;

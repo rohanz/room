@@ -194,7 +194,8 @@ describe('local relay credentials', () => {
     const Polyfill = authorizedWebSocket({ key })
     const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`)
     ws.once('message', () => resolve(ws))
-    ws.once('open', () => ws.send(Uint8Array.of(0, 0)))
+    // A well-formed sync step 1 (empty state vector): the relay answers it and only then broadcasts to this socket.
+    ws.once('open', () => ws.send(Uint8Array.of(0, 0, 1, 0)))
     ws.once('error', reject)
   })
 
@@ -203,7 +204,7 @@ describe('local relay credentials', () => {
     try {
       const flood = await openClient(relay.port)
       const flooded = new Promise<number>(resolve => flood.once('close', code => resolve(code)))
-      for (let n = 0; n < 11; n++) flood.send(Uint8Array.of(0, 0))
+      for (let n = 0; n < 11; n++) flood.send(Uint8Array.of(0, 0, 1, 0))
       expect(await flooded).toBe(1013)
     } finally { await relay.close() }
   })

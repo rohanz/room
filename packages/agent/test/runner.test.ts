@@ -78,7 +78,7 @@ describe('Runner', () => {
     expect(s.room.seen('Rohan').get(msg.id)).toMatchObject({ via: 'agent' })
   })
 
-  it('S2 prunes live roomagent receipts after their last bus, mail and outcome references disappear', async () => {
+  it('S2 keeps live roomagent receipts without proof of ending', async () => {
     const msg = hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' },
       { type: 'question', to: 'Rohan', text: 'ready?' })
     await s.runner.idle()
@@ -89,7 +89,7 @@ describe('Runner', () => {
     expect(s.room.seen('Rohan').has(msg.id)).toBe(true)
     s.room.mail.delete(msg.id)
     await s.runner.retryDelivery()
-    expect(s.room.seen('Rohan').has(msg.id)).toBe(false)
+    expect(s.room.seen('Rohan').has(msg.id)).toBe(true)
     await s.runner.stop()
   })
 

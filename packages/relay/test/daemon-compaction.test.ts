@@ -136,9 +136,18 @@ it('skips compaction once per process if a snapshot would shed broadcasts', asyn
   expect(docGeneration(doc)).toBe(generation)
   expect(doc.getArray('bus').toArray()).toEqual(broadcasts)
   expect(logs.filter(line => line.includes('snapshot would shed content'))).toHaveLength(1)
+  await d.close()
+  const saved = new Y.Doc()
+  Y.applyUpdate(saved, fs.readFileSync(memoryFile(dirs.at(-1)!, room)))
+  expect(docGeneration(saved)).toBe(generation)
+  expect(logs.some(line => line.includes('graceful stop preserves generation: snapshot would shed content'))).toBe(true)
+  saved.destroy()
 })
 
-it.each(['second room rename', 'directory fsync'])('exits after planned save failure: %s', async failure => {
+it.each([
+  ['planned', 'second room rename'], ['planned', 'directory fsync'],
+  ['graceful', 'second room rename'], ['graceful', 'directory fsync'],
+])('exits after %s save failure: %s', async (stop, failure) => {
   vi.stubEnv('ROOM_COMPACT_MIN_DELETED', '1')
   let now = 0
   const dir = common(), first = await start(dir, () => now), other = 'local/other'
@@ -178,8 +187,9 @@ it.each(['second room rename', 'directory fsync'])('exits after planned save fai
     if (failure === 'directory fsync' && snapshotInstalled && !fsyncFailed && fs.fstatSync(fd).isDirectory()) { fsyncFailed = true; throw new Error('EIO directory fsync after rename') }
     return sync(fd)
   })
-  now = 60_000
-  await Promise.race([first.closed, new Promise((_, reject) => setTimeout(() => reject(new Error('failed compaction reopened')), 2000))])
+  if (stop === 'graceful') void first.close()
+  else now = 60_000
+  await Promise.race([first.closed, new Promise((_, reject) => setTimeout(() => reject(new Error('failed generation save reopened')), 2000))])
   // The injected failure must actually have happened, or this test checks nothing.
   expect(failure === 'second room rename' ? renameFailed : fsyncFailed).toBe(true)
   a.disconnect(); b.disconnect(); vi.restoreAllMocks()

@@ -2,6 +2,8 @@
 
 ## 0.17.46
 
+- **Prevent mass redelivery of already-read messages to some participants after a graceful local daemon restart.** Graceful final saves now end the generation, as compaction does, so surviving replicas rejoin fresh (snapshots that would shed content retain the generation, with a diagnostic). Relay broadcasts wait for the first sync reply, and sync requests received while draining wait until accepting resumes. Receipt pruning now requires proof that the message ended in archive or outcomes; absence from a partially synced bus is insufficient.
+
 - **`room_send` loses two parameters.** `message` was an alias of `text`, and `symbols` listed changed definitions by hand although Room detects them itself. `text` and detected definitions remain; `refresh` stays. For one release `message` is still accepted with a note; `symbols` is ignored. Both the alias and the collector's rule for the retired hook-pruning marker files are removed in 0.17.47.
 - **The collection review hold is its own tool.** `room_review(action="hold" | "release" | "status", reason?, reviewToken?)` replaces `room_collect(checkpoint=...)`; `room_collect` keeps collection, discard and keep (six parameters). A `checkpoint` argument to `room_collect` now errors and names `room_review`. Moving `plans` from `room_claim` to `room_scope` was considered and not done: plans are a property of a claim throughout the room document, the release and plan messages and the web view, so that is a schema change for a later release.
 

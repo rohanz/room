@@ -51,7 +51,7 @@ it('M5: a reply that fails after selecting its inbox is an error that receipts n
   expect(await tools.call('room_state', {})).toContain('owed to Pat')
 })
 
-it('S2: the live holder prunes receipts once bus, mail and outcomes stop referencing them', () => {
+it('S2: the live holder prunes receipts only when archive or outcomes proves a message ended', () => {
   const dir = tmp('room-receipts-')
   const s = memorySession(me, dir)
   const ledger = new Ledger({ sessionId: () => 'holder', route: () => ({}) })
@@ -68,9 +68,9 @@ it('S2: the live holder prunes receipts once bus, mail and outcomes stop referen
   s.room.outcomes.set(outcome.id, { id: outcome.id, reason: 'expired', at: Date.now() } as never)
   s.room.bus.delete(0, s.room.bus.length)
   ledger.candidates(s)
-  expect(s.room.seen(me.name).has(gone.id)).toBe(false)
+  expect(s.room.seen(me.name).has(gone.id)).toBe(true)
   expect(s.room.seen(me.name).has(retained.id)).toBe(true)
-  expect(s.room.seen(me.name).has(outcome.id)).toBe(true)
+  expect(s.room.seen(me.name).has(outcome.id)).toBe(false)
 })
 
 it('M5: the transport commits only a reply that carries the tool\'s text; a replaced reply receipts nothing', async () => {

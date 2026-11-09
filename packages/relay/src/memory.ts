@@ -104,7 +104,7 @@ function writeMemory(commonDir: string, room: string, doc: Y.Doc, log: (line: st
     let shed = false
     let update = memorySnapshot(doc, { onShed: () => { shed = true }, maxBytes: MAX_MEMORY_BYTES, log: line => warnings.warn(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log) })
     if (generation !== undefined && shed) return 'snapshot would shed content'
-    // Only a planned compaction's final save fences survivors. Never change the live
+    // Compaction and graceful-stop final saves fence survivors. Never change the live
     // replica: failed pre-rename saves retain the generation survivors can resync into.
     if (generation !== undefined) {
       const copy = new Y.Doc()
@@ -203,7 +203,7 @@ export class RoomMemory {
       this.retryDelay = Math.min(60_000, this.retryDelay * 2)
     }
     if (generation !== undefined && cause !== undefined) {
-      this.log(`local room memory: planned compaction save failed for ${this.room}: ${cause}; exiting without reopening`)
+      this.log(`local room memory: generation final save failed for ${this.room}: ${cause}; exiting without reopening`)
     }
     return cause
   }
@@ -251,7 +251,7 @@ export class FinalSaveError extends Error {
 /**
  * Save every memory in one synchronous pass, retrying the whole pass after each delay until all succeed.
  * On success the caller can tear down in the same tick, so no update lands between the save and teardown.
- * Ordinary shutdown throws FinalSaveError after exhausted retries. Planned compaction makes one pass,
+ * A save without a generation throws FinalSaveError after exhausted retries. A generation save makes one pass,
  * logs each failure and returns so the caller always tears down; nothing is detached here.
  */
 export async function finalSave(memories: () => readonly RoomMemory[], delays: readonly number[] = FINAL_SAVE_RETRY_MS, generation?: string): Promise<void> {

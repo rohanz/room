@@ -56,7 +56,7 @@ export interface RelayDocCap { maxBytes?: number; meter?: DocSizeMeterOptions }
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { loaded?: (room: string, doc: Y.Doc) => void; commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission; accepting?: () => boolean; attached?: (conn: WebSocket, readOnly: boolean) => void; daemon?: boolean; compat?: typeof CURRENT_COMPAT }
+interface DocOptions { loaded?: (room: string, doc: Y.Doc) => void; commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission; accepting?: () => boolean; whenAccepting?: (resume: () => void) => () => void; attached?: (conn: WebSocket, readOnly: boolean) => void; daemon?: boolean; compat?: typeof CURRENT_COMPAT }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
 /** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
 export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
@@ -67,6 +67,8 @@ export function relayOutputAllowed(queued: number, aggregateQueued: number, next
 /** A relay started with its own per-socket budget (RelayOptions.socketQueueBytes) records it per connection. */
 const socketBudgets = new WeakMap<WebSocket, number>()
 const sessions = new WeakMap<WebSocket, SecureSession>()
+// Skip broadcasts until the first step 2 reply supplies everything missed since attachment.
+const syncReplied = new WeakSet<WebSocket>()
 /** ws 8.21's Receiver has no public dynamic payload-limit setter. Keep the private access
  * guarded and transport-local (the hosted transport has the same adapter). The receiver
  * checks fragmented message lengths at the frame header, before collecting their payloads. */
@@ -142,7 +144,7 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
     encoding.writeVarUint(enc, MSG_SYNC)
     syncProtocol.writeUpdate(enc, update)
     const buf = encoding.toUint8Array(enc)
-    for (const c of d!.conns.keys()) send(c, buf)
+    for (const c of d!.conns.keys()) if (syncReplied.has(c)) send(c, buf)
   })
   awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
     const changed = [...added, ...updated, ...removed]
@@ -155,7 +157,7 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
     encoding.writeVarUint(enc, MSG_AWARENESS)
     encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(awareness, changed))
     const buf = encoding.toUint8Array(enc)
-    for (const c of d!.conns.keys()) send(c, buf)
+    for (const c of d!.conns.keys()) if (syncReplied.has(c)) send(c, buf)
   })
   opts.loaded?.(decodeURIComponent(name), doc)
   docs.set(name, d)
@@ -344,18 +346,30 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
   const allowState = stateRequestLimiter()
   const allowPresence = d.presence.connection(reason => conn.close(4429, reason))
   conn.binaryType = 'arraybuffer'
-  conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
-    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN || (opts.accepting && !opts.accepting())) return
-    let buf: Uint8Array
-    try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
-    catch { conn.close(1008, 'invalid secure frame'); return }
-    if (negotiated && buf[0] === MSG_HUB) {
+  let pendingStep1: Uint8Array | undefined
+  let cancelResume: (() => void) | undefined
+  const receive = (buf: Uint8Array): void => {
+    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return
+    if (opts.accepting && !opts.accepting()) {
+      // Keep only the latest state vector, bounded by the existing state-request queue budget.
+      const dec = decoding.createDecoder(buf)
       try {
-        const frame = decodeFrame(buf) as { op?: string }
-        if (frame.op === 'compat-hello' || frame.op === 'compat-ack') { conn.close(4406, 'selection is immutable; reconnect Room'); return }
-      } catch { /* normal hub validation below */ }
+        if (decoding.readVarUint(dec) !== MSG_SYNC || decoding.readVarUint(dec) !== syncProtocol.messageYjsSyncStep1) return
+      } catch { return }
+      if (buf.byteLength > RELAY_STATE_QUEUE_BYTES) { full(conn); return }
+      if (pendingStep1) stateReservation -= pendingStep1.byteLength
+      pendingStep1 = undefined
+      if (!capacityFor(buf.byteLength, conn)) { full(conn); return }
+      pendingStep1 = buf
+      stateReservation += buf.byteLength
+      cancelResume ??= opts.whenAccepting?.(() => {
+        cancelResume?.(); cancelResume = undefined
+        const pending = pendingStep1; pendingStep1 = undefined
+        if (pending) stateReservation -= pending.byteLength
+        if (pending) receive(pending)
+      })
+      return
     }
-    if (!allowState(buf, conn.bufferedAmount)) { conn.close(1013, 'too many state requests'); return }
     // A view connection's writes are ignored below; a writer into a room over its cap is closed as the server does,
     // unless its write inserts nothing: a newcomer's sync step 2 and deletions still go through, so a local room
     // (with no operator to trim it) stays joinable and can shrink.
@@ -382,6 +396,16 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
           try { syncProtocol.readSyncMessage(dec, enc, d.doc, conn) }
           finally { if (step1) stateReservation -= RELAY_SOCKET_QUEUE_BYTES }
           if (encoding.length(enc) > 1) send(conn, encoding.toUint8Array(enc))
+          if (step1) {
+            syncReplied.add(conn)
+            const states = d.awareness.getStates()
+            if (states.size) {
+              const aenc = encoding.createEncoder()
+              encoding.writeVarUint(aenc, MSG_AWARENESS)
+              encoding.writeVarUint8Array(aenc, awarenessProtocol.encodeAwarenessUpdate(d.awareness, Array.from(states.keys())))
+              send(conn, encoding.toUint8Array(aenc))
+            }
+          }
           break
         case MSG_AWARENESS:
           if (opts.readOnly) break
@@ -393,8 +417,26 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
           break
       }
     } catch { /* malformed message: ignore */ }
+  }
+  conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
+    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return
+    let buf: Uint8Array
+    try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
+    catch { conn.close(1008, 'invalid secure frame'); return }
+    if (negotiated && buf[0] === MSG_HUB) {
+      try {
+        const frame = decodeFrame(buf) as { op?: string }
+        if (frame.op === 'compat-hello' || frame.op === 'compat-ack') { conn.close(4406, 'selection is immutable; reconnect Room'); return }
+      } catch { /* normal hub validation below */ }
+    }
+    if (!allowState(buf, conn.bufferedAmount)) { conn.close(1013, 'too many state requests'); return }
+    receive(buf)
   })
   const bye = () => {
+    cancelResume?.()
+    if (pendingStep1) stateReservation -= pendingStep1.byteLength
+    pendingStep1 = undefined
+
     if (!d.conns.has(conn)) return
     const ids = d.conns.get(conn)
     d.conns.delete(conn)
@@ -404,18 +446,11 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
     if (!d.conns.size && !d.closed) d.memory?.flush() // a closed relay already saved its last state
   }
   conn.on('close', bye); conn.on('error', bye)
-  // Sync step 1 and the current awareness states, as y-websocket's server does.
+  // Offer our state vector; broadcasts and awareness wait for the first sync reply.
   const enc = encoding.createEncoder()
   encoding.writeVarUint(enc, MSG_SYNC)
   syncProtocol.writeSyncStep1(enc, d.doc)
   send(conn, encoding.toUint8Array(enc))
-  const states = d.awareness.getStates()
-  if (states.size) {
-    const aenc = encoding.createEncoder()
-    encoding.writeVarUint(aenc, MSG_AWARENESS)
-    encoding.writeVarUint8Array(aenc, awarenessProtocol.encodeAwarenessUpdate(d.awareness, Array.from(states.keys())))
-    send(conn, encoding.toUint8Array(aenc))
-  }
 }
 
 /** The first operation on every accepted websocket is its error listener. */
@@ -628,11 +663,13 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
   return new Promise((resolve, reject) => {
     parseAdvertisement(CURRENT_COMPAT) // startup fails rather than truncating an oversized or invalid manifest
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir")
+    const acceptingWaiters = new Set<() => void>()
     let draining = false
     const writers = new Set<WebSocket>(), viewers = new Set<WebSocket>()
     const docOptions: DocOptions = {
       loaded: opts.daemon?.loaded,
       daemon: !!opts.daemon, compat: opts.daemon ? { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } } : CURRENT_COMPAT, accepting: () => !draining,
+      whenAccepting: resume => { acceptingWaiters.add(resume); return () => { acceptingWaiters.delete(resume) } },
       attached: (conn, readOnly) => {
         const group = readOnly ? viewers : writers
         group.add(conn)
@@ -791,7 +828,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     let closing: Promise<void> | undefined
     const onSignal = () => { if (opts.daemon) { opts.daemon.onSignal(); return }; close().catch(error => opts.log?.(`local relay: room state could not be saved on stop: ${error instanceof Error ? error.message : String(error)}`)) }
     // The relay holds the room's only current replica once the last writer has gone. Nothing is torn down
-    // until every room's memory is saved, except planned compaction must exit even on save failure.
+    // until every room's memory is saved, except a generation save must exit even on save failure.
     const close = (saved?: () => void, generation?: string): Promise<void> => closing ??= (async () => {
       if (opts.daemon) {
         for (const d of docs.values()) await d.hubReady
@@ -827,7 +864,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         get connections() { return { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size } },
         canCompact: () => [...docs.values()].every(d => !d.memory || d.memory.canCompact()),
         history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted })),
-        setDraining(value) { draining = value },
+        setDraining(value) { draining = value; if (!value) for (const resume of [...acceptingWaiters]) resume() },
         async abortUnpublished() {
           if (writers.size || viewers.size) throw new Error('cannot discard a published relay replica')
           draining = true

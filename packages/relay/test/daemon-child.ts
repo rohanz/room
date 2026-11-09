@@ -16,6 +16,7 @@ if (!daemon) { process.send?.({ loser: true }); process.disconnect?.() }
 else {
   process.on('message', async (value: { command: string; now?: number; full?: boolean }) => {
     if (value.command === 'clock') now = value.now!
+    if (value.command === 'shed') daemon.relay.hubRoom(room)!.doc.bus.push([{ id: 'large', type: 'note', text: 'x'.repeat(6 * 1024 * 1024) } as never])
     if (value.command === 'full') full = value.full!
     if (value.command === 'save') {
       try { await daemon.close(); process.send?.({ saved: true }) }

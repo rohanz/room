@@ -121,3 +121,61 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
     fs.rmSync(commonDir, { recursive: true, force: true })
   }
 })
+
+it.each([false, true])('withholds broadcasts until the first sync reply (held while draining: %s)', async draining => {
+  const encoding = await import('lib0/encoding')
+  const decoding = await import('lib0/decoding')
+  const sync = await import('y-protocols/sync')
+  const awarenessProtocol = await import('y-protocols/awareness')
+  const relay = await startRelay(0, { key: 'sync-order' })
+  const doc = new Y.Doc(), replica = new Y.Doc()
+  const writer = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, 'local%2Fsync-order', doc, {
+    WebSocketPolyfill: keyedSocket('sync-order') as never, params: { schema: '2' }, disableBc: true,
+  })
+  writer.awareness.setLocalState(null)
+  let socket: WebSocket | undefined
+  try {
+    await until(() => writer.synced)
+    const Socket = keyedSocket('sync-order')
+    socket = new Socket(`ws://127.0.0.1:${relay.port}/local%2Fsync-order?schema=2`) as unknown as WebSocket
+    const frames: Uint8Array[] = []
+    socket.on('message', raw => frames.push(new Uint8Array(raw as Buffer)))
+    await new Promise<void>(resolve => socket!.once('open', () => resolve()))
+    // The relay attaches a socket on its first frame: an awareness frame here, so the socket is attached but has
+    // not asked for state. It must receive the relay's sync step 1 and nothing else until it asks.
+    const hello = encoding.createEncoder()
+    encoding.writeVarUint(hello, 1)
+    encoding.writeVarUint8Array(hello, awarenessProtocol.encodeAwarenessUpdate(new awarenessProtocol.Awareness(replica), []))
+    socket.send(encoding.toUint8Array(hello))
+    await until(() => frames.length === 1)
+    expect(decoding.peekVarUint(decoding.createDecoder(frames[0]))).toBe(0)
+    doc.getMap('meta').set('missed', 'covered by reply')
+    await wait(150)
+    expect(frames).toHaveLength(1)
+    if (draining) relay.setDraining(true)
+    const enc = encoding.createEncoder()
+    encoding.writeVarUint(enc, 0); sync.writeSyncStep1(enc, replica)
+    socket.send(encoding.toUint8Array(enc))
+    if (draining) {
+      await wait(150)
+      expect(frames).toHaveLength(1)
+      relay.setDraining(false)
+    }
+    await until(() => frames.length >= 2)
+    const reply = decoding.createDecoder(frames[1])
+    expect(decoding.readVarUint(reply)).toBe(0)
+    expect(decoding.peekVarUint(reply)).toBe(sync.messageYjsSyncStep2)
+    sync.readSyncMessage(reply, encoding.createEncoder(), replica, 'relay')
+    expect(replica.getMap('meta').get('missed')).toBe('covered by reply')
+    doc.getMap('meta').set('later', 'broadcast')
+    await until(() => frames.some((f, i) => i >= 2 && decoding.peekVarUint(decoding.createDecoder(f)) === 0))
+    for (const f of frames.slice(2)) {
+      const d = decoding.createDecoder(f)
+      if (decoding.readVarUint(d) !== 0) continue
+      sync.readSyncMessage(d, encoding.createEncoder(), replica, 'relay')
+    }
+    expect(replica.getMap('meta').get('later')).toBe('broadcast')
+  } finally {
+    socket?.close(); writer.destroy(); await relay.close(); doc.destroy(); replica.destroy()
+  }
+})

@@ -501,14 +501,18 @@ export class RoomDoc {
     const value: Receipt = { ...receipt, at: Date.now() }
     this.doc.transact(() => { const m = this.seen(name); for (const id of ids) if (!m.has(id)) m.set(id, value) }, origin)
   }
-  /** Remove orphaned receipts only while this writer still holds its authority fence. */
+  /**
+   * Remove receipts only for messages proven ended, while this writer holds its fence: an outcome, or an archive
+   * entry with no mail copy (the trim archives every message that leaves the bus, and keeps the owed or answerable
+   * ones in mail as well). Absence from the bus is not proof: a replica mid-sync sees a partial bus. A receipt
+   * whose message left the archive too is dropped by the snapshot's receipt filter at the next save (memory.ts).
+   */
   pruneSeen(name: string, current: () => boolean): void {
     if (!current()) return
     this.doc.transact(() => {
       if (!current()) return
-      const refs = new Set([...this.messages().map(m => m.id), ...this.mail.keys(), ...this.outcomes.keys()])
       const seen = this.seen(name)
-      for (const id of seen.keys()) if (!refs.has(id)) seen.delete(id)
+      for (const id of seen.keys()) if (this.outcomes.has(id) || (this.archive.has(id) && !this.mail.has(id))) seen.delete(id)
     })
   }
   seenBy(msgId: string): string[] {

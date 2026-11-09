@@ -288,7 +288,7 @@ export class Ledger {
     batch.timer.unref?.()
   }
 
-  /** Only the current holder removes receipts whose retained message and outcome references are gone. */
+  /** Only the current holder removes receipts for messages proven ended by archive or outcomes. */
   private prune(s: Session): void {
     s.room.pruneSeen(s.me.name, () => this.fenced(s))
   }

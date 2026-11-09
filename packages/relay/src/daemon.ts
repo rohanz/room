@@ -75,6 +75,7 @@ export class WriterIdleClock {
 }
 
 /**
+ * Graceful stops end the saved generation unless the snapshot would shed content; crashes retain it.
  * Run in the child only. Losing contenders exit without ever publishing shared state.
  * Not an admission boundary: Room's shipped entry (room-daemon.mjs) reaches this only when launched by
  * ensureLocalDaemon after its required admitStart. In-repo test and compatibility harnesses call it directly
@@ -121,10 +122,17 @@ export async function startLocalDaemon(opts: {
       // Fence synchronously in the idle callback, before lease flush/final-save awaits.
       if (stopping) return stopping
       draining = true; relay!.setDraining(true)
+      // Decide while fenced. A generation save must never reopen, even after a partial write.
+      if (!compactionGeneration) {
+        if (relay!.canCompact()) compactionGeneration = crypto.randomUUID()
+        else log('local daemon graceful stop preserves generation: snapshot would shed content')
+      }
       stopping = relay!.close(saved, compactionGeneration).then(() => {
         if (timer) clearInterval(timer)
         resolveClosed()
       }).catch(error => {
+        // Rejection is before generation saves begin (for example a lease flush failure).
+        compactionGeneration = undefined
         draining = false; relay!.setDraining(false); stopping = undefined
         failure = (error instanceof Error ? error.message : String(error)).slice(0, 256)
         log(`local daemon save blocked: ${failure}`)

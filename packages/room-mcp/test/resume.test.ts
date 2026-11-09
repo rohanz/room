@@ -337,7 +337,7 @@ describe('resumed worker boundaries', () => {
     t.room.bus.delete(0, t.room.bus.length)
     t.room.mail.delete(run.promptMsgIds[0])
     await projectWorkers(t.session, registry, 'rohanz', 'joined')
-    expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
+    expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(true)
   })
 
   it.each([
@@ -345,7 +345,7 @@ describe('resumed worker boundaries', () => {
     ['bus trim event', 'bus'],
     ['mail trim event', 'mail'],
     ['outcome trim event', 'outcome'],
-  ] as const)('S2: %s prunes an older receipt after a later resume is rejected', async (trigger, lastReference) => {
+  ] as const)('S2: %s retains receipts without proof of ending after a later resume is rejected', async (trigger, lastReference) => {
     const t = setup()
     await t.seed('prune')
     const registry = await registryForDir(t.dir)
@@ -383,13 +383,13 @@ describe('resumed worker boundaries', () => {
       if (lastReference !== 'bus') {
         if (trigger === 'explicit pass') await projectWorkers(t.session, registry, 'rohanz', 'joined')
         else await projector?.project()
-        expect(t.room.seen(first.name).has(firstMessage.id)).toBe(true)
+        expect(t.room.seen(first.name).has(firstMessage.id)).toBe(lastReference !== 'outcome')
       }
       if (lastReference === 'mail') t.room.mail.delete(firstMessage.id)
       if (lastReference === 'outcome') t.room.outcomes.delete(firstMessage.id)
       if (trigger === 'explicit pass') await projectWorkers(t.session, registry, 'rohanz', 'joined')
-      else await vi.waitFor(() => expect(t.room.seen(first.name).has(firstMessage.id)).toBe(false))
-      expect(t.room.seen(first.name).has(firstMessage.id)).toBe(false)
+      else await vi.waitFor(() => expect(t.room.seen(first.name).has(firstMessage.id)).toBe(lastReference !== 'outcome'))
+      expect(t.room.seen(first.name).has(firstMessage.id)).toBe(lastReference !== 'outcome')
     } finally { projector?.stop() }
   })
 
