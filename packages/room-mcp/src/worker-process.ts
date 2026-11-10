@@ -245,7 +245,7 @@ function processName(pid: number): string {
 }
 
 /** List processes by cwd. No process group is inferred: a dev server may have reparented itself. */
-function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProcess[] {
+export function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProcess[] {
   const result: CwdProcess[] = []
   if (platform === 'linux') {
     for (const entry of fs.readdirSync('/proc')) {

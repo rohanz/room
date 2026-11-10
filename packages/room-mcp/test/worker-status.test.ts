@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { statusOf, realStateInput, type WorkerRecord, type Run } from '../src/worker-status.js'
-import { decideRegistryCollect } from '../src/worker-state.js'
 
 const token = { pid: 31, startTime: 'start', executable: '/bin/agent', sessionId: 's', nonce: 'n' }
 const run = (launch?: Run['launch'], mode: Run['mode'] = 'fresh'): Run => ({ n: 1, mode, intentAt: 1, nonce: 'n', busFrontier: 0, promptMsgIds: [], launcher: token, logStart: 0, ...(launch ? { launch } : {}) })
@@ -89,11 +88,6 @@ describe('statusOf', () => {
     const imported = record('active', run({ outcome: 'imported' }))
     imported.capabilities.collect = 'copy'
     expect(realStateInput(imported, statusOf(imported, undefined, undefined, undefined, dead)).status).toBe('dismissed')
-    expect(decideRegistryCollect(r, statusOf(r, undefined, undefined, undefined, dead), { worktree: 'present', hostSession: false,
-      finished: false, status: 'running', dismissed: false }, true, true)).toBe('skip-status')
-    expect(decideRegistryCollect(imported, statusOf(imported, undefined, undefined, undefined, dead), { worktree: 'present', hostSession: false,
-      finished: true, status: 'dismissed', dismissed: true }, true, true)).toBe('skip-status')
-    expect(decideRegistryCollect(imported, statusOf(imported, undefined, undefined, undefined, dead), { worktree: 'present', hostSession: false,
-      finished: true, status: 'dismissed', dismissed: true }, true, true, 'copy')).toBe('inspect')
+
   })
 })

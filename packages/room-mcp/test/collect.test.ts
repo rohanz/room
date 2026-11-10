@@ -206,18 +206,102 @@ describe('room_collect', () => {
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
   })
 
-  it('refuses to stop a worker in an unmanaged existing directory', async () => {
+  it('still refuses an unmanaged directory without an outside spawn record', async () => {
     const t = setup('running')
-    t.set('test', { ...t.w, dir: lead, branch: 'main', model: 'worker-model' })
-    let alive = true
-    const stopped = vi.fn(async () => { alive = false; return 'pid signalled' })
-    t.state.workerAlive = () => alive
-    t.state.dismissWorker = stopped as never
-    const result = await t.call({ tag: 'test', discard: true })
-    expect(stopped).not.toHaveBeenCalled()
-    expect(result).toContain('no local worker capability')
+    t.set('test', { ...t.w, dir: lead, branch: 'main' })
+    t.state.dismissWorker = vi.fn() as never
+    expect(await t.call({ tag: 'test', discard: true })).toContain('no local worker capability')
+    expect(t.state.dismissWorker).not.toHaveBeenCalled()
     expect(fs.existsSync(lead)).toBe(true)
-    expect(t.s.room.retiredWorkers()).toEqual([])
+  })
+
+  async function outside(t: ReturnType<typeof setup>, owner = 'lead') {
+    const dir = path.join(root, 'outside', '.room', 'workers', 'existing')
+    fs.mkdirSync(dir, { recursive: true })
+    git(dir, 'init', '-q', '-b', 'outside-branch')
+    put(dir, 'file.txt', 'outside changes\n')
+    git(dir, 'add', '.')
+    git(dir, '-c', 'user.name=Outside', '-c', 'user.email=outside@test', 'commit', '-qm', 'outside')
+    put(dir, 'untracked.txt', 'keep me\n')
+    t.set('test', { ...t.w, dir, branch: 'outside-branch', lead: owner, mode: 'here', hostSessionId: 'outside-thread' })
+    await t.sync()
+    const registry = await registryForDir(lead)
+    await mutateWorkerFixture(registry, 'w_test', old => ({ ...old, outside: true,
+      logFile: path.join(lead, '.room/workers/test.log'), capabilities: { ...old.capabilities, collect: 'none' }, seq: old.seq + 1 }))
+    return { dir, head: git(dir, 'rev-parse', 'HEAD'), status: git(dir, 'status', '--porcelain') }
+  }
+
+  it('discards a running outside worker and keeps its directory and git state untouched', async () => {
+    const t = setup('running')
+    const before = await outside(t)
+    let alive = true
+    t.state.workerAlive = () => alive
+    t.state.dismissWorker = vi.fn(async () => { alive = false; return 'pid signalled' }) as never
+    t.state.ctx!.listCwdProcesses = () => { throw new Error('must not inspect outside cwd processes') }
+    put(lead, '.room/workers/test.log', 'Room log')
+    // Same-shaped directories outside the lead must never be treated as Room-owned sidecars.
+    put(path.join(before.dir, '..'), 'test.log', 'outside log')
+    const registry = await registryForDir(lead)
+    expect(await registry.trusted({ participant: 'lead', room: t.s.roomName, dir: lead }, 'test')).toBeUndefined()
+    expect((await registry.trustedOutside({ participant: 'lead', room: t.s.roomName }, 'test'))?.record.id).toBe('w_test')
+    expect(await registry.trustedOutside({ participant: 'other-lead', room: t.s.roomName }, 'test')).toBeUndefined()
+    expect(await registry.trustedOutside({ participant: 'lead', room: 'another-room' }, 'test')).toBeUndefined()
+    const result = await t.call({ tag: 'test', discard: true })
+    expect(t.state.dismissWorker).toHaveBeenCalledOnce()
+    expect(alive).toBe(false)
+    expect(result).toContain(`stopped test; kept ${before.dir} (an existing directory, not a Room worktree)`)
+    expect(git(before.dir, 'rev-parse', 'HEAD')).toBe(before.head)
+    expect(git(before.dir, 'branch', '--show-current')).toBe('outside-branch')
+    expect(git(before.dir, 'status', '--porcelain')).toBe(before.status)
+    expect(fs.readFileSync(path.join(before.dir, 'untracked.txt'), 'utf8')).toBe('keep me\n')
+    expect(fs.readFileSync(path.join(before.dir, '..', 'test.log'), 'utf8')).toBe('outside log')
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
+    expect(await workerByTag(lead, 'test')).toBeUndefined()
+  })
+
+  it.each(['done', 'failed'] as const)('plain collect retires a %s outside record, writes no checkout files and still collects other workers', async status => {
+    const t = setup(status)
+    const other = second(t)
+    const before = await outside(t)
+    put(other, 'new.txt', 'managed changes\n')
+    put(lead, '.room/workers/test.log', 'Room log')
+    const result = await t.call({})
+    expect(result).toContain(`test: changes remain in its own checkout at ${before.dir}; nothing was brought in`)
+    expect(result).toContain('retired test')
+    expect(result).toContain('Changes from second: new.txt')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('managed changes\n')
+    expect(fs.existsSync(path.join(lead, 'untracked.txt'))).toBe(false)
+    expect(git(before.dir, 'rev-parse', 'HEAD')).toBe(before.head)
+    expect(git(before.dir, 'status', '--porcelain')).toBe(before.status)
+    expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
+    expect(await workerByTag(lead, 'test')).toBeUndefined()
+  })
+
+  it.each(['unknown', 'reused'] as const)('collect handles an outside recorded pid whose identity is %s without signalling it', async identity => {
+    const t = setup()
+    Object.assign(t.w, { pid: process.pid, processStartTime: 'fixture:outside-worker-start' })
+    const before = await outside(t)
+    t.state.ctx!.probe = () => identity === 'unknown' ? {} : { startTime: 'different-process-start', executable: 'node' }
+    t.state.dismissWorker = vi.fn() as never
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('nothing was brought in')
+    expect(t.state.dismissWorker).not.toHaveBeenCalled()
+    expect(pidAlive(process.pid)).toBe(true)
+    expect(!!await workerByTag(lead, 'test')).toBe(identity === 'unknown')
+    expect(git(before.dir, 'status', '--porcelain')).toBe(before.status)
+  })
+
+  it("refuses another lead's outside record for collect and discard", async () => {
+    const t = setup()
+    const before = await outside(t, 'other-lead')
+    t.state.dismissWorker = vi.fn() as never
+    for (const args of [{ tag: 'test' }, { tag: 'test', discard: true }, { tag: 'test', discard: true, force: true }]) {
+      expect(await t.call(args)).toContain('no worker test owned by you')
+    }
+    expect(t.state.dismissWorker).not.toHaveBeenCalled()
+    expect(await workerByTag(lead, 'test')).toBeDefined()
+    expect(git(before.dir, 'status', '--porcelain')).toBe(before.status)
   })
 
   it('keeps a finished worker when process ownership becomes unknown during discard', async () => {

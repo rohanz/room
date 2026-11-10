@@ -50,21 +50,22 @@ function nextSweepWindow() {
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('finished workers with nothing to collect', () => {
-  it('plain room_collect retires them with one summary line instead of repeating a skip line', async () => {
+  it('plain room_collect retires outside records with clear no-import lines instead of repeating skips', async () => {
     const t = setup()
     await outsideWorker(t, 'one')
     await outsideWorker(t, 'two')
     fs.rmSync(path.join(root, 'jobs'), { recursive: true, force: true })
     const reply = await t.call({})
     expect(reply).not.toContain('no local worker capability')
-    expect(reply.split('\n').filter(line => line.includes('nothing to collect'))).toEqual([
-      'retired 2 finished workers with nothing to collect (their worktree and branch are gone): one, two',
+    expect(reply.split('\n').filter(line => line.includes('nothing was brought in'))).toEqual([
+      expect.stringContaining('one: changes remain in its own checkout at '),
+      expect.stringContaining('two: changes remain in its own checkout at '),
     ])
     for (const tag of ['one', 'two']) expect((await workerByTag(lead, tag))).toBeUndefined()
     const archived = t.s.room.retiredWorkers().map(r => [r.tag, r.summary, r.disposition])
     expect(archived).toEqual(expect.arrayContaining([
-      ['one', 'nothing to collect: its worktree and branch were already gone', 'discarded'],
-      ['two', 'nothing to collect: its worktree and branch were already gone', 'discarded'],
+      ['one', expect.stringContaining('nothing was brought in'), 'discarded'],
+      ['two', expect.stringContaining('nothing was brought in'), 'discarded'],
     ]))
     expect(await t.call({})).toBe('No finished changes to collect.')
   })
@@ -94,7 +95,7 @@ describe('finished workers with nothing to collect', () => {
     put(lead, '.room/workers/test.log', 'transcript')
     const reply = await t.call({ tag: 'test', discard: true })
     expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
-    expect(reply).toBe('discarded test: nothing to collect; its worktree and branch were already gone')
+    expect(reply).toContain('stopped test; kept ')
     expect((await (await registryForDir(lead)).read(id))?.phase).toBe('retired')
     expect((await workerByTag(lead, 'test'))).toBeUndefined()
   })
@@ -103,20 +104,23 @@ describe('finished workers with nothing to collect', () => {
     const t = setup()
     const { id } = await outsideWorker(t)
     fs.rmSync(path.join(root, 'jobs'), { recursive: true, force: true })
-    expect(await t.call({ tag: 'test', keep: true })).toContain('skipped test: no local worker capability')
+    expect(await t.call({ tag: 'test', keep: true })).toContain('nothing was brought in')
     expect((await (await registryForDir(lead)).read(id))?.phase).toBe('active')
-    expect(await t.call({ tag: 'test' })).toBe('retired 1 finished worker with nothing to collect (its worktree and branch are gone): test')
+    expect(await t.call({ tag: 'test' })).toContain('nothing was brought in')
     expect((await (await registryForDir(lead)).read(id))?.phase).toBe('retired')
   })
 
-  describe('anything recoverable keeps today\'s behaviour', () => {
-    it('keeps a worker whose checkout still exists', async () => {
+  describe('outside records retire while managed work remains protected', () => {
+    it('retires an outside worker whose checkout still exists without touching its files', async () => {
       const t = setup()
-      const { id } = await outsideWorker(t)
+      const { id, dir } = await outsideWorker(t)
+      put(dir, 'keep.txt', 'outside changes')
+      put(lead, '.room/workers/test.log', 'Room log')
       nextSweepWindow()
       await autoRetire(t.s, rooms(t))
-      expect((await (await registryForDir(lead)).read(id))?.phase).toBe('active')
-      expect(await t.call({})).toContain('skipped test: no local worker capability')
+      expect((await (await registryForDir(lead)).read(id))?.phase).toBe('retired')
+      expect(fs.readFileSync(path.join(dir, 'keep.txt'), 'utf8')).toBe('outside changes')
+      expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
     })
 
     it('keeps a worker whose worktree is gone while its branch remains', async () => {
@@ -135,15 +139,15 @@ describe('finished workers with nothing to collect', () => {
       expect(git(lead, 'rev-parse', 'room/test')).toBe(head)
     })
 
-    it('keeps an outside worker whose branch still exists in this clone', async () => {
+    it('retires an outside worker whose branch still exists in this clone', async () => {
       const t = setup()
       git(lead, 'branch', 'sqlite-slice1')
       const { id } = await outsideWorker(t)
       fs.rmSync(path.join(root, 'jobs'), { recursive: true, force: true })
       nextSweepWindow()
       await autoRetire(t.s, rooms(t))
-      expect((await (await registryForDir(lead)).read(id))?.phase).toBe('active')
-      expect(await t.call({})).toContain('skipped test: no local worker capability')
+      expect((await (await registryForDir(lead)).read(id))?.phase).toBe('retired')
+      expect(git(lead, 'rev-parse', 'sqlite-slice1')).toBeTruthy()
     })
 
     it('keeps a worker whose host process is still running', async () => {

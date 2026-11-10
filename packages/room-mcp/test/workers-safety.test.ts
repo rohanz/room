@@ -3,8 +3,8 @@ import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
 import { finishSignalShutdown } from '../src/index.js'
 import { setParticipantBase } from '@room/shared/testing'
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { existsSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -282,7 +282,7 @@ describe('worker safety', () => {
     const reply = await t.leadTools.call('room_spawn', { tag: 'watch', task: 'x' })
     expect(reply).toContain('warning: vite.config.ts appears to ignore .room')
   })
-  it('keeps allowOutside for a team room', async () => {
+  it('stops a running outside worker in a team room without inspecting its cwd', async () => {
     const { a } = pair()
     a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     const other = mkdtempSync(join(tmpdir(), 'room-team-outside-'))
@@ -293,13 +293,52 @@ describe('worker safety', () => {
     execFileSync('git', ['-C', other, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
     let session: Session | null = { ...fakeSession(a, lead, false), roomName: 'github.com/o/x', roomUrl: 'ws://team.example/github.com%2Fo%2Fx' } as Session
     const specs: SpawnSpec[] = []
+    const kill = vi.fn(() => true)
+    const listCwdProcesses = vi.fn(() => { throw new Error('must not inspect outside cwd') })
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir,
-      spawner: spec => { specs.push(spec); return { pid: 4242, started: Promise.resolve(), onExit: () => {}, kill: () => true } },
-      probe: () => undefined })
+      spawner: spec => { specs.push(spec); return { pid: 4242, started: Promise.resolve(), onExit: () => {}, kill } },
+      probe: () => undefined, listCwdProcesses })
     expect(await tools.call('room_spawn', { tag: 'far', task: 'x', dir: other })).toContain('pass allowOutside=true')
     expect(await tools.call('room_spawn', { tag: 'far', task: 'x', dir: other, allowOutside: true })).toContain('spawned far')
     expect(specs[0].cwd).toBe(other)
+    await tools.shutdown()
+    expect(kill).toHaveBeenCalledOnce()
+    expect(listCwdProcesses).not.toHaveBeenCalled()
+    expect(existsSync(join(other, 'f.txt'))).toBe(true)
   })
+  it('discards an outside worker by stopping the real launched process and keeping its checkout', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
+    const other = mkdtempSync(join(tmpdir(), 'room-outside-process-'))
+    scratchRepos.push(other)
+    execFileSync('git', ['-C', other, 'init', '-q', '-b', 'existing'])
+    writeFileSync(join(other, 'f.txt'), 'outside changes\n')
+    execFileSync('git', ['-C', other, 'add', '.'])
+    execFileSync('git', ['-C', other, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'existing'])
+    const head = execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' })
+    let session: Session | null = { ...fakeSession(a, lead, false), roomName: 'github.com/o/x', roomUrl: 'ws://team.example/github.com%2Fo%2Fx' } as Session
+    let child: ChildProcess | undefined
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir,
+      probe: probeProcess, listCwdProcesses: () => { throw new Error('must not inspect outside cwd') },
+      spawner: spec => {
+        child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: spec.cwd, stdio: 'ignore' })
+        const launched = child
+        return { pid: launched.pid!, started: new Promise<void>((resolve, reject) => { launched.once('spawn', resolve); launched.once('error', reject) }),
+          onExit: cb => { launched.once('close', (code, signal) => { void cb(code, signal) }) }, kill: () => launched.kill('SIGTERM'),
+          isRunning: () => launched.exitCode === null && launched.signalCode === null }
+      } })
+    try {
+      expect(await tools.call('room_spawn', { tag: 'real-outside', task: 'x', dir: other, allowOutside: true })).toContain('spawned real-outside')
+      const result = await tools.call('room_collect', { tag: 'real-outside', discard: true })
+      expect(result).toContain(`stopped real-outside; kept ${other}`)
+      expect(child?.signalCode).toBe('SIGTERM')
+      expect(await workerByTag(dir, 'real-outside')).toBeUndefined()
+      expect(readFileSync(join(other, 'f.txt'), 'utf8')).toBe('outside changes\n')
+      expect(execFileSync('git', ['-C', other, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(head)
+      expect(execFileSync('git', ['-C', other, 'branch', '--show-current'], { encoding: 'utf8' }).trim()).toBe('existing')
+    } finally { if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await tools.shutdown() }
+  })
+
   it('room_spawn where=local from a team room refuses another repository before launch', async () => {
     const team = pair(), local = pair()
     team.a.setMeta({ repo: 'x' }); local.a.setMeta({ repo: 'x' })

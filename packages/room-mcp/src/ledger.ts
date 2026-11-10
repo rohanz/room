@@ -142,7 +142,7 @@ export class Ledger {
     const prompt = new Set(this.promptIds(s))
     // A peer's conflict notice that a later one replaced is not owed: the reader gets the current files once.
     const superseded = supersededConflictNotices([...s.room.mail.values(), ...s.room.messages()])
-    return owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && !superseded.has(m.id) && (this.o.relevant?.(s, m) ?? true))
+    return owed(s.room, s.me, cursor, { ...this.o.route(s), stateSynced: s.provider?.synced === true }, m => !prompt.has(m.id) && !superseded.has(m.id) && (this.o.relevant?.(s, m) ?? true))
   }
 
   /** Receipts for a confirmed handoff; a late commit for an expired batch still writes (a real handoff). */

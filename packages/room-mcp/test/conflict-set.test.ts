@@ -1,3 +1,4 @@
+import { slotKey, noticeId, peerNoticeId } from '@room/shared'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import type { Baseline } from '@room/roomd/baseline'
 import { describe, expect, it, vi } from 'vitest'
@@ -11,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId, peerNoticeId } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, reconcileProjectedConflicts } from '../src/conflict-set.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'

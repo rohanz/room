@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
+import { conflictNoticeId, peerNoticeId, slotKey, type ConflictNoticeSlot } from './conflict-notices.js'
+import { hubAppend } from './testing.js'
 import {
   admit, archiveSummary, BUS_BYTES, LEDGER_BUDGET, MAIL_BYTES, OUTCOMES_MAX, OWED_PER_RECIPIENT,
   highestSeq, OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim,
 } from './delivery.js'
-import type { DeliveryCursor, MessageMap, Msg, MsgType } from './types.js'
+import type { ConflictMsg, ContractMsg, DeliveryCursor, MergeConflictMsg, MessageMap, Msg, MsgType } from './types.js'
 
 const SHOWN = { s: 'session-1', via: 'reply' } as const
 
@@ -245,5 +247,126 @@ describe('bounds and admission (test 3, MF6, SF4)', () => {
     const kept = new Set([...ids(room.messages()), ...room.mail.keys()])
     expect(kept.size + room.outcomes.size).toBe(100)
     expect([...room.outcomes.values()].every(o => o.outcome === 'over-cap')).toBe(true)
+  })
+})
+
+describe('current conflict notice subjects', () => {
+  function fixture(kind: ConflictNoticeSlot['kind'], state: 'conflict' | 'possible' | 'clean' = 'conflict', holder = false) {
+    const room = new RoomDoc(), other = 'quinn+worker'
+    for (const name of [P.name, other]) room.participants.set(`${name}\0id`, { name, kind: 'agent' })
+    const c = room.addClaim({ by: other, byKind: 'agent', path: 'x', from: 1, to: 2, intent: 'edit' })
+    const own = room.addClaim({ by: P.name, byKind: 'agent', path: 'x', from: 1, to: 2, intent: 'edit' })
+    const slot: ConflictNoticeSlot = { owner: P.name, other, kind, path: 'x', subject: kind === 'claims' ? `${c.id}\0${own.id}` : kind === 'contract' ? 'f' : c.id,
+      settled: state, epoch: 1, ...(state === 'possible' ? { possibleEpisode: 1 } : {}), ...(state === 'clean' ? { clearedFrom: 'conflict' as const } : {}) }
+    const key = slotKey(P.name, kind, other, 'x', slot.subject)
+    room.doc.getMap('conflicts').set(key, slot)
+    const id = holder ? conflictNoticeId(key, slot) + ':holder' : kind === 'merge' ? peerNoticeId(P.name, other, 1, [{ path: 'x', epoch: 1 }], []) : conflictNoticeId(key, slot)
+    const base = { path: 'x', to: holder ? other : P.name, text: 'state notice' }
+    const from = { name: 'room', kind: 'agent' as const }, opts = { id, at: NOW }
+    const notice = kind === 'merge' ? hubAppend<MergeConflictMsg>(room, from, { ...base, type: 'merge-conflict' }, opts)
+      : kind === 'contract' ? hubAppend<ContractMsg>(room, from, { ...base, type: 'contract', symbol: 'f' }, opts)
+        : hubAppend<ConflictMsg>(room, from, { ...base, type: 'conflict', claimId: c.id, otherClaimId: kind === 'claims' ? own.id : '' }, opts)
+    return { room, notice, key, c, own, other }
+  }
+
+  for (const kind of ['merge', 'edit-in-claim', 'claims', 'contract'] as const) {
+    it(`${kind}: retains a live subject and ends its notice when either participant disappears`, () => {
+      for (const remove of ['owner', 'other'] as const) {
+        const { room, notice, other } = fixture(kind)
+        expect(ids(owed(room, P, cursor(), { stateSynced: true }))).toContain(notice.id)
+        trim(room, NOW, { conflictsReady: true })
+        expect(room.outcomes.has(notice.id)).toBe(false)
+        room.participants.delete(`${remove === 'owner' ? P.name : other}\0id`)
+        expect(owed(room, P, cursor(), { stateSynced: true })).toEqual([])
+        trim(room, NOW, { conflictsReady: true })
+        expect(room.outcomes.get(notice.id)).toMatchObject({ outcome: 'expired' })
+        expect(admit(room, { to: P.name }, NOW)).toEqual({ ok: true })
+      }
+    })
+  }
+
+  it('ends exact, possible, holder and cleared claim notices on release/expiry without waiting for participant removal', () => {
+    for (const state of ['conflict', 'possible', 'clean'] as const) {
+      for (const holder of state === 'conflict' ? [false, true] : [false]) {
+        const { room, notice, c, other } = fixture('edit-in-claim', state, holder)
+        const me = holder ? { name: other } : P
+        expect(ids(owed(room, me, cursor(), { stateSynced: true }))).toContain(notice.id)
+        room.claims.delete(c.id)
+        expect(owed(room, me, cursor(), { stateSynced: true })).toEqual([])
+        trim(room, NOW, { conflictsReady: true })
+        expect(room.outcomes.get(notice.id)).toMatchObject({ outcome: 'expired' })
+      }
+    }
+    const { room, notice, own } = fixture('claims')
+    room.claims.delete(own.id)
+    expect(owed(room, P, cursor(), { stateSynced: true })).toEqual([])
+    trim(room, NOW, { conflictsReady: true })
+    expect(room.outcomes.get(notice.id)).toMatchObject({ outcome: 'expired' })
+  })
+
+  it('keeps unresolved notices on an incomplete replica, then resolves their live subjects after sync', () => {
+    const { room: source, notice } = fixture('edit-in-claim')
+    const room = new RoomDoc()
+    room.bus.push([notice])
+    expect(ids(owed(room, P, cursor(), { stateSynced: false }))).toEqual([notice.id])
+    trim(room, NOW)
+    expect(room.outcomes.has(notice.id)).toBe(false)
+    // The rest of the first sync brings the subject after the bus entry.
+    Y.applyUpdate(room.doc, Y.encodeStateAsUpdate(source.doc))
+    expect(new Set(ids(owed(room, P, cursor(), { stateSynced: true })))).toEqual(new Set([notice.id]))
+    trim(room, NOW, { conflictsReady: true })
+    expect(room.outcomes.has(notice.id)).toBe(false)
+  })
+
+  it('preserves a live notice whose derived slot was omitted by a local snapshot', () => {
+    for (const kind of ['merge', 'edit-in-claim', 'claims', 'contract'] as const) {
+      const { room, notice, key } = fixture(kind)
+      room.doc.getMap('conflicts').delete(key)
+      expect(ids(owed(room, P, cursor(), { stateSynced: true }))).toEqual([notice.id])
+      trim(room, NOW, { conflictsReady: true })
+      expect(room.outcomes.has(notice.id)).toBe(false)
+    }
+  })
+
+  it('recovers a retired peer from its archived name when a restart omitted its derived slots', () => {
+    for (const kind of ['merge', 'edit-in-claim', 'claims', 'contract'] as const) {
+      const { room, notice, key, other } = fixture(kind)
+      room.doc.getMap('conflicts').delete(key)
+      room.retireWorker('w', { id: 'w', name: other, tag: 'worker', lead: 'quinn', host: 'codex', task: 'task', summary: 'done',
+        files: [], fileCount: 0, startedAt: NOW - 2, finishedAt: NOW - 1, retiredAt: NOW, outcome: 'clean' }, () => {})
+      expect(owed(room, P, cursor(), { stateSynced: true })).toEqual([])
+      trim(room, NOW, { conflictsReady: true })
+      expect(room.outcomes.get(notice.id)).toMatchObject({ outcome: 'expired' })
+    }
+  })
+
+  it('does not use an older retirement to invalidate a later notice under a reused name', () => {
+    const { room, notice, key, other } = fixture('merge')
+    room.doc.getMap('conflicts').delete(key)
+    room.participants.clear() // a local snapshot omits participant metadata too
+    room.doc.getArray('retiredWorkers').push([null, { name: other, retiredAt: notice.at - 1 }])
+    expect(ids(owed(room, P, cursor(), { stateSynced: true }))).toEqual([notice.id])
+    trim(room, NOW, { conflictsReady: true })
+    expect(room.outcomes.has(notice.id)).toBe(false)
+  })
+
+  it('rechecks a full inbox when settlement first enables gone-subject expiry', () => {
+    const room = new RoomDoc()
+    push(room, ...Array.from({ length: OWED_PER_RECIPIENT }, () => msg({ type: 'conflict', from: 'room', to: P.name,
+      path: 'x', claimId: 'gone', otherClaimId: '', text: 'gone subject' })))
+    trim(room, NOW) // an incomplete replica's trim cannot remove these subjects
+    expect(admit(room, { to: P.name }, NOW, { conflictsReady: true })).toEqual({ ok: true })
+    expect(room.outcomes.size).toBe(OWED_PER_RECIPIENT)
+  })
+
+  it('keeps ordinary addressed events when their author or referenced historical claim is gone', () => {
+    const room = new RoomDoc()
+    const messages = [question(), msg({ type: 'answer', to: P.name, inReplyTo: 'old', text: 'answer' }),
+      msg({ type: 'note', to: P.name, text: 'note' }), msg({ type: 'done', to: P.name, tag: 'gone', summary: 'done', changed: [] }),
+      msg({ type: 'plan', to: P.name, status: 'cancelled', claimId: 'gone', path: 'x', plan: { kind: 'delete', symbol: 'f' }, text: 'cancelled' })]
+    push(room, ...messages)
+    trim(room, NOW, { conflictsReady: true })
+    expect(ids(owed(room, P, cursor(), { stateSynced: true }))).toEqual(ids(messages))
+    expect(room.outcomes.size).toBe(0)
   })
 })

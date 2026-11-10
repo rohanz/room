@@ -296,6 +296,7 @@ export class WorkerRegistry {
   hasPendingIdleClaims(roomKey: string, sessionId: string, idleEpoch: string): boolean { return IdleClaimsJournal.open(this.commonDir).hasPendingIdleClaims(roomKey, sessionId, idleEpoch) }
   reconcileIdleClaims(action: import('./idle-claims.js').IdleClaimsAction): Promise<boolean> { return IdleClaimsJournal.open(this.commonDir).reconcileIdleClaims(action) }
   trusted(...args: Parameters<FileWorkerStore['trusted']>): ReturnType<FileWorkerStore['trusted']> { return this.backend().trusted(...args) }
+  trustedOutside(...args: Parameters<FileWorkerStore['trustedOutside']>): ReturnType<FileWorkerStore['trustedOutside']> { return this.backend().trustedOutside(...args) }
   writeIntent(...args: Parameters<FileWorkerStore['writeIntent']>): ReturnType<FileWorkerStore['writeIntent']> { return this.backend().writeIntent(...args) }
   finishOperation(...args: Parameters<FileWorkerStore['finishOperation']>): ReturnType<FileWorkerStore['finishOperation']> { return this.backend().finishOperation(...args) }
   beginOperation(...args: Parameters<FileWorkerStore['beginOperation']>): ReturnType<FileWorkerStore['beginOperation']> { return this.backend().beginOperation(...args) }

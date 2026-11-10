@@ -20,6 +20,8 @@ import { handlers as collectHandlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
+import { fixtureProcess } from './fixtures/process-liveness.js'
 
 const facts: WorkerRealState = { worktree: 'present', process: 'not-ours', hostSession: false, finished: true, status: 'done', dismissed: false, merged: false, clean: false, ahead: 1 }
 // Seeding a registry worker takes seconds (lease guards and process probes).
@@ -34,11 +36,203 @@ const dirs: string[] = []
 const maintenanceDirs = new Set<string>()
 afterEach(async () => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
   for (const dir of dirs.splice(0)) {
     if (maintenanceDirs.has(dir)) await disposePreviewFixture(dir, { registries: [dir] })
     else { await closeRegistryForDir(dir); await rm(dir, { recursive: true, force: true }) }
   }
   maintenanceDirs.clear()
+})
+
+let sweepTime = Date.now()
+function nextSweep() { vi.spyOn(Date, 'now').mockReturnValue(sweepTime += 3_600_001) }
+
+describe('clone-wide cleanup after the original lead is gone', () => {
+  it.each(['recorded', 'missing'])('keeps a retired legacy checkout while its host still runs (start time %s)', async identityState => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base, pid: 812348, processStartTime: 'fixture:legacy-host' }
+    const workers = await registerWorkers(r.s, [w]), id = fixtureId(w)
+    const archive = { ...await workers.archiveOf((await workers.read(id))!, { summary: 'done', disposition: 'collected' }), keptWorktree: w.dir, keptReason: 'clean exit not confirmed' }
+    await workers.beginRetirement(id, archive, { keptWorktree: w.dir })
+    await workers.finishCleanup(id, r.s.roomName)
+    if (identityState === 'missing') await mutateWorkerFixture(workers, id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: w.pid } }], seq: old.seq + 1 }))
+    const identity = fixtureProcess(w.pid, w.processStartTime, 'codex')
+    vi.spyOn(r.rooms, 'probe').mockReturnValue(identity)
+    await r.rooms.autoRetire()
+    expect(existsSync(w.dir)).toBe(true)
+    expect((await workers.read(id))?.keptWorktree).toBe(w.dir)
+    r.close()
+  })
+
+  it('removes leftover sidecars of an already-retired worker without a kept marker', async () => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir), w = worker(join(dir, '.room/workers/w'))
+    const workers = await registerWorkers(r.s, [w]), id = fixtureId(w)
+    await workers.beginRetirement(id, await workers.archiveOf((await workers.read(id))!, { summary: 'done' }))
+    await workers.finishCleanup(id, r.s.roomName)
+    mkdirSync(join(dir, '.room/workers'), { recursive: true })
+    writeFileSync(join(dir, '.room/workers/w.log'), 'old log')
+    await r.rooms.autoRetire()
+    expect(existsSync(join(dir, '.room/workers/w.log'))).toBe(false)
+    r.close()
+  })
+
+  it.each(['gone', 'branch', 'checkout', 'process', 'other-lead', 'team', 'record'])('reconciles only safe local orphan kept archives: %s', async condition => {
+    nextSweep()
+    const { dir, git } = repo(), r = registry(dir), w = worker(join(dir, '.room/workers/w'))
+    const workers = await registerWorkers(r.s, [w]), id = fixtureId(w)
+    const archive = { ...await workers.archiveOf((await workers.read(id))!, { summary: 'done', disposition: 'collected' }), keptWorktree: w.dir, keptReason: 'nested workers remain' }
+    if (condition !== 'record') {
+      rmSync(join(workers.root, 'workers', id + '.json'))
+      rmSync(join(workers.root, 'tags', 'w.json'))
+    } else {
+      const identity = fixtureProcess(812349, 'fixture:retained-host', 'codex')
+      await mutateWorkerFixture(workers, id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: identity.pid, process: identity } }], seq: old.seq + 1 }))
+      vi.spyOn(r.rooms, 'probe').mockReturnValue(identity)
+    }
+    if (condition === 'other-lead') archive.lead = 'someone-else'
+    r.room.doc.getArray('retiredWorkers').push([archive])
+    r.room.workerViews.delete(id)
+    if (condition !== 'team') r.s.local = {} as Session['local']
+    if (condition === 'checkout') mkdirSync(w.dir, { recursive: true })
+    if (condition === 'branch') git('branch', 'room/w')
+    if (condition === 'process') vi.spyOn(r.rooms, 'listCwdProcesses', 'get').mockReturnValue(() => [{ pid: 812349, cwd: w.dir, command: 'codex' }])
+    mkdirSync(join(dir, '.room/workers'), { recursive: true })
+    writeFileSync(join(dir, '.room/workers/w.log'), 'orphan log')
+    await r.rooms.autoRetire()
+    expect(r.room.retiredWorkers()[0].keptWorktree).toBe(condition === 'gone' ? undefined : w.dir)
+    expect(existsSync(join(dir, '.room/workers/w.log'))).toBe(condition !== 'gone')
+    r.close()
+  })
+
+  it.each(['dead-lead', 'renamed-lead'])('finishes already-collected output from %s and names it in the log', async lead => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', lead)
+    const w = { ...worker(prepared.dir), lead, base: prepared.base }
+    const workers = await registerWorkers(r.s, [w])
+    await workers.deferCollectCleanup(fixtureId(w), 'clean exit not confirmed')
+    const log = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    await r.rooms.autoRetire()
+    expect((await workers.read(fixtureId(w)))?.phase).toBe('retired')
+    expect(existsSync(w.dir)).toBe(false)
+    expect(log.mock.calls.flat().join('')).toContain('cleaned up w')
+    r.close()
+  })
+
+  it('does not let mutually nested pending records block each other', async () => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const a = await prepareWorktree(dir, 'a-worker', 'lead'), b = await prepareWorktree(dir, 'b-worker', 'lead')
+    const wa = { ...worker(a.dir), id: 'a', tag: 'a-worker', branch: 'room/a-worker', name: 'lead+a', lead: 'lead+b', base: a.base }
+    const wb = { ...worker(b.dir), id: 'b', tag: 'b-worker', branch: 'room/b-worker', name: 'lead+b', lead: 'lead+a', base: b.base }
+    const workers = await registerWorkers(r.s, [wa, wb])
+    for (const w of [wa, wb]) await workers.deferCollectCleanup(fixtureId(w), 'nested workers remain')
+    await r.rooms.autoRetire()
+    for (const w of [wa, wb]) {
+      expect((await workers.read(fixtureId(w)))?.phase).toBe('retired')
+      expect(existsSync(w.dir)).toBe(false)
+    }
+    r.close()
+  })
+
+  it('cleans actual nested pending worktrees before their already-collected parent', async () => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const parent = await prepareWorktree(dir, 'w', 'departed-lead')
+    const w = { ...worker(parent.dir), lead: 'departed-lead', base: parent.base }
+    const nested = await prepareWorktree(parent.dir, 'child', w.name)
+    const child = { ...worker(nested.dir), id: 'child', tag: 'child', branch: 'room/child', name: 'lead+w+child', lead: w.name, base: nested.base }
+    const workers = await registerWorkers(r.s, [w, child])
+    for (const item of [w, child]) await workers.deferCollectCleanup(fixtureId(item), 'cleanup incomplete')
+    await r.rooms.autoRetire()
+    for (const item of [w, child]) expect((await workers.read(fixtureId(item)))?.phase).toBe('retired')
+    expect(existsSync(w.dir)).toBe(false)
+    r.close()
+  })
+
+  it('ignores a nested record whose process and checkout are gone even if its branch survives', async () => {
+    nextSweep()
+    const { dir, git } = repo(), r = registry(dir)
+    const a = await prepareWorktree(dir, 'w', 'lead')
+    git('branch', 'room/child')
+    const w = { ...worker(a.dir), base: a.base }
+    const child = { ...worker(join(dir, '.room/workers/child')), id: 'child', tag: 'child', branch: 'room/child', name: 'lead+w+child', lead: w.name, hostSessionId: 'retained' }
+    const workers = await registerWorkers(r.s, [w, child])
+    await workers.deferCollectCleanup(fixtureId(w), 'nested workers remain')
+    await r.rooms.autoRetire()
+    expect((await workers.read(fixtureId(w)))?.phase).toBe('retired')
+    expect(git('branch', '--list', 'room/child')).toContain('room/child')
+    r.close()
+  })
+
+  it('finishes pending collection when a different process reused its pid', async () => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    const w = { ...worker(prepared.dir), base: prepared.base, pid: 812345, processStartTime: 'fixture:old-host' }
+    const workers = await registerWorkers(r.s, [w])
+    fixtureProcess(w.pid, 'fixture:unrelated-new-host', 'codex')
+    const probe = vi.spyOn(r.rooms, 'probe').mockReturnValue({ startTime: 'fixture:unrelated-new-host', executable: 'codex' })
+    await workers.deferCollectCleanup(fixtureId(w), 'clean exit not confirmed')
+    const state = { rooms: r.rooms, S: () => r.s, now: Date.now, ctx: { probe: r.rooms.probe.bind(r.rooms), listCwdProcesses: () => [] }, workerAlive: () => false } as unknown as HandlerState
+    const reply = await collectHandlers(state).room_collect({ tag: 'w' })
+    expect(reply).toContain('cleaned up w')
+    expect((await workers.read(fixtureId(w)))?.phase).toBe('retired')
+    probe.mockRestore()
+    r.close()
+  })
+
+  it('projects retiring records for a departed lead in a room this clone still holds', async () => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const w = { ...worker(join(dir, '.room/workers/w')), lead: 'departed-lead' }
+    const workers = await registerWorkers(r.s, [w]), id = fixtureId(w)
+    await workers.beginRetirement(id, await workers.archiveOf((await workers.read(id))!, { summary: 'collected', disposition: 'collected' }))
+    expect((await workers.read(id))?.cleanup?.[r.s.roomName]).toBe('pending')
+    await r.rooms.autoRetire()
+    expect((await workers.read(id))?.phase).toBe('retired')
+    expect(r.room.workerViews.has(id)).toBe(false)
+    expect(r.room.retiredWorkers().some(entry => entry.id === id)).toBe(true)
+    r.close()
+  })
+
+  it('finishes another lead’s retirement without rewriting its active sibling views or fence', async () => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'sibling', 'another-lead')
+    const sibling = { ...worker(prepared.dir), id: 'sibling', tag: 'sibling', branch: 'room/sibling', name: 'lead+sibling', lead: 'another-lead', base: prepared.base, hostSessionId: 'retained' }
+    const ended = { ...worker(join(dir, '.room/workers/w')), lead: 'another-lead' }
+    const workers = await registerWorkers(r.s, [ended, sibling]), id = fixtureId(ended)
+    const original = { ...r.room.workerViews.get(fixtureId(sibling))!, fence: 'other-lead-live-fence' }
+    r.room.workerViews.set(fixtureId(sibling), original)
+    await workers.beginRetirement(id, await workers.archiveOf((await workers.read(id))!, { summary: 'done' }))
+    await r.rooms.autoRetire()
+    expect((await workers.read(id))?.phase).toBe('retired')
+    expect(r.room.workerViews.get(fixtureId(sibling))).toEqual(original)
+    r.close()
+  })
+
+  it.each(['clean exit not confirmed', 'cleanup incomplete', 'nested workers remain'])('clears legacy kept markers and sidecars after a missing checkout (%s)', async keptReason => {
+    nextSweep()
+    const { dir } = repo(), r = registry(dir)
+    const w = { ...worker(join(dir, '.room/workers/w')), lead: 'departed-lead' }
+    const workers = await registerWorkers(r.s, [w]), id = fixtureId(w)
+    const archive = { ...await workers.archiveOf((await workers.read(id))!, { summary: 'done', disposition: 'collected' }), keptWorktree: w.dir, keptReason }
+    await workers.beginRetirement(id, archive, { keptWorktree: w.dir })
+    await workers.finishCleanup(id, r.s.roomName)
+    r.room.doc.getArray('retiredWorkers').push([archive])
+    mkdirSync(join(dir, '.room/workers'), { recursive: true })
+    const files = ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs'].map(suffix => join(dir, '.room/workers', 'w' + suffix))
+    for (const file of files) writeFileSync(file, 'leftover')
+    await r.rooms.autoRetire()
+    expect((await workers.read(id))?.keptWorktree).toBeUndefined()
+    expect(r.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
+    for (const file of files) expect(existsSync(file)).toBe(false)
+    r.close()
+  })
 })
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'room-retirement-')); dirs.push(dir)

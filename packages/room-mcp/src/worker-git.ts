@@ -577,9 +577,13 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
 }
 
 /** Remove a worker's local logs after either checkout cleanup or vanished-checkout pruning. */
-export function cleanupWorkerLogs(leadDir: string, w: Pick<LocalWorker, 'dir' | 'tag'>): void {
-  const parent = path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
-    ? path.resolve(w.dir, '../../..') : leadDir
+export function cleanupWorkerLogs(leadDir: string, w: Pick<LocalWorker, 'dir' | 'tag'> & { outside?: boolean; logFile?: string }): void {
+  const logRoot = w.outside && w.logFile && path.basename(w.logFile) === `${w.tag}.log`
+    && path.basename(path.dirname(w.logFile)) === 'workers' && path.basename(path.dirname(path.dirname(w.logFile))) === '.room'
+    ? path.resolve(w.logFile, '../../..') : leadDir
+  const parent = !w.outside && path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
+    ? path.resolve(w.dir, '../../..') : logRoot
+  if (w.outside && (path.resolve(parent) === path.resolve(w.dir) || path.resolve(parent).startsWith(path.resolve(w.dir) + path.sep))) return
   for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) {
     try { fs.rmSync(path.join(parent, WORKERS_DIR, w.tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
   }

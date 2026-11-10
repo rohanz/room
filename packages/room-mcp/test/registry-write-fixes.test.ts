@@ -163,6 +163,41 @@ describe('reviewed worker write failures', () => {
     expect((await store.read('w_05'))?.discard?.steps.stop).toBe(true)
   })
 
+  it('replays an outside discard by signalling only its recorded host and preserving the checkout', async () => {
+    const { root, record } = fixture()
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'room-outside-replay-'))
+    roots.push(outside)
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'outside work')
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: outside, stdio: 'ignore' })
+    children.push(child)
+    let live = true
+    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+      liveness: identity => identity.pid === child.pid && live ? 'alive' : 'dead' })
+    const signalled: number[] = []
+    signal.handler = pid => { signalled.push(pid); live = false; return child.kill('SIGTERM') }
+    signal.quiesce = vi.fn(async () => { throw new Error('must not inspect outside cwd processes') })
+    try {
+      await store.writeIntent({ ...record('w_outside'), outside: true, dir: outside, branch: 'existing',
+        logFile: path.join(root, '.room/workers/tests.log'), capabilities: { resume: true, signal: true, collect: 'none' } })
+      await mutateWorkerFixture(store, 'w_outside', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: false },
+        runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: child.pid!, process: {
+          pid: child.pid!, startTime: 'outside-host', executable: process.execPath } } }], seq: old.seq + 1 }))
+      await store.writeReport('w_outside', { run: 1, nonce: 'nonce', joinedAt: 2, chain: [
+        { pid: 4245, startTime: 'outside-mcp', executable: process.execPath },
+        { pid: child.pid!, startTime: 'outside-host', executable: process.execPath },
+      ] })
+      fs.mkdirSync(path.join(root, '.room/workers'), { recursive: true })
+      fs.writeFileSync(path.join(root, '.room/workers/tests.log'), 'Room log')
+      await store.beginDiscard('w_outside', false, [])
+      await store.replayDiscard('w_outside')
+      expect(signalled).toEqual([child.pid])
+      expect(signal.quiesce).not.toHaveBeenCalled()
+      expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('outside work')
+      expect(fs.existsSync(path.join(root, '.room/workers/tests.log'))).toBe(false)
+      expect((await store.read('w_outside'))?.phase).toBe('retiring')
+    } finally { signal.quiesce = undefined; store.close() }
+  })
+
   it('stops the admitted host and MCP before publishing a discard patch (N2)', async () => {
     const { root, dir, git, record } = fixture()
     git('worktree', 'add', '-qb', 'room/tests', dir)

@@ -1,3 +1,4 @@
+import { slotKey } from '@room/shared'
 /**
  * rc8 dogfood #5: envfix held two claims on workers.test.ts; an approximate line mapping maps every claim to
  * the whole file, so each claim's slot posted the same "you may have edited … inside envfix's claim" text under
@@ -6,7 +7,7 @@
  */
 import { expect, it, vi } from 'vitest'
 import { RoomDoc, type Claim } from '@room/shared'
-import { ConflictSlots, slotKey, type Evaluation } from '../src/conflict-set.js'
+import { ConflictSlots, type Evaluation } from '../src/conflict-set.js'
 
 const PATH = 'packages/room-mcp/test/workers.test.ts'
 const claim = (id: string, from: number, to: number): Claim => ({ id, by: 'rohanz+envfix', byKind: 'agent', path: PATH, from, to, intent: 'edit', at: 1 })

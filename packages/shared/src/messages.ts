@@ -200,6 +200,8 @@ export function messageKind(m: Msg): MessageKind<any> {
 }
 
 export interface MessageRouteContext {
+  /** A completed replica sync makes missing conflict subjects evidence of removal. */
+  stateSynced?: boolean
   claims?: readonly Claim[]
   inMyAreas?: (message: Msg) => boolean
 }

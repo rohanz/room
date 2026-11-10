@@ -6,7 +6,7 @@ import { git } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { RECORDED_PATH, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { workerProcessOwnership, type ProcessInfo, type ProcessOwnership } from './worker-process.js'
-import { type LocalWorker, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
+import { type LocalWorker } from './worker-status.js'
 
 /** A Room worker path is a chain of .room/workers/<name> directories ending on room/<name>. */
 export function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
@@ -176,13 +176,6 @@ export function decideCollect(s: WorkerRealState, explicit: boolean, stopped: bo
   if (s.status !== 'done' && !(stopped && (s.status === 'running' || s.status === 'dismissed'))) return 'skip-status'
   if (!explicit && stopped && s.status !== 'done') return 'skip-partial'
   return s.worktree === 'vanished' ? 'missing' : 'inspect'
-}
-/** Registry status and capability checks precede today's worktree inspection decision. */
-export function decideRegistryCollect(record: WorkerRecord, status: WorkerStatusResult, state: WorkerRealState,
-  explicit: boolean, stopped: boolean, mode: 'apply' | 'copy' = 'apply'): CollectDecision {
-  if (status.status === 'ambiguous' || record.capabilities.collect === 'none') return 'skip-status'
-  if (record.capabilities.collect === 'copy' && mode !== 'copy') return 'skip-status'
-  return decideCollect(state, explicit, stopped)
 }
 export type DiscardDecision = 'prune' | 'cleanup' | 'retain-directory'
 export function decideDiscard(s: WorkerRealState): DiscardDecision {

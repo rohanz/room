@@ -413,7 +413,8 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       progress('opening registry')
       const registry = await registryForDir(s.dir)
       progress('verifying local capability')
-      const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
+      const trusted = await registry.trustedOutside({ participant: s.me.name, room: s.roomName }, w.tag)
+        ?? await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
       if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`
       let acquired: boolean
       progress('acquiring stop operation')
@@ -445,7 +446,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
-      const ownedWorktree = !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...(await localWorkers(s.dir))] })).cwd
+      const ownedWorktree = !trusted.record.outside && !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...(await localWorkers(s.dir))] })).cwd
       const stopped: string[] = []
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {
@@ -481,7 +482,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       if (stopReason && cleanupError) throw new Error(cleanupError)
       progress(`delivering notification (${signalled ? 'signal sent' : 'no signal sent'}); stop intent recorded`)
       if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await notify(() => s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true }))
-      return how + cleanupText()
+      return how + cleanupText() + (trusted.record.outside ? `; kept ${w.dir} (an existing directory, not a Room worktree)` : '')
       } finally { if (acquired) { progress(`releasing stop operation; ${stopRecorded ? 'stop intent recorded' : 'stop intent not confirmed'}`); await registry.finishOperation(w.id!) } }
     }
 

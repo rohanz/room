@@ -532,7 +532,7 @@ class RoomHub implements Hub {
     // Count hysteresis amortises the full O(n) pass; byte hysteresis reserves one maximum post.
     const highBytes = BUS_BYTES - MAX_MESSAGE_BYTES - 1024
     if (this.doc.bus.length > keep + Math.max(1, Math.ceil(keep / 10)) || deliveryIndex(this.doc).bus.bytes > highBytes)
-      trim(this.doc, wall, { origin: HUB_ORIGIN, busKeep: keep, busBytes: highBytes * 0.9 })
+      trim(this.doc, wall, { origin: HUB_ORIGIN, busKeep: keep, busBytes: highBytes * 0.9, conflictsReady: !this.settling() })
     return record
   }
 
@@ -697,7 +697,7 @@ class RoomHub implements Hub {
     if (this.host.full?.()) return fail('room-full', "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB")
     const wall = this.host.wall()
     if (msg.to && !req.auto) {
-      const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN })
+      const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN, conflictsReady: !this.settling() })
       if (!admission.ok) return fail('over-cap', admission.reason)
     }
     if (!isRoomNotice(msg) && this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${'login' in p ? p.login ?? 'an anonymous connection' : 'a local connection'}; accepted`)
@@ -729,7 +729,7 @@ class RoomHub implements Hub {
       this.maintainedAt = now
       this.repairMailAliases()
       // Deliberate full O(n) maintenance pass once per minute (TTL, mail/archive/outcome bounds).
-      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep })
+      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep, conflictsReady: true })
       const drift = deliveryIndex(this.doc).verify()
       if (drift) this.host.log(`hub: ledger index drift corrected (${drift})`)
       this.expire()

@@ -481,6 +481,15 @@ export class FileWorkerStore {
     if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return undefined
     return { record: candidate, status }
   }
+  /** Only process/record management: an outside checkout never grants a worktree capability. */
+  async trustedOutside(lead: { participant: string; room: string }, tagOrName: string): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
+    const record = this.#reservedByTagOrName(tagOrName)
+    if (!record?.outside || record.capabilities.collect !== 'none' || record.legacy?.unowned
+      || record.lead.participant !== lead.participant || record.lead.room !== lead.room
+      || ['retiring', 'retired', 'abandoned'].includes(record.phase)) return undefined
+    const status = this.#status(record.id)
+    return status && { record, status }
+  }
   /** Any operation lease, including an unreadable one, blocks automatic claim release. */
   #operationInProgress(id: string): boolean {
     try { fs.lstatSync(this.opFile(id)); return true }
@@ -1070,7 +1079,7 @@ export class FileWorkerStore {
       if (!path.basename(scratch).startsWith(`${id}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue
       if (fs.lstatSync(scratch).isFile()) fs.rmSync(scratch)
     }
-    const leadDir = path.dirname(path.dirname(path.dirname(record.dir)))
+    const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
     const status = this.#status(id)
     if (!status) return
     const own = realStateInput(record, status)
@@ -1079,7 +1088,7 @@ export class FileWorkerStore {
       return current ? [realStateInput(value, current)] : []
     })
     const borrowed = !!record.sharedWith || !!this.#worktreeOwner(record)
-    const shared = !borrowed && fs.existsSync(record.dir) ? requireWorkerInventory(this.#list()).filter(value => value.id !== id && !['retiring', 'retired', 'abandoned'].includes(value.phase)
+    const shared = !record.outside && !borrowed && fs.existsSync(record.dir) ? requireWorkerInventory(this.#list()).filter(value => value.id !== id && !['retiring', 'retired', 'abandoned'].includes(value.phase)
       && path.resolve(value.dir) === path.resolve(record!.dir)) : []
     for (const user of shared) {
       const userStatus = this.#status(user.id)
@@ -1088,8 +1097,8 @@ export class FileWorkerStore {
       await this.replayDiscard(user.id, publishPatch)
       if (!['retiring', 'retired'].includes(this.#read(user.id)?.phase ?? '')) return
     }
-    const owned = !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
-    if (!borrowed && !owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
+    const owned = !record.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
+    if (!record.outside && !borrowed && !owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
     if (!record.discard.steps.children) {
       for (const childId of record.discard.children) {
         const child = this.#read(childId)
@@ -1111,7 +1120,7 @@ export class FileWorkerStore {
     if (launch?.outcome === 'launched' && launch.process && reportedHost
       && (!sameStartTime(launch.process.startTime, reportedHost.startTime) || launch.process.executable !== reportedHost.executable)) return
     const host = launch?.outcome === 'launched' ? launch.process ?? reportedHost : undefined
-    const identities = [host, ...chain.filter(value => value.pid !== host?.pid)]
+    const identities = [host, ...(record.outside ? [] : chain.filter(value => value.pid !== host?.pid))]
       .filter((value): value is NonNullable<typeof value> => !!value)
     if (!record.discard!.steps.stop) await this.beginStop(id, 'discarded')
     // A PID-only launch without a matching admitted host has no verified signal
@@ -1125,9 +1134,9 @@ export class FileWorkerStore {
       if (!record.capabilities.signal || record.discard!.steps.stop) return
       const signalOwn = { ...own, pid: identity.pid, processStartTime: identity.startTime }
       const stopped = await stopWorkerWithEscalation({
-        terminate: () => signalWorker(identity.pid, 'SIGTERM', record!.dir, undefined, signalOwn, probeProcess),
+        terminate: () => signalWorker(identity.pid, 'SIGTERM', record!.outside ? undefined : record!.dir, undefined, signalOwn, probeProcess),
         exited: () => this.alive(identity) === 'dead',
-        force: () => signalWorker(identity.pid, 'SIGKILL', record!.dir, undefined, signalOwn, probeProcess),
+        force: () => signalWorker(identity.pid, 'SIGKILL', record!.outside ? undefined : record!.dir, undefined, signalOwn, probeProcess),
       })
       if (!stopped) return
     }
@@ -1163,6 +1172,8 @@ export class FileWorkerStore {
     if (!record.discard!.steps.cleanup) {
       if (owned) {
         if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers })) return
+      } else if (record.outside) {
+        cleanupWorkerLogs(leadDir, { ...own, outside: true, logFile: record.logFile })
       } else if (!borrowed) {
         await pruneMissingWorkerWorktree(leadDir, own)
         cleanupWorkerLogs(leadDir, own)
@@ -1219,7 +1230,7 @@ export class FileWorkerStore {
     // A supplied directory has no resources for this preparation to undo.
     if (prep.created !== true && prep.branchCreated !== true
       && !Object.keys(prep.previousCarryRefs ?? {}).length) return
-    const leadDir = path.dirname(path.dirname(path.dirname(record.dir)))
+    const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
     if (!roomWorkerPathMatchesBranch(leadDir, record.dir, record.branch, false)) throw new Error(`unsafe preparation path for ${record.id}`)
     const run = (...args: string[]): string => execFileSync('git', ['--git-dir', this.commonDir, ...args], { encoding: 'utf8' }).trim()
     if (prep.created === true && fs.existsSync(record.dir)) {

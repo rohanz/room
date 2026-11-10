@@ -669,8 +669,8 @@ async function gitObjectInfoMany(dir, relpaths, object6, configuredTimeoutMs) {
   if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`);
   for (const [i, p] of paths.entries()) {
     if (i % 32 === 0) await setImmediate2();
-    const [hash3, type, size2] = headers[i].split(" ");
-    out.set(p, type === "blob" ? { hash: hash3, size: Number(size2) } : void 0);
+    const [hash4, type, size2] = headers[i].split(" ");
+    out.set(p, type === "blob" ? { hash: hash4, size: Number(size2) } : void 0);
   }
   return out;
 }
@@ -9498,6 +9498,73 @@ var init_yjs = __esm({
   }
 });
 
+// packages/shared/src/conflict-notices.ts
+import { createHash } from "node:crypto";
+function conflictNoticeId(key2, slot) {
+  const episode = slot.kind === "edit-in-claim" && slot.possibleEpisode !== void 0 && (slot.settled === "possible" || slot.clearedFrom === "possible") ? slot.possibleEpisode : void 0;
+  return episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
+}
+function subjects(doc) {
+  let cache2 = caches.get(doc.doc);
+  if (!cache2) {
+    cache2 = {};
+    caches.set(doc.doc, cache2);
+    const invalidate = (tx) => {
+      if ([doc.claims, doc.participants, doc.doc.getMap("conflicts")].some((root) => tx.changed.has(root))) cache2.subjects = void 0;
+    };
+    doc.doc.on("beforeObserverCalls", invalidate);
+    doc.doc.on("destroy", () => doc.doc.off("beforeObserverCalls", invalidate));
+  }
+  if (cache2.subjects) return cache2.subjects;
+  const out = /* @__PURE__ */ new Map();
+  const add2 = (id3, slot) => out.set(id3, [...out.get(id3) ?? [], slot]);
+  for (const [key2, slot] of doc.doc.getMap("conflicts")) {
+    if (!slot || typeof slot.owner !== "string" || typeof slot.other !== "string" || typeof slot.path !== "string" || !["merge", "edit-in-claim", "claims", "contract"].includes(slot.kind) || !Number.isSafeInteger(slot.epoch) || slot.subject !== void 0 && typeof slot.subject !== "string") continue;
+    if (slot.kind === "merge" && slot.path !== "*") add2(peerNoticeId(slot.owner, slot.other, 0, [], []).split(":peer:")[0] + ":peer:", slot);
+    add2(conflictNoticeId(key2, slot), slot);
+    add2(noticeId(key2, slot.epoch, slot.episode) + ":holder", slot);
+  }
+  cache2.subjects = out;
+  return out;
+}
+function staleConflictNotice(doc, m) {
+  if (m.type !== "conflict" && m.type !== "merge-conflict" && m.type !== "contract") return false;
+  if (m.type === "conflict" && [m.claimId, m.otherClaimId].some((id3) => id3 && !doc.claims.has(id3))) return true;
+  if (m.from !== "room" || !m.id.startsWith("cf:")) return false;
+  const pair = /^cf:[0-9a-f]+:peer:/.exec(m.id)?.[0];
+  const slots = subjects(doc).get(pair ?? m.id) ?? [];
+  if (!slots.length) {
+    if (!m.to) return false;
+    return doc.retiredWorkers().some((worker) => {
+      if (!worker || typeof worker.name !== "string" || !Number.isFinite(worker.retiredAt) || worker.retiredAt < m.at || participantRecord(doc, worker.name)) return false;
+      if (pair) return peerNoticeId(m.to, worker.name, 0, [], []).startsWith(pair);
+      const kind = m.type === "merge-conflict" ? "merge" : m.type === "contract" ? "contract" : "edit-in-claim";
+      const subject = m.type === "contract" ? m.symbol : m.type === "conflict" ? m.claimId : "";
+      return [slotKey(m.to, kind, worker.name, m.path, subject), slotKey(m.to, kind, worker.name, m.path)].some((key2) => m.id.startsWith(`cf:${hash(key2)}:`));
+    });
+  }
+  return !slots.some((slot) => {
+    if (!participantRecord(doc, slot.owner) || !participantRecord(doc, slot.other)) return false;
+    if (slot.kind === "claims" || slot.kind === "edit-in-claim") {
+      const ids = slot.subject?.split("\0").filter(Boolean) ?? [];
+      return ids.length > 0 && ids.every((id3) => doc.claims.has(id3));
+    }
+    return true;
+  });
+}
+var hash, slotKey, noticeId, peerNoticeId, caches;
+var init_conflict_notices = __esm({
+  "packages/shared/src/conflict-notices.ts"() {
+    "use strict";
+    init_doc();
+    hash = (value5) => createHash("sha256").update(value5).digest("hex");
+    slotKey = (owner, kind, other, path75, subject = "") => [owner, kind, other, path75, subject].join("\0");
+    noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
+    peerNoticeId = (owner, other, episode, open3, cleared) => `cf:${hash([owner, other, "merge"].join("\0"))}:peer:${episode}:${open3.length ? hash(JSON.stringify([open3.map((s) => [s.path, s.epoch]), cleared.map((s) => [s.path, s.epoch])])) : "clean"}`;
+    caches = /* @__PURE__ */ new WeakMap();
+  }
+});
+
 // packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
@@ -9743,7 +9810,7 @@ function highestSeq(doc) {
 function owed(doc, me, cursor, route, relevant = () => true) {
   const out = /* @__PURE__ */ new Map();
   const offer = (m) => {
-    if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out.set(m.id, m);
+    if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && (!route.stateSynced || !staleConflictNotice(doc, m)) && relevant(m)) out.set(m.id, m);
   };
   const mine = (m) => addressedTo(m, me.name) && (cursor.addressedFrom === void 0 || (m.seq ?? 0) > cursor.addressedFrom);
   for (const m of [...doc.mail.values()].sort(byAge)) if (mine(m)) offer(m);
@@ -9780,6 +9847,7 @@ var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
+    init_conflict_notices();
     init_bus_index();
     init_ledger();
     init_messages();
@@ -9866,6 +9934,7 @@ var init_delivery = __esm({
       clean = false;
       cleanKeep = BUS_KEEP;
       cleanBytes = BUS_BYTES;
+      cleanConflictsReady = false;
       oldest = Infinity;
       oldestOutcome = Infinity;
       changed = /* @__PURE__ */ new Set();
@@ -9881,6 +9950,9 @@ var init_delivery = __esm({
         for (const [type, keys3] of tx.changed) {
           if (!(type instanceof YMap) || !this.rootNames.get(type)?.startsWith("seen:")) continue;
           for (const key2 of keys3) if (key2 !== null) this.changed.add(key2);
+        }
+        if ([...tx.changed.keys()].some((root) => ["claims", "participants", "conflicts"].includes(this.rootNames.get(root) ?? ""))) {
+          this.clean = false;
         }
         const changed = this.changed;
         this.changed = /* @__PURE__ */ new Set();
@@ -10069,6 +10141,7 @@ var init_delivery = __esm({
       markTrimmed(now, opts) {
         this.cleanKeep = opts.busKeep ?? BUS_KEEP;
         this.cleanBytes = opts.busBytes ?? BUS_BYTES;
+        this.cleanConflictsReady = opts.conflictsReady === true;
         this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter((m) => Number.isFinite(m.at)).map((m) => m.at));
         this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter((o) => o && Number.isFinite(o.at)).map((o) => o.at));
         this.clean = !this.bus.stale && this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && now - this.oldest <= OWED_TTL_MS;
@@ -10079,7 +10152,7 @@ var init_delivery = __esm({
         return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && this.outcomeSizes.size <= OUTCOMES_MAX && this.outcomeBytes <= OUTCOMES_BYTES && now - this.oldestOutcome <= OUTCOMES_TTL_MS && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk)) && !(this.outcomeSizes.size && (this.overCapRecipients.size || mailRisk || now - this.oldest > OWED_TTL_MS));
       }
       trimmed(now, opts) {
-        return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
+        return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS && this.cleanConflictsReady === (opts.conflictsReady === true) && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
       }
     };
     indexes = /* @__PURE__ */ new WeakMap();
@@ -11566,14 +11639,14 @@ __export(manifest_node_exports, {
   digestPath: () => digestPath,
   gitBlobHash: () => gitBlobHash
 });
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function digestPath(roomSalt, path75) {
   if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error("invalid roomSalt");
-  return createHash("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path75), "utf8").digest("hex");
+  return createHash2("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path75), "utf8").digest("hex");
 }
 function gitBlobHash(text2, format = "sha1") {
   const bytes = Buffer.from(text2);
-  return createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  return createHash2(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 var init_manifest_node = __esm({
   "packages/shared/src/manifest-node.ts"() {
@@ -12762,6 +12835,7 @@ var init_src = __esm({
     init_build_output();
     init_compact();
     init_schema();
+    init_conflict_notices();
   }
 });
 
@@ -12835,7 +12909,7 @@ var init_roomignore = __esm({
 });
 
 // packages/roomd/src/policy.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { setImmediate as setImmediate3 } from "node:timers/promises";
 function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher = true) {
   return Object.freeze({ level: clampShare(level, ceiling), requested: level, ceiling, textPrefixes: Object.freeze([...textPrefixes]), ending: Object.freeze([]), publisher });
@@ -12855,7 +12929,7 @@ function rulesFromText(text2, sizeCap, budget) {
     sizeCap,
     budget,
     unavailable: text2 === void 0,
-    id: createHash2("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
+    id: createHash3("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
   });
 }
 function publishesFiles(inputs) {
@@ -12879,7 +12953,7 @@ function* planSteps(inputs, disk, salt) {
     const hide2 = (reason) => {
       excludedPaths.push(p);
       excludedReasons.set(p, reason);
-      excluded.push(createHash2("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
+      excluded.push(createHash3("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
     };
     if (fact.excluded || fact.ignored || defaultExcludedPath(p) || defaultIgnoredPath(p) || inputs.rules.roomIgnore.ignores(p)) {
       if (changed) hide2(fact.exclusionReason ?? "ignore");
@@ -12957,7 +13031,7 @@ var init_policy = __esm({
 // packages/roomd/src/disk-scan.ts
 import fs7 from "node:fs";
 import path6 from "node:path";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { setImmediate as setImmediate4 } from "node:timers/promises";
 async function ignoredTrackedPaths(dir, paths) {
   if (!paths.length) return /* @__PURE__ */ new Set();
@@ -13060,9 +13134,9 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
         continue;
       }
       const cached3 = oversizedCache.get(p);
-      const hash4 = cached3?.base === inputs.head && cached3.size === stat4.size && cached3.mtimeMs === stat4.mtimeMs ? cached3.hash : (await git(dir, ["hash-object", "--no-filters", "--", p])).trim();
-      oversizedCache.set(p, { base: inputs.head, size: stat4.size, mtimeMs: stat4.mtimeMs, hash: hash4 });
-      facts.push({ path: p, kind: "file", baseHash, hash: hash4, size: stat4.size });
+      const hash5 = cached3?.base === inputs.head && cached3.size === stat4.size && cached3.mtimeMs === stat4.mtimeMs ? cached3.hash : (await git(dir, ["hash-object", "--no-filters", "--", p])).trim();
+      oversizedCache.set(p, { base: inputs.head, size: stat4.size, mtimeMs: stat4.mtimeMs, hash: hash5 });
+      facts.push({ path: p, kind: "file", baseHash, hash: hash5, size: stat4.size });
       continue;
     }
     let bytes;
@@ -13096,7 +13170,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
       continue;
     }
-    const hash3 = createHash3(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const hash4 = createHash4(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
     let text2;
     let binary = false;
     try {
@@ -13104,14 +13178,14 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
     } catch {
       binary = true;
     }
-    const isChanged = (changed.has(p) || !!baseHash) && hash3 !== baseHash;
+    const isChanged = (changed.has(p) || !!baseHash) && hash4 !== baseHash;
     const publishable = isChanged && authorizesText(inputs.policy, p) && text2 !== void 0;
     const budgetOmitted = publishable && retainedTextBytes + bytes.length > inputs.rules.budget;
     if (publishable && !budgetOmitted) retainedTextBytes += bytes.length;
     facts.push({
       path: p,
       kind: "file",
-      hash: hash3,
+      hash: hash4,
       baseHash,
       size: bytes.length,
       ...publishable && !budgetOmitted ? { text: text2 } : {},
@@ -15997,7 +16071,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net3 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes9, createHash: createHash26 } = __require("crypto");
+    var { randomBytes: randomBytes9, createHash: createHash27 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -16665,7 +16739,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash26("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash27("sha1").update(key2 + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -17034,7 +17108,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash26 } = __require("crypto");
+    var { createHash: createHash27 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -17341,7 +17415,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash26("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash27("sha1").update(key2 + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -18144,7 +18218,7 @@ var init_src2 = __esm({
 // packages/relay/src/leases.ts
 import fs12 from "node:fs";
 import path10 from "node:path";
-import { createHash as createHash4, randomUUID } from "node:crypto";
+import { createHash as createHash5, randomUUID } from "node:crypto";
 function liveness(identity4, probe = probeProcess) {
   const verdict = livenessBy(identity4, probe);
   return verdict === "dead" && probe === probeProcess && pidAlive(identity4.pid) ? livenessBy(identity4, (pid) => probeProcessConfirm(pid, identity4)) : verdict;
@@ -18354,7 +18428,7 @@ var init_leases = __esm({
     "use strict";
     init_private_state();
     init_process();
-    startMarker = (startTime) => createHash4("sha256").update(startTime).digest("hex").slice(0, 24);
+    startMarker = (startTime) => createHash5("sha256").update(startTime).digest("hex").slice(0, 24);
     tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
   }
 });
@@ -19729,7 +19803,7 @@ ${reason}`);
 });
 
 // packages/roomd/src/reanchor.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { setImmediate as setImmediate7 } from "node:timers/promises";
 function claimDigest(text2, from2, to2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
@@ -19906,7 +19980,7 @@ var init_reanchor = __esm({
     init_libesm();
     DEFAULT_WORK_BUDGET = 4e6;
     BASE = 16777619;
-    digestLines = (lines2) => createHash5("sha256").update(lines2.join("\n"), "utf8").digest("hex");
+    digestLines = (lines2) => createHash6("sha256").update(lines2.join("\n"), "utf8").digest("hex");
     splitLines2 = (text2) => {
       const lines2 = text2.split("\n");
       if (text2.endsWith("\n")) lines2.pop();
@@ -21966,7 +22040,7 @@ var init_base2 = __esm({
 import fs16 from "node:fs";
 import path14 from "node:path";
 import os3 from "node:os";
-import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
@@ -22129,7 +22203,7 @@ var init_src4 = __esm({
           return () => clearTimeout(timer);
         });
         this.debounceMs = options.debounceMs ?? 300;
-        this.watchedDirectory = createHash6("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs16.realpathSync(this.dir)).digest("hex");
+        this.watchedDirectory = createHash7("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs16.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths, overflow) => {
           const work = this.enqueue(async () => {
             await this.pollHead();
@@ -22996,12 +23070,12 @@ var init_src4 = __esm({
           const oldText = oldTexts.get(c.path);
           const range2 = overlay !== void 0 && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to };
           const source = overlay === void 0 ? oldText : overlay;
-          const hash3 = c.claimedHash ?? this.claimDigests.get(c.id) ?? (source === void 0 || Buffer.byteLength(source) > this.sizeCap ? void 0 : claimDigest(source, range2.from, range2.to));
+          const hash4 = c.claimedHash ?? this.claimDigests.get(c.id) ?? (source === void 0 || Buffer.byteLength(source) > this.sizeCap ? void 0 : claimDigest(source, range2.from, range2.to));
           const block = (text2) => {
-            if (text2 === void 0 || Buffer.byteLength(text2) > this.sizeCap || claimDigest(text2, range2.from, range2.to) !== hash3) return void 0;
+            if (text2 === void 0 || Buffer.byteLength(text2) > this.sizeCap || claimDigest(text2, range2.from, range2.to) !== hash4) return void 0;
             return text2.split("\n").slice(range2.from - 1, range2.to).join("\n");
           };
-          snapshots.push({ ...c, ...range2, claimedHash: hash3, anchorText: block(overlay) ?? block(oldText), oldText, claimState: JSON.stringify(c) });
+          snapshots.push({ ...c, ...range2, claimedHash: hash4, anchorText: block(overlay) ?? block(oldText), oldText, claimState: JSON.stringify(c) });
         }
         return snapshots;
       }
@@ -25272,10 +25346,10 @@ var require_util = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash3 = {};
+      const hash4 = {};
       for (const item of arr)
-        hash3[item] = true;
-      return hash3;
+        hash4[item] = true;
+      return hash4;
     }
     exports.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -32918,7 +32992,7 @@ var init_checkout_publication = __esm({
 });
 
 // packages/room-mcp/src/tools/reader-diff.ts
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 function boundedTwoFilesPatch(p, before, after, person) {
   const a = before.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const b = after.match(/[^\n]*\n|[^\n]+$/g) ?? [];
@@ -33004,7 +33078,7 @@ function boundedTwoFilesPatch(p, before, after, person) {
   patch.hunks = hunks;
   return formatPatch(patch);
 }
-function diffPage(text2, cursor, digest = createHash7("sha256").update(text2).digest("hex")) {
+function diffPage(text2, cursor, digest = createHash8("sha256").update(text2).digest("hex")) {
   let start = 0;
   if (cursor !== void 0) {
     const match = typeof cursor === "string" && /^([a-f0-9]{64}):([1-9][0-9]*)$/.exec(cursor);
@@ -33030,7 +33104,7 @@ var init_reader_diff = __esm({
 });
 
 // packages/room-mcp/src/read-diff-cache.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 var READ_DIFF_LIMITS, DIFF_RESTART, ReadDiffCache, readDiffCache;
 var init_read_diff_cache = __esm({
   "packages/room-mcp/src/read-diff-cache.ts"() {
@@ -33072,7 +33146,7 @@ var init_read_diff_cache = __esm({
         if (bytes > this.limits.entryBytes || bytes > this.limits.bytes)
           return "error: diff exceeds the bounded continuation cache; use room_state(all=true) to discover changed paths and room_read(diff=true, path=...) for individual files";
         while (this.entries.size >= this.limits.entries || this.bytes + bytes > this.limits.bytes) this.remove(this.entries.values().next().value);
-        const digest = createHash8("sha256").update(text2).digest("hex");
+        const digest = createHash9("sha256").update(text2).digest("hex");
         const entry = {
           owner: new WeakRef(owner),
           request,
@@ -33155,7 +33229,7 @@ var init_session_entries = __esm({
 import fs27 from "node:fs";
 import path26 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 import { execFile as execFile8 } from "node:child_process";
 import { promisify } from "node:util";
 async function inspectDaemonCutover(commonDir2, options = {}) {
@@ -33177,7 +33251,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
     if (folder(path26.dirname(file)) !== "present") return void 0;
     const bytes = readRegular(file, MAX_RECORD_BYTES, state.issues);
     if (!bytes) return void 0;
-    hashes.set(file, createHash9("sha256").update(bytes).digest("hex"));
+    hashes.set(file, createHash10("sha256").update(bytes).digest("hex"));
     return parseObject(file, bytes, state.issues);
   };
   const entries = (dir) => {
@@ -33197,7 +33271,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   const fingerprint = (file, evidence) => {
     const own2 = hashes.get(file);
     if (own2 === void 0 || !evidence?.length) return own2;
-    return createHash9("sha256").update([file, ...evidence].map((f) => `${path26.relative(commonDir2, f)}:${hashes.get(f) ?? "absent"}`).join("\n")).digest("hex");
+    return createHash10("sha256").update([file, ...evidence].map((f) => `${path26.relative(commonDir2, f)}:${hashes.get(f) ?? "absent"}`).join("\n")).digest("hex");
   };
   const alive = (identity4) => identity4 ? liveness(identity4, options.probe) : "unknown";
   const add2 = (client, identity4, verdict) => {
@@ -33215,7 +33289,7 @@ async function inspectDaemonCutover(commonDir2, options = {}) {
   }
   const room = path26.join(commonDir2, "room");
   const discovery2 = read2(path26.join(room, "relay.json"));
-  if (typeof discovery2?.key === "string") state.keyFingerprint = createHash9("sha256").update(discovery2.key).digest("hex");
+  if (typeof discovery2?.key === "string") state.keyFingerprint = createHash10("sha256").update(discovery2.key).digest("hex");
   const lock = read2(path26.join(room, "hub", "authority.lock"));
   const lockIdentity = identityOf(lock);
   const discoveryIdentity = discovery2?.lead !== void 0 && discovery2.lead !== true ? identityOf(discovery2.lead) : identityOf(discovery2);
@@ -33576,7 +33650,7 @@ var init_plugin = __esm({
 });
 
 // packages/room-mcp/src/client-compat.ts
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 import { existsSync as existsSync2, readFileSync } from "node:fs";
 import { join as join3 } from "node:path";
 function compatibilityFromHealth(health, learned = false, client = CURRENT_COMPAT) {
@@ -33598,7 +33672,7 @@ function compatibilityFromHealth(health, learned = false, client = CURRENT_COMPA
   return { offer: LEGACY_COMPAT, legacy: true };
 }
 function compatibilityFloor(commonDir2, identity4, fingerprint) {
-  const file = join3(commonDir2, "room", "compat", `${createHash10("sha256").update(identity4).digest("hex")}.json`);
+  const file = join3(commonDir2, "room", "compat", `${createHash11("sha256").update(identity4).digest("hex")}.json`);
   return {
     learned() {
       if (!existsSync2(file)) return false;
@@ -36833,7 +36907,7 @@ var init_choice = __esm({
 // packages/room-mcp/src/policy-store.ts
 import fs36 from "node:fs";
 import path34 from "node:path";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 async function legacyBaseline(dir) {
   const file = path34.join(await gitCommonDir(dir), "room", "sharing", "legacy-baseline.json");
   const choice = await choiceFile(dir);
@@ -36865,8 +36939,8 @@ async function legacyBaseline(dir) {
   });
 }
 async function sharingFile(dir, room, participant) {
-  const hash3 = createHash11("sha256").update(room).update("\0").update(participant).digest("hex");
-  return path34.join(await gitCommonDir(dir), "room", "sharing", `${hash3}.json`);
+  const hash4 = createHash12("sha256").update(room).update("\0").update(participant).digest("hex");
+  return path34.join(await gitCommonDir(dir), "room", "sharing", `${hash4}.json`);
 }
 var emptyGrant, levels, shareLevel, sorted, clean2, PolicyStore, CeilingSource;
 var init_policy_store = __esm({
@@ -37036,8 +37110,8 @@ var init_policy_store = __esm({
         return this.update((old) => ({ ...old, disclosed: { level, version: version3 }, updatedAt: Date.now() }), false);
       }
       static retire(dir, room, participant, server) {
-        const hash3 = createHash11("sha256").update(room).update("\0").update(participant).digest("hex");
-        const file = path34.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash3}.json`);
+        const hash4 = createHash12("sha256").update(room).update("\0").update(participant).digest("hex");
+        const file = path34.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash4}.json`);
         fs36.rmSync(file, { force: true });
         const privateGit = worktreeGitDirFromDotGit(dir);
         for (const name of fs36.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
@@ -37571,9 +37645,9 @@ var init_post = __esm({
 // packages/room-mcp/src/publisher-lease.ts
 import fs37 from "node:fs";
 import path35 from "node:path";
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 function publisherLeaseFile(commonDir2, worktree) {
-  return path35.join(commonDir2, "room", "publishers", `${createHash12("sha256").update(worktree).digest("hex")}.json`);
+  return path35.join(commonDir2, "room", "publishers", `${createHash13("sha256").update(worktree).digest("hex")}.json`);
 }
 async function guarded(fn) {
   const deadline = performance.now() + GUARD_WAIT_MS;
@@ -37765,9 +37839,9 @@ var init_publisher_lease = __esm({
 // packages/room-mcp/src/names.ts
 import fs38 from "node:fs";
 import path36 from "node:path";
-import { createHash as createHash13, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash14, randomUUID as randomUUID4 } from "node:crypto";
 function nameLeaseFile(commonDir2, roomKey2, name) {
-  return path36.join(commonDir2, "room", "names", `${createHash13("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
+  return path36.join(commonDir2, "room", "names", `${createHash14("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
 }
 function readLease(file) {
   try {
@@ -38312,20 +38386,20 @@ var init_timing = __esm({
 
 // packages/room-mcp/src/worker-projector.ts
 import path38 from "node:path";
-async function projectWorkers(s, registry2, lead, role, origin, active = () => true) {
+async function projectWorkers(s, registry2, lead, role, origin, active = () => true, retirementOnly = false) {
   const roomKey2 = s.roomName, fence = s.daemon.fence;
   const current2 = () => active() && s.daemon.fence === fence;
   if (!fence || !current2()) return void 0;
   const records = requireWorkerInventory(await registry2.list());
   if (!current2()) return void 0;
-  await warmRunLogs(s, records.filter((record2) => record2.lead.participant === lead && !["retired", "abandoned"].includes(record2.phase)));
+  await warmRunLogs(s, records.filter((record2) => record2.lead.participant === lead && (retirementOnly ? record2.phase === "retiring" : !["retired", "abandoned"].includes(record2.phase))));
   if (!current2()) return void 0;
   const before = await registry2.snapshot();
   if (!current2() || !before.available) return void 0;
   requireWorkerEvidence(workerEvidence(before));
   const { write: all2, retire: retiring } = requireWorkerEvidence(await registry2.projectable(lead, roomKey2));
   if (!current2()) return void 0;
-  const write2 = all2.filter(({ record: record2 }) => inRole(record2, roomKey2, role));
+  const write2 = retirementOnly ? [] : all2.filter(({ record: record2 }) => inRole(record2, roomKey2, role));
   const retire = retiring.filter((record2) => inRole(record2, roomKey2, role));
   const post = releasePoster(s.post);
   const listed = /* @__PURE__ */ new Set([...write2.map(({ record: record2 }) => record2.id), ...retire.map((record2) => record2.id)]);
@@ -38356,7 +38430,7 @@ async function projectWorkers(s, registry2, lead, role, origin, active = () => t
         s.room.clearWorkerCoordination(record2.name, "worker stopped", post);
       }
     }
-    for (const [id3, view] of s.room.workerViews) {
+    if (!retirementOnly) for (const [id3, view] of s.room.workerViews) {
       if (view.lead !== lead || listed.has(id3)) continue;
       const known = snapshotRead(facts, id3);
       if (known ? inRole(known, roomKey2, role) : role === "joined") s.room.workerViews.delete(id3);
@@ -39088,11 +39162,11 @@ var init_bridge = __esm({
         const atB = await blobsAt(dir, B, candidates, valid);
         const all2 = /* @__PURE__ */ new Map(), carried = /* @__PURE__ */ new Map();
         const now = Date.now();
-        const put = (path75, hash3, at, size2, mode2) => {
+        const put = (path75, hash4, at, size2, mode2) => {
           const base = atB.get(path75);
-          if (hash3 === void 0) return base ? { change: "D", baseHash: base.blob, at } : void 0;
-          if (base?.blob === hash3) return void 0;
-          return { change: base ? "M" : "A", hash: hash3, ...size2 !== void 0 ? { size: size2 } : {}, ...mode2 !== void 0 ? { mode: mode2 } : {}, ...base ? { baseHash: base.blob } : {}, at };
+          if (hash4 === void 0) return base ? { change: "D", baseHash: base.blob, at } : void 0;
+          if (base?.blob === hash4) return void 0;
+          return { change: base ? "M" : "A", hash: hash4, ...size2 !== void 0 ? { size: size2 } : {}, ...mode2 !== void 0 ? { mode: mode2 } : {}, ...base ? { baseHash: base.blob } : {}, at };
         };
         index = 0;
         for (const [path75, e] of own2) {
@@ -39227,7 +39301,7 @@ var init_bridge = __esm({
 
 // packages/room-mcp/src/session.ts
 import { existsSync as existsSync3, readFileSync as readFileSync2, statSync } from "node:fs";
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash15 } from "node:crypto";
 import { execFileSync as execFileSync8 } from "node:child_process";
 import { dirname as dirname3, join as join4, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL } from "node:url";
@@ -39245,7 +39319,7 @@ function localBrowserLink(roomUrl, name, view, viewerFile = findLocalViewer(), w
 }
 function sessionDirectory(commonDir2, sessionId) {
   if (!sessionId) throw new Error("session ID is required");
-  const sid = createHash14("sha256").update(sessionId).digest("hex").slice(0, 16);
+  const sid = createHash15("sha256").update(sessionId).digest("hex").slice(0, 16);
   return join4(commonDir2, "room", "sessions", sid);
 }
 function readSessionFile(commonDir2, sessionId, name) {
@@ -39561,7 +39635,7 @@ async function discoverCompatibility(server, dir, localKey, log2) {
   const url = new URL(server);
   const common = await realGitCommonDir(dir);
   const identity4 = localKey ? `local:${common}` : url.origin;
-  const floor2 = compatibilityFloor(common, identity4, localKey ? createHash14("sha256").update(localKey).digest("hex") : void 0);
+  const floor2 = compatibilityFloor(common, identity4, localKey ? createHash15("sha256").update(localKey).digest("hex") : void 0);
   let health;
   if (localKey) health = await relayHealth(Number(url.port), localKey);
   else try {
@@ -41192,9 +41266,16 @@ async function retireWorker(rooms, s, id3, archive, extra = {}) {
   const registry2 = await registryForDir(s.dir);
   const record2 = await registry2.read(id3);
   if (!record2) return;
-  if (fs44.existsSync(path44.join(record2.dir, ".git"))) PolicyStore.retire(record2.dir, record2.room, record2.name, new URL(s.roomUrl).origin);
+  if (!record2.outside && fs44.existsSync(path44.join(record2.dir, ".git"))) PolicyStore.retire(record2.dir, record2.room, record2.name, new URL(s.roomUrl).origin);
   await registry2.beginRetirement(id3, archive, extra);
   await rooms.project();
+}
+function cleanupInput(record2, status) {
+  const run2 = status.run ?? record2.runs.at(-1);
+  const w = realStateInput(record2, { ...status, run: run2 });
+  const launch = run2?.launch;
+  if (launch?.outcome === "launched") return { ...w, pid: launch.pid, processStartTime: launch.process?.startTime };
+  return { ...w, pid: launch?.outcome === "never" ? 0 : -1 };
 }
 async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
   const registry2 = await registryForDir(s.dir);
@@ -41203,7 +41284,13 @@ async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
   const users = evidence;
   if (users.length && !o.retireUser) return { removed: false, reason: `its worktree is shared with ${users.map((user) => user.record.tag).join(", ")}` };
   for (const { record: user } of users) await o.retireUser(user);
-  const nested = requireWorkerInventory(await registry2.list()).filter((other) => other.lead.participant === w.name && !["retiring", "retired", "abandoned"].includes(other.phase));
+  const nested = [];
+  for (const other of requireWorkerInventory(await registry2.list())) {
+    if (other.id === record2?.id || other.lead.participant !== w.name || other.collectPending || ["retiring", "retired", "abandoned"].includes(other.phase)) continue;
+    const status = await registry2.status(other.id);
+    if (!fs44.existsSync(other.dir) && status && !await processes.alive(cleanupInput(other, status))) continue;
+    nested.push(other);
+  }
   if (nested.length) return { removed: false, reason: "nested workers remain: " + nested.map((other) => other.tag).join(", ") };
   const ignored = await ignoredWorkerArtifacts(w, s.dir);
   if (ignored.length) return { removed: false, reason: "uncopied ignored artifacts", lines: [...ignored.map((p) => `kept ${p} at ${path44.join(w.dir, p)}`), `retained worktree: ${w.dir}`] };
@@ -41220,11 +41307,23 @@ async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
     const st = await registry2.status(other.id);
     return st ? [realStateInput(other, st)] : [];
   }))).flat();
+  const ownership = [...s.room.retiredWorkers(), ...workers];
+  const byName = new Map(ownership.map((other) => [other.name, other]));
+  let leadName = w.lead;
+  let ancestor = w;
+  const seen = /* @__PURE__ */ new Set([w.name]);
+  while (!roomWorkerPathMatchesBranch(s.dir, ancestor.dir, ancestor.branch)) {
+    const parent = byName.get(ancestor.lead);
+    if (!parent || seen.has(parent.name)) break;
+    seen.add(parent.name);
+    ancestor = { name: parent.name, lead: parent.lead, dir: "dir" in parent ? parent.dir : parent.keptWorktree ?? path44.resolve(ancestor.dir, "../../.."), branch: "branch" in parent ? parent.branch : `room/${parent.tag}` };
+    leadName = parent.lead;
+  }
   const terminated = [];
   const preservation = { ignored: [], uncollected: [] };
   if (record2 && fs44.existsSync(path44.join(w.dir, ".git"))) PolicyStore.retire(w.dir, record2.room, record2.name, new URL(s.roomUrl).origin);
   try {
-    if (!await cleanupWorker(s.dir, { ...w, status: "done", exitCode: 0 }, { collected: true, terminatedProcesses: terminated, processOptions: { probe: processes.probe, list: processes.list }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers], preservation })) {
+    if (!await cleanupWorker(s.dir, { ...w, status: "done", exitCode: 0 }, { collected: true, terminatedProcesses: terminated, processOptions: { probe: processes.probe, list: processes.list }, leadName, workers: ownership, preservation })) {
       const details = [
         ...preservation.ignored.length ? [`ignored files not copied: ${preservation.ignored.join(", ")}`] : [],
         ...preservation.uncollected.length ? [`uncollected work: ${preservation.uncollected.join(", ")}`] : [],
@@ -41242,7 +41341,7 @@ async function finishPendingCollect(s, rooms, id3, processes) {
   const record2 = await registry2.read(id3);
   const status = record2?.collectPending && record2.phase === "active" ? await registry2.status(id3) : void 0;
   if (!record2 || !status) return void 0;
-  const w = realStateInput(record2, status);
+  const w = cleanupInput(record2, status);
   const kept = (reason) => `kept ${w.tag}: ${reason}`;
   if (await processes.alive(w)) return kept("its host process is still running; its changes are already collected, and cleanup follows once it exits");
   try {
@@ -41252,7 +41351,7 @@ async function finishPendingCollect(s, rooms, id3, processes) {
   }
   try {
     const fresh = await registry2.read(id3);
-    if (!fresh?.collectPending || fresh.phase !== "active" || await processes.alive(w)) return kept("changed while finishing; call room_collect again");
+    if (!fresh?.collectPending || fresh.seq !== record2.seq || fresh.phase !== "active" || await processes.alive(w)) return kept("changed while finishing; call room_collect again");
     const retiredAt = Date.now();
     const files4 = [...new Set((await registry2.reports(id3)).flatMap((report) => report.done?.changed ?? []))].sort();
     const archive = async (summary) => await registry2.archiveOf(fresh, {
@@ -41271,6 +41370,7 @@ async function finishPendingCollect(s, rooms, id3, processes) {
     }
     if (!fs44.existsSync(w.dir)) {
       await pruneMissingWorkerWorktree(s.dir, w);
+      cleanupWorkerLogs(s.dir, w);
       await retireWorker(rooms, s, id3, await archive(w.summary ?? ""));
       return `retired ${w.tag}: its worktree was already gone`;
     }
@@ -41289,8 +41389,8 @@ stopped processes from ${w.tag}: ${result2.terminated.join(", ")}` : "");
 async function adoptLegacyKept(s, rooms, record2, processes) {
   const registry2 = await registryForDir(s.dir);
   const status = await registry2.status(record2.id);
-  if (!status || !record2.keptWorktree || !fs44.existsSync(record2.keptWorktree)) return;
-  const w = { ...realStateInput(record2, status), dir: record2.keptWorktree };
+  if (!status || !record2.keptWorktree) return;
+  const w = { ...cleanupInput(record2, status), dir: record2.keptWorktree };
   if (await processes.alive(w)) return;
   try {
     if (!await registry2.beginOperation(record2.id, "collect")) return;
@@ -41299,30 +41399,85 @@ async function adoptLegacyKept(s, rooms, record2, processes) {
   }
   try {
     const fresh = await registry2.read(record2.id);
-    if (fresh?.phase !== "retired" || fresh.keptWorktree !== w.dir || fresh.archive?.keptReason !== LEGACY_UNCONFIRMED) return;
-    if (!(await removeCollectedCheckout(s, fresh, w, processes)).removed) return;
+    if (fresh?.phase !== "retired" || fresh.seq !== record2.seq || fresh.keptWorktree !== w.dir || await processes.alive(w)) return;
+    if (fs44.existsSync(w.dir)) {
+      const result2 = await removeCollectedCheckout(s, fresh, w, processes);
+      if (!result2.removed) {
+        if (fresh.archive?.keptReason !== result2.reason) await registry2.command(fresh.id, { type: "retired-checkout-kept", dir: w.dir, reason: result2.reason });
+        syncKeptArchive(rooms, await registry2.read(fresh.id));
+        return `kept ${w.tag}: ${result2.reason}`;
+      }
+    } else await pruneMissingWorkerWorktree(s.dir, w);
+    cleanupWorkerLogs(s.dir, w);
     await registry2.command(fresh.id, { type: "retired-checkout-removed" });
-    for (const room of rooms.all()) {
-      const list = room.room.doc.getArray("retiredWorkers");
-      const index = list.toArray().findIndex((entry) => entry.id === fresh.id);
-      if (index >= 0) room.room.doc.transact(() => {
-        const { keptWorktree: _kept, keptReason: _reason, ...entry } = list.get(index);
-        list.delete(index);
-        list.insert(index, [entry]);
-      });
-    }
+    syncKeptArchive(rooms, await registry2.read(fresh.id));
+    return `cleaned up ${w.tag}: cleared its kept-worktree marker and removed worker logs`;
   } finally {
     await registry2.finishOperation(record2.id);
+  }
+}
+function syncKeptArchive(rooms, record2) {
+  for (const s of rooms.all()) {
+    if (s.roomName !== record2.room && s.roomName !== record2.projectedInto) continue;
+    const list = s.room.doc.getArray("retiredWorkers");
+    const index = list.toArray().findIndex((entry) => entry.id === record2.id);
+    if (index < 0) continue;
+    const { keptWorktree: _kept, keptReason: _reason, ...rest } = list.get(index);
+    const next = { ...rest, ...record2.keptWorktree ? { keptWorktree: record2.keptWorktree, keptReason: record2.archive?.keptReason } : {} };
+    if (JSON.stringify(next) === JSON.stringify(list.get(index))) continue;
+    s.room.doc.transact(() => {
+      list.delete(index);
+      list.insert(index, [next]);
+    });
+  }
+}
+async function reconcileOrphanArchives(s, dir, registry2, rooms) {
+  if (!s.local || fs44.realpathSync(s.dir) !== fs44.realpathSync(dir)) return;
+  const list = s.room.doc.getArray("retiredWorkers");
+  for (const entry of list.toArray()) {
+    const kept = entry.keptWorktree;
+    if (!kept || entry.lead !== s.me.name || path44.basename(kept) !== entry.tag || !roomWorkerPathMatchesBranch(dir, kept, `room/${entry.tag}`, true)) continue;
+    const records = requireWorkerInventory(await registry2.list());
+    if (records.some((record2) => record2.id === entry.id || record2.name === entry.name || record2.tag === entry.tag || path44.resolve(record2.dir) === path44.resolve(kept))) continue;
+    const absent = () => {
+      try {
+        fs44.lstatSync(kept);
+        return false;
+      } catch (error2) {
+        return error2.code === "ENOENT";
+      }
+    };
+    if (!absent()) continue;
+    if ((await git(dir, ["for-each-ref", "--format=%(refname)", `refs/heads/room/${entry.tag}`])).trim()) continue;
+    if ([...s.awareness?.getStates().values() ?? []].some((p) => p?.user?.name === entry.name)) continue;
+    const holder = participantRecord(s.room, entry.name)?.holder;
+    if (holder && liveness(holder, rooms.probe.bind(rooms)) !== "dead") continue;
+    const root = path44.resolve(kept);
+    if ((rooms.listCwdProcesses ?? listCwdProcesses)().some((p) => path44.resolve(p.cwd) === root || path44.resolve(p.cwd).startsWith(root + path44.sep))) continue;
+    const changed = withGuard(path44.join(registry2.root, "tags", entry.tag + ".json"), () => {
+      if (fs44.existsSync(path44.join(registry2.root, "tags", entry.tag + ".json")) || !absent()) return false;
+      const index = list.toArray().findIndex((value5) => value5.id === entry.id && value5.name === entry.name && value5.keptWorktree === kept);
+      if (index < 0) return false;
+      const { keptWorktree: _kept, keptReason: _reason, ...archive } = list.get(index);
+      cleanupWorkerLogs(dir, { dir: kept, tag: entry.tag });
+      s.room.doc.transact(() => {
+        list.delete(index);
+        list.insert(index, [archive]);
+      });
+      return true;
+    });
+    if (changed) process.stderr.write(`[room] cleaned up ${entry.tag}: reconciled its orphaned local kept-worktree marker and logs; history retained
+`);
   }
 }
 async function autoRetire(s, rooms) {
   const registry2 = await registryForDir(s.dir);
   const probe = rooms.probe.bind(rooms);
-  await sweepClone(s.dir, registry2, rooms);
+  await sweepClone(s, registry2, rooms);
   for (const record2 of requireWorkerInventory(await registry2.list())) {
     if (record2.lead.participant !== s.me.name || record2.room !== s.roomName) continue;
     const processes = { probe, list: rooms.listCwdProcesses, alive: async (w2) => rooms.hasHandle(s, w2) || !processExited(await workerRealState(s.dir, w2, { process: true, probe })) };
-    if (record2.phase === "retired" && record2.keptWorktree && record2.archive?.keptReason === LEGACY_UNCONFIRMED) {
+    if (record2.phase === "retired" && record2.keptWorktree) {
       await adoptLegacyKept(s, rooms, record2, processes).catch(() => {
       });
       continue;
@@ -41433,11 +41588,14 @@ async function autoRetire(s, rooms) {
   }
 }
 async function nothingToCollect(leadDir, registry2, record2, host2) {
-  if (record2.phase !== "active" || record2.collectPending || fs44.existsSync(record2.dir)) return void 0;
+  if (record2.phase !== "active" || record2.collectPending) return void 0;
+  const outside = record2.outside && record2.capabilities.collect === "none" && !record2.legacy?.unowned;
+  if (!outside && fs44.existsSync(record2.dir)) return void 0;
   const status = await registry2.status(record2.id);
   if (!status) return void 0;
   const w = realStateInput(record2, status);
-  if (!decideNothingToCollect(await workerRealState(leadDir, w, { branch: true, process: true, hasHandle: host2.hasHandle?.(w), probe: host2.probe }))) return void 0;
+  const facts = await workerRealState(leadDir, w, { branch: !outside, process: true, hasHandle: host2.hasHandle?.(w), probe: host2.probe });
+  if (outside ? !processExited(facts) || !["done", "failed"].includes(w.status) : !decideNothingToCollect(facts)) return void 0;
   const nested = requireWorkerInventory(await registry2.list()).some((other) => other.lead.participant === record2.name && !["retiring", "retired", "abandoned"].includes(other.phase));
   return nested ? void 0 : w;
 }
@@ -41452,13 +41610,16 @@ async function retireIfNothingToCollect(leadDir, registry2, record2, host2) {
     const fresh = await registry2.read(record2.id);
     const w = fresh && fresh.seq === record2.seq ? await nothingToCollect(leadDir, registry2, fresh, host2) : void 0;
     if (!fresh || !w) return false;
-    if (roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) await pruneMissingWorkerWorktree(leadDir, w, false).catch(() => void 0);
-    cleanupWorkerLogs(leadDir, w);
-    await registry2.beginRetirement(fresh.id, await registry2.archiveOf(fresh, { summary: NOTHING_TO_COLLECT, disposition: "discarded" }));
+    if (!fresh.outside && roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) await pruneMissingWorkerWorktree(leadDir, w, false).catch(() => void 0);
+    cleanupWorkerLogs(leadDir, { ...w, outside: fresh.outside, logFile: fresh.logFile });
+    await registry2.beginRetirement(fresh.id, await registry2.archiveOf(fresh, { summary: fresh.outside ? outsideCollectLine(fresh) : NOTHING_TO_COLLECT, disposition: "discarded" }));
     return true;
   } finally {
     await registry2.finishOperation(record2.id);
   }
+}
+function outsideCollectLine(record2) {
+  return `${record2.tag}: changes remain in its own checkout at ${record2.dir}; nothing was brought in`;
 }
 function nothingToCollectLine(tags) {
   return `retired ${tags.length === 1 ? "1 finished worker" : `${tags.length} finished workers`} with nothing to collect (${tags.length === 1 ? "its" : "their"} worktree and branch are gone): ${tags.join(", ")}`;
@@ -41469,22 +41630,59 @@ async function retireNothingToCollect(dir, registry2, host2) {
     progress = false;
     for (const record2 of requireWorkerInventory(await registry2.list())) {
       if (retired.includes(record2.tag) || !await retireIfNothingToCollect(dir, registry2, record2, host2)) continue;
-      retired.push(record2.tag);
+      if (record2.outside) process.stderr.write(`[room] ${outsideCollectLine(record2)}; retired ${record2.tag} (nothing to collect into this checkout)
+`);
+      else retired.push(record2.tag);
       progress = true;
     }
   }
   return retired;
 }
-async function sweepClone(dir, registry2, rooms) {
-  if (Date.now() - collectedAt < GC_EVERY_MS) return;
-  collectedAt = Date.now();
+async function sweepClone(session, registry2, rooms) {
+  if (Date.now() - (collectedAt.get(registry2) ?? 0) < GC_EVERY_MS) return;
+  collectedAt.set(registry2, Date.now());
+  const main2 = (await git(session.dir, ["worktree", "list", "--porcelain"])).split("\n").find((line) => line.startsWith("worktree "))?.slice(9);
+  if (!main2) return;
+  const dir = fs44.realpathSync(main2) === fs44.realpathSync(session.dir) ? session.dir : main2;
+  const s = { ...session, dir };
+  const probe = rooms.probe.bind(rooms);
+  const processes = { probe, list: rooms.listCwdProcesses, alive: async (w) => rooms.all().some((held) => rooms.hasHandle(held, w)) || !processExited(await workerRealState(dir, w, { process: true, probe })) };
   try {
-    const retired = await retireNothingToCollect(dir, registry2, { probe: rooms.probe.bind(rooms), hasHandle: (w) => rooms.all().some((s) => rooms.hasHandle(s, w)) });
+    for (const record2 of requireWorkerInventory(await registry2.list()).sort((a, b) => b.dir.length - a.dir.length)) {
+      const line = record2.phase === "active" && record2.collectPending ? await finishPendingCollect(s, rooms, record2.id, processes) : record2.phase === "retired" && record2.keptWorktree ? await adoptLegacyKept(s, rooms, record2, processes) : void 0;
+      if (line) process.stderr.write(`[room] ${line}
+`);
+    }
+    for (const held of rooms.all()) {
+      const pending2 = requireWorkerInventory(await registry2.list()).filter((record2) => record2.phase === "retiring" && record2.cleanup?.[held.roomName] === "pending");
+      for (const lead of new Set(pending2.map((record2) => record2.lead.participant))) {
+        for (const role of ["joined", "projected"]) await projectWorkers(held, registry2, lead, role, void 0, () => rooms.tracking(held), true);
+      }
+      for (const record2 of pending2) if ((await registry2.read(record2.id))?.phase === "retired") process.stderr.write(`[room] finished retirement cleanup for ${record2.tag}
+`);
+    }
+    for (const record2 of requireWorkerInventory(await registry2.list())) if (record2.phase === "retired") {
+      syncKeptArchive(rooms, record2);
+      if (record2.keptWorktree || !await registry2.beginOperation(record2.id, "collect")) continue;
+      try {
+        const fresh = await registry2.read(record2.id), status = await registry2.status(record2.id);
+        if (fresh?.phase === "retired" && !fresh.keptWorktree && (await registry2.reserved(fresh.tag))?.id === fresh.id && status && !await processes.alive(cleanupInput(fresh, status))) cleanupWorkerLogs(dir, cleanupInput(fresh, status));
+      } finally {
+        await registry2.finishOperation(record2.id);
+      }
+    }
+    await reconcileOrphanArchives(session, dir, registry2, rooms);
+  } catch (error2) {
+    process.stderr.write(`[room] collected worker cleanup: ${error2}
+`);
+  }
+  try {
+    const retired = await retireNothingToCollect(dir, registry2, { probe: rooms.probe.bind(rooms), hasHandle: (w) => rooms.all().some((s2) => rooms.hasHandle(s2, w)) });
     if (retired.length) {
       process.stderr.write(`[room] ${nothingToCollectLine(retired)}
 `);
-      await rooms.project();
     }
+    await rooms.project();
   } catch (error2) {
     process.stderr.write(`[room] nothing-to-collect retirement: ${error2}
 `);
@@ -41502,7 +41700,7 @@ async function sweepClone(dir, registry2, rooms) {
 `);
   }
 }
-var LEGACY_UNCONFIRMED, NOTHING_TO_COLLECT, GC_EVERY_MS, collectedAt;
+var NOTHING_TO_COLLECT, GC_EVERY_MS, collectedAt;
 var init_retire = __esm({
   "packages/room-mcp/src/retire.ts"() {
     "use strict";
@@ -41517,10 +41715,12 @@ var init_retire = __esm({
     init_worker_state();
     init_worker_git();
     init_git();
-    LEGACY_UNCONFIRMED = "clean exit not confirmed";
+    init_worker_projector();
+    init_worker_process();
+    init_leases2();
     NOTHING_TO_COLLECT = "nothing to collect: its worktree and branch were already gone";
     GC_EVERY_MS = 60 * 60 * 1e3;
-    collectedAt = 0;
+    collectedAt = /* @__PURE__ */ new WeakMap();
   }
 });
 
@@ -42437,7 +42637,7 @@ var init_share = __esm({
 // packages/room-mcp/src/kept-publication.ts
 import fs48 from "node:fs";
 import path47 from "node:path";
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 async function acknowledgeKeptPublication(s, previous, paths, written = [], timeoutMs2 = 5e3, retryNow = false) {
   const required2 = [.../* @__PURE__ */ new Set([...previous?.paths ?? [], ...paths])].sort();
   const publisher = checkoutPublisher(s) ?? s.me.name, head = manifestHeadOf(s.room, publisher);
@@ -42468,7 +42668,7 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
       (async () => {
         const [format, expectedHead] = (await git(s.dir, ["rev-parse", "--show-object-format", "HEAD"])).trim().split("\n");
         if (format !== "sha1" && format !== "sha256") return pending2;
-        const hash3 = (bytes2) => createHash15(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
+        const hash4 = (bytes2) => createHash16(format).update(`blob ${bytes2.length}\0`).update(bytes2).digest("hex");
         const required2 = /* @__PURE__ */ new Map();
         const root = fs48.realpathSync(s.dir);
         const diskHash = async (p) => {
@@ -42477,7 +42677,7 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
             const safe = containedRepoPath(root, file, { leaf: "read-contained-link" });
             if (!safe.ok) throw new Error("unsafe publication verification path");
             const text2 = await readBoundedDiskText(safe.path, "latin1", { root, path: file });
-            return hash3(Buffer.from(text2, "latin1"));
+            return hash4(Buffer.from(text2, "latin1"));
           } catch (error2) {
             if (error2.code !== "ENOENT") throw error2;
             return null;
@@ -42487,7 +42687,7 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
           if (!validRepoPath(p, DISK_READ_PATH)) return pending2;
           required2.set(p, await diskHash(p));
         }
-        for (const { p, after } of written) if (required2.has(p)) required2.set(p, after === null ? null : hash3(after));
+        for (const { p, after } of written) if (required2.has(p)) required2.set(p, after === null ? null : hash4(after));
         await s.daemon.reconcileGitChanges();
         await s.daemon.settle();
         const publisher = checkoutPublisher(s) ?? s.me.name;
@@ -42503,7 +42703,7 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
           if (!entry && (!meta2.roomSalt || head.excluded.includes(digestPath(meta2.roomSalt, p)))) return pending2;
           if (entry?.state === "shared" && entry.change !== "D") {
             const text2 = s.room.overlayText(`${publisher}\0${head.fence}`, p)?.toString();
-            if (text2 === void 0 || hash3(Buffer.from(text2, "utf8")) !== entry.hash) return pending2;
+            if (text2 === void 0 || hash4(Buffer.from(text2, "utf8")) !== entry.hash) return pending2;
           }
           const published = entry?.change === "D" ? null : entry?.hash ?? base.get(p)?.hash ?? null;
           if (published !== expected) {
@@ -42569,7 +42769,7 @@ var init_kept_publication = __esm({
 // packages/room-mcp/src/tools/combined-tree.ts
 import fs49 from "node:fs";
 import path48 from "node:path";
-import { createHash as createHash16 } from "node:crypto";
+import { createHash as createHash17 } from "node:crypto";
 function publicationInputs(snap, text2) {
   if (!snap) return void 0;
   const { head, record: record2 } = snap;
@@ -42606,7 +42806,7 @@ function publicationInputs(snap, text2) {
         entry.hash,
         entry.baseHash,
         entry.held,
-        value5 === void 0 ? void 0 : createHash16("sha256").update(value5).digest("hex")
+        value5 === void 0 ? void 0 : createHash17("sha256").update(value5).digest("hex")
       ])];
     }))
   };
@@ -42783,7 +42983,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (stale.has(person)) return { kind: "unknown", why: "updating", detail: "stale publication; old text was not used" };
     let version3 = await versionOf(snap, p, {
       gitAt,
-      known: (hash3) => readBoundedCheckoutText(caller.dir, hash3, p, "utf8", false).catch(() => void 0)
+      known: (hash4) => readBoundedCheckoutText(caller.dir, hash4, p, "utf8", false).catch(() => void 0)
     });
     const carried = version3.kind === "base" && version3.text === void 0 ? relationFor(s.dir, person)?.baseline : void 0;
     const blob = carried?.untracked.get(p);
@@ -44198,7 +44398,7 @@ __export(files_exports, {
 });
 import { execFile as execFile13, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
-import { createHash as createHash17, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash18, randomUUID as randomUUID6 } from "node:crypto";
 import fs52 from "node:fs";
 import os11 from "node:os";
 import path51 from "node:path";
@@ -44252,7 +44452,7 @@ function handlers2(state) {
       const note = !worker && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
 ` : "";
       const label = (text2) => `${worker ? WORKTREE_NOTE + "\n" : ""}${note}${text2}`;
-      const fingerprint = createHash17("sha256");
+      const fingerprint = createHash18("sha256");
       const record2 = (...values) => {
         fingerprint.update(JSON.stringify(values));
       };
@@ -44286,7 +44486,7 @@ function handlers2(state) {
         try {
           version3 = ownDisk || worker ? void 0 : await versionOf(snap, p, {
             gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
-            known: (hash3) => readBoundedCheckoutText(s.dir, hash3, p, "utf8", false).catch(() => void 0)
+            known: (hash4) => readBoundedCheckoutText(s.dir, hash4, p, "utf8", false).catch(() => void 0)
           });
         } catch (error2) {
           return reportGitFailure(error2);
@@ -44768,7 +44968,7 @@ function canonicalPreviewClonePath(cloneDir) {
 }
 async function previewKeyPath(cloneDir, repoDir = cloneDir) {
   const common = await fs52.promises.realpath(await gitCommonDir(repoDir));
-  const key2 = createHash17("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
+  const key2 = createHash18("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
   const root = path51.join(common, "room-preview");
   await rejectPreviewLink(root);
   return path51.join(root, key2);
@@ -45021,16 +45221,16 @@ async function checkoutSettings(dir) {
   }
   const systemAttributes = await systemAttributePaths(dir);
   const relevant = [...values].filter(([key2]) => checkoutConfigKeys.has(key2) || /^filter\..+\.(smudge|clean|process|required)$/.test(key2)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const hash3 = createHash17("sha256").update(JSON.stringify(relevant)).update("\0");
+  const hash4 = createHash18("sha256").update(JSON.stringify(relevant)).update("\0");
   for (const [kind, identity4, file] of [
     ["info", infoAttributes, infoAttributes],
     ["user", userIdentity, userAttributes],
     ...systemAttributes.map((file2) => ["system", file2, file2])
   ]) {
     const bytes = await optionalAttributeFile(file);
-    hash3.update(JSON.stringify([kind, identity4, bytes.length])).update("\0").update(bytes).update("\0");
+    hash4.update(JSON.stringify([kind, identity4, bytes.length])).update("\0").update(bytes).update("\0");
   }
-  return { fingerprint: hash3.digest("hex"), sparse };
+  return { fingerprint: hash4.digest("hex"), sparse };
 }
 function slotSettingsFile(slot) {
   return path51.join(path51.dirname(slot), `.checkout-${path51.basename(slot)}.json`);
@@ -45280,12 +45480,12 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   return !!stat4;
 }
 function previewCheckKey(ancestor, merged, cmd, modes) {
-  const hash3 = createHash17("sha256").update(ancestor).update("\0").update(cmd);
+  const hash4 = createHash18("sha256").update(ancestor).update("\0").update(cmd);
   for (const rel of [...merged.keys()].sort()) {
     const text2 = merged.get(rel);
-    hash3.update("\0").update(rel).update("\0").update(text2 === null ? "deleted" : `${modes.get(rel) ?? ""}:${text2}`);
+    hash4.update("\0").update(rel).update("\0").update(text2 === null ? "deleted" : `${modes.get(rel) ?? ""}:${text2}`);
   }
-  return hash3.digest("hex");
+  return hash4.digest("hex");
 }
 function stoppedPreviewReply(s, key2, cmd) {
   const previous = stoppedPreviewChecks.get(s)?.get(key2);
@@ -45324,7 +45524,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let stage = "setup";
   const setupStart = performance4.now();
   let checkStart = 0, checkStartedAt = Date.now();
-  const inputHash = createHash17("sha256").update(ancestor);
+  const inputHash = createHash18("sha256").update(ancestor);
   for (const [rel, value5] of [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
     inputHash.update(JSON.stringify([rel, value5, modes.get(rel) ?? 420]));
   }
@@ -46187,7 +46387,9 @@ async function cleanupWorker(leadDir, w, options = {}) {
   return true;
 }
 function cleanupWorkerLogs(leadDir, w) {
-  const parent = path52.basename(path52.dirname(w.dir)) === "workers" && path52.basename(path52.dirname(path52.dirname(w.dir))) === ".room" ? path52.resolve(w.dir, "../../..") : leadDir;
+  const logRoot = w.outside && w.logFile && path52.basename(w.logFile) === `${w.tag}.log` && path52.basename(path52.dirname(w.logFile)) === "workers" && path52.basename(path52.dirname(path52.dirname(w.logFile))) === ".room" ? path52.resolve(w.logFile, "../../..") : leadDir;
+  const parent = !w.outside && path52.basename(path52.dirname(w.dir)) === "workers" && path52.basename(path52.dirname(path52.dirname(w.dir))) === ".room" ? path52.resolve(w.dir, "../../..") : logRoot;
+  if (w.outside && (path52.resolve(parent) === path52.resolve(w.dir) || path52.resolve(parent).startsWith(path52.resolve(w.dir) + path52.sep))) return;
   for (const suffix of [".log", ".mcp.log", ".env.sh", ".shell-env.mjs"]) {
     try {
       fs53.rmSync(path52.join(parent, WORKERS_DIR, w.tag + suffix), { force: true });
@@ -46396,7 +46598,7 @@ var init_worker_codecs = __esm({
 // packages/room-mcp/src/worker-file-store.ts
 import fs54 from "node:fs";
 import path53 from "node:path";
-import { createHash as createHash18, randomBytes as randomBytes4 } from "node:crypto";
+import { createHash as createHash19, randomBytes as randomBytes4 } from "node:crypto";
 import { execFileSync as execFileSync9 } from "node:child_process";
 import { performance as performance5 } from "node:perf_hooks";
 function cached2(file, load2, slot = file, validate2 = false) {
@@ -46955,6 +47157,13 @@ var init_worker_file_store = __esm({
         if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return void 0;
         return { record: candidate, status };
       }
+      /** Only process/record management: an outside checkout never grants a worktree capability. */
+      async trustedOutside(lead, tagOrName) {
+        const record2 = this.#reservedByTagOrName(tagOrName);
+        if (!record2?.outside || record2.capabilities.collect !== "none" || record2.legacy?.unowned || record2.lead.participant !== lead.participant || record2.lead.room !== lead.room || ["retiring", "retired", "abandoned"].includes(record2.phase)) return void 0;
+        const status = this.#status(record2.id);
+        return status && { record: record2, status };
+      }
       /** Any operation lease, including an unreadable one, blocks automatic claim release. */
       #operationInProgress(id3) {
         try {
@@ -47178,7 +47387,7 @@ var init_worker_file_store = __esm({
         }
       }
       #factRevision(query2) {
-        const hash3 = createHash18("sha256").update(this.commonDir).update(JSON.stringify(query2 ?? {}));
+        const hash4 = createHash19("sha256").update(this.commonDir).update(JSON.stringify(query2 ?? {}));
         const addFile = (file) => {
           let text2;
           try {
@@ -47186,7 +47395,7 @@ var init_worker_file_store = __esm({
           } catch (error2) {
             if (!["ENOENT", "ENOTDIR"].includes(error2.code ?? "")) throw error2;
           }
-          hash3.update(file).update("\0").update(snapshotReads?.get(file)?.key ?? "-").update("\0").update(text2 ?? "").update("\0");
+          hash4.update(file).update("\0").update(snapshotReads?.get(file)?.key ?? "-").update("\0").update(text2 ?? "").update("\0");
         };
         const visit = (dir) => {
           let entries;
@@ -47203,7 +47412,7 @@ var init_worker_file_store = __esm({
               continue;
             }
             if (!entry.isFile() || !(entry.name.endsWith(".json") || entry.name.endsWith(".op") || entry.name.endsWith(".writer") || dir === path53.join(this.root, "quarantine"))) continue;
-            if (dir === path53.join(this.root, "quarantine")) hash3.update(file).update("\0").update(statKey(file)?.key ?? "-").update("\0");
+            if (dir === path53.join(this.root, "quarantine")) hash4.update(file).update("\0").update(statKey(file)?.key ?? "-").update("\0");
             else addFile(file);
           }
         };
@@ -47227,12 +47436,12 @@ var init_worker_file_store = __esm({
           if (!query2.workerId && !query2.tag) {
             const dir = path53.join(this.root, "workers"), slot = `${dir}\0*.json`;
             const entries = cached2(dir, () => files(dir, ".json"), slot, true) ?? [];
-            hash3.update(snapshotReads?.get(slot)?.key ?? "-").update("\0");
+            hash4.update(snapshotReads?.get(slot)?.key ?? "-").update("\0");
             for (const file of [...entries].sort()) addFile(file);
           }
           if (!query2.recordOnly) visit(path53.join(this.root, "quarantine"));
         } else for (const family of ["workers", "tags", "adoptions", "runs", "quarantine"]) visit(path53.join(this.root, family));
-        return hash3.digest("hex");
+        return hash4.digest("hex");
       }
       /** Host/log evidence is enriched asynchronously after the immutable fact read. */
       async enrichedStatus(fact) {
@@ -47310,7 +47519,7 @@ var init_worker_file_store = __esm({
       }
       async withCollectLease(worktree, work) {
         const canonical = fs54.realpathSync(worktree);
-        const key2 = createHash18("sha256").update(canonical).digest("hex");
+        const key2 = createHash19("sha256").update(canonical).digest("hex");
         const file = path53.join(this.root, "collect", `${key2}.json`);
         const deadline = performance5.now() + GUARD_WAIT_MS3;
         for (; ; ) {
@@ -47582,7 +47791,7 @@ var init_worker_file_store = __esm({
       /** Store the hash before linking a stable patch; replay validates the published bytes. */
       async recordDiscardPatch(id3, bytes) {
         const file = path53.join(this.root, "patches", `${id3}.patch`);
-        const sha256 = createHash18("sha256").update(bytes).digest("hex");
+        const sha256 = createHash19("sha256").update(bytes).digest("hex");
         const record2 = this.#read(id3);
         if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
         if (record2.discard.patch && record2.discard.patch.path !== file) throw new Error("discard patch path changed");
@@ -47600,7 +47809,7 @@ var init_worker_file_store = __esm({
           if (error2.code !== "ENOENT") throw error2;
         }
         if (existing) {
-          if (existing.isFile() && createHash18("sha256").update(fs54.readFileSync(file)).digest("hex") === sha256) return file;
+          if (existing.isFile() && createHash19("sha256").update(fs54.readFileSync(file)).digest("hex") === sha256) return file;
           this.quarantine(file, "discard patch hash mismatch");
         }
         const scratch = path53.join(this.root, "patches", `${id3}.${randomBytes4(8).toString("hex")}.tmp`);
@@ -47646,7 +47855,7 @@ var init_worker_file_store = __esm({
             if (!path53.basename(scratch).startsWith(`${id3}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue;
             if (fs54.lstatSync(scratch).isFile()) fs54.rmSync(scratch);
           }
-          const leadDir = path53.dirname(path53.dirname(path53.dirname(record2.dir)));
+          const leadDir = record2.outside ? path53.dirname(this.commonDir) : path53.dirname(path53.dirname(path53.dirname(record2.dir)));
           const status = this.#status(id3);
           if (!status) return;
           const own2 = realStateInput(record2, status);
@@ -47655,7 +47864,7 @@ var init_worker_file_store = __esm({
             return current2 ? [realStateInput(value5, current2)] : [];
           });
           const borrowed = !!record2.sharedWith || !!this.#worktreeOwner(record2);
-          const shared = !borrowed && fs54.existsSync(record2.dir) ? requireWorkerInventory(this.#list()).filter((value5) => value5.id !== id3 && !["retiring", "retired", "abandoned"].includes(value5.phase) && path53.resolve(value5.dir) === path53.resolve(record2.dir)) : [];
+          const shared = !record2.outside && !borrowed && fs54.existsSync(record2.dir) ? requireWorkerInventory(this.#list()).filter((value5) => value5.id !== id3 && !["retiring", "retired", "abandoned"].includes(value5.phase) && path53.resolve(value5.dir) === path53.resolve(record2.dir)) : [];
           for (const user of shared) {
             const userStatus = this.#status(user.id);
             if (!userStatus || user.phase !== "discarding" && !["done", "failed", "stopped"].includes(userStatus.status)) return;
@@ -47663,8 +47872,8 @@ var init_worker_file_store = __esm({
             await this.replayDiscard(user.id, publishPatch);
             if (!["retiring", "retired"].includes(this.#read(user.id)?.phase ?? "")) return;
           }
-          const owned = !borrowed && await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
-          if (!borrowed && !owned && fs54.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
+          const owned = !record2.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
+          if (!record2.outside && !borrowed && !owned && fs54.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
           if (!record2.discard.steps.children) {
             for (const childId of record2.discard.children) {
               const child = this.#read(childId);
@@ -47683,7 +47892,7 @@ var init_worker_file_store = __esm({
           const reportedHost = launch?.outcome === "launched" ? chain.find((value5) => value5.pid === launch.pid) : void 0;
           if (launch?.outcome === "launched" && launch.process && reportedHost && (!sameStartTime(launch.process.startTime, reportedHost.startTime) || launch.process.executable !== reportedHost.executable)) return;
           const host2 = launch?.outcome === "launched" ? launch.process ?? reportedHost : void 0;
-          const identities = [host2, ...chain.filter((value5) => value5.pid !== host2?.pid)].filter((value5) => !!value5);
+          const identities = [host2, ...record2.outside ? [] : chain.filter((value5) => value5.pid !== host2?.pid)].filter((value5) => !!value5);
           if (!record2.discard.steps.stop) await this.beginStop(id3, "discarded");
           if (launch?.outcome === "launched" && !host2 && !requireWorkerInventory(this.#exits(id3)).some((value5) => value5.run === run2.n) && pidAlive(launch.pid)) return;
           for (const identity4 of identities) {
@@ -47693,9 +47902,9 @@ var init_worker_file_store = __esm({
             if (!record2.capabilities.signal || record2.discard.steps.stop) return;
             const signalOwn = { ...own2, pid: identity4.pid, processStartTime: identity4.startTime };
             const stopped = await stopWorkerWithEscalation({
-              terminate: () => signalWorker(identity4.pid, "SIGTERM", record2.dir, void 0, signalOwn, probeProcess),
+              terminate: () => signalWorker(identity4.pid, "SIGTERM", record2.outside ? void 0 : record2.dir, void 0, signalOwn, probeProcess),
               exited: () => this.alive(identity4) === "dead",
-              force: () => signalWorker(identity4.pid, "SIGKILL", record2.dir, void 0, signalOwn, probeProcess)
+              force: () => signalWorker(identity4.pid, "SIGKILL", record2.outside ? void 0 : record2.dir, void 0, signalOwn, probeProcess)
             });
             if (!stopped) return;
           }
@@ -47721,7 +47930,7 @@ var init_worker_file_store = __esm({
           if (published) {
             const expected = path53.join(this.root, "patches", `${id3}.patch`);
             if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-            const valid = fs54.existsSync(expected) && fs54.lstatSync(expected).isFile() && createHash18("sha256").update(fs54.readFileSync(expected)).digest("hex") === published.sha256;
+            const valid = fs54.existsSync(expected) && fs54.lstatSync(expected).isFile() && createHash19("sha256").update(fs54.readFileSync(expected)).digest("hex") === published.sha256;
             if (!valid) {
               if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
               await saveDiscardPatch(leadDir, own2, (bytes) => publishPatch(id3, bytes));
@@ -47730,6 +47939,8 @@ var init_worker_file_store = __esm({
           if (!record2.discard.steps.cleanup) {
             if (owned) {
               if (!await cleanupWorker(leadDir, own2, { collected: true, discarded: true, leadName: record2.lead.participant, workers })) return;
+            } else if (record2.outside) {
+              cleanupWorkerLogs(leadDir, { ...own2, outside: true, logFile: record2.logFile });
             } else if (!borrowed) {
               await pruneMissingWorkerWorktree(leadDir, own2);
               cleanupWorkerLogs(leadDir, own2);
@@ -47792,7 +48003,7 @@ var init_worker_file_store = __esm({
           return;
         }
         if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) return;
-        const leadDir = path53.dirname(path53.dirname(path53.dirname(record2.dir)));
+        const leadDir = record2.outside ? path53.dirname(this.commonDir) : path53.dirname(path53.dirname(path53.dirname(record2.dir)));
         if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
         const run2 = (...args2) => execFileSync9("git", ["--git-dir", this.commonDir, ...args2], { encoding: "utf8" }).trim();
         if (prep.created === true && fs54.existsSync(record2.dir)) {
@@ -48060,7 +48271,7 @@ var init_worker_file_store = __esm({
 // packages/room-mcp/src/idle-claims.ts
 import fs55 from "node:fs";
 import path54 from "node:path";
-import { createHash as createHash19, randomBytes as randomBytes5 } from "node:crypto";
+import { createHash as createHash20, randomBytes as randomBytes5 } from "node:crypto";
 import { performance as performance6 } from "node:perf_hooks";
 async function guarded4(file, fn, deadline = performance6.now() + GUARD_WAIT_MS4) {
   for (; ; ) {
@@ -48135,7 +48346,7 @@ var init_idle_claims = __esm({
         return path54.join(this.commonDir, "room", "sessions", sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims");
       }
       idleClaimsFile(roomKey2, sessionId, idleEpoch) {
-        const key2 = createHash19("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
+        const key2 = createHash20("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
         return path54.join(this.idleClaimsDir(sessionId), `${key2}.json`);
       }
       pendingIdleClaims(roomKey2, sessionId, idleEpoch, participant) {
@@ -48579,6 +48790,9 @@ var init_worker_registry = __esm({
       }
       trusted(...args2) {
         return this.backend().trusted(...args2);
+      }
+      trustedOutside(...args2) {
+        return this.backend().trustedOutside(...args2);
       }
       writeIntent(...args2) {
         return this.backend().writeIntent(...args2);
@@ -58139,7 +58353,7 @@ import fs57 from "node:fs";
 import path56 from "node:path";
 import os13 from "node:os";
 import { execFileSync as execFileSync10 } from "node:child_process";
-import { createHash as createHash20 } from "node:crypto";
+import { createHash as createHash21 } from "node:crypto";
 var CODEX_ROOM_HOOK_HASHES = {
   "pre_tool_use:0:0": "sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb",
   "session_start:0:0": "sha256:96fd593f780005aedd3d3796345ed66ef79f6b3751129aed8a120818ddf11d18"
@@ -58238,7 +58452,7 @@ function installedCodexRoomContract(env = process.env) {
     const evidence = contractEvidence(root);
     const raw = fs57.readFileSync(path56.join(root, "compat.json"), "utf8");
     const descriptor = JSON.parse(raw);
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash20("sha256").update(fs57.readFileSync(path56.join(root, "room-mcp.mjs"))).digest("hex")) return void 0;
+    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash21("sha256").update(fs57.readFileSync(path56.join(root, "room-mcp.mjs"))).digest("hex")) return void 0;
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
     if (contractEvidence(root) !== evidence) return void 0;
     const after = selectionEvidence(home, env);
@@ -58542,15 +58756,12 @@ init_context();
 init_disk_text();
 init_worker_registry();
 import fs58 from "node:fs";
-import { createHash as createHash21, randomUUID as randomUUID7 } from "node:crypto";
-var hash = (value5) => createHash21("sha256").update(value5).digest("hex");
-var slotKey = (owner, kind, other, path75, subject = "") => [owner, kind, other, path75, subject].join("\0");
-var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
+import { createHash as createHash22, randomUUID as randomUUID7 } from "node:crypto";
+var hash2 = (value5) => createHash22("sha256").update(value5).digest("hex");
 var peerMerge = (slot) => slot.kind === "merge" && slot.path !== "*";
 var openInEpisode = (slot) => slot.settled === "conflict";
 var clearedInEpisode = (slot) => slot.settled === "clean" && slot.clearedFrom === "conflict";
 var PEER_NOTICE_FILES = 8;
-var peerNoticeId = (owner, other, episode, open3, cleared) => `cf:${hash([owner, other, "merge"].join("\0"))}:peer:${episode}:${open3.length ? hash(JSON.stringify([open3.map((s) => [s.path, s.epoch]), cleared.map((s) => [s.path, s.epoch])])) : "clean"}`;
 var atLines = (lines2) => lines2?.length ? ` at lines ${lines2.join(", ")}` : "";
 var bounded3 = (items, sep) => items.slice(0, PEER_NOTICE_FILES).join(sep) + (items.length > PEER_NOTICE_FILES ? `${sep}and ${items.length - PEER_NOTICE_FILES} more` : "");
 var files3 = (n) => `${n} file${n === 1 ? "" : "s"}`;
@@ -58608,7 +58819,7 @@ var ConflictSlots = class {
         this.map.set(key2, {
           ...slot,
           status: "unknown",
-          inputs: hash(`${key2}\0${why}`),
+          inputs: hash2(`${key2}\0${why}`),
           why,
           fence,
           checkedAt: now,
@@ -58748,7 +58959,7 @@ var ConflictSlots = class {
       if (slot.settled === "possible" && (replay ? open3.some(([k]) => k < key2) : slot.possibleJoined)) return;
       if (slot.settled === "clean" && open3.length) return;
     }
-    const id3 = episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
+    const id3 = conflictNoticeId(key2, slot);
     const status = slot.settled;
     const ownWorker = workerView2?.lead === slot.owner;
     const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" && !ownWorker ? defaultPriority({ type: "conflict", merges: slot.merges }) : "notify";
@@ -59061,7 +59272,7 @@ var ConflictSet = class _ConflictSet {
       graph?.uncoveredPaths,
       graph?.uncoveredTruncated
     ] : void 0;
-    return hash(JSON.stringify([
+    return hash2(JSON.stringify([
       metadata(mine),
       metadata(theirs),
       room.roomSalt,
@@ -59250,7 +59461,7 @@ var ConflictSet = class _ConflictSet {
   }
   async unknownConsumer(key2, slot) {
     const why = "consumer version is not readable";
-    await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${key2}\0${why}`), why });
+    await this.settle(key2, { ...slot, status: "unknown", inputs: hash2(`${key2}\0${why}`), why });
   }
   async run(reason) {
     const carriedOf = await this.carriedPass();
@@ -59325,19 +59536,19 @@ var ConflictSet = class _ConflictSet {
         }
         if (!theirs || theirGit === "updating") {
           const why = `${other}'s manifest or base is updating`;
-          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(why), factId: "", why });
-          for (const [key2, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash2(why), factId: "", why });
+          for (const [key2, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(key2, { ...slot, status: "unknown", inputs: hash2(`${slot.inputs}\0${why}`), why });
           this.unknownContracts(other, why);
           continue;
         }
-        const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]));
+        const retrySource = hash2(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]));
         if (existing.some(([, slot]) => slot.kind === "merge" && slot.path === "*" && slot.status === "unknown" && slot.retrySource === retrySource && (slot.retryAt ?? 0) > Date.now())) continue;
         const pair = await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
         if ("cannotCompare" in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== "all" || theirs.head.coverage.kind !== "all" || !mine.fenceValid || !theirs.fenceValid || !mine.roomSalt || !theirs.roomSalt) {
           const why = "cannotCompare" in pair ? pair.cannotCompare : "manifest is incomplete or fenced out";
           const key2 = slotKey(this.owner, "merge", other, "*");
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: "", why });
-          for (const [existingKey, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(existingKey, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash2(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: "", why });
+          for (const [existingKey, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(existingKey, { ...slot, status: "unknown", inputs: hash2(`${slot.inputs}\0${why}`), why });
           this.unknownContracts(other, why);
           continue;
         }
@@ -59365,15 +59576,15 @@ var ConflictSet = class _ConflictSet {
         const [aPaths, bPaths] = await Promise.all([changed(mine, ownGit.base), changed(theirs, theirGit.base)]);
         if (!aPaths || !bPaths) {
           await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: retrySource, retrySource, factId: "", why: "cannot enumerate changed paths" });
-          for (const [key2, slot] of existing) if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0failed enumeration`), why: "cannot enumerate changed paths" });
+          for (const [key2, slot] of existing) if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash2(`${slot.inputs}\0failed enumeration`), why: "cannot enumerate changed paths" });
           continue;
         }
         if (aPaths.size + bPaths.size > _ConflictSet.MAX_PAIR_FILES) {
           const why = "too many changed paths to compare";
-          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(`${retrySource}\0${why}`), retrySource, factId: "", why });
+          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash2(`${retrySource}\0${why}`), retrySource, factId: "", why });
           for (const [key2, slot] of existing) {
             await this.fileTurn();
-            if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+            if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash2(`${slot.inputs}\0${why}`), why });
           }
           await this.claims(mine, theirs, other, pair.mergeBase, aPaths);
           continue;
@@ -59413,7 +59624,7 @@ var ConflictSet = class _ConflictSet {
           const key2 = slotKey(this.owner, "merge", other, path75);
           const bothChanged = ownMergePaths.has(path75) && bPaths.has(path75);
           const sharedBase = sharedPaths.has(path75) ? sharedBaselines[0] : void 0;
-          const inputs = hash(JSON.stringify([
+          const inputs = hash2(JSON.stringify([
             ownGit.base,
             theirGit.base,
             mergeBase2,
@@ -59459,7 +59670,7 @@ var ConflictSet = class _ConflictSet {
               path: path75,
               status: "possible",
               inputs,
-              factId: hash(["possible", path75, mergeBase2, aChange, bChange].join("\0")),
+              factId: hash2(["possible", path75, mergeBase2, aChange, bChange].join("\0")),
               why: heldBy
             });
             continue;
@@ -59495,7 +59706,7 @@ var ConflictSet = class _ConflictSet {
               path: path75,
               status: "conflict",
               inputs,
-              factId: hash(JSON.stringify([mergeBase2, "add/add"])),
+              factId: hash2(JSON.stringify([mergeBase2, "add/add"])),
               lines: [line + 1]
             });
             continue;
@@ -59510,7 +59721,7 @@ var ConflictSet = class _ConflictSet {
             path: path75,
             status: lines2.length ? "conflict" : "clean",
             inputs,
-            factId: lines2.length ? hash(JSON.stringify([mergeBase2, ...merged.conflicts.map((c) => c.o)])) : "",
+            factId: lines2.length ? hash2(JSON.stringify([mergeBase2, ...merged.conflicts.map((c) => c.o)])) : "",
             lines: lines2
           });
         }
@@ -59586,7 +59797,7 @@ var ConflictSet = class _ConflictSet {
       await this.team.post(
         ROOM,
         { type: "note", to: this.owner, priority: "fyi", text: `released ${name}'s claims: its changes are in your tree` },
-        { id: `cf:${hash([this.owner, name, claims.map((c) => c.id).sort().join(",")].join("\0"))}:landed`, auto: true }
+        { id: `cf:${hash2([this.owner, name, claims.map((c) => c.id).sort().join(",")].join("\0"))}:landed`, auto: true }
       );
     }
   }
@@ -59618,7 +59829,7 @@ var ConflictSet = class _ConflictSet {
     let changes = graph?.observed ?? [];
     if (!carriedProvider) for (const path75 of graph?.uncoveredPaths ?? []) {
       if (!this.contractPathAuthorized(theirs, path75)) continue;
-      await unknownPath(path75, "outside the contract analysis budget or not analysable", hash(JSON.stringify([graph?.sourceFence, graph?.sourceRev, path75, "uncovered"])));
+      await unknownPath(path75, "outside the contract analysis budget or not analysable", hash2(JSON.stringify([graph?.sourceFence, graph?.sourceRev, path75, "uncovered"])));
     }
     if (carriedProvider) {
       const paths = /* @__PURE__ */ new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()]);
@@ -59629,8 +59840,8 @@ var ConflictSet = class _ConflictSet {
         const before = await boundedBaseline(this.team.dir, carried.baseline, path75);
         if (before.kind === "unavailable") {
           const key2 = slotKey(this.owner, "contract", other, path75, "*");
-          await unknownPath(path75, before.error.message, hash(JSON.stringify([carried.baseline.sha, path75, "unavailable"])));
-          const id3 = `cf:${hash(`${key2}\0${carried.baseline.sha}`)}:degraded`;
+          await unknownPath(path75, before.error.message, hash2(JSON.stringify([carried.baseline.sha, path75, "unavailable"])));
+          const id3 = `cf:${hash2(`${key2}\0${carried.baseline.sha}`)}:degraded`;
           if (this.freshStorage && !await this.freshStorage() || this.guard && !this.guard()) throw new StaleConflictInputs();
           const notice = await this.notices.post(ROOM, {
             type: "note",
@@ -59648,7 +59859,7 @@ var ConflictSet = class _ConflictSet {
           return;
         }
         const oldText = before.kind === "absent" ? "" : before.text;
-        const cacheKey = hash(JSON.stringify([carried.baseline.sha, path75, oldText, after]));
+        const cacheKey = hash2(JSON.stringify([carried.baseline.sha, path75, oldText, after]));
         let parsed = this.contractCache.get(cacheKey);
         if (!parsed) {
           const versions2 = await parseInWorker(path75, [oldText, after]);
@@ -59695,7 +59906,7 @@ var ConflictSet = class _ConflictSet {
       uses.sort();
       if (!uses.length) continue;
       live.add(key2);
-      const input = hash(JSON.stringify([change, uses]));
+      const input = hash2(JSON.stringify([change, uses]));
       await this.settle(key2, {
         owner: this.owner,
         other,
@@ -59704,7 +59915,7 @@ var ConflictSet = class _ConflictSet {
         subject: change.symbol,
         status: "conflict",
         inputs: input,
-        factId: hash(JSON.stringify([change.symbol, change.detail, change.kind])),
+        factId: hash2(JSON.stringify([change.symbol, change.detail, change.kind])),
         why: change.detail,
         consumers: uses
       });
@@ -59731,7 +59942,7 @@ var ConflictSet = class _ConflictSet {
         path: slot.path,
         subject: slot.subject,
         status: "clean",
-        inputs: hash(`clean\0${key2}`),
+        inputs: hash2(`clean\0${key2}`),
         factId: "",
         consumers: slot.consumers
       });
@@ -59759,7 +59970,7 @@ var ConflictSet = class _ConflictSet {
       seen.add(key2);
       for (const [oldKey] of prior.slice(1)) await this.drop(oldKey);
       const claims = theirClaims.filter((c) => claimsOverlap(c, { path: path75, from: 1, to: Number.MAX_SAFE_INTEGER })).sort((a, b) => a.id.localeCompare(b.id));
-      const inputs = hash(JSON.stringify([
+      const inputs = hash2(JSON.stringify([
         mine.head.semRev,
         theirs.head.semRev,
         mergeBase2,
@@ -59825,7 +60036,7 @@ var ConflictSet = class _ConflictSet {
         // Claim IDs, timestamps and range padding are inputs, not new overlap facts. Actual
         // conflicting regions matter even when the merge verdict stays "conflict"; another
         // rewrite of the peer's text inside the same region does not change that verdict.
-        factId: hash(JSON.stringify([revision, merges ? [] : hits, conflicts?.map((c) => [c.from, c.o])])),
+        factId: hash2(JSON.stringify([revision, merges ? [] : hits, conflicts?.map((c) => [c.from, c.o])])),
         lines: hits.map((r) => r.from),
         why: exact.length ? claim2.intent : "approximate range",
         ...earlierSha !== void 0 ? { earlierSha } : {},
@@ -59844,8 +60055,8 @@ var ConflictSet = class _ConflictSet {
           path: path75,
           subject: subject2,
           status: "conflict",
-          inputs: hash(JSON.stringify([a.id, a.path, a.from, a.to, b.id, b.path, b.from, b.to])),
-          factId: hash(JSON.stringify([subject2, a.path, b.path]))
+          inputs: hash2(JSON.stringify([a.id, a.path, a.from, a.to, b.id, b.path, b.from, b.to])),
+          factId: hash2(JSON.stringify([subject2, a.path, b.path]))
         });
         continue;
       }
@@ -59862,8 +60073,8 @@ var ConflictSet = class _ConflictSet {
         path: a.path,
         subject,
         status: hit ? mapped.approximate ? "possible" : "conflict" : "clean",
-        inputs: hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, a.id, a.from, a.to, a.claimedHash, b.id, b.from, b.to, b.claimedHash])),
-        factId: hit ? hash(JSON.stringify([subject, a.from, a.to, mapped])) : ""
+        inputs: hash2(JSON.stringify([mine.head.semRev, theirs.head.semRev, a.id, a.from, a.to, a.claimedHash, b.id, b.from, b.to, b.claimedHash])),
+        factId: hit ? hash2(JSON.stringify([subject, a.from, a.to, mapped])) : ""
       });
     }
     for (const [key2, slot] of this.slots.owned(this.owner)) {
@@ -59875,7 +60086,7 @@ var ConflictSet = class _ConflictSet {
         path: slot.path,
         subject: slot.subject,
         status: "clean",
-        inputs: hash(`released\0${key2}`),
+        inputs: hash2(`released\0${key2}`),
         factId: ""
       });
     }
@@ -60792,7 +61003,7 @@ function createWorkerRuntime(deps) {
     progress("opening registry");
     const registry2 = await registryForDir(s.dir);
     progress("verifying local capability");
-    const trusted = await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag);
+    const trusted = await registry2.trustedOutside({ participant: s.me.name, room: s.roomName }, w.tag) ?? await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag);
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; not signalled`;
     let acquired;
     progress("acquiring stop operation");
@@ -60825,7 +61036,7 @@ function createWorkerRuntime(deps) {
         if (processState.process !== "ours") return `pid ${w.pid} not signalled: the process is gone; worker record kept`;
       }
       const protectedPids = w.pid ? [w.pid] : [];
-      const ownedWorktree = !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...await localWorkers(s.dir)] })).cwd;
+      const ownedWorktree = !trusted.record.outside && !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...await localWorkers(s.dir)] })).cwd;
       const stopped = [];
       let cleanupError;
       const stopCwdProcesses = async () => {
@@ -60861,7 +61072,7 @@ function createWorkerRuntime(deps) {
       if (stopReason && cleanupError) throw new Error(cleanupError);
       progress(`delivering notification (${signalled ? "signal sent" : "no signal sent"}); stop intent recorded`);
       if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === "discarded by the lead" && w.lead === s.me.name)) await notify(() => s.post(s.me, { type: "note", to: w.lead, priority: signalled ? "notify" : "interrupt", text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true }));
-      return how + cleanupText();
+      return how + cleanupText() + (trusted.record.outside ? `; kept ${w.dir} (an existing directory, not a Room worktree)` : "");
     } finally {
       if (acquired) {
         progress(`releasing stop operation; ${stopRecorded ? "stop intent recorded" : "stop intent not confirmed"}`);
@@ -60893,7 +61104,7 @@ import path65 from "node:path";
 // packages/room-mcp/src/browser-open.ts
 init_src3();
 import { spawn as spawn6 } from "node:child_process";
-import { createHash as createHash22, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash23, randomUUID as randomUUID9 } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
 import path59 from "node:path";
 function launchBrowserHandler(command3, args2) {
@@ -60922,11 +61133,11 @@ async function openRoomBrowser(url, directory, options = {}) {
   const quoted = JSON.stringify(url).replace(/[<>&\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const escaped = url.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const script = `location.replace(${quoted})`;
-  const digest = createHash22("sha256").update(script).digest("base64");
+  const digest = createHash23("sha256").update(script).digest("base64");
   const html = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${digest}'; base-uri 'none'"><title>Opening Room</title><p>Opening your room. <a href="${escaped}">Continue to Room</a></p><script>${script}</script>`;
   privateStateDirectory(directory);
   const destination = new URLSearchParams(parsed.hash.slice(1)).get("room") ?? parsed.href.split("#")[0];
-  const name = createHash22("sha256").update(destination).digest("hex").slice(0, 24);
+  const name = createHash23("sha256").update(destination).digest("hex").slice(0, 24);
   const entry = path59.join(directory, `${name}.html`), temporary = path59.join(directory, `${randomUUID9()}.tmp`);
   try {
     await writeFile(temporary, html, { mode: 384, flag: "wx" });
@@ -63899,7 +64110,7 @@ init_disk_text();
 init_git();
 import fs68 from "node:fs";
 import path67 from "node:path";
-import { createHash as createHash23, randomUUID as randomUUID11 } from "node:crypto";
+import { createHash as createHash24, randomUUID as randomUUID11 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -64058,7 +64269,7 @@ var HooksBridge = class {
 var hookHealth = /* @__PURE__ */ new WeakMap();
 var PROCESS_STARTED_AT = Date.now();
 function hookReceiptPath(sessionDir, sessionId) {
-  return path67.join(sessionDir, "..", "..", "hook-receipts", createHash23("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
+  return path67.join(sessionDir, "..", "..", "hook-receipts", createHash24("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
 }
 function readBoundedJson(file) {
   let fd;
@@ -64614,11 +64825,11 @@ init_leases2();
 init_worker_store();
 import fs70 from "node:fs";
 import path69 from "node:path";
-import { createHash as createHash24, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash25, randomUUID as randomUUID12 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text2) {
-  return `n:${kind}:${createHash24("sha256").update(text2).digest("hex").slice(0, 16)}`;
+  return `n:${kind}:${createHash25("sha256").update(text2).digest("hex").slice(0, 16)}`;
 }
 var Batch = class {
   constructor(id3, kind, leaseMs) {
@@ -64716,7 +64927,7 @@ var Ledger = class {
     const cursor = this.route(s);
     const prompt = new Set(this.promptIds(s));
     const superseded = supersededConflictNotices([...s.room.mail.values(), ...s.room.messages()]);
-    return owed(s.room, s.me, cursor, this.o.route(s), (m) => !prompt.has(m.id) && !superseded.has(m.id) && (this.o.relevant?.(s, m) ?? true));
+    return owed(s.room, s.me, cursor, { ...this.o.route(s), stateSynced: s.provider?.synced === true }, (m) => !prompt.has(m.id) && !superseded.has(m.id) && (this.o.relevant?.(s, m) ?? true));
   }
   /** Receipts for a confirmed handoff; a late commit for an expired batch still writes (a real handoff). */
   commit(batch) {
@@ -65152,7 +65363,7 @@ function createHandlerState(ctx) {
       const snap = snapshotPath(s.room, person, view, path75);
       const result2 = await versionOf(snap, path75, {
         gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
-        known: (hash3) => readBoundedCheckoutText(s.dir, hash3, path75, "utf8", false).catch(() => void 0)
+        known: (hash4) => readBoundedCheckoutText(s.dir, hash4, path75, "utf8", false).catch(() => void 0)
       });
       if (!snap || snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, now()))) return result2;
     }
@@ -65392,12 +65603,12 @@ init_context();
 init_leases2();
 import fs71 from "node:fs";
 import path70 from "node:path";
-import { createHash as createHash25, randomBytes as randomBytes7 } from "node:crypto";
-var hash2 = (text2) => createHash25("sha256").update(text2).digest("hex");
+import { createHash as createHash26, randomBytes as randomBytes7 } from "node:crypto";
+var hash3 = (text2) => createHash26("sha256").update(text2).digest("hex");
 var CollectionReview = class {
   file;
   constructor(registryRoot, worktree) {
-    this.file = path70.join(registryRoot, "collection-reviews", hash2(fs71.realpathSync(worktree)) + ".json");
+    this.file = path70.join(registryRoot, "collection-reviews", hash3(fs71.realpathSync(worktree)) + ".json");
   }
   read() {
     let value5;
@@ -65420,18 +65631,18 @@ var CollectionReview = class {
     if (this.read().length) throw new Error(this.status());
   }
   hold(session, reviewer, reason) {
-    const holds = this.read(), owner = hash2(session);
+    const holds = this.read(), owner = hash3(session);
     if (holds.some((h) => h.owner === owner)) return "your collection review hold is already active. " + this.status();
     if (holds.length >= 32) throw new Error("too many collection review holds; release an existing hold first");
     const token = randomBytes7(32).toString("hex");
-    holds.push({ owner, reviewer, reason, at: Date.now(), tokenHash: hash2(token) });
+    holds.push({ owner, reviewer, reason, at: Date.now(), tokenHash: hash3(token) });
     writeAtomic(this.file, holds);
     return `collection review hold active for this checkout. New room_collect apply, copy and discard operations are blocked. This does not undo or interrupt an earlier collection, or freeze other lifecycle actions.
 Release after review with room_review action="release" from this same session. For recovery from another session, keep this private reviewToken: ${token}`;
   }
   release(session, token) {
     const holds = this.read();
-    const remaining = holds.filter((h) => token ? h.tokenHash !== hash2(token) : h.owner !== hash2(session));
+    const remaining = holds.filter((h) => token ? h.tokenHash !== hash3(token) : h.owner !== hash3(session));
     if (remaining.length === holds.length) throw new Error("no matching review hold; only its creating session or private reviewToken can release it");
     writeAtomic(this.file, remaining);
     return "your collection review hold released; no work collected. " + this.status();
@@ -65778,7 +65989,7 @@ function handlers10(state) {
   const takeWorkerOperation = async (s, w, op) => {
     if (!w.id) return "untrusted";
     const registry2 = await registryForDir(s.dir);
-    const trusted = await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag, op === "discard");
+    const trusted = await registry2.trustedOutside({ participant: s.me.name, room: s.roomName }, w.tag) ?? await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag, op === "discard");
     if (!trusted || trusted.record.id !== w.id) return "untrusted";
     try {
       await registry2.beginOperation(w.id, op);
@@ -65846,13 +66057,13 @@ function handlers10(state) {
     let s = actingLead ?? await holdingWorker(a.tag, lead);
     const w = (await localWorkers(s.dir, (record2) => record2.tag === a.tag))[0];
     if (!w) return "error: no worker " + a.tag + " owned by you";
+    const workerRecord = await registry2.read(w.id);
     const owner = await ownership(s, w, discarding);
-    if (!owner.owned) {
-      if (a.force !== true || !await orphanDiscardAllowed(s, w)) return "error: no worker " + a.tag + " owned by you";
+    if (!owner.owned || workerRecord?.outside && w.lead !== s.me.name) {
+      if (workerRecord?.outside || a.force !== true || !await orphanDiscardAllowed(s, w)) return "error: no worker " + a.tag + " owned by you";
       s = { ...s, me: { ...s.me, name: w.lead } };
     }
     if (owner.liveLead) return `error: ${w.tag} belongs to ${owner.liveLead}, which is still running; ask it with room_send, or discard ${owner.liveLead}'s worker first`;
-    const workerRecord = await registry2.read(w.id);
     const borrowedOwner = workerRecord && await registry2.worktreeOwner(workerRecord);
     const borrowed = !!w.sharedWith || !!borrowedOwner;
     const lock = await takeWorkerOperation(s, w, "discard");
@@ -65866,7 +66077,7 @@ function handlers10(state) {
     if (lock === "busy") return "error: this worker is already being handled or retired";
     try {
       const sharedResults = [];
-      if (!borrowed) {
+      if (!borrowed && !workerRecord?.outside) {
         const users = requireWorkerEvidence(await registry2.checkoutUsers(await registry2.read(w.id)));
         const running = users.find(({ status }) => !["done", "failed", "stopped"].includes(status.status));
         if (running && fs72.existsSync(w.dir)) return `error: discard refused; ${running.record.tag} is still running in ${w.tag}'s worktree: ${w.dir}`;
@@ -65880,7 +66091,7 @@ function handlers10(state) {
       if (unsafe) return unsafe;
       const children = await descendants(s, w);
       if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`;
-      const beforePlan = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: await ownershipRecords(s) });
+      const beforePlan = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, leadName: s.me.name, workers: await ownershipRecords(s) });
       const ignoredBefore = !borrowed && decideDiscard(beforePlan) === "cleanup" ? await ignoredWorkerArtifacts(w, s.dir) : [];
       if (ignoredBefore.length && a.force !== true) return ignoredDiscardRefusal(w.tag, w.dir, ignoredBefore);
       await registry2.beginDiscard(lock, a.force === true, children.map((child) => child.id).filter(Boolean));
@@ -65900,7 +66111,7 @@ function handlers10(state) {
       const cleanupErrors = [];
       const beforeStop = await workerRealState(s.dir, w, { process: true, hasHandle: !!rooms.handle?.(s, w.id), probe: state.ctx?.probe });
       const verifiedProcess = decideStop(beforeStop).host === "signal";
-      const terminated = borrowed ? [] : await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, await ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
+      const terminated = borrowed || workerRecord?.outside ? [] : await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, await ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
       if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
         const how = await state.dismissWorker(s, w, "discarded by the lead");
         if ((await localWorkers(s.dir, (record2) => record2.id === w.id))[0]?.status === "running" && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) {
@@ -65923,10 +66134,10 @@ function handlers10(state) {
         await registry2.interruptDiscard(lock, unsafeAfterDismissal);
         return unsafeAfterDismissal;
       }
-      if (!borrowed) terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, await ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses));
+      if (!borrowed && !workerRecord?.outside) terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, await ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses));
       if (cleanupErrors.length) throw new Error(cleanupErrors.join("; "));
-      const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: await ownershipRecords(s) });
-      const missing2 = !borrowed && decideDiscard(afterStop) === "prune";
+      const afterStop = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, leadName: s.me.name, workers: await ownershipRecords(s) });
+      const missing2 = !workerRecord?.outside && !borrowed && decideDiscard(afterStop) === "prune";
       let missingDetail;
       if (missing2) {
         try {
@@ -65951,7 +66162,7 @@ function handlers10(state) {
       await registry2.markDiscardStep(lock, "patch");
       const preservation = { ignored: [], uncollected: [] };
       if (ownedWorktree && !await cleanupWorker(s.dir, w, { collected: true, discarded: true, terminatedProcesses: terminated, processOptions: { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, leadName: s.me.name, workers: await ownershipRecords(s), preservation })) throw new Error("worker is not an owned Room worktree");
-      if (borrowed) cleanupWorkerLogs(s.dir, w);
+      if (borrowed || workerRecord?.outside) cleanupWorkerLogs(s.dir, { ...w, outside: workerRecord?.outside, logFile: workerRecord?.logFile });
       await registry2.markDiscardStep(lock, "cleanup");
       releaseClaimsOnDone(s, () => false, w.name, false);
       await registry2.markDiscardStep(lock, "prune");
@@ -65972,7 +66183,7 @@ function handlers10(state) {
         outcome: "dismissed",
         disposition: "discarded"
       });
-      return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRef ? "; branch recovery ref: " + preservation.recoveryRef : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
+      return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : workerRecord?.outside || decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRef ? "; branch recovery ref: " + preservation.recoveryRef : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
     } catch (e) {
       await registry2.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {
       });
@@ -66277,12 +66488,29 @@ function handlers10(state) {
         const { s } = item;
         let { w } = item;
         const holder = await registryForDir(s.dir);
-        const record2 = a.mode !== "copy" && a.keep !== true ? await holder.read(w.id) : void 0;
+        const currentRecord = await holder.read(w.id);
+        if (currentRecord?.outside && currentRecord.capabilities.collect === "none") {
+          const trusted = await holder.trustedOutside({ participant: s.me.name, room: s.roomName }, w.tag);
+          if (!trusted || trusted.record.id !== w.id) {
+            out.push(`skipped ${await missingCapability(s, w)}`);
+            continue;
+          }
+          const retired = a.keep !== true && a.mode !== "copy" && await retireIfNothingToCollect(
+            s.dir,
+            holder,
+            trusted.record,
+            { probe: state.ctx?.probe, hasHandle: (x) => state.workerAlive(s, x) }
+          );
+          out.push(outsideCollectLine(trusted.record) + (retired ? `; retired ${w.tag}` : `; room_collect(tag="${w.tag}", discard=true) ends its record`));
+          if (retired) await rooms.project();
+          continue;
+        }
+        const record2 = a.mode !== "copy" && a.keep !== true ? currentRecord : void 0;
         if (record2?.collectPending) {
           out.push(await finishPendingCollect(s, rooms, w.id, {
             probe: state.ctx?.probe,
             list: state.ctx?.listCwdProcesses,
-            alive: (x) => state.workerAlive(s, x) || pidPresent(x.pid, state.ctx?.probe)
+            alive: (x) => state.workerAlive(s, x) || workerProcessOwnership(x.pid, x, state.ctx?.probe) !== "not-ours"
           }) ?? `skipped ${w.tag}: changed while waiting`);
           continue;
         }

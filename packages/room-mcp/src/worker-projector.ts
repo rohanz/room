@@ -26,9 +26,10 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
 /**
  * One pass over `projectable(lead, roomKey)`: writes views of `write`, retires `retire` and marks that room's
  * cleanup done, and deletes this lead's views whose worker is in neither list. Retiring records are never
- * written, so projection cannot undo retirement (N2). Returns the written records for the caller's own facts.
+ * written, so projection cannot undo retirement (N2). `retirementOnly` lets clone retention finish cleanup
+ * without writing another lead's live views or fence. Returns the written records for the caller's own facts.
  */
-export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown, active: () => boolean = () => true): Promise<WorkerRecord[] | undefined> {
+export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown, active: () => boolean = () => true, retirementOnly = false): Promise<WorkerRecord[] | undefined> {
   const roomKey = s.roomName, fence = s.daemon.fence
   const current = () => active() && s.daemon.fence === fence
   if (!fence || !current()) return undefined
@@ -36,14 +37,14 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   // come from the cache. The projectable lists are taken after these awaits: a worker may have started retiring.
   const records = requireWorkerInventory(await registry.list())
   if (!current()) return undefined
-  await warmRunLogs(s, records.filter(record => record.lead.participant === lead && !['retired', 'abandoned'].includes(record.phase)))
+  await warmRunLogs(s, records.filter(record => record.lead.participant === lead && (retirementOnly ? record.phase === 'retiring' : !['retired', 'abandoned'].includes(record.phase))))
   if (!current()) return undefined
   const before = await registry.snapshot()
   if (!current() || !before.available) return undefined
   requireWorkerEvidence(workerEvidence(before))
   const { write: all, retire: retiring } = requireWorkerEvidence(await registry.projectable(lead, roomKey))
   if (!current()) return undefined
-  const write = all.filter(({ record }) => inRole(record, roomKey, role))
+  const write = retirementOnly ? [] : all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
   const post = releasePoster(s.post)
   const listed = new Set([...write.map(({ record }) => record.id), ...retire.map(record => record.id)])
@@ -77,7 +78,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
         s.room.clearWorkerCoordination(record.name, 'worker stopped', post)
       }
     }
-    for (const [id, view] of s.room.workerViews) {
+    if (!retirementOnly) for (const [id, view] of s.room.workerViews) {
       if (view.lead !== lead || listed.has(id)) continue
       const known = snapshotRead(facts, id)
       // A view without a local record is a dead incarnation's; the joined writer removes it.
