@@ -280,3 +280,27 @@ Round 0 was clean and the scored end is the first Room result under the better s
 The lead tail came back, for a different reason than t3. The last resumed worker finished at T+24:28 and the lead exited at T+34:22; about seven of those ten minutes were its own integrated build, lint and full suite (13:28:06 to 13:35:19), which it now awaits before exiting as the skill requires, so this is the first Room run with a clean exit code. The controller's validation then runs the same build, lint and suite again (6.5 minutes). In this harness that run is pure duplication; in real use it is the integrator's required validation and stays. The floor for Room on this task is therefore about 34 minutes plus validation, and the remaining lever is a lead that starts its integrated run while the last revision workers are still finishing, or trusts a complete passing preview of the final inputs, which the skill already permits only under exact equivalence.
 
 Limits: one run, same operator and grader, static correctness review plus the automated gates, same task; the cost is higher than t4 with one more worker. Evidence: `/tmp/room-coupled-benchmark-2026-10-18-checklist-t5/` (`control/evidence/room/`, `manual-review.json`, `preparation/` with `RUN-PLAN.md`, `harness-tests.log`, prepare and preflight logs, `make-attempt.mjs`).
+
+### Two Room arms on the 0.17.46 candidate (2026-11-10)
+
+Purpose: check the release candidate in a real six-worker run after the receipt-replay fix, not to claim a speedup. Both arms used the 2026-10-13 control (byte-identical lead prompts, spec, revisions and 89 acceptance cases, verified by diff against the durable copy; milestone-triggered revisions; effort high). No solo arm was run; the only solo figure on this control is 2026-10-13's (Opus 5.5, 42.9 min, Claude Code 2.1.296).
+
+| | Trial 1 | Trial 2 |
+|---|---:|---:|
+| Lead model | Fable 5.1 (as on 2026-10-13) | Opus 5.5 |
+| Workers | 6, Opus 5.5 | 6, Opus 5.5 |
+| Plugin frozen from | main 520d18fd | main 452799cb |
+| Claude Code | 2.1.319 | 2.1.32x |
+| First spawn / last spawn | 8.9 / 14.8 min | 5.2 / 6.9 min |
+| Brief size per worker | 12 to 21 KB | 4 to 7 KB |
+| Change 1 / change 2 delivered | 29.1 / 44.1 min | 22.2 / 37.2 min |
+| Lead exit | 66.4 min | 52.3 min |
+| Validation round 0 | pass, 89/89 | pass, 89/89 |
+| Scored end | 73.3 min | 59.3 min |
+| Reported cost | $48.92 | $35.39 |
+| Lead waiting | 4 `room_wait`, then about 40 shell sleep loops | 24 `room_wait`, no sleep-loop polling |
+| Protocol violations | 0 | 0 |
+
+Room behaviour: daemon and MCP logs clean in both arms, no restart, no redelivered message, every collect applied. Trial 1 exposed three product faults fixed before trial 2 (452799cb): a bare `room_wait` told a headless lead to end its turn; `room_state` replies hit the size cap and dropped lines; the workers skill was 20 KB and leads wrote long, repetitive briefs. Trial 2 friction: three end-of-run `room_collect(discard=true)` calls were refused because BullMQ's generated `rawScripts/` and `src/scripts/` are ignored files not covered by a recovery patch.
+
+Limits: one run per condition, so the difference between the trials mixes the lead model, the plugin changes and the Claude Code version. Other deviations from 2026-10-13: Redis 8.10.3 from Homebrew instead of 7.4.11 built from source, and a recreated baseline commit of the same BullMQ version. Neither trial is comparable with the 2026-10-18 runs (effort medium, timed revisions, 92 cases). Same operator and grader; static correctness review plus the automated gates. Evidence: `/tmp/room-coupled-benchmark-2026-11-10/` and `/tmp/room-coupled-benchmark-2026-11-10-t2/` (`control/evidence/room/`, `DEVIATIONS.md`).
