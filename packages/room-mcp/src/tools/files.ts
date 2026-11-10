@@ -23,6 +23,7 @@ import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../worker-git.js'
 import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree.js'
+import { fingerprintTree, createPreviewTreePaths, validateFingerprintSync, beginPreviewAttempt, type TreeFingerprint } from '../preview-evidence.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
@@ -395,7 +396,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               if (await settler.settle(await result.settledWorkers())) continue
               return movedReply(await result.moved(), await result.movementDetails())
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
+            const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, coverageComplete: complete, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
             ranOk = verdict.passed
             const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join('; ')})`
               : !appliedFromOthers ? '; passed on your own tree only' : ''
@@ -679,6 +680,7 @@ interface TrackedProcessOptions {
   lock?: PreviewUnlock
   env?: NodeJS.ProcessEnv
   signal?: AbortSignal
+  beforeLaunch?: () => void
 }
 
 function runTrackedProcess(file: string, args: string[], options: TrackedProcessOptions): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
@@ -764,8 +766,12 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
         settle(() => failed ? fail() : resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped }))
       })().catch(error => settle(() => reject(error)))
     })
-    if (child.pid && lock) void lock.trackProcess(child.pid).then(() => child.stdin.end('GO\n'), stop)
-    else if (child.pid) child.stdin.end('GO\n')
+    const launch = () => {
+      try { options.beforeLaunch?.(); child.stdin.end('GO\n') }
+      catch (error) { stop(error instanceof Error ? error : new Error(String(error))) }
+    }
+    if (child.pid && lock) void lock.trackProcess(child.pid).then(launch, stop)
+    else if (child.pid) launch()
   })
 }
 
@@ -1227,6 +1233,8 @@ function rememberStoppedPreview(s: Session, key: string, text: string): void {
 /** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
 export interface PreviewObserver { baseMaterialized?(): void; mergedWrite?(path: string): void }
 export interface MergedTreeOptions {
+  /** False for a partial participant selection's materialization (not merely moving contributors). */
+  coverageComplete?: boolean
   modes?: ReadonlyMap<string, number>
   observe?: PreviewObserver
   /** Run even though the identical command on these inputs hit the time limit before. */
@@ -1240,12 +1248,14 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
   const key = previewCheckKey(ancestor, merged, cmd, modes)
   const repeated = !options.allowSlow ? stoppedPreviewReply(s, key, cmd) : undefined
   if (repeated) return repeated
-  return previewProcesses.run({ signal: options.signal }, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, { modes, observe: options.observe, historyKey: key, signal: options.signal }))
+  return previewProcesses.run({ signal: options.signal }, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, { modes, coverageComplete: options.coverageComplete !== false, observe: options.observe, historyKey: key, signal: options.signal }))
 }
 
 async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string,
-  options: { modes: ReadonlyMap<string, number>; observe?: PreviewObserver; historyKey: string; signal?: AbortSignal }): Promise<TestResult> {
+  options: { modes: ReadonlyMap<string, number>; coverageComplete: boolean; observe?: PreviewObserver; historyKey: string; signal?: AbortSignal }): Promise<TestResult> {
   const { modes, observe, historyKey, signal } = options
+  const startedAt = new Date().toISOString()
+  let startHead: string | undefined
   let dir: string | undefined
   // Processes outlived the cleanup deadline: leave the tree in place and its lock held until they exit.
   let survivors = false
@@ -1260,6 +1270,14 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   let checkMs = 0
   let cacheFailure = false
   let completed: TestResult | undefined
+  let tree: TreeFingerprint | undefined
+  let treePaths: Awaited<ReturnType<typeof createPreviewTreePaths>> | undefined
+  let treeChanged: string | undefined
+  let evidenceFailure: string | undefined
+  let checkExitCode: number | null = null
+  let checkFinished = false
+  let commandPassed = false
+  let finishEvidence: Awaited<ReturnType<typeof beginPreviewAttempt>> | undefined
   let stage: 'setup' | 'check' = 'setup'
   const setupStart = performance.now()
   let checkStart = 0, checkStartedAt = Date.now()
@@ -1271,6 +1289,8 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   const evidence = `snapshot inputs sha256: ${inputHash.digest('hex')}; command: ${JSON.stringify(cmd)}\nenvironment: ${process.platform}/${process.arch}, Node ${process.version}; inherited environment (ROOM_* removed, ROOM_MERGED_TREE set) and linked dependencies are not fingerprinted`
   try {
     if (signal?.aborted) throw new PreviewCancelled()
+    finishEvidence = await beginPreviewAttempt(s.dir, cmd, startedAt)
+    startHead = (await git(s.dir, ['rev-parse', 'HEAD'])).trim()
     await previewPhase('setup', async () => {
       let cache: string | undefined
       let source: Awaited<ReturnType<typeof checkoutSettings>> | undefined
@@ -1315,6 +1335,11 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
         observe?.mergedWrite?.(rel)
       }
       await linkSharedDirs(s.dir, dir!)
+      try {
+        treePaths = await createPreviewTreePaths(s.dir, ancestor, dir!, signal)
+        tree = await fingerprintTree(dir!, await treePaths.paths(), signal)
+      }
+      catch (error) { evidenceFailure = error instanceof Error ? error.message : String(error) }
     })
     setupMs = performance.now() - setupStart
     if (signal?.aborted) throw new PreviewCancelled()
@@ -1323,11 +1348,21 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
     env.ROOM_MERGED_TREE = dir!
     checkStart = performance.now(); checkStartedAt = Date.now()
+    if (tree) {
+      try { await finishEvidence(tree, { complete: false, exitCode: null, passed: false }, startHead) }
+      catch (error) { evidenceFailure = error instanceof Error ? error.message : String(error) }
+    }
     const result = await previewCheck(async () => {
       const command = bash ?? 'sh'
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
+      const beforeLaunch = () => {
+        if (!tree || !treePaths) return
+        try { validateFingerprintSync(tree, treePaths.pathsSync()) }
+        catch (error) { treeChanged = 'included tree changed before command launch: ' + (error instanceof Error ? error.message : String(error)) }
+      }
       // Windows has no process groups to signal (and never caches): its check keeps execFile's own deadline.
       if (process.platform === 'win32') return new Promise<{ code: number; out: string; stopped: boolean }>((resolve, reject) => {
+        beforeLaunch()
         execFile(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env, signal }, (err, stdout, stderr) => {
           if (err && signal?.aborted) { const cancelled = new PreviewCancelled(); cancelled.out = `${stdout}${stderr}`; reject(cancelled); return }
           const raw = err ? (err as { code?: unknown }).code : 0
@@ -1336,15 +1371,29 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
           resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false })
         })
       })
-      const tracked = await runTrackedProcess(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, lock: previewProcesses.getStore()?.lock, env, signal })
+      const tracked = await runTrackedProcess(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, lock: previewProcesses.getStore()?.lock, env, signal, beforeLaunch })
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
     checkMs = performance.now() - checkStart
+    checkExitCode = result.code
+    checkFinished = true
+    if (tree && treePaths) {
+      try {
+        const paths = await treePaths.paths()
+        const after = await fingerprintTree(dir!, paths, signal)
+        if (tree.hash !== after.hash) throw new Error('included manifest differs from command input')
+        validateFingerprintSync(tree, treePaths.pathsSync())
+        validateFingerprintSync(after, paths)
+      } catch (error) { treeChanged ??= 'included tree changed during command: ' + (error instanceof Error ? error.message : String(error)) }
+    }
     stoppedPreviewChecks.get(s)?.delete(historyKey)
     completed = await previewPhase('collect', () => {
       const tail = outputTail(result.out)
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : skippedQuarantine ? 'fresh base; cached tree quarantined while an earlier check\'s process may use it' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdict.text}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
+      commandPassed = result.code === 0 && !verdict.text.includes('tests: FAILED') && !treeChanged
+      const gitContext = cached ? `detached worktree at ${ancestor} with its own index` : 'temporary materialization with no repository of its own'
+      const verdictText = treeChanged ? `${verdict.text.replace('tests: PASSED', 'tests: NOT certified')}\n${treeChanged}; preview evidence is NOT passed` : verdict.text
+      return { passed: verdict.passed && !treeChanged, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : skippedQuarantine ? 'fresh base; cached tree quarantined while an earlier check\'s process may use it' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\npreview Git context: ${gitContext}; lead HEAD at preview start: ${startHead}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdictText}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
     })
     return completed
   } catch (error) {
@@ -1375,6 +1424,19 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     }
     return { passed: false, text: `${stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}`}\n${evidence}\ncommand completion: ${stage === 'setup' ? 'not run' : 'incomplete'}` }
   } finally {
+    // Capture the pre-command image, even for a SNAPSHOT result. Never fingerprint output that
+    // the command may have rewritten. Incomplete runs remain evidence, but never a passing tree.
+    if (finishEvidence) {
+      try {
+        const completion = { complete: checkFinished && options.coverageComplete, exitCode: checkExitCode, passed: commandPassed, ...(treeChanged ? { reason: treeChanged } : {}) }
+        if (!await finishEvidence(tree ?? null, completion, startHead ?? null) && completed) completed.text += '\npreview evidence not retained: a newer attempt started or the record expired'
+      } catch (error) { evidenceFailure = error instanceof Error ? error.message : String(error) }
+    }
+    if (evidenceFailure) {
+      console.warn('room preview evidence: ' + evidenceFailure)
+      if (completed) completed.text += '\nwarning: tree equivalence evidence unavailable: ' + evidenceFailure
+    }
+    await treePaths?.dispose().catch(error => console.warn('room preview path index cleanup: ' + String(error)))
     // Cancellation stops the check; restoring the cached tree still runs, under its own bounds.
     previewProcesses.getStore()!.signal = undefined
     try {

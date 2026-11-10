@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import * as gitModule from '@room/roomd/git'
 import { RoomDoc, gitBlobHash, manifestKey } from '@room/shared'
 import { handlers } from '../src/tools/files.js'
+import { collectedTreeEvidence } from '../src/preview-evidence.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
@@ -97,6 +98,12 @@ it.each([{ passed: true, label: 'passing' }, { passed: false, label: 'failing' }
   expect(fs.readFileSync(runs, 'utf8')).toBe('run\n')
   expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false, testsCommand: run })
   expect(room.messages().some(m => m.type === 'note' && m.text.startsWith('merge preview with'))).toBe(false)
+  // Materialize the checked bytes after a SNAPSHOT run: currency is separate from
+  // whether a later collection produces exactly the tree that actually ran.
+  for (const file of [marker, release, runs]) fs.unlinkSync(file)
+  fs.writeFileSync(path.join(root!, 'ben.txt'), 'snapshot\n')
+  fs.writeFileSync(path.join(root!, 'chris.txt'), 'stable\n')
+  expect(await collectedTreeEvidence(root!)).toContain(passed ? 'tree that passed ' + JSON.stringify(run) : 'tree whose preview failed ' + JSON.stringify(run))
 })
 
 it('names every participant that moved, retaining the revisions actually tested', async () => {

@@ -98,7 +98,9 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
    kept or carried snapshots: Room anchors on it and applies worker deltas in collection
    order; a stale lead publication shows as a gap, retried by an addressed message without
    refresh. Clean text merges still need behavioral tests. Resolve conflicts and failing
-   tests before collection.
+   tests before collection. Start the final full check as a preview while the last workers finish,
+   if it can complete within the preview limit. A command that cannot finish within five
+   minutes must run on the collected tree; `allowSlow` only permits retrying timed-out inputs.
 6. Collect. Keep finished workers resumable until follow-ups and requirement revisions are
    done: defer collection, or `room_collect(keep=true)` applies finished output while keeping
    the worktree, branch, logs and session. `keep` is apply-only, incompatible with copy or
@@ -119,9 +121,13 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
      stop also stop processes running inside an owned worktree.
    - A `dir=` retry in a failed worker's checkout previews and collects normally and detaches
      without touching the owner; discard the owner after the retry and its other users finish.
-7. Validate and finish. Run full relevant validation, including the CI checks the change requires, on the collected tree.
+7. Validate and finish. Whoever integrates owns full relevant validation, including the CI checks the change requires.
    Reuse a complete passing preview only for identical preview inputs, command and relevant environment.
-   Its input hash does not establish equivalence with the collected tree. Validate the collected tree unless exact equivalence is independently established.
+   Validate the collected tree unless collect reports it identical to the most recent preview of this checkout, which passed the same command you would run.
+   The report covers files and command only: Git state (HEAD, refs, index), environment and ignored files are not compared.
+   Rerun commands that read Git state on the collected tree, even when HEAD is unchanged.
+   Files written by another process during collect are outside the guarantee; stop concurrent writers.
+   Rerun when installed dependencies, ignored build output or services the command depends on differ.
    Partial, timed-out or output-limited runs do not validate the whole tree. Where background commands are verified, start the integrated test run in the background and review diffs or write the summary
    meanwhile. Await completion and inspect the actual result before reporting it.
    Stop remaining background commands and monitors you started before the final message.

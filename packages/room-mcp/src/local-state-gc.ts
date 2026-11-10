@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { ROOM_STALE_MS } from '@room/shared'
-import { leaseToken, liveness } from './leases.js'
+import { leaseToken, liveness, withGuard } from './leases.js'
 import type { ProcessProbe } from '@room/relay/process'
 
 /**
@@ -44,7 +44,7 @@ const inDir = (dir: string, test: (name: string, isDir: boolean) => boolean) =>
 const isTemp = (name: string) => name.endsWith('.tmp')
 
 /** Top-level directories whose entries the table judges one by one. */
-const GC_DIRECTORIES = ['relay', 'hub', 'hub-leases', 'names', 'publishers', 'sessions', 'hook-receipts', 'sharing', 'compat', 'browser', 'profiles', 'registry']
+const GC_DIRECTORIES = ['relay', 'hub', 'hub-leases', 'names', 'publishers', 'sessions', 'hook-receipts', 'sharing', 'compat', 'browser', 'profiles', 'preview-evidence', 'registry']
 
 export const GC_RULES: GcRule[] = [
   { path: 'relay.json, hub/incarnation.json', owner: 'daemon', lifetime: { kind: 'keep' },
@@ -69,6 +69,7 @@ export const GC_RULES: GcRule[] = [
   { path: 'compat/<hash>.json', owner: 'MCP session', lifetime: { kind: 'age', ms: 30 * DAY }, match: inDir('compat', n => n.endsWith('.json')) },
   { path: 'browser/*.html', owner: 'MCP session', lifetime: { kind: 'age', ms: HOUR }, match: inDir('browser', n => n.endsWith('.html')) },
   { path: 'profiles/*.cpuprofile', owner: 'MCP session', lifetime: { kind: 'age', ms: ROOM_STALE_MS }, match: inDir('profiles', n => n.endsWith('.cpuprofile')) },
+  { path: 'preview-evidence/*.json', owner: 'MCP session', lifetime: { kind: 'age', ms: ROOM_STALE_MS }, match: inDir('preview-evidence', n => n.endsWith('.json')) },
   { path: 'registry/workers, tags, adoptions, runs, patches, collect, migration.*', owner: 'lead MCP', lifetime: { kind: 'owner' },
     match: inDir('registry', n => n !== 'quarantine') },
   { path: 'registry/quarantine/*', owner: 'MCP session', lifetime: { kind: 'age', ms: 30 * DAY }, match: inDir('registry/quarantine', () => true) },
@@ -112,7 +113,17 @@ export function collectLocalState(commonDir: string, options: GcOptions = {}): G
       case 'foreign': return remove(target, true)
       case 'temp': return olderThan(target, GC_TEMP_AGE_MS) ? remove(target) : undefined
       case 'age': return !isDir && olderThan(target, life.ms) ? remove(target) : undefined
-      case 'dead-holder': return !isDir && deadHolderIdle(target) ? remove(target) : undefined
+      case 'dead-holder': {
+        if (isDir || !deadHolderIdle(target)) return
+        if (path.basename(path.dirname(target)) === 'preview-evidence' && /^[a-f0-9]{64}-publication(?:\.guard)+$/.test(path.basename(target)) && !options.dryRun) {
+          // Let the lease primitive recheck/recover this exact holder and release
+          // its own nonce. Blind removal could unlink a newly acquired successor.
+          try { withGuard(target.slice(0, -'.guard'.length), () => { removed.push(target) }, options.probe) }
+          catch { /* A live/unknown successor keeps its guard. */ }
+          return
+        }
+        return remove(target)
+      }
       case 'orphan-sharing': return !isDir && orphanSharing(target) ? remove(target) : undefined
       case 'session-dir': {
         const newest = Math.max(stat(target)?.mtimeMs ?? 0, ...list(target).map(f => stat(path.join(target, f.name))?.mtimeMs ?? 0))

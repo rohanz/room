@@ -57,7 +57,13 @@ While alone, work normally. With company:
      dependencies in `people`.
    - A pass is interim evidence for those revisions; it does not certify the latest combined
      code or rerun automatically. Reuse a complete passing preview only for identical preview inputs, command and relevant environment.
-     Its input hash does not establish equivalence with the integrated tree. Validate the integrated tree unless exact equivalence is independently established.
+     Validate the collected tree unless collect reports it identical to the most recent preview of this checkout, which passed the same command you would run.
+     The report covers files and command only: Git state (HEAD, refs, index), environment and ignored files are not compared.
+     Rerun commands that read Git state on the collected tree, even when HEAD is unchanged.
+     Files written by another process during collect are outside the guarantee; stop concurrent writers.
+     Rerun when installed dependencies, ignored build output or services the command depends on differ.
+     Leads should start the final full check as a preview while the last workers finish, if it fits
+     the preview limit; longer commands must run on the collected tree.
      Partial, timed-out or output-limited runs do not validate the whole tree. Rerun for relevant
      changes, failures or uncertain inputs; before `room_done`, verify the evidence is current.
      Do not skip checks solely because reported changed paths do not overlap.

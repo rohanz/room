@@ -24,6 +24,7 @@ import { realStateInput, type LocalWorker } from '../worker-status.js'
 import { currentToolTiming } from '../timing.js'
 import { CollectionReview } from '../collection-review.js'
 import { acknowledgeKeptPublication } from '../kept-publication.js'
+import { collectedTreeEvidence } from '../preview-evidence.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
@@ -672,6 +673,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
     releasePaths(files)
     if (!files.length) out.push('nothing copied (empty directories)')
+    out.push(await collectedTreeEvidence(leadRoot))
 
     // Named artifacts are only a partial collection; keep the worker recoverable.
     return out.join('\n')
@@ -995,6 +997,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         await finishOne()
       }
+      out.push(await collectedTreeEvidence(leadRoot))
       return out.join('\n')
     } catch (e) {
       for (const id of collectStarted) await registry.abortCollect(id).catch(() => {})

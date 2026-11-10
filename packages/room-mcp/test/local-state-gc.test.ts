@@ -2,12 +2,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ROOM_STALE_MS } from '@room/shared'
 import { collectLocalState, GC_RULES, GC_TEMP_AGE_MS } from '../src/local-state-gc.js'
+import { withGuard } from '../src/leases.js'
 
 const dirs: string[] = []
-afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR
 const now = 1_800_000_000_000
 const alive = { startTime: 'fixture-start', executable: 'fixture-node' }
@@ -38,6 +39,33 @@ const left = (common: string) => {
 }
 
 describe('local state collector', () => {
+  it('preserves a live successor of a stale preview publisher guard', () => {
+    const c = commonDir(), prefix = 'a'.repeat(64) + '-'
+    const guard = touch(c, `preview-evidence/${prefix}publication.guard`, now - 2 * HOUR, token(200))
+    const stat = fs.statSync.bind(fs)
+    let replaced = false
+    vi.spyOn(fs, 'statSync').mockImplementation((...args) => {
+      const result = stat(...args)
+      if (String(args[0]) === guard && !replaced) {
+        replaced = true
+        fs.writeFileSync(guard, JSON.stringify(token(100)))
+        fs.utimesSync(guard, now / 1000, now / 1000)
+      }
+      return result
+    })
+    collectLocalState(c, { now: () => now, probe })
+    expect(replaced).toBe(true)
+    expect(fs.existsSync(guard)).toBe(true)
+    expect(JSON.parse(fs.readFileSync(guard, 'utf8')).pid).toBe(100)
+  })
+  it('ages out preview evidence and abandoned writes while preserving recent records', () => {
+    const c = commonDir()
+    touch(c, 'preview-evidence/old.json', now - ROOM_STALE_MS - 1)
+    touch(c, 'preview-evidence/recent.json', now - HOUR)
+    touch(c, 'preview-evidence/abandoned.tmp', now - GC_TEMP_AGE_MS - 1)
+    expect(collectLocalState(c, { now: () => now }).unknown).toEqual([])
+    expect(left(c)).toEqual(['preview-evidence/recent.json'])
+  })
   it('removes everything the table ages out and keeps every kept, owned or live entry', () => {
     const c = commonDir(), old = now - ROOM_STALE_MS - 1, gone = '/nonexistent/worktree/' + Math.random()
     // keep / owner

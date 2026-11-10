@@ -19,7 +19,7 @@ describe('room_collect', () => {
   it('copies ignored and nested artifacts byte-for-byte, without committing', async () => {
     put(worker, 'artifact.bin', 'a\0b'); put(worker, 'out/nested.txt', 'nested')
     const t = setup(), before = git(lead, 'rev-parse', 'HEAD')
-    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['artifact.bin', 'out'] })).toBe('copied artifact.bin\ncopied out/nested.txt')
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['artifact.bin', 'out'] })).toContain('copied artifact.bin\ncopied out/nested.txt\nno preview ran a command on this tree; validate it')
     expect(fs.readFileSync(path.join(lead, 'artifact.bin'))).toEqual(fs.readFileSync(path.join(worker, 'artifact.bin')))
     expect(git(lead, 'rev-parse', 'HEAD')).toBe(before)
     expect(fs.existsSync(worker)).toBe(true)
@@ -38,7 +38,7 @@ describe('room_collect', () => {
     expect({ head: git(lead, 'rev-parse', 'HEAD'), index: git(lead, 'ls-files', '--stage'), status: git(lead, 'status', '--porcelain') }).toEqual(before)
     expect(fs.readFileSync(path.join(lead, 'renamed.txt'))).toEqual(fs.readFileSync(path.join(worker, 'file.txt')))
     expect(release).not.toHaveBeenCalled()
-    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toBe('copied file.txt')
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toContain('copied file.txt\nno preview ran a command on this tree; validate it')
   })
 
   it('preflights the whole copy before releasing or writing, and requires force for modified destinations', async () => {
@@ -46,7 +46,7 @@ describe('room_collect', () => {
     const t = setup()
     expect(await t.call({ tag: 'test', mode: 'copy', paths: ['a.txt', 'file.txt'] })).toContain('lead has modified file.txt')
     expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false); expect(release).not.toHaveBeenCalled()
-    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toBe('copied file.txt')
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toContain('copied file.txt\nno preview ran a command on this tree; validate it')
   })
 
   it('preserves an original and a newly created later destination during copy preparation', async () => {
@@ -186,7 +186,7 @@ describe('room_collect', () => {
     const t = setup()
     expect(await t.call({ tag: 'test', mode: 'copy', paths: ['large.bin'] })).toContain('lead has modified large.bin; pass force=true')
     expect(release).not.toHaveBeenCalled()
-    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['large.bin'], force: true })).toBe('copied large.bin')
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['large.bin'], force: true })).toContain('copied large.bin\nno preview ran a command on this tree; validate it')
   })
 
   it('restores earlier destinations if a later apply write fails', async () => {

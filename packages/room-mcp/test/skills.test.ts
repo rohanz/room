@@ -68,13 +68,22 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       'Reuse a complete passing preview only for identical preview inputs, command and relevant environment',
       'CI checks the change requires',
     ] },
-    ...(['workers', 'etiquette', 'agent'] as const).map(source => {
-      const tree = source === 'workers' ? 'collected' : 'integrated'
-      return { sources: [source], phrases: [
-        `Its input hash does not establish equivalence with the ${tree} tree`,
-        `Validate the ${tree} tree unless exact equivalence is independently established`,
-      ] }
-    }),
+    { sources: ['workers', 'etiquette', 'agent'], phrases: [
+      'Validate the collected tree unless collect reports it identical to the most recent preview of this checkout',
+      'files and command only',
+    ] },
+    // The server instructions carry the rule; the exclusions are spelled out in the skills and in every collect reply.
+    { sources: ['workers', 'etiquette'], phrases: [
+      'environment and ignored files are not compared',
+      'Git state (HEAD, refs, index)',
+      'Rerun commands that read Git state on the collected tree',
+      'Files written by another process during collect are outside the guarantee',
+    ] },
+    { sources: ['agent'], phrases: [
+      'not Git state, environment or ignored files', 'dependencies still take time', 'then room_done releases claims',
+      'Skipped present peers need explicit names', 'Rerun for relevant changed inputs, failures or uncertain evidence',
+      'No release or changed-message ritual',
+    ] },
     { sources: ['etiquette'], phrases: [
       'A timeout, interruption or missing result is not a pass',
       'source review or document checks where applicable', 'Whoever integrates owns comprehensive relevant validation',
