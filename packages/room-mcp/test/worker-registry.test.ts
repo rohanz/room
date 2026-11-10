@@ -208,7 +208,7 @@ describe('WorkerRegistry durable store', () => {
     await expect(second.writeIntent({ ...intent(), id: 'w_02', tag: 'more', name: 'lead+more' }, 1)).rejects.toThrow(/capacity/)
   })
 
-  it('keeps a dead orphan tag reservation blocked while its payload is missing', async () => {
+  it('keeps a missing payload blocking until bootstrap proves its reservation dead and empty', async () => {
     const dir = common(), registry = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
     const tag = path.join(dir, 'room', 'registry', 'tags', 'tests.json')
     fs.mkdirSync(path.dirname(tag), { recursive: true })
@@ -218,8 +218,9 @@ describe('WorkerRegistry durable store', () => {
     expect(await registry.read('w_01')).toBeUndefined()
     expect(fs.readFileSync(tag)).toEqual(before)
     const reopened = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
-    await expect(reopened.writeIntent(intent())).rejects.toMatchObject({ reason: 'blocked' })
-    expect(fs.readFileSync(tag)).toEqual(before)
+    expect(fs.existsSync(tag)).toBe(false)
+    await expect(reopened.writeIntent(intent())).resolves.toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(tag, 'utf8')).id).toBe('w_01')
   })
 
   it('resumes a partially written migration map with the same worker id', async () => {

@@ -1,4 +1,5 @@
-import { slotKey, noticeId, peerNoticeId } from '@room/shared'
+import { owed, trim, participantsView } from '@room/shared'
+import { hubAppend } from '../../shared/src/testing.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import type { Baseline } from '@room/roomd/baseline'
 import { describe, expect, it, vi } from 'vitest'
@@ -12,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { ConflictSet, ConflictSlots, reconcileProjectedConflicts } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId, peerNoticeId } from '../src/conflict-set.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
@@ -2712,4 +2713,49 @@ describe('per-peer merge notice delivery', () => {
       { other: 'B', path: 'x', lines: [3] }, { other: 'B', path: 'y', lines: [3] }, { other: 'C', path: 'x', lines: [3] }])
     room.doc.destroy()
   })
+})
+
+it('a fresh live worker with its view not yet projected must retain a current conflict', async () => {
+  const room = new RoomDoc(), owner = 'lead+starting', other = 'peer'
+  try {
+    for (const name of [owner, other]) room.participants.set(`${name}\0id`, { name, kind: 'agent' })
+    room.participants.set(`${owner}\0holder`, { sessionId: 'live-session', epoch: 1, workerId: 'w_starting', pid: 1234, startTime: 'now', executable: 'codex', at: 1 })
+    const awareness = { getStates: () => new Map([[1, { user: { name: owner, kind: 'agent' }, sessionId: 'live-session' }]]) }
+    expect(participantsView(room, awareness, Date.now()).find(p => p.name === owner)?.visible).toBe(true)
+    const slots = new ConflictSlots(room, vi.fn(async (from, body, options) => {
+      hubAppend(room, from, body, { id: options.id, at: 2 }); return { ok: true } as const
+    }), 'fence')
+    await slots.settle(slotKey(owner, 'merge', other, 'x'), { owner, other, path: 'x', kind: 'merge', status: 'conflict', inputs: 'live', factId: 'live' })
+    const notice = room.messages()[0]!
+    expect.soft(owed(room, { name: owner }, { frontier: 0, routed: new Set() }, {}).map(m => m.id)).toContain(notice.id)
+    trim(room, 3)
+    expect(room.outcomes.has(notice.id)).toBe(false)
+  } finally { room.doc.destroy() }
+})
+
+it('trim between claim renewal and slot refresh must not poison the unchanged semantic notice ID', async () => {
+  const room = new RoomDoc(), owner = 'pat', other = 'peer'
+  try {
+    for (const name of [owner, other]) room.participants.set(`${name}\0id`, { name, kind: 'agent' })
+    const add = (id: string) => room.claims.set(id, { id, by: other, byKind: 'agent', path: 'x', from: 1, to: 2, intent: 'edit', at: 1 })
+    add('old-claim')
+    const slots = new ConflictSlots(room, vi.fn(async (from, body, options) => {
+      if (!room.message(options.id) && !room.outcomes.has(options.id)) hubAppend(room, from, body, { id: options.id, at: 2 })
+      return { ok: true } as const
+    }), 'fence')
+    // This is the actual ConflictSet producer's semantic per-path key, which deliberately survives claim renewal.
+    const key = slotKey(owner, 'edit-in-claim', other, 'x')
+    const result = (subject: string) => ({ owner, other, path: 'x', subject, kind: 'edit-in-claim' as const, status: 'conflict' as const, inputs: subject, factId: 'same-overlap' })
+    await slots.settle(key, result('old-claim'))
+    const notice = room.messages().find(m => m.to === owner)!
+    room.doc.transact(() => { room.claims.delete('old-claim'); add('new-claim') })
+    // A hub trim or an admission can run before the asynchronous conflict producer has refreshed its slot.
+    trim(room, 3)
+    await slots.settle(key, result('new-claim'))
+    await slots.replay(owner)
+    expect(slots.get(key)?.subject).toBe('new-claim')
+    expect(room.claims.has('new-claim')).toBe(true)
+    expect.soft(room.outcomes.has(notice.id)).toBe(false)
+    expect(owed(room, { name: owner }, { frontier: 0, routed: new Set() }, {}).map(m => m.id)).toContain(notice.id)
+  } finally { room.doc.destroy() }
 })

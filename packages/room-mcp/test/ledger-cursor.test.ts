@@ -1,4 +1,3 @@
-import { slotKey } from '@room/shared'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -6,11 +5,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SETTLE_MS, serializedStore, startHub, type Hub } from '@room/hub-core'
-import { highestSeq, RoomDoc, trim, type Identity, type Msg, type PostBody } from '@room/shared'
+import { highestSeq, RoomDoc, type Msg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
-import type { Post } from '../src/post.js'
-import { ConflictSlots } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
 import { closeRegistryForDir, openWorkerReader, registryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
@@ -23,7 +20,7 @@ beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'room-cursor-')); execFileSyn
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 afterEach(async () => { vi.unstubAllEnvs(); await closeRegistryForDir(dir) })
 
-const session = (room: RoomDoc, name = 'pat'): Session => ({ room, me: { name, kind: 'agent' }, roomName: 'r', dir, provider: { synced: true } } as unknown as Session)
+const session = (room: RoomDoc, name = 'pat'): Session => ({ room, me: { name, kind: 'agent' }, roomName: 'r', dir } as unknown as Session)
 const ledger = (sessionDir?: string) => new Ledger({ sessionId: () => 'host-1', sessionDir: () => sessionDir, route: () => ({}) })
 const ids = (messages: readonly Msg[]) => messages.map(m => m.id)
 
@@ -247,54 +244,4 @@ describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
     l.bind(s)
     expect(text(l.candidates(s))).toEqual(['old note, trimmed to mail', 'old answer: update doctor-entry.test.ts', 'new briefing'])
   })
-})
-
-
-describe('conflict state after a name is reused', () => {
-  it('ends notices about a retired worker before a new session takes the addressed name, but delivers a live conflict', async () => {
-    const room = new RoomDoc(), name = 'rohanz+claude'
-    for (const who of [name, 'lead+retired', 'lead+live']) room.participants.set(`${who}\0id`, { name: who, kind: 'agent' })
-    const post: Post = <T extends Msg>(from: Identity, body: PostBody<T>, opts?: { id?: string }) => {
-      const msg = hubAppend<T>(room, from, body, opts)
-      return Object.assign(Promise.resolve({ ok: true as const, msg, seq: msg.seq! }), { id: msg.id })
-    }
-    const slots = new ConflictSlots(room, post, '1')
-    for (const other of ['lead+retired', 'lead+live']) {
-      const claim = room.addClaim({ by: other, byKind: 'agent', path: 'x.ts', from: 1, to: 2, intent: 'edit' })
-      await slots.settle(slotKey(name, 'edit-in-claim', other, 'x.ts', claim.id), {
-        owner: name, other, kind: 'edit-in-claim', path: 'x.ts', subject: claim.id,
-        status: 'conflict', inputs: other, factId: other,
-      })
-      await slots.settle(slotKey(name, 'merge', other, 'x.ts'), {
-        owner: name, other, kind: 'merge', path: 'x.ts', status: 'conflict', inputs: other, factId: other,
-      })
-    }
-    const stale = room.messages().filter(m => m.to === name && 'text' in m && m.text.includes('lead+retired'))
-    expect(stale).toHaveLength(2)
-    // One old notice has already rolled off the bus into mail.
-    room.mail.set(stale[0].id, stale[0])
-    room.bus.delete(room.messages().findIndex(m => m.id === stale[0].id), 1)
-    room.retireWorker('w_old', { id: 'w_old', name: 'lead+retired', tag: 'retired', lead: 'lead', host: 'codex',
-      task: 'old task', summary: 'done', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }, () => {})
-    const s = session(room, name), l = ledger()
-    l.bind(s)
-    expect(l.candidates(s)).toHaveLength(2)
-    expect(l.candidates(s).every(m => 'text' in m && m.text.includes('lead+live'))).toBe(true)
-    trim(room, Date.now(), { conflictsReady: true })
-    for (const m of stale) expect(room.outcomes.get(m.id)).toMatchObject({ to: name, outcome: 'expired' })
-    expect(room.mail.has(stale[0].id)).toBe(false)
-    expect(l.candidates(s)).toHaveLength(2)
-  })
-})
-
-
-it('does not drop a conflict before its provider has finished syncing the subject', () => {
-  const room = new RoomDoc(), s = session(room), l = ledger()
-  const notice = hubAppend(room, { name: 'room', kind: 'agent' }, { type: 'conflict', to: 'pat', path: 'x', text: 'current conflict', claimId: 'not-yet-synced', otherClaimId: '' }, { id: 'cf:abc:1' })
-  const provider = s.provider as unknown as { synced: boolean }
-  provider.synced = false
-  l.bind(s)
-  expect(ids(l.candidates(s))).toEqual([notice.id])
-  provider.synced = true
-  expect(l.candidates(s)).toEqual([])
 })

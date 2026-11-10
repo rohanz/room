@@ -8060,73 +8060,6 @@ var init_yjs = __esm({
   }
 });
 
-// packages/shared/src/conflict-notices.ts
-import { createHash } from "node:crypto";
-function conflictNoticeId(key, slot) {
-  const episode = slot.kind === "edit-in-claim" && slot.possibleEpisode !== void 0 && (slot.settled === "possible" || slot.clearedFrom === "possible") ? slot.possibleEpisode : void 0;
-  return episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : noticeId(key, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
-}
-function subjects(doc) {
-  let cache = caches.get(doc.doc);
-  if (!cache) {
-    cache = {};
-    caches.set(doc.doc, cache);
-    const invalidate = (tx) => {
-      if ([doc.claims, doc.participants, doc.doc.getMap("conflicts")].some((root) => tx.changed.has(root))) cache.subjects = void 0;
-    };
-    doc.doc.on("beforeObserverCalls", invalidate);
-    doc.doc.on("destroy", () => doc.doc.off("beforeObserverCalls", invalidate));
-  }
-  if (cache.subjects) return cache.subjects;
-  const out = /* @__PURE__ */ new Map();
-  const add = (id2, slot) => out.set(id2, [...out.get(id2) ?? [], slot]);
-  for (const [key, slot] of doc.doc.getMap("conflicts")) {
-    if (!slot || typeof slot.owner !== "string" || typeof slot.other !== "string" || typeof slot.path !== "string" || !["merge", "edit-in-claim", "claims", "contract"].includes(slot.kind) || !Number.isSafeInteger(slot.epoch) || slot.subject !== void 0 && typeof slot.subject !== "string") continue;
-    if (slot.kind === "merge" && slot.path !== "*") add(peerNoticeId(slot.owner, slot.other, 0, [], []).split(":peer:")[0] + ":peer:", slot);
-    add(conflictNoticeId(key, slot), slot);
-    add(noticeId(key, slot.epoch, slot.episode) + ":holder", slot);
-  }
-  cache.subjects = out;
-  return out;
-}
-function staleConflictNotice(doc, m) {
-  if (m.type !== "conflict" && m.type !== "merge-conflict" && m.type !== "contract") return false;
-  if (m.type === "conflict" && [m.claimId, m.otherClaimId].some((id2) => id2 && !doc.claims.has(id2))) return true;
-  if (m.from !== "room" || !m.id.startsWith("cf:")) return false;
-  const pair = /^cf:[0-9a-f]+:peer:/.exec(m.id)?.[0];
-  const slots = subjects(doc).get(pair ?? m.id) ?? [];
-  if (!slots.length) {
-    if (!m.to) return false;
-    return doc.retiredWorkers().some((worker) => {
-      if (!worker || typeof worker.name !== "string" || !Number.isFinite(worker.retiredAt) || worker.retiredAt < m.at || participantRecord(doc, worker.name)) return false;
-      if (pair) return peerNoticeId(m.to, worker.name, 0, [], []).startsWith(pair);
-      const kind = m.type === "merge-conflict" ? "merge" : m.type === "contract" ? "contract" : "edit-in-claim";
-      const subject = m.type === "contract" ? m.symbol : m.type === "conflict" ? m.claimId : "";
-      return [slotKey(m.to, kind, worker.name, m.path, subject), slotKey(m.to, kind, worker.name, m.path)].some((key) => m.id.startsWith(`cf:${hash(key)}:`));
-    });
-  }
-  return !slots.some((slot) => {
-    if (!participantRecord(doc, slot.owner) || !participantRecord(doc, slot.other)) return false;
-    if (slot.kind === "claims" || slot.kind === "edit-in-claim") {
-      const ids = slot.subject?.split("\0").filter(Boolean) ?? [];
-      return ids.length > 0 && ids.every((id2) => doc.claims.has(id2));
-    }
-    return true;
-  });
-}
-var hash, slotKey, noticeId, peerNoticeId, caches;
-var init_conflict_notices = __esm({
-  "packages/shared/src/conflict-notices.ts"() {
-    "use strict";
-    init_doc();
-    hash = (value2) => createHash("sha256").update(value2).digest("hex");
-    slotKey = (owner, kind, other, path12, subject = "") => [owner, kind, other, path12, subject].join("\0");
-    noticeId = (key, epoch, episode) => `cf:${hash(key)}:${epoch}${episode ? `:${episode}` : ""}`;
-    peerNoticeId = (owner, other, episode, open, cleared) => `cf:${hash([owner, other, "merge"].join("\0"))}:peer:${episode}:${open.length ? hash(JSON.stringify([open.map((s) => [s.path, s.epoch]), cleared.map((s) => [s.path, s.epoch])])) : "clean"}`;
-    caches = /* @__PURE__ */ new WeakMap();
-  }
-});
-
 // packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
@@ -8433,9 +8366,6 @@ function trim(doc, now, opts = {}) {
     if (outcome === "expired") report.expired++;
     else report.evicted++;
   };
-  for (const m of [...bus, ...mail.values()]) {
-    if (m.to && !ended.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id) && opts.conflictsReady && staleConflictNotice(doc, m)) end(m, "expired");
-  }
   for (const m of [...pending.values()]) if (now - m.at > OWED_TTL_MS) end(m, "expired");
   const byRecipient = /* @__PURE__ */ new Map();
   for (const m of pending.values()) {
@@ -8545,7 +8475,6 @@ var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
-    init_conflict_notices();
     init_bus_index();
     init_ledger();
     init_messages();
@@ -8633,7 +8562,6 @@ var init_delivery = __esm({
       clean = false;
       cleanKeep = BUS_KEEP;
       cleanBytes = BUS_BYTES;
-      cleanConflictsReady = false;
       oldest = Infinity;
       oldestOutcome = Infinity;
       changed = /* @__PURE__ */ new Set();
@@ -8649,9 +8577,6 @@ var init_delivery = __esm({
         for (const [type, keys3] of tx.changed) {
           if (!(type instanceof YMap) || !this.rootNames.get(type)?.startsWith("seen:")) continue;
           for (const key of keys3) if (key !== null) this.changed.add(key);
-        }
-        if ([...tx.changed.keys()].some((root) => ["claims", "participants", "conflicts"].includes(this.rootNames.get(root) ?? ""))) {
-          this.clean = false;
         }
         const changed = this.changed;
         this.changed = /* @__PURE__ */ new Set();
@@ -8840,7 +8765,6 @@ var init_delivery = __esm({
       markTrimmed(now, opts) {
         this.cleanKeep = opts.busKeep ?? BUS_KEEP;
         this.cleanBytes = opts.busBytes ?? BUS_BYTES;
-        this.cleanConflictsReady = opts.conflictsReady === true;
         this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter((m) => Number.isFinite(m.at)).map((m) => m.at));
         this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter((o) => o && Number.isFinite(o.at)).map((o) => o.at));
         this.clean = !this.bus.stale && this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && now - this.oldest <= OWED_TTL_MS;
@@ -8851,7 +8775,7 @@ var init_delivery = __esm({
         return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && this.outcomeSizes.size <= OUTCOMES_MAX && this.outcomeBytes <= OUTCOMES_BYTES && now - this.oldestOutcome <= OUTCOMES_TTL_MS && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk)) && !(this.outcomeSizes.size && (this.overCapRecipients.size || mailRisk || now - this.oldest > OWED_TTL_MS));
       }
       trimmed(now, opts) {
-        return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS && this.cleanConflictsReady === (opts.conflictsReady === true) && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
+        return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
       }
     };
     indexes = /* @__PURE__ */ new WeakMap();
@@ -12353,7 +12277,7 @@ var require_websocket = __commonJS({
     var http3 = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes2, createHash: createHash4 } = __require("crypto");
+    var { randomBytes: randomBytes2, createHash: createHash3 } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -13021,7 +12945,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash4("sha1").update(key + GUID).digest("base64");
+        const digest = createHash3("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -13390,7 +13314,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http3 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash4 } = __require("crypto");
+    var { createHash: createHash3 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -13697,7 +13621,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash4("sha1").update(key + GUID).digest("base64");
+        const digest = createHash3("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -14366,9 +14290,6 @@ function compactMinDeleted(raw) {
   return raw === "off" || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 1e4;
 }
 
-// packages/shared/src/index.ts
-init_conflict_notices();
-
 // packages/hub-core/src/hub.ts
 var MAINTENANCE_MS = 6e4;
 var MAX_HUB_FRAME_BYTES = 96 * 1024;
@@ -14829,7 +14750,7 @@ var RoomHub = class {
     const keep = this.host.busKeep ?? BUS_KEEP;
     const highBytes = BUS_BYTES - MAX_MESSAGE_BYTES - 1024;
     if (this.doc.bus.length > keep + Math.max(1, Math.ceil(keep / 10)) || deliveryIndex(this.doc).bus.bytes > highBytes)
-      trim(this.doc, wall, { origin: HUB_ORIGIN, busKeep: keep, busBytes: highBytes * 0.9, conflictsReady: !this.settling() });
+      trim(this.doc, wall, { origin: HUB_ORIGIN, busKeep: keep, busBytes: highBytes * 0.9 });
     return record;
   }
   // ---- requests ----
@@ -14987,7 +14908,7 @@ var RoomHub = class {
     if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB");
     const wall = this.host.wall();
     if (msg.to && !req.auto) {
-      const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN, conflictsReady: !this.settling() });
+      const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN });
       if (!admission.ok) return fail("over-cap", admission.reason);
     }
     if (!isRoomNotice(msg) && this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
@@ -15027,7 +14948,7 @@ var RoomHub = class {
     if (now - this.maintainedAt >= MAINTENANCE_MS) {
       this.maintainedAt = now;
       this.repairMailAliases();
-      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep, conflictsReady: true });
+      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep });
       const drift = deliveryIndex(this.doc).verify();
       if (drift) this.host.log(`hub: ledger index drift corrected (${drift})`);
       this.expire();
@@ -15263,12 +15184,12 @@ function incarnationFile(file, io) {
 // packages/relay/src/hub.ts
 import fs5 from "node:fs";
 import path6 from "node:path";
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // packages/relay/src/leases.ts
 import fs4 from "node:fs";
 import path5 from "node:path";
-import { createHash as createHash2, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 // packages/relay/src/private-state.ts
 import fs2 from "node:fs";
@@ -15812,7 +15733,7 @@ function ensureDurableDirectory(dir, holdsFile = true) {
   }
   syncDirectory(parent);
 }
-var startMarker = (startTime) => createHash2("sha256").update(startTime).digest("hex").slice(0, 24);
+var startMarker = (startTime) => createHash("sha256").update(startTime).digest("hex").slice(0, 24);
 var tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
 function cleanupOrphanTemps(dir, probe = probeProcess) {
   let removed = 0;
@@ -16019,7 +15940,7 @@ function incarnationFile2(commonDir) {
   return incarnationFile(file, { nullIsMissing: true, read: (file2) => fs5.readFileSync(file2, "utf8"), write: writeAtomic });
 }
 function relayLeaseFile(commonDir, room) {
-  const file = path6.join(commonDir, "room", "hub-leases", `${createHash3("sha256").update(room).digest("hex")}.json`);
+  const file = path6.join(commonDir, "room", "hub-leases", `${createHash2("sha256").update(room).digest("hex")}.json`);
   return {
     read: async () => {
       try {

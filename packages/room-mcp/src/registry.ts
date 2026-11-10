@@ -88,6 +88,8 @@ export class Rooms {
   private projectors = new Map<Session, WorkerProjector>()
 
   constructor(private o: RoomsOptions) {}
+  /** One line for the clone's Room log (room-mcp.log); stderr when the host supplied no logger. */
+  log = (line: string): void => { (this.o.log ?? (l => { process.stderr.write(`[room] ${l}\n`) }))(line) }
   probe(pid: number) { return (this.o.probe ?? probeProcess)(pid) }
   get listCwdProcesses(): CwdProcessLister | undefined { return this.o.listCwdProcesses }
 

@@ -171,7 +171,7 @@ describe('reviewed worker write failures', () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: outside, stdio: 'ignore' })
     children.push(child)
     let live = true
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await WorkerRegistry.open(path.join(root, '.git'), { identity: token, migrate: false, watch: false,
       liveness: identity => identity.pid === child.pid && live ? 'alive' : 'dead' })
     const signalled: number[] = []
     signal.handler = pid => { signalled.push(pid); live = false; return child.kill('SIGTERM') }
@@ -267,4 +267,119 @@ describe('reviewed worker write failures', () => {
     await store.replayDiscard('w_06')
     expect(fs.existsSync(scratch)).toBe(false)
   })
+})
+
+it.each(['tag-only', 'tag-and-op', 'reused-tag'])('recovers a crash after tag publication without blocking later spawns (%s)', async boundary => {
+  const { root, record } = fixture(), common = path.join(root, '.git')
+  const dead = { ...token, pid: 99999999, startTime: 'dead', nonce: 'dead-instance' }
+  const intent = { ...record('w_crash'), tag: 'crash', name: 'lead+crash',
+    lead: { ...record('w_crash').lead, instance: dead }, runs: [{ ...record('w_crash').runs[0], launcher: dead }] }
+  const writer = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: dead, liveness: () => 'dead' })
+  if (boundary === 'reused-tag') {
+    const old = { ...intent, id: 'w_old' }
+    await writer.writeIntent(old)
+    await writer.beginRetirement(old.id, await writer.archiveOf(old, { summary: 'done' }))
+    await writer.finishCleanup(old.id, old.room)
+    await writer.finishOperation(old.id)
+  }
+  const link = fs.linkSync
+  const spy = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+    if (String(to) === path.join(writer.root, boundary === 'tag-only' ? 'workers/w_crash.op' : 'workers/w_crash.json')) throw new Error('simulated process death after tag/op writes')
+    return link(from, to)
+  })
+  let next: WorkerRegistry | undefined
+  try {
+    await expect(writer.writeIntent(intent)).rejects.toThrow('simulated process death')
+    spy.mockRestore(); writer.close()
+    expect(fs.existsSync(path.join(writer.root, 'tags/crash.json'))).toBe(true)
+    expect(fs.existsSync(path.join(writer.root, 'workers/w_crash.op'))).toBe(boundary !== 'tag-only')
+    next = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: token, liveness: () => 'dead' })
+    await next.reconcile()
+    const snapshot = await next.snapshot()
+    expect.soft(snapshot.available && snapshot.blockers).toEqual([])
+    expect.soft(fs.existsSync(path.join(writer.root, 'tags/crash.json'))).toBe(false)
+    expect.soft(fs.existsSync(path.join(writer.root, 'workers/w_crash.op'))).toBe(false)
+    await expect(next.writeIntent({ ...record('w_after'), tag: 'after', name: 'lead+after' })).resolves.toBeUndefined()
+  } finally { spy.mockRestore(); writer.close(); next?.close() }
+})
+
+it.each(['alive', 'unknown', 'run', 'quarantine', 'adoption', 'op-holder', 'op-live', 'op-unknown', 'op-resume', 'op-corrupt', 'payload-enotdir', 'payload-unreadable', 'payload-corrupt', 'payload-symlink'])
+('preserves blocking orphan evidence: %s', async condition => {
+  const { root, record } = fixture(), common = path.join(root, '.git')
+  const dead = { ...token, pid: 99999999, startTime: 'dead', nonce: 'dead-instance' }
+  let probes = 0
+  const registry = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: token, liveness: () => {
+    if (condition === 'alive' || condition === 'unknown') return condition
+    if (condition === 'op-live' || condition === 'op-unknown') return ++probes === 1 ? 'dead' : condition === 'op-live' ? 'alive' : 'unknown'
+    return 'dead'
+  } })
+  const tagFile = path.join(registry.root, 'tags/crash.json'), opFile = path.join(registry.root, 'workers/w_crash.op'), payload = path.join(registry.root, 'workers/w_crash.json')
+  fs.mkdirSync(path.dirname(tagFile), { recursive: true }); fs.mkdirSync(path.dirname(opFile), { recursive: true })
+  const tagText = JSON.stringify({ id: 'w_crash', holder: dead, at: 1 })
+  fs.writeFileSync(tagFile, tagText)
+  fs.writeFileSync(opFile, condition === 'op-corrupt' ? '{bad' : JSON.stringify({ op: condition === 'op-resume' ? 'resume' : 'spawn',
+    holder: condition === 'op-holder' ? { ...dead, nonce: 'someone-else' } : dead, at: 1 }))
+  if (condition === 'run') {
+    fs.mkdirSync(path.join(registry.root, 'runs/w_crash'), { recursive: true })
+    fs.writeFileSync(path.join(registry.root, 'runs/w_crash/1.report.json'), '{}')
+  }
+  if (condition === 'quarantine') {
+    fs.mkdirSync(path.join(registry.root, 'quarantine'), { recursive: true })
+    fs.writeFileSync(path.join(registry.root, 'quarantine/w_crash.json.bad-old'), 'retained evidence')
+  }
+  if (condition === 'adoption') {
+    fs.mkdirSync(path.join(registry.root, 'adoptions'), { recursive: true })
+    fs.writeFileSync(path.join(registry.root, 'adoptions/w_crash.json'), '{}')
+  }
+  if (condition === 'payload-corrupt' || condition === 'payload-unreadable') fs.writeFileSync(payload, '{bad')
+  if (condition === 'payload-symlink') fs.symlinkSync(path.join(root, 'missing-target'), payload)
+  const lstat = fs.lstatSync, read = fs.readFileSync
+  const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation(((file: fs.PathLike, ...args: unknown[]) => {
+    if (String(file) === payload && condition === 'payload-enotdir') throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' })
+    return Reflect.apply(lstat, fs, [file, ...args])
+  }) as typeof fs.lstatSync)
+  const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (String(file) === payload && condition === 'payload-unreadable') throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    return Reflect.apply(read, fs, [file, ...args])
+  }) as typeof fs.readFileSync)
+  try {
+    await registry.reconcile()
+    expect(fs.readFileSync(tagFile, 'utf8')).toBe(tagText)
+    expect(fs.existsSync(opFile)).toBe(true)
+    const snapshot = await registry.snapshot()
+    expect(snapshot.available && snapshot.blockers.length).toBeGreaterThan(0)
+    await expect(registry.writeIntent({ ...record('w_after'), tag: 'after' })).rejects.toThrow(/worker evidence blocked/)
+  } finally { lstatSpy.mockRestore(); readSpy.mockRestore(); registry.close() }
+})
+
+it.each(['reservation', 'payload', 'run'])('rechecks orphan evidence after acquiring capacity and tag guards: %s', async changed => {
+  const { root, record } = fixture(), common = path.join(root, '.git')
+  const dead = { ...token, pid: 99999999, startTime: 'dead', nonce: 'dead-instance' }
+  const registry = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: token, liveness: () => 'dead' })
+  const tagFile = path.join(registry.root, 'tags/crash.json'), payload = path.join(registry.root, 'workers/w_crash.json')
+  fs.mkdirSync(path.dirname(tagFile), { recursive: true }); fs.mkdirSync(path.dirname(payload), { recursive: true })
+  fs.writeFileSync(tagFile, JSON.stringify({ id: 'w_crash', holder: dead, at: 1 }))
+  fs.writeFileSync(path.join(registry.root, 'workers/w_crash.op'), JSON.stringify({ op: 'spawn', holder: dead, at: 1 }))
+  const link = fs.linkSync
+  let interleaved = false
+  const spy = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+    if (!interleaved && String(to) === path.join(registry.root, 'capacity.guard')) {
+      interleaved = true // the candidate was read, but capacity has not yet been acquired
+      if (changed === 'reservation') fs.writeFileSync(tagFile, JSON.stringify({ id: 'w_crash', holder: { ...dead, nonce: 'successor' }, at: 2 }))
+      if (changed === 'payload') fs.writeFileSync(payload, JSON.stringify({ ...record('w_crash'), tag: 'crash' }))
+      if (changed === 'run') {
+        fs.mkdirSync(path.join(registry.root, 'runs/w_crash'), { recursive: true })
+        fs.writeFileSync(path.join(registry.root, 'runs/w_crash/1.report.json'), '{}')
+      }
+    }
+    return link(from, to)
+  })
+  try {
+    await registry.reconcile()
+    expect(interleaved).toBe(true)
+    expect(fs.existsSync(tagFile)).toBe(true)
+    if (changed === 'reservation') expect(JSON.parse(fs.readFileSync(tagFile, 'utf8')).holder.nonce).toBe('successor')
+    if (changed === 'payload') expect((await registry.read('w_crash'))?.id).toBe('w_crash')
+    if (changed === 'run') expect(fs.readFileSync(path.join(registry.root, 'runs/w_crash/1.report.json'), 'utf8')).toBe('{}')
+  } finally { spy.mockRestore(); registry.close() }
 })

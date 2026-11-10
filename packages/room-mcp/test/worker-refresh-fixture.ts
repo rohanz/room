@@ -142,7 +142,7 @@ function world() {
     await vi.waitFor(async () => expect((await workerByTag(repo, tag))).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
   return { call, spawn, finish, launches, leadSession: () => ls!, messages: () => ra.messages(),
-    retire: () => autoRetire(ls!, { probe: () => undefined, hasHandle: () => false, tracking: () => true, project: async () => {} } as never) }
+    retire: () => autoRetire(ls!, { probe: () => undefined, log: (line: string) => { process.stderr.write(`[room] ${line}\n`) }, hasHandle: () => false, tracking: () => true, project: async () => {} } as never) }
 }
 
 /** Everything about a worker that a refused refresh must leave as it was. */

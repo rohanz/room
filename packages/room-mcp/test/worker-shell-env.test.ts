@@ -177,6 +177,7 @@ it('skips a lead env file that no longer exists instead of failing the command',
 
 it('writes only the env file, 0600 next to the worker log, replacing rather than following planted links', () => {
   const lead = tmp()
+  execFileSync('git', ['init', '-q', lead])
   const workers = path.join(lead, '.room', 'workers')
   fs.mkdirSync(workers, { recursive: true })
   const target = path.join(lead, 'elsewhere')
@@ -217,10 +218,11 @@ it('reports an env file it could not write instead of launching silently unscrub
 
 it('removes the env file with the worker logs, and hook files older versions left', () => {
   const lead = tmp()
+  execFileSync('git', ['init', '-q', lead])
   const workers = path.join(lead, '.room', 'workers')
   fs.mkdirSync(workers, { recursive: true })
   for (const name of ['w.log', 'w.mcp.log', 'w.env.sh', 'w.shell-env.mjs']) fs.writeFileSync(path.join(workers, name), '')
-  cleanupWorkerLogs(lead, { dir: path.join(workers, 'w'), tag: 'w' })
+  cleanupWorkerLogs(lead, { id: 'w_test', dir: path.join(workers, 'w'), tag: 'w', outside: false })
   expect(fs.existsSync(path.join(lead, '.room'))).toBe(false)
 })
 

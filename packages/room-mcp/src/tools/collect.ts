@@ -351,7 +351,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cleanupErrors.length) throw new Error(cleanupErrors.join('; '))
       // A kept worktree that is no longer an owned Room worktree is refused, not forgotten: cleanupWorker decides.
       const missingDetail = missing ? await pruneMissingWorkerWorktree(s.dir, w) : undefined
-      if (missing || borrowed) cleanupWorkerLogs(s.dir, w)
+      if (missing || borrowed) cleanupWorkerLogs(s.dir, active)
       await registry.markDiscardStep(active.id, 'stop')
       const patch = missing || borrowed ? undefined : await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(active.id, bytes))
       await registry.markDiscardStep(active.id, 'patch')
@@ -484,7 +484,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             && w.branch === `room/${w.tag}`
           if (!verifiedProcess || !recordedPath || !(error instanceof Error) || !error.message.includes('is not an owned Room worktree')) throw error
         }
-        cleanupWorkerLogs(s.dir, w)
+        cleanupWorkerLogs(s.dir, workerRecord!)
       }
       const ownedWorktree = !borrowed && decideDiscard(afterStop) === 'cleanup'
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : []
@@ -500,7 +500,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await registry.markDiscardStep(lock, 'patch')
       const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
       if (ownedWorktree && !await cleanupWorker(s.dir, w, { collected: true, discarded: true, terminatedProcesses: terminated, processOptions: { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, leadName: s.me.name, workers: (await ownershipRecords(s)), preservation })) throw new Error('worker is not an owned Room worktree')
-      if (borrowed || workerRecord?.outside) cleanupWorkerLogs(s.dir, { ...w, outside: workerRecord?.outside, logFile: workerRecord?.logFile })
+      if (borrowed || workerRecord?.outside) cleanupWorkerLogs(s.dir, workerRecord!)
       await registry.markDiscardStep(lock, 'cleanup')
       releaseClaimsOnDone(s, () => false, w.name, false)
       await registry.markDiscardStep(lock, 'prune')

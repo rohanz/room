@@ -1,3 +1,4 @@
+import { workerTagFile, withWorkerTag } from './worker-tags.js'
 import { legacyWorkerHost, retainedSessionMissing } from './hosts/lifecycle.js'
 import type { HostId } from './hosts/types.js'
 /** The local source of truth for worker operations. No replicated document grants local authority. */
@@ -261,6 +262,12 @@ function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
   return out
 }
 
+/**
+ * A record whose lifecycle is over. Only an unended borrower needs its owner's record: retention (pruneRetired)
+ * and the inventory's owner check (#list) both decide by this one rule.
+ */
+const ended = (record: WorkerRecord): boolean => record.phase === 'retired' || record.phase === 'abandoned'
+
 export class FileWorkerStore {
   readonly root: string
   private readonly alive: LivenessProbe
@@ -316,7 +323,7 @@ export class FileWorkerStore {
   }
   private workerFile(id: string): string { if (!safeId(id)) throw new Error('invalid worker id'); return path.join(this.root, 'workers', `${id}.json`) }
   private opFile(id: string): string { if (!safeId(id)) throw new Error('invalid worker id'); return path.join(this.root, 'workers', `${id}.op`) }
-  private tagFile(tag: string): string { if (!safeTag(tag)) throw new Error('invalid worker tag'); return path.join(this.root, 'tags', `${tag}.json`) }
+  private tagFile(tag: string): string { return workerTagFile(this.root, tag) }
   private adoptionFile(id: string): string { if (!safeId(id)) throw new Error('invalid worker id'); return path.join(this.root, 'adoptions', `${id}.json`) }
   private runDir(id: string, n: number): string {
     if (!safeId(id) || !Number.isSafeInteger(n) || n < 1) throw new Error('invalid worker run')
@@ -388,7 +395,7 @@ export class FileWorkerStore {
       this.decodeBlockers = previous
     }
   }
-  #list(recordOnly = false): WorkerInventory<WorkerRecord> {
+  #list(recordOnly = false, orphanTags?: Set<string>): WorkerInventory<WorkerRecord> {
     return this.#inventory(() => {
       const records = cachedFiles(path.join(this.root, 'workers'), '.json').flatMap(file => {
         const id = path.basename(file, '.json')
@@ -402,24 +409,24 @@ export class FileWorkerStore {
       // Record-only projections explicitly omit reservation authority (WorkerQuery.recordOnly).
       if (!recordOnly) {
         const known = new Set(records.map(record => record.id))
-        // Retention removes an owner once no unended record borrows it (pruneRetired): an ended borrower's
-        // reference to a removed owner is history, not missing evidence.
-        for (const record of records) if (record.sharedWith && !known.has(record.sharedWith) && !['retired', 'abandoned'].includes(record.phase))
+        // An ended borrower's reference to an owner that retention removed is history, not missing evidence.
+        for (const record of records) if (record.sharedWith && !known.has(record.sharedWith) && !ended(record))
           this.invalid(this.workerFile(record.sharedWith), 'unavailable shared owner record')
       }
       if (!recordOnly) for (const file of files(path.join(this.root, 'tags'), '.json')) {
         const tag = path.basename(file, '.json')
         if (!safeTag(tag)) this.invalid(file, 'invalid reservation filename', true)
-        else this.#reserved(tag)
+        else this.#reserved(tag, orphanTags)
       }
       return records
     })
   }
   /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
-  #reserved(tag: string): WorkerRecord | undefined {
+  #reserved(tag: string, orphanTags?: Set<string>): WorkerRecord | undefined {
     if (!safeTag(tag)) return undefined
     const reservation = this.#readFact(this.tagFile(tag), (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id))
     const record = reservation ? this.#read(reservation.id) : undefined
+    if (reservation && !record) orphanTags?.add(tag)
     if (reservation && (!record || record.tag !== tag)) this.invalid(this.tagFile(tag), 'unavailable reserved record')
     return record
   }
@@ -573,20 +580,21 @@ export class FileWorkerStore {
       try {
         await guarded(path.join(this.root, 'capacity'), () => {
           if (this.#occupancy() >= capacity) throw new Error('worker capacity reached')
-          const tagFile = this.tagFile(record.tag)
-          if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) {
-            const reservation = readJson<{ id?: string; holder?: InstanceToken }>(tagFile)
-            if (reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder)) {
-              const bound = this.#read(reservation.id)
-              const reusable = bound && (bound.phase === 'abandoned' || (bound.phase === 'retired' && !bound.keptWorktree
-                && !!bound.cleanup && Object.values(bound.cleanup).every(state => state === 'done')))
-              if (reusable) compareAndRelease(tagFile, reservation.holder!)
-              else if (!bound) throw new WorkerEvidenceBlocked([`tags/${record.tag}.json: unavailable reserved record`])
-            }
-            if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record.tag}`)
-          }
-          if (!createExclusive(this.opFile(record.id), { op: 'spawn', holder: record.runs[0].launcher, at: this.now() })) throw new Error('worker operation lease busy')
-          if (!createExclusive(this.workerFile(record.id), record)) throw new Error(`worker already exists: ${record.id}`)
+          withWorkerTag(this.root, record.tag, () => {
+            const tagFile = this.tagFile(record.tag)
+            if (fs.existsSync(tagFile)) {
+              const reservation = readJson<{ id?: string; holder?: InstanceToken }>(tagFile)
+              const bound = reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder) ? this.#read(reservation.id) : undefined
+              if (!bound) throw new WorkerEvidenceBlocked([`tags/${record.tag}.json: unavailable reserved record`])
+              const reusable = bound.phase === 'abandoned' || (bound.phase === 'retired' && !bound.keptWorktree
+                && !!bound.cleanup && Object.values(bound.cleanup).every(state => state === 'done'))
+              if (!reusable) throw new Error(`tag in use: ${record.tag}`)
+              // Already under the tag guard; no nested compareAndRelease of the same guard.
+              writeAtomic(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })
+            } else if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record.tag}`)
+            if (!createExclusive(this.opFile(record.id), { op: 'spawn', holder: record.runs[0].launcher, at: this.now() })) throw new Error('worker operation lease busy')
+            if (!createExclusive(this.workerFile(record.id), record)) throw new Error(`worker already exists: ${record.id}`)
+          })
         }, deadline)
         break
       } catch (error) { await pauseForGuard(deadline, error) }
@@ -956,7 +964,6 @@ export class FileWorkerStore {
    */
   async pruneRetired(maxAgeMs: number): Promise<WorkerRecord[]> {
     if (!readJson<MigrationMap>(path.join(this.root, 'migration.json'))?.done) return []
-    const ended = (record: WorkerRecord) => record.phase === 'retired' || record.phase === 'abandoned'
     const borrowers = (records: WorkerRecord[]) => new Set(records.filter(record => !ended(record))
       .flatMap(record => [record.sharedWith, this.#worktreeOwner(record)?.id]).filter(Boolean))
     /** Every retention predicate, on one reading of the registry; undefined keeps the record. */
@@ -1175,11 +1182,11 @@ export class FileWorkerStore {
       if (owned) {
         if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers })) return
       } else if (record.outside) {
-        cleanupWorkerLogs(leadDir, { ...own, outside: true, logFile: record.logFile })
+        cleanupWorkerLogs(leadDir, record)
       } else if (!borrowed) {
         await pruneMissingWorkerWorktree(leadDir, own)
-        cleanupWorkerLogs(leadDir, own)
-      } else cleanupWorkerLogs(leadDir, own)
+        cleanupWorkerLogs(leadDir, record)
+      } else cleanupWorkerLogs(leadDir, record)
       await this.markDiscardStep(id, 'cleanup')
     }
     await this.markDiscardStep(id, 'prune')
@@ -1270,6 +1277,64 @@ export class FileWorkerStore {
     await this.update(id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
   }
 
+  /** Bootstrap only: a dead spawn may have published its tag/op before its payload. Inventory
+   * blockers must not prevent recovery, but only genuine ENOENT can establish missing evidence. */
+  private async recoverOrphanReservations(tags: ReadonlySet<string>): Promise<boolean> {
+    if (this.readOnly) return false
+    let recovered = false
+    const absent = (file: string): boolean => {
+      try { fs.lstatSync(file); return false }
+      catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' }
+    }
+    for (const tag of tags) {
+      if (!safeTag(tag)) continue
+      const file = this.tagFile(tag)
+      try {
+        const text = fs.readFileSync(file, 'utf8'), key = statKey(file)?.key
+        const reservation: unknown = JSON.parse(text)
+        if (!object(reservation) || typeof reservation.id !== 'string' || !safeId(reservation.id)
+          || !tokenShape(reservation.holder) || !Number.isFinite(reservation.at)
+          || Object.keys(reservation).some(k => !['id', 'holder', 'at'].includes(k))
+          || !key || !absent(this.workerFile(reservation.id))) continue
+        const { id, holder } = reservation
+        const removed = await guarded(path.join(this.root, 'capacity'), () => withWorkerTag(this.root, tag, () => {
+          if (statKey(file)?.key !== key || fs.readFileSync(file, 'utf8') !== text
+            || !fs.lstatSync(file).isFile() || this.alive(holder) !== 'dead') return
+          const opFile = this.opFile(id)
+          // A filesystem guard protects the final op comparison/deletion; no operation lease is acquired.
+          return withGuard(opFile, () => {
+            let opText: string | undefined
+            if (!absent(opFile)) {
+              if (!fs.lstatSync(opFile).isFile()) return
+              opText = fs.readFileSync(opFile, 'utf8')
+              const op: unknown = JSON.parse(opText)
+              if (!object(op) || op.op !== 'spawn' || !tokenShape(op.holder) || !Number.isFinite(op.at)
+                || Object.keys(op).some(k => !['op', 'holder', 'at'].includes(k))) return
+              const opHolder = op.holder
+              if (!(Object.keys(holder) as (keyof InstanceToken)[]).every(k => opHolder[k] === holder[k])
+                || this.alive(opHolder) !== 'dead') return
+            }
+            // Recheck after process probes too. A payload, dangling symlink, partial run directory,
+            // adoption or quarantined evidence makes this an unknown lifecycle, never an absent spawn.
+            if (statKey(file)?.key !== key || fs.readFileSync(file, 'utf8') !== text
+              || !absent(this.workerFile(id)) || !absent(path.join(this.root, 'runs', id))
+              || !absent(this.adoptionFile(id)) || files(path.join(this.root, 'quarantine'), '').length) return
+            if (opText === undefined ? !absent(opFile) : fs.readFileSync(opFile, 'utf8') !== opText) return
+            // Op first: interruption before removing the reservation leaves another recoverable bootstrap gap.
+            if (opText !== undefined) fs.rmSync(opFile)
+            fs.rmSync(file)
+            return true
+          })
+        }))
+        if (removed) { recovered = true; this.changed(id) }
+      } catch {
+        // Busy guards, malformed/unreadable evidence and uncertain filesystem state stay blocking.
+        // Normal reconciliation below still inventories/quarantines evidence under its existing rules.
+      }
+    }
+    return recovered
+  }
+
   async reconcile(): Promise<void> {
     // Only this writer-owned pass may rename invalid facts, after its read-only inventory.
     const candidates = new Map<string, { key?: string; text?: string; why: unknown }>()
@@ -1277,12 +1342,20 @@ export class FileWorkerStore {
     // Capture each run family once. Recovery consumes this inventory, and a pass that
     // never yields can also use it for change detection. External writes after capture
     // are detected on the next pass, just as writes after the old final scan were.
-    const scan = () => this.#inventory(() => this.#list().records.map(record => ({ record,
+    const orphanTags = new Set<string>()
+    const scan = () => this.#inventory(() => this.#list(false, orphanTags).records.map(record => ({ record,
       reports: this.#reports(record.id).records, exits: this.#exits(record.id).records })))
     let inventory: ReturnType<typeof scan>
     try {
       inventory = scan()
     } finally { this.quarantineCandidates = undefined }
+    // The normal inventory identifies candidates without a second all-tag scan. Recover only
+    // proven dead, empty preparations before its missing-payload blocker can end reconciliation.
+    if (orphanTags.size && await this.recoverOrphanReservations(orphanTags)) {
+      candidates.clear(); orphanTags.clear()
+      this.quarantineCandidates = candidates
+      try { inventory = scan() } finally { this.quarantineCandidates = undefined }
+    }
     if (inventory.blockers.length) {
       for (const [file, fact] of candidates) {
         if (!fact.key || statKey(file)?.key !== fact.key) continue
@@ -1455,8 +1528,10 @@ export class FileWorkerStore {
       runs: [{ n: 1, mode: 'fresh', intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: 0, promptMsgIds: [], launcher: token, launch: { outcome: 'imported' }, logStart: 0 }],
       legacy: { id: source.key, source: source.dir, said: source.said, unowned: true }, createdAt: this.now(), seq: 1,
     }
-    createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() })
-    createExclusive(file, record)
+    withWorkerTag(this.root, source.tag, () => {
+      createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() })
+      createExclusive(file, record)
+    })
     if (fs.existsSync(carryFile) && !fs.existsSync(migratedCarryFile)) fs.renameSync(carryFile, migratedCarryFile)
   }
 }

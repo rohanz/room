@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { acceptedGit, conflictNoticeId, noticeId, peerNoticeId, slotKey, defaultPriority, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, defaultPriority, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitBlobInfoMany } from '@room/roomd/git'
@@ -15,7 +15,7 @@ import { trustedWorker, workerText } from './tools/context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
 import { openWorkerReader, registryForDir } from './worker-registry.js'
 
-type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
+export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
 export interface ConflictSlot {
   kind: ConflictKind
@@ -58,12 +58,24 @@ export interface ConflictSlot {
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers'>
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
+export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
+  [owner, kind, other, path, subject].join('\0')
+export const noticeId = (key: string, epoch: number, episode?: string): string =>
+  `cf:${hash(key)}:${epoch}${episode ? `:${episode}` : ''}`
 /** A file merge slot whose conflicts are told per peer, not per file. */
 const peerMerge = (slot: Pick<ConflictSlot, 'kind' | 'path'>): boolean => slot.kind === 'merge' && slot.path !== '*'
 const openInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'conflict'
 const clearedInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'clean' && slot.clearedFrom === 'conflict'
 /** Files named in a peer notice; room_state lists every file. */
 const PEER_NOTICE_FILES = 8
+/**
+ * The id of the per-peer merge notice for one episode state. Every notice for the same owner and peer shares the
+ * `cf:<pair>:peer:` prefix, so a later one replaces an earlier one that was not yet delivered (supersededConflictNotices).
+ */
+export const peerNoticeId = (owner: string, other: string, episode: number, open: readonly Pick<ConflictSlot, 'path' | 'epoch'>[], cleared: readonly Pick<ConflictSlot, 'path' | 'epoch'>[]): string =>
+  `cf:${hash([owner, other, 'merge'].join('\0'))}:peer:${episode}:${open.length
+    ? hash(JSON.stringify([open.map(s => [s.path, s.epoch]), cleared.map(s => [s.path, s.epoch])]))
+    : 'clean'}`
 const atLines = (lines?: number[]) => lines?.length ? ` at lines ${lines.join(', ')}` : ''
 const bounded = (items: string[], sep: string) => items.slice(0, PEER_NOTICE_FILES).join(sep) +
   (items.length > PEER_NOTICE_FILES ? `${sep}and ${items.length - PEER_NOTICE_FILES} more` : '')
@@ -251,7 +263,11 @@ export class ConflictSlots {
       if (slot.settled === 'possible' && (replay ? open.some(([k]) => k < key) : slot.possibleJoined)) return
       if (slot.settled === 'clean' && open.length) return
     }
-    const id = conflictNoticeId(key, slot)
+    const id = episode !== undefined
+      ? `cf:${hash([slot.owner, slot.other, slot.path, 'possible', episode].join('\0'))}:${slot.settled === 'clean' ? 'clean' : 'possible'}`
+      : slot.settled === 'clean' && slot.kind !== 'contract'
+      ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join('\0'))}:clean`
+      : noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
     const status = slot.settled
     const ownWorker = workerView?.lead === slot.owner
     const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' && !ownWorker ? defaultPriority({ type: 'conflict', merges: slot.merges }) : 'notify'

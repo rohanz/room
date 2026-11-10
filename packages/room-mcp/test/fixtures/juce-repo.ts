@@ -77,7 +77,7 @@ export async function juceSession(repo: JuceRepo): Promise<{ session: Session; s
   await registerWorkers(session, repo.workers.map(w => ({ tag: w.tag, name: `lead+${w.tag}`, lead: 'lead', dir: w.dir, branch: `room/${w.tag}`,
     status: 'done' as const, exitCode: 0, summary: 'finished', base: w.base, carriedUntracked: w.carriedUntracked, host: 'codex' as const, task: 'task', pid: 0, startedAt: 1 })))
   const state = {
-    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: async () => {}, project: async () => {} },
+    S: () => s, rooms: { all: () => [s], log: (line: string) => { process.stderr.write(`[room] ${line}\n`) }, holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: async () => {}, project: async () => {} },
     myWorkers: () => localWorkers(repo.lead), workerAlive: () => false, others: () => repo.workers.map(w => `lead+${w.tag}`), presences: () => [],
     withheld: () => undefined, baseFor: () => repo.base, shareOf: () => 'full', liveText: async () => undefined,
   } as unknown as HandlerState

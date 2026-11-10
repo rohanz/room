@@ -257,6 +257,15 @@ describe('room_collect', () => {
     expect(fs.readFileSync(path.join(before.dir, '..', 'test.log'), 'utf8')).toBe('outside log')
     expect(fs.existsSync(path.join(lead, '.room/workers/test.log'))).toBe(false)
     expect(await workerByTag(lead, 'test')).toBeUndefined()
+    // A second session's later retention pass must preserve the outside checkout's sidecars too.
+    const { Rooms } = await import('../src/registry.js')
+    const rooms = new Rooms({ primary: () => t.s, setPrimary() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
+    t.s.provider = { on() {}, off() {} } as never
+    rooms.track(t.s)
+    vi.spyOn(rooms, 'probe').mockReturnValue(undefined)
+    try { await rooms.autoRetire() } finally { rooms.remove(t.s) }
+    expect(fs.readFileSync(path.join(before.dir, '..', 'test.log'), 'utf8')).toBe('outside log')
+
   })
 
   it.each(['done', 'failed'] as const)('plain collect retires a %s outside record, writes no checkout files and still collects other workers', async status => {

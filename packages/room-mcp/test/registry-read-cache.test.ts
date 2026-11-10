@@ -142,7 +142,13 @@ describe('worker registry read cache', () => {
     // Status and admission have no platform-dependent fixed cost, so their absolute budgets hold everywhere.
     for (const workers of [50, 500]) {
       expect(calls('status', workers)).toBeLessThanOrEqual(6 * workers + 10)
-      expect(calls('admission', workers)).toBeLessThanOrEqual(6 * workers + 300)
+      // One durable tag guard prevents sidecar cleanup racing reservation creation/reuse. On macOS
+      // it adds 77 calls (72 acquire, 5 release): 62 ensure/sync directories, 1 temp scan,
+      // 4 temp write, 5 exclusive publish/cleanup, then 5 release. The existing primitive
+      // syncs each ancestor; this is one acquisition, not a repeated inventory. One existence
+      // check avoids a failed durable create on reuse. Measured 767dfc9e: 592/3292 calls at
+      // 50/500 workers; guarded admission: 670/3370 (6N + 370). Allow ten fixed calls of margin.
+      expect(calls('admission', workers)).toBeLessThanOrEqual(6 * workers + 380)
     }
   })
 

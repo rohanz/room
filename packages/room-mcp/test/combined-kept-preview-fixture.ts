@@ -84,7 +84,7 @@ async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; le
   await registerWorkers(lead, tags.map(tag => ({ tag, name: `lead+${tag}`, lead: 'lead', dir: sessions.get(`lead+${tag}`)!.dir,
     branch: `room/${tag}`, status: 'done', exitCode: 0, base, host: 'codex', task: tag, pid: 0, startedAt: 1 })))
   const stateFor = (caller: Session) => ({ S: () => caller,
-    rooms: { all: () => [caller], holding: () => caller, holdingWorker: () => caller, reserve: () => true, unreserve() {},
+    rooms: { all: () => [caller], log: (line: string) => { process.stderr.write(`[room] ${line}\n`) }, holding: () => caller, holdingWorker: () => caller, reserve: () => true, unreserve() {},
       autoRetire: async () => {}, project: async () => {}, hasHandle: () => false, tracking: () => true },
     myWorkers: async () => (await localWorkers(caller.dir)), workerAlive: () => false, now: Date.now,
     baseFor: (_s: Session, person: string) => manifestHeadOf(room, person)?.base ?? base,

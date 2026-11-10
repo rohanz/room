@@ -1,3 +1,5 @@
+import { createExclusive, compareAndRelease } from '../src/leases.js'
+import { workerTagFile } from '../src/worker-tags.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { describe, expect, it, vi } from 'vitest'
@@ -206,4 +208,37 @@ describe('retired worker record retention', () => {
       other.close()
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
   })
+})
+
+it.each([false, true])('serializes first reservation creation and retired-tag reuse with the cleanup guard (reuse: %s)', async reuse => {
+  const dir = repo()
+  let pending: Promise<unknown> | undefined
+  let release: (() => void) | undefined
+  try {
+    const { registry, record } = await seedRegistryWorker(dir, 'same')
+    await registry.beginRetirement(record.id, await registry.archiveOf(record, { summary: 'done' }))
+    await registry.finishCleanup(record.id, record.room)
+    const tag = reuse ? 'same' : 'new-tag', tagFile = workerTagFile(registry.root, tag), guard = `${tagFile}.guard`
+    expect(createExclusive(guard, registry.instance)).toBe(true)
+    release = () => { expect(compareAndRelease(guard, registry.instance)).toBe(true) }
+    const link = fs.linkSync
+    let attempted = false, completed = false
+    const spy = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+      if (String(to) === guard) attempted = true
+      return link(from, to)
+    })
+    pending = seedRegistryWorker(dir, tag, { name: `another+${tag}`, lead: { ...record.lead, participant: 'another' } }).then(value => { completed = true; return value })
+    try {
+      // Wait for an actual attempt at the shared guard, not just a scheduling delay.
+      await vi.waitFor(() => expect(attempted || completed).toBe(true))
+      expect(completed).toBe(false)
+      expect((await registry.reserved(tag))?.id).toBe(reuse ? record.id : undefined)
+    } finally { spy.mockRestore(); release(); release = undefined }
+    await pending
+    expect((await registry.reserved(tag))?.lead.participant).toBe('another')
+  } finally {
+    release?.()
+    await pending
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

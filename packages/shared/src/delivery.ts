@@ -1,5 +1,4 @@
 import * as Y from 'yjs'
-import { staleConflictNotice } from './conflict-notices.js'
 import { BusIndex } from './bus-index.js'
 import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
@@ -87,7 +86,7 @@ export function owed(doc: RoomDoc, me: Pick<Identity, 'name'>, cursor: DeliveryC
   relevant: (m: Msg) => boolean = () => true): Msg[] {
   const out = new Map<string, Msg>()
   const offer = (m: Msg) => {
-    if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && (!route.stateSynced || !staleConflictNotice(doc, m)) && relevant(m)) out.set(m.id, m)
+    if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out.set(m.id, m)
   }
   // Addressed messages are owed whenever they were sent, except to a worker that took over the name after them.
   const mine = (m: Msg) => addressedTo(m, me.name) && (cursor.addressedFrom === undefined || (m.seq ?? 0) > cursor.addressedFrom)
@@ -126,13 +125,7 @@ function newest<T extends { at: number; id: string; size: number }>(entries: T[]
 }
 
 export interface TrimReport { archived: number; mailed: number; expired: number; evicted: number; removed: number }
-export interface TrimOptions {
-  busKeep?: number
-  busBytes?: number
-  origin?: unknown
-  /** Only the settled authoritative hub can conclude that an unresolved state subject is gone. */
-  conflictsReady?: boolean
-}
+export interface TrimOptions { busKeep?: number; busBytes?: number; origin?: unknown }
 
 /**
  * A pure, idempotent function of `(doc, now)`: every step only adds idempotent entries or removes items,
@@ -168,10 +161,6 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
     ended.set(m.id, { to: m.to!, from: m.from, outcome, at: now })
     pending.delete(m.id); stored.delete(m.id)
     if (outcome === 'expired') report.expired++; else report.evicted++
-  }
-  // Gone subjects terminate even within the newest bus window, before owed caps count them.
-  for (const m of [...bus, ...mail.values()]) {
-    if (m.to && !ended.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id) && opts.conflictsReady && staleConflictNotice(doc, m)) end(m, 'expired')
   }
   for (const m of [...pending.values()]) if (now - m.at > OWED_TTL_MS) end(m, 'expired')
   const byRecipient = new Map<string, Msg[]>()
@@ -255,7 +244,6 @@ export class DeliveryIndex {
   private clean = false
   private cleanKeep = BUS_KEEP
   private cleanBytes = BUS_BYTES
-  private cleanConflictsReady = false
   private oldest = Infinity
   private oldestOutcome = Infinity
   private changed = new Set<string>()
@@ -269,9 +257,6 @@ export class DeliveryIndex {
     for (const [type, keys] of tx.changed) {
       if (!(type instanceof Y.Map) || !this.rootNames.get(type)?.startsWith('seen:')) continue
       for (const key of keys) if (key !== null) this.changed.add(key)
-    }
-    if ([...tx.changed.keys()].some(root => ['claims', 'participants', 'conflicts'].includes(this.rootNames.get(root) ?? ''))) {
-      this.clean = false
     }
     const changed = this.changed
     this.changed = new Set()
@@ -462,7 +447,6 @@ export class DeliveryIndex {
   markTrimmed(now: number, opts: TrimOptions): void {
     this.cleanKeep = opts.busKeep ?? BUS_KEEP
     this.cleanBytes = opts.busBytes ?? BUS_BYTES
-    this.cleanConflictsReady = opts.conflictsReady === true
     // Recompute these minima once per full trim, not per post or tick.
     this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter(m => Number.isFinite(m.at)).map(m => m.at))
     this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter(o => o && Number.isFinite(o.at)).map(o => o.at))
@@ -494,7 +478,6 @@ export class DeliveryIndex {
 
   trimmed(now: number, opts: TrimOptions): boolean {
     return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS
-      && this.cleanConflictsReady === (opts.conflictsReady === true)
       && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES)
   }
 }

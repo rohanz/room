@@ -1,15 +1,17 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { exitedPid } from '../../relay/test/exited-pid.js'
 import { rm } from 'node:fs/promises'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
-import { finishWorker, fixtureId, patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
+import { seedRegistryWorker, finishWorker, fixtureId, patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, manifestPaths } from '@room/shared'
-import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
+import { WorkerRegistry, closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
 import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
@@ -705,4 +707,79 @@ it('retains workers when the worktree, branch, fork commit or lead git state is 
     expect((await workerGitFacts('/missing', w)).ahead).toBeUndefined()
     r.close()
   }
+})
+
+async function retiredSidecars(dir: string, s: Session, patch = {}) {
+  const { registry, record } = await seedRegistryWorker(dir, 'same', patch)
+  await registry.beginRetirement(record.id, await registry.archiveOf(record, { summary: 'done' }))
+  await registry.finishCleanup(record.id, s.roomName)
+  return { registry, record }
+}
+
+it('preserves sidecars inside an unrelated outside checkout on a later retirement sweep', async () => {
+  nextSweep()
+  const { dir } = repo(), r = registry(dir), outside = mkdtempSync(join(tmpdir(), 'room-outside-sidecars-'))
+  dirs.push(outside)
+  try {
+    const checkout = join(outside, '.room/workers/existing'); mkdirSync(checkout, { recursive: true })
+    await retiredSidecars(dir, r.s, { room: r.s.roomName, dir: checkout, outside: true,
+      capabilities: { collect: 'none', signal: false, resume: false }, logFile: join(dir, '.room/workers/same.log') })
+    for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) writeFileSync(join(outside, '.room/workers/same' + suffix), 'outside owned')
+    await r.rooms.autoRetire()
+    for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) expect(readFileSync(join(outside, '.room/workers/same' + suffix), 'utf8')).toBe('outside owned')
+  } finally { r.close() }
+})
+
+it('preserves another lead same-tag successor sidecars after a stale retired reservation read', async () => {
+  nextSweep()
+  const { dir } = repo(), r = registry(dir)
+  try {
+    const { registry: workers, record } = await retiredSidecars(dir, r.s, { room: r.s.roomName })
+    let spawned = false
+    const original = WorkerRegistry.prototype.reserved, log = join(dir, '.room/workers/same.log')
+    vi.spyOn(WorkerRegistry.prototype, 'reserved').mockImplementation(async function (this: WorkerRegistry, tag) {
+      const value = await original.call(this, tag)
+      if (!spawned && this.commonDir === workers.commonDir && tag === 'same' && value?.id === record.id) {
+        spawned = true
+        await seedRegistryWorker(dir, 'same', { name: 'other-lead+same', lead: { ...record.lead, participant: 'other-lead' } })
+        mkdirSync(path.dirname(log), { recursive: true })
+        for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) writeFileSync(join(dir, '.room/workers/same' + suffix), 'successor transcript')
+      }
+      return value
+    })
+    await r.rooms.autoRetire()
+    expect(spawned).toBe(true)
+    expect((await original.call(workers, 'same'))?.id).not.toBe(record.id)
+    for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) expect(readFileSync(join(dir, '.room/workers/same' + suffix), 'utf8')).toBe('successor transcript')
+  } finally { r.close() }
+})
+
+it('preserves a successor created after an orphan archive inventory was captured', async () => {
+  nextSweep()
+  const { dir } = repo(), r = registry(dir), w = worker(join(dir, '.room/workers/w'))
+  try {
+    r.s.local = {} as Session['local']
+    const workers = await registerWorkers(r.s, [w]), id = fixtureId(w)
+    r.room.doc.getArray('retiredWorkers').push([{ ...await workers.archiveOf((await workers.read(id))!, { summary: 'done' }),
+      keptWorktree: w.dir, keptReason: 'cleanup incomplete' }])
+    r.room.workerViews.delete(id)
+    rmSync(join(workers.root, 'workers', id + '.json'))
+    rmSync(join(workers.root, 'tags', 'w.json'))
+    const original = WorkerRegistry.prototype.list
+    let spawned = false
+    vi.spyOn(WorkerRegistry.prototype, 'list').mockImplementation(async function (this: WorkerRegistry, ...args) {
+      const inventory = await original.apply(this, args)
+      if (!spawned && this.commonDir === workers.commonDir && !inventory.records.length) {
+        spawned = true
+        await seedRegistryWorker(dir, 'w', { name: 'another+w', lead: { participant: 'another', room: r.s.roomName, instance: workers.instance } })
+        mkdirSync(join(dir, '.room/workers'), { recursive: true })
+        writeFileSync(join(dir, '.room/workers/w.log'), 'live successor')
+      }
+      return inventory
+    })
+    await r.rooms.autoRetire()
+    expect(spawned).toBe(true)
+    expect(readFileSync(join(dir, '.room/workers/w.log'), 'utf8')).toBe('live successor')
+    expect(r.room.retiredWorkers()[0].keptWorktree).toBe(w.dir)
+  } finally { r.close() }
 })

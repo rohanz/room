@@ -17,7 +17,7 @@ import type { CwdProcessLister, ProcessProbe } from './worker-process.js'
 import { git } from '@room/roomd/git'
 import { projectWorkers } from './worker-projector.js'
 import { listCwdProcesses } from './worker-process.js'
-import { liveness, withGuard } from './leases.js'
+import { liveness } from './leases.js'
 
 /**
  * Remove the worker's local sharing authority, write `retiring` with its archive entry and a pending cleanup
@@ -147,7 +147,7 @@ export async function finishPendingCollect(s: Session, rooms: Rooms, id: string,
     }
     if (!fs.existsSync(w.dir)) {
       await pruneMissingWorkerWorktree(s.dir, w)
-      cleanupWorkerLogs(s.dir, w)
+      cleanupWorkerLogs(s.dir, fresh)
       await retireWorker(rooms, s, id, (await archive(w.summary ?? '')))
       return `retired ${w.tag}: its worktree was already gone`
     }
@@ -184,7 +184,7 @@ async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, p
         return `kept ${w.tag}: ${result.reason}`
       }
     } else await pruneMissingWorkerWorktree(s.dir, w)
-    cleanupWorkerLogs(s.dir, w)
+    cleanupWorkerLogs(s.dir, fresh)
     await registry.command(fresh.id, { type: 'retired-checkout-removed' })
     syncKeptArchive(rooms, (await registry.read(fresh.id))!)
     return `cleaned up ${w.tag}: cleared its kept-worktree marker and removed worker logs`
@@ -226,16 +226,19 @@ async function reconcileOrphanArchives(s: Session, dir: string, registry: Regist
     if ((rooms.listCwdProcesses ?? listCwdProcesses)().some(p => path.resolve(p.cwd) === root || path.resolve(p.cwd).startsWith(root + path.sep))) continue
     // A new spawn takes the same tag guard before publishing its record and opening its logs.
     // Refuse a reservation (including a corrupt one); never delete a successor's sidecars.
-    const changed = withGuard(path.join(registry.root, 'tags', entry.tag + '.json'), () => {
-      if (fs.existsSync(path.join(registry.root, 'tags', entry.tag + '.json')) || !absent()) return false
-      const index = list.toArray().findIndex(value => value.id === entry.id && value.name === entry.name && value.keptWorktree === kept)
-      if (index < 0) return false
-      const { keptWorktree: _kept, keptReason: _reason, ...archive } = list.get(index)
-      cleanupWorkerLogs(dir, { dir: kept, tag: entry.tag })
-      s.room.doc.transact(() => { list.delete(index); list.insert(index, [archive]) })
-      return true
-    })
-    if (changed) process.stderr.write(`[room] cleaned up ${entry.tag}: reconciled its orphaned local kept-worktree marker and logs; history retained\n`)
+    const sameArchive = () => list.toArray().findIndex(value => value.id === entry.id && value.name === entry.name && value.keptWorktree === kept)
+    // Old archives may have no ID: an empty identity deliberately matches no reservation.
+    const changed = cleanupWorkerLogs(dir, { id: entry.id ?? '', dir: kept, tag: entry.tag, outside: false }, () =>
+      !fs.existsSync(path.join(registry.root, 'tags', entry.tag + '.json')) && absent() && sameArchive() >= 0)
+    if (changed) {
+      // Clear the marker after deletion, so a crash before here can retry the leftover pass.
+      const index = sameArchive()
+      if (index >= 0) {
+        const { keptWorktree: _kept, keptReason: _reason, ...archive } = list.get(index)
+        s.room.doc.transact(() => { list.delete(index); list.insert(index, [archive]) })
+      }
+      rooms.log(`cleaned up ${entry.tag}: reconciled its orphaned local kept-worktree marker and logs; history retained`)
+    }
   }
 }
 
@@ -375,7 +378,7 @@ export async function retireIfNothingToCollect(leadDir: string, registry: Regist
     const w = fresh && fresh.seq === record.seq ? await nothingToCollect(leadDir, registry, fresh, host) : undefined
     if (!fresh || !w) return false
     if (!fresh.outside && roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) await pruneMissingWorkerWorktree(leadDir, w, false).catch(() => undefined)
-    cleanupWorkerLogs(leadDir, { ...w, outside: fresh.outside, logFile: fresh.logFile })
+    cleanupWorkerLogs(leadDir, fresh)
     await registry.beginRetirement(fresh.id, await registry.archiveOf(fresh, { summary: fresh.outside ? outsideCollectLine(fresh) : NOTHING_TO_COLLECT, disposition: 'discarded' }))
     return true
   } finally { await registry.finishOperation(record.id) }
@@ -395,13 +398,13 @@ export function nothingToCollectLine(tags: string[]): string {
  * Every record in this clone with nothing to collect, whichever lead dispatched it: nothing of it can be collected,
  * resumed or recovered, so no lead's decision is pending on it. Nested workers go before their lead. Returns the tags.
  */
-async function retireNothingToCollect(dir: string, registry: Registry, host: HostProbe): Promise<string[]> {
+async function retireNothingToCollect(dir: string, registry: Registry, host: HostProbe, log: (line: string) => void): Promise<string[]> {
   const retired: string[] = []
   for (let progress = true; progress;) {
     progress = false
     for (const record of requireWorkerInventory(await registry.list())) {
       if (retired.includes(record.tag) || !await retireIfNothingToCollect(dir, registry, record, host)) continue
-      if (record.outside) process.stderr.write(`[room] ${outsideCollectLine(record)}; retired ${record.tag} (nothing to collect into this checkout)\n`)
+      if (record.outside) log(`${outsideCollectLine(record)}; retired ${record.tag} (nothing to collect into this checkout)`)
       else retired.push(record.tag)
       progress = true
     }
@@ -433,7 +436,7 @@ async function sweepClone(session: Session, registry: Registry, rooms: Rooms): P
       const line = record.phase === 'active' && record.collectPending
         ? await finishPendingCollect(s, rooms, record.id, processes)
         : record.phase === 'retired' && record.keptWorktree ? await adoptLegacyKept(s, rooms, record, processes) : undefined
-      if (line) process.stderr.write(`[room] ${line}\n`)
+      if (line) rooms.log(`${line}`)
     }
     // Retirement already ended the worker's authority. Any session of this clone in the
     // affected room can run the existing idempotent projector, even after its lead vanished.
@@ -442,7 +445,7 @@ async function sweepClone(session: Session, registry: Registry, rooms: Rooms): P
       for (const lead of new Set(pending.map(record => record.lead.participant))) {
         for (const role of ['joined', 'projected'] as const) await projectWorkers(held, registry, lead, role, undefined, () => rooms.tracking(held), true)
       }
-      for (const record of pending) if ((await registry.read(record.id))?.phase === 'retired') process.stderr.write(`[room] finished retirement cleanup for ${record.tag}\n`)
+      for (const record of pending) if ((await registry.read(record.id))?.phase === 'retired') rooms.log(`finished retirement cleanup for ${record.tag}`)
     }
     for (const record of requireWorkerInventory(await registry.list())) if (record.phase === 'retired') {
       syncKeptArchive(rooms, record)
@@ -450,21 +453,21 @@ async function sweepClone(session: Session, registry: Registry, rooms: Rooms): P
       try {
         const fresh = await registry.read(record.id), status = await registry.status(record.id)
         if (fresh?.phase === 'retired' && !fresh.keptWorktree && (await registry.reserved(fresh.tag))?.id === fresh.id
-          && status && !await processes.alive(cleanupInput(fresh, status))) cleanupWorkerLogs(dir, cleanupInput(fresh, status))
+          && status && !await processes.alive(cleanupInput(fresh, status))) cleanupWorkerLogs(dir, fresh)
       } finally { await registry.finishOperation(record.id) }
     }
     await reconcileOrphanArchives(session, dir, registry, rooms)
-  } catch (error) { process.stderr.write(`[room] collected worker cleanup: ${error}\n`) }
+  } catch (error) { rooms.log(`collected worker cleanup: ${error}`) }
   try {
-    const retired = await retireNothingToCollect(dir, registry, { probe: rooms.probe.bind(rooms), hasHandle: w => rooms.all().some(s => rooms.hasHandle(s, w)) })
+    const retired = await retireNothingToCollect(dir, registry, { probe: rooms.probe.bind(rooms), hasHandle: w => rooms.all().some(s => rooms.hasHandle(s, w)) }, line => rooms.log(line))
     if (retired.length) {
-      process.stderr.write(`[room] ${nothingToCollectLine(retired)}\n`)
+      rooms.log(`${nothingToCollectLine(retired)}`)
     }
     await rooms.project()
-  } catch (error) { process.stderr.write(`[room] nothing-to-collect retirement: ${error}\n`) }
-  await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
+  } catch (error) { rooms.log(`nothing-to-collect retirement: ${error}`) }
+  await registry.pruneRetired(ROOM_STALE_MS).catch(error => { rooms.log(`retired record retention: ${error}`) })
   try {
     const { removed } = collectLocalState(await gitCommonDir(dir))
-    if (removed.length) process.stderr.write(`[room] local state: removed ${removed.length} stale item${removed.length === 1 ? '' : 's'}\n`)
-  } catch (error) { process.stderr.write(`[room] local state collector: ${error}\n`) }
+    if (removed.length) rooms.log(`local state: removed ${removed.length} stale item${removed.length === 1 ? '' : 's'}`)
+  } catch (error) { rooms.log(`local state collector: ${error}`) }
 }

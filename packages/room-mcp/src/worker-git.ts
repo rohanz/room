@@ -1,3 +1,4 @@
+import { workerTagFile, withWorkerTag } from './worker-tags.js'
 import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Worker worktrees, carry snapshots, links, and cleanup. */
@@ -5,8 +6,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isRegenerableBuildPath } from '@room/shared'
-import type { LocalWorker } from './worker-status.js'
-import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
+import type { LocalWorker, WorkerRecord } from './worker-status.js'
+import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, commonGitDirFromDotGit, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
@@ -572,24 +573,42 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}; ${recoveryNote}`) }
     throw new Error(`cleanup failed: ${(error as Error).message}; reconstructed base at ${w.dir}; ${recoveryNote}`)
   }
-  cleanupWorkerLogs(leadDir, w)
+  if (w.id) {
+    const { registryForDir } = await import('./worker-registry.js')
+    const record = await (await registryForDir(leadDir)).read(w.id)
+    if (record) cleanupWorkerLogs(leadDir, record)
+  }
   return true
 }
 
-/** Remove a worker's local logs after either checkout cleanup or vanished-checkout pruning. */
-export function cleanupWorkerLogs(leadDir: string, w: Pick<LocalWorker, 'dir' | 'tag'> & { outside?: boolean; logFile?: string }): void {
-  const logRoot = w.outside && w.logFile && path.basename(w.logFile) === `${w.tag}.log`
-    && path.basename(path.dirname(w.logFile)) === 'workers' && path.basename(path.dirname(path.dirname(w.logFile))) === '.room'
-    ? path.resolve(w.logFile, '../../..') : leadDir
-  const parent = !w.outside && path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
-    ? path.resolve(w.dir, '../../..') : logRoot
-  if (w.outside && (path.resolve(parent) === path.resolve(w.dir) || path.resolve(parent).startsWith(path.resolve(w.dir) + path.sep))) return
-  for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) {
-    try { fs.rmSync(path.join(parent, WORKERS_DIR, w.tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
-  }
-  for (const dir of [path.join(parent, WORKERS_DIR), path.join(parent, '.room')]) {
-    try { fs.rmdirSync(dir) } catch { /* another worker or a locked log keeps the directory */ }
-  }
+/** Record identity and sidecar ownership are mandatory; LocalWorker is insufficient for outside checkouts.
+ * The optional readiness check runs synchronously under the same guard as every reservation creation/reuse. */
+export function cleanupWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'id' | 'dir' | 'tag' | 'outside' | 'logFile'>,
+  ready: () => boolean = () => true): boolean {
+  const root = path.join(commonGitDirFromDotGit(leadDir), 'room', 'registry')
+  return withWorkerTag(root, record.tag, () => {
+    const tagFile = workerTagFile(root, record.tag)
+    if (fs.existsSync(tagFile)) {
+      // Corrupt reservations are evidence, never permission to delete files.
+      const reservation = JSON.parse(fs.readFileSync(tagFile, 'utf8')) as { id?: string } | null
+      if (!reservation || reservation.id !== record.id) return false
+    }
+    if (!ready()) return false
+    const { tag, dir, outside, logFile } = record
+    const logRoot = outside && logFile && path.basename(logFile) === `${tag}.log`
+      && path.basename(path.dirname(logFile)) === 'workers' && path.basename(path.dirname(path.dirname(logFile))) === '.room'
+      ? path.resolve(logFile, '../../..') : leadDir
+    const parent = !outside && path.basename(path.dirname(dir)) === 'workers' && path.basename(path.dirname(path.dirname(dir))) === '.room'
+      ? path.resolve(dir, '../../..') : logRoot
+    if (outside && (path.resolve(parent) === path.resolve(dir) || path.resolve(parent).startsWith(path.resolve(dir) + path.sep))) return false
+    for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) {
+      try { fs.rmSync(path.join(parent, WORKERS_DIR, tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
+    }
+    for (const dir of [path.join(parent, WORKERS_DIR), path.join(parent, '.room')]) {
+      try { fs.rmdirSync(dir) } catch { /* another worker or a locked log keeps the directory */ }
+    }
+    return true
+  })
 }
 
 /** One binary-capable snapshot against the fork, without modifying the worker's index. */

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { hubAppend } from '@room/shared/testing'
 import { OWED_TTL_MS, ROOM_STALE_MS, RoomDoc } from '@room/shared'
 import { LEASE_TTL_MS, MAINTENANCE_MS, MAX_LEASES_PER_PRINCIPAL, MAX_LEASES_PER_ROOM, MAX_RETAINED_NAMES_PER_PRINCIPAL, POST_RATE_PER_LEASE, SETTLE_MS, RoomStateError, encodeSeq, incarnationOf, serializedStore, startHub, type Hub, type HubHost, type Push } from '../src/index.js'
 import { contractSuite, fakeClock, holder, memoryEnv } from './contract.js'
@@ -472,25 +471,6 @@ describe('hub in process', () => {
     const store = serializedStore({ read: async () => max, write: async v => { await new Promise(r => setTimeout(r, 5)); max = v } })
     const [a, b] = await Promise.all([startHub(host({ store })), startHub(host({ store }))])
     expect(a.incarnation).not.toBe(b.incarnation)
-  })
-
-  it('expires state notices only after settlement and preserves a late-arriving live claim', async () => {
-    const h = host(), hub = await startHub(h)
-    try {
-      const live = hubAppend(h.doc, { name: 'room', kind: 'agent' }, { type: 'conflict', to: 'ada', path: 'x', text: 'live', claimId: 'live-claim', otherClaimId: '' }, { id: 'cf:abc:1', at: h.clock.wall() })
-      const stale = hubAppend(h.doc, { name: 'room', kind: 'agent' }, { type: 'conflict', to: 'ada', path: 'x', text: 'gone', claimId: 'gone-claim', otherClaimId: '' }, { id: 'cf:def:1', at: h.clock.wall() })
-      hub.tick()
-      expect(h.doc.outcomes.size).toBe(0)
-      h.doc.claims.set('live-claim', { id: 'live-claim', by: 'bob', byKind: 'agent', path: 'x', from: 1, to: 2, intent: 'edit', at: h.clock.wall() })
-      h.clock.advance(SETTLE_MS + MAINTENANCE_MS)
-      hub.tick()
-      expect(h.doc.outcomes.get(stale.id)).toMatchObject({ outcome: 'expired', to: 'ada' })
-      expect(h.doc.outcomes.has(live.id)).toBe(false)
-      h.doc.claims.delete('live-claim')
-      h.clock.advance(MAINTENANCE_MS)
-      hub.tick()
-      expect(h.doc.outcomes.get(live.id)).toMatchObject({ outcome: 'expired', to: 'ada' })
-    } finally { hub.stop() }
   })
 
   it('trims on the hub clock every maintenance period', async () => {
