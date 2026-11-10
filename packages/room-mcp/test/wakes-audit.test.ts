@@ -213,6 +213,24 @@ it('caps oversized waits at 100 seconds and says to call again', async () => {
   expect(await waiting).toContain('waited 100 s (the most per call); call again')
 })
 
+it('blocks a headless bare wait until its running worker finishes, then returns before the timeout', async () => {
+  vi.useFakeTimers()
+  vi.stubEnv('CLAUDE_CODE_ENTRYPOINT', 'sdk-cli')
+  try {
+    const { main, addWorker, state, tools } = fixture()
+    state.deliveryHealth = () => ({ host: 'claude', path: { mode: 'auto', transport: 'socket', availability: 'configured' },
+      retainedAddressed: 0, pendingAddressed: 0, handedToHost: 0, answersRecorded: 0, wakeRecorded: 0, uncertainWakeRecorded: 0 })
+    addWorker(main, money('running'))
+    let reply: string | undefined
+    void tools.room_wait({ timeoutMs: 100_000 }).then(r => { reply = r })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(reply).toBeUndefined()
+    hubAppend(main.room, { name: 'lead+money', kind: 'agent' }, { type: 'done', to: 'lead', tag: 'money', summary: 'fixed it', changed: [] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reply).toContain('(worker money) finished: fixed it')
+  } finally { vi.unstubAllEnvs() }
+})
+
 it('S1: a 100-second wait consumes an answer arriving after the 60-second reply lease', async () => {
   vi.useFakeTimers()
   const { main, tools, state } = fixture()

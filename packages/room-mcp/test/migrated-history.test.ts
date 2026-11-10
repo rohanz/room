@@ -26,7 +26,8 @@ async function roomStates(seed: (room: RoomDoc) => void): Promise<{ recent: stri
 it('keeps migrated Room 0.16 history out of the recent bus, and shows it with all=true (rc8)', async () => {
   const { recent, all } = await roomStates(room => {
     room.metaMap.set('hubIncarnation', 1)
-    for (let i = 0; i < 3; i++) hubAppend<NoteMsg>(room, { name: 'rohanz', kind: 'agent' }, { type: 'note', text: `current ${i}` })
+    // A peer's feed: the caller's own messages are not in its default recent bus.
+    for (let i = 0; i < 3; i++) hubAppend<NoteMsg>(room, { name: 'kieran', kind: 'agent' }, { type: 'note', priority: 'fyi', text: `current ${i}` } as never)
     // The local migration copies 0.16 bus messages as they were: no hub seq, their old time, appended after current lines.
     const old = Date.UTC(2026, 8, 28, 12)
     room.bus.push(Array.from({ length: 12 }, (_, i): Msg => i % 2
@@ -36,7 +37,7 @@ it('keeps migrated Room 0.16 history out of the recent bus, and shows it with al
   for (let i = 0; i < 3; i++) expect(recent).toContain(`current ${i}`)
   expect(recent).not.toContain('registry-review')
   expect(recent).not.toContain('moved the base to 422c74e1a5')
-  expect(recent).toContain('recent bus (3):')
+  expect(recent).toContain('recent bus, not yet shown to you (3):')
   expect(recent).toContain('migrated Room 0.16 history: 12 messages, room_state all=true shows them')
   expect(all).toContain('registry-review')
 })

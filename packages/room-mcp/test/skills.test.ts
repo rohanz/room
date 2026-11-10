@@ -59,7 +59,8 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       'start the integrated test run in the background and review diffs or write the summary',
       'Await completion and inspect the actual result', 'Stop remaining background commands and monitors you started before the final message',
     ] },
-    { sources: ['workers', 'etiquette', 'worker'], phrases: [
+    // Command lifecycle is stated once in room-etiquette; room-workers links to it.
+    { sources: ['etiquette', 'worker'], phrases: [
       'when responsiveness matters', 'actual result before room_done', 'unverified hosts, including Codex',
       'background lifetime and completion delivery are verified',
     ] },
@@ -75,7 +76,6 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       ] }
     }),
     { sources: ['etiquette'], phrases: [
-      'every observable rule in exactly one brief',
       'A timeout, interruption or missing result is not a pass',
       'source review or document checks where applicable', 'Whoever integrates owns comprehensive relevant validation',
       'independent peers manage their own sessions', 'A brief is a slice of the task, not its edge',
@@ -90,14 +90,20 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       'ask lead for scope decisions or unresolved ownership', 'Continue independent work while an answer is pending',
       'room_wait(questionId)', 'send failures to their owner',
     ] },
-    { sources: ['workers', 'etiquette'], phrases: [
+    // Waiting rules for every participant live in room-etiquette; lead wakes and resumption in room-workers.
+    { sources: ['etiquette'], phrases: [
       'room_wait observes Room dependencies only', 'use host task completion for your own commands', 'one room_wait at a time',
-      'with nothing else to do, end the turn',
-      'message from its lead to a finished worker resumes its retained session',
-      'output-limited runs do not validate the whole tree',
-      'completion from their own registered workers mid-turn as tool output', 'not proof that content was read or acted on',
+      'with nothing else to do, end the turn', 'ask its lead to resume it',
     ] },
-    { sources: ['workers', 'etiquette', 'agent', 'worker'], phrases: [
+    { sources: ['workers'], phrases: [
+      'message from its lead to a finished worker resumes its retained session',
+      'completion from their own registered workers mid-turn as tool output', 'not proof that content was read or acted on',
+      'A headless lead (`claude -p`, `codex exec`) must stay alive until supervision is complete',
+      '.room/briefs/<batch>.md', 'with or without `carry=false`', 'its absolute path plus only its own slice',
+      'Never commit or push unless the human asked', 'removes its worktree, branch and logs, keeping a recovery patch for a week',
+    ] },
+    { sources: ['workers', 'etiquette'], phrases: ['output-limited runs do not validate the whole tree'] },
+    { sources: ['etiquette', 'agent', 'worker'], phrases: [
       'timeout is not an answer or approval', 'decisions stay with the human',
     ] },
   ]

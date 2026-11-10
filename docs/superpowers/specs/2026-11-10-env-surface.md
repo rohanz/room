@@ -1,0 +1,239 @@
+# ROOM_* environment surface audit (2026-11-10)
+
+Status: audit plus one removal. Base `520d18fd`. Author: worker `env-audit`.
+
+## Method
+
+- Names: `grep -rhoE "ROOM_[A-Z_]+" packages/*/src | sort -u` (109 names; with digits allowed the set is the same).
+  Every name was then read in context: a match is not necessarily an environment variable.
+- Readers: every `process.env.X`, `env.X`, `e.X` and `env[...]` site in `packages/*/src`, `plugins/room/hooks/*.mjs`,
+  `plugins/room/bin`, `scripts/` and `deploy/`, plus the Codex MCP allow-list `plugins/room/codex-mcp.json` (`env_vars`).
+- Documented: `README.md`, `docs/reference.md`, `deploy/DEPLOYING.md`, `deploy/self-hosting.md`, `docs/upgrading.md`.
+  "pkg README" means only `packages/room-mcp/README.md`, which is a contributor document, not user documentation.
+- Dead code: `npx knip` is clean on the base, so no reader of a name sits in an unused export or file. A name is
+  "remove" only when no source, hook, script, test fixture child or deploy file reads it.
+
+Kinds:
+
+- **user setting**: a person or operator is expected to set it (client side, or `(server)` for the team server).
+- **internal handoff**: one Room process sets it for another (lead → worker, roomagent → MCP, Node → PowerShell,
+  preview → check command). Users should not set it.
+- **test-only seam**: exists so tests can steer behavior.
+- **tuning knob**: a limit or interval with a working default.
+- **not an env var**: a constant, error code, build define, or a substring of a longer identifier.
+
+Verdicts: **keep**; **keep but document** (live, user-visible, not in user docs); **make a constant** (tuning knob
+nobody should need; not changed in this slice, see the list below); **remove** (never read).
+
+## Table
+
+| Name | Read in (packages/…/src) | Kind | Documented | Verdict | Note |
+|---|---|---|---|---|---|
+| `ROOM_AUTO_FETCH` | roomd/base.ts | user setting | README, reference | keep | `0` disables missing-base fetches |
+| `ROOM_CLAUDE_WORKER_EFFORT` | room-mcp/hosts/instructions.ts | user setting | README, reference | keep | per-host defaults; candidate to fold into the generic pair |
+| `ROOM_CLAUDE_WORKER_MODEL` | room-mcp/hosts/instructions.ts | user setting | README, reference | keep | per-host defaults; candidate to fold into the generic pair |
+| `ROOM_CODEX_WORKER_EFFORT` | room-mcp/hosts/instructions.ts | user setting | README, reference | keep | per-host defaults; candidate to fold into the generic pair |
+| `ROOM_CODEX_WORKER_MODEL` | room-mcp/hosts/instructions.ts | user setting | README, reference | keep | per-host defaults; candidate to fold into the generic pair |
+| `ROOM_CREDENTIALS` | agent/cli.ts, room-mcp/config.ts, room-mcp/credentials.ts | user setting | reference | keep |  |
+| `ROOM_KIND` | room-mcp/config.ts, room-mcp/session.ts, room-mcp/worker-config.ts | user setting | pkg README only | keep but document | `agent`/`bot`/`ci`; scrubbed from workers |
+| `ROOM_LOCAL_KEY` | agent/cli.ts | user setting | nowhere | keep but document | roomagent CLI fallbacks for `--session` / `--key` (scripts/demo.sh, say.mts) |
+| `ROOM_LOG_FILE` | room-mcp/config.ts, room-mcp/index.ts, room-mcp/worker-config.ts +2 | user setting | reference | keep | also worker handoff (per-tag MCP log) |
+| `ROOM_MAX_WORKERS` | room-mcp/config.ts | user setting | README, reference | keep | default 8 |
+| `ROOM_NAME` | agent/cli.ts, room-mcp/config.ts, room-mcp/worker-config.ts | user setting | pkg README only | keep but document | roomagent writes it for its MCP child; scrubbed from workers |
+| `ROOM_OWNER` | room-mcp/config.ts, room-mcp/session.ts, room-mcp/worker-config.ts | user setting | pkg README only | keep but document | also worker handoff (workers inherit the lead owner) |
+| `ROOM_ROOM` | room-mcp/config.ts, room-mcp/tools/join.ts, room-mcp/worker-config.ts +1 | user setting | pkg README only | keep but document | explicit room name; how workers get the lead room |
+| `ROOM_SERVER` | agent/cli.ts, room-mcp/choice.ts, room-mcp/config.ts +5 | user setting | README, reference, self-hosting | keep | also worker handoff; in Codex allow-list |
+| `ROOM_SESSION` | agent/cli.ts | user setting | nowhere | keep but document | roomagent CLI fallbacks for `--session` / `--key` (scripts/demo.sh, say.mts) |
+| `ROOM_SHARE` | room-mcp/config.ts, room-mcp/session.ts, room-mcp/worker-config.ts | user setting | README, reference | keep | also worker handoff |
+| `ROOM_TAG` | room-mcp/config.ts, room-mcp/index.ts, room-mcp/names.ts +4 | user setting | README, reference | keep | also worker handoff |
+| `ROOM_TOKEN` | agent/cli.ts, room-mcp/choice.ts, room-mcp/config.ts +8 | user setting | reference, DEPLOYING, self-hosting | keep | client shared token and server admission token; also worker handoff |
+| `ROOM_URL` | agent/cli.ts, room-mcp/choice.ts, room-mcp/config.ts +4 | user setting | reference | keep | legacy team URL; roomagent writes it for its MCP child |
+| `ROOM_WAKE` | room-mcp/hosts/diagnostics.ts, room-mcp/hosts/prompt.ts, room-mcp/hosts/wake-mode.ts +2 | user setting | README, reference | keep | `auto`/`socket`/`off` |
+| `ROOM_WEB` | room-mcp/config.ts | user setting | reference | keep |  |
+| `ROOM_WORKER_EFFORT` | room-mcp/config.ts, room-mcp/hosts/selection.ts, room-mcp/tools/workers.ts +1 | user setting | README, reference | keep | also written into worker env so nested spawns inherit |
+| `ROOM_WORKER_MAX_BUDGET_USD` | room-mcp/worker-config.ts | user setting | README, reference | keep | Claude `--max-budget-usd` |
+| `ROOM_WORKER_MODEL` | room-mcp/config.ts, room-mcp/hosts/selection.ts, room-mcp/tools/workers.ts +1 | user setting | README, reference | keep | also written into worker env so nested spawns inherit |
+| `ROOM_ADMINS` | server/auth.ts, server/index.ts | user setting (server) | DEPLOYING, self-hosting, upgrading | keep | read directly from process.env (not settingsFromEnv) |
+| `ROOM_DOC_MAX_MB` | hub-core/doc-cap.ts, hub-core/hub.ts, server/index.ts +3 | user setting (server) | README, reference, DEPLOYING, self-hosting, upgrading | keep | error messages tell operators to raise it |
+| `ROOM_IDENTITY_GUARD` | server/index.ts | user setting (server) | README, reference, DEPLOYING, self-hosting | keep | experimental `enforce`; read directly from process.env |
+| `ROOM_IDLE_DAYS` | server/index.ts, server/settings.ts | user setting (server) | README, reference, DEPLOYING, self-hosting | keep |  |
+| `ROOM_MANAGED_REPOS` | server/index.ts | user setting (server) | DEPLOYING, self-hosting, upgrading | keep | read directly from process.env |
+| `ROOM_MAX_MESSAGE_MB` | server/index.ts, server/settings.ts | user setting (server) | README, reference, DEPLOYING, self-hosting, upgrading | keep |  |
+| `ROOM_SHARE_MAX` | room-mcp/session.ts, room-mcp/tools/share.ts, server/index.ts | user setting (server) | README, reference, DEPLOYING, self-hosting | keep | read directly from process.env |
+| `ROOM_STATIC` | server/index.ts | user setting (server) | self-hosting | keep | web bundle directory |
+| `ROOM_TRUST_PROXY` | server/index.ts | user setting (server) | reference, DEPLOYING, self-hosting | keep | read directly from process.env |
+| `ROOM_DIR` | agent/cli.ts, room-mcp/hosts/claude-binding.ts, room-mcp/hosts/codex-binding.ts +3 | internal handoff | pkg README (worker env list) | keep | worker and roomagent → MCP working directory |
+| `ROOM_HOST` | room-mcp/hosts/codex-binding.ts, room-mcp/hosts/codex-worker-warning.ts, room-mcp/hosts/diagnostics.ts +1 | internal handoff | roadmap only | keep | set to `codex` by codex-mcp.json; host detection |
+| `ROOM_LAUNCH_NONCE` | room-mcp/ledger.ts, room-mcp/tools/workers.ts, room-mcp/worker-config.ts +1 | internal handoff | nowhere | keep | worker launch identity checked against the registry (group 3) |
+| `ROOM_LEAD` | room-mcp/worker-config.ts, room-mcp/session.ts | internal handoff | pkg README (worker env list) | **remove** (done) | written into every worker env and the Codex allow-list; never read by any source, hook or script since it was introduced (f5b070cf) |
+| `ROOM_LEAD_CLONE` | room-mcp/session.ts, room-mcp/worker-config.ts | internal handoff | nowhere | keep | lead git common dir for local workers (group 3) |
+| `ROOM_MERGED_TREE` | room-mcp/tools/files.ts | internal handoff | nowhere (tool text only) | keep but document | set for room_preview_merge `run` commands; user check scripts may read it |
+| `ROOM_NAME_EPOCH` | room-mcp/names.ts, room-mcp/session.ts, room-mcp/worker-config.ts | internal handoff | nowhere | keep | name-reservation epoch the worker takes over (group 3) |
+| `ROOM_PRIVATE_PATH` | relay/private-state.ts | internal handoff | nowhere | keep | passes a path to a PowerShell child (Windows ACLs); not user-facing |
+| `ROOM_REGISTRY` | room-mcp/hosts/claude-shell.ts, room-mcp/worker-config.ts, room-mcp/worker-registry.ts | internal handoff | reference | keep | group 3 |
+| `ROOM_WORKER_HOST` | room-mcp/hosts/codex-identity.ts, room-mcp/hosts/selection.ts, room-mcp/worker-config.ts | internal handoff | nowhere | keep | worker host selection (group 3) |
+| `ROOM_WORKER_ID` | room-mcp/config.ts, room-mcp/hosts/claude-shell.ts, room-mcp/hosts/codex-identity.ts +9 | internal handoff | reference | keep | marks a worker process (hooks/session-start.mjs reads it; headless detection) |
+| `ROOM_WORKER_MEM_GB` | room-mcp/tools/workers.ts, room-mcp/worker-config.ts, room-mcp/worker-launch.ts | internal handoff | README, reference | keep | computed budget shown to a worker; README also offers them as user overrides; nested spawns divide them |
+| `ROOM_WORKER_RUN` | room-mcp/ledger.ts, room-mcp/tools/workers.ts, room-mcp/worker-config.ts +1 | internal handoff | nowhere | keep | worker launch identity checked against the registry (group 3) |
+| `ROOM_WORKER_THREADS` | room-mcp/tools/workers.ts, room-mcp/worker-config.ts | internal handoff | README, reference | keep | computed budget shown to a worker; README also offers them as user overrides; nested spawns divide them |
+| `ROOM_ARCHIVE_LIST_MAX_KEYS` | server/index.ts | tuning knob | self-hosting | make a constant | group 1; clamped to ≤1000, so it can only lower the default; read outside settingsFromEnv |
+| `ROOM_AUDIT_KEEP_FILES` | server/settings.ts, server/store.ts | tuning knob | self-hosting | keep | audit disk retention; unset keeps all |
+| `ROOM_AUDIT_ROTATE_MB` | server/settings.ts, server/store.ts | tuning knob | self-hosting | keep | audit disk retention |
+| `ROOM_AUDIT_SCAN_MB` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_AWARENESS_IDS_PER_ROOM` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_AWARENESS_MESSAGES_PER_MINUTE` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_COMPACT_MIN_DELETED` | relay/daemon.ts, server/index.ts | tuning knob | reference, self-hosting | keep | server and local relay; `off` switch; soak.mts seam |
+| `ROOM_EXPORT_MAX_FRAME_MB` | room-mcp/prs.ts | tuning knob | self-hosting, upgrading | keep but document | client-side frame cap that must track the server ROOM_DOC_MAX_MB; missing from the Codex allow-list |
+| `ROOM_GIT_TIMEOUT_MS` | roomd/git.ts | tuning knob | nowhere | make a constant | git timeouts already scale with tree size; carry-cleanliness.test.ts uses it as a seam |
+| `ROOM_IDLE_LEASE_MS` | room-mcp/index.ts | tuning knob | README, reference | make a constant | Codex app-server idle lease; pinned by codex-env.test.ts |
+| `ROOM_LEGACY_DAYS` | server/settings.ts | tuning knob | README, reference, self-hosting, upgrading | make a constant | 0.16 cutover budget (group 2): retire with the migration path |
+| `ROOM_LOAD_MAX_MB` | server/index.ts, server/limits.ts, server/settings.ts | tuning knob | DEPLOYING, self-hosting, upgrading | keep | load ceiling coupled to ROOM_DOC_MAX_MB; read twice (limits.ts and settings.ts) |
+| `ROOM_MAX_BODY_READS` | server/settings.ts | tuning knob | reference, self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_CONNECTIONS` | server/settings.ts | tuning knob | reference, self-hosting | keep | capacity |
+| `ROOM_MAX_CONNECTIONS_PER_PRINCIPAL` | server/settings.ts | tuning knob | self-hosting | keep | capacity |
+| `ROOM_MAX_CONNECTIONS_PER_ROOM` | server/settings.ts | tuning knob | self-hosting | keep | capacity |
+| `ROOM_MAX_EXPORTS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_HTTP_RESPONSES` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_PENDING_ADMISSIONS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_PENDING_LOGINS` | server/auth.ts, server/settings.ts | tuning knob | reference, self-hosting | make a constant | group 1; read twice (settings.ts and auth.ts) |
+| `ROOM_MAX_PENDING_PER_ADDRESS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_PR_OPERATIONS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_QUEUED_MB` | server/settings.ts | tuning knob | self-hosting | make a constant | group 1; default derived from ROOM_DOC_MAX_MB |
+| `ROOM_MAX_ROOMS` | server/settings.ts | tuning knob | reference, self-hosting | keep | capacity |
+| `ROOM_MAX_ROOM_LISTS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_TOTAL_QUEUED_MB` | server/index.ts, server/settings.ts | tuning knob | self-hosting, upgrading | keep | server memory ceiling |
+| `ROOM_MIGRATION_MAX_READ_MB` | server/migrate.ts, server/settings.ts | tuning knob | upgrading | make a constant | group 2; read twice (settings.ts and migrate.ts) |
+| `ROOM_MIGRATION_MAX_RECORDS` | server/migrate.ts, server/settings.ts | tuning knob | upgrading | make a constant | 0.16 cutover budget (group 2): retire with the migration path |
+| `ROOM_MIGRATION_MAX_SOURCES` | server/migrate.ts, server/settings.ts | tuning knob | upgrading | make a constant | 0.16 cutover budget (group 2): retire with the migration path |
+| `ROOM_PREVIEW_CACHE_GB` | room-mcp/preview-cache.ts | tuning knob | README, reference | keep | `0` disables reuse; a real disk-use choice |
+| `ROOM_REVALIDATE_MINUTES` | server/index.ts | tuning knob | reference, self-hosting | keep | push-permission recheck; `0` disables; read outside settingsFromEnv |
+| `ROOM_STALE_DAYS` | hub-core/hub.ts, room-mcp/config.ts, shared/expiry.ts | tuning knob | README, reference, pkg README | make a constant | display-only `stale` label; can disagree with the fixed 7-day hub expiry |
+| `ROOM_VIEW_MAX_PER_ROOM` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_VIEW_MAX_TOTAL` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_VIEW_TTL_MS` | server/settings.ts | tuning knob | self-hosting | keep | view-key lifetime: a security policy |
+| `ROOM_WORKER_NICE` | room-mcp/worker-config.ts, room-mcp/worker-launch.ts | tuning knob | nowhere | keep but document | worker priority (default 10); the resume path also passes it to workerPriority through a synthetic env object |
+| `ROOM_MACHINE_ID` | roomd/index.ts | test-only seam | nowhere | keep | overrides the per-machine salt so tests stay out of ~/.config/room |
+| `ROOM_TEST_ARCHIVE_LOAD_DELAY_MS` | server/index.ts | test-only seam | nowhere | keep | gated on NODE_ENV=test (group candidate: one injected delay hook) |
+| `ROOM_TEST_INVENTORY_DELAY_MS` | server/index.ts | test-only seam | nowhere | keep | gated on NODE_ENV=test (group candidate: one injected delay hook) |
+| `ROOM_TEST_STORED_TABLES_DELAY_MS` | server/index.ts | test-only seam | nowhere | keep | gated on NODE_ENV=test (group candidate: one injected delay hook) |
+| `ROOM_TEST_UPGRADE_DELAY_MS` | server/index.ts | test-only seam | nowhere | keep | gated on NODE_ENV=test (group candidate: one injected delay hook) |
+| `ROOM_TREE_SITTER_WASM_DIR` | room-mcp/parse/engine.ts | test-only seam | nowhere | keep | grammar directory override; only parse-engine.test.ts sets it |
+| `ROOM_CARRY_IDENTITY` | room-mcp/worker-git.ts, room-mcp/worker-refresh.ts, room-mcp/worker-state.ts | not an env var | — | n/a | constant: git author of carried-edit commits |
+| `ROOM_CLAUDE_WORKER_` | room-mcp/hosts/selection.ts | not an env var | README | n/a | prefix used to compose the per-host `_MODEL`/`_EFFORT` names (grep cannot see composed names) |
+| `ROOM_CLOSED_CODE` | room-mcp/session.ts | not an env var | — | n/a | websocket close-code constants |
+| `ROOM_CODEX_WORKER_` | room-mcp/hosts/selection.ts | not an env var | README | n/a | prefix used to compose the per-host `_MODEL`/`_EFFORT` names (grep cannot see composed names) |
+| `ROOM_DAEMON_RELEASE__` | relay/daemon.ts | not an env var | — | n/a | esbuild define `__ROOM_DAEMON_RELEASE__` |
+| `ROOM_DOC_MAX_BYTES` | hub-core/doc-cap.ts, relay/index.ts, relay/local-migrate.ts +4 | not an env var | — | n/a | constant (64 MiB) in @room/shared; mirrors server default of ROOM_DOC_MAX_MB |
+| `ROOM_FILE` | roomd/index.ts | not an env var | — | n/a | constants: `.room.json` and its 16 KiB read bound |
+| `ROOM_FILE_MAX_BYTES` | roomd/room-file.ts | not an env var | — | n/a | constants: `.room.json` and its 16 KiB read bound |
+| `ROOM_FILE_TOO_LARGE` | roomd/bounded-read.ts | not an env var | — | n/a | error `code` strings |
+| `ROOM_HOOKS_FILE_SHA256` | room-mcp/hosts/codex-install.ts | not an env var | — | n/a | substring of `CODEX_ROOM_HOOK_HASHES` / `CODEX_ROOM_HOOKS_FILE_SHA256` |
+| `ROOM_HOOK_HASHES` | room-mcp/hosts/codex-install.ts | not an env var | — | n/a | substring of `CODEX_ROOM_HOOK_HASHES` / `CODEX_ROOM_HOOKS_FILE_SHA256` |
+| `ROOM_LISTS` | server/settings.ts, server/index.ts | not an env var | — | n/a | substring of `MAX_ROOM_LISTS[_PER_PRINCIPAL]` constants |
+| `ROOM_LISTS_PER_PRINCIPAL` | server/index.ts | not an env var | — | n/a | substring of `MAX_ROOM_LISTS[_PER_PRINCIPAL]` constants |
+| `ROOM_LOG` | room-mcp/index.ts | not an env var | — | n/a | constants: `room-mcp.log` name and its 1 MiB cap |
+| `ROOM_LOG_MAX_BYTES` | room-mcp/index.ts | not an env var | — | n/a | constants: `room-mcp.log` name and its 1 MiB cap |
+| `ROOM_MESSAGE_TYPES` | server/readonly.ts | not an env var | — | n/a | substring of `TRUSTED_ROOM_MESSAGE_TYPES` |
+| `ROOM_NOT_A_FILE` | roomd/bounded-read.ts | not an env var | — | n/a | error `code` strings |
+| `ROOM_SIZE_CAP_CODE` | room-mcp/session.ts | not an env var | — | n/a | websocket close-code constants |
+| `ROOM_STALE_MS` | room-mcp/config.ts, room-mcp/local-state-gc.ts, room-mcp/retire.ts +2 | not an env var | — | n/a | constant: fixed 7-day hub expiry |
+| `ROOM_TEXT_TOO_LARGE` | room-mcp/tools/disk-text.ts, shared/manifest.ts | not an env var | — | n/a | error `code` strings |
+
+## Names outside `packages/*/src`
+
+| Name | Where | Kind | Verdict |
+|---|---|---|---|
+| `ROOM_GEN` | packages/room-mcp/test/config.test.ts, pkg README | legacy (removed with the 2026-09-28 registry) | test kept: it asserts the variable is ignored. The pkg README still listed it as a worker setting: **removed from the README** (done). |
+| `ROOM_TEST_PROCESS_TABLE` | plugins/room/hooks/common.mjs | test-only seam (NODE_ENV=test) | keep |
+| `ROOM_CONNECT_TIMEOUT_MS` | scripts/say.mts | dev-script knob | keep (dev script only) |
+| `ROOM_IMAGE_TAG` | deploy/docker-compose.yml, .env.example, self-hosting.md | compose interpolation | keep |
+| `ROOM_PORT` | deploy/docker-compose.yml | compose interpolation | keep but document (absent from self-hosting.md and .env.example) |
+| `ROOM_MIGRATION_*` | self-hosting.md | doc shorthand for the three migration budgets | n/a |
+| `ROOM_B`, `ROOM_C`, `ROOM_FAKE`, `ROOM_FROM_LEAD_FILE`, `ROOM_LEAD_FILE`, `ROOM_PREVIEW_SECRET`, `ROOM_REAL_GIT`, `ROOM_SECURITY_MARKER`, `ROOM_SYNC_GIT_LOG`, `ROOM_TEST_BARRIER`, `ROOM_TEST_FAIL_DIR`, `ROOM_TEST_FILE`, `ROOM_TEST_MARKER`, `ROOM_TEST_PATH`, `ROOM_TEST_PATHS`, `ROOM_TEST_PRIVATE_PARENT`, `ROOM_TEST_ROOT`, `ROOM_TEST_WRITER` | packages/*/test | test fixtures: values passed to child processes, or deliberately `ROOM_`-prefixed to prove the scrubbers remove them | keep; not product surface |
+
+Non-`ROOM_` variables (`YPERSISTENCE`, `GITHUB_CLIENT_ID`, `OIDC_*`, `CLAUDE_CODE_ENTRYPOINT`, `SOAK_*`, …) are out of
+scope. Peer note: `wait-headless` adds a reader of `ROOM_WORKER_ID` and of the host variable `CLAUDE_CODE_ENTRYPOINT`
+for headless detection; no new `ROOM_*` name.
+
+## What was removed
+
+`ROOM_LEAD` (the only provably dead variable). `workerProcessEnv` wrote it into every worker's environment, the
+Codex allow-list forwarded it, and `LEAD_ONLY_ENV` scrubbed it, but nothing ever read it; the lead's name reaches the
+worker through its prompt and `ROOM_OWNER`. Changes:
+
+- `packages/room-mcp/src/worker-config.ts`: dropped from the worker env, from `LEAD_ONLY_ENV` and its comment; the
+  `lead` option of `workerProcessEnv` existed only to fill it and is gone (`worker-launch.ts` still passes
+  `policy.lead` to `workerPrompt`).
+- `plugins/room/codex-mcp.json`: dropped from `env_vars` (not `hooks.json`; no hook-trust impact).
+- Tests: `workers.test.ts` asserts `ROOM_OWNER` where it asserted `ROOM_LEAD`, and its exact worker key list no longer
+  contains it; `local-naming.test.ts` no longer stubs it; the `lead:` field is gone from `workerProcessEnv` literals.
+- `packages/room-mcp/README.md`: worker env list; also the stale `ROOM_GEN` mention.
+
+Scrub lists: the Claude worker shell scrub (`Get-ChildItem Env:ROOM_*` / `CLAUDE_ENV_FILE`), the Codex
+`shell_environment_policy` filter (`ROOM_*`) and vitest `isolateTestEnv` (`ROOM_` prefix) are prefix-based and
+need no change. `LEAD_ONLY_ENV` is the one explicit list and now matches what `workerProcessEnv` writes.
+`codex-env.test.ts` still proves every launched `ROOM_` variable is in the Codex allow-list.
+
+## For the lead: "make a constant" verdicts (not changed)
+
+| Name(s) | Risk of making it a constant |
+|---|---|
+| Group 1 (15 server fairness budgets): `ROOM_MAX_BODY_READS`, `ROOM_MAX_HTTP_RESPONSES`, `ROOM_MAX_PR_OPERATIONS`, `ROOM_MAX_ROOM_LISTS`, `ROOM_MAX_EXPORTS`, `ROOM_MAX_PENDING_ADMISSIONS`, `ROOM_MAX_PENDING_PER_ADDRESS`, `ROOM_MAX_PENDING_LOGINS`, `ROOM_AWARENESS_IDS_PER_ROOM`, `ROOM_AWARENESS_MESSAGES_PER_MINUTE`, `ROOM_ARCHIVE_LIST_MAX_KEYS`, `ROOM_AUDIT_SCAN_MB`, `ROOM_VIEW_MAX_PER_ROOM`, `ROOM_VIEW_MAX_TOTAL`, `ROOM_MAX_QUEUED_MB` | All are in self-hosting.md "advanced limits"; a self-hoster who set one would see it silently ignored. Mitigate with a boot-time warning for any retired `ROOM_*` name (settingsFromEnv already fails boot on invalid values, so the operator is used to being told). `settings.test.ts`, `settings-startup.test.ts`, `pending-admission.test.ts`, `room-capacity.test.ts` and `server.test.ts` exercise some through env and would move to constructor options. |
+| Group 2 (0.16 cutover): `ROOM_LEGACY_DAYS`, `ROOM_MIGRATION_MAX_READ_MB`, `ROOM_MIGRATION_MAX_RECORDS`, `ROOM_MIGRATION_MAX_SOURCES` | An operator still upgrading a ≤0.16 server whose rooms exceed a cap loses the documented escape hatch (`migrate.ts` errors say "raise it and retry"). Retire together with the migration path once it leaves the supported upgrade window, not before. |
+| `ROOM_STALE_DAYS` | Documented in README, reference and in the Codex allow-list; users who set it lose a display-only label tweak. Benefit: the `stale` label can no longer disagree with the fixed 7-day hub expiry (`ROOM_STALE_MS`). |
+| `ROOM_IDLE_LEASE_MS` | Documented in README/reference; `codex-env.test.ts` pins it in the allow-list (added after 2026-09-29 rehearsal finding F3), and its one test sets it through the environment, so that test needs a parameter seam instead. |
+| `ROOM_GIT_TIMEOUT_MS` | Undocumented but in the Codex allow-list; `carry-cleanliness.test.ts` drives timeouts through it (needs a parameter seam). A user on a very slow filesystem loses the override; timeouts already scale with tree size and cap at five minutes. |
+
+## Other findings
+
+- Codex allow-list gaps: `ROOM_EXPORT_MAX_FRAME_MB` (documented client knob), `ROOM_COMPACT_MIN_DELETED` (the local
+  relay daemon inherits the MCP environment), `ROOM_MACHINE_ID` and `ROOM_TREE_SITTER_WASM_DIR` are not in
+  `codex-mcp.json` `env_vars`, so under Codex they never take effect. Only the first matters to users; better still,
+  derive the client frame cap from the server's advertised document cap and drop the knob.
+- Server settings read outside `settingsFromEnv` are not validated at boot: `ROOM_ADMINS`, `ROOM_MANAGED_REPOS`,
+  `ROOM_SHARE_MAX`, `ROOM_TRUST_PROXY`, `ROOM_STATIC`, `ROOM_IDENTITY_GUARD`, `ROOM_ARCHIVE_LIST_MAX_KEYS`,
+  `ROOM_REVALIDATE_MINUTES`, `ROOM_COMPACT_MIN_DELETED`. A typo such as `ROOM_TRUST_PROXY=yes` silently means false.
+  `ROOM_MAX_PENDING_LOGINS`, `ROOM_LOAD_MAX_MB` and `ROOM_MIGRATION_*` are read twice (validated in settings.ts, then
+  re-read from `process.env` in auth.ts / limits.ts / migrate.ts).
+- The resume path passes `ROOM_WORKER_NICE` to `workerPriority` through a synthetic `{ ...process.env, ROOM_WORKER_NICE }`
+  object: an argument disguised as an environment variable.
+- `ROOM_STALE_DAYS` is both a client env var (config.ts) and an exported constant in `@room/shared/expiry.ts` with a
+  different meaning (fixed hub expiry in days). Same name, two rules.
+
+## Counts
+
+By kind (109 names from `packages/*/src`):
+
+| Kind | Count |
+|---|---|
+| user setting (client 24, server 9) | 33 |
+| tuning knob (client 7, server 29) | 36 |
+| internal handoff | 14 |
+| test-only seam | 6 |
+| not an env var | 20 |
+| **total** | **109** |
+
+So 89 of the 109 are environment variables; 33 are settings a person is meant to touch.
+
+By verdict: keep 57 · keep but document 9 · make a constant 22 · remove 1 (done) · n/a 20.
+If the "make a constant" list lands, 66 environment variables remain: 19 team-server settings and 47 client-side (28 settings or knobs, 13 handoff, 6 test seams).
+
+## Collapse first
+
+1. **Server fairness budgets (15 names → 0).** They bound per-principal or per-request work (body reads, HTTP
+   responses, PR operations, room lists, exports, pending admissions/logins, awareness rates, view keys, per-socket
+   queue). Their defaults protect the server; there is no deployment decision an operator makes with them, and
+   `settings.ts` already centralises them, so the change is mechanical. Keep the capacity knobs (`ROOM_MAX_ROOMS`,
+   `ROOM_MAX_CONNECTIONS*`, `ROOM_MAX_TOTAL_QUEUED_MB`) that do encode a deployment size.
+2. **Worker launch identity (7 handoff names → 1).** `ROOM_WORKER_ID`, `ROOM_WORKER_RUN`, `ROOM_LAUNCH_NONCE`,
+   `ROOM_REGISTRY`, `ROOM_NAME_EPOCH`, `ROOM_LEAD_CLONE` and `ROOM_WORKER_HOST` always travel together and must be
+   kept in step across `workerProcessEnv`, `LEAD_ONLY_ENV` and the Codex allow-list; a missing allow-list entry already
+   broke Codex workers' `room_done` once (2026-09-28 wave 2 rehearsal). One variable naming a 0600 launch record in the
+   registry (or one JSON value) removes that class of bug. `ROOM_WORKER_ID` alone should stay visible as the
+   "this is a worker" marker the hooks read. Needs care for resumed workers launched by an older bundle.
+3. **0.16 cutover budgets (4 names → 0).** `ROOM_LEGACY_DAYS` and the three `ROOM_MIGRATION_*` caps exist only for the
+   one-time 0.16 → 0.17 migration. Retire them with that code path when it leaves the supported upgrade window;
+   until then they cost little but they dominate the upgrading guide's settings section.
+
+Runner-up: the six worker model/effort variables (`ROOM_WORKER_*` plus four per-host variants) could become two
+values with an optional `host:` prefix, but they are documented user settings and cheap; collapse later.

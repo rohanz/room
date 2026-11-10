@@ -298,11 +298,11 @@ describe('session gating', () => {
     publishFixture(t.room, 'Kieran', 'README.md', 'changed')
     try {
       const compact = await t.tools.call('room_state', { all: true })
-      expect(compact).toContain('  - Kieran: 7 files, mostly art/main-street/ (6): README.md, scene-0.md, scene-1.md ...')
+      expect(compact).toContain("  - Kieran: offline; uncommitted, not yet pushed: 7 files, mostly art/main-street/ (6): README.md, scene-0.md, scene-1.md ...")
       expect(await t.tools.call('room_state', { path: 'README.md' })).toContain('uncommitted changes by: Kieran')
       for (let i = 1; i < 6; i++) clearFixture(t.room, 'Kieran', `art/main-street/scene-${i}.md`)
       const short = await t.tools.call('room_state', { all: true })
-      expect(short).toContain('  - Kieran: README.md, art/main-street/scene-0.md')
+      expect(short).toContain("  - Kieran: offline; uncommitted, not yet pushed: README.md, art/main-street/scene-0.md")
       expect(short).not.toContain('Kieran: 2 files')
     } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
   })
@@ -424,6 +424,20 @@ describe('session gating', () => {
     expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('not sent: hub unreachable')
     expect(a.messages().some(m => 'text' in m && m.text === 'queued')).toBe(false)
     expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: room_wait cannot observe new messages until reconnected')
+  })
+
+  it('names the local daemon in room_state only while it is unreachable', async () => {
+    const { a } = pair()
+    a.setMeta({ repo: 'demo', branch: 'main', base })
+    const session = fakeSession(a, true, true)
+    Object.assign(session, { local: { url: 'ws://127.0.0.1:9', port: 9, owned: false, pid: 4321, async stop() {} } })
+    let clock = 1000
+    const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir, now: () => clock })
+    expect(await tools.call('room_state', {})).not.toContain('local daemon:')
+    session.provider.wsconnected = false
+    await tools.call('room_state', {})
+    clock += 2001
+    expect(await tools.call('room_state', {})).toMatch(/OFFLINE: not connected to local .*\nroom: .*\nlocal daemon: pid 4321 on ws:\/\/127\.0\.0\.1:9; stops after 5 minutes without an authenticated writer/)
   })
 
   it('room_state says when the current room was closed, including a path view', async () => {
@@ -1788,10 +1802,12 @@ describe('merge preview scratch tree', () => {
    it('cuts recent bus lines to one line and names where the full text is', async () => {
      const t = setup()
      try {
-       const me = { name: 'Rohan', kind: 'agent' as const }
-       const long = hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'finished: ' + 'x'.repeat(600) })
-       const multi = hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'first line\nsecond line' })
-       const short = hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'short note' })
+       // A peer's routine feed (the caller's own messages stay out of its default recent bus).
+       const peer = { name: 'Kieran', kind: 'agent' as const }
+       const note = (text: string) => hubAppend<NoteMsg>(t.room, peer, { type: 'note', priority: 'fyi', text } as never)
+       const long = note('finished: ' + 'x'.repeat(600))
+       const multi = note('first line\nsecond line')
+       const short = note('short note')
        const out = await t.tools.call('room_state', {})
        const line = (id: string) => out.split('\n').find(l => l.includes(`[${id}]`))!
        expect(line(long.id).endsWith('…')).toBe(true)
@@ -1804,8 +1820,8 @@ describe('merge preview scratch tree', () => {
        expect(full).toContain('x'.repeat(600))
        expect(full).toContain('first line\nsecond line')
        expect(full).not.toContain('long messages cut to one line')
-       hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'another short note' })
-       for (let i = 0; i < 10; i++) hubAppend<NoteMsg>(t.room, me, { type: 'note', text: `short ${i}` })
+       note('another short note')
+       for (let i = 0; i < 10; i++) note(`short ${i}`)
        expect(await t.tools.call('room_state', {})).not.toContain('long messages cut to one line')
      } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
    })
@@ -1909,7 +1925,9 @@ it('scoped room_state shows a participant whose changed path alone overlaps my w
     publishFixture(t.other, 'Ada', 'src/file.ts', 'changed')
     const out = await t.tools.call('room_state', {})
     expect(out.slice(out.indexOf('participants overlapping your work'), out.indexOf('open claims'))).toContain("  - Ada's agent:")
-    expect(out).toContain('  - Ada: src/file.ts')
+    // Files are listed once, on the participant line.
+    expect(out).toMatch(/  - Ada's agent: .*uncommitted, not yet pushed: src\/file\.ts/)
+    expect(out).not.toContain('  - Ada: src/file.ts')
     expect(out).not.toContain("1 others: Ada's agent (all:true for detail)")
   } finally { ada.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
 })

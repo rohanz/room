@@ -20,7 +20,6 @@
         "XDG_CONFIG_HOME",
         "HOME",
         "ROOM_ROOM",
-        "ROOM_LEAD",
         "ROOM_SHARE",
         "ROOM_KIND",
         "ROOM_MAX_WORKERS",

@@ -175,7 +175,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state in ${s.roomName}`)
       }
       out.push(`room: ${s.roomName} — ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
-      if (s.local) out.push(localDaemonLine(s))
+      // The daemon's pid, port and idle policy matter while it is unreachable; check=true always shows them.
+      if (s.local && since !== undefined) out.push(localDaemonLine(s))
       // Right after the room line, near the top: a replayed wake reads this and stops.
       if (noUnseen) out.push('nothing new for you since your last read; no action needed')
       const ps = presences(s)
@@ -222,7 +223,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const own = worker && (await myWorkers(s)).find(w => w.id === worker.id)
         const idle = p && !worker ? idleLabel(p.idleMin, s.room.openClaims().filter(c => c.by === n).length) : undefined
         const ago = idle ?? (p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own && !state.workerAlive(s, own) }) : 'offline')
-        const who = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find(c => c.by === n)?.byKind)
+        // By default the workers section below carries an own worker's host, model, effort and report.
+        const who = own && a.all !== true ? n : participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find(c => c.by === n)?.byKind)
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n)
           out.push(`  - ${who}: another session in this checkout${n === checkoutPublisher(s) ? '; publishes this checkout' : ''}${declaredScope ? `; scope ${scopeLine(declaredScope)}` : ''} · ${ago}`)
@@ -230,7 +232,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const theirs = areasFor(s, n)
         const areaSummary = areaMembershipSummary(theirs)
-        out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n)}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
+        out.push(`  - ${who}${n === s.me.name ? ' (you)' : ''}: ${personLine(s, n, { reported: a.all !== true && !!own && !!worker.summary })}${areaSummary ? ` · ${areaSummary}` : ''} · ${ago}`)
       }
       if (hidden.length) {
         const label = (name: string) => displayName({ name, kind: (ps.find(p => p.user.name === name && isAgentic(p.user.kind)) ?? ps.find(p => p.user.name === name))?.user.kind ?? s.room.scope(name)?.byKind ?? s.room.openClaims().find(c => c.by === name)?.byKind ?? 'human' })
@@ -279,15 +281,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         hiddenChanged += paths.length - ps2.length
         if (ps2.length) changed.set(person, ps2)
       }
-      out.push(`uncommitted changes${all ? '' : ' in your areas'}${hiddenChanged ? ` (${hiddenChanged} file${hiddenChanged === 1 ? '' : 's'} elsewhere)` : ''}:`)
-      if (!changed.size) out.push('  (none)')
-      for (const [person, ps2] of changed) {
+      // Each participant line above already lists that person's changed files; list only the rest here.
+      const unlisted = [...changed].filter(([person]) => !names.includes(person))
+      const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] }
+      const elsewhere = hiddenChanged ? `${hiddenChanged} file${hiddenChanged === 1 ? '' : 's'} elsewhere` : ''
+      if (unlisted.length || skipped.size.length || skipped.budget.length) out.push(`uncommitted changes${all ? '' : ' in your areas'}${unlisted.length ? ' not listed above' : ''}${elsewhere ? ` (${elsewhere})` : ''}:`)
+      else if (elsewhere) out.push(`uncommitted changes: ${elsewhere} (room_state all=true for everything)`)
+      for (const [person, ps2] of unlisted) {
         const files = summarizeFiles(ps2)
         out.push(`  - ${person}: ${files.count > 5
           ? `${files.count} files${files.dominant ? `, mostly ${files.dominant.folder} (${files.dominant.count})` : ''}: ${files.named.map(file => file.label).join(', ')} ...`
           : ps2.join(', ')}`)
       }
-      const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] }
       if (skipped.size.length) out.push(`  ${skipped.size.length} of your changed files are not shared: too large`)
       if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`)
       // Conflict notices name a peer and up to eight files; every file is here.
@@ -300,11 +305,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (waits.length) { out.push('waiting on (others\' planned changes to symbols you use):'); out.push(...waits) }
       // Migrated Room 0.16 history is not recent: it would push out current lines. all=true shows it.
       const history = a.all === true ? 0 : s.room.messages().filter(x => importedHistory(s.room, x)).length
+      // Owed messages head this reply as its inbox. A receipt that records how a message was handed over (or a
+      // legacy numeric one) means it was read; a receipt without one (a stale base notice) was never shown.
+      const owed = new Set(a.all === true ? [] : ledger.candidates(s).map(x => x.id))
+      const seen = s.room.seen(s.me.name)
+      const handed = (id: string) => { const r = seen.get(id); return typeof r === 'number' || !!r?.via }
+      const copiesToMe = new Map<string, string[]>()
+      for (const x of s.room.messages()) if (x.copyOf && x.to === s.me.name) copiesToMe.set(x.copyOf, [...copiesToMe.get(x.copyOf) ?? [], x.id])
+      const shown = (id: string) => owed.has(id) || handed(id)
+      const unread = (x: Msg) => a.all === true || (x.from !== s.me.name && !shown(x.id) && !(copiesToMe.get(x.id) ?? []).some(shown))
       const msgs = (history ? s.room.messages().filter(x => !importedHistory(s.room, x)).slice(all ? -10 : -30) : s.room.lastMessages(all ? 10 : 30))
         .filter(x => !(x.to && x.to !== s.me.name && x.from !== s.me.name))
         .filter(x => all || x.to === s.me.name || x.from === s.me.name || x.type === 'base' || msgInMyAreas(s, x))
+        .filter(unread)
         .slice(-10)
-      out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
+      out.push(`recent bus${all ? '' : ' in your areas'}${a.all === true ? '' : ', not yet shown to you'} (${msgs.length}):`)
       // Worker reports run to a thousand characters: one line each here, in full with all=true.
       let cut = false
       for (const x of msgs) {
@@ -401,7 +416,8 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
       return out
     }
   const scopeLine = formatScopeLine
-  const personLine = (s: Session, name: string): string => {
+  /** `reported`: an own worker whose report the workers section shows (cut to 120 characters there; in full with all=true). */
+  const personLine = (s: Session, name: string, options: { reported?: boolean } = {}): string => {
       const accepted = s.room.acceptedWorkerViewOf(name)
       const publication = snapshotMetadata(s.room, name, participantsView(s.room, s.awareness, now()))
       const raw = [...s.room.workerViews.values()].find(view => view.name === name && view.mode === 'local')
@@ -412,7 +428,7 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
         changedPaths: name === s.me.name
           ? [...new Set([name, ...presences(s).map(p => p.user.name).filter(n => sameCheckoutSession(s, n))].flatMap(n => manifestPaths(s.room, n)))]
           : manifestPaths(s.room, name),
-        messages: s.room.messages().filter((m): m is NoteMsg => m.type === 'note'),
+        messages: s.room.messages().filter((m): m is NoteMsg => m.type === 'note' && !(options.reported && m.from === name)),
         share: shareOf(s, name),
         heldCount: [...publication?.entries.values() ?? []].filter(entry => entry.state === 'held').length,
         excludedCount: publication?.head.excluded.length ?? 0,

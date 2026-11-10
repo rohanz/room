@@ -10,7 +10,7 @@ it('passes every launched worker ROOM variable through the Codex MCP allow-list'
   }
   const launched = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', model: 'gpt-6-sol', effort: 'high',
     server: 'local', room: 'local/repo/main', dir: '/repo/.room/workers/test', tag: 'test',
-    lead: 'lead', owner: 'lead', share: 'intent', run: 1, nonce: 'launch-nonce',
+    owner: 'lead', share: 'intent', run: 1, nonce: 'launch-nonce',
     registry: '/repo/.git/room/registry', id: 'w_test', token: 'token', logDir: '/repo', isWorker: false })
   const passed = new Set([...plugin.mcpServers.room.env_vars, ...Object.keys(plugin.mcpServers.room.env)])
   const missing = Object.keys(launched).filter(key => key.startsWith('ROOM_') && !passed.has(key))

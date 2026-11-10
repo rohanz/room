@@ -14,7 +14,7 @@ describe('worker module characterization', () => {
   it('strips lead identity before adding worker identity and caps nested threads', () => {
     expect(workerEnv({ ROOM_OWNER: 'lead', PORT: '1234', KEEP: 'yes' }, { ROOM_OWNER: 'worker' }))
       .toEqual({ KEEP: 'yes', ROOM_OWNER: 'worker' })
-    const env = workerProcessEnv({ threads: 2, memGb: 1, host: 'codex', server: 'ws://local', room: 'r', dir: '/worker', tag: 'w', lead: 'l', owner: 'o', share: 'intent', run: 1, nonce: 'test-nonce', registry: '/repo/.git/room/registry', id: 'id', logDir: '/lead', isWorker: true }, { OMP_NUM_THREADS: '8' })
+    const env = workerProcessEnv({ threads: 2, memGb: 1, host: 'codex', server: 'ws://local', room: 'r', dir: '/worker', tag: 'w', owner: 'o', share: 'intent', run: 1, nonce: 'test-nonce', registry: '/repo/.git/room/registry', id: 'id', logDir: '/lead', isWorker: true }, { OMP_NUM_THREADS: '8' })
     expect(env.OMP_NUM_THREADS).toBe('2')
     expect(env.ROOM_LOG_FILE).toBe(path.join('/lead', '.room', 'workers', 'w.mcp.log'))
     expect(env).toMatchObject({ ROOM_WORKER_ID: 'id', ROOM_WORKER_RUN: '1',
@@ -22,7 +22,7 @@ describe('worker module characterization', () => {
   })
 
   it('passes a nested Git room through ROOM_ROOM for team workers', () => {
-    const env = workerProcessEnv({ threads: 2, memGb: 1, host: 'codex', server: 'ws://team', room: 'git/gitlab.example/group/subgroup/repo', dir: '/worker', tag: 'w', lead: 'l', owner: 'o', share: 'intent', run: 1, nonce: 'test-nonce', registry: '/repo/.git/room/registry', id: 'id', logDir: '/lead', isWorker: true }, {})
+    const env = workerProcessEnv({ threads: 2, memGb: 1, host: 'codex', server: 'ws://team', room: 'git/gitlab.example/group/subgroup/repo', dir: '/worker', tag: 'w', owner: 'o', share: 'intent', run: 1, nonce: 'test-nonce', registry: '/repo/.git/room/registry', id: 'id', logDir: '/lead', isWorker: true }, {})
     expect(env.ROOM_ROOM).toBe('git/gitlab.example/group/subgroup/repo')
   })
 })

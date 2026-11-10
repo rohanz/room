@@ -11467,14 +11467,15 @@ function staleWorkersNote(workers, now = Date.now()) {
   const oldest = Math.min(...stale.map((w) => w.finishedAt));
   return `${formatCount(stale.length, "finished worker")} uncollected for ${ago(now - oldest)} (${stale.map((w) => w.tag).join(", ")}): collect or discard them; their final publications still take part in conflict checks.`;
 }
-function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last: last2, activity, now = Date.now() }) {
+function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last: last2, activity, now = Date.now() }, { task = true } = {}) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const showActivity = activity && workerLive(w.status) && !processGone && (!w.stopReason || stoppedWithSession(w));
   if (showActivity) lastActive = Math.max(lastActive ?? 0, activity.at);
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
+  if (last2 && w.summary && last2.includes(`: ${w.summary.slice(0, 60)}`)) last2 = void 0;
   const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : uncollected(w) ? `${w.status}, uncollected for ${ago(now - w.finishedAt)}` : w.status);
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m)${task ? `: ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}` : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${w.followUp ? ` \xB7 follow-up: ${w.followUp.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`,
     ...showActivity ? [`      ${activity.label.slice(0, WORKER_ACTIVITY_MAX)} \xB7 ${ago(now - activity.at)} ago`] : []
   ];
@@ -11483,7 +11484,7 @@ function workerLines(inputs, options = {}) {
   const retired = options.retiredWorkers ?? [];
   if (!inputs.length && !retired.length) return [];
   const visibleRetired = options.all ? retired : retired.filter((w) => !!w.keptWorktree);
-  const out = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap(workerLine)];
+  const out = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs].sort((a, b) => a.worker.startedAt - b.worker.startedAt).flatMap((input) => workerLine(input, { task: options.all === true }))];
   const stale = staleWorkersNote(inputs.map((input) => input.worker), inputs[0]?.now);
   if (stale) out.push("  " + stale);
   for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {
@@ -31788,7 +31789,6 @@ function workerProcessEnv(options, inherited = process.env) {
     ...options.port ? { PORT: String(options.port) } : {},
     ...workerAdapter(options.host, inherited).shellEnv(options.shellEnvFile),
     ROOM_TAG: options.tag,
-    ROOM_LEAD: options.lead,
     ROOM_OWNER: options.owner,
     ROOM_SHARE: options.share,
     ROOM_WORKER_ID: options.id,
@@ -31849,7 +31849,7 @@ var init_worker_config = __esm({
     WORKER_PORT_END = 4499;
     warnedMissingNice = false;
     WORKER_THREAD_CAPS = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"];
-    LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, "ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_LEAD_CLONE", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_WORKER_ID", "ROOM_WORKER_RUN", "ROOM_LAUNCH_NONCE", "ROOM_REGISTRY", "ROOM_NAME_EPOCH", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND", "PORT"];
+    LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, "ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD_CLONE", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_WORKER_ID", "ROOM_WORKER_RUN", "ROOM_LAUNCH_NONCE", "ROOM_REGISTRY", "ROOM_NAME_EPOCH", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND", "PORT"];
   }
 });
 
@@ -40857,7 +40857,6 @@ async function launchWorkerProcess(policy, command3, host2, lifecycle) {
       room: s.roomName,
       dir: policy.dir,
       tag,
-      lead: policy.lead,
       owner: policy.owner,
       share: policy.share,
       run: policy.run,
@@ -58421,8 +58420,16 @@ function wakeText(off = false) {
     "Organization settings can turn cross-session messaging off. Messages remain owed until delivered through Room tools or eligible hooks."
   ].join("\n");
 }
-function idleWakeAdvice(health) {
-  return health?.host === "claude" && health.path?.availability === "configured" && health.degraded === void 0 ? "Nothing owed; this session is woken when a worker finishes or asks you something, so end your turn instead of calling room_wait again. Call room_wait only with a questionId or claimId. A command of your own (including one the host moved to the background) reports through the host, not through room_wait." : void 0;
+function headlessSession(env = process.env) {
+  return !!env.ROOM_WORKER_ID?.trim() || !!env.CLAUDE_CODE_ENTRYPOINT?.startsWith("sdk-");
+}
+function idleWakeAdvice(health, opts = {}) {
+  const headless = headlessSession(opts.env);
+  const availability = health?.path?.availability;
+  if (opts.workersRunning && (headless || availability === "off" || availability === "unavailable")) {
+    return `${headless ? "This session is headless: it ends with its turn and cannot be woken" : "No wake path is available to this session"}, so call room_wait again (timeoutMs up to 100000) to keep supervising; it returns as soon as a worker finishes or asks you something. Continue independent work between waits if you have any.`;
+  }
+  return !headless && health?.host === "claude" && availability === "configured" && health.degraded === void 0 ? "Nothing owed; this session is woken when a worker finishes or asks you something, so end your turn instead of calling room_wait again. Call room_wait only with a questionId or claimId. A command of your own (including one the host moved to the background) reports through the host, not through room_wait." : void 0;
 }
 
 // packages/room-mcp/src/prompt.ts
@@ -62025,7 +62032,7 @@ ${url}`;
         out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state in ${s.roomName}`);
       }
       out.push(`room: ${s.roomName} \u2014 ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ""}`);
-      if (s.local) out.push(localDaemonLine(s));
+      if (s.local && since !== void 0) out.push(localDaemonLine(s));
       if (noUnseen) out.push("nothing new for you since your last read; no action needed");
       const ps = presences(s);
       const ownGit = participantRecord(s.room, s.me.name)?.git;
@@ -62075,7 +62082,7 @@ ${url}`;
         const own2 = worker && (await myWorkers(s)).find((w) => w.id === worker.id);
         const idle = p && !worker ? idleLabel(p.idleMin, s.room.openClaims().filter((c) => c.by === n).length) : void 0;
         const ago2 = idle ?? (p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own2 && !state.workerAlive(s, own2) }) : "offline");
-        const who2 = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
+        const who2 = own2 && a.all !== true ? n : participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n);
           out.push(`  - ${who2}: another session in this checkout${n === checkoutPublisher(s) ? "; publishes this checkout" : ""}${declaredScope ? `; scope ${scopeLine2(declaredScope)}` : ""} \xB7 ${ago2}`);
@@ -62083,7 +62090,7 @@ ${url}`;
         }
         const theirs = areasFor(s, n);
         const areaSummary2 = areaMembershipSummary(theirs);
-        out.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n)}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago2}`);
+        out.push(`  - ${who2}${n === s.me.name ? " (you)" : ""}: ${personLine2(s, n, { reported: a.all !== true && !!own2 && !!worker.summary })}${areaSummary2 ? ` \xB7 ${areaSummary2}` : ""} \xB7 ${ago2}`);
       }
       if (hidden.length) {
         const label = (name) => displayName({ name, kind: (ps.find((p) => p.user.name === name && isAgentic(p.user.kind)) ?? ps.find((p) => p.user.name === name))?.user.kind ?? s.room.scope(name)?.byKind ?? s.room.openClaims().find((c) => c.by === name)?.byKind ?? "human" });
@@ -62137,13 +62144,15 @@ ${url}`;
         hiddenChanged += paths.length - ps2.length;
         if (ps2.length) changed.set(person, ps2);
       }
-      out.push(`uncommitted changes${all2 ? "" : " in your areas"}${hiddenChanged ? ` (${hiddenChanged} file${hiddenChanged === 1 ? "" : "s"} elsewhere)` : ""}:`);
-      if (!changed.size) out.push("  (none)");
-      for (const [person, ps2] of changed) {
+      const unlisted = [...changed].filter(([person]) => !names.includes(person));
+      const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] };
+      const elsewhere = hiddenChanged ? `${hiddenChanged} file${hiddenChanged === 1 ? "" : "s"} elsewhere` : "";
+      if (unlisted.length || skipped.size.length || skipped.budget.length) out.push(`uncommitted changes${all2 ? "" : " in your areas"}${unlisted.length ? " not listed above" : ""}${elsewhere ? ` (${elsewhere})` : ""}:`);
+      else if (elsewhere) out.push(`uncommitted changes: ${elsewhere} (room_state all=true for everything)`);
+      for (const [person, ps2] of unlisted) {
         const files4 = summarizeFiles(ps2);
         out.push(`  - ${person}: ${files4.count > 5 ? `${files4.count} files${files4.dominant ? `, mostly ${files4.dominant.folder} (${files4.dominant.count})` : ""}: ${files4.named.map((file) => file.label).join(", ")} ...` : ps2.join(", ")}`);
       }
-      const skipped = s.daemon.skipped?.() ?? { size: [], budget: [] };
       if (skipped.size.length) out.push(`  ${skipped.size.length} of your changed files are not shared: too large`);
       if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`);
       const merges = openMergeConflicts(s.room, s.me.name);
@@ -62157,8 +62166,18 @@ ${url}`;
         out.push(...waits);
       }
       const history = a.all === true ? 0 : s.room.messages().filter((x) => importedHistory(s.room, x)).length;
-      const msgs = (history ? s.room.messages().filter((x) => !importedHistory(s.room, x)).slice(all2 ? -10 : -30) : s.room.lastMessages(all2 ? 10 : 30)).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name)).filter((x) => all2 || x.to === s.me.name || x.from === s.me.name || x.type === "base" || msgInMyAreas(s, x)).slice(-10);
-      out.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
+      const owed2 = new Set(a.all === true ? [] : ledger2.candidates(s).map((x) => x.id));
+      const seen = s.room.seen(s.me.name);
+      const handed = (id3) => {
+        const r = seen.get(id3);
+        return typeof r === "number" || !!r?.via;
+      };
+      const copiesToMe = /* @__PURE__ */ new Map();
+      for (const x of s.room.messages()) if (x.copyOf && x.to === s.me.name) copiesToMe.set(x.copyOf, [...copiesToMe.get(x.copyOf) ?? [], x.id]);
+      const shown = (id3) => owed2.has(id3) || handed(id3);
+      const unread = (x) => a.all === true || x.from !== s.me.name && !shown(x.id) && !(copiesToMe.get(x.id) ?? []).some(shown);
+      const msgs = (history ? s.room.messages().filter((x) => !importedHistory(s.room, x)).slice(all2 ? -10 : -30) : s.room.lastMessages(all2 ? 10 : 30)).filter((x) => !(x.to && x.to !== s.me.name && x.from !== s.me.name)).filter((x) => all2 || x.to === s.me.name || x.from === s.me.name || x.type === "base" || msgInMyAreas(s, x)).filter(unread).slice(-10);
+      out.push(`recent bus${all2 ? "" : " in your areas"}${a.all === true ? "" : ", not yet shown to you"} (${msgs.length}):`);
       let cut = false;
       for (const x of msgs) {
         const text2 = formatRoomMessage(s, x);
@@ -62274,7 +62293,7 @@ function createAreas(deps) {
     return out;
   };
   const scopeLine2 = scopeLine;
-  const personLine2 = (s, name) => {
+  const personLine2 = (s, name, options = {}) => {
     const accepted = s.room.acceptedWorkerViewOf(name);
     const publication = snapshotMetadata(s.room, name, participantsView(s.room, s.awareness, now()));
     const raw = [...s.room.workerViews.values()].find((view) => view.name === name && view.mode === "local");
@@ -62283,7 +62302,7 @@ function createAreas(deps) {
       scope: s.room.scope(name),
       presences: presences(s),
       changedPaths: name === s.me.name ? [...new Set([name, ...presences(s).map((p) => p.user.name).filter((n) => sameCheckoutSession(s, n))].flatMap((n) => manifestPaths(s.room, n)))] : manifestPaths(s.room, name),
-      messages: s.room.messages().filter((m) => m.type === "note"),
+      messages: s.room.messages().filter((m) => m.type === "note" && !(options.reported && m.from === name)),
       share: shareOf(s, name),
       heldCount: [...publication?.entries.values() ?? []].filter((entry) => entry.state === "held").length,
       excludedCount: publication?.head.excluded.length ?? 0,
@@ -63653,7 +63672,7 @@ ${lines2.join("\n")}` };
           const running = [...new Map((await Promise.all(rooms.all().map(async (room) => await myWorkers(room)))).flat().filter((w) => w.status === "running" && w.exitCode === void 0).map((w) => [w.name, w])).values()];
           const unread = state.inbox?.(s, batch) ?? "";
           const health = state.deliveryHealth?.();
-          const wakeAdvice = !questionId && !claimId ? idleWakeAdvice(health) : void 0;
+          const wakeAdvice = !questionId && !claimId ? idleWakeAdvice(health, { workersRunning: running.length > 0 && !unread }) : void 0;
           const facts = unread ? `timeout after ${timeoutMs2}ms: unread messages delivered above.` : running.length ? `nothing yet; ${running.length} worker${running.length === 1 ? "" : "s"} still running (${running.map((w) => w.tag).join(", ")}); nothing in the room needs you.` : `timeout after ${timeoutMs2}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ""}nothing new.`;
           const advice = wakeAdvice ?? (running.length && !unread ? "Continue independent work or wait for the needed result." : "Continue independent work or wait on the blocking dependency.");
           finish(`${capNotice}${unread}${facts} ${advice} A timeout is not an answer or approval.`);

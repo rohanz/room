@@ -281,7 +281,7 @@ describe('worker workspace links', () => {
 
   it('points a lead-checkout VIRTUAL_ENV at the worktree\'s own .venv', () => {
     const lead = '/repo', worker = '/repo/.room/workers/w'
-    const base = { threads: 1, memGb: 1, host: 'claude' as const, server: 'local', room: 'local/x', tag: 'w', lead: 'l', owner: 'l',
+    const base = { threads: 1, memGb: 1, host: 'claude' as const, server: 'local', room: 'local/x', tag: 'w', owner: 'l',
       share: 'full', run: 1, nonce: 'n', registry: '/r', id: 'i', logDir: lead, isWorker: false, dir: worker }
     const env = workerProcessEnv(base, { VIRTUAL_ENV: '/repo/.venv', PATH: ['/repo/.venv/bin', '/usr/bin'].join(path.delimiter) })
     expect(env.VIRTUAL_ENV).toBe(path.join(worker, '.venv'))

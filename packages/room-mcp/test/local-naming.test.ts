@@ -43,7 +43,6 @@ it('keeps an explicit local repository name on every branch', async () => {
 })
 it('preserves the local room inherited through worker environment config', async () => {
   vi.stubEnv('ROOM_ROOM', 'local/lead')
-  vi.stubEnv('ROOM_LEAD', 'Ada')
   const config = await resolveConfig({ dir, args: { server: 'local' } })
   await expect(joinSession({ dir, server: config.server, room: config.room, name: 'Ada' })).rejects.toThrow('relay boundary')
   expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))

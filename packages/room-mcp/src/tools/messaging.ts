@@ -409,7 +409,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           // Standalone handler callers may not have installed inbox delivery.
           const unread = state.inbox?.(s, batch) ?? ''
           const health = state.deliveryHealth?.()
-          const wakeAdvice = !questionId && !claimId ? idleWakeAdvice(health) : undefined
+          const wakeAdvice = !questionId && !claimId ? idleWakeAdvice(health, { workersRunning: running.length > 0 && !unread }) : undefined
           const facts = unread
             ? `timeout after ${timeoutMs}ms: unread messages delivered above.`
             : running.length

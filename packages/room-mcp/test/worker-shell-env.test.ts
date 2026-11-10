@@ -31,7 +31,7 @@ function has(shell: string): boolean {
   try { execFileSync(shell, ['-c', 'true'], { stdio: 'ignore' }); return true } catch { return false }
 }
 
-const options = { threads: 2, memGb: 1, server: 'local', room: 'local/repo', dir: '/repo/.room/workers/w', tag: 'w', lead: 'l', owner: 'o',
+const options = { threads: 2, memGb: 1, server: 'local', room: 'local/repo', dir: '/repo/.room/workers/w', tag: 'w', owner: 'o',
   share: 'intent', run: 1, nonce: 'n', registry: '/repo/.git/room/registry', id: 'id', token: 'secret', logDir: '/repo', isWorker: true, port: 4414 }
 
 // Runs the hook exactly as a worker's settings install it: `node` with the exec-form args, event JSON on stdin.

@@ -112,7 +112,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const worker = workerAdapter(policy.host)
     const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
-      room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
+      room: s.roomName, dir: policy.dir, tag, owner: policy.owner,
       share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
       id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, nameEpoch,
       leadClone: await realGitCommonDir(s.dir) })

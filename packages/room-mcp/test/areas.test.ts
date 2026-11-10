@@ -122,14 +122,16 @@ describe('areas from CODEOWNERS', () => {
     expect(mine).toContain('open claims (1):')
     expect(mine).toContain('Kieran: 1 claim · api/a.py\n')
     expect(mine).not.toContain('tune a')
-    expect(mine).toContain('uncommitted changes in your areas (1 file elsewhere):')
+    expect(mine).toContain('uncommitted changes: 1 file elsewhere (room_state all=true for everything)')
     expect(mine).not.toContain('Kieran: api/a.py')
     expect(mine).not.toContain('Kieran · agent · areas api/')
     const all = await t.rohan.tools.call('room_state', { all: true })
     expect(all).toContain('participants (2 active):')
     expect(all).toMatch(/Kieran's agent: working on api: handlers \(api\/\).* · areas api\//)
     expect(all).toContain('tune a')
-    expect(all).toContain('Kieran: api/a.py')
+    // Files are listed once, on the participant line.
+    expect(all).toMatch(/Kieran's agent: working on api: handlers \(api\/\); uncommitted, not yet pushed: api\/a\.py/)
+    expect(all).not.toContain('Kieran: api/a.py')
     // Someone in my area is listed without all=true.
     await t.kieran.tools.call('room_scope', { area: 'web', summary: 'moved to ui', paths: ['web/b.py'] })
     t.sync()

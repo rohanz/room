@@ -321,7 +321,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(t.specs[0].cmd).toBe(priority.cmd)
     if (priority.nice) expect(t.specs[0].args.slice(0, 3)).toEqual(['-n', '10', 'codex'])
     expect(out).toContain(` · priority ${priority.nice ? 'nice 10' : 'normal'}`)
-    expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_LEAD: 'rohanz' })
+    expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_OWNER: 'rohanz' })
     expect(t.specs[0].cwd).toBe(join(dir, '.room', 'workers', 'money'))
     const w = (await workerByTag(dir, 'money'))
     expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', base, host: 'codex', model: 'gpt-5.6', effort: 'medium' })
@@ -354,7 +354,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const out = await leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', where: 'local' })
     expect(joins).toEqual([{ server: 'local', name: 'rohanz' }])
     expect(out).toContain('local workers room local/x')
-    expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_LEAD: 'rohanz' })
+    expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_OWNER: 'rohanz' })
     expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'running', lead: 'rohanz' })
     expect(local.a.workerViewOf('rohanz+money')).toMatchObject({ status: 'running', lead: 'rohanz' })
     // The lead's bridge projects its local worker's view into the team room (registry §13).
@@ -730,9 +730,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 't' })
     const env = t.specs[0].env
-    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_LAUNCH_NONCE', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_REGISTRY', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_RUN', 'ROOM_WORKER_THREADS'])
+    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_LAUNCH_NONCE', 'ROOM_LEAD_CLONE', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_REGISTRY', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_RUN', 'ROOM_WORKER_THREADS'])
     expect(env.ROOM_LEAD_CLONE).toBe(realpathSync(join(dir, '.git')))
-    expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_TAG: 'money', ROOM_LEAD: 'rohanz', ROOM_OWNER: 'rohanz', ROOM_WORKER_RUN: '1', ROOM_SHARE: 'full' })
+    expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_TAG: 'money', ROOM_OWNER: 'rohanz', ROOM_WORKER_RUN: '1', ROOM_SHARE: 'full' })
     expect(env.ROOM_DIR).toBe(join(dir, '.room', 'workers', 'money'))
     expect(env.ROOM_LOG_FILE).toBe(join(dir, '.room', 'workers', 'money.mcp.log'))
     // the real spawner strips the lead's own room variables from the inherited environment before applying the spec's

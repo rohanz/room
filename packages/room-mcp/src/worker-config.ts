@@ -73,7 +73,7 @@ function workerVirtualEnv(leadDir: string, workerDir: string, inherited: NodeJS.
 
 export function workerProcessEnv(options: {
   threads: number; memGb: number; host: WorkerHost; model?: string; effort?: string
-  server: string; room: string; dir: string; tag: string; lead: string; owner: string
+  server: string; room: string; dir: string; tag: string; owner: string
   share: string; run: number; nonce: string; registry: string; id: string; token?: string; logDir: string; isWorker: boolean; port?: number; leadClone?: string
   /** The epoch of the lead's reservation of the worker's name, which the worker takes over (hub §2.3). */
   nameEpoch?: number
@@ -91,7 +91,7 @@ export function workerProcessEnv(options: {
     ROOM_SERVER: options.server, ROOM_ROOM: options.server === 'local' ? options.room : normalizeExplicitRoomName(options.room), ROOM_DIR: options.dir, PWD: options.dir,
     ...(options.port ? { PORT: String(options.port) } : {}),
     ...workerAdapter(options.host, inherited).shellEnv(options.shellEnvFile),
-    ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
+    ROOM_TAG: options.tag, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_WORKER_ID: options.id, ROOM_WORKER_RUN: String(options.run), ROOM_LAUNCH_NONCE: options.nonce,
     ROOM_REGISTRY: options.registry,
     ...(options.leadClone ? { ROOM_LEAD_CLONE: options.leadClone } : {}),
@@ -141,10 +141,10 @@ export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | 
  * Room variables the lead's own process may carry that must never reach a worker: the runner's
  * ROOM_URL/ROOM_NAME/ROOM_DIR would send it into the lead's room under the lead's name, and the
  * lead's token, share level, tag or generation are the lead's, not the worker's. room_spawn sets
- * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
+ * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG,
  * ROOM_OWNER, ROOM_SHARE, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-const LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, 'ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
+const LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, 'ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

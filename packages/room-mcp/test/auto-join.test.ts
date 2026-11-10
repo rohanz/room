@@ -151,7 +151,7 @@ describe('automatic join (real room-mcp processes)', () => {
     const clients = await Promise.all(records.map(record => {
       const run = record.runs[0]
       const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir: record.dir,
-        tag: record.tag, lead: 'Ada', owner: 'Ada', share: 'intent', run: run.n, nonce: run.nonce,
+        tag: record.tag, owner: 'Ada', share: 'intent', run: run.n, nonce: run.nonce,
         registry: registry.root, id: record.id, logDir: dir, isWorker: false, leadClone: path.join(dir, '.git') })
       return startMcp(record.dir, env, async pid => {
         const observed = probeProcessNow(pid)
@@ -187,7 +187,7 @@ describe('automatic join (real room-mcp processes)', () => {
     })
     const run = record.runs[0]
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir: workerDir,
-      tag: 'privacy', lead: 'Ada', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false, leadClone: path.join(dir, '.git') })
+      tag: 'privacy', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false, leadClone: path.join(dir, '.git') })
     const first = await startMcp(workerDir, env)
     await first.waitFor(/^room-mcp: ready$/, 30_000)
     expect(await first.call('room_share')).toContain('full text of files you change')
@@ -221,7 +221,7 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(lead.room.workerViewOf('Ada+q')).toMatchObject({ id: record.id, status: 'running' })
     const early = hubAppend(lead.room, lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
-      tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false })
+      tag: 'q', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false })
     const mcp = await startMcp(dir, env)
     await mcp.waitFor(/Ada\+q joined/, 30_000)
     const waiting = mcp.call('room_wait', { timeoutMs: 3000 })
@@ -252,7 +252,7 @@ describe('automatic join (real room-mcp processes)', () => {
       runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'late-run-1', busFrontier: 0, promptMsgIds: [], launcher, logStart: 0 }],
     })
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
-      tag: 'late', lead: 'Ada', owner: 'Ada', share: 'full', run: 1, nonce: 'late-run-1', registry: registry.root, id: record.id, logDir: dir, isWorker: false })
+      tag: 'late', owner: 'Ada', share: 'full', run: 1, nonce: 'late-run-1', registry: registry.root, id: record.id, logDir: dir, isWorker: false })
     const mcp = await startMcp(dir, env)
     // What the SessionStart hook writes once Codex has started the thread, after the MCP is already up.
     await new Promise(r => setTimeout(r, 500))

@@ -387,12 +387,15 @@ export function staleWorkersNote(workers: readonly WorkerView[], now = Date.now(
   return `${formatCount(stale.length, 'finished worker')} uncollected for ${ago(now - oldest)} (${stale.map(w => w.tag).join(', ')}): collect or discard them; their final publications still take part in conflict checks.`
 }
 
-/** The canonical room_state lines for one dispatched worker; a live worker with known activity gets a third. */
-export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, activity, now = Date.now() }: WorkerLineInput): string[] {
+/** The canonical room_state lines for one dispatched worker; a live worker with known activity gets a third.
+ *  `task: false` leaves out the brief's opening (the compact room_state; its tag and report identify it). */
+export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, activity, now = Date.now() }: WorkerLineInput, { task = true }: { task?: boolean } = {}): string[] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
   const showActivity = activity && workerLive(w.status) && !processGone && (!w.stopReason || stoppedWithSession(w))
   if (showActivity) lastActive = Math.max(lastActive ?? 0, activity.at)
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
+  // The worker's own report notice repeats its summary.
+  if (last && w.summary && last.includes(`: ${w.summary.slice(0, 60)}`)) last = undefined
   const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === 'discarded' ? `discard pending (${w.status})`
     : w.stopReason ? `stopped (${w.stopReason})`
     : w.noReport ? 'ended without a report'
@@ -400,7 +403,7 @@ export function workerLine({ worker: w, dir, processGone = false, lastActive, ch
     : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true })
     : uncollected(w) ? `${w.status}, uncollected for ${ago(now - w.finishedAt!)}` : w.status)
   return [
-    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
+    `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m)${task ? `: ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}` : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${w.followUp ? ` · follow-up: ${w.followUp.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
     ...(showActivity ? [`      ${activity.label.slice(0, WORKER_ACTIVITY_MAX)} · ${ago(now - activity.at)} ago`] : []),
   ]
@@ -412,7 +415,7 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
   const visibleRetired = options.all ? retired : retired.filter(w => !!w.keptWorktree)
   const out = [`workers (${inputs.length + visibleRetired.length}):`, ...[...inputs]
     .sort((a, b) => a.worker.startedAt - b.worker.startedAt)
-    .flatMap(workerLine)]
+    .flatMap(input => workerLine(input, { task: options.all === true }))]
   const stale = staleWorkersNote(inputs.map(input => input.worker), inputs[0]?.now)
   if (stale) out.push('  ' + stale)
   for (const w of [...visibleRetired].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))) {

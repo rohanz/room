@@ -12,7 +12,7 @@ settings: `ROOM_SERVER` (`local` by default, `hosted`, or a `ws(s)://` URL),
 `ROOM_NAME` / `ROOM_OWNER` / `ROOM_TAG` / `ROOM_KIND` (identity), `ROOM_SHARE` (sharing level),
 `ROOM_CREDENTIALS`, `ROOM_TOKEN`, `ROOM_LOG_FILE`, `ROOM_MAX_WORKERS`, `ROOM_STALE_DAYS`,
 `ROOM_ROOM` (explicit room name, how workers get the lead's room), `ROOM_WEB`, and, for a
-dispatched worker, `ROOM_WORKER_ID` / `ROOM_GEN`. Nothing is required: with nothing set a
+dispatched worker, `ROOM_WORKER_ID` / `ROOM_WORKER_RUN` / `ROOM_LAUNCH_NONCE`. Nothing is required: with nothing set a
 session is in a local room.
 
 Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root).
@@ -156,7 +156,7 @@ down and drop the mirrored claims.
 `room_spawn(tag, task, host?, model?, share?, dir?)` makes a git worktree at
 `<repo>/.room/workers/<tag>` on branch `room/<tag>` from HEAD (or uses `dir`), and starts
 `claude -p` or `codex exec` there, detached, with an explicit environment: `ROOM_SERVER`,
-`ROOM_ROOM`, `ROOM_DIR`, `ROOM_TAG`, `ROOM_LEAD`, `ROOM_OWNER`, `ROOM_SHARE`, `ROOM_WORKER_ID`
+`ROOM_ROOM`, `ROOM_DIR`, `ROOM_TAG`, `ROOM_OWNER`, `ROOM_SHARE`, `ROOM_WORKER_ID`
 (and `ROOM_TOKEN` when the lead joined a shared-token server). Other parent environment variables
 are inherited except for the explicit lead-only Room variables.
 Output goes to `.room/workers/<tag>.log`, the worker's MCP log to `.room/workers/<tag>.mcp.log`.

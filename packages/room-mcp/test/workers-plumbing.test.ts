@@ -35,7 +35,7 @@ describe('worker plumbing', () => {
 
   it("marks the worker's host process with its own ROOM_WORKER_ID, never the lead's", () => {
     const env = workerEnv({ ROOM_WORKER_ID: 'w_lead', HOME: '/home/x' }, workerProcessEnv({ threads: 1, memGb: 1, host: 'codex',
-      server: 'local', room: 'local/x', dir: '/tmp/w', tag: 'money', lead: 'rohanz', owner: 'rohanz', share: 'full', run: 1,
+      server: 'local', room: 'local/x', dir: '/tmp/w', tag: 'money', owner: 'rohanz', share: 'full', run: 1,
       nonce: 'n', registry: '/tmp/r', id: 'w_money', logDir: '/tmp', isWorker: false }, {}))
     expect(env).toMatchObject({ ROOM_WORKER_ID: 'w_money', HOME: '/home/x' })
   })

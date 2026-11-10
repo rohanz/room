@@ -147,7 +147,7 @@ describe('worker lifecycle cleanup', () => {
     expect(allocateWorkerPort(workerPortsInUse(hundredRetired))).toBe(4400)
     expect(workerEnv({ PORT: '3000' }, { PORT: '4402' }).PORT).toBe('4402')
     expect(workerEnv({ PORT: '3000' }, {}).PORT).toBeUndefined()
-    expect(workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: 'local', room: 'room', dir: '/tmp/a', tag: 'a', lead: 'lead', owner: 'lead', share: 'intent', gen: 1, id: 'id', logDir: '/tmp', isWorker: false, port: 4402 }).PORT).toBe('4402')
+    expect(workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: 'local', room: 'room', dir: '/tmp/a', tag: 'a', owner: 'lead', share: 'intent', id: 'id', logDir: '/tmp', isWorker: false, port: 4402 }).PORT).toBe('4402')
     const prompt = workerPrompt('lead', 'a', 'task', { threads: 1, memGb: 1, nice: 10, port: 4402 })
     expect(prompt).toContain('Your dev-server port is 4402')
     expect(prompt).toContain('Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.')

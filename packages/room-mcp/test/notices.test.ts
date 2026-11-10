@@ -16,7 +16,7 @@ import { hubSeam } from './fixtures/hub.js'
 const ignore = () => {}
 
 const close: (() => void)[] = []
-afterEach(() => { close.splice(0).forEach(f => f()); vi.useRealTimers() })
+afterEach(() => { close.splice(0).forEach(f => f()); vi.useRealTimers(); vi.unstubAllEnvs() })
 const clock = 600_000
 const worker = (patch: Partial<LocalWorker> = {}): LocalWorker => ({
   id: `w_${patch.tag ?? 'state'}`, tag: 'state', name: 'lead+state', host: 'codex', task: 'fix state', dir: '/tmp/state', branch: 'room/state',
@@ -291,10 +291,65 @@ describe('finishing claim notices', () => {
    expect(reply).not.toContain('wait for the needed result')
  })
 
+ const headlessAdvice = 'This session is headless: it ends with its turn and cannot be woken, so call room_wait again (timeoutMs up to 100000) to keep supervising; it returns as soon as a worker finishes or asks you something. Continue independent work between waits if you have any.'
+ const noWakeAdvice = 'No wake path is available to this session, so call room_wait again (timeoutMs up to 100000) to keep supervising; it returns as soon as a worker finishes or asks you something. Continue independent work between waits if you have any.'
+
+ it.each([
+   { name: 'claude -p with a bound inbox socket', env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, health: healthyClaude },
+   { name: 'Agent SDK session', env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' }, health: healthyClaude },
+   { name: 'Codex worker leading its own workers', env: { ROOM_WORKER_ID: 'w_1', ROOM_WORKER_HOST: 'codex' }, health: { ...healthyClaude, host: 'codex' as const } },
+ ])('tells a headless lead to call room_wait again while workers run ($name)', async ({ env, health }) => {
+   vi.useFakeTimers()
+   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v)
+   const { s, state, addWorker, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(health)
+   for (const tag of ['a', 'b']) addWorker(s, worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   expect(await waiting).toBe(`nothing yet; 2 workers still running (a, b); nothing in the room needs you. ${headlessAdvice} A timeout is not an answer or approval.`)
+ })
+
  it.each([
    { ...healthyClaude, path: { ...healthyClaude.path, availability: 'off' as const } },
-   { ...healthyClaude, path: { ...healthyClaude.path, availability: 'unknown' as const } },
    { ...healthyClaude, path: { ...healthyClaude.path, availability: 'unavailable' as const } },
+ ])('tells a lead without a wake path to call room_wait again while workers run (%j)', async health => {
+   vi.useFakeTimers()
+   const { s, state, addWorker, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(health)
+   for (const tag of ['a', 'b']) addWorker(s, worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   expect(await waiting).toBe(`nothing yet; 2 workers still running (a, b); nothing in the room needs you. ${noWakeAdvice} A timeout is not an answer or approval.`)
+ })
+
+ it.each(['empty', 'unread'] as const)('never tells a headless session to end its turn (%s)', async kind => {
+   vi.useFakeTimers()
+   vi.stubEnv('CLAUDE_CODE_ENTRYPOINT', 'sdk-cli')
+   const { state, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(healthyClaude)
+   if (kind === 'unread') state.inbox = vi.fn(() => 'Unread notice.\n')
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   const reply = await waiting
+   expect(reply).not.toContain('end your turn')
+   expect(reply).toContain('Continue independent work or wait on the blocking dependency.')
+ })
+
+ it('keeps the end-your-turn advice for an interactive Claude session with a wake path', async () => {
+   vi.useFakeTimers()
+   vi.stubEnv('CLAUDE_CODE_ENTRYPOINT', 'cli')
+   const { s, state, addWorker, tools } = fixture()
+   vi.mocked(state.deliveryHealth).mockReturnValue(healthyClaude)
+   addWorker(s, worker({ tag: 'a', name: 'lead+a', status: 'running', exitCode: undefined }))
+   const waiting = tools.room_wait({ timeoutMs: 10 })
+   await vi.advanceTimersByTimeAsync(10)
+   const reply = await waiting
+   expect(reply).toContain('so end your turn instead of calling room_wait again.')
+   expect(reply).not.toContain('call room_wait again (timeoutMs')
+ })
+
+ it.each([
+   { ...healthyClaude, path: { ...healthyClaude.path, availability: 'unknown' as const } },
    { ...healthyClaude, degraded: 'transport-failed' as const },
    { ...healthyClaude, path: undefined },
    { ...healthyClaude, host: 'codex' as const },
