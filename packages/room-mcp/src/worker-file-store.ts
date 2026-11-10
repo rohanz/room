@@ -402,7 +402,9 @@ export class FileWorkerStore {
       // Record-only projections explicitly omit reservation authority (WorkerQuery.recordOnly).
       if (!recordOnly) {
         const known = new Set(records.map(record => record.id))
-        for (const record of records) if (record.sharedWith && !known.has(record.sharedWith))
+        // Retention removes an owner once no unended record borrows it (pruneRetired): an ended borrower's
+        // reference to a removed owner is history, not missing evidence.
+        for (const record of records) if (record.sharedWith && !known.has(record.sharedWith) && !['retired', 'abandoned'].includes(record.phase))
           this.invalid(this.workerFile(record.sharedWith), 'unavailable shared owner record')
       }
       if (!recordOnly) for (const file of files(path.join(this.root, 'tags'), '.json')) {

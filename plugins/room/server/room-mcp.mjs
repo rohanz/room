@@ -47074,7 +47074,7 @@ var init_worker_file_store = __esm({
           });
           if (!recordOnly) {
             const known = new Set(records.map((record2) => record2.id));
-            for (const record2 of records) if (record2.sharedWith && !known.has(record2.sharedWith))
+            for (const record2 of records) if (record2.sharedWith && !known.has(record2.sharedWith) && !["retired", "abandoned"].includes(record2.phase))
               this.invalid(this.workerFile(record2.sharedWith), "unavailable shared owner record");
           }
           if (!recordOnly) for (const file of files(path53.join(this.root, "tags"), ".json")) {

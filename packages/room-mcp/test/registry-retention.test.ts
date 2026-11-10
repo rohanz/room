@@ -75,6 +75,26 @@ describe('retired worker record retention', () => {
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
   })
 
+  it('an ended borrower whose owner record expired first does not block the registry', async () => {
+    const dir = repo()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const registry = await registryForDir(dir)
+      const now = Date.now(), old = now - ROOM_STALE_MS - DAY
+      const retire = (record: WorkerRecord, retiredAt: number) => mutateWorkerFixture(registry, record.id, async prior => ({ ...prior, phase: 'retired' as const, seq: prior.seq + 1,
+        archive: (await registry.archiveOf(prior, { summary: '', retiredAt })), cleanup: { [prior.room]: 'done' as const } }))
+      const { record: owner } = await seedRegistryWorker(dir, 'owner')
+      const { record: borrower } = await seedRegistryWorker(dir, 'borrower', { dir: owner.dir, sharedWith: owner.id })
+      // The borrower ended later than its owner: retention removes the owner first.
+      await retire(owner, old)
+      await retire(borrower, now - DAY)
+      expect((await registry.pruneRetired(ROOM_STALE_MS)).map(r => r.tag)).toEqual(['owner'])
+      expect(requireWorkerInventory(await registry.list()).map(r => r.tag)).toEqual(['borrower'])
+      // New work is not blocked by the retired borrower's dangling reference.
+      await expect(seedRegistryWorker(dir, 'next')).resolves.toBeTruthy()
+    } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('removes nothing before migration has finished', async () => {
     const dir = repo()
     try {
