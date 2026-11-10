@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.47
+
+- **A worker that reported done is collectable even if its session then died.** `room_collect` skipped any worker whose host process exited non-zero ("failed exit"), including one that had already committed and called `room_done` before an API error ended its session. Its report now wins: default, keep and copy collection take it, the reply says the process exited abnormally after reporting, `room_state` shows `done (exited N after reporting)`, and its worktree is cleaned up like any collected worker's. A worker that exited non-zero without reporting done is still failed and skipped.
+- **Finished workers with nothing left to collect are retired.** A record whose worktree and branch are both gone, whose process has exited and which is not running (for example a worker started with `dir=` in a checkout that was later deleted) could never be collected or discarded and stayed in every `room_collect`, spawn reply and `room_state`, with its last publication still in conflict checks. The hourly retention pass now retires such records, a plain `room_collect` reports them in one line, and `room_collect(tag, discard=true)` on one succeeds. A record whose worktree or branch still exists is unchanged.
+- **A refused discard says what to do.** When ignored files not covered by a recovery patch block `room_collect(discard=true)`, the reply names the worktree, the copy-first step and the exact `force=true` call.
+
 ## 0.17.46
 
 - **Prevent mass redelivery of already-read messages to some participants after a graceful local daemon restart.** Graceful final saves now end the generation, as compaction does, so surviving replicas rejoin fresh (snapshots that would shed content retain the generation, with a diagnostic). Relay broadcasts wait for the first sync reply, and sync requests received while draining wait until accepting resumes. Receipt pruning now requires proof that the message ended in archive or outcomes; absence from a partially synced bus is insufficient.

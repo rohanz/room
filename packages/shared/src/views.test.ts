@@ -177,6 +177,9 @@ it('shows current running, done, and failed workers by default and labels retire
   expect(expanded).toContain('old (collected, actual-model): shipped · 60 files')
   expect(expanded).toContain('discarded (discarded, actual-model)')
   expect(expanded).toContain('stopped (stopped when your last session ended; its partial work is in its worktree, actual-model)')
+  // A worker that reported done stays done when its host then exits non-zero; the line says so.
+  const abnormal = workerLines([{ worker: { ...worker, tag: 'late', status: 'done', exitCode: 1, finishedAt: 5 }, changedCount: 1, now: 65_000 }]).join('\n')
+  expect(abnormal).toContain('late (codex, done (exited 1 after reporting), uncollected for 1m')
   expect(expanded).not.toContain('all=true')
   expect(workerLines([], { retiredWorkers: history })[0]).toBe('workers (1):')
   expect(workerLines([], { all: true, retiredWorkers: history })).toContain('workers (4):')

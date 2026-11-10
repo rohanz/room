@@ -788,6 +788,31 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(true); expect(git(lead, 'branch', '--list', 'room/test')).toContain('room/test')
   })
 
+  // Live (2026-11-10): brief-skill committed, called room_done, then its `claude -p` ended with api_error, exit 1;
+  // plain room_collect() replied "skipped brief-skill: failed exit (exit code 1; ...)". Its report wins (registry §6 row 10).
+  it.each([[{ tag: 'test' }], [{}]])('collects a worker that reported done before its host exited non-zero (%o)', async args => {
+    const t = setup(); t.set('test', { ...t.w, exitCode: 1 })
+    put(worker, 'new.txt', 'reported output\n'); git(worker, 'add', '.'); git(worker, 'commit', '-qm', 'worker commit')
+    const result = await t.call(args)
+    expect(result).toContain('test reported done, then its host process exited abnormally (exit code 1)')
+    expect(result).toContain('Changes from test: new.txt')
+    expect(result).toContain('cleaned up test')
+    expect(result).not.toContain('skipped')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('reported output\n')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect((await localWorkers(lead))).toEqual([])
+  })
+
+  it('keeps a worker that reported done before its host exited non-zero', async () => {
+    const t = setup(); t.set('test', { ...t.w, exitCode: 1 })
+    put(worker, 'new.txt', 'reported output\n')
+    const result = await t.call({ tag: 'test', keep: true })
+    expect(result).toContain('exited abnormally (exit code 1)')
+    expect(result).toContain('kept test: finished and resumable')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('reported output\n')
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+
   it('discards a dirty running worker and restores committed, staged, unstaged and untracked output from one patch', async () => {
     const t = setup('running')
     put(worker, 'committed.txt', 'commit\n'); git(worker, 'add', '.'); git(worker, 'commit', '-qm', 'worker commit')
@@ -832,7 +857,8 @@ describe('room_collect', () => {
     const result = await t.call({ tag: 'test', discard: true })
     expect(result).toContain('ignored artifacts not covered by a recovery patch: artifact.bin')
     expect(result).toContain(`retained worktree: ${worker}`)
-    expect(result).toContain(`retained worktree: ${worker}`)
+    // Live (t2, 2026-11-10): the reply must name both ways forward with the exact call.
+    expect(result).toContain(`to keep any of them, copy them out of ${worker} first; then room_collect(tag="test", discard=true, force=true) deletes them with the worktree`)
     expect(result).not.toContain('node_modules')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('generated model')
     expect((await workerByTag(lead, 'test'))).toBeDefined()

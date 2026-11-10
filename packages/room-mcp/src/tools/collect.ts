@@ -18,7 +18,7 @@ import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFi
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import type { Session } from '../session.js'
-import { finishPendingCollect, removeCollectedCheckout, retireWorker } from '../retire.js'
+import { finishPendingCollect, nothingToCollectLine, removeCollectedCheckout, retireIfNothingToCollect, retireWorker } from '../retire.js'
 import { localWorkers, openWorkerReader, registryForDir } from '../worker-registry.js'
 import { realStateInput, type LocalWorker } from '../worker-status.js'
 import { currentToolTiming } from '../timing.js'
@@ -117,6 +117,13 @@ async function stopOwnedWorktreeProcesses(leadDir: string, w: LocalWorker, leadN
 const failureReason = (w: LocalWorker): string => w.exitCode !== undefined && w.exitCode !== 0
   ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, ' ').slice(0, 180)}` : ''}`
   : w.stopReason ?? w.summary?.replace(/\s+/g, ' ').slice(0, 180) ?? 'worker reported failure'
+
+/** A discard refused for ignored output that no recovery patch covers: where it is, and the exact ways forward. */
+const ignoredDiscardRefusal = (tag: string, dir: string, ignored: string[], details: string[] = []): string => [
+  `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}`,
+  ...details, `retained worktree: ${dir}`,
+  `to keep any of them, copy them out of ${dir} first; then room_collect(tag="${tag}", discard=true, force=true) deletes them with the worktree`,
+].join('\n')
 
 /** Reject symlinks at every component, including dangling destination links. */
 function safePath(root: string, rel: string): string {
@@ -236,16 +243,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     // nothing of ours is running, so nothing is left behind. Only an unreadable identity blocks.
     return facts.process === 'unknown' ? `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped` : undefined
   }
-  /** Why the host's clean exit is not confirmed yet, or undefined once a witnessed exit 0 is recorded. Read from the
-   * exit records: during collection the record is `collecting`, which hides the run's status. */
+  /** The exit recorded for the worker's last launched run. Read from the exit records: during collection the record
+   * is `collecting`, which hides the run's status. */
+  const lastExit = async (s: Session, w: LocalWorker) => {
+    const registry = await openWorkerReader(s.dir)
+    const run = (await registry.read(w.id))?.runs.filter(r => r.launch?.outcome !== 'never').at(-1)?.n
+    return run === undefined ? undefined : (await registry.exits(w.id)).find(e => e.run === run)
+  }
+  /** Why the host's exit is not confirmed yet, or undefined once a witnessed exit is recorded. Collect only takes a
+   * worker that reported done, and its report wins over the exit code (registry §6): any witnessed exit confirms
+   * the host is gone. */
   const uncleanExit = async (s: Session, w: LocalWorker): Promise<string | undefined> => {
     if (state.workerAlive(s, w)) return 'its host process is still running'
     if (w.exitCode === 0) return undefined
-    const registry = await openWorkerReader(s.dir)
-    const run = (await registry.read(w.id))?.runs.filter(r => r.launch?.outcome !== 'never').at(-1)?.n
-    const exit = run === undefined ? undefined : (await registry.exits(w.id)).find(e => e.run === run)
-    if (!exit?.witnessed) return 'exit not witnessed'
-    return exit.code === 0 ? undefined : `exited ${exit.code ?? exit.signal ?? 'abnormally'} after reporting`
+    return (await lastExit(s, w))?.witnessed ? undefined : 'exit not witnessed'
+  }
+  /** How a run that reported done then ended abnormally, from its witnessed exit; undefined after a clean exit. */
+  const exitAfterReport = async (s: Session, w: LocalWorker): Promise<string | undefined> => {
+    const exit = await lastExit(s, w)
+    if (!exit?.witnessed) return undefined
+    return exit.signal ? `killed by ${exit.signal}` : exit.code !== null && exit.code !== 0 ? `exit code ${exit.code}` : undefined
   }
   const ownership = async (s: Session, w: Pick<LocalWorker, 'lead'>, discarding: Set<string>): Promise<{ owned: boolean; liveLead?: string }> => {
     const live = (await localWorkers(s.dir))
@@ -324,7 +341,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`
       const missing = !borrowed && decideDiscard(await workerRealState(s.dir, w)) === 'prune'
       const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir)
-      if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
+      if (ignored.length && a.force !== true) return ignoredDiscardRefusal(r.tag, w.dir, ignored)
       await registry.beginDiscard(active.id, a.force === true, [])
       await registry.markDiscardStep(active.id, 'children')
       await registry.beginStop(active.id, 'discarded')
@@ -371,7 +388,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const borrowedOwner = workerRecord && (await registry.worktreeOwner(workerRecord))
     const borrowed = !!w.sharedWith || !!borrowedOwner
     const lock = await takeWorkerOperation(s, w, 'discard')
-    if (lock === 'untrusted') return `error: ${(await missingCapability(s, w))}`
+    if (lock === 'untrusted') {
+      // No worktree capability can be proven for a checkout that is gone (dir= into a removed checkout). With its
+      // branch and process gone too, nothing remains to stop, patch or clean up: retiring the record is the discard.
+      if (workerRecord && await retireIfNothingToCollect(s.dir, registry, workerRecord, { probe: state.ctx?.probe, hasHandle: x => state.workerAlive(s, x) })) {
+        await rooms.project()
+        return `discarded ${w.tag}: nothing to collect; its worktree and branch were already gone`
+      }
+      return `error: ${(await missingCapability(s, w))}`
+    }
     if (lock === 'busy') return 'error: this worker is already being handled or retired'
     try {
     const sharedResults: string[] = []
@@ -391,7 +416,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
       const beforePlan = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: (await ownershipRecords(s)) })
       const ignoredBefore = !borrowed && decideDiscard(beforePlan) === 'cleanup' ? await ignoredWorkerArtifacts(w, s.dir) : []
-      if (ignoredBefore.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignoredBefore.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
+      if (ignoredBefore.length && a.force !== true) return ignoredDiscardRefusal(w.tag, w.dir, ignoredBefore)
       await registry.beginDiscard(lock, a.force === true, children.map(child => child.id!).filter(Boolean))
       const childResults: string[] = []
       // Recurse through each direct lead so deeper descendants retain their own
@@ -464,14 +489,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : []
       if (ignored.length && a.force !== true) {
         await registry.interruptDiscard(lock, `ignored artifacts appeared: ${ignored.join(', ')}`)
-        return [
-          `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}`,
+        return ignoredDiscardRefusal(w.tag, w.dir, ignored, [
           ...ignored.map(p => `kept ${p} at ${path.join(w.dir, p)}`),
-          `retained worktree: ${w.dir}`,
           ...(terminated.length ? ['stopped processes: ' + terminated.join(', ')] : []),
           ...cleanupErrors,
-          'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest',
-        ].join('\n')
+        ])
       }
       const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(lock, bytes)) : undefined
       await registry.markDiscardStep(lock, 'patch')
@@ -562,7 +584,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push('skipped ' + w.tag + ': changed while waiting'); return undefined
       }
       w = current.status === 'done' ? current : { ...current, status: 'done', exitCode: current.exitCode ?? 0 }
-      if (w.exitCode !== undefined && w.exitCode !== 0) { out.push('skipped ' + w.tag + ': failed exit (' + failureReason(w) + ')'); return undefined }
+      // Its report wins over a later abnormal exit (registry §6): the reported work is collected, and the lead told.
+      const abnormal = current.status === 'done' ? await exitAfterReport(s, w) : undefined
+      if (abnormal) out.push(`${w.tag} reported done, then its host process exited abnormally (${abnormal}); collecting what it reported`)
       return { w, root: workerRoot }
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e)
@@ -798,15 +822,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const now = state.now ?? Date.now
     const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
     const run: CollectRun = { a, lead, leadRoot, registry, out, workerLocks, now, sleep, nextPhase }
+    const nothingLeft: string[] = []
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
         // Its output is already applied; only cleanup remains, once its host is confirmed gone. keep=true instead
         // collects it again under the operation lease (already-present output writes nothing) and replaces the
         // pending cleanup with a kept baseline; a refusal leaves it pending.
-        if (a.mode !== 'copy' && a.keep !== true && (await (await openWorkerReader(s.dir)).read(w.id))?.collectPending) {
+        const holder = await registryForDir(s.dir)
+        const record = a.mode !== 'copy' && a.keep !== true ? await holder.read(w.id) : undefined
+        if (record?.collectPending) {
           out.push(await finishPendingCollect(s, rooms, w.id, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses,
             alive: x => state.workerAlive(s, x) || pidPresent(x.pid, state.ctx?.probe) }) ?? `skipped ${w.tag}: changed while waiting`)
+          continue
+        }
+        // Collecting means finishing with it; with nothing left to collect that is retirement, reported once below.
+        if (record && await retireIfNothingToCollect(s.dir, holder, record, { probe: state.ctx?.probe, hasHandle: x => state.workerAlive(s, x) })) {
+          nothingLeft.push(w.tag)
           continue
         }
         // A worker that reported done is running until its host exits; the done notice promises this wait.
@@ -826,6 +858,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!reserved) continue
         selected.push({ s, w: reserved.w })
         workerRoots.set(reserved.w, reserved.root)
+      }
+      if (nothingLeft.length) {
+        await rooms.project()
+        out.push(nothingToCollectLine(nothingLeft))
       }
       if (!selected.length) return out.join('\n') || 'No finished changes to collect.'
       nextPhase(a.mode === 'copy' ? 'copy' : 'merge')
@@ -901,7 +937,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           pending = reason
           out.push(`${w.tag}'s record stays live with its worktree; a later room_collect or the automatic sweep finishes cleanup once that is resolved, or discard=true removes it`)
         }
-        // A witnessed exit 0 recorded after the status was read.
+        // The host's exit is witnessed (uncleanExit): a nonzero code after its report, or an exit 0 recorded after
+        // the status was read, does not make the collected output failed.
         if (w.exitCode !== 0) w = { ...w, exitCode: 0 }
         try {
           const record = (await registry.read(w.id))

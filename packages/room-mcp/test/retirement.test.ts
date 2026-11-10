@@ -280,6 +280,17 @@ describe('git facts and lead evaluation', () => {
     r.close()
   })
 
+  it('removes the worktree of a clean worker that reported done before its host exited non-zero', async () => {
+    // Its report wins (registry §6): retiring it without cleanup orphaned the worktree.
+    const { dir } = repo(), r = registry(dir)
+    const prepared = await prepareWorktree(dir, 'w', 'lead')
+    await registerWorkers(r.s, [{ ...worker(prepared.dir), base: prepared.base, exitCode: 1 }])
+    await r.rooms.autoRetire()
+    expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'clean' }])
+    expect(existsSync(prepared.dir)).toBe(false)
+    r.close()
+  })
+
   it('saves only worker edits in a discard patch after a real carried commit', async () => {
     const { dir } = repo()
     writeFileSync(join(dir, 'a'), 'lead WIP')

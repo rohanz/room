@@ -11,8 +11,8 @@ import { registryForDir } from './worker-registry.js'
 import { collectLocalState } from './local-state-gc.js'
 import { gitCommonDir } from '@room/roomd'
 import { realStateInput, type LocalWorker, type WorkerRecord } from './worker-status.js'
-import { decideRetire, processExited, workerRealState } from './worker-state.js'
-import { cleanupWorker, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, uncollectedWorkerPaths, type WorkerCleanupPreservation } from './worker-git.js'
+import { decideNothingToCollect, decideRetire, processExited, roomWorkerPathMatchesBranch, workerRealState } from './worker-state.js'
+import { cleanupWorker, cleanupWorkerLogs, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, uncollectedWorkerPaths, type WorkerCleanupPreservation } from './worker-git.js'
 import type { CwdProcessLister, ProcessProbe } from './worker-process.js'
 import { git } from '@room/roomd/git'
 
@@ -165,7 +165,7 @@ async function adoptLegacyKept(s: Session, rooms: Rooms, record: WorkerRecord, p
 export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   const registry = await registryForDir(s.dir)
   const probe = rooms.probe.bind(rooms)
-  await sweepClone(s.dir, registry)
+  await sweepClone(s.dir, registry, rooms)
   for (const record of (requireWorkerInventory(await registry.list()))) {
     if (record.lead.participant !== s.me.name || record.room !== s.roomName) continue
     const processes: CollectedProcesses = { probe, list: rooms.listCwdProcesses, alive: async w =>
@@ -223,7 +223,8 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     catch { continue }
     const reported = (await registry.reports(record.id)).flatMap(report => report.done?.changed ?? [])
     const files = [...new Set([...manifestPaths(s.room, w.name), ...reported])].sort()
-    if (facts.clean && w.exitCode === 0) {
+    // A run that reported done is finished whatever exit code it later recorded (registry §6): clean its checkout too.
+    if (facts.clean && (w.exitCode === 0 || (w.status === 'done' && w.exitCode !== undefined))) {
       // Spawn and resume borrow the owner's operation lane. Hold it through the
       // final checkout-user check, cwd cleanup, and retirement record.
       if (!await current()) continue
@@ -236,7 +237,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
         const borrower = !!fresh.sharedWith || !!(await registry.worktreeOwner(fresh))
         const users = borrower ? [] : requireWorkerEvidence(await registry.checkoutUsers(fresh))
         if (!borrower && !users.length) {
-          if (!await cleanupWorker(s.dir, w, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue
+          if (!await cleanupWorker(s.dir, { ...w, exitCode: 0 }, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue
         }
         const reason = users.length ? `shared checkout: ${users.map(user => user.record.tag).join(', ')}` : undefined
         await retireWorker(rooms, s, record.id, (await registry.archiveOf(record, {
@@ -256,16 +257,84 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
   }
 }
 
+type Registry = Awaited<ReturnType<typeof registryForDir>>
+/** How a retirement pass sees a worker's host process: this process's handles, then the process table. */
+type HostProbe = { probe?: ProcessProbe; hasHandle?: (w: LocalWorker) => boolean }
+const NOTHING_TO_COLLECT = 'nothing to collect: its worktree and branch were already gone'
+
+/**
+ * A finished worker with nothing left to collect or recover (decideNothingToCollect) that no active nested worker
+ * still names as its lead. A collection awaiting cleanup belongs to finishPendingCollect.
+ */
+async function nothingToCollect(leadDir: string, registry: Registry, record: WorkerRecord, host: HostProbe): Promise<LocalWorker | undefined> {
+  if (record.phase !== 'active' || record.collectPending || fs.existsSync(record.dir)) return undefined
+  const status = await registry.status(record.id)
+  if (!status) return undefined
+  const w = realStateInput(record, status)
+  if (!decideNothingToCollect(await workerRealState(leadDir, w, { branch: true, process: true, hasHandle: host.hasHandle?.(w), probe: host.probe }))) return undefined
+  const nested = requireWorkerInventory(await registry.list()).some(other => other.lead.participant === record.name && !['retiring', 'retired', 'abandoned'].includes(other.phase))
+  return nested ? undefined : w
+}
+
+/**
+ * Retire `record` when it has nothing to collect, under its operation lease, rechecked on the fresh record, and
+ * remove what it left in the lead's checkout: its logs and, for a Room worktree path, the stale worktree entry and
+ * preview cache. The registry records the retirement; each room's projector removes the worker's live state,
+ * including its final publication, so it stops taking part in conflict checks (§12). The caller runs `rooms.project()`.
+ */
+export async function retireIfNothingToCollect(leadDir: string, registry: Registry, record: WorkerRecord, host: HostProbe): Promise<boolean> {
+  if (!await nothingToCollect(leadDir, registry, record, host)) return false
+  try { if (!await registry.beginOperation(record.id, 'collect')) return false } catch { return false }
+  try {
+    const fresh = await registry.read(record.id)
+    const w = fresh && fresh.seq === record.seq ? await nothingToCollect(leadDir, registry, fresh, host) : undefined
+    if (!fresh || !w) return false
+    if (roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) await pruneMissingWorkerWorktree(leadDir, w, false).catch(() => undefined)
+    cleanupWorkerLogs(leadDir, w)
+    await registry.beginRetirement(fresh.id, await registry.archiveOf(fresh, { summary: NOTHING_TO_COLLECT, disposition: 'discarded' }))
+    return true
+  } finally { await registry.finishOperation(record.id) }
+}
+
+/** The reply or log line naming records retired with nothing to collect. */
+export function nothingToCollectLine(tags: string[]): string {
+  return `retired ${tags.length === 1 ? '1 finished worker' : `${tags.length} finished workers`} with nothing to collect (${tags.length === 1 ? 'its' : 'their'} worktree and branch are gone): ${tags.join(', ')}`
+}
+
+/**
+ * Every record in this clone with nothing to collect, whichever lead dispatched it: nothing of it can be collected,
+ * resumed or recovered, so no lead's decision is pending on it. Nested workers go before their lead. Returns the tags.
+ */
+async function retireNothingToCollect(dir: string, registry: Registry, host: HostProbe): Promise<string[]> {
+  const retired: string[] = []
+  for (let progress = true; progress;) {
+    progress = false
+    for (const record of requireWorkerInventory(await registry.list())) {
+      if (retired.includes(record.tag) || !await retireIfNothingToCollect(dir, registry, record, host)) continue
+      retired.push(record.tag)
+      progress = true
+    }
+  }
+  return retired
+}
+
 const GC_EVERY_MS = 60 * 60 * 1000
 let collectedAt = 0
 /**
- * The clone's one retention pass, once an hour per process: the worker registry removes its expired records under
- * its own locks (the room's archive entry is the durable copy), then the local state collector (local-state-gc.ts)
- * applies the ownership table to everything else.
+ * The clone's one retention pass, once an hour per process: the worker registry retires finished records with
+ * nothing to collect and removes its expired records under its own locks (the room's archive entry is the durable
+ * copy), then the local state collector (local-state-gc.ts) applies the ownership table to everything else.
  */
-async function sweepClone(dir: string, registry: Awaited<ReturnType<typeof registryForDir>>): Promise<void> {
+async function sweepClone(dir: string, registry: Registry, rooms: Rooms): Promise<void> {
   if (Date.now() - collectedAt < GC_EVERY_MS) return
   collectedAt = Date.now()
+  try {
+    const retired = await retireNothingToCollect(dir, registry, { probe: rooms.probe.bind(rooms), hasHandle: w => rooms.all().some(s => rooms.hasHandle(s, w)) })
+    if (retired.length) {
+      process.stderr.write(`[room] ${nothingToCollectLine(retired)}\n`)
+      await rooms.project()
+    }
+  } catch (error) { process.stderr.write(`[room] nothing-to-collect retirement: ${error}\n`) }
   await registry.pruneRetired(ROOM_STALE_MS).catch(error => { process.stderr.write(`[room] retired record retention: ${error}\n`) })
   try {
     const { removed } = collectLocalState(await gitCommonDir(dir))

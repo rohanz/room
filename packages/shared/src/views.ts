@@ -396,12 +396,14 @@ export function workerLine({ worker: w, dir, processGone = false, lastActive, ch
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
   // The worker's own report notice repeats its summary.
   if (last && w.summary && last.includes(`: ${w.summary.slice(0, 60)}`)) last = undefined
+  // Its report wins over a later abnormal exit (registry §6): still done and collectable, but the lead should know.
+  const status = w.status === 'done' && w.exitCode ? `done (exited ${w.exitCode} after reporting)` : w.status
   const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === 'discarded' ? `discard pending (${w.status})`
     : w.stopReason ? `stopped (${w.stopReason})`
     : w.noReport ? 'ended without a report'
     : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED
     : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true })
-    : uncollected(w) ? `${w.status}, uncollected for ${ago(now - w.finishedAt!)}` : w.status)
+    : uncollected(w) ? `${status}, uncollected for ${ago(now - w.finishedAt!)}` : status)
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m)${task ? `: ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}` : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${w.followUp ? ` · follow-up: ${w.followUp.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,

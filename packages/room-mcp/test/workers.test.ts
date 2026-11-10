@@ -954,6 +954,8 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'parent', task: 'parent task' })
     const parent = (await workerByTag(dir, 'parent'))!
+    // Its branch survives its missing worktree, so it is not retirable with nothing to collect; disposal is refused.
+    execFileSync('git', ['-C', dir, 'branch', 'room/child'])
     await registerWorkers(fakeSession(t.a, lead), [{ tag: 'child', name: `${parent.name}+child`, lead: parent.name,
       host: 'codex', task: 'nested', dir: join(dir, '.room/workers/absent-child'),
       branch: 'room/child', pid: 0, startedAt: Date.now(), status: 'done' }])

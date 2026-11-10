@@ -11473,7 +11473,8 @@ function workerLine({ worker: w, dir, processGone = false, lastActive, changedCo
   if (showActivity) lastActive = Math.max(lastActive ?? 0, activity.at);
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
   if (last2 && w.summary && last2.includes(`: ${w.summary.slice(0, 60)}`)) last2 = void 0;
-  const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : uncollected(w) ? `${w.status}, uncollected for ${ago(now - w.finishedAt)}` : w.status);
+  const status = w.status === "done" && w.exitCode ? `done (exited ${w.exitCode} after reporting)` : w.status;
+  const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : uncollected(w) ? `${status}, uncollected for ${ago(now - w.finishedAt)}` : status);
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m)${task ? `: ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}` : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${w.followUp ? ` \xB7 follow-up: ${w.followUp.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`,
@@ -32403,6 +32404,9 @@ function decideCollect(s, explicit, stopped) {
 function decideDiscard(s) {
   return s.worktree === "vanished" ? "prune" : s.owned ? "cleanup" : "retain-directory";
 }
+function decideNothingToCollect(s) {
+  return s.worktree === "vanished" && s.branch === "absent" && processExited(s) && s.status !== "running";
+}
 function decideStop(s) {
   return { cwd: s.owned === true, host: s.process === "ours" ? "signal" : s.process === "unknown" ? "unknown" : "not-ours" };
 }
@@ -41314,7 +41318,7 @@ async function adoptLegacyKept(s, rooms, record2, processes) {
 async function autoRetire(s, rooms) {
   const registry2 = await registryForDir(s.dir);
   const probe = rooms.probe.bind(rooms);
-  await sweepClone(s.dir, registry2);
+  await sweepClone(s.dir, registry2, rooms);
   for (const record2 of requireWorkerInventory(await registry2.list())) {
     if (record2.lead.participant !== s.me.name || record2.room !== s.roomName) continue;
     const processes = { probe, list: rooms.listCwdProcesses, alive: async (w2) => rooms.hasHandle(s, w2) || !processExited(await workerRealState(s.dir, w2, { process: true, probe })) };
@@ -41383,7 +41387,7 @@ async function autoRetire(s, rooms) {
     }
     const reported = (await registry2.reports(record2.id)).flatMap((report) => report.done?.changed ?? []);
     const files4 = [.../* @__PURE__ */ new Set([...manifestPaths(s.room, w.name), ...reported])].sort();
-    if (facts.clean && w.exitCode === 0) {
+    if (facts.clean && (w.exitCode === 0 || w.status === "done" && w.exitCode !== void 0)) {
       if (!await current2()) continue;
       try {
         await registry2.beginOperation(record2.id, "collect");
@@ -41396,7 +41400,7 @@ async function autoRetire(s, rooms) {
         const borrower = !!fresh.sharedWith || !!await registry2.worktreeOwner(fresh);
         const users = borrower ? [] : requireWorkerEvidence(await registry2.checkoutUsers(fresh));
         if (!borrower && !users.length) {
-          if (!await cleanupWorker(s.dir, w, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue;
+          if (!await cleanupWorker(s.dir, { ...w, exitCode: 0 }, { collected: true, processOptions: { probe, list: rooms.listCwdProcesses }, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...workers] })) continue;
         }
         const reason = users.length ? `shared checkout: ${users.map((user) => user.record.tag).join(", ")}` : void 0;
         await retireWorker(rooms, s, record2.id, await registry2.archiveOf(record2, {
@@ -41428,9 +41432,63 @@ async function autoRetire(s, rooms) {
     }));
   }
 }
-async function sweepClone(dir, registry2) {
+async function nothingToCollect(leadDir, registry2, record2, host2) {
+  if (record2.phase !== "active" || record2.collectPending || fs44.existsSync(record2.dir)) return void 0;
+  const status = await registry2.status(record2.id);
+  if (!status) return void 0;
+  const w = realStateInput(record2, status);
+  if (!decideNothingToCollect(await workerRealState(leadDir, w, { branch: true, process: true, hasHandle: host2.hasHandle?.(w), probe: host2.probe }))) return void 0;
+  const nested = requireWorkerInventory(await registry2.list()).some((other) => other.lead.participant === record2.name && !["retiring", "retired", "abandoned"].includes(other.phase));
+  return nested ? void 0 : w;
+}
+async function retireIfNothingToCollect(leadDir, registry2, record2, host2) {
+  if (!await nothingToCollect(leadDir, registry2, record2, host2)) return false;
+  try {
+    if (!await registry2.beginOperation(record2.id, "collect")) return false;
+  } catch {
+    return false;
+  }
+  try {
+    const fresh = await registry2.read(record2.id);
+    const w = fresh && fresh.seq === record2.seq ? await nothingToCollect(leadDir, registry2, fresh, host2) : void 0;
+    if (!fresh || !w) return false;
+    if (roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) await pruneMissingWorkerWorktree(leadDir, w, false).catch(() => void 0);
+    cleanupWorkerLogs(leadDir, w);
+    await registry2.beginRetirement(fresh.id, await registry2.archiveOf(fresh, { summary: NOTHING_TO_COLLECT, disposition: "discarded" }));
+    return true;
+  } finally {
+    await registry2.finishOperation(record2.id);
+  }
+}
+function nothingToCollectLine(tags) {
+  return `retired ${tags.length === 1 ? "1 finished worker" : `${tags.length} finished workers`} with nothing to collect (${tags.length === 1 ? "its" : "their"} worktree and branch are gone): ${tags.join(", ")}`;
+}
+async function retireNothingToCollect(dir, registry2, host2) {
+  const retired = [];
+  for (let progress = true; progress; ) {
+    progress = false;
+    for (const record2 of requireWorkerInventory(await registry2.list())) {
+      if (retired.includes(record2.tag) || !await retireIfNothingToCollect(dir, registry2, record2, host2)) continue;
+      retired.push(record2.tag);
+      progress = true;
+    }
+  }
+  return retired;
+}
+async function sweepClone(dir, registry2, rooms) {
   if (Date.now() - collectedAt < GC_EVERY_MS) return;
   collectedAt = Date.now();
+  try {
+    const retired = await retireNothingToCollect(dir, registry2, { probe: rooms.probe.bind(rooms), hasHandle: (w) => rooms.all().some((s) => rooms.hasHandle(s, w)) });
+    if (retired.length) {
+      process.stderr.write(`[room] ${nothingToCollectLine(retired)}
+`);
+      await rooms.project();
+    }
+  } catch (error2) {
+    process.stderr.write(`[room] nothing-to-collect retirement: ${error2}
+`);
+  }
   await registry2.pruneRetired(ROOM_STALE_MS).catch((error2) => {
     process.stderr.write(`[room] retired record retention: ${error2}
 `);
@@ -41444,7 +41502,7 @@ async function sweepClone(dir, registry2) {
 `);
   }
 }
-var LEGACY_UNCONFIRMED, GC_EVERY_MS, collectedAt;
+var LEGACY_UNCONFIRMED, NOTHING_TO_COLLECT, GC_EVERY_MS, collectedAt;
 var init_retire = __esm({
   "packages/room-mcp/src/retire.ts"() {
     "use strict";
@@ -41460,6 +41518,7 @@ var init_retire = __esm({
     init_worker_git();
     init_git();
     LEGACY_UNCONFIRMED = "clean exit not confirmed";
+    NOTHING_TO_COLLECT = "nothing to collect: its worktree and branch were already gone";
     GC_EVERY_MS = 60 * 60 * 1e3;
     collectedAt = 0;
   }
@@ -65530,6 +65589,12 @@ async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors,
   }
 }
 var failureReason = (w) => w.exitCode !== void 0 && w.exitCode !== 0 ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, " ").slice(0, 180)}` : ""}` : w.stopReason ?? w.summary?.replace(/\s+/g, " ").slice(0, 180) ?? "worker reported failure";
+var ignoredDiscardRefusal = (tag, dir, ignored, details = []) => [
+  `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}`,
+  ...details,
+  `retained worktree: ${dir}`,
+  `to keep any of them, copy them out of ${dir} first; then room_collect(tag="${tag}", discard=true, force=true) deletes them with the worktree`
+].join("\n");
 function safePath(root, rel) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe collection path: " + rel);
   const result2 = containedRepoPath(root, path71.join(root, rel), { leaf: "reject-link", allowMissing: true });
@@ -65650,14 +65715,20 @@ function handlers10(state) {
     const facts = await workerRealState(s.dir, w, { process: true, hasHandle: !!state.rooms.handle?.(s, w.id), probe: state.ctx?.probe });
     return facts.process === "unknown" ? `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped` : void 0;
   };
+  const lastExit = async (s, w) => {
+    const registry2 = await openWorkerReader(s.dir);
+    const run2 = (await registry2.read(w.id))?.runs.filter((r) => r.launch?.outcome !== "never").at(-1)?.n;
+    return run2 === void 0 ? void 0 : (await registry2.exits(w.id)).find((e) => e.run === run2);
+  };
   const uncleanExit = async (s, w) => {
     if (state.workerAlive(s, w)) return "its host process is still running";
     if (w.exitCode === 0) return void 0;
-    const registry2 = await openWorkerReader(s.dir);
-    const run2 = (await registry2.read(w.id))?.runs.filter((r) => r.launch?.outcome !== "never").at(-1)?.n;
-    const exit = run2 === void 0 ? void 0 : (await registry2.exits(w.id)).find((e) => e.run === run2);
-    if (!exit?.witnessed) return "exit not witnessed";
-    return exit.code === 0 ? void 0 : `exited ${exit.code ?? exit.signal ?? "abnormally"} after reporting`;
+    return (await lastExit(s, w))?.witnessed ? void 0 : "exit not witnessed";
+  };
+  const exitAfterReport = async (s, w) => {
+    const exit = await lastExit(s, w);
+    if (!exit?.witnessed) return void 0;
+    return exit.signal ? `killed by ${exit.signal}` : exit.code !== null && exit.code !== 0 ? `exit code ${exit.code}` : void 0;
   };
   const ownership = async (s, w, discarding) => {
     const live = await localWorkers(s.dir);
@@ -65737,9 +65808,7 @@ function handlers10(state) {
       if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`;
       const missing2 = !borrowed && decideDiscard(await workerRealState(s.dir, w)) === "prune";
       const ignored = missing2 || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir);
-      if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
-retained worktree: ${w.dir}
-repeat with force=true to delete them`;
+      if (ignored.length && a.force !== true) return ignoredDiscardRefusal(r.tag, w.dir, ignored);
       await registry2.beginDiscard(active.id, a.force === true, []);
       await registry2.markDiscardStep(active.id, "children");
       await registry2.beginStop(active.id, "discarded");
@@ -65787,7 +65856,13 @@ repeat with force=true to delete them`;
     const borrowedOwner = workerRecord && await registry2.worktreeOwner(workerRecord);
     const borrowed = !!w.sharedWith || !!borrowedOwner;
     const lock = await takeWorkerOperation(s, w, "discard");
-    if (lock === "untrusted") return `error: ${await missingCapability(s, w)}`;
+    if (lock === "untrusted") {
+      if (workerRecord && await retireIfNothingToCollect(s.dir, registry2, workerRecord, { probe: state.ctx?.probe, hasHandle: (x) => state.workerAlive(s, x) })) {
+        await rooms.project();
+        return `discarded ${w.tag}: nothing to collect; its worktree and branch were already gone`;
+      }
+      return `error: ${await missingCapability(s, w)}`;
+    }
     if (lock === "busy") return "error: this worker is already being handled or retired";
     try {
       const sharedResults = [];
@@ -65807,9 +65882,7 @@ repeat with force=true to delete them`;
       if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`;
       const beforePlan = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: await ownershipRecords(s) });
       const ignoredBefore = !borrowed && decideDiscard(beforePlan) === "cleanup" ? await ignoredWorkerArtifacts(w, s.dir) : [];
-      if (ignoredBefore.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignoredBefore.join(", ")}
-retained worktree: ${w.dir}
-repeat with force=true to delete them`;
+      if (ignoredBefore.length && a.force !== true) return ignoredDiscardRefusal(w.tag, w.dir, ignoredBefore);
       await registry2.beginDiscard(lock, a.force === true, children.map((child) => child.id).filter(Boolean));
       const childResults = [];
       for (const child of children.filter((child2) => child2.lead === w.name)) {
@@ -65868,14 +65941,11 @@ repeat with force=true to delete them`;
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : [];
       if (ignored.length && a.force !== true) {
         await registry2.interruptDiscard(lock, `ignored artifacts appeared: ${ignored.join(", ")}`);
-        return [
-          `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}`,
+        return ignoredDiscardRefusal(w.tag, w.dir, ignored, [
           ...ignored.map((p) => `kept ${p} at ${path71.join(w.dir, p)}`),
-          `retained worktree: ${w.dir}`,
           ...terminated.length ? ["stopped processes: " + terminated.join(", ")] : [],
-          ...cleanupErrors,
-          'copy what you need (mode="copy", paths=[...]), then repeat with force=true to delete the rest'
-        ].join("\n");
+          ...cleanupErrors
+        ]);
       }
       const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w, (bytes) => registry2.recordDiscardPatch(lock, bytes)) : void 0;
       await registry2.markDiscardStep(lock, "patch");
@@ -65981,10 +66051,8 @@ repeat with force=true to delete them`;
         return void 0;
       }
       w = current2.status === "done" ? current2 : { ...current2, status: "done", exitCode: current2.exitCode ?? 0 };
-      if (w.exitCode !== void 0 && w.exitCode !== 0) {
-        out.push("skipped " + w.tag + ": failed exit (" + failureReason(w) + ")");
-        return void 0;
-      }
+      const abnormal = current2.status === "done" ? await exitAfterReport(s, w) : void 0;
+      if (abnormal) out.push(`${w.tag} reported done, then its host process exited abnormally (${abnormal}); collecting what it reported`);
       return { w, root: workerRoot };
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
@@ -66203,16 +66271,23 @@ repeat with force=true to delete them`;
     const now = state.now ?? Date.now;
     const sleep = state.ctx?.sleep ?? ((ms2) => new Promise((resolve6) => setTimeout(resolve6, ms2)));
     const run2 = { a, lead, leadRoot, registry: registry2, out, workerLocks, now, sleep, nextPhase };
+    const nothingLeft = [];
     try {
       for (const item of candidates) {
         const { s } = item;
         let { w } = item;
-        if (a.mode !== "copy" && a.keep !== true && (await (await openWorkerReader(s.dir)).read(w.id))?.collectPending) {
+        const holder = await registryForDir(s.dir);
+        const record2 = a.mode !== "copy" && a.keep !== true ? await holder.read(w.id) : void 0;
+        if (record2?.collectPending) {
           out.push(await finishPendingCollect(s, rooms, w.id, {
             probe: state.ctx?.probe,
             list: state.ctx?.listCwdProcesses,
             alive: (x) => state.workerAlive(s, x) || pidPresent(x.pid, state.ctx?.probe)
           }) ?? `skipped ${w.tag}: changed while waiting`);
+          continue;
+        }
+        if (record2 && await retireIfNothingToCollect(s.dir, holder, record2, { probe: state.ctx?.probe, hasHandle: (x) => state.workerAlive(s, x) })) {
+          nothingLeft.push(w.tag);
           continue;
         }
         const reported = await (await openWorkerReader(s.dir)).status(w.id);
@@ -66221,7 +66296,7 @@ repeat with force=true to delete them`;
           let current2 = w;
           while (current2?.status === "running" && now() < deadline) {
             await sleep(Math.min(250, deadline - now()));
-            current2 = (await localWorkers(s.dir, (record2) => record2.id === w.id))[0];
+            current2 = (await localWorkers(s.dir, (record3) => record3.id === w.id))[0];
           }
           if (!current2) {
             out.push("skipped " + w.tag + ": changed while waiting");
@@ -66237,6 +66312,10 @@ repeat with force=true to delete them`;
         if (!reserved) continue;
         selected.push({ s, w: reserved.w });
         workerRoots.set(reserved.w, reserved.root);
+      }
+      if (nothingLeft.length) {
+        await rooms.project();
+        out.push(nothingToCollectLine(nothingLeft));
       }
       if (!selected.length) return out.join("\n") || "No finished changes to collect.";
       nextPhase(a.mode === "copy" ? "copy" : "merge");
