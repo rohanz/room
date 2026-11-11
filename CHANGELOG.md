@@ -4,7 +4,6 @@
 
 - **A failed Codex install check says what failed.** `room_spawn(host="codex")` checks Codex's installed Room copy by running `codex plugin list --json` with a 2.5 second limit. A slow first listing after a reinstall (46 seconds was observed), a missing CLI, unreadable output and a copy that fails verification all produced the same advice to update Room and reconnect. Each now has its own message and action; a timeout says to run the listing once in a terminal and retry, and that the installed copy was not checked. The verification itself is unchanged.
 - **A refused room move names the right action for each worker.** Moving rooms is refused while a worker is uncollected, kept for follow-ups, mid-collection or collected with cleanup pending, and the reply now says what to do for each; it no longer asks you to collect a worker that was already collected. Retiring and retired records do not block a move.
-- **The documented eval command no longer picks up worker checkouts.** `claude plugin eval .` searches the repository for suites and does not skip `.room/`, so every worker checkout's copy of `evals/` ran as well. AGENTS.md now targets `./evals`.
 - **Guidance: run the full suite once.** The room-workers skill tells the lead to run the full suite after the final collect and focused checks between collects.
 
 ## 0.17.47

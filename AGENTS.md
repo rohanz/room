@@ -138,9 +138,12 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 - Tool descriptions route explicit Room delegation to Room workers. Generic agent, parallel
   or background requests use the host’s normal delegation; being installed or joined is not consent.
   Stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, regenerate eval mocks
-  with `npm run eval:mocks`, and rerun the `claude plugin eval` suite after routing changes. From the repo root, run `claude plugin eval ./evals --scaffold --allow-tools Edit Write`
-  (target `./evals` to exclude worker checkout suites; Claude Code 2.1.269+; [eval docs](https://code.claude.com/docs/en/plugin-evals)). Add
+  with `npm run eval:mocks`, and rerun the `claude plugin eval` suite after routing changes. From the repo root, run `claude plugin eval . --scaffold --allow-tools Edit Write`
+  (Claude Code 2.1.269+; [eval docs](https://code.claude.com/docs/en/plugin-evals)). Add
   `--trust-plugin` for noninteractive runs. It clones a pinned demo repo and makes model calls.
+  Collect or discard every Room worker first: eval discovery (checked on Claude Code 2.1.322, 2026-11-11) also runs each
+  worker checkout's copy of the suite under `.room/workers/`, and the cases cannot be targeted as `./evals` because they
+  load `plugins/room` from outside that directory. The run must report 27 cases.
 - A message to a finished worker resumes its retained session in its worktree. A collected or
   discarded worker cannot be resumed. `ROOM_WORKER_MAX_BUDGET_USD` sets the Claude worker
   `--max-budget-usd` cap (documented in the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)).
