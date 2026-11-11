@@ -62089,7 +62089,7 @@ function legacyLocalFiles(common) {
     if (name.endsWith(".json")) found.push(label(`room-carry/${name}`));
   });
   names(path63.join(common, "worktrees"), (name) => gitDirectory(`worktrees/${name}`));
-  return found;
+  return found.sort();
 }
 async function collectDoctorFacts(dir, inSession = false, selected) {
   const f = await hostDoctorFacts(dir, inSession, fileURLToPath7(import.meta.url));

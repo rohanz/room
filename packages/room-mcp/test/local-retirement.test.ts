@@ -75,7 +75,9 @@ it.each(['complete-leftovers', 'session-only', 'snapshots-only', 'incomplete-imp
   if (scenario === 'complete-leftovers') {
     const report = await runDoctor(dir, { inSession: true, selected: { server: 'local' }, sessionBound: true })
     const line = report.split('\n').find(row => row.includes('Room 0.16 local leftovers'))!
-    expect(line).toMatch(/room-session.json.*room-local.json/)
+    expect(line).toContain('room-session.json')
+    expect(line).toContain('room-local.json')
+    expect(line.indexOf('room-local.json')).toBeLessThan(line.indexOf('room-session.json'))
     expect(line).toContain('Room 0.17 does not use them')
     expect(line).toContain('v0.17.47 can import them')
     expect(line).toContain('safe to delete')

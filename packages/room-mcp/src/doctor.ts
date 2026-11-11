@@ -152,7 +152,8 @@ export function legacyLocalFiles(common: string): string[] {
   names(path.join(common, 'room-local'), name => { if (name.endsWith('.ydoc')) found.push(label(`room-local/${name}`)) })
   names(path.join(common, 'room-carry'), name => { if (name.endsWith('.json')) found.push(label(`room-carry/${name}`)) })
   names(path.join(common, 'worktrees'), name => gitDirectory(`worktrees/${name}`))
-  return found
+  // Directory order differs between filesystems; report the sample in a stable order.
+  return found.sort()
 }
 
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
