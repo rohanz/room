@@ -152,10 +152,15 @@ let saves = 0, saved = 0, retry;
 const schedule = globalThis.setTimeout;
 globalThis.setTimeout = function(callback, ms, ...args) { if (ms === 1000) { retry = () => callback(...args); return { unref() {} } }; return schedule(callback, ms, ...args) };
 FileStore.prototype.saveRooms = async function(all) { if (++saves === 1) throw new Error('first save failed'); await save.call(this, all); saved++ };`)
-  expect(observed.responses.map((r: { status: number }) => r.status)).toEqual([500, 201])
+  // The two requests race to the server; whichever saves first meets the failing save.
+  const rooms = ['local/fail', 'local/good']
+  const statuses: number[] = observed.responses.map((r: { status: number }) => r.status)
+  expect([...statuses].sort()).toEqual([201, 500])
+  const failed = rooms[statuses.indexOf(500)], succeeded = rooms[statuses.indexOf(201)]
   expect(observed.saves).toBe(3)
-  expect(observed.keys).toEqual(['local/good'])
-  expect(observed.listing.body).not.toContain('local/fail')
+  expect(observed.keys).toEqual([succeeded])
+  expect(observed.listing.body).not.toContain(failed)
+  expect(observed.listing.body).toContain(succeeded)
 })
 
 it('holds a first connection until registration is durable, then admits it', async () => {
