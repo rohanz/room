@@ -23,7 +23,7 @@ import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../worker-git.js'
 import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree.js'
-import { fingerprintTree, createPreviewTreePaths, validateFingerprintSync, beginPreviewAttempt, type TreeFingerprint } from '../preview-evidence.js'
+import { fingerprintTree, createPreviewTreePaths, validateFingerprintSync, beginPreviewAttempt, EquivalenceTooLarge, largeTreeReason, type TreeFingerprint } from '../preview-evidence.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskTextSync, readBoundedHistoricalText, readContainedRepoText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
@@ -450,9 +450,9 @@ export async function linkSharedDirs(cloneDir: string, scratchDir: string): Prom
   ensureMergedDirectory(scratchDir, '')
   const venv = path.join(cloneDir, '.venv')
   const scratchVenv = path.join(scratchDir, '.venv')
-  try { if ((await fs.promises.lstat(scratchVenv)).isSymbolicLink()) await fs.promises.unlink(scratchVenv) }
+  try { if ((await fs.promises.lstat(scratchVenv)).isSymbolicLink()) { assertPreviewCacheLock(); await fs.promises.unlink(scratchVenv) } }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  if (fs.existsSync(venv) && !fs.existsSync(scratchVenv)) fs.symlinkSync(venv, scratchVenv)
+  if (fs.existsSync(venv) && !fs.existsSync(scratchVenv)) { assertPreviewCacheLock(); fs.symlinkSync(venv, scratchVenv) }
   const candidates = new Set(['node_modules'])
   for (const top of ['packages', 'apps', 'libs']) {
     await yieldTurn()
@@ -473,7 +473,7 @@ export async function linkSharedDirs(cloneDir: string, scratchDir: string): Prom
     if (rel !== 'node_modules') ensureMergedDirectory(scratchDir, path.dirname(rel))
     // These shallow trees contain only links created by Room. Rebuild them each time so
     // npm installs, package additions and workspace relinks are reflected in the check.
-    try { await fs.promises.lstat(dst); await fs.promises.rm(dst, { recursive: true, force: true }) }
+    try { await fs.promises.lstat(dst); assertPreviewCacheLock(); await fs.promises.rm(dst, { recursive: true, force: true }) }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     if (!fs.existsSync(src)) continue
     await mirrorLinks(cloneDir, scratchDir, src, dst)
@@ -503,6 +503,7 @@ async function mirrorLinks(cloneDir: string, scratchDir: string, src: string, ds
 export interface TestResult { text: string; passed: boolean }
 
 function ensureMergedDirectory(root: string, rel: string): string {
+  assertPreviewCacheLock()
   const canonicalRoot = path.resolve(root)
   if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('merged root is no longer safe')
   if (!rel) return canonicalRoot
@@ -565,6 +566,7 @@ export function mergedFileMode(rel: string, initialMode: number, participants: {
 
 /** Materialize one merged byte image without following links from an archived ancestor. */
 export function materializeMergedFile(root: string, rel: string, bytes: Buffer | null, mode = 0o644): void {
+  assertPreviewCacheLock()
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error('unsafe merged path: ' + rel)
   const canonicalRoot = path.resolve(root)
   if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: 'read-contained-link', allowRoot: true }).ok) throw new Error('merged root is no longer safe')
@@ -658,6 +660,7 @@ class PreviewCleanupIncomplete extends Error {
   constructor(readonly graceMs: number, readonly reason?: Error) { super(`process cleanup did not finish within ${graceMs}ms`) }
 }
 const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock; signal?: AbortSignal }>()
+function assertPreviewCacheLock(): void { previewProcesses.getStore()?.lock?.assertOwned() }
 const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
 
 /** After a stop or an exit, how long group termination and pipe closure may take before the result is incomplete. */
@@ -680,7 +683,7 @@ interface TrackedProcessOptions {
   lock?: PreviewUnlock
   env?: NodeJS.ProcessEnv
   signal?: AbortSignal
-  beforeLaunch?: () => void
+  beforeLaunch?: (signal: AbortSignal) => Promise<(() => void) | undefined>
 }
 
 function runTrackedProcess(file: string, args: string[], options: TrackedProcessOptions): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
@@ -692,6 +695,9 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
     const out: Buffer[] = [], err: Buffer[] = []
     const output = () => Buffer.concat(out).toString() + Buffer.concat(err).toString()
     let bytes = 0, failed: Error | undefined, settled = false
+    const launchAbort = new AbortController()
+    let launching: Promise<void> | undefined, settling = false
+    let stopWatchingLock: (() => void) | undefined
     let termAt: number | undefined
     let killTimer: NodeJS.Timeout | undefined, graceTimer: NodeJS.Timeout | undefined
     const signalGroup = (sig: NodeJS.Signals) => {
@@ -701,14 +707,21 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
     let markEnded!: () => void
     const ended = new Promise<void>(done => { markEnded = done })
     const settle = (finish: () => void) => {
-      if (settled) return
-      settled = true
-      markEnded()
-      clearTimeout(timer)
-      if (killTimer) clearTimeout(killTimer)
-      if (graceTimer) clearTimeout(graceTimer)
-      signal?.removeEventListener('abort', onAbort)
-      finish()
+      if (settled || settling) return
+      settling = true
+      launchAbort.abort()
+      // A cancelled yielding gate (including its Git enumeration) must finish
+      // before the caller can dispose the tree and private index.
+      void Promise.resolve(launching).then(() => {
+        settled = true
+        markEnded()
+        clearTimeout(timer)
+        if (killTimer) clearTimeout(killTimer)
+        if (graceTimer) clearTimeout(graceTimer)
+        signal?.removeEventListener('abort', onAbort)
+        stopWatchingLock?.()
+        finish()
+      })
     }
     // One bound for termination and pipe closure, armed by the first stop or exit.
     const armGrace = () => {
@@ -729,10 +742,12 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
     const stop = (error: Error) => {
       if (failed) return
       failed = error
+      launchAbort.abort(error)
       terminate()
     }
     const timer = setTimeout(() => stop(timeLimit(timeout)), timeout)
     signal?.addEventListener('abort', onAbort, { once: true })
+    stopWatchingLock = lock?.onLost(() => stop(new Error('preview cache lock ownership lost; check is NOT certified')))
     const collect = (kind: 'stdout' | 'stderr', chunk: Buffer) => {
       bytes += chunk.length
       if (bytes > maxBuffer) { stop(outputCap(maxBuffer)); return }
@@ -767,11 +782,20 @@ function runTrackedProcess(file: string, args: string[], options: TrackedProcess
       })().catch(error => settle(() => reject(error)))
     })
     const launch = () => {
-      try { options.beforeLaunch?.(); child.stdin.end('GO\n') }
-      catch (error) { stop(error instanceof Error ? error : new Error(String(error))) }
+      if (failed || settled || settling) return
+      launching = (async () => {
+        try {
+          const final = await options.beforeLaunch?.(launchAbort.signal)
+          if (failed || settled || settling) return
+          final?.()
+          lock?.assertOwned()
+          child.stdin.end('GO\n')
+        }
+        catch (error) { stop(error instanceof Error ? error : new Error(String(error))) }
+      })()
     }
     if (child.pid && lock) void lock.trackProcess(child.pid).then(launch, stop)
-    else if (child.pid) launch()
+    else if (child.pid) void launch()
   })
 }
 
@@ -1023,12 +1047,14 @@ async function removePreviewEntry(repoDir: string, entry: string, partial = fals
     } else if (state === 'unregistered' && partial) {
       const stat = await fs.promises.lstat(entry).catch(() => undefined)
       if (stat?.isSymbolicLink()) throw new Error('unsafe preview cache link')
-      if (stat) await fs.promises.rm(entry, { recursive: true, force: true })
+      if (stat) { assertPreviewCacheLock(); await fs.promises.rm(entry, { recursive: true, force: true }) }
     } else {
       warnEntry(entry, `registration is ${state}; manual inspection required`)
       return false
     }
+    assertPreviewCacheLock()
     await fs.promises.rm(slotSettingsFile(entry), { force: true })
+    assertPreviewCacheLock()
     await fs.promises.rm(`${entry}.meta.json`, { force: true })
     return true
   } catch (error) {
@@ -1262,7 +1288,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   // A cached tree a check's processes may still use is marked unusable before its lock is released.
   let quarantined = false
   let skippedQuarantine = false
-  let release: (() => Promise<void>) | undefined
+  let release: PreviewUnlock | undefined
   let cached = false
   let reused = false
   let cacheReady = false
@@ -1272,11 +1298,18 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   let completed: TestResult | undefined
   let tree: TreeFingerprint | undefined
   let treePaths: Awaited<ReturnType<typeof createPreviewTreePaths>> | undefined
+  let equivalenceTooLarge = false
+  let postCommandGate: (() => void) | undefined
   let treeChanged: string | undefined
   let evidenceFailure: string | undefined
   let checkExitCode: number | null = null
   let checkFinished = false
   let commandPassed = false
+  const assertAuthority = (authoritySignal = signal) => { authoritySignal?.throwIfAborted(); release?.assertOwned() }
+  const changed = (phase: string, error: unknown) => {
+    if (error instanceof EquivalenceTooLarge) equivalenceTooLarge = true
+    else treeChanged ??= `included tree changed ${phase}: ${error instanceof Error ? error.message : String(error)}`
+  }
   let finishEvidence: Awaited<ReturnType<typeof beginPreviewAttempt>> | undefined
   let stage: 'setup' | 'check' = 'setup'
   const setupStart = performance.now()
@@ -1316,6 +1349,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
           reused = await preparePreviewCache(s.dir, dir, ancestor, source!, observe)
           cacheReady = true
         } catch (error) {
+          release?.assertOwned()
           await removePreviewEntry(s.dir, dir, true)
           console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
           cached = false
@@ -1331,15 +1365,16 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       }
       for (const [rel, value] of merged) {
         await new Promise<void>(resolve => setImmediate(resolve))
+        assertAuthority()
         materializeMergedFile(dir!, rel, value === null ? null : Buffer.from(value, 'latin1'), modes.get(rel) ?? 0o644)
         observe?.mergedWrite?.(rel)
       }
       await linkSharedDirs(s.dir, dir!)
       try {
         treePaths = await createPreviewTreePaths(s.dir, ancestor, dir!, signal)
-        tree = await fingerprintTree(dir!, await treePaths.paths(), signal)
+        tree = await fingerprintTree(dir!, await treePaths.eligiblePaths(), signal)
       }
-      catch (error) { evidenceFailure = error instanceof Error ? error.message : String(error) }
+      catch (error) { if (error instanceof EquivalenceTooLarge) equivalenceTooLarge = true; else evidenceFailure = error instanceof Error ? error.message : String(error) }
     })
     setupMs = performance.now() - setupStart
     if (signal?.aborted) throw new PreviewCancelled()
@@ -1355,45 +1390,64 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const result = await previewCheck(async () => {
       const command = bash ?? 'sh'
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
-      const beforeLaunch = () => {
-        if (!tree || !treePaths) return
-        try { validateFingerprintSync(tree, treePaths.pathsSync()) }
-        catch (error) { treeChanged = 'included tree changed before command launch: ' + (error instanceof Error ? error.message : String(error)) }
+      const beforeLaunch = async (launchSignal = signal) => {
+        if (!tree || !treePaths || equivalenceTooLarge) return () => assertAuthority(launchSignal)
+        try {
+          await treePaths.eligiblePaths(launchSignal) // Eligibility only; final membership is synchronous.
+          return () => {
+            assertAuthority(launchSignal)
+            try { validateFingerprintSync(tree!, treePaths!.pathsSync()) }
+            catch (error) { changed('before command launch', error) }
+            assertAuthority(launchSignal)
+          }
+        } catch (error) {
+          if (launchSignal?.aborted) throw new PreviewCancelled()
+          changed('before command launch', error)
+          return () => assertAuthority(launchSignal)
+        }
       }
       // Windows has no process groups to signal (and never caches): its check keeps execFile's own deadline.
-      if (process.platform === 'win32') return new Promise<{ code: number; out: string; stopped: boolean }>((resolve, reject) => {
-        beforeLaunch()
-        execFile(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env, signal }, (err, stdout, stderr) => {
-          if (err && signal?.aborted) { const cancelled = new PreviewCancelled(); cancelled.out = `${stdout}${stderr}`; reject(cancelled); return }
-          const raw = err ? (err as { code?: unknown }).code : 0
-          const limit = execFileLimit(err, checkLimits)
-          if (limit) { limit.out = `${stdout}${stderr}`; reject(limit); return }
-          resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false })
+      if (process.platform === 'win32') {
+        const final = await beforeLaunch()
+        final?.()
+        return new Promise<{ code: number; out: string; stopped: boolean }>((resolve, reject) => {
+          execFile(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env, signal }, (err, stdout, stderr) => {
+            if (err && signal?.aborted) { const cancelled = new PreviewCancelled(); cancelled.out = `${stdout}${stderr}`; reject(cancelled); return }
+            const raw = err ? (err as { code?: unknown }).code : 0
+            const limit = execFileLimit(err, checkLimits)
+            if (limit) { limit.out = `${stdout}${stderr}`; reject(limit); return }
+            resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false })
+          })
         })
-      })
+      }
       const tracked = await runTrackedProcess(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, lock: previewProcesses.getStore()?.lock, env, signal, beforeLaunch })
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
     checkMs = performance.now() - checkStart
     checkExitCode = result.code
     checkFinished = true
-    if (tree && treePaths) {
+    if (tree && treePaths && !equivalenceTooLarge) {
       try {
-        const paths = await treePaths.paths()
+        const paths = await treePaths.eligiblePaths()
         const after = await fingerprintTree(dir!, paths, signal)
         if (tree.hash !== after.hash) throw new Error('included manifest differs from command input')
-        validateFingerprintSync(tree, treePaths.pathsSync())
-        validateFingerprintSync(after, paths)
-      } catch (error) { treeChanged ??= 'included tree changed during command: ' + (error instanceof Error ? error.message : String(error)) }
+        postCommandGate = () => {
+          assertAuthority()
+          validateFingerprintSync(tree!, treePaths!.pathsSync(), after)
+          assertAuthority()
+        }
+      } catch (error) { changed('during command', error) }
     }
     stoppedPreviewChecks.get(s)?.delete(historyKey)
     completed = await previewPhase('collect', () => {
+      try { assertAuthority(); postCommandGate?.() } catch (error) { changed('during command', error) }
       const tail = outputTail(result.out)
       const verdict = testVerdict(result.out, result.code)
       commandPassed = result.code === 0 && !verdict.text.includes('tests: FAILED') && !treeChanged
       const gitContext = cached ? `detached worktree at ${ancestor} with its own index` : 'temporary materialization with no repository of its own'
+      const largeNote = equivalenceTooLarge ? `\n${largeTreeReason}; validate the collected tree` : ''
       const verdictText = treeChanged ? `${verdict.text.replace('tests: PASSED', 'tests: NOT certified')}\n${treeChanged}; preview evidence is NOT passed` : verdict.text
-      return { passed: verdict.passed && !treeChanged, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : skippedQuarantine ? 'fresh base; cached tree quarantined while an earlier check\'s process may use it' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\npreview Git context: ${gitContext}; lead HEAD at preview start: ${startHead}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdictText}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
+      return { passed: verdict.passed && !treeChanged, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : skippedQuarantine ? 'fresh base; cached tree quarantined while an earlier check\'s process may use it' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\npreview Git context: ${gitContext}; lead HEAD at preview start: ${startHead}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdictText}${largeNote}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
     })
     return completed
   } catch (error) {
@@ -1405,9 +1459,12 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
         try { await quarantinePreview(dir, `cleanup did not finish within ${error.graceMs}ms`, checkStartedAt); quarantined = true }
         catch (failure) { console.warn(`room preview: could not quarantine ${dir}: ${failure instanceof Error ? failure.message : String(failure)}`) }
       }
+      let lockOwned = true
+      try { release?.assertOwned() } catch { lockOwned = false }
       const kept = !cached ? '' : quarantined
         ? ' and is quarantined: no later check resets, reuses or removes it while any process has its working directory inside it'
-        : ' and stays locked by this session until it exits'
+        : lockOwned ? ' and stays locked by this session until it exits'
+          : ' and was left untouched after cache lock ownership was lost; process cleanup still needs confirmation'
       const why = error.reason instanceof PreviewProcessLimit ? `it was stopped at ${error.reason.limit}, and ` : error.reason instanceof PreviewCancelled ? 'it was cancelled, and ' : ''
       return { passed: false, text: `merged-tree ${stage} did not finish: "${cmd}" ${why}process cleanup did not finish within ${error.graceMs / 1000}s (${elapsed()}): a process from it is still running or still holds its output open; this is NOT a pass.\n${evidence}\ncommand completion: incomplete\nThe preview tree ${dir ?? ''} is left in place${kept}.\nLast output:\n${outputTail(error.out) || '(no output)'}` }
     }
@@ -1428,9 +1485,15 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     // the command may have rewritten. Incomplete runs remain evidence, but never a passing tree.
     if (finishEvidence) {
       try {
-        const completion = { complete: checkFinished && options.coverageComplete, exitCode: checkExitCode, passed: commandPassed, ...(treeChanged ? { reason: treeChanged } : {}) }
-        if (!await finishEvidence(tree ?? null, completion, startHead ?? null) && completed) completed.text += '\npreview evidence not retained: a newer attempt started or the record expired'
-      } catch (error) { evidenceFailure = error instanceof Error ? error.message : String(error) }
+        const completion = { complete: checkFinished && options.coverageComplete, exitCode: checkExitCode, passed: commandPassed && !equivalenceTooLarge && tree !== undefined, ...(equivalenceTooLarge ? { reason: largeTreeReason, equivalence: 'too-large' as const } : treeChanged ? { reason: treeChanged } : {}) }
+        if (!await finishEvidence(equivalenceTooLarge ? null : tree ?? null, completion, startHead ?? null, () => { if (completion.passed || completed?.passed) assertAuthority() }) && completed) completed.text += '\npreview evidence not retained: a newer attempt started or the record expired'
+      } catch (error) {
+        evidenceFailure = error instanceof Error ? error.message : String(error)
+        if (completed && (signal?.aborted || (() => { try { release?.assertOwned(); return false } catch { return true } })())) {
+          completed.passed = false
+          completed.text = completed.text.replace('tests: PASSED', 'tests: NOT certified') + `\npreview evidence is NOT passed: ${evidenceFailure}`
+        }
+      }
     }
     if (evidenceFailure) {
       console.warn('room preview evidence: ' + evidenceFailure)
@@ -1442,9 +1505,11 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     try {
       // Never reset, remove or unlock a tree that live processes may still be using.
       if (dir && !survivors) {
+        release?.assertOwned()
         if (cached && cacheReady) {
           try { await resetPreviewTree(s.dir, dir, ancestor) }
           catch (error) {
+            release?.assertOwned()
             await removePreviewEntry(s.dir, dir, true)
             cacheReady = false
             console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
@@ -1452,7 +1517,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
           }
         }
         else if (!cached) await fs.promises.rm(dir, { recursive: true, force: true })
-        if (cached && cacheReady) await touchPreview(dir, previewCapBytes())
+        if (cached && cacheReady) { release?.assertOwned(); await touchPreview(dir, previewCapBytes()) }
       }
     } catch (error) {
       console.warn(`room preview cleanup: ${error instanceof Error ? error.message : String(error)}`)

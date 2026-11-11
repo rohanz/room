@@ -21,7 +21,7 @@ export function previewCapBytes(): number {
 let lockUnavailableForTests = false
 export function setPreviewLockUnavailableForTests(value = false): void { lockUnavailableForTests = value }
 
-export type PreviewUnlock = (() => Promise<void>) & { trackProcess(pid: number): Promise<void> }
+export type PreviewUnlock = (() => Promise<void>) & { trackProcess(pid: number): Promise<void>; assertOwned(): void; onLost(listener: () => void): () => void }
 
 /** One bounded, asynchronous `ps -A` read (never on the event loop), parsed into `{ key, stat }` rows. */
 function readTable(column: 'pgid' | 'pid'): Promise<{ key: number; stat: string }[]> {
@@ -81,7 +81,14 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     : ['-n', file, 'sh', '-c', helper, 'room-preview', process.execPath]
   return new Promise(resolve => {
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'] })
-    let settled = false
+    // A signaled child keeps exitCode null after close. Remember completion from
+    // creation, and still wait for close when a live helper drains its groups.
+    const closed = new Promise<void>(done => child.once('close', () => done()))
+    let settled = false, lost = false, released = false
+    const listeners = new Set<() => void>()
+    const assertOwned = () => {
+      if (lost || released || child.exitCode !== null || child.signalCode != null || !child.stdin.writable) throw new Error('preview cache lock ownership lost; tree is NOT certified')
+    }
     let timer: NodeJS.Timeout | undefined
     const finish = (release?: PreviewUnlock) => {
       if (settled) return
@@ -92,15 +99,21 @@ export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | und
     }
     child.stdout.on('data', (data: Buffer) => {
       if (String(data).includes('READY')) finish(Object.assign(async () => {
+        released = true
         child.stdin.end()
-        if (child.exitCode === null) await new Promise<void>(done => child.once('close', () => done()))
-      }, { trackProcess(pid: number) {
-        if (!validPid(pid) || !child.stdin.writable) return Promise.reject(new Error('preview lock lost before process registration'))
+        await closed
+      }, { assertOwned, onLost(listener: () => void) {
+        try { assertOwned(); listeners.add(listener) } catch { listener() }
+        return () => { listeners.delete(listener) }
+      }, trackProcess(pid: number) {
+        try { assertOwned() } catch (error) { return Promise.reject(error) }
+        if (!validPid(pid)) return Promise.reject(new Error('invalid preview process registration'))
         return new Promise<void>((done, fail) => child.stdin.write(`${pid}\n`, error => error ? fail(error) : done()))
       } }))
     })
-    child.on('error', () => finish())
-    child.on('close', () => finish())
+    const lose = () => { lost = true; for (const listener of listeners) listener(); finish() }
+    child.on('error', lose)
+    child.on('close', lose)
     timer = setTimeout(() => finish(), 1000)
   })
 }

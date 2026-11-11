@@ -5,13 +5,15 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import { previewCachePath, runInMergedTree } from '../src/tools/files.js'
+import { collectedTreeEvidence } from '../src/preview-evidence.js'
+import * as evidence from '../src/preview-evidence.js'
 import type { Session } from '../src/session.js'
 
 const roots: string[] = []
 const merged = new Map<string, string | null>([['src/00/f00000.txt', 'merged zero\n'], ['src/00/f00001.txt', 'merged one\n']])
 const command = 'test "$(cat src/00/f00000.txt)" = "merged zero" && test "$(cat src/00/f00001.txt)" = "merged one" && test "$(cat src/49/f04999.txt)" = "base 4999" && echo "1 passed"'
 
-function fixture(scale = false) {
+function fixture(scale: boolean | number = false) {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-cache-test-'))
   roots.push(repo)
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
@@ -19,7 +21,7 @@ function fixture(scale = false) {
   git('config', 'user.name', 'Test')
   git('config', 'user.email', 'test@example.com')
   // Functional cases need only these five paths. The 5,000-path setup belongs to scale cases.
-  for (const i of scale ? Array.from({ length: 5_000 }, (_, i) => i) : [0, 1, 2, 3, 4999]) {
+  for (const i of scale ? Array.from({ length: typeof scale === 'number' ? scale : 5_000 }, (_, i) => i) : [0, 1, 2, 3, 4999]) {
     const dir = path.join(repo, 'src', String(Math.floor(i / 100)).padStart(2, '0'))
     if (!scale || i % 100 === 0) fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, `f${String(i).padStart(5, '0')}.txt`), `base ${i}\n`)
@@ -45,8 +47,10 @@ it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes
   expect(second.text).toMatch(/setup .*cached base.*check /)
 }, 120_000)
 
-it.skipIf(process.env.TEST_SCALE !== '1')('keeps the event loop responsive throughout a preview with a check', async () => {
-  const { ancestor, session } = fixture(true)
+it.skipIf(process.env.TEST_SCALE !== '1').each([5_000, 50_000])('keeps the event loop responsive throughout a preview with a check (%i files)', async count => {
+  const { repo, ancestor, session } = fixture(count)
+  const fingerprint = vi.spyOn(evidence, 'fingerprintTree')
+  const gate = vi.spyOn(evidence, 'validateFingerprintSync')
   let maxDelay = 0
   let previous = performance.now()
   const timer = setInterval(() => { const now = performance.now(); maxDelay = Math.max(maxDelay, now - previous - 10); previous = now }, 10)
@@ -62,8 +66,14 @@ it.skipIf(process.env.TEST_SCALE !== '1')('keeps the event loop responsive throu
   try {
     const result = await runInMergedTree(session(), ancestor, merged, command)
     expect(result.passed, result.text).toBe(true)
+    const evidence = await collectedTreeEvidence(repo)
+    expect(evidence).toBe('tree too large to compare cheaply (more than 2,000 files); validate it')
+    expect(result.text).toContain('equivalence was not established because the tree has more than 2,000 files')
+    expect(fingerprint).not.toHaveBeenCalled()
+    expect(gate).not.toHaveBeenCalled()
     await new Promise<void>(resolve => setTimeout(resolve, 0))
-  } finally { clearInterval(timer); remove.mockRestore() }
+  } finally { clearInterval(timer); remove.mockRestore(); fingerprint.mockRestore(); gate.mockRestore() }
+  process.stdout.write(JSON.stringify({ files: count, finalSynchronousGateMs: 0, fingerprints: 0, gateCalls: 0, previewAndCollectMaxDelayMs: maxDelay }) + '\n')
   expect(maxDelay).toBeLessThan(200)
 }, 120_000)
 

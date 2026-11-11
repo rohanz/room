@@ -1,13 +1,15 @@
 import { privateStateDirectory } from '@room/relay'
 import { realGitCommonDir, validRepoPath, MATERIALIZED_PATH } from '@room/roomd'
 import { gitWholeTree, wholeTreeTimeoutMs } from '@room/roomd/git'
-import { boundedGitSync } from '@room/roomd/baseline'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { withGuard } from './leases.js'
+import { assertCollectLease } from './collect-lease.js'
+import { boundedGitSync } from '@room/roomd/baseline'
+import { batchBudget, sortedCopy, normalizedPaths, boundedJson } from './preview-batches.js'
 
 type TreeFile = [path: string, mode: number, sha256: string]
 export interface TreeFingerprint { hash: string; files: TreeFile[] }
@@ -22,16 +24,39 @@ interface PreviewEvidence {
   exitCode: number | null
   passed: boolean
   reason?: string
+  equivalence?: 'too-large'
 }
-type PreviewCompletion = Pick<PreviewEvidence, 'complete' | 'exitCode' | 'passed' | 'reason'>
+type PreviewCompletion = Pick<PreviewEvidence, 'complete' | 'exitCode' | 'passed' | 'reason' | 'equivalence'>
 type Observations = { root: string; paths: string[]; files: { rel: string; before: fs.Stats | null }[] }
 const observationsOf = new WeakMap<TreeFingerprint, Observations>()
 const MAX_RECORD_BYTES = 8 * 1024 * 1024
-const split = (text: string) => text.split('\0').filter(Boolean)
+/** File count bounds synchronous metadata work, not time: deep paths, a slow
+ * filesystem and Git traversal of untracked/ignored directories can exceed it. */
+export const MAX_EQUIVALENCE_FILES = 2_000
+const displayedLimit = MAX_EQUIVALENCE_FILES.toLocaleString('en-US')
+export const largeTreeReply = `tree too large to compare cheaply (more than ${displayedLimit} files); validate it`
+export const largeTreeReason = `equivalence was not established because the tree has more than ${displayedLimit} files`
+export class EquivalenceTooLarge extends Error {
+  constructor() { super(largeTreeReason) }
+}
+/** Count at most N+1 distinct paths before any whole-tree sort/Set/JSON work. */
+function cappedPaths(text: string): string[] {
+  const paths = new Set<string>()
+  let start = 0
+  while (start < text.length) {
+    const end = text.indexOf('\0', start), next = end < 0 ? text.length : end
+    if (next > start) {
+      paths.add(text.slice(start, next))
+      if (paths.size > MAX_EQUIVALENCE_FILES) throw new EquivalenceTooLarge()
+    }
+    start = next + 1
+  }
+  return [...paths].sort() // At most 2,000 entries, including duplicate Git stages.
+}
 const evidenceLimits = 'same files, same command only; Git state (HEAD, refs, index), environment and ignored files are not compared; rerun commands that read Git state on the collected tree; files written by another process during collect are outside the guarantee'
 
 const listArgs = ['ls-files', '-z', '--cached', '--others', '--exclude-standard']
-const sortedPaths = (text: string) => [...new Set(split(text))].sort()
+const sortedPaths = normalizedPaths
 
 /**
  * The actual materialized checkout, including new non-ignored paths written by a command.
@@ -42,22 +67,30 @@ export async function createPreviewTreePaths(repo: string, ancestor: string, dir
   const temporary = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-preview-paths-'))
   const env = { ...process.env, GIT_INDEX_FILE: path.join(temporary, 'index') }
   const prefix = [`--work-tree=${dir}`, '-c', 'core.sparseCheckout=false', '-c', 'core.sparseCheckoutCone=false', '-c', 'core.splitIndex=false', '-c', 'index.sparse=false', '-c', 'core.untrackedCache=false', '-c', 'core.fsmonitor=false']
-  const run = (args: string[]) => new Promise<string>((resolve, reject) => {
-    execFile('git', [...prefix, ...args], { cwd: repo, env, signal, timeout: wholeTreeTimeoutMs(), maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout))
+  const run = (args: string[], runSignal = signal) => new Promise<string>((resolve, reject) => {
+    let child: ReturnType<typeof execFile> | undefined
+    child = execFile('git', [...prefix, ...args], { cwd: repo, env, signal: runSignal, timeout: wholeTreeTimeoutMs(), maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+      const finish = () => error ? reject(error) : resolve(stdout)
+      // Abort can invoke execFile's callback before its child has closed. The
+      // private index/tree must not be disposed while that reader still runs.
+      if (error && child && child.exitCode === null && child.signalCode === null) child.once('close', finish)
+      else finish()
+    })
   })
   const dispose = () => fs.promises.rm(temporary, { recursive: true, force: true })
   try { await run(['read-tree', ancestor]) }
   catch (error) { await dispose(); throw error }
   return {
-    paths: async () => sortedPaths(await run(listArgs)),
-    pathsSync: () => sortedPaths(boundedGitSync(repo, [...prefix, ...listArgs], { env, wholeTreePaths: 10_000 }).toString()),
+    paths: async (runSignal = signal) => sortedPaths(await run(listArgs, runSignal), runSignal),
+    eligiblePaths: async (runSignal = signal) => cappedPaths(await run(listArgs, runSignal)),
+    pathsSync: () => cappedPaths(boundedGitSync(repo, [...prefix, ...listArgs], { env, wholeTreePaths: MAX_EQUIVALENCE_FILES }).toString()),
     dispose,
   }
 }
 
 /** Read-only enumeration: staged contents are irrelevant; fingerprint the files actually on disk. */
 async function collectedTreePaths(dir: string): Promise<string[]> {
-  return sortedPaths(await gitWholeTree(dir, listArgs))
+  return cappedPaths(await gitWholeTree(dir, listArgs))
 }
 
 /**
@@ -67,6 +100,7 @@ async function collectedTreePaths(dir: string): Promise<string[]> {
  * entries (e.g. submodule directories), unsafe ancestors and files moving during a read fail closed.
  */
 export async function fingerprintTree(dir: string, paths: readonly string[], signal?: AbortSignal): Promise<TreeFingerprint> {
+  if (paths.length > MAX_EQUIVALENCE_FILES) throw new EquivalenceTooLarge()
   const root = await fs.promises.realpath(dir)
   const files: TreeFile[] = []
   const observations: { rel: string; before: fs.Stats | null }[] = []
@@ -120,24 +154,47 @@ export async function fingerprintTree(dir: string, paths: readonly string[], sig
       if (after && await fs.promises.realpath(path.dirname(file)) !== path.dirname(file)) throw new Error('fingerprint path has a linked ancestor: ' + rel)
     }
   })
-  files.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-  const tree = { hash: createHash('sha256').update(JSON.stringify(files)).digest('hex'), files }
-  observationsOf.set(tree, { root, paths: [...paths].sort(), files: observations })
+  const ordered = await sortedCopy(files, ([a], [b]) => a < b ? -1 : a > b ? 1 : 0, signal)
+  const bytes = await boundedJson(ordered, MAX_RECORD_BYTES, signal)
+  const tree = { hash: createHash('sha256').update(bytes).digest('hex'), files: ordered }
+  const orderedPaths = await sortedCopy(paths, (a, b) => a < b ? -1 : a > b ? 1 : 0, signal)
+  observationsOf.set(tree, { root, paths: orderedPaths, files: observations })
   return tree
 }
 
-/** No await between this final gate and the caller's launch/report decision. External writers need quiescence. */
-export function validateFingerprintSync(tree: TreeFingerprint, paths: readonly string[]): void {
-  const observed = observationsOf.get(tree)
-  if (!observed || JSON.stringify(observed.paths) !== JSON.stringify([...paths].sort())) throw new Error('included path set changed')
+/** Run synchronously after the final await and path listing, through the decision.
+ * One stat/ancestor observation covers both byte fingerprints, including rewrites. */
+export function validateFingerprintSync(tree: TreeFingerprint, paths: readonly string[], also?: TreeFingerprint): void {
+  if (paths.length > MAX_EQUIVALENCE_FILES) throw new EquivalenceTooLarge()
+  const observed = observationsOf.get(tree), second = also && observationsOf.get(also)
+  if (!observed || also && !second) throw new Error('unobserved fingerprint')
+  if (observed.paths.length !== paths.length || second && second.paths.length !== paths.length) throw new Error('included path set changed')
+  // Callers supply sorted paths from Git; the direct API historically accepted
+  // unsorted lists too. Sorting is capped at N before this point.
+  const ordered = [...paths].sort()
+  for (let i = 0; i < ordered.length; i++) {
+    if (observed.paths[i] !== ordered[i] || second && second.paths[i] !== ordered[i]) throw new Error('included path set changed')
+  }
+  const other = second && new Map(second.files.map(entry => [entry.rel, entry.before]))
   for (const { rel, before } of observed.files) {
     const file = path.join(observed.root, rel)
     let after: fs.Stats | null
     try { after = fs.lstatSync(file) }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') after = null; else throw error }
-    if (before === null ? after !== null : after === null || !sameFile(before, after)) throw new Error('file changed during fingerprint: ' + rel)
+    const changed = (prior: fs.Stats | null) => prior === null ? after !== null : after === null || !sameFile(prior, after)
+    if (changed(before) || other && (!other.has(rel) || changed(other.get(rel)!))) throw new Error('file changed during fingerprint: ' + rel)
     if (after && fs.realpathSync(path.dirname(file)) !== path.dirname(file)) throw new Error('fingerprint path has a linked ancestor: ' + rel)
   }
+}
+
+/** Cancellation test seam retained for review regressions. Production calls the
+ * synchronous gate directly after its last await, never this async convenience. */
+export async function validateFingerprint(tree: TreeFingerprint, listPaths: () => Promise<readonly string[]>, signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted()
+  const paths = await listPaths()
+  signal?.throwIfAborted()
+  validateFingerprintSync(tree, paths)
+  return () => { signal?.throwIfAborted() }
 }
 
 async function readers(read: () => Promise<void>): Promise<void> {
@@ -201,9 +258,7 @@ function readEvidenceSync(file: string): PreviewEvidence | undefined {
   } finally { fs.closeSync(fd) }
 }
 
-function writeEvidenceSync(file: string, record: PreviewEvidence): void {
-  const text = JSON.stringify(record)
-  if (Buffer.byteLength(text) > MAX_RECORD_BYTES) throw new Error('preview evidence exceeds 8 MiB; validate the collected tree')
+function writeEvidenceSync(file: string, text: Buffer): void {
   const temporary = `${file}.${randomUUID()}.tmp`
   try { fs.writeFileSync(temporary, text, { mode: 0o600, flag: 'wx' }); fs.renameSync(temporary, file) }
   finally { fs.rmSync(temporary, { force: true }) }
@@ -214,29 +269,39 @@ export async function beginPreviewAttempt(clone: string, command: string, at = n
   const { root, prefix } = await location(clone)
   const file = evidenceFile(root, prefix)
   const pending: PreviewEvidence = { version: 3, nonce: randomUUID(), tree: null, head: null, command, at, complete: false, exitCode: null, passed: false }
-  await guardedPublisher(root, prefix, () => writeEvidenceSync(file, pending))
-  return (tree: TreeFingerprint | null, completion: PreviewCompletion, head: string | null = null): Promise<boolean> => guardedPublisher(root, prefix, () => {
-    if (readEvidenceSync(file)?.nonce !== pending.nonce) return false
-    writeEvidenceSync(file, { ...pending, tree, head, ...completion })
-    return true
-  })
+  const initial = await boundedJson(pending, MAX_RECORD_BYTES)
+  await guardedPublisher(root, prefix, () => writeEvidenceSync(file, initial))
+  return async (tree: TreeFingerprint | null, completion: PreviewCompletion, head: string | null = null, final?: () => void): Promise<boolean> => {
+    const bytes = await boundedJson({ ...pending, tree, head, ...completion }, MAX_RECORD_BYTES)
+    return guardedPublisher(root, prefix, () => {
+      // Authority also governs the caller's reply when a newer record wins.
+      final?.()
+      if (readEvidenceSync(file)?.nonce !== pending.nonce) return false
+      writeEvidenceSync(file, bytes)
+      return true
+    })
+  }
 }
 
 /** A diagnostic must never turn an already-applied collection into an apparent failure. */
 export async function collectedTreeEvidence(clone: string): Promise<string> {
   try {
     const { root, prefix } = await location(clone)
+    assertCollectLease(clone)
     const paths = await collectedTreePaths(clone)
     const tree = await fingerprintTree(clone, paths)
-    if (JSON.stringify(paths) !== JSON.stringify(await collectedTreePaths(clone))) throw new Error('paths changed during fingerprint')
-    // No guard, wait or fsync: one immutable record snapshot, then the non-yielding file gate/decision.
+    const head = (await gitWholeTree(clone, ['rev-parse', 'HEAD'])).trim()
+    assertCollectLease(clone)
+    validateFingerprintSync(tree, cappedPaths(boundedGitSync(clone, listArgs, { wholeTreePaths: MAX_EQUIVALENCE_FILES }).toString()))
+    // No await between the final synchronous listing/gate, this immutable latest
+    // record snapshot and the decision. No pre-await evidence can choose a pass.
     const record = readEvidenceSync(evidenceFile(root, prefix))
+    assertCollectLease(clone)
     const limits = evidenceLimits
     if (!record) return `no preview ran a command on this tree; validate it; ${limits}`
     const info = `${JSON.stringify(record.command)} (preview at ${record.at})`
+    if (record.equivalence === 'too-large') return `the most recent preview did not establish equivalence ${info}: ${record.reason ?? largeTreeReason}; validate it; ${limits}`
     if (record.tree === null) return `the most recent preview was incomplete ${info}; no preview result is recorded for this tree; validate it; ${limits}`
-    const head = boundedGitSync(clone, ['rev-parse', 'HEAD']).toString().trim()
-    validateFingerprintSync(tree, sortedPaths(boundedGitSync(clone, listArgs, { wholeTreePaths: paths.length }).toString()))
     if (record.tree.hash === tree.hash) {
       const reason = record.reason ? `; ${record.reason}` : ''
       if (record.head !== head) return `collected tree has identical files to the most recent preview ${info}; HEAD moved from ${record.head} to ${head}; ${passed(record) ? 'command exited 0' : record.complete ? 'preview failed' : 'preview was incomplete'}${reason}; validate it; ${limits}`
@@ -244,11 +309,23 @@ export async function collectedTreeEvidence(clone: string): Promise<string> {
       if (record.complete === true) return `collected tree is identical to the tree whose preview failed ${info}: exit ${record.exitCode}${reason}; validate it; ${limits}`
       return `collected tree is identical to the tree whose preview was incomplete ${info}${reason}; validate it; ${limits}`
     }
-    const previous = new Map(record.tree.files.map(([rel, mode, hash]) => [rel, `${mode}:${hash}`]))
-    const current = new Map(tree.files.map(([rel, mode, hash]) => [rel, `${mode}:${hash}`]))
-    const changed = [...new Set([...previous.keys(), ...current.keys()])].filter(rel => previous.get(rel) !== current.get(rel)).sort()
-    return `no preview result is recorded for this tree; validate it; collected tree differs from the most recent preview in ${changed.length} file(s): ${changed.slice(0, 8).map(rel => /[\n\r\t]/.test(rel) ? JSON.stringify(rel) : rel).join(', ')}${changed.length > 8 ? ', …' : ''}; ${limits}`
+    // A differing-tree result cannot promote a pass; its diagnostic can yield after
+    // taking the immutable evidence snapshot. Compare sorted manifests by merge.
+    const changed: string[] = [], budget = batchBudget()
+    let left = 0, right = 0, count = 0
+    while (left < record.tree.files.length || right < tree.files.length) {
+      const old = record.tree.files[left], current = tree.files[right]
+      let rel: string | undefined
+      if (!old || current && current[0] < old[0]) { rel = current![0]; right++ }
+      else if (!current || old[0] < current[0]) { rel = old[0]; left++ }
+      else { if (old[1] !== current[1] || old[2] !== current[2]) rel = old[0]; left++; right++ }
+      if (rel !== undefined) { count++; if (changed.length < 8) changed.push(rel) }
+      const wait = budget(); if (wait) await wait
+    }
+    return `no preview result is recorded for this tree; validate it; collected tree differs from the most recent preview in ${count} file(s): ${changed.map(rel => /[\n\r\t]/.test(rel) ? JSON.stringify(rel) : rel).join(', ')}${count > 8 ? ', …' : ''}; ${limits}`
+
   } catch (error) {
+    if (error instanceof EquivalenceTooLarge) return largeTreeReply
     return `collected tree equivalence unavailable: ${error instanceof Error ? error.message : String(error)}; validate it; ${evidenceLimits}`
   }
 }

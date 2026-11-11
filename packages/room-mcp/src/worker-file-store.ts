@@ -23,6 +23,8 @@ import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalat
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
 import { ended, WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
 import { sameStartTime } from '@room/relay/process'
+import { withCollectLeaseAssertion } from './collect-lease.js'
+import { readBoundedFileSync } from '@room/roomd'
 
 export interface RegistryOptions {
   liveness?: LivenessProbe; now?: () => number; identity?: InstanceToken; watch?: boolean
@@ -718,7 +720,16 @@ export class FileWorkerStore {
       if (performance.now() >= deadline) throw new Error('another collection is in progress')
       await new Promise<void>(resolve => setTimeout(resolve, GUARD_POLL_MS))
     }
-    try { return await work() }
+    const assertOwned = () => {
+      try {
+        const current = JSON.parse(readBoundedFileSync(file, 16 * 1024)) as { holder?: InstanceToken; worktree?: string }
+        const holder = current.holder
+        if (!holder || current.worktree !== canonical || holder.nonce !== this.identity.nonce || holder.pid !== this.identity.pid
+          || holder.sessionId !== this.identity.sessionId || holder.startTime !== this.identity.startTime || holder.executable !== this.identity.executable)
+          throw new Error('holder changed')
+      } catch { throw new Error('destination collect lease ownership lost') }
+    }
+    try { return await withCollectLeaseAssertion(canonical, assertOwned, work) }
     finally { await leaseRetry(() => compareAndRelease(file, this.identity)) }
   }
 
