@@ -50,7 +50,7 @@ require('node:net').Server.prototype.listen = function (...args) {
     res.destroy = () => {res.destroyed = true; res.emit('close')};
     res.end = body => {res.writableEnded = true; res.writableFinished = true; res.emit('finish');
       console.log('RESULT ' + JSON.stringify({status:res.status, body:String(body), valueReads}));
-      setTimeout(() => process.exit(0), 100);
+      setImmediate(() => process.exit(0));
     };
     server.emit('request', req, res);
   }); return this;
@@ -99,7 +99,20 @@ it.each([29, 30, 31, 40])('keeps the unset-ROOM_LEGACY_DAYS expiry boundary at a
 Date.now = () => ${now};
 require('node:net').Server.prototype.listen = function (...args) {
   const done = args.find(a => typeof a === 'function'); if (done) setImmediate(done);
-  setTimeout(() => process.exit(0), 700); return this;
+  // Younger archives must remain untouched: expiry has no completion signal in that case.
+  const NO_ARCHIVE_EXPIRY_WINDOW_MS = 700;
+  if (${age} <= 30) setTimeout(() => process.exit(0), NO_ARCHIVE_EXPIRY_WINDOW_MS);
+  else {
+    const deadline = performance.now() + 5000;
+    const check = () => {
+      const saved = JSON.parse(require('node:fs').readFileSync(${JSON.stringify(path.join(dir, 'rooms.json'))}, 'utf8'));
+      if (saved[${JSON.stringify(repo)}].legacy.length === 0) return process.exit(0);
+      if (performance.now() > deadline) { console.error('timed out waiting for archive expiry persistence'); return process.exit(2) }
+      setTimeout(check, 5);
+    };
+    setImmediate(check);
+  }
+  return this;
 };
 `)
   const env = { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '', DATABASE_URL: '',

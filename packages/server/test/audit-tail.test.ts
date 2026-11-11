@@ -103,7 +103,6 @@ describe('audit rotation and retention', () => {
     const dir = tmp()
     const s = new FileStore({ dir, auditRotateBytes: 600, auditKeepFiles: 2 })
     for (const at of range(1, 40)) await s.audit(entry(at))
-    await new Promise(r => setTimeout(r, 20))
     // Later entries carry times after any pruned segment was last written.
     const later = Date.now() + 60_000
     for (const i of range(0, 39)) await s.audit(entry(later + i))

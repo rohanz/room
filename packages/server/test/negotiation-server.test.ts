@@ -15,6 +15,8 @@ import { devServers } from './dev-server.js'
 const legacyFrames = JSON.parse(fs.readFileSync(new URL('./fixtures/legacy-0.17.32-first-frames.json', import.meta.url), 'utf8')) as {
   query: string; syncStep1: string; awareness: string; hello: string
 }
+// No frame can signal success while the protocol intentionally withholds it.
+const NO_DOCUMENT_FRAME_WINDOW_MS = 25
 const servers = devServers(), persistenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-negotiation-'))
 let port: number, base: string
 const post = (route: string, body: unknown) => fetch(base + route, {
@@ -62,13 +64,13 @@ describe('hosted bootstrap and the frozen legacy wire profile', () => {
     ws.on('message', data => packets.push(new Uint8Array(data as Buffer)))
     try {
       await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
-      await new Promise(resolve => setTimeout(resolve, 25))
+      await new Promise(resolve => setTimeout(resolve, NO_DOCUMENT_FRAME_WINDOW_MS))
       expect(packets).toHaveLength(0)
       ws.send(encodeFrame({ v: 1, id: 'hello', op: 'compat-hello', sessionId: 'negotiated-session', offer: CURRENT_COMPAT }))
       await expect.poll(() => packets.length).toBe(1)
       const reply = decodeFrame(packets[0]) as BootstrapSelection
       expect(reply).toMatchObject({ ok: true, compat: CURRENT_COMPAT, selection: { bootstrap: 1, hub: 1, schema: 2 } })
-      await new Promise(resolve => setTimeout(resolve, 25))
+      await new Promise(resolve => setTimeout(resolve, NO_DOCUMENT_FRAME_WINDOW_MS))
       expect(packets).toHaveLength(1)
       ws.send(encodeFrame({ v: 1, id: 'ack', op: 'compat-ack', selectionId: reply.selectionId }))
       await expect.poll(() => packets.some(p => p[0] === 0)).toBe(true)

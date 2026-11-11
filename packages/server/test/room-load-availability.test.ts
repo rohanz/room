@@ -162,8 +162,9 @@ it('drains a recovered write before checking loaded state and never stamps the r
     fail = true; old.getMap('scopes').set('retained', { summary: 'must recover first' })
     await vi.waitFor(() => expect(hubs.storageFailure(name)).toContain('temporary write failure'))
     registered = true
+    const draining = vi.spyOn(hubs, 'flushName')
     const loading = p.bindState(name, current)
-    await new Promise(resolve => setTimeout(resolve, 60))
+    await vi.waitFor(() => expect(draining, 'cold load entered recovered-write drain').toHaveBeenCalledWith(name))
     expect(probes).toBe(1)
     fail = false
     await loading; await hubs.flush(current)

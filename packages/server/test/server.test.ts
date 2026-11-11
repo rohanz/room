@@ -3,7 +3,7 @@
  * its branch room over a websocket. Also the refusals every entry point must give: a forwarded
  * GitHub token, and ROOM_TOKEN on a github.com room.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -17,6 +17,8 @@ import { LISTS_PER_MINUTE } from '../src/limits.js'
 import { devServers } from './dev-server.js'
 import { CURRENT_COMPAT } from '@room/hub-core'
 
+// Refusal has no completion event on a reset peer; watch for delayed process failure.
+const NO_RESET_CRASH_WINDOW_MS = 300
 const servers = devServers()
 let proc: ChildProcess, port = 0, base = ''
 const persistenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-server-test-'))
@@ -63,8 +65,11 @@ function sendMemberUpdate(room: string, session: string, change: (doc: Y.Doc) =>
     const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${session}` } })
     ws.on('open', () => {
       ws.send(encoding.toUint8Array(message))
-      setTimeout(() => { ws.close(); doc.destroy(); resolve() }, 50)
+      // A pong is ordered after the update, so the server has processed its frame.
+      ws.once('pong', () => ws.close())
+      ws.ping()
     })
+    ws.on('close', () => { doc.destroy(); resolve() })
     ws.on('error', reject)
   })
 }
@@ -293,7 +298,7 @@ describe('room server with the fake GitHub issuer', () => {
     const upgrade = (target: string) => `GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`
     // Malformed target (400), invalid room name (400) and failed admission (401/403/404): each refusal writes to a reset socket.
     for (let i = 0; i < 10; i++) for (const target of ['//[', '/github.com', '/github.com%2Fnobody%2Fnothing?schema=2']) await reset(upgrade(target))
-    await new Promise(r => setTimeout(r, 300))
+    await new Promise(r => setTimeout(r, NO_RESET_CRASH_WINDOW_MS))
     expect((await fetch(`${base}/health`)).status).toBe(200)
     expect(proc.exitCode).toBeNull()
   })
@@ -325,10 +330,23 @@ describe('room server refuses the fake issuer in production', () => {
 it('bounds rooms scans per identity and globally, shares admission checks, and stops disconnected scans', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-scan-'))
   const preload = path.join(dir, 'fetch.mjs'), callsFile = path.join(dir, 'calls.log')
+  const released = (token: string) => path.join(dir, token + '.released')
+  const completed = path.join(dir, 'fetch-completed')
+  const disconnected = (session: string) => path.join(dir, session + '.closed')
+  const calls = () => fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').trim().split('\n') : []
   const repos = ['github.com/scans/a', 'github.com/scans/b', 'github.com/scans/c']
   fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify(Object.fromEntries(repos.map(repo => [repo, { at: Date.now(), branches: [], mode: 'repo', migratedAt: Date.now() }]))))
   // Synthetic device issuer and delayed GitHub permission API; no real credentials or network.
   fs.writeFileSync(preload, `import fs from 'node:fs';
+    import http from 'node:http';
+    const emit = http.Server.prototype.emit;
+    http.Server.prototype.emit = function(event, req, res, ...args) {
+      if (event === 'request' && req.url === '/rooms' && req.headers.authorization) {
+        const session = req.headers.authorization.replace('Bearer ', '');
+        res.once('close', () => fs.writeFileSync(${JSON.stringify(dir)} + '/' + session + '.closed', 'closed'));
+      }
+      return emit.call(this, event, req, res, ...args);
+    };
     let serial = 0;
     globalThis.fetch = async (url, init) => {
       const reply = body => new Response(JSON.stringify(body));
@@ -337,7 +355,12 @@ it('bounds rooms scans per identity and globally, shares admission checks, and s
       const token = init.headers.authorization.replace('Bearer ', '');
       if (String(url).endsWith('/user')) return reply({ login: token });
       fs.appendFileSync(${JSON.stringify(callsFile)}, token + ' ' + String(url) + '\\n');
-      await new Promise(resolve => setTimeout(resolve, 400));
+      const deadline = Date.now() + 5000;
+      while (!fs.existsSync(${JSON.stringify(dir)} + '/' + token + '.released')) {
+        if (Date.now() > deadline) throw new Error('permission response gate not released: ' + token);
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      if (token === 'holder-4') setImmediate(() => fs.writeFileSync(${JSON.stringify(completed)}, 'settled'));
       return reply({ permissions: { push: false } });
     };
   `)
@@ -361,15 +384,15 @@ it('bounds rooms scans per identity and globally, shares admission checks, and s
     for (let i = 0; i < 4; i++) sessions.push(await scanLogin())
     const list = (session: string) => fetch(scanBase + '/rooms', { headers: { authorization: `Bearer ${session}` } })
     const a = list(sessions[0]), b = list(sessions[1])
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await vi.waitFor(() => expect(calls(), 'two permission scans held').toHaveLength(2))
     const [same, global] = await Promise.all([list(sessions[0]), list(sessions[2])])
     expect(same.status).toBe(429); expect(global.status).toBe(429)
     expect(same.headers.get('retry-after')).toBeTruthy(); expect(global.headers.get('retry-after')).toBeTruthy()
     // This admission call must share the first listing's pending token/repository check.
     const admission = scanPost('/view-token', { room: repos[0], schema: 2, session: sessions[0] })
+    fs.writeFileSync(released('holder-1'), 'release'); fs.writeFileSync(released('holder-2'), 'release')
     expect((await admission).status).toBe(403)
     expect(await (await a).json()).toEqual([]); expect(await (await b).json()).toEqual([])
-    const calls = () => fs.readFileSync(callsFile, 'utf8').trim().split('\n')
     const before = calls()
     expect(before.filter(line => line === 'holder-1 https://api.github.com/repos/scans/a')).toHaveLength(1)
     // The first scan and the refused concurrent scan both count toward the real rate limit.
@@ -381,8 +404,11 @@ it('bounds rooms scans per identity and globally, shares admission checks, and s
     const socket = net.connect(scanPort, '127.0.0.1')
     socket.on('error', () => {})
     socket.write(`GET /rooms HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${sessions[3]}\r\n\r\n`)
-    await new Promise(resolve => setTimeout(resolve, 100)); socket.destroy()
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await vi.waitFor(() => expect(calls().filter(line => line.startsWith('holder-4 ')), 'disconnected scan permission request started').toHaveLength(1))
+    socket.destroy()
+    await vi.waitFor(() => expect(fs.existsSync(disconnected(sessions[3])), 'server observed disconnected scan').toBe(true))
+    fs.writeFileSync(released('holder-4'), 'release')
+    await vi.waitFor(() => expect(fs.existsSync(completed), 'permission response and scan continuation settled').toBe(true))
     expect(calls().filter(line => line.startsWith('holder-4 '))).toHaveLength(1)
   } finally { if (child) await servers.stop(child); fs.rmSync(dir, { recursive: true, force: true }) }
 }, 30_000)

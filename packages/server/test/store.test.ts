@@ -185,7 +185,7 @@ describe('PgStore', () => {
   it('overlapping PgStore writes never interleave: each full-table replacement completes before the next begins', async () => {
     const pg = fakePg()
     // a slow pool: every query yields, so two unqueued saveRooms would interleave their DELETE/INSERT
-    const slow = { ...pg.pool, connect: async () => { const c = await pg.pool.connect(); return { ...c, query: async (t: string, v?: unknown[]) => { await new Promise(r => setTimeout(r, 1)); return c.query(t, v) } } } }
+    const slow = { ...pg.pool, connect: async () => { const c = await pg.pool.connect(); return { ...c, query: async (t: string, v?: unknown[]) => { await new Promise<void>(resolve => setImmediate(resolve)); return c.query(t, v) } } } }
     const s = new PgStore('postgres://x', async () => slow)
     const a = s.saveRooms({ 'github.com/a/one': { at: 1, branches: [] }, 'github.com/a/two': { at: 1, branches: [] } })
     const b = s.saveRooms({ 'github.com/a/three': { at: 2, branches: [] } })

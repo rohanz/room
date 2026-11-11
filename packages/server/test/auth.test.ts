@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -161,7 +161,7 @@ describe('device-flow auth', () => {
       const auth = new Auth({ clientId: 'fake', sessionsFile: file, onSessionRemoved: id => removed.push(id) })
       await auth.ready
       const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
-      await new Promise(r => setTimeout(r, 10))
+      await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(file, 'utf8'))[session], 'session persisted before external file edit').toBeDefined())
       const good = fs.readFileSync(file, 'utf8')
       fs.writeFileSync(file, good.slice(0, 10)) // a torn or half-copied file
       expect(await auth.reconcileSessions()).toMatchObject({ ok: false, error: expect.stringMatching(/sessions\.json/) })
@@ -196,7 +196,7 @@ describe('device-flow auth', () => {
       const auth = new Auth({ clientId: 'fake', sessionsFile: file, onSessionRemoved: id => removed.push(id) })
       await auth.ready
       const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
-      await new Promise(r => setTimeout(r, 10))
+      await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(file, 'utf8'))[session], 'session persisted before external file edit').toBeDefined())
       const good = fs.readFileSync(file, 'utf8')
       fs.writeFileSync(file, good.slice(0, 10))
       const failed = await auth.logout(session)
@@ -220,7 +220,7 @@ describe('device-flow auth', () => {
       const auth = new Auth({ clientId: 'fake', sessionsFile: file })
       await auth.ready
       const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
-      await new Promise(r => setTimeout(r, 10))
+      await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(file, 'utf8'))[session], 'session persisted before external file edit').toBeDefined())
       const good = fs.readFileSync(file, 'utf8')
       fs.writeFileSync(file, good.slice(0, 10))
       expect((await auth.logout(session)).error).toBeTruthy()
@@ -240,7 +240,7 @@ describe('device-flow auth', () => {
         onSessionRemoved: (id, reason) => removed.push(`${id}:${reason}`) })
       await auth.ready
       const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
-      await new Promise(r => setTimeout(r, 10))
+      await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(file, 'utf8'))[session], 'session persisted before external file edit').toBeDefined())
       fs.writeFileSync(file, '{}')
       await auth.reconcileSessions()
       expect(removed).toEqual([`${session}:logged out`])
@@ -266,7 +266,7 @@ describe('logout of a token the server has not loaded yet', () => {
     const stored = { tok1: { login: 'alice', provider: 'github' as const, at: now }, tok2: { login: 'bob', provider: 'github' as const, at: now } }
     const { store, state } = flakyStore(stored)
     const auth = new Auth({ clientId: 'fake', production: false, store, now: () => now })
-    await new Promise(r => setTimeout(r, 10)) // startup load failed; nothing adopted yet
+    await auth.ready // startup load failed; nothing adopted yet
     state.deleteFails = true
     expect(await auth.logout('tok1')).toMatchObject({ error: expect.stringContaining('retry') })
     state.deleteFails = false
@@ -282,7 +282,7 @@ describe('logout of a token the server has not loaded yet', () => {
     const stored = { tok1: { login: 'alice', provider: 'github' as const, at: now } }
     const { store, state } = flakyStore(stored)
     const auth = new Auth({ clientId: 'fake', production: false, store, now: () => now })
-    await new Promise(r => setTimeout(r, 10))
+    await auth.ready
     state.deleteFails = true
     await auth.logout('tok1')
     state.loadFails = false

@@ -26,7 +26,7 @@ const require = createRequire(${JSON.stringify(path.join(root, 'package.json'))}
 const { FileStore } = await import(${JSON.stringify(path.join(root, 'packages/server/src/store.ts'))});
 const save = FileStore.prototype.saveRooms;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const until = async check => { for (let n = 0; !check(); n++) { if (n > 500) throw new Error('probe wait timed out'); await sleep(5) } };
+const until = async (condition, check) => { const deadline = Date.now() + 5000; while (!check()) { if (Date.now() > deadline) throw new Error('timed out waiting for ' + condition); await sleep(5) } };
 // Wait for the hub's first normal persistence of a room instead of a fixed delay.
 const persisted = async room => {
   const { getPersistence } = await import(new URL('src/utils.js', 'file://' + require.resolve('@y/websocket-server/package.json')).href);
@@ -74,7 +74,7 @@ const connect = (room, schema = 2) => new Promise(resolve => {
 });
 setTimeout(() => process.exit(4), 9000);
 await import(${JSON.stringify(path.join(root, 'packages/server/src/index.ts'))});
-await until(() => server);
+await until('server startup', () => server);
 try { const result = await (async () => { ${scenario} })(); console.log('RESULT ' + JSON.stringify(result)); process.exit(0) }
 catch (error) { console.error(error); process.exit(2) }
 `)
@@ -108,7 +108,7 @@ it('distinguishes exact keys from prefixes and unusual UTF-8 names with real Lev
 it('keeps pending rooms invisible, reserves their capacity, and publishes only after durable save', async () => {
   const dir = temp(); fs.writeFileSync(path.join(dir, 'rooms.json'), '{}')
   const observed = await run(dir, `
-const a = create('local/a'); await until(() => release);
+const a = create('local/a'); await until('registry save held', () => release);
 const during = await list(), diskDuring = registry(), excess = await create('local/b');
 release(); const opened = await a, after = await list(), diskAfter = registry();
 return { during, diskDuring, excess, opened, after, diskAfter };`, `
@@ -126,11 +126,14 @@ it('keeps a concurrent close and second create when an earlier registration save
   const dir = temp(), old = 'local/old'
   fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify({ [old]: { at: Date.now(), branches: [], mode: 'repo', migratedAt: Date.now() } }))
   const observed = await run(dir, `
-const a = create('local/a'); await until(() => release);
-const closed = close('local/old'), b = create('local/b'); await sleep(30);
+const a = create('local/a'); await until('registry save held', () => release);
+const closed = close('local/old'), b = create('local/b');
+await until('second create exact-key probes completed', () => secondProbe);
 release(); const responses = await Promise.all([a, closed, b]);
 return { responses, keys: Object.keys(registry()).sort(), listing: await list() };`, `
-let release, first = true;
+let release, first = true, secondProbe = false;
+const LevelUP = require('levelup'), read = LevelUP.prototype.createReadStream;
+LevelUP.prototype.createReadStream = function(opts) { const stream = read.call(this, opts); if (opts?.gte?.[0] === 'v1' && opts.gte[1] === 'local/b' && opts.gte.length === 2) stream.on('end', () => { secondProbe = true }); return stream };
 FileStore.prototype.saveRooms = async function(all) { if (first) { first = false; await new Promise(resolve => { release = resolve }) }; return save.call(this, all) };`)
   expect(observed.responses.map((r: { status: number }) => r.status)).toEqual([201, 200, 201])
   expect(observed.keys).toEqual(['local/a', 'local/b'])
@@ -141,9 +144,14 @@ it('does not resurrect failed registrations or erase a queued success when the o
   const dir = temp(); fs.writeFileSync(path.join(dir, 'rooms.json'), '{}')
   const observed = await run(dir, `
 const responses = await Promise.all([create('local/fail'), create('local/good')]);
-await sleep(1250); return { responses, saves, keys: Object.keys(registry()), listing: await list() };`, `
-let saves = 0;
-FileStore.prototype.saveRooms = async function(all) { if (++saves === 1) throw new Error('first save failed'); return save.call(this, all) };`)
+await until('one-second registry retry scheduled', () => retry); retry();
+await until('registry retry persisted', () => saved === 2);
+return { responses, saves, keys: Object.keys(registry()), listing: await list() };`, `
+let saves = 0, saved = 0, retry;
+// Drive the production one-second retry timer without advancing wall time or LevelDB IO.
+const schedule = globalThis.setTimeout;
+globalThis.setTimeout = function(callback, ms, ...args) { if (ms === 1000) { retry = () => callback(...args); return { unref() {} } }; return schedule(callback, ms, ...args) };
+FileStore.prototype.saveRooms = async function(all) { if (++saves === 1) throw new Error('first save failed'); await save.call(this, all); saved++ };`)
   expect(observed.responses.map((r: { status: number }) => r.status)).toEqual([500, 201])
   expect(observed.saves).toBe(3)
   expect(observed.keys).toEqual(['local/good'])
@@ -153,9 +161,10 @@ FileStore.prototype.saveRooms = async function(all) { if (++saves === 1) throw n
 it('holds a first connection until registration is durable, then admits it', async () => {
   const dir = temp(); fs.writeFileSync(path.join(dir, 'rooms.json'), '{}')
   const observed = await run(dir, `
-const opening = create('local/pending'); await until(() => release);
+const opening = create('local/pending'); await until('registry save held', () => release);
 let connection; const joining = connect('local/pending').then(result => { connection = result; return result });
-await sleep(40); const before = connection ?? null, diskBefore = registry();
+// A blocked connection has no completion event; observe non-admission for this named window.
+const NON_ADMISSION_WINDOW_MS = 40; await sleep(NON_ADMISSION_WINDOW_MS); const before = connection ?? null, diskBefore = registry();
 release(); return { before, diskBefore, opening: await opening, joining: await joining, diskAfter: registry() };`, `
 let release, first = true;
 FileStore.prototype.saveRooms = async function(all) { if (first) { first = false; await new Promise(resolve => { release = resolve }) }; return save.call(this, all) };`)
@@ -169,7 +178,7 @@ FileStore.prototype.saveRooms = async function(all) { if (first) { first = false
 it('opens and connects memory-only rooms, and reopens their existing in-memory document', async () => {
   const observed = await run(temp(), `
 const opened = await create('local/memory'), joined = await connect('local/memory');
-await sleep(40); const reopened = await create('local/memory'); return { opened, joined, reopened };`, '', { YPERSISTENCE: undefined })
+const reopened = await create('local/memory'); return { opened, joined, reopened };`, '', { YPERSISTENCE: undefined })
   expect([observed.opened.status, observed.joined.status, observed.reopened.status], observed.log).toEqual([201, 101, 200])
 })
 
@@ -232,7 +241,7 @@ it('initializes from loaded state without any exact-key probe at first persisten
   const observed = await run(dir, `
 const opened = await create(${JSON.stringify(name)}), before = fs.readFileSync(pathToRegistry, 'utf8');
 failProbe = true;
-const accepted = await connect(${JSON.stringify(name)}); await sleep(50);
+const accepted = await connect(${JSON.stringify(name)}); await persisted(${JSON.stringify(name)});
 return { opened, accepted, valueReads, before, after: fs.readFileSync(pathToRegistry, 'utf8'), probes };`, `
 let failProbe = false, valueReads = 0, probes = 0;
 const LevelUP = require('levelup'), read = LevelUP.prototype.createReadStream;
@@ -298,7 +307,7 @@ it.each(['close', 'expiry'])('refuses reconnect after %s removed the room, then 
   }
   const observed = await run(dir, `
 const room = ${JSON.stringify(name)};
-${removal === 'close' ? 'await create(room); await connect(room); await close(room);' : 'await sleep(60);'}
+${removal === 'close' ? 'await create(room); await connect(room); await close(room);' : "await until('expired room removed from registry', () => !registry()[room]);"}
 const refused = await connect(room), disk = registry();
 const opened = await create(room), accepted = await connect(room);
 await persisted(room); return { refused, disk, opened, accepted };`, '', { ROOM_IDLE_DAYS: removal === 'expiry' ? '30' : '0' })

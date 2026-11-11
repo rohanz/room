@@ -13,6 +13,8 @@ import http from 'node:http'
 
 /** A stand-in for a clone's git common dir: the relay only needs a directory for its discovery file. */
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-'))
+// Withheld frames have no completion signal before sync/undrain.
+const NO_BROADCAST_WINDOW_MS = 150
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 const until = async (f: () => boolean | Promise<boolean>, ms = 5000) => { const t = Date.now(); while (!(await f())) { if (Date.now() - t > ms) throw new Error('timeout'); await wait(50) } }
 
@@ -150,14 +152,14 @@ it.each([false, true])('withholds broadcasts until the first sync reply (held wh
     await until(() => frames.length === 1)
     expect(decoding.peekVarUint(decoding.createDecoder(frames[0]))).toBe(0)
     doc.getMap('meta').set('missed', 'covered by reply')
-    await wait(150)
+    await wait(NO_BROADCAST_WINDOW_MS)
     expect(frames).toHaveLength(1)
     if (draining) relay.setDraining(true)
     const enc = encoding.createEncoder()
     encoding.writeVarUint(enc, 0); sync.writeSyncStep1(enc, replica)
     socket.send(encoding.toUint8Array(enc))
     if (draining) {
-      await wait(150)
+      await wait(NO_BROADCAST_WINDOW_MS)
       expect(frames).toHaveLength(1)
       relay.setDraining(false)
     }

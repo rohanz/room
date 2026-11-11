@@ -39,10 +39,12 @@ require('node:net').Server.prototype.listen = function (...args) { const done = 
 const log = console.log;
 const finish = () => { log('PROBE ' + JSON.stringify({ valueReads, keyReads, completed })); process.exit(0); };
 const timer = setTimeout(finish, 10000);
+// Startup exposes no end-of-background-work event; watch for forbidden scans in this window.
+const NO_STARTUP_SCAN_WINDOW_MS = 2000;
 console.log = (...args) => {
   log(...args);
   if (String(args[0]).startsWith('room server listening')) {
-    completed = true; clearTimeout(timer); setTimeout(finish, 2000);
+    completed = true; clearTimeout(timer); setTimeout(finish, NO_STARTUP_SCAN_WINDOW_MS);
   }
 };
 `)

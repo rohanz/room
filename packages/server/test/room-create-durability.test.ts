@@ -176,7 +176,11 @@ it('expires an idle registered room with no document after restarting', async ()
     at: now - 40 * 86400000, mode: 'repo', branches: [], migratedAt: now - 40 * 86400000,
   } }))
   const result = await probe(dir, `
-await new Promise(resolve => setTimeout(resolve, 50));
+const deadline = Date.now() + 5000;
+while (JSON.parse(require('node:fs').readFileSync(${JSON.stringify(path.join(dir, 'rooms.json'))}, 'utf8'))[${JSON.stringify(name)}]) {
+  if (Date.now() > deadline) throw new Error('timed out waiting for expired room registry removal');
+  await new Promise(resolve => setTimeout(resolve, 5));
+}
 return [await request(server, 'GET', '/rooms?schema=2')];`, '', { ROOM_IDLE_DAYS: '30' })
   expect(result.result[0].status).toBe(200)
   expect(result.result[0].body).not.toContain(name)
