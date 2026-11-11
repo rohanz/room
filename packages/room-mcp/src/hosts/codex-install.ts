@@ -98,7 +98,11 @@ function selectionEvidence(home: string, env: NodeJS.ProcessEnv): string | undef
 }
 
 /** Resolve the installed entry selected by Codex, then authenticate its descriptor against its executable. */
-export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env): WorkerContract | undefined {
+export type ContractFailure = 'listing-timeout' | 'listing-unavailable' | 'listing-invalid' | 'verification'
+// Bound synchronous work on the MCP tool path. A cold CLI can exceed this; run its listing
+// outside Room to finish initialization, then retry. Never treat a timeout as a bad install.
+const LISTING_TIMEOUT_MS = 2500
+export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env, failed?: (reason: ContractFailure) => void): WorkerContract | undefined {
   const home = path.resolve(env.CODEX_HOME || path.join(os.homedir(), '.codex'))
   const key = JSON.stringify([home, env.PATH, process.cwd()])
   const selection = selectionEvidence(home, env)
@@ -107,22 +111,32 @@ export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env)
       return structuredClone(verifiedContract.contract)
   } catch { /* Missing or unreadable evidence invalidates the verification too. */ }
   verifiedContract = undefined
+  let json: string
   try {
-    const listing = JSON.parse(execFileSync('codex', ['plugin', 'list', '--json'], { env, encoding: 'utf8', timeout: 2500, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })) as { installed?: { pluginId?: string; version?: string; enabled?: boolean }[] }
+    json = execFileSync('codex', ['plugin', 'list', '--json'], { env, encoding: 'utf8', timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch (error) {
+    failed?.((error as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? 'listing-timeout' : 'listing-unavailable')
+    return undefined
+  }
+  let stage: ContractFailure = 'listing-invalid'
+  const reject = () => { failed?.(stage); return undefined }
+  try {
+    const listing = JSON.parse(json) as { installed?: { pluginId?: string; version?: string; enabled?: boolean }[] }
+    stage = 'verification'
     const entries = listing.installed?.filter(row => row.pluginId === 'room@room' && row.enabled !== false)
-    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return undefined
+    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return reject()
     const root = path.join(home, 'plugins', 'cache', 'room', 'room', entries[0].version, 'server')
     const evidence = contractEvidence(root)
     const raw = fs.readFileSync(path.join(root, 'compat.json'), 'utf8')
     const descriptor = JSON.parse(raw)
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return undefined
+    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return reject()
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
-    if (contractEvidence(root) !== evidence) return undefined
+    if (contractEvidence(root) !== evidence) return reject()
     const after = selectionEvidence(home, env)
-    if (selection !== undefined && after !== selection) return undefined
+    if (selection !== undefined && after !== selection) return reject()
     if (selection !== undefined) verifiedContract = { key, root, evidence, selection, contract }
     return structuredClone(contract)
-  } catch { return undefined }
+  } catch { return reject() }
 }
 
 /** Doctor intentionally uses its own permissive first-row listing evidence. Contract verification above

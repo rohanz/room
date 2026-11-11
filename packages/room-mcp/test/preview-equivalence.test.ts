@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { manifestKey } from '@room/shared'
 import { publishFixture } from './fixtures/manifest.js'
 import { realGitCommonDir } from '@room/roomd'
-import { collectedTreeEvidence, fingerprintTree, beginPreviewAttempt } from '../src/preview-evidence.js'
+import { collectedTreeEvidence, fingerprintTree, beginPreviewAttempt, validateFingerprintSync } from '../src/preview-evidence.js'
 import * as previewEvidence from '../src/preview-evidence.js'
 import { withGuard } from '../src/leases.js'
 import { collectLocalState } from '../src/local-state-gc.js'
@@ -462,6 +462,24 @@ describe('single preview evidence record', () => {
     put(lead, 'original/file.txt', 'bytes\n')
     fs.symlinkSync('original', path.join(lead, 'alias'))
     await expect(fingerprintTree(lead, ['alias/file.txt'])).rejects.toThrow('linked ancestor')
+  })
+  it.skipIf(process.platform === 'win32')('rechecks parent identity on each synchronous gate even when file identities are unchanged', async () => {
+    const paths = ['parent/a.txt', 'parent/b.txt']
+    for (const name of paths) put(lead, name, 'bytes\n')
+    const tree = await fingerprintTree(lead, paths)
+    validateFingerprintSync(tree, paths)
+    const before = paths.map(name => fs.lstatSync(path.join(lead, name)).ino)
+    fs.renameSync(path.join(lead, 'parent'), path.join(lead, 'original-parent'))
+    fs.symlinkSync('original-parent', path.join(lead, 'parent'))
+    expect(paths.map(name => fs.lstatSync(path.join(lead, name)).ino)).toEqual(before)
+    expect(() => validateFingerprintSync(tree, paths)).toThrow('linked ancestor')
+  })
+  it('still checks every sibling file in the synchronous gate', async () => {
+    const paths = ['parent/a.txt', 'parent/b.txt']
+    for (const name of paths) put(lead, name, 'bytes\n')
+    const tree = await fingerprintTree(lead, paths)
+    put(lead, paths[1]!, 'changed\n')
+    expect(() => validateFingerprintSync(tree, paths)).toThrow('file changed during fingerprint: parent/b.txt')
   })
   it.skipIf(process.platform === 'win32')('hashes symlink targets without following them', async () => {
     fs.symlinkSync('first-missing-target', path.join(lead, 'link'))

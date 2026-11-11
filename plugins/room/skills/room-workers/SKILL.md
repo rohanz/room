@@ -122,6 +122,7 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
    - A `dir=` retry in a failed worker's checkout previews and collects normally and detaches
      without touching the owner; discard the owner after the retry and its other users finish.
 7. Validate and finish. Whoever integrates owns full relevant validation, including the CI checks the change requires.
+   Run the full suite once, after the final collect; between collects, run the focused checks the collected change needs.
    Reuse a complete passing preview only for identical preview inputs, command and relevant environment.
    Validate the collected tree unless collect reports it identical to the most recent preview of this checkout, which passed the same command you would run.
    The report covers files and command only: Git state (HEAD, refs, index), environment and ignored files are not compared.

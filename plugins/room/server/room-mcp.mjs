@@ -58776,7 +58776,8 @@ function selectionEvidence(home, env) {
     return void 0;
   }
 }
-function installedCodexRoomContract(env = process.env) {
+var LISTING_TIMEOUT_MS = 2500;
+function installedCodexRoomContract(env = process.env, failed) {
   const home = path58.resolve(env.CODEX_HOME || path58.join(os14.homedir(), ".codex"));
   const key2 = JSON.stringify([home, env.PATH, process.cwd()]);
   const selection = selectionEvidence(home, env);
@@ -58786,23 +58787,36 @@ function installedCodexRoomContract(env = process.env) {
   } catch {
   }
   verifiedContract = void 0;
+  let json;
   try {
-    const listing = JSON.parse(execFileSync10("codex", ["plugin", "list", "--json"], { env, encoding: "utf8", timeout: 2500, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] }));
+    json = execFileSync10("codex", ["plugin", "list", "--json"], { env, encoding: "utf8", timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  } catch (error2) {
+    failed?.(error2.code === "ETIMEDOUT" ? "listing-timeout" : "listing-unavailable");
+    return void 0;
+  }
+  let stage = "listing-invalid";
+  const reject = () => {
+    failed?.(stage);
+    return void 0;
+  };
+  try {
+    const listing = JSON.parse(json);
+    stage = "verification";
     const entries = listing.installed?.filter((row) => row.pluginId === "room@room" && row.enabled !== false);
-    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return void 0;
+    if (entries?.length !== 1 || !entries[0].version || !/^[A-Za-z0-9.+_-]+$/.test(entries[0].version)) return reject();
     const root = path58.join(home, "plugins", "cache", "room", "room", entries[0].version, "server");
     const evidence = contractEvidence(root);
     const raw = fs58.readFileSync(path58.join(root, "compat.json"), "utf8");
     const descriptor = JSON.parse(raw);
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash21("sha256").update(fs58.readFileSync(path58.join(root, "room-mcp.mjs"))).digest("hex")) return void 0;
+    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash21("sha256").update(fs58.readFileSync(path58.join(root, "room-mcp.mjs"))).digest("hex")) return reject();
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
-    if (contractEvidence(root) !== evidence) return void 0;
+    if (contractEvidence(root) !== evidence) return reject();
     const after = selectionEvidence(home, env);
-    if (selection !== void 0 && after !== selection) return void 0;
+    if (selection !== void 0 && after !== selection) return reject();
     if (selection !== void 0) verifiedContract = { key: key2, root, evidence, selection, contract };
     return structuredClone(contract);
   } catch {
-    return void 0;
+    return reject();
   }
 }
 function decodeCodexDoctorListing(listing) {
@@ -58839,8 +58853,14 @@ function createCodexInstall(env = process.env, io = defaultInstallIO) {
 }
 
 // packages/room-mcp/src/hosts/codex-worker-warning.ts
-function codexRoomCompatibilityMismatch(lead = { release: plugin_default.version, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA }, installed = void 0, diagnostic) {
-  if (arguments.length < 2) installed = installedCodexRoomContract();
+function codexRoomCompatibilityMismatch(lead = { release: plugin_default.version, compat: CURRENT_COMPAT, workerRecordSchema: WORKER_RECORD_SCHEMA }, installed = void 0, diagnostic, failure) {
+  if (arguments.length < 2) installed = installedCodexRoomContract(process.env, (reason2) => {
+    failure = reason2;
+  });
+  if (!installed && failure === "listing-timeout") return "Codex plugin listing timed out after 2500 ms; run `codex plugin list --json` in a terminal and let it finish, then retry room_spawn. The installed Room copy has not been checked";
+  if (!installed && failure === "listing-unavailable") return "Codex plugin listing could not run successfully; check that codex is on Room's PATH and run `codex plugin list --json` in a terminal to diagnose the CLI failure, then retry room_spawn";
+  if (!installed && failure === "listing-invalid") return "Codex plugin listing returned invalid JSON; run `codex plugin list --json` in a terminal and resolve the CLI output failure, then retry room_spawn";
+  if (!installed && failure === "verification") return "Codex's installed copy failed verification (enabled selection, descriptor, executable digest or changing evidence); update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker";
   if (!installed) return "Codex's installed Room executable contract is unverified; update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker";
   const selected = selectContract(installed.compat, lead.compat, { activeSchema: 2 });
   if (selected.ok && installed.workerRecordSchema === lead.workerRecordSchema) {
@@ -58852,7 +58872,13 @@ function codexRoomCompatibilityMismatch(lead = { release: plugin_default.version
   return `Codex has Room ${installed.release}, but this lead runs Room ${lead.release}: ${reason}; ${newer ? "reconnect Room with /mcp or restart the session to load the installed Room contract" : "update Room for Codex to a compatible protocol and worker record schema"}`;
 }
 function workerContractWarning(host2, diagnostic) {
-  if (host2 === "codex" && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) return codexRoomCompatibilityMismatch(void 0, installedCodexRoomContract(), diagnostic);
+  if (host2 === "codex" && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
+    let failure;
+    const installed = installedCodexRoomContract(process.env, (reason) => {
+      failure = reason;
+    });
+    return codexRoomCompatibilityMismatch(void 0, installed, diagnostic, failure);
+  }
 }
 
 // packages/room-mcp/src/tools/workers.ts
@@ -63000,6 +63026,7 @@ init_worker_state();
 init_repository();
 init_registry();
 init_worker_registry();
+init_worker_store();
 init_timing();
 var timed2 = (phase, work) => currentToolTiming()?.phase(phase, work) ?? Promise.resolve().then(work);
 var defs6 = [
@@ -63201,8 +63228,14 @@ function handlers6(state) {
       };
       const withWorkers = async () => {
         if (!cur) return void 0;
-        const mine = await localWorkers(cur.dir, (record2) => record2.lead.participant === cur.me.name);
+        const mine = requireWorkerInventory(await (await openWorkerReader(cur.dir)).list()).filter((record2) => record2.lead.participant === cur.me.name && !["retiring", "retired", "abandoned"].includes(record2.phase));
         if (!mine.length) return void 0;
+        const special = mine.filter((w) => w.collectPending || w.collectedKeep || ["collecting", "discarding"].includes(w.phase));
+        if (special.length) return [
+          ...special.map((w) => ["collecting", "discarding"].includes(w.phase) ? `${w.tag}: collection or discard is in progress; wait for it to finish, or retry the interrupted operation with room_collect` : w.collectPending ? `${w.tag}: already collected; cleanup pending (${w.collectPending.reason}). Resolve that blocker, then retry room_collect to finish cleanup, or explicitly discard it` : `${w.tag}: kept for follow-ups; finish with room_collect without keep=true, or explicitly discard it`),
+          ...mine.length > special.length ? ["Other workers still need collection or discard."] : [],
+          `Finish these workers before moving rooms.${stay}`
+        ].join("\n");
         return `You have ${mine.length} worker(s) (${mine.map((w) => w.tag).join(", ")}). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${stay}`;
       };
       const blocked = await withWorkers();

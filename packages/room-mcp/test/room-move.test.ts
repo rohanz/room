@@ -13,6 +13,7 @@ import { createTools } from '../src/tools.js'
 import { readChoice, writeChoice } from '../src/choice.js'
 import { resolveConfig } from '../src/config.js'
 import { seedRegistryWorker } from './registry-fixture.js'
+import { registryForDir } from '../src/worker-registry.js'
 
 let dir: string
 const dispose: (() => void)[] = []
@@ -214,6 +215,33 @@ it('refuses to move while a finished worker is not yet collected, before any pre
   expect(reply).toBe(`You have 1 worker(s) (done). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${STILL()}`)
   expect(vi.mocked(fetch)).not.toHaveBeenCalled()
   expect(t.events).toEqual([])
+})
+
+it.each(['pending', 'collecting', 'kept', 'retiring', 'retired', 'abandoned'] as const)('explains the move gate for %s records', async phase => {
+  const server = teamServer(`phase-${phase}.example`)
+  const t = setup(async () => fakeSession('example/repo', false))
+  await recordWorker('phase', true)
+  const registry = await registryForDir(dir)
+  const record = (await registry.reserved('phase'))!
+  await mutateWorkerFixture(registry, record.id, old => ({ ...old, seq: old.seq + 1,
+    ...(phase === 'pending' ? { collectPending: { at: Date.now(), reason: 'nested workers remain: child' } }
+      : phase === 'kept' ? { collectedKeep: true } : { phase }),
+  }))
+  const reply = await t.tools.call('room_join', { where: server, room: 'example/repo' })
+  if (phase === 'pending') {
+    expect(reply).toContain('already collected; cleanup pending')
+    expect(reply).toContain('nested workers remain: child')
+    expect(reply).not.toContain('Collect or discard them first')
+  } else if (phase === 'collecting') {
+    expect(reply).toContain('collection or discard is in progress')
+    expect(reply).not.toContain('Collect or discard them first')
+  } else if (phase === 'kept') {
+    expect(reply).toContain('kept for follow-ups')
+    expect(reply).toContain('without keep=true')
+  } else {
+    expect(reply).toContain('moved from')
+  }
+  if (['pending', 'collecting', 'kept'].includes(phase)) expect(t.events).toEqual([])
 })
 
 it('a rollback restores the exact identity: unpinned stays unpinned, and an untagged name stays untagged', async () => {

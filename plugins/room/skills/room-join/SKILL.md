@@ -34,7 +34,11 @@ push-only sync daemon, and returns who is here, their scopes, open claims, and t
 view URL. A local room needs no name and no origin remote. Pass `room` for a local join
 only when the user asks for a separate, named room; it becomes `local/<name>`.
 Re-joining the same room prints its current state. Moving rooms is refused
-while any worker remains uncollected; collect or discard them first. Room checks
+while any worker remains uncollected, kept for follow-ups, or pending cleanup.
+Collect or discard uncollected workers; finish kept workers without `keep=true`.
+For already-collected workers, resolve the reported cleanup blocker and retry
+`room_collect` to finish cleanup, or explicitly discard them. Wait for an in-progress
+collection/discard, or retry it if interrupted. Retiring and retired records do not block a move. Room checks
 the target before leaving and rejoins the previous room if the move fails.
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
 When your human asks you to push, push your current branch; Room tells teammates on that branch to catch up. Run git pull --ff-only --autostash to catch up on a shared branch. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.

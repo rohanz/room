@@ -50,6 +50,33 @@ let sweepTime = Date.now()
 function nextSweep() { vi.spyOn(Date, 'now').mockReturnValue(sweepTime += 3_600_001) }
 
 describe('clone-wide cleanup after the original lead is gone', () => {
+  it('clears a legacy lead kept for nested workers in one sweep after the last child cleanup', async () => {
+    nextSweep()
+    const { dir, git } = repo(), r = registry(dir)
+    const parent = await prepareWorktree(dir, 'w', 'departed-lead')
+    const w = { ...worker(parent.dir), lead: 'departed-lead', base: parent.base }
+    const nested = await prepareWorktree(parent.dir, 'child', w.name)
+    const child = { ...worker(nested.dir), id: 'child', tag: 'child', branch: 'room/child', name: 'lead+w+child', lead: w.name, base: nested.base }
+    const workers = await registerWorkers(r.s, [w, child]), id = fixtureId(w)
+    const archive = { ...await workers.archiveOf((await workers.read(id))!, { summary: 'done', disposition: 'collected' }),
+      keptWorktree: w.dir, keptReason: 'nested workers remain: child' }
+    await workers.beginRetirement(id, archive, { keptWorktree: w.dir })
+    await workers.finishCleanup(id, r.s.roomName)
+    r.room.doc.getArray('retiredWorkers').push([archive])
+    await workers.deferCollectCleanup(fixtureId(child), 'cleanup incomplete')
+    // Neither the original lead nor its nested lead is held. The clone-wide sweep
+    // must clean the child first, then revisit the legacy parent in this same pass.
+    expect(r.s.me.name).not.toBe(w.lead)
+    expect(r.s.me.name).not.toBe(child.lead)
+    await r.rooms.autoRetire()
+    expect((await workers.read(fixtureId(child)))?.phase).toBe('retired')
+    expect((await workers.read(id))?.keptWorktree).toBeUndefined()
+    expect(r.room.retiredWorkers().find(entry => entry.id === id)?.keptWorktree).toBeUndefined()
+    expect(existsSync(w.dir)).toBe(false)
+    expect(git('branch', '--list', 'room/w', 'room/child')).toBe('')
+    r.close()
+  })
+
   it.each(['recorded', 'missing'])('keeps a retired legacy checkout while its host still runs (start time %s)', async identityState => {
     nextSweep()
     const { dir } = repo(), r = registry(dir)

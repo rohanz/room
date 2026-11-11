@@ -9,6 +9,30 @@ const { listing } = vi.hoisted(() => ({ listing: vi.fn() }))
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), execFileSync: listing }))
 import { installedCodexRoomContract } from '../src/hosts/codex-install.js'
 const dirs: string[] = []
+it.each([
+  ['ETIMEDOUT', /listing timed out.*run.*codex plugin list --json.*retry/i],
+  ['ENOENT', /listing could not run.*codex.*PATH/i],
+])('explains listing failure %s without prescribing an update', async (code, expected) => {
+  const { workerContractWarning } = await import('../src/hosts/codex-worker-warning.js')
+  vi.stubEnv('ROOM_HOST', 'claude')
+  listing.mockImplementation(() => { throw Object.assign(new Error('listing failed'), { code }) })
+  try {
+    const warning = workerContractWarning('codex')
+    expect(warning).toMatch(expected)
+    expect(warning).not.toMatch(/update Room|reconnect Room/)
+  } finally { vi.unstubAllEnvs() }
+})
+
+it('distinguishes a failed executable verification from listing failure', async () => {
+  const { workerContractWarning } = await import('../src/hosts/codex-worker-warning.js')
+  const { dir } = verifiedFixture()
+  writeFileSync(join(dir, 'plugins/cache/room/room/0.17.40/server/room-mcp.mjs'), 'tampered')
+  vi.stubEnv('ROOM_HOST', 'claude')
+  vi.stubEnv('CODEX_HOME', dir)
+  try {
+    expect(workerContractWarning('codex')).toMatch(/installed copy failed verification.*update Room.*reconnect Room/i)
+  } finally { vi.unstubAllEnvs() }
+})
 function selectionEnv(dir: string): NodeJS.ProcessEnv {
   return { CODEX_HOME: dir, ProgramData: join(dir, 'system') }
 }

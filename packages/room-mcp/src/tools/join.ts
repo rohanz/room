@@ -21,7 +21,8 @@ import { exportArchiveLedger, exportRoomLedger } from '../prs.js'
 import { decideLeave, workerRealState } from '../worker-state.js'
 import { joinableRoot, sameFolder } from '../repository.js'
 import { toolCallAborted } from '../registry.js'
-import { localWorkers } from '../worker-registry.js'
+import { localWorkers, openWorkerReader } from '../worker-registry.js'
+import { requireWorkerInventory } from '../worker-store.js'
 import { currentToolTiming } from '../timing.js'
 
 const timed = <T>(phase: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(phase, work) ?? Promise.resolve().then(work)
@@ -212,8 +213,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const withWorkers = async (): Promise<string | undefined> => {
         if (!cur) return undefined
-        const mine = (await localWorkers(cur.dir, record => record.lead.participant === cur.me.name))
+        const mine = requireWorkerInventory(await (await openWorkerReader(cur.dir)).list()).filter(record => record.lead.participant === cur.me.name && !['retiring', 'retired', 'abandoned'].includes(record.phase))
         if (!mine.length) return undefined
+        const special = mine.filter(w => w.collectPending || w.collectedKeep || ['collecting', 'discarding'].includes(w.phase))
+        if (special.length) return [
+          ...special.map(w => ['collecting', 'discarding'].includes(w.phase)
+            ? `${w.tag}: collection or discard is in progress; wait for it to finish, or retry the interrupted operation with room_collect`
+            : w.collectPending
+              ? `${w.tag}: already collected; cleanup pending (${w.collectPending.reason}). Resolve that blocker, then retry room_collect to finish cleanup, or explicitly discard it`
+              : `${w.tag}: kept for follow-ups; finish with room_collect without keep=true, or explicitly discard it`),
+          ...(mine.length > special.length ? ['Other workers still need collection or discard.'] : []),
+          `Finish these workers before moving rooms.${stay}`,
+        ].join('\n')
         return `You have ${mine.length} worker(s) (${mine.map(w => w.tag).join(', ')}). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${stay}`
       }
       const blocked = await withWorkers()
