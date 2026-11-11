@@ -67577,6 +67577,28 @@ init_src();
 var CHOOSES_ROOM = /* @__PURE__ */ new Set(["room_join", "room_create", "room_leave", "room_close"]);
 var WORKER_OPS = /* @__PURE__ */ new Set(["room_spawn", "room_send", "room_collect", "room_review"]);
 var FENCED = /* @__PURE__ */ new Set(["room_scope", "room_claim", "room_release", "room_done"]);
+var TRIMMED_SELECTORS = /* @__PURE__ */ new Map([
+  ["room_join", ["room", "name", "where", "server"]],
+  ["room_create", ["room", "name", "where", "server"]],
+  ["room_login", ["server", "credentials", "provider"]],
+  ["room_export", ["room"]],
+  ["room_read", ["person"]],
+  ["room_impact", ["symbol"]],
+  ["room_claim", ["symbol"]],
+  ["room_preview_merge", ["person"]],
+  ["room_send", ["to", "inReplyTo"]],
+  ["room_wait", ["claimId", "questionId"]],
+  ["room_spawn", ["model"]]
+]);
+var LITERAL_PATH_SELECTORS = /* @__PURE__ */ new Map([
+  ["room_join", ["dir"]],
+  ["room_create", ["dir"]],
+  ["room_spawn", ["dir"]],
+  ["room_export", ["path"]],
+  ["room_state", ["path"]],
+  ["room_read", ["path"]],
+  ["room_impact", ["path"]]
+]);
 var ALL_DEFS = [...defs6, ...defs5, ...defs2, ...defs3, ...defs8, ...defs4, ...defs10, ...defs9, ...defs7, ...defs];
 var DEF_ORDER = ["room_login", "room_create", "room_join", "room_leave", "room_close", "room_export", "room_scope", "room_state", "room_open", "room_read", "room_claim", "room_release", "room_send", "room_wait", "room_done", "room_pr_note", "room_impact", "room_preview_merge", "room_share", "room_spawn", "room_collect", "room_review"];
 var DEFS = DEF_ORDER.map((name) => ALL_DEFS.find((d) => d.name === name));
@@ -67751,6 +67773,10 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       return { batch, items, notices, more: more + moreNotices };
     },
     async call(name, args2, signal, handoff2) {
+      const blankName = TRIMMED_SELECTORS.get(name)?.find((key2) => typeof args2?.[key2] === "string" && !args2[key2].trim());
+      const blankPath = LITERAL_PATH_SELECTORS.get(name)?.find((key2) => args2?.[key2] === "");
+      const empty2 = blankName ?? blankPath;
+      if (empty2) return `error: ${empty2} was empty; omit ${empty2} to use the default`;
       if (name === "room_state" && args2?.check === true) {
         const body = await handlers11.room_state(args2);
         const batch = ledger2.open("reply");

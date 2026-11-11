@@ -80,6 +80,34 @@ const WORKER_OPS = new Set(['room_spawn', 'room_send', 'room_collect', 'room_rev
 /** Writes fenced by the name lease: refused while coordination is paused (hub §7). Posts are refused by the hub client. */
 const FENCED = new Set(['room_scope', 'room_claim', 'room_release', 'room_done'])
 
+/** Names and selectors already trimmed by configuration reject whitespace too.
+ * credentials is intentionally here: its resolver trims it before choosing a file. */
+const TRIMMED_SELECTORS = new Map<string, readonly string[]>([
+  ['room_join', ['room', 'name', 'where', 'server']],
+  ['room_create', ['room', 'name', 'where', 'server']],
+  ['room_login', ['server', 'credentials', 'provider']],
+  ['room_export', ['room']],
+  ['room_read', ['person']],
+  ['room_impact', ['symbol']],
+  ['room_claim', ['symbol']],
+  ['room_preview_merge', ['person']],
+  ['room_send', ['to', 'inReplyTo']],
+  ['room_wait', ['claimId', 'questionId']],
+  ['room_spawn', ['model']],
+])
+
+/** These paths are literal: only "" chooses a fallback. A whitespace-only filename
+ * is valid and must reach the handler unchanged. Applies only to tool arguments. */
+const LITERAL_PATH_SELECTORS = new Map<string, readonly string[]>([
+  ['room_join', ['dir']],
+  ['room_create', ['dir']],
+  ['room_spawn', ['dir']],
+  ['room_export', ['path']],
+  ['room_state', ['path']],
+  ['room_read', ['path']],
+  ['room_impact', ['path']],
+])
+
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...reviewDefs, ...prDefs, ...shareDefs]
 const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect', 'room_review']
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
@@ -234,6 +262,10 @@ export function createTools(ctx: ToolCtx): Tools {
       return { batch, items, notices, more: more + moreNotices }
     },
     async call(name, args, signal, handoff) {
+      const blankName = TRIMMED_SELECTORS.get(name)?.find(key => typeof args?.[key] === 'string' && !args[key].trim())
+      const blankPath = LITERAL_PATH_SELECTORS.get(name)?.find(key => args?.[key] === '')
+      const empty = blankName ?? blankPath
+      if (empty) return `error: ${empty} was empty; omit ${empty} to use the default`
       // Setup checks must work while auto-join, rebinding, or room sync is stuck.
       // They do not reserve owed messages or touch the current room. Already-prepared
       // local notices can still reach this first reply, without waiting for startup I/O.
