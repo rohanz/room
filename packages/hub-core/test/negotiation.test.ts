@@ -19,7 +19,7 @@ const selected = (client = ad(), server = ad(), p = policy) => {
 
 describe('baseline and advertisement', () => {
   it('keeps independently versioned axes and only implemented capability versions', () => {
-    expect(CURRENT_COMPAT).toEqual(LEGACY_COMPAT)
+    expect(CURRENT_COMPAT).toEqual({ ...LEGACY_COMPAT, capabilities: { ...LEGACY_COMPAT.capabilities, 'room.notice-lifecycle': [1] } })
     expect(CURRENT_COMPAT.hub).toEqual({ min: 1, max: 1 })
     expect(CURRENT_COMPAT.schemas).toEqual({ read: [2], write: [2] })
     expect(CAPABILITY_REGISTRY['room.worker-handover'].versions).toEqual({})
@@ -32,7 +32,8 @@ describe('baseline and advertisement', () => {
   ])('%s → %s selects exact baseline', (c, s) => {
     const client = c === 'N' ? ad({ release: 'diagnostic-new' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
     const server = s === 'N' ? ad({ release: 'another-build' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
-    expect(selected(client, server)).toEqual({ bootstrap: 1, hub: 1, schema: 2, capabilities: { 'room.generation': 1, 'room.ledger': 1, 'room.manifest': 1 } })
+    expect(selected(client, server)).toEqual({ bootstrap: 1, hub: 1, schema: 2, capabilities: { 'room.generation': 1, 'room.ledger': 1, 'room.manifest': 1,
+      ...(c === 'N' && s === 'N' ? { 'room.notice-lifecycle': 1 } : {}) } })
   })
   it('pins exact baseline identities; these tables are contract doubles, not archived process evidence', () => {
     expect(BASELINE_FIXTURES.map(f => f.release)).toEqual(['0.17.0', '0.17.32'])

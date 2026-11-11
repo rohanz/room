@@ -645,7 +645,8 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const holder: HolderIn = { sessionId, pid: token.pid, startTime: token.startTime, executable: token.executable, ...(workerId ? { workerId } : {}) }
   const room = decodeURIComponent(new URL(options.room).pathname.replace(/^\/+/, ''))
   const key = roomKey(options.localKey ? 'local' : new URL(options.room).origin, room)
-  const hub = new HubClient({ transport: hubTransport(probe), client: 'room-mcp', sessionId, local: !!options.localKey })
+  const hub = new HubClient({ transport: hubTransport(probe), client: 'room-mcp', sessionId, local: !!options.localKey,
+    noticeCapability: () => !selected?.legacy && selected?.capabilities['room.notice-lifecycle'] === 1 })
   let chosen: ChosenName
   try {
     if (compatibilityRefusal) throw new RoomdError(compatibilityRefusal, 2)

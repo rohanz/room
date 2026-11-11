@@ -2,7 +2,7 @@ import type { WebsocketProvider } from 'y-websocket'
 import {
   decodeFrame, encodeFrame, HUB_PROTO, LEASE_RENEW_MS, LEASE_TTL_MS, MSG_HUB,
   REQUEST_TIMEOUT_LOCAL_MS, REQUEST_TIMEOUT_TEAM_MS, SETTLE_MS,
-  type HolderIn, type PostIn, type Push, type Reply, type Req,
+  type HolderIn, type PostIn, type Push, type Reply, type Req, type NoticeIntent,
 } from '@room/hub-core'
 
 export interface HubTransport {
@@ -76,6 +76,8 @@ export interface HubClientOptions {
   local?: boolean
   mono?: () => number
   wall?: () => number
+  /** From authenticated bootstrap selection; absent/legacy connections never send the optional op. */
+  noticeCapability?: () => boolean
 }
 
 export class HubClient {
@@ -91,6 +93,7 @@ export class HubClient {
   private readonly interval: ReturnType<typeof setInterval>
   private nextId = 0
   private helloOk = false
+  private noticeGeneration?: number
   private pauseReason?: string
   private readonly renewing = new Map<Lease, Renewal>()
   private closed = false
@@ -128,6 +131,7 @@ export class HubClient {
 
   /** The hub answered hello on the current connection, which is still up. */
   reachable(): boolean { return !this.closed && this.helloOk && this.transport.connected() }
+  noticeIncarnation(): number | undefined { return this.options.noticeCapability?.() ? this.noticeGeneration : undefined }
 
   /** The epoch of `name`'s lease while it is valid by the send-time clock (§4.3). */
   lease(name: string): number | undefined {
@@ -167,6 +171,7 @@ export class HubClient {
     try {
       const reply = await this.request({ op: 'hello', proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId }, undefined, budgetMs)
       this.helloOk = true
+      this.noticeGeneration = typeof reply.incarnation === 'number' ? reply.incarnation : undefined
       this.pauseReason = undefined
       this.renewAll(true)
       return reply
@@ -269,6 +274,15 @@ export class HubClient {
         && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name)
       throw error
     }
+  }
+
+  async noticeLifecycle(intent: NoticeIntent & { lease: { name: string; epoch: number } }): Promise<Reply> {
+    if (!this.options.noticeCapability?.() || this.noticeGeneration === undefined) throw new Error('notice lifecycle unsupported; retain TTL')
+    const generation = this.noticeGeneration
+    return this.request({ op: 'notice-lifecycle', generation, ...intent }, () => {
+      if (!this.options.noticeCapability?.() || this.noticeGeneration !== generation || this.paused()
+        || this.lease(intent.lease.name) !== intent.lease.epoch) throw new NameLeaseUnavailable(NOT_SENT_LEASE)
+    })
   }
 
   private valid(lease: Lease): boolean {

@@ -25,7 +25,7 @@ export type CompatAdvertisement = {
   legacy?: { schema: 2; hub: 1 }
   release?: string
 }
-export type CapabilityName = 'room.generation' | 'room.manifest' | 'room.ledger' | 'room.worker-handover' | 'room.daemon'
+export type CapabilityName = 'room.generation' | 'room.manifest' | 'room.ledger' | 'room.worker-handover' | 'room.daemon' | 'room.notice-lifecycle'
 export type CapabilityContract = {
   scope: 'connection' | 'participant' | 'room'
   wire: string
@@ -46,6 +46,7 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CapabilityName, CapabilityCont
   'room.ledger': { scope: 'room', wire: 'proto-1 ordered post and baseline event vocabulary', documentEffects: 'schema-2 bus, mail, archive, outcomes and receipts; no stronger durability', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   'room.daemon': { scope: 'connection', wire: 'negotiated standalone local transport; no in-session takeover', documentEffects: 'client retains its replica across involuntary transport rebinding; delayed snapshot durability unchanged', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   'room.worker-handover': { scope: 'participant', wire: 'reserved; not implemented', documentEffects: 'reserved; grants no worker lifecycle guarantee', versions: {} },
+  'room.notice-lifecycle': { scope: 'connection', wire: 'optional proto-1 notice-lifecycle requests authorized by private live leases', documentEffects: 'stage 1 same-room exact-id registration with private worker dependencies and worker-retirement endings only; no evaluated endings, restart recovery or projection; unknown/untracked state retains TTL', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: { 'room.ledger': [1] } } } },
 })
 
 function baseline(): CompatAdvertisement {
@@ -53,7 +54,7 @@ function baseline(): CompatAdvertisement {
 }
 /** Fixed supported 0.17.0–0.17.32 wire profile. Never infer new safety behavior from it. */
 export const LEGACY_COMPAT: CompatAdvertisement = freeze(baseline())
-export const CURRENT_COMPAT: CompatAdvertisement = freeze(baseline())
+export const CURRENT_COMPAT: CompatAdvertisement = freeze({ ...baseline(), capabilities: { ...baseline().capabilities, 'room.notice-lifecycle': [1] } })
 
 export class CompatibilityValidationError extends Error {
   constructor(message: string) { super(message); this.name = 'CompatibilityValidationError' }

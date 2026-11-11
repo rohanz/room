@@ -24,6 +24,9 @@
       ],
       "room.ledger": [
         1
+      ],
+      "room.notice-lifecycle": [
+        1
       ]
     },
     "legacy": {
@@ -32,5 +35,5 @@
     }
   },
   "workerRecordSchema": 1,
-  "bundleSha256": "2e293975300c9ff03e91504b52462cc3cdfc1504f970f945c46f9d2deb4639ba"
+  "bundleSha256": "1a234977ba240b9f444b7de703acbcf321fb5905519dd062ab42c37d6ceed18b"
 }

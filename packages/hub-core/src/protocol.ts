@@ -6,6 +6,7 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import type { MsgType } from '@room/shared'
 import type { BootstrapFrame } from './negotiation.js'
+import type { NoticeIntent } from './notice-lifecycle.js'
 export * from './negotiation.js'
 
 /** The y-websocket message type of a hub frame (0–3 are y-websocket's own). */
@@ -34,7 +35,8 @@ export type Req = { v: 1; id: string } & (
   | { op: 'acquire'; name: string; holder: HolderIn; supersedes?: number }
   | { op: 'renew'; name: string; epoch: number }
   | { op: 'release'; name: string; epoch: number }
-  | { op: 'post'; lease: { name: string; epoch: number }; msg: PostIn; auto?: boolean })
+  | { op: 'post'; lease: { name: string; epoch: number }; msg: PostIn; auto?: boolean }
+  | ({ op: 'notice-lifecycle'; lease: { name: string; epoch: number }; generation: number } & NoticeIntent))
 export type Op = Req['op']
 
 export type Reason = 'version' | 'hello-first' | 'not-authority' | 'starting' | 'held' | 'not-yours' | 'stale'

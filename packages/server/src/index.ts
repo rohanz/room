@@ -1243,6 +1243,7 @@ server.on('upgrade', (req, socket, head) => {
               if (!opts.readOnly) {
                 const greeted = hub.handle(ws, legacyHello('bootstrap', hello.offer.release ?? 'negotiating', hello.sessionId), principal)
                 if (!greeted.ok) { ws.close(4406, 'room: hub authority changed; rejoin'); return }
+                hub.noticeContract(ws, selected.selection)
               }
               if (!activate()) { hub.closed(ws); return }
               bootstrapInput.restore()

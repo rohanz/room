@@ -16,6 +16,7 @@ import { postWorkerMessage } from './post.js'
 import { followUpAnswer, resumeAccepted } from './worker-process.js'
 import { scanRunLog, runLogIdentity } from './run-log-facts.js'
 import { retainedSessionMissing } from './hosts/lifecycle.js'
+import { retireNoticeDependencies } from './notice-lifecycle.js'
 
 /** Which of the lead's workers a writer in `roomKey` owns: those that joined it, or those projected into it. */
 export type ProjectorRole = 'joined' | 'projected'
@@ -136,6 +137,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
     s.room.retireWorker(record.id, { ...archive, id: record.id }, post)
     if (!undelivered.has(record.id)) await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
   }
+  if (role === 'joined' && current()) await retireNoticeDependencies(s, registry, current)
   return write.map(({ record }) => record)
 }
 

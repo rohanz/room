@@ -12,6 +12,8 @@ import {
   encodeSeq, incarnationOf,
   type HolderIn, type LeaseLostReason, type PostIn, type Principal, type Push, type Reason, type Reply, type Req,
 } from './protocol.js'
+import { NOTICE_CAPABILITY, NoticeInventory, type NoticeAuthority } from './notice-lifecycle.js'
+import type { ContractSelection } from './negotiation.js'
 
 /** How often the hub trims the bus and measures absence (§8). */
 export const MAINTENANCE_MS = 60_000
@@ -117,6 +119,8 @@ export interface Hub {
   /** Tests and orderly handoff may await pending lease persistence; requests never do. */
   flushLeases(): Promise<void>
   handle(conn: object, frame: unknown, p: Principal, frameBytes?: number): Reply
+  /** Bound only by an authenticated adapter, never by a wire request. */
+  noticeContract(conn: object, selection: Pick<ContractSelection, 'capabilities'>): void
   closed(conn: object): void
   /** Leases, re-assertion, trim and expiry; call every second. */
   tick(): void
@@ -227,6 +231,8 @@ class RoomHub implements Hub {
   private leaseWriteFailed = false
   private readonly greeted = new Set<object>()
   private readonly sessions = new Map<object, string>()
+  private readonly noticeConnections = new WeakSet<object>()
+  private readonly notices: NoticeInventory
   private readonly rates = new Map<string, { at: number; count: number }>()
   private push: (conn: object, push: Push) => void = () => {}
   private readonly onUpdate = (_update: Uint8Array, origin: unknown) => {
@@ -237,9 +243,14 @@ class RoomHub implements Hub {
 
   constructor(private readonly host: HubHost) {
     this.limit = host.counterLimit ?? COUNTER_LIMIT
+    this.notices = new NoticeInventory(host.doc, () => this.incarnation)
   }
 
   private get doc(): RoomDoc { return this.host.doc }
+
+  noticeContract(conn: object, selection: Pick<ContractSelection, 'capabilities'>): void {
+    if (selection.capabilities[NOTICE_CAPABILITY] === 1) this.noticeConnections.add(conn)
+  }
 
   async start(): Promise<void> {
     if (this.host.unavailable?.()) throw new Error('hub storage unavailable at startup')
@@ -311,6 +322,7 @@ class RoomHub implements Hub {
   onPush(fn: (conn: object, push: Push) => void): void { this.push = fn }
 
   closed(conn: object): void {
+    this.noticeConnections.delete(conn)
     this.greeted.delete(conn)
     this.sessions.delete(conn)
     for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = undefined
@@ -555,6 +567,7 @@ class RoomHub implements Hub {
     const fields: Record<string, string[]> = {
       hello: ['proto', 'schema', 'client', 'sessionId'], acquire: ['name', 'holder', 'supersedes'],
       renew: ['name', 'epoch'], release: ['name', 'epoch'], post: ['lease', 'msg', 'auto'],
+      'notice-lifecycle': ['lease', 'generation', 'action', 'producer', 'expected', 'operation', 'evidence', 'episode', 'msg', 'workerId', 'targets'],
     }
     const op = frame.op as string
     if (fields[op] && Object.keys(frame).some(k => !['v', 'id', 'op', ...fields[op]].includes(k))) return fail('invalid', 'unknown hub request field')
@@ -569,8 +582,38 @@ class RoomHub implements Hub {
       case 'renew': return this.renew(conn, req, p, fail)
       case 'release': return this.release(conn, req, p, fail)
       case 'post': return this.post(conn, req, p, fail, starting)
+      case 'notice-lifecycle': return this.noticeLifecycle(conn, req, p, fail, starting)
       default: return fail('invalid', `unknown op ${JSON.stringify((req as { op: unknown }).op)}`)
     }
+  }
+
+  private noticeLifecycle(conn: object, req: Extract<Req, { op: 'notice-lifecycle' }>, p: Principal, fail: Fail, starting: () => Reply): Reply {
+    if (!this.noticeConnections.has(conn)) return fail('version', 'notice lifecycle capability was not negotiated; retain TTL')
+    if (req.generation !== this.incarnation) return fail('stale', 'notice authority generation changed')
+    if (!isObject(req.lease) || Object.keys(req.lease).some(k => !['name', 'epoch'].includes(k))
+      || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail('invalid', 'notice intent needs a name lease')
+    const unavailable = this.unavailable(fail)
+    if (unavailable) return unavailable
+    const live = this.live(req.lease.name)
+    if (!live || live.epoch !== req.lease.epoch) return fail('stale', 'notice name lease is no longer live')
+    if (!this.owner(conn, p, req.lease.name, live)) return fail('not-yours', 'notice intent belongs to another principal or session')
+    if (isObject(req.evidence) && Array.isArray(req.evidence.names)) for (const name of req.evidence.names) {
+      if (typeof name !== 'string') continue
+      const known = this.records.get(name), expected = known && this.recordOf(known), mirror = this.record(name)
+      if (expected ? !sameRecord(mirror, expected) : !!mirror) return fail('stale', 'notice participant authority mirror moved')
+    }
+    if (this.settling() || !this.reserve('seq', req.action === 'register' ? 1 : 0)) return starting()
+    const authority: NoticeAuthority = { name: req.lease.name, epoch: live.epoch, session: this.sessions.get(conn)!, principal: live.principal!,
+      ...(live.holder?.workerId ? { workerId: live.holder.workerId } : {}) }
+    const { v: _v, id: _id, op: _op, lease: _lease, generation: _generation, ...intent } = req
+    let reply!: Reply
+    this.doc.doc.transact(() => {
+      reply = this.notices.apply(intent, authority, this.host.wall(), msg => this.post(conn, { v: 1, id: req.id, op: 'post', lease: req.lease, msg, auto: true }, p, fail, starting), name => {
+        const known = this.records.get(name)
+        return known?.holder?.workerId && known.principal ? { workerId: known.holder.workerId, principal: known.principal } : undefined
+      }, fail)
+    }, HUB_ORIGIN)
+    return { ...reply, re: req.id }
   }
 
   private hello(conn: object, req: Extract<Req, { op: 'hello' }>, fail: Fail): Reply {
@@ -691,7 +734,7 @@ class RoomHub implements Hub {
       const seq = (found as { seq?: unknown }).seq
       return { v: 1, re: req.id, ok: true, ...(isCounter(seq) ? { seq } : {}), at: found.at, duplicate: true }
     }
-    if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true }
+    if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id) || this.notices.registered(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true }
     const size = sizeOf(msg)
     if (size > MAX_MESSAGE_BYTES) return fail('too-large', `the message is ${Math.ceil(size / 1024)} KiB; the limit is ${MAX_MESSAGE_BYTES / 1024} KiB`)
     if (this.host.full?.()) return fail('room-full', "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB")
@@ -777,6 +820,7 @@ class RoomHub implements Hub {
     const { doc } = this
     const archived = (id: string) => doc.archive.has(id) || doc.outcomes.has(id)
     doc.doc.transact(() => {
+      this.notices.reassert()
       const names = new Set(this.records.keys())
       for (const [key, value] of doc.participants.entries()) if (key.endsWith(HOLDER) && hubHolder(value)) names.add(key.slice(0, -HOLDER.length))
       for (const name of names) {

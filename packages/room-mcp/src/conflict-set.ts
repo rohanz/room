@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { noticeLifecycle, type NoticeLifecycle } from './notice-lifecycle.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { acceptedGit, defaultPriority, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
@@ -100,6 +101,7 @@ type TrustedLandedWorker = { id: string; status: string; dir: string; run: strin
 /** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
 export class ConflictSlots {
   private readonly map
+  private readonly registrations?: NoticeLifecycle
   constructor(
     private readonly room: RoomDoc,
     private readonly post: Post,
@@ -108,7 +110,17 @@ export class ConflictSlots {
     private readonly log: (line: string) => void = () => {},
     private readonly holderPost: Post = post,
     private readonly valid: () => boolean = () => true,
-  ) { this.map = room.doc.getMap<ConflictSlot>('conflicts') }
+    session?: Session,
+  ) {
+    this.map = room.doc.getMap<ConflictSlot>('conflicts')
+    this.registrations = session?.room === room ? noticeLifecycle(session) : undefined
+  }
+
+  /** The lifecycle binds managed ids to exact workers; bodies/posting decisions stay baseline. It cannot end a notice. */
+  private postRegistered(body: PostBody<Msg>, id: string, names: string[], post: Post = this.post) {
+    return this.registrations ? this.registrations.register(ROOM, body, id, names, this.valid, post)
+      : post(ROOM, body, { id, auto: true })
+  }
 
   get(key: string): ConflictSlot | undefined { return this.map.get(key) }
   owned(owner: string): [string, ConflictSlot][] { return [...this.map.entries()].filter(([, slot]) => slot.owner === owner) }
@@ -218,7 +230,7 @@ export class ConflictSlots {
     const body = { type: 'merge-conflict', path: (open[0] ?? cleared[0])!.path, to: owner, priority, text,
       ...(open.length ? {} : { clearedFrom: 'conflict' }) } as unknown as PostBody<Msg>
     try {
-      const posted = await this.post(ROOM, body, { id, auto: true })
+      const posted = await this.postRegistered(body, id, [owner, other])
       if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
     } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
   }
@@ -296,7 +308,7 @@ export class ConflictSlots {
         ? { type: 'contract', path: slot.path, symbol: slot.subject ?? '', to: slot.owner, priority, text }
         : { type: 'conflict', claimId: slot.subject?.split('\0')[0] ?? '', otherClaimId: slot.subject?.split('\0')[1] ?? '', path: slot.path, to: slot.owner, priority, text: text + mergeNote, ...(clearedFrom ? { clearedFrom } : {}), ...merges }) as unknown as PostBody<Msg>
     try {
-      const posted = await this.post(ROOM, body, { id, auto: true })
+      const posted = await this.postRegistered(body, id, [slot.owner, slot.other])
       if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
     } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
     if (slot.kind === 'edit-in-claim' && status === 'conflict') {
@@ -305,7 +317,7 @@ export class ConflictSlots {
         const holderText = slot.earlierSha !== undefined
           ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps your new claim`
           : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}`
-        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: holderText + mergeNote } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch, slot.episode)}:holder`, auto: true })
+        const holder = await this.postRegistered({ ...body, to: slot.other, priority: 'notify', text: holderText + mergeNote } as PostBody<Msg>, `${noticeId(key, slot.epoch, slot.episode)}:holder`, [slot.owner, slot.other], this.holderPost)
         if (!holder.ok) this.log(`conflict holder notice ${id}: ${holder.text}`)
       } catch (e) { this.log(`conflict holder notice ${id}: ${String(e)}`) }
     }
@@ -423,7 +435,8 @@ export class ConflictSet {
     },
     private readonly claimText: typeof workerText = workerText) {
     const fence = () => team.lease?.fence() ?? ''
-    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false)
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false,
+      team.room === notices.room && owner === team.me.name ? team : undefined)
   }
 
   start(): void {

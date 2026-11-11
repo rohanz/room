@@ -2,6 +2,12 @@
 import type { PrepJournal, PrepStep, Run, RunReport, ExitObservation, WorkerRecord } from './worker-status.js'
 import type { Liveness, ProcessIdentity } from './leases.js'
 
+/**
+ * A record whose lifecycle is over. Only an unended borrower needs its owner's record: retention (pruneRetired)
+ * and the inventory's owner check (#list) both decide by this one rule.
+ */
+export const ended = (record: WorkerRecord): boolean => record.phase === 'retired' || record.phase === 'abandoned'
+
 export interface WorkerQuery {
   workerId?: string; tag?: string
   /** Record projection (all records if no selector): omit run/lease evidence and conservatively mark busy. */

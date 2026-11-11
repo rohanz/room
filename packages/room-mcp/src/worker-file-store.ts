@@ -21,7 +21,7 @@ import { realStateInput } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
-import { WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
+import { ended, WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
 import { sameStartTime } from '@room/relay/process'
 
 export interface RegistryOptions {
@@ -182,11 +182,6 @@ async function leaseRetry<T>(fn: () => T, deadline = performance.now() + GUARD_W
     catch (error) { await pauseForGuard(deadline, error) }
   }
 }
-/**
- * A record whose lifecycle is over. Only an unended borrower needs its owner's record: retention (pruneRetired)
- * and the inventory's owner check (#list) both decide by this one rule.
- */
-const ended = (record: WorkerRecord): boolean => record.phase === 'retired' || record.phase === 'abandoned'
 
 export class FileWorkerStore {
   readonly root: string

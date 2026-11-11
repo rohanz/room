@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
-import { decodeFrame, encodeFrame, LEASE_RENEW_MS, LEASE_TTL_MS, MSG_HUB, REQUEST_TIMEOUT_LOCAL_MS, REQUEST_TIMEOUT_TEAM_MS, SETTLE_MS, type Req, type Reply } from '@room/hub-core'
+import { decodeFrame, encodeFrame, LEASE_RENEW_MS, LEASE_TTL_MS, MSG_HUB, REQUEST_TIMEOUT_LOCAL_MS, REQUEST_TIMEOUT_TEAM_MS, SETTLE_MS, workerNoticeId, type Req, type Reply } from '@room/hub-core'
+import { RoomDoc, outgoing } from '@room/shared'
+import { noticeLifecycle } from '../src/notice-lifecycle.js'
+import type { Session } from '../src/session.js'
+import type { Post } from '../src/post.js'
 import type { WebsocketProvider } from 'y-websocket'
 import { HubClient, hubTransport, type HubTransport } from '../src/hub-client.js'
 
@@ -32,7 +36,7 @@ class FakeTransport implements HubTransport {
   disconnect() { this.up = false; for (const fn of this.closes) fn() }
 }
 
-function fixture(local = true) {
+function fixture(local = true, noticeCapability?: () => boolean) {
   const transport = new FakeTransport()
   let mono = 0; let wall = 0
   let incarnation = 1
@@ -45,7 +49,7 @@ function fixture(local = true) {
       case 'post': return { ok: true, seq: 5, at: 1 }
     }
   }
-  const client = new HubClient({ transport, client: 'codex', sessionId: 's1', local, mono: () => mono, wall: () => wall })
+  const client = new HubClient({ transport, client: 'codex', sessionId: 's1', local, noticeCapability, mono: () => mono, wall: () => wall })
   return { transport, client, advance: (ms: number) => { mono += ms; wall += ms }, jumpWall: (ms: number) => { wall += ms }, setIncarnation: (v: number) => { incarnation = v } }
 }
 
@@ -53,6 +57,51 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('HubClient', () => {
+  it.each(['rate-limited', 'hello-first', 'disconnect', 'timeout'] as const)('keeps registration %s retries separate from the baseline fallback post and its reconnect resend', async failure => {
+    const { client, transport } = fixture(true, () => true)
+    await client.hello(); await client.acquire('A', holder)
+    const room = new RoomDoc(), original = transport.answer!
+    room.participants.set('A\0holder', { ...holder, epoch: 42 })
+    room.participants.set('B\0holder', { ...holder, epoch: 43, workerId: 'w1' })
+    let registrations = 0, posts = 0
+    transport.answer = req => {
+      if (req.op === 'notice-lifecycle') {
+        registrations++
+        if (failure === 'disconnect' || failure === 'timeout') return undefined
+        return registrations === 1
+          ? { ok: false, reason: failure, text: 'retry registration', retryMs: 1 }
+          : { ok: false, reason: 'stale', text: 'private binding refused' }
+      }
+      if (req.op === 'post') return ++posts === 1 ? undefined : { ok: true, seq: 5, at: 1 }
+      return original(req)
+    }
+    const post: Post = (async (from, body, options) => {
+      const msg = outgoing(from, body, options!.id!)
+      const reply = await client.post(msg, { lease: { name: 'A', epoch: 42 }, auto: true })
+      return { ...reply, msg: { ...msg, at: 1 } }
+    }) as Post
+    const session = { room, me: { name: 'A', kind: 'agent' }, post, hub: client,
+      lease: { fence: () => '42', sessionId: 's1' }, contract: { legacy: false, capabilities: { 'room.notice-lifecycle': 1 } } } as unknown as Session
+    try {
+      const published = noticeLifecycle(session)!.register({ name: 'room', kind: 'agent' }, {
+        type: 'merge-conflict', path: 'x', to: 'A', priority: 'notify', text: 'conflict with B',
+      }, 'cf:baseline', ['A', 'B'], () => true)
+      if (failure === 'disconnect') {
+        await vi.advanceTimersByTimeAsync(1)
+        transport.disconnect(); transport.reconnect()
+      }
+      await vi.advanceTimersByTimeAsync(failure === 'timeout' ? REQUEST_TIMEOUT_LOCAL_MS + 1 : 100)
+      expect(transport.sent.filter(req => req.op === 'post').map(req => req.msg.id)).toEqual(['cf:baseline'])
+      transport.disconnect(); transport.reconnect()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(await published).toMatchObject({ ok: true, msg: { id: 'cf:baseline' } })
+      const candidates = transport.sent.filter(req => req.op === 'notice-lifecycle')
+      expect(candidates).toHaveLength(failure === 'disconnect' || failure === 'timeout' ? 1 : 2)
+      expect(candidates.every(req => req.action === 'register' && req.msg!.id === workerNoticeId('cf:baseline', ['w1']))).toBe(true)
+      expect(transport.sent.filter(req => req.op === 'post').map(req => req.msg.id)).toEqual(['cf:baseline', 'cf:baseline'])
+    } finally { client.close(); room.doc.destroy() }
+  })
+
   it('resends an interrupted post with the same message id after reconnect and hello', async () => {
     const { client, transport, advance } = fixture(false)
     await client.hello(); await client.acquire('alice', holder)
