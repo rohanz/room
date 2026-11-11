@@ -18,7 +18,6 @@ describe('server settings', () => {
     expect(envNumber({ ROOM_IDLE_DAYS: '0' }, 'ROOM_IDLE_DAYS', 30, { zero: true })).toBe(0)
     expect(envNumber({ ROOM_IDLE_DAYS: '0.5' }, 'ROOM_IDLE_DAYS', 30, { zero: true })).toBe(0.5)
     expect(() => envNumber({ ROOM_IDLE_DAYS: 'thirty' }, 'ROOM_IDLE_DAYS', 30, { zero: true })).toThrow(/ROOM_IDLE_DAYS must be zero or a positive number/)
-    expect(() => envNumber({ ROOM_LEGACY_DAYS: '0' }, 'ROOM_LEGACY_DAYS', 30)).toThrow(/ROOM_LEGACY_DAYS must be a positive number/)
   })
 
   it('converts megabyte budgets to whole bytes and refuses non-finite or non-positive ones', () => {
@@ -33,8 +32,8 @@ describe('server settings', () => {
     expect(s).toMatchObject({ maxRooms: 100, maxConnections: 4000, docMaxBytes: 64 * 1048576, maxQueuedBytes: 68 * 1048576, idleMs: 30 * 86400000 })
     expect(settingsFromEnv({ ROOM_DOC_MAX_MB: '8' }).maxQueuedBytes).toBe(12 * 1048576)
     let message = ''
-    try { settingsFromEnv({ ROOM_MAX_CONNECTIONS: 'lots', ROOM_DOC_MAX_MB: '-1', ROOM_MIGRATION_MAX_SOURCES: 'NaN' }) } catch (e) { message = (e as Error).message }
-    expect(message.split('\n')).toHaveLength(3)
-    for (const name of ['ROOM_MAX_CONNECTIONS', 'ROOM_DOC_MAX_MB', 'ROOM_MIGRATION_MAX_SOURCES']) expect(message).toContain(`${name} must be`)
+    try { settingsFromEnv({ ROOM_MAX_CONNECTIONS: 'lots', ROOM_DOC_MAX_MB: '-1' }) } catch (e) { message = (e as Error).message }
+    expect(message.split('\n')).toHaveLength(2)
+    for (const name of ['ROOM_MAX_CONNECTIONS', 'ROOM_DOC_MAX_MB']) expect(message).toContain(`${name} must be`)
   })
 })

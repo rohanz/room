@@ -42,6 +42,24 @@ export function envMegabytes(env: Env, name: string, fallbackMb: number): number
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/** Fixed fairness budgets; deployment capacity remains configurable below. */
+export const SERVER_FAIRNESS = Object.freeze({
+  maxPendingAdmissions: 256,
+  maxPendingPerAddress: 16,
+  maxPendingLogins: 1000,
+  queuedDocumentHeadroomBytes: 4 * 1048576,
+  maxExports: 2,
+  maxPrOperations: 8,
+  maxHttpResponses: 32,
+  maxRoomLists: 8,
+  maxBodyReads: 32,
+  viewMaxPerRoom: 200,
+  viewMaxTotal: 10000,
+  awarenessMessagesPerMinute: 6000,
+  awarenessIdsPerRoom: 4096,
+  auditScanBytes: 64 * 1048576,
+})
+
 /** Rotated audit segments kept (ROOM_AUDIT_KEEP_FILES); unset keeps every one, so nothing is pruned. */
 export function auditKeepFiles(env: Env, errors?: string[]): number | undefined {
   if (raw(env, 'ROOM_AUDIT_KEEP_FILES') === undefined) return undefined
@@ -55,39 +73,47 @@ export function settingsFromEnv(env: Env = process.env) {
   const count = (name: string, fallback: number) => read(() => envCount(env, name, fallback), fallback)
   const mb = (name: string, fallbackMb: number) => read(() => envMegabytes(env, name, fallbackMb), fallbackMb * 1048576)
   const docMaxBytes = mb('ROOM_DOC_MAX_MB', 64)
+  const maxQueuedBytes = docMaxBytes + SERVER_FAIRNESS.queuedDocumentHeadroomBytes
+  if (!Number.isSafeInteger(maxQueuedBytes)) errors.push('ROOM_DOC_MAX_MB leaves no safe socket queue headroom')
   const settings = {
     maxRooms: count('ROOM_MAX_ROOMS', 100),
     maxConnections: count('ROOM_MAX_CONNECTIONS', 4000),
     maxConnectionsPerRoom: count('ROOM_MAX_CONNECTIONS_PER_ROOM', 200),
     maxConnectionsPerPrincipal: count('ROOM_MAX_CONNECTIONS_PER_PRINCIPAL', 100),
-    maxPendingAdmissions: count('ROOM_MAX_PENDING_ADMISSIONS', 256),
-    maxPendingPerAddress: count('ROOM_MAX_PENDING_PER_ADDRESS', 16),
-    maxPendingLogins: count('ROOM_MAX_PENDING_LOGINS', 1000),
+    maxPendingAdmissions: SERVER_FAIRNESS.maxPendingAdmissions,
+    maxPendingPerAddress: SERVER_FAIRNESS.maxPendingPerAddress,
+    maxPendingLogins: SERVER_FAIRNESS.maxPendingLogins,
     docMaxBytes,
     // Default: the document cap plus 4 MB, so one full document can always be queued.
-    maxQueuedBytes: mb('ROOM_MAX_QUEUED_MB', docMaxBytes / 1048576 + 4),
+    maxQueuedBytes,
     maxTotalQueuedBytes: mb('ROOM_MAX_TOTAL_QUEUED_MB', 256),
     maxMessageBytes: mb('ROOM_MAX_MESSAGE_MB', 16),
-    maxExports: count('ROOM_MAX_EXPORTS', 2),
-    maxPrOperations: count('ROOM_MAX_PR_OPERATIONS', 8),
-    maxHttpResponses: count('ROOM_MAX_HTTP_RESPONSES', 32),
-    maxRoomLists: count('ROOM_MAX_ROOM_LISTS', 8),
-    maxBodyReads: count('ROOM_MAX_BODY_READS', 32),
+    maxExports: SERVER_FAIRNESS.maxExports,
+    maxPrOperations: SERVER_FAIRNESS.maxPrOperations,
+    maxHttpResponses: SERVER_FAIRNESS.maxHttpResponses,
+    maxRoomLists: SERVER_FAIRNESS.maxRoomLists,
+    maxBodyReads: SERVER_FAIRNESS.maxBodyReads,
     viewTtlMs: read(() => envNumber(env, 'ROOM_VIEW_TTL_MS', 7 * DAY_MS), 7 * DAY_MS),
-    viewMaxPerRoom: count('ROOM_VIEW_MAX_PER_ROOM', 200),
-    viewMaxTotal: count('ROOM_VIEW_MAX_TOTAL', 10000),
-    awarenessMessagesPerMinute: count('ROOM_AWARENESS_MESSAGES_PER_MINUTE', 6000),
-    awarenessIdsPerRoom: count('ROOM_AWARENESS_IDS_PER_ROOM', 4096),
+    viewMaxPerRoom: SERVER_FAIRNESS.viewMaxPerRoom,
+    viewMaxTotal: SERVER_FAIRNESS.viewMaxTotal,
+    awarenessMessagesPerMinute: SERVER_FAIRNESS.awarenessMessagesPerMinute,
+    awarenessIdsPerRoom: SERVER_FAIRNESS.awarenessIdsPerRoom,
     /** 0 disables idle expiry (documented). */
     idleMs: read(() => envNumber(env, 'ROOM_IDLE_DAYS', 30, { zero: true }), 30) * DAY_MS,
-    legacyMs: read(() => envNumber(env, 'ROOM_LEGACY_DAYS', 30), 30) * DAY_MS,
     /** Bytes one GET /audit may scan. */
-    auditScanBytes: mb('ROOM_AUDIT_SCAN_MB', 64),
+    auditScanBytes: SERVER_FAIRNESS.auditScanBytes,
   }
-  // Read elsewhere (store, cutover); validated here so a typo stops startup rather than a later write.
+  // Read elsewhere (store, document loading); validated here so a typo stops startup rather than a later write.
   mb('ROOM_AUDIT_ROTATE_MB', 64); auditKeepFiles(env, errors)
-  mb('ROOM_LOAD_MAX_MB', 32); mb('ROOM_MIGRATION_MAX_READ_MB', 128)
-  count('ROOM_MIGRATION_MAX_RECORDS', 100_000); count('ROOM_MIGRATION_MAX_SOURCES', 1000)
+  mb('ROOM_LOAD_MAX_MB', 32)
   if (errors.length) throw new RangeError(errors.join('\n'))
-  return settings
+  return { ...settings, ...testSettings }
+}
+
+let testSettings: Partial<Record<'maxPendingAdmissions' | 'maxPendingPerAddress' | 'maxRoomLists', number>> = {}
+
+/** Test entry only: production settings never read environment shortcuts for fixed budgets. */
+export function overrideSettingsForTest(overrides: typeof testSettings): void {
+  if (process.env.NODE_ENV !== 'test') throw new Error('settings overrides require NODE_ENV=test')
+  testSettings = { ...overrides }
 }

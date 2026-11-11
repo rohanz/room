@@ -577,7 +577,7 @@ class RoomHub implements Hub {
     if (req.proto !== HUB_PROTO) {
       return fail('version', typeof req.proto === 'number' && req.proto > HUB_PROTO
         ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating`
-        : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`)
+        : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later (Room 0.16 is refused; use v0.17.47, the last release that can migrate)`)
     }
     if (typeof req.sessionId !== 'string' || !req.sessionId || req.sessionId.length > MAX_HOLDER_FIELD_LENGTH
       || typeof req.client !== 'string' || req.client.length > 128 || req.schema !== 2) return fail('invalid', 'hello needs a supported schema, client and session')

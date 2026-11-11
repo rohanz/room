@@ -1,5 +1,4 @@
-/** Read-only inventory of stored documents against the room registry: what 0.17 migrates, what it leaves.
- *  Shared by the server (startup log, admin endpoint) and scripts/room-inventory.mts (operator pre-flight). */
+/** Read-only admin inventory of canonical rooms, retained archives and unknown stored documents. */
 import type { OpenRepo } from './store.js'
 import { levelOversizedTables, type levelStoredTables, type StoredSize } from './stored.js'
 import { archiveOwnerOf, parseRoomName, parseLegacyRoomName } from './names.js'
@@ -50,34 +49,8 @@ export async function takeInventory(names: Iterable<string>, registry: Readonly<
     const found = classifyDoc(name, registry)
     const measured = await size(name, budgetBytes)
     const reason = found.reason ?? measured.reason ?? (measured.over && (found.kind === 'served' || found.kind === 'canonical')
-      ? 'over the per-document load budget: kept as an archive without loading' : undefined)
+      ? 'over the per-document load budget: never loaded' : undefined)
     docs.push({ name, ...found, ...measured, ...(reason ? { reason } : {}) })
   }
   return { budgetBytes, docs, tables: levelOversizedTables(tables, budgetBytes) }
-}
-
-const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`
-/** One line per document, grouped by repository; problems are marked with `!`. */
-export function formatInventory(inventory: Inventory): string {
-  const lines = [`budget: ${mb(inventory.budgetBytes)} stored per document`]
-  const groups = new Map<string, InventoryDoc[]>()
-  for (const doc of inventory.docs) {
-    const key = doc.kind === 'unregistered' ? '(unregistered)' : doc.repo!
-    groups.set(key, [...groups.get(key) ?? [], doc])
-  }
-  for (const [repo, docs] of [...groups].sort(([a], [b]) => a === '(unregistered)' ? 1 : b === '(unregistered)' ? -1 : a.localeCompare(b))) {
-    lines.push(repo)
-    for (const doc of docs) {
-      const flag = doc.over || doc.kind === 'never-served' || doc.kind === 'unregistered' ? '!' : ' '
-      lines.push(`  ${flag} ${doc.kind.padEnd(12)} ${(doc.over ? `>${mb(doc.bytes)}` : mb(doc.bytes)).padStart(10)} ${String(doc.updates).padStart(6)} upd  ${JSON.stringify(doc.name)}${doc.reason ? `  (${doc.reason})` : ''}`)
-    }
-  }
-  const problems = inventory.docs.filter(doc => doc.over || doc.kind === 'never-served' || doc.kind === 'unregistered').length
-  if (inventory.tables.length) {
-    lines.push('tables over budget:')
-    for (const table of inventory.tables) lines.push(`  ! level ${table.level} file ${table.file}: ${mb(table.bytes)}  ${JSON.stringify(table.smallest)} .. ${JSON.stringify(table.largest)}`)
-  }
-  lines.push(`${inventory.docs.length} document(s); ${problems} flagged`)
-  if (inventory.tables.length) lines.push(`${inventory.tables.length} table(s) over budget; review before deploying`)
-  return lines.join('\n')
 }

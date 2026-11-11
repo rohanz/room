@@ -89,7 +89,6 @@ scripts/demo.sh          server + shared origin + two clones on one machine
 scripts/say.mts          post a message into a person's agent chat and watch the room
 scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 scripts/build-server.mjs esbuild bundle of the server for the image (`npm run build:server`)
-scripts/room-inventory.mts read-only LevelDB pre-flight for the 0.17 cutover (docs/upgrading.md)
 ```
 
 ## Host features change weekly: read the current docs first

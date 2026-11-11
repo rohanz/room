@@ -15,7 +15,7 @@ import { setParticipantBase } from '@room/shared/testing'
 import type { LocalWorker } from '../src/worker-status.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { carriedContentHash, carriedPaths, carriedUnchanged, checkoutText, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
-import { gitPathsBetween } from '@room/roomd/git'
+import { gitPathsBetween, setGitTimeoutForTest } from '@room/roomd/git'
 import { readRoomFile } from '@room/roomd'
 import { GraphIndex } from '../src/graph-index.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
@@ -26,13 +26,11 @@ import { testPolicyStore } from './policy-fixture.js'
 
 let root: string
 let originalPath: string | undefined
-let originalTimeout: string | undefined
 const run = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
 let startsPreviewMaintenance = false
 beforeEach(() => {
   startsPreviewMaintenance = false
   originalPath = process.env.PATH
-  originalTimeout = process.env.ROOM_GIT_TIMEOUT_MS
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-clean-')))
   run(root, 'init', '-q', '-b', 'main')
   run(root, 'config', 'user.name', 'Test')
@@ -43,8 +41,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   process.env.PATH = originalPath
-  if (originalTimeout === undefined) delete process.env.ROOM_GIT_TIMEOUT_MS
-  else process.env.ROOM_GIT_TIMEOUT_MS = originalTimeout
+  setGitTimeoutForTest(undefined)
   vi.restoreAllMocks()
   if (startsPreviewMaintenance) await disposePreviewFixture(root, { registries: [root] })
   else await fs.promises.rm(root, { recursive: true, force: true })
@@ -168,7 +165,7 @@ describe('carry and discard safety', () => {
     const gitPath = fs.existsSync('/usr/bin/git') ? '/usr/bin/git' : realGit
     fs.writeFileSync(path.join(fakeDir, 'git'), `#!/bin/sh\nif [ "$1" = "hash-object" ]; then sleep 2; fi\nexec ${JSON.stringify(gitPath)} "$@"\n`, { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '100'
+    setGitTimeoutForTest(100)
     expect(() => carriedContentHash(prepared.dir, 'lead.txt')).toThrow(/timed out/)
     expect(() => carriedUnchanged(workerBaseline(worker)!, 'lead.txt')).toThrow(/timed out/)
   })
@@ -179,7 +176,7 @@ describe('carry and discard safety', () => {
     const fakeDir = path.join(root, '.git', 'slow-carry'); fs.mkdirSync(fakeDir)
     fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\ncase " $* " in *" hash-object "*) sleep 60;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '5000'
+    setGitTimeoutForTest(5000)
     const prepared = await prepareWorktree(root, 'timed-carry', 'lead')
     expect(prepared.carryFailed).toBe(true)
     expect(prepared.carryError).toMatch(/timed out/)
@@ -195,7 +192,7 @@ describe('carry and discard safety', () => {
     const calls = path.join(fakeDir, 'calls')
     fs.writeFileSync(path.join(fakeDir, 'git'), `#!/bin/sh\nif [ "$1" = "hash-object" ]; then echo x >> ${JSON.stringify(calls)}; if [ -e ${JSON.stringify(marker)} ]; then sleep 60; else touch ${JSON.stringify(marker)}; fi; fi\nexec /usr/bin/git "$@"\n`, { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '5000'
+    setGitTimeoutForTest(5000)
     const prepared = await prepareWorktree(root, 'timed-stability', 'lead')
     expect(prepared.carryFailed).toBe(true)
     expect(prepared.carryError).toMatch(/timed out/)
@@ -206,7 +203,7 @@ describe('carry and discard safety', () => {
     const fakeDir = path.join(root, 'slow-checkout'); fs.mkdirSync(fakeDir)
     fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\nif [ "$1" = "cat-file" ]; then sleep 2; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '100'
+    setGitTimeoutForTest(100)
     await expect(checkoutText(root, run(root, 'rev-parse', 'HEAD') + ':base.txt', 'base.txt')).rejects.toThrow(/timed out/)
   })
 
@@ -214,7 +211,7 @@ describe('carry and discard safety', () => {
     const fakeDir = path.join(root, 'slow-room-file'); fs.mkdirSync(fakeDir)
     fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\nsleep 2\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    process.env.ROOM_GIT_TIMEOUT_MS = '100'
+    setGitTimeoutForTest(100)
     expect(() => readRoomFile(root)).toThrow(/timed out/)
   })
 

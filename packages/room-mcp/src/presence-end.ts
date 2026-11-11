@@ -163,13 +163,6 @@ export const IDLE_LEASE_MS = 30 * MINUTE
 export const IDLE_CLAIMS_MS = 8 * 60 * MINUTE
 const PRESENCE_TICK_MS = 30_000
 
-/** Positive integer milliseconds only; malformed overrides retain the production lease. */
-export function resolveIdleLeaseMs(raw: string | undefined): number {
-  if (!raw || !/^\d+$/.test(raw)) return IDLE_LEASE_MS
-  const ms = Number(raw)
-  return Number.isSafeInteger(ms) && ms > 0 ? ms : IDLE_LEASE_MS
-}
-
 /** Check often enough to honour a short lease, without running the tick faster than needed. */
 export function idleLeaseTickMs(leaseMs: number): number {
   return Math.min(leaseMs, PRESENCE_TICK_MS, Math.max(1_000, Math.floor(leaseMs / 4)))

@@ -1,6 +1,6 @@
 # ROOM_* environment surface audit (2026-11-10)
 
-Status: audit plus one removal. Base `520d18fd`. Author: worker `env-audit`.
+Status: audit updated for the tuning-constant retirement. Original base `520d18fd`; original author: worker `env-audit`. Historical counts below describe that baseline unless stated otherwise.
 
 ## Method
 
@@ -23,7 +23,7 @@ Kinds:
 - **not an env var**: a constant, error code, build define, or a substring of a longer identifier.
 
 Verdicts: **keep**; **keep but document** (live, user-visible, not in user docs); **make a constant** (tuning knob
-nobody should need; not changed in this slice, see the list below); **remove** (never read).
+nobody should need; retired tuning settings are marked below); **remove** (never read).
 
 ## Table
 
@@ -76,40 +76,40 @@ nobody should need; not changed in this slice, see the list below); **remove** (
 | `ROOM_WORKER_MEM_GB` | room-mcp/tools/workers.ts, room-mcp/worker-config.ts, room-mcp/worker-launch.ts | internal handoff | README, reference | keep | computed budget shown to a worker; README also offers them as user overrides; nested spawns divide them |
 | `ROOM_WORKER_RUN` | room-mcp/ledger.ts, room-mcp/tools/workers.ts, room-mcp/worker-config.ts +1 | internal handoff | nowhere | keep | worker launch identity checked against the registry (group 3) |
 | `ROOM_WORKER_THREADS` | room-mcp/tools/workers.ts, room-mcp/worker-config.ts | internal handoff | README, reference | keep | computed budget shown to a worker; README also offers them as user overrides; nested spawns divide them |
-| `ROOM_ARCHIVE_LIST_MAX_KEYS` | server/index.ts | tuning knob | self-hosting | make a constant | group 1; clamped to ≤1000, so it can only lower the default; read outside settingsFromEnv |
+| `ROOM_ARCHIVE_LIST_MAX_KEYS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `ARCHIVE_LIST_MAX_KEYS = 1000` (the old clamp default) |
 | `ROOM_AUDIT_KEEP_FILES` | server/settings.ts, server/store.ts | tuning knob | self-hosting | keep | audit disk retention; unset keeps all |
 | `ROOM_AUDIT_ROTATE_MB` | server/settings.ts, server/store.ts | tuning knob | self-hosting | keep | audit disk retention |
-| `ROOM_AUDIT_SCAN_MB` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_AWARENESS_IDS_PER_ROOM` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_AWARENESS_MESSAGES_PER_MINUTE` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_AUDIT_SCAN_MB` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.auditScanBytes = 64 * 1048576` |
+| `ROOM_AWARENESS_IDS_PER_ROOM` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.awarenessIdsPerRoom = 4096` |
+| `ROOM_AWARENESS_MESSAGES_PER_MINUTE` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.awarenessMessagesPerMinute = 6000` |
 | `ROOM_COMPACT_MIN_DELETED` | relay/daemon.ts, server/index.ts | tuning knob | reference, self-hosting | keep | server and local relay; `off` switch; soak.mts seam |
 | `ROOM_EXPORT_MAX_FRAME_MB` | room-mcp/prs.ts | tuning knob | self-hosting, upgrading | keep but document | client-side frame cap that must track the server ROOM_DOC_MAX_MB; missing from the Codex allow-list |
-| `ROOM_GIT_TIMEOUT_MS` | roomd/git.ts | tuning knob | nowhere | make a constant | git timeouts already scale with tree size; carry-cleanliness.test.ts uses it as a seam |
-| `ROOM_IDLE_LEASE_MS` | room-mcp/index.ts | tuning knob | README, reference | make a constant | Codex app-server idle lease; pinned by codex-env.test.ts |
-| `ROOM_LEGACY_DAYS` | server/settings.ts | tuning knob | README, reference, self-hosting, upgrading | make a constant | 0.16 cutover budget (group 2): retire with the migration path |
+| `ROOM_GIT_TIMEOUT_MS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `DEFAULT_GIT_TIMEOUT_MS = 30000`; whole-tree scaling still adds 15 ms/path, capped at 300000 ms. Explicit call options and `setGitTimeoutForTest` replace the test env seam |
+| `ROOM_IDLE_LEASE_MS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `IDLE_LEASE_MS = 30 * 60000`; tests inject `PresenceEndOptions.idleLeaseMs` and tick timing |
+| `ROOM_LEGACY_DAYS` | shared/retired-env.ts (startup diagnostic only) | retired setting | upgrading (retirement notice) | retired (migration owner) | 0.16 migration code and environment reader removed by retire-016; included in shared startup diagnostic |
 | `ROOM_LOAD_MAX_MB` | server/index.ts, server/limits.ts, server/settings.ts | tuning knob | DEPLOYING, self-hosting, upgrading | keep | load ceiling coupled to ROOM_DOC_MAX_MB; read twice (limits.ts and settings.ts) |
-| `ROOM_MAX_BODY_READS` | server/settings.ts | tuning knob | reference, self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_BODY_READS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxBodyReads = 32` |
 | `ROOM_MAX_CONNECTIONS` | server/settings.ts | tuning knob | reference, self-hosting | keep | capacity |
 | `ROOM_MAX_CONNECTIONS_PER_PRINCIPAL` | server/settings.ts | tuning knob | self-hosting | keep | capacity |
 | `ROOM_MAX_CONNECTIONS_PER_ROOM` | server/settings.ts | tuning knob | self-hosting | keep | capacity |
-| `ROOM_MAX_EXPORTS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_MAX_HTTP_RESPONSES` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_MAX_PENDING_ADMISSIONS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_MAX_PENDING_LOGINS` | server/auth.ts, server/settings.ts | tuning knob | reference, self-hosting | make a constant | group 1; read twice (settings.ts and auth.ts) |
-| `ROOM_MAX_PENDING_PER_ADDRESS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_MAX_PR_OPERATIONS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_MAX_QUEUED_MB` | server/settings.ts | tuning knob | self-hosting | make a constant | group 1; default derived from ROOM_DOC_MAX_MB |
+| `ROOM_MAX_EXPORTS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxExports = 2` |
+| `ROOM_MAX_HTTP_RESPONSES` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxHttpResponses = 32` |
+| `ROOM_MAX_PENDING_ADMISSIONS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxPendingAdmissions = 256`; spawned tests inject `overrideSettingsForTest` |
+| `ROOM_MAX_PENDING_LOGINS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxPendingLogins = 1000`; Auth constructor injection remains available |
+| `ROOM_MAX_PENDING_PER_ADDRESS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxPendingPerAddress = 16`; spawned tests inject `overrideSettingsForTest` |
+| `ROOM_MAX_PR_OPERATIONS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxPrOperations = 8` |
+| `ROOM_MAX_QUEUED_MB` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `docMaxBytes + SERVER_FAIRNESS.queuedDocumentHeadroomBytes` (4 * 1048576); tracks ROOM_DOC_MAX_MB as before |
 | `ROOM_MAX_ROOMS` | server/settings.ts | tuning knob | reference, self-hosting | keep | capacity |
-| `ROOM_MAX_ROOM_LISTS` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_MAX_ROOM_LISTS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.maxRoomLists = 8`; spawned tests inject `overrideSettingsForTest` |
 | `ROOM_MAX_TOTAL_QUEUED_MB` | server/index.ts, server/settings.ts | tuning knob | self-hosting, upgrading | keep | server memory ceiling |
-| `ROOM_MIGRATION_MAX_READ_MB` | server/migrate.ts, server/settings.ts | tuning knob | upgrading | make a constant | group 2; read twice (settings.ts and migrate.ts) |
-| `ROOM_MIGRATION_MAX_RECORDS` | server/migrate.ts, server/settings.ts | tuning knob | upgrading | make a constant | 0.16 cutover budget (group 2): retire with the migration path |
-| `ROOM_MIGRATION_MAX_SOURCES` | server/migrate.ts, server/settings.ts | tuning knob | upgrading | make a constant | 0.16 cutover budget (group 2): retire with the migration path |
+| `ROOM_MIGRATION_MAX_READ_MB` | shared/retired-env.ts (startup diagnostic only) | retired setting | upgrading (retirement notice) | retired (migration owner) | 0.16 migration code and environment reader removed by retire-016; included in shared startup diagnostic |
+| `ROOM_MIGRATION_MAX_RECORDS` | shared/retired-env.ts (startup diagnostic only) | retired setting | upgrading (retirement notice) | retired (migration owner) | 0.16 migration code and environment reader removed by retire-016; included in shared startup diagnostic |
+| `ROOM_MIGRATION_MAX_SOURCES` | shared/retired-env.ts (startup diagnostic only) | retired setting | upgrading (retirement notice) | retired (migration owner) | 0.16 migration code and environment reader removed by retire-016; included in shared startup diagnostic |
 | `ROOM_PREVIEW_CACHE_GB` | room-mcp/preview-cache.ts | tuning knob | README, reference | keep | `0` disables reuse; a real disk-use choice |
 | `ROOM_REVALIDATE_MINUTES` | server/index.ts | tuning knob | reference, self-hosting | keep | push-permission recheck; `0` disables; read outside settingsFromEnv |
-| `ROOM_STALE_DAYS` | hub-core/hub.ts, room-mcp/config.ts, shared/expiry.ts | tuning knob | README, reference, pkg README | make a constant | display-only `stale` label; can disagree with the fixed 7-day hub expiry |
-| `ROOM_VIEW_MAX_PER_ROOM` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
-| `ROOM_VIEW_MAX_TOTAL` | server/settings.ts | tuning knob | self-hosting | make a constant | per-request fairness budget (group 1) |
+| `ROOM_STALE_DAYS` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1000`, shared with the hub expiry; staleDays argument/config field removed |
+| `ROOM_VIEW_MAX_PER_ROOM` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.viewMaxPerRoom = 200` |
+| `ROOM_VIEW_MAX_TOTAL` | shared/retired-env.ts (startup diagnostic only) | retired setting | reference (retirement notice) | constant (done) | `SERVER_FAIRNESS.viewMaxTotal = 10000` |
 | `ROOM_VIEW_TTL_MS` | server/settings.ts | tuning knob | self-hosting | keep | view-key lifetime: a security policy |
 | `ROOM_WORKER_NICE` | room-mcp/worker-config.ts, room-mcp/worker-launch.ts | tuning knob | nowhere | keep but document | worker priority (default 10); the resume path also passes it to workerPriority through a synthetic env object |
 | `ROOM_MACHINE_ID` | roomd/index.ts | test-only seam | nowhere | keep | overrides the per-machine salt so tests stay out of ~/.config/room |
@@ -174,15 +174,13 @@ Scrub lists: the Claude worker shell scrub (`Get-ChildItem Env:ROOM_*` / `CLAUDE
 need no change. `LEAD_ONLY_ENV` is the one explicit list and now matches what `workerProcessEnv` writes.
 `codex-env.test.ts` still proves every launched `ROOM_` variable is in the Codex allow-list.
 
-## For the lead: "make a constant" verdicts (not changed)
+## Tuning retirement (implemented)
 
-| Name(s) | Risk of making it a constant |
-|---|---|
-| Group 1 (15 server fairness budgets): `ROOM_MAX_BODY_READS`, `ROOM_MAX_HTTP_RESPONSES`, `ROOM_MAX_PR_OPERATIONS`, `ROOM_MAX_ROOM_LISTS`, `ROOM_MAX_EXPORTS`, `ROOM_MAX_PENDING_ADMISSIONS`, `ROOM_MAX_PENDING_PER_ADDRESS`, `ROOM_MAX_PENDING_LOGINS`, `ROOM_AWARENESS_IDS_PER_ROOM`, `ROOM_AWARENESS_MESSAGES_PER_MINUTE`, `ROOM_ARCHIVE_LIST_MAX_KEYS`, `ROOM_AUDIT_SCAN_MB`, `ROOM_VIEW_MAX_PER_ROOM`, `ROOM_VIEW_MAX_TOTAL`, `ROOM_MAX_QUEUED_MB` | All are in self-hosting.md "advanced limits"; a self-hoster who set one would see it silently ignored. Mitigate with a boot-time warning for any retired `ROOM_*` name (settingsFromEnv already fails boot on invalid values, so the operator is used to being told). `settings.test.ts`, `settings-startup.test.ts`, `pending-admission.test.ts`, `room-capacity.test.ts` and `server.test.ts` exercise some through env and would move to constructor options. |
-| Group 2 (0.16 cutover): `ROOM_LEGACY_DAYS`, `ROOM_MIGRATION_MAX_READ_MB`, `ROOM_MIGRATION_MAX_RECORDS`, `ROOM_MIGRATION_MAX_SOURCES` | An operator still upgrading a ≤0.16 server whose rooms exceed a cap loses the documented escape hatch (`migrate.ts` errors say "raise it and retry"). Retire together with the migration path once it leaves the supported upgrade window, not before. |
-| `ROOM_STALE_DAYS` | Documented in README, reference and in the Codex allow-list; users who set it lose a display-only label tweak. Benefit: the `stale` label can no longer disagree with the fixed 7-day hub expiry (`ROOM_STALE_MS`). |
-| `ROOM_IDLE_LEASE_MS` | Documented in README/reference; `codex-env.test.ts` pins it in the allow-list (added after 2026-09-29 rehearsal finding F3), and its one test sets it through the environment, so that test needs a parameter seam instead. |
-| `ROOM_GIT_TIMEOUT_MS` | Undocumented but in the Codex allow-list; `carry-cleanliness.test.ts` drives timeouts through it (needs a parameter seam). A user on a very slow filesystem loses the override; timeouts already scale with tree size and cap at five minutes. |
+The 18 non-migration tuning variables are fixed at their former unset defaults (see the table). Server capacities, audit retention, view-key lifetime, compaction and other keep/keep-but-document rows remain configurable. The four 0.16 migration variables are removed by the separate migration-retirement change; their completed table state is recorded here by agreement with its owner.
+
+`shared/retired-env.ts` is the single server/client retirement list. Each entry point logs one line per applicable set variable at startup, including empty or malformed values, without printing values or refusing startup. The list also contains the four retired migration variables, agreed with the migration owner. This diagnostic can only see a process's environment: Codex's allow-list no longer forwards the three retired client names, so a value hidden by that host produces no MCP warning. No hook or extra handoff is introduced.
+
+`carry-cleanliness.test.ts` now calls `setGitTimeoutForTest`; `PresenceEnd` already accepts explicit lease options. The spawned-server entry receives admission/list limits as structured command arguments through `devServers.start`, never through environment settings. Startup/settings tests cover the fixed defaults, derived queue headroom and diagnostic behavior. Historical rehearsal records and CHANGELOG entries retain the variable names as evidence of the versions they describe.
 
 ## Other findings
 
@@ -191,16 +189,15 @@ need no change. `LEAD_ONLY_ENV` is the one explicit list and now matches what `w
   `codex-mcp.json` `env_vars`, so under Codex they never take effect. Only the first matters to users; better still,
   derive the client frame cap from the server's advertised document cap and drop the knob.
 - Server settings read outside `settingsFromEnv` are not validated at boot: `ROOM_ADMINS`, `ROOM_MANAGED_REPOS`,
-  `ROOM_SHARE_MAX`, `ROOM_TRUST_PROXY`, `ROOM_STATIC`, `ROOM_IDENTITY_GUARD`, `ROOM_ARCHIVE_LIST_MAX_KEYS`,
+  `ROOM_SHARE_MAX`, `ROOM_TRUST_PROXY`, `ROOM_STATIC`, `ROOM_IDENTITY_GUARD`,
   `ROOM_REVALIDATE_MINUTES`, `ROOM_COMPACT_MIN_DELETED`. A typo such as `ROOM_TRUST_PROXY=yes` silently means false.
-  `ROOM_MAX_PENDING_LOGINS`, `ROOM_LOAD_MAX_MB` and `ROOM_MIGRATION_*` are read twice (validated in settings.ts, then
+  `ROOM_LOAD_MAX_MB` and (before migration retirement) `ROOM_MIGRATION_*` are read twice (validated in settings.ts, then
   re-read from `process.env` in auth.ts / limits.ts / migrate.ts).
 - The resume path passes `ROOM_WORKER_NICE` to `workerPriority` through a synthetic `{ ...process.env, ROOM_WORKER_NICE }`
   object: an argument disguised as an environment variable.
-- `ROOM_STALE_DAYS` is both a client env var (config.ts) and an exported constant in `@room/shared/expiry.ts` with a
-  different meaning (fixed hub expiry in days). Same name, two rules.
+- `ROOM_STALE_DAYS` is now only an exported day-count constant in `@room/shared/expiry.ts` and a retired-environment diagnostic name; the configurable MCP label and hub both use `ROOM_STALE_MS`. The web participant panel retains its unrelated fixed ten-minute offline-claim flag (`shared/views.ts:245`), by the lead's scope decision.
 
-## Counts
+## Original audit counts
 
 By kind (109 names from `packages/*/src`):
 
@@ -218,7 +215,7 @@ So 89 of the 109 are environment variables; 33 are settings a person is meant to
 By verdict: keep 57 · keep but document 9 · make a constant 22 · remove 1 (done) · n/a 20.
 If the "make a constant" list lands, 66 environment variables remain: 19 team-server settings and 47 client-side (28 settings or knobs, 13 handoff, 6 test seams).
 
-## Collapse first
+## Original prioritization (historical)
 
 1. **Server fairness budgets (15 names → 0).** They bound per-principal or per-request work (body reads, HTTP
    responses, PR operations, room lists, exports, pending admissions/logins, awareness rates, view keys, per-socket

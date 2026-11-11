@@ -29,10 +29,16 @@ export function missingGitCwd(dir: string, error: NodeJS.ErrnoException): Error 
   return error.code === 'ENOENT' && !existsSync(dir) ? new Error(`worktree ${dir} no longer exists`) : undefined
 }
 
+let testTimeoutMs: number | undefined
+/** Process-wide Git boundary seam for tests, including synchronous carry/recovery commands. */
+export function setGitTimeoutForTest(ms: number | undefined): void {
+  if (process.env.NODE_ENV !== 'test') throw new Error('Git timeout overrides require NODE_ENV=test')
+  testTimeoutMs = ms
+}
+
 function overrideMs(configured?: number): number | undefined {
   if (configured !== undefined && Number.isFinite(configured) && configured > 0) return configured
-  const fromEnv = Number(process.env.ROOM_GIT_TIMEOUT_MS)
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : undefined
+  return testTimeoutMs
 }
 
 export const timeoutMs = (configured?: number): number => overrideMs(configured) ?? DEFAULT_GIT_TIMEOUT_MS

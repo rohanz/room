@@ -23,7 +23,7 @@ it('reads no stored values and runs no inventory at startup with several persist
     }
     await provider.destroy()
     await fs.writeFile(path.join(dir, 'rooms.json'), JSON.stringify(Object.fromEntries(
-      ['first', 'second', 'third'].map(name => [`local/${name}`, { at: Date.now(), branches: [`local/${name}/main`] }]))))
+      ['first', 'second', 'third'].map(name => [`local/${name}`, { at: Date.now(), branches: [], mode: 'repo', migratedAt: Date.now() }]))))
     // Resolve levelup from this checkout, not the temporary fixture directory.
     await fs.writeFile(preload, `
 const { createRequire } = require('node:module');

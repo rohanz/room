@@ -36,7 +36,7 @@ import { LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionRuntim
 import { sessionHost } from './hosts/selection.js'
 import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
-import { migrateLegacyLocalChoice, worktreePath } from './choice.js'
+import { worktreePath } from './choice.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
@@ -115,8 +115,6 @@ export interface Session {
   /** Receives this session's server-wait progress lines (the join's `log`). */
   serverLog?: ServerLog
   autoTagNote?: string
-  /** One-time upgrade notice for the first reply: a remembered 0.16 per-branch local room moved to the repository room. */
-  upgradeNote?: string
   /** Latest preview started by this MCP session; never reconstructed from shared room history. */
   lastPreview?: { clean: boolean; complete: boolean; testsPassed?: boolean; partialPassed?: boolean; testsCommand?: string }
   policyStore: PolicyStore
@@ -879,10 +877,6 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     const leadClone = dispatched ? process.env.ROOM_LEAD_CLONE || undefined : opts.leadClone
     const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web, leadClone })
     session.shareWarning = config.shareWarning
-    if (config.legacyLocalRoom && session.roomName === config.legacyLocalRoom.to) {
-      const note = await migrateLegacyLocalChoice(dir).catch(error => { opts.log?.(`could not update the remembered room choice: ${error instanceof Error ? error.message : String(error)}`); return undefined })
-      if (note) { opts.log?.(note); session.upgradeNote = note }
-    }
     return session
   }
   const parsed = parseServer(chosen)

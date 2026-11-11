@@ -112,6 +112,8 @@ export interface ServerHubsOptions {
   log(line: string): void
   /** The room's document is over its size cap. */
   full(room: string): boolean
+  /** Registry membership only; initialization uses the state already read during normal loading. */
+  registered?(room: string): boolean
   hubBytes?(room: string, bytes: number): void
   mono?: () => number
   wall?: () => number
@@ -225,6 +227,10 @@ export class ServerHubs {
         const loaded = (async () => {
           await this.waitForRecoveredWrite(docName)
           const persisted = await this.compactAtLoad(docName, await provider.getYDoc(docName), provider)
+          // Check before any hub metadata is added. A vector alone misses unapplied causal updates.
+          if (this.opts.registered?.(docName) && Y.decodeStateVector(Y.encodeStateVector(persisted)).size === 0
+            && persisted.store.pendingStructs === null && persisted.store.pendingDs === null)
+            persisted.getMap('meta').set('schemaVersion', 2)
           this.writes.set(docName, state)
           doc.once('destroy', () => { if (this.writes.get(docName) === state && !state.dirty && !state.pending && !state.error) this.writes.delete(docName) })
           Y.applyUpdate(doc, Y.encodeStateAsUpdate(persisted))

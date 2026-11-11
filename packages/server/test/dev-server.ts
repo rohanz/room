@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import type { overrideSettingsForTest } from '../src/settings.js'
 import type { overrideLimitsForTest } from '../src/limits.js'
 
 const server = fileURLToPath(new URL('../src/index.ts', import.meta.url))
@@ -9,8 +10,8 @@ const testEntry = fileURLToPath(new URL('./helpers/server-entry.ts', import.meta
 export function devServers() {
   const children = new Set<ChildProcess>()
 
-  function start(options: SpawnOptions, limits?: Parameters<typeof overrideLimitsForTest>[0]): ChildProcess {
-    const entry = limits ? [testEntry, JSON.stringify(limits)] : [server]
+  function start(options: SpawnOptions, limits?: Parameters<typeof overrideLimitsForTest>[0], settings?: Parameters<typeof overrideSettingsForTest>[0]): ChildProcess {
+    const entry = limits || settings ? [testEntry, JSON.stringify(limits ?? {}), JSON.stringify(settings ?? {})] : [server]
     const child = spawn(process.execPath, ['--import', 'tsx', ...entry], options)
     children.add(child)
     return child

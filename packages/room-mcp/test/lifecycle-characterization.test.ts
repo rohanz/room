@@ -32,7 +32,7 @@ afterEach(() => {
 describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as const)('%s lifecycle storage observable contract', (_name, implementation) => {
   async function open(common?: string) {
     if (!common) { common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-lifecycle-parity-')); roots.push(common) }
-    const registry = await implementation.open(common, { migrate: false, watch: false, identity: token, liveness: () => 'alive' })
+    const registry = await implementation.open(common, { watch: false, identity: token, liveness: () => 'alive' })
     opened.push(registry)
     return registry
   }
@@ -158,7 +158,7 @@ describe.each([['facade', WorkerRegistry], ['file adapter', FileWorkerStore]] as
     expect(await registry.beginOperation(first.id, 'stop')).toBe(false)
     await registry.beginStop(first.id, 'discarded')
     await expect(registry.beginOperation(first.id, 'collect')).rejects.toThrow('another call')
-    const stranger = await implementation.open(registry.commonDir, { watch: false, migrate: false,
+    const stranger = await implementation.open(registry.commonDir, { watch: false,
       identity: { ...token, nonce: 'stranger' }, liveness: () => 'alive' })
     opened.push(stranger)
     expect(await stranger.finishOperation(first.id)).toBe(false)

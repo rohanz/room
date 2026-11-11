@@ -10,7 +10,7 @@ import { checkoutPublisher, publisherLine } from './share.js'
 import { sessionWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
-import { coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestNames, manifestPaths, snapshotMetadata } from '@room/shared'
+import { ROOM_STALE_MS, coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestNames, manifestPaths, snapshotMetadata } from '@room/shared'
 import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatCount, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
@@ -347,7 +347,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences' | 'others' | 'shareOf' | 'now' | 'isMe'>): Pick<HandlerState, 'loadAreas' | 'areasOf' | 'areasFor' | 'myAreas' | 'inMyAreas' | 'areaLines' | 'ownerHints' | 'msgInMyAreas' | 'claimLine' | 'ledgerLines' | 'scopeLine' | 'personLine'> {
   const { ctx, log, presences, others, shareOf, now, isMe } = deps
-  const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1000
   const areaIndex = new WeakMap<Session, { head: string; areas: Areas }>()
   const loadAreas = async (s: Session): Promise<Areas> => {
       const head = participantRecord(s.room, s.me.name)?.git?.head ?? 'HEAD'
@@ -404,7 +403,7 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
       return sharesArea(mineA, areasFor(s, m.from))
     }
   const claimLine = (s: Session, c: Claim) => {
-      const stale = !presences(s).some(p => p.user.name === c.by) && now() - c.at > STALE_MS
+      const stale = !presences(s).some(p => p.user.name === c.by) && now() - c.at > ROOM_STALE_MS
       return formatClaimLine(c, { yours: isMe(s, { name: c.by, kind: c.byKind }), stale })
     }
   const ledgerLines = (s: Session, q: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string, excludeId?: string): string[] => {

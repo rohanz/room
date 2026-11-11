@@ -1,7 +1,5 @@
 /** Loopback relay transport, selective memory and hub. The standalone daemon owns its lifecycle. */
 import { RoomMemory, finalSave, memoryFile } from './memory.js'
-import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
-export { legacyRelayRunning } from './local-migrate.js'
 import type { ProcessIdentity } from './leases.js'
 export { ensureLocalDaemon, startLocalDaemon, stopLocalDaemon, LOCAL_DAEMON_IDLE_MS } from './daemon.js'
 export type { LocalDaemon, LocalDaemonOptions, StartedLocalDaemon } from './daemon.js'
@@ -132,7 +130,6 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
   const memory = opts.commonDir ? new RoomMemory(opts.commonDir, decodeURIComponent(name), opts.log) : undefined
   const doc = memory?.doc ?? new Y.Doc({ gc: true })
   if (doc.getMap('meta').get('schemaVersion') !== 2) doc.getMap('meta').set('schemaVersion', 2)
-  if (opts.commonDir) catchUpLocal(opts.commonDir, decodeURIComponent(name), doc, opts.log)
   const awareness = new awarenessProtocol.Awareness(doc)
   awareness.setLocalState(null)
   const meter = new DocSizeMeter(() => Y.encodeStateAsUpdate(doc).byteLength, opts.docCap?.meter)
@@ -768,7 +765,6 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
           const d = docs.get(encodeURIComponent(room))
           if (d?.memory) d.memory.forget()
           else if (opts.commonDir) fs.rmSync(memoryFile(opts.commonDir, room), { force: true })
-          if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room)
           res.writeHead(204); res.end()
         } catch { res.writeHead(500); res.end('could not forget local memory') }
         return
@@ -792,8 +788,6 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         d.presence.prune()
         try { d.hub?.tick() }
         catch (error) { opts.log?.(`hub maintenance ${name}: ${error instanceof Error ? error.message : String(error)}`) }
-        if (opts.commonDir && d.memory) try { catchUpLocal(opts.commonDir, decodeURIComponent(name), d.doc, opts.log) }
-        catch (error) { opts.log?.(`local migration: ${error instanceof Error ? error.message : String(error)}`) }
       }
     }, 1000)
     ticker.unref?.()
@@ -807,7 +801,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
       if (obsolete(req, url)) return refuse(400, 'use Authorization: Room-Proof or a browser ticket')
       if (url.searchParams.has('negotiate') && url.searchParams.get('negotiate') !== '1') return refuse(426, 'unsupported bootstrap; update this client')
-      if (url.searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: this local room uses schema 2')
+      if (url.searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: Room 0.16 peers are refused; use v0.17.47, the last release that can migrate, before upgrading')
       try { decodeURIComponent((req.url ?? '/').split('?')[0]) } catch { return refuse(400, 'Bad Request') }
       if (opts.key) {
         const issued = url.searchParams.get('ticket')

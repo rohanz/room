@@ -257,7 +257,7 @@ describe('logout of a token the server has not loaded yet', () => {
       async loadSessions() { if (state.loadFails) throw new Error('storage down'); return { ...sessions } },
       async putSession(id, s) { sessions[id] = s },
       async deleteSession(id) { if (state.deleteFails) throw new Error('storage down'); state.deleted.push(id); delete sessions[id] },
-      async audit() {}, async readAudit() { return [] }, async readAllAudit() { return { entries: [], complete: true } }, async close() {},
+      async audit() {}, async readAudit() { return [] }, async close() {},
     }
     return { store, state }
   }

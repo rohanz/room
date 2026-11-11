@@ -7,7 +7,7 @@
  * uncommitted work becomes visible to the repo's room members.
  *
  * 0.17 writes carry `schema: 2`. A local choice without it was written by 0.16 (or an rc before rc7), whose
- * remembered local room may be a per-branch room; the first local join moves it to the repository room.
+ * remembered local room may be a per-branch room; that room is now ignored without rewriting the choice.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,10 +15,10 @@ import { primePrivateDirectory } from '@room/relay'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd'
 import { mainWorktree } from '@room/roomd/local'
+import { legacyLocalBranchRoom } from './room-name.js'
 import { LOCAL, normaliseWhere } from './config.js'
 import { acquireOwnedFile } from './owned-file.js'
 import { withGuard, writeAtomic } from './leases.js'
-import { legacyLocalBranchRoom } from './room-name.js'
 
 const CHOICE_FILE = 'room-choice.json'
 /** Marks a choice written by Room 0.17 or later: its room is never a 0.16 per-branch room. */
@@ -70,26 +70,6 @@ export async function writeChoice(dir: string, where: string, by?: string, room?
   })
 }
 
-/**
- * Move a remembered 0.16 per-branch local room (`local/<main worktree basename>/<branch>`) to the repository room,
- * keeping every other field. Returns the one-time notice only to the caller that rewrote the file.
- */
-export async function migrateLegacyLocalChoice(dir: string): Promise<string | undefined> {
-  const file = await choiceFile(dir)
-  await primePrivateDirectory(path.dirname(file))
-  const base = path.basename(await mainWorktree(dir))
-  return withGuard(`${file}.lock`, () => {
-    let prev: Record<string, unknown>
-    try { prev = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> } catch { return undefined }
-    if (!prev || typeof prev !== 'object' || normaliseWhere(prev.where as string) !== LOCAL || prev.schema !== undefined || typeof prev.room !== 'string') return undefined
-    const from = prev.room.trim(), to = legacyLocalBranchRoom(from, base)
-    if (!to) return undefined
-    const { room: _room, ...rest } = prev
-    writeAtomic(file, { ...rest, schema: SCHEMA })
-    return `your remembered 0.16 branch room ${from} is now the repository room ${to}; Room 0.17 has one room per repository, shared by every branch`
-  })
-}
-
 /** Remember an automatically assigned identity without changing this clone's room choice. */
 export async function rememberTag(dir: string, tag: string): Promise<RoomChoice> {
   const file = await choiceFile(dir)
@@ -105,6 +85,8 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
   try {
     const prev = await readChoice(dir)
     if (!prev && fs.existsSync(file)) throw new Error(`cannot rewrite unreadable Room choice ${file}`)
+    if (prev && prev.schema === undefined && normaliseWhere(prev.where) === LOCAL && prev.room
+      && legacyLocalBranchRoom(prev.room, path.basename(await mainWorktree(dir)))) return prev
     const key = await worktreePath(dir)
     const c: RoomChoice = { ...(prev ?? { where: LOCAL, at: Date.now() }), tags: { ...prev?.tags, [key]: tag } }
     const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`

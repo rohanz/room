@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { resolveConfig } from './config.js'
 import { credentialsPath, getCredential } from './credentials.js'
 import type { DeliveryHealth } from './wake-reconciler.js'
-import { canonicalRelayWarning, cloneId, deterministicPort, legacyRelayRunning, readRelayInfo, relayFile, relayIdentity } from '@room/relay'
+import { canonicalRelayWarning, cloneId, deterministicPort, readRelayInfo, relayFile, relayIdentity } from '@room/relay'
 import { gitCommonDir } from '@room/roomd'
 import { collectLocalState } from './local-state-gc.js'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
@@ -80,7 +80,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   } else add(f.relayFile ? f.relayHealth ? 'PASS' : 'WARN' : 'PASS', 'local relay', f.relayFile ? f.relayHealth ? 'discovery and /health OK' : 'discovery exists; /health unavailable' : 'not started yet', 'Join the local room to start its relay')
   if (f.unknownLocalState?.length) add('WARN', 'local state', `${f.unknownLocalState.length} unlisted entr${f.unknownLocalState.length === 1 ? 'y' : 'ies'} under the clone's room directory: ${f.unknownLocalState.slice(0, 5).join(', ')}${f.unknownLocalState.length > 5 ? ', …' : ''}`, 'Room never removes files its table does not name (docs/reference.md, Local state); remove them by hand if they are leftovers')
   if (f.hookCompatibility) add('WARN', 'hook delivery contract', f.hookCompatibility, 'Update the hook or reconnect Room (/mcp) or restart the session')
-  if (f.legacyRelay) add('WARN', 'Room 0.16 session', 'a Room 0.16 local relay is still running in this clone', 'End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)')
+  if (f.legacyLocalFiles?.length) add('INFO', 'Room 0.16 local leftovers', `${f.legacyLocalFiles.slice(0, 5).join(', ')}${f.legacyLocalFiles.length > 5 ? ', …' : ''}; Room 0.17 does not use them; v0.17.47 can import them; safe to delete if import is not needed`)
   if (f.canonicalRelayWarning) add('WARN', 'canonical relay', f.canonicalRelayWarning, 'Quit the older Room session or reconnect Room there')
   add(f.inSession ? f.stale ? 'WARN' : 'PASS' : 'PASS', 'running session', f.inSession ? f.stale ?? 'matches installed bundle' : 'n/a', 'Restart the host session or reconnect Room (/mcp)')
   return rows
@@ -121,6 +121,40 @@ export function hookCompatibilityWarning(dir?: string): string | undefined {
   } catch { /* missing, stale or partially written diagnostic */ }
 }
 
+// Diagnostic-only names recognized by the retired 0.16 hook-state importer, plus old discovery.
+const LEGACY_LOCAL_NAMES = ['room-session.json', 'room-local.json', 'room-hook-seen.json', 'room-state.json',
+  'room-hook-activity.json', /^room-write-intents-.*\.json$/, /\.notice-lock$/] as const
+
+/** Bounded, name-only diagnostic. Never open an old record, snapshot, carry file or process ID. */
+export function legacyLocalFiles(common: string): string[] {
+  const found: string[] = []
+  let budget = 256
+  const label = (name: string) => name.replace(/[\x00-\x1f\x7f]/g, '?').slice(0, 96)
+  const names = (dir: string, visit: (name: string) => void) => {
+    if (budget <= 0 || found.length >= 6) return
+    let stream: fs.Dir | undefined
+    try {
+      stream = fs.opendirSync(dir)
+      while (budget > 0 && found.length < 6) {
+        budget--
+        const entry = stream.readSync()
+        if (!entry) break
+        visit(entry.name)
+      }
+    } catch { /* Missing or unreadable old directories are not part of the active runtime. */ }
+    finally { stream?.closeSync() }
+  }
+  const gitDirectory = (relative: string) => names(path.join(common, relative), name => {
+    if (LEGACY_LOCAL_NAMES.some(pattern => typeof pattern === 'string' ? name === pattern : pattern.test(name)))
+      found.push(label(relative ? `${relative}/${name}` : name))
+  })
+  gitDirectory('')
+  names(path.join(common, 'room-local'), name => { if (name.endsWith('.ydoc')) found.push(label(`room-local/${name}`)) })
+  names(path.join(common, 'room-carry'), name => { if (name.endsWith('.json')) found.push(label(`room-carry/${name}`)) })
+  names(path.join(common, 'worktrees'), name => gitDirectory(`worktrees/${name}`))
+  return found
+}
+
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
 async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
   const f = await hostDoctorFacts(dir, inSession, fileURLToPath(import.meta.url))
@@ -150,7 +184,6 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     } else if (f.repo) {
       const common = await gitCommonDir(dir)
       const info = readRelayInfo(common)
-      f.legacyRelay = legacyRelayRunning(common)
       f.relayFile = info ? relayFile(common) : undefined
       if (info) f.relayHealth = (await probeHealth(`http://127.0.0.1:${info.port}/health`)).ok
       const port = deterministicPort(common)
@@ -160,7 +193,11 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     }
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
   f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir())
-  if (f.repo) try { f.unknownLocalState = collectLocalState(await gitCommonDir(dir), { dryRun: true }).unknown } catch { /* unreadable state directory: nothing to report */ }
+  if (f.repo) try {
+    const common = await gitCommonDir(dir)
+    f.legacyLocalFiles = legacyLocalFiles(common)
+    f.unknownLocalState = collectLocalState(common, { dryRun: true }).unknown
+  } catch { /* unreadable state directory: nothing to report */ }
   return f
 }
 export interface DoctorOptions {

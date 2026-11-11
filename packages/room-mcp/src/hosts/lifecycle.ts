@@ -1,10 +1,6 @@
 /** Host-specific lifecycle evidence. Storage callers consume these decisions without interpreting hosts. */
 import { runLogFacts, runLogIdentity } from '../run-log-facts.js'
 import type { Run, WorkerRecord } from '../worker-status.js'
-import type { HostId } from './types.js'
-
-/** The legacy discovery path historically assigned Codex when no display evidence named a host. */
-export function legacyWorkerHost(value: HostId | undefined): HostId { return value ?? 'codex' }
 
 export function retainedSessionMissing(record: Pick<WorkerRecord, 'host' | 'hostSessionId'> & Partial<Pick<WorkerRecord, 'id' | 'dir'>>,
   run: Pick<Run, 'mode' | 'logStart'> & Partial<Pick<Run, 'n'>>, file: string): boolean {

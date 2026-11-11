@@ -156,18 +156,18 @@ curl -H "Authorization: Bearer <session id>" "https://room.example.com/audit?sin
 
 The session id is in `~/.config/room/credentials.json` on a machine that ran `room_login`.
 
-A query reads the log backwards and keeps only the requested tail: at most `ROOM_AUDIT_SCAN_MB`
-(default 64) of the newest bytes within a 10 s deadline. The response says whether that covered
+A query reads the log backwards and keeps only the requested tail: at most 64 MiB
+of the newest bytes within a 10 s deadline. The response says whether that covered
 everything: `X-Room-Audit-Complete: true|false` and, when false, `X-Room-Audit-Gaps` naming the reason
 (`pruned`, `scan-bytes`, `deadline`, `unreadable`, or `rotated` when the log kept rotating while the
 query opened it, with no entries returned: retry). A segment deleted while a query opens it counts as
 `pruned`, as does one an operator removes by hand during a query. The file rotates into `audit.log.1`, `audit.log.2`, …
 once a segment passes `ROOM_AUDIT_ROTATE_MB` (default 64). Nothing is deleted unless
 `ROOM_AUDIT_KEEP_FILES` is set; then older segments are removed after `audit.log.pruned` records it,
-and every later query and migration inventory that reaches into the pruned period reports itself
+and every later query that reaches into the pruned period reports itself
 incomplete rather than pretending the history is whole. Postgres has no retention setting.
 
-`GET /admin/inventory` lists stored room documents with their sizes for the same admins; an unlisted caller receives `403`. `scripts/room-inventory.mts` in a checkout is the offline alternative over a stopped server's `YPERSISTENCE` directory. Both matter mostly for the [0.16 upgrade](../docs/upgrading.md).
+`GET /admin/inventory` lists stored room documents with their sizes for the same admins; an unlisted caller receives `403`. Inventory is available through this authenticated endpoint; the retired 0.16 offline pre-flight is available only in v0.17.47.
 
 ## Backup
 
@@ -192,7 +192,7 @@ docker compose pull room
 docker compose up -d room
 ```
 
-With the build override, `git pull` then add `-f deploy/docker-compose.build.yml --build`. Clients update the plugin on their own schedule unless a release says otherwise; the `docker compose` healthcheck hits `/health`. Moving a server from Room 0.16 is a one-way data migration: follow [the upgrade guide](../docs/upgrading.md) and take its snapshot first.
+With the build override, `git pull` then add `-f deploy/docker-compose.build.yml --build`. Clients update the plugin on their own schedule unless a release says otherwise; the `docker compose` healthcheck hits `/health`. Current servers refuse Room 0.16 state; v0.17.47 is the last release that can migrate it. See [the upgrade notice](../docs/upgrading.md#room-016-upgrade-path-retired).
 
 ## Running without Docker
 
@@ -216,25 +216,18 @@ Resource limits with defaults that suit a small team. Change them only for a rea
 | `ROOM_MAX_CONNECTIONS`, `ROOM_MAX_CONNECTIONS_PER_ROOM`, `ROOM_MAX_CONNECTIONS_PER_PRINCIPAL` | Live websockets overall, per room, and per principal: a login, or for browser views each view key (different view keys have separate allowances; the overall and per-room limits still apply). Every session, worker and browser view is one connection. | `4000`, `200`, `100` |
 | `ROOM_DOC_MAX_MB` | Live room document cap: once a room is over it, writers are closed with 4413 and reads continue. | `64` |
 | `ROOM_MAX_MESSAGE_MB` | Largest websocket message accepted. | `16` |
-| `ROOM_LOAD_MAX_MB` | Stored-byte ceiling per document when loading it cold during the 0.16 migration. Other cold loads and joins use the larger of this and twice `ROOM_DOC_MAX_MB`. | `32` |
-| `ROOM_AUDIT_SCAN_MB` | Newest audit bytes a `GET /audit` query scans (10 s deadline); past it the response is marked incomplete. | 64 |
+| `ROOM_LOAD_MAX_MB` | Cold loads and joins use the larger of this stored-byte limit and twice `ROOM_DOC_MAX_MB`. | `32` |
 | `ROOM_AUDIT_ROTATE_MB` | Size at which `audit.log` rotates into a numbered segment. | 64 |
 | `ROOM_AUDIT_KEEP_FILES` | Rotated segments kept; older ones are deleted and recorded in `audit.log.pruned`. Unset keeps all. | all |
 | `ROOM_COMPACT_MIN_DELETED` | Deleted Yjs structs a stored room needs before its first load after a server start rebuilds it from its values (a new document generation; clients rejoin with a fresh copy). `0` or `off` disables. | `10000` |
-| `ROOM_MAX_QUEUED_MB`, `ROOM_MAX_TOTAL_QUEUED_MB` | Bytes that may wait unsent for one websocket (default: the document cap plus 4) and for all of them. A consumer already behind is disconnected with 1013 and reconnects. The total is checked before every send: the largest queues are dropped first, and when nothing more can be dropped the new message's socket is asked to retry (1013). | `68`, `256` |
-| `ROOM_AWARENESS_MESSAGES_PER_MINUTE`, `ROOM_AWARENESS_IDS_PER_ROOM` | Presence messages per connection a minute and IDs per room. The fixed limits are 64 KiB per message, 16 KiB per state and 16 IDs per connection. | `6000`, `4096` |
-| `ROOM_VIEW_TTL_MS`, `ROOM_VIEW_MAX_PER_ROOM`, `ROOM_VIEW_MAX_TOTAL` | Browser view-key lifetime, keys per room and keys on the server. The fixed limits are 5 keys per login and room, and 20 issued per login an hour. Asking again returns the key you already hold while more than half its life remains. | 7 days, `200`, `10000` |
-| `ROOM_MAX_PENDING_LOGINS` | Login attempts awaiting completion. | `1000` |
-| `ROOM_MAX_PENDING_ADMISSIONS`, `ROOM_MAX_PENDING_PER_ADDRESS` | Websocket upgrades still being admitted (permission check, document load), overall and per address; more are answered 429 and clients retry. | `256`, `16` |
-| `ROOM_MAX_BODY_READS` | Concurrent HTTP body reads; past the limit the server answers 503. Bodies are fixed at 64 KiB while streaming (413), with a fixed 10 s read deadline (408). `POST /github/pr-note` accepts up to 4 MiB with a live session. | `32` |
-| `ROOM_MAX_HTTP_RESPONSES`, `ROOM_MAX_ROOM_LISTS`, `ROOM_ARCHIVE_LIST_MAX_KEYS` | Responses built from room or registry state (`/rooms`, `/archive`, `/audit`) in flight overall, room listings in flight, and unresolved names returned by an archive listing (with `unresolvedTotal` and `truncated`). Each response reserves its bytes; per identity the response limit is fixed at 4 and the deadline at 120 s. Room listings are fixed at one at a time and 10 a minute per identity. Definite GitHub denials are cached for a fixed 60 s. | `32`, `8`, `1000` |
-| `ROOM_MAX_PR_OPERATIONS` | GitHub pull-request proxy calls in flight overall. The fixed limits per identity are 2 notes in flight, 4 lists in flight and 30 operations a minute; past them the server answers 429. A disconnect aborts the GitHub call; identical list requests share one. | `8` |
-| `ROOM_MAX_EXPORTS` | Archive exports and listings in flight on the server; per identity the limit is fixed at 1. A slot is held until the load has finished. The export deadline is fixed at 120 s and streaming chunks at 64 KiB; an export's bytes are reserved against the same output budget as websockets before it is loaded. The exporting agent's own frame ceiling is `ROOM_EXPORT_MAX_FRAME_MB` (default 64). | `2` |
+| `ROOM_MAX_TOTAL_QUEUED_MB` | MiB that may wait unsent across all websockets. Each socket has a fixed budget of the document cap plus 4 MiB. A consumer already behind is disconnected with 1013 and reconnects. The total is checked before every send: the largest queues are dropped first, and when nothing more can be dropped the new message's socket is asked to retry (1013). | `256` |
+| `ROOM_VIEW_TTL_MS` | Browser view-key lifetime. The fixed limits are 200 keys per room, 10,000 on the server, 5 per login and room, and 20 issued per login an hour. Asking again returns the key you already hold while more than half its life remains. | 7 days |
 | `ROOM_REVALIDATE_MINUTES` | Recheck each live GitHub session's push access, bypassing the positive cache. `0` disables periodic checks; logout and expiry still close sockets. | `10` |
 | `ROOM_IDENTITY_GUARD` | Member identity-guard mode. Only literal `enforce` blocks objected document packets; every other value observes them, rate-limits logs and `identity_violation` audits to once per login per minute, and applies the packet unchanged. `enforce` is experimental and can desynchronise a client's causal stream. Read-only viewer document and awareness writes remain blocked in either mode. | observe-only |
-| `ROOM_LEGACY_DAYS`, `ROOM_MIGRATION_*` | Budgets of the 0.16 cutover; see [the upgrade guide](../docs/upgrading.md#server-settings-for-the-cutover). | |
 
-Fixed limits with no setting. Per address and minute: 10 login starts, 120 login polls, 30 OIDC callbacks, 600 websocket
+Fixed fairness limits: 256 pending websocket admissions overall and 16 per address; 1,000 pending logins; 32 body reads; 32 HTTP responses and 8 room listings in flight; 8 GitHub proxy operations; 2 archive exports/listings; 1,000 unresolved names per archive listing; 64 MiB scanned per audit query (10 s deadline). Presence allows 6,000 messages per minute per connection and 4,096 IDs per room, with 64 KiB messages, 16 KiB states and 16 IDs per connection. HTTP bodies are 64 KiB with a 10 s deadline; authenticated PR notes allow 4 MiB. Response work is limited to 4 per identity with a 120 s deadline; room lists allow one in flight and 10 per minute per identity, caching definite GitHub denials for 60 s. GitHub proxy work allows 2 notes, 4 lists and 30 operations per minute per identity. An archive export holds its slot through loading, reserves its output bytes against the websocket budget, and has a 120 s deadline with 64 KiB chunks; its client frame cap remains `ROOM_EXPORT_MAX_FRAME_MB` (default 64). See [retired settings](../docs/reference.md#environment-variables) for startup warning behavior.
+
+Other fixed limits with no setting. Per address and minute: 10 login starts, 120 login polls, 30 OIDC callbacks, 600 websocket
 upgrade attempts, 60 browser tickets, 30 failed admissions; past a limit the server answers 429 with `Retry-After`. A device-flow poll
 earlier than GitHub's interval is answered `pending` without calling GitHub. A browser websocket ticket, exchanged from a session or view key, lasts 60 s and is used once. Per room, the hub allows 512 live name
 leases (64 per login), keeps at most 1,024 ended names, accepts hub frames up to 96 KiB with holder fields up to 512
@@ -253,7 +246,6 @@ The hub keeps its leases in its own files (`<YPERSISTENCE>/hub/leases/`, one per
 alone: `bytes` is the size of the SST files overlapping the document and `updates: 0` means
 uncounted. A document is flagged `possibly over` when those bytes × 24 (above snappy's best
 compression ratio, about 21×) plus memtable slack could exceed the load budget, or when metadata is
-missing; the estimate never calls an oversized document safe. `scripts/room-inventory.mts` is the
-exact pre-flight over a stopped server's directory. To compare idle memory on synthetic persisted data, run `npx tsx scripts/measure-idle-rss.mts --mb 60`
+missing; the estimate never calls an oversized document safe. To compare idle memory on synthetic persisted data, run `npx tsx scripts/measure-idle-rss.mts --mb 60`
 (add `--cmd 'node --import tsx packages/server/src/index.ts'` for the source runtime); it prints the
 server's RSS after startup and 60 seconds idle.

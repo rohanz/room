@@ -21,7 +21,7 @@ const identityOf = (v: unknown): ProcessIdentity | undefined => object(v) && pid
   ? { pid: v.pid, startTime: typeof v.startTime === 'string' ? v.startTime : '', executable: typeof v.executable === 'string' ? v.executable : '' } : undefined
 
 interface CutoverClient {
-  kind: 'session' | 'mcp' | 'worker' | 'legacy-session'
+  kind: 'session' | 'mcp' | 'worker'
   source: string
   label: string
   cwd?: string
@@ -177,7 +177,6 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
   if (resolutionRecord && !parsedResolutions) state.issues.push(`Invalid or foreign daemon cutover resolutions in ${path.join(room, RESOLUTIONS)}; they must name this clone. Inspect and remove the file before cutover`)
   const upgradedWorkers = new Set<string>()
   if (options.currentWorkerId) upgradedWorkers.add(options.currentWorkerId)
-  const workerProcesses = new Map<string, { identity?: ProcessIdentity; runtime: CutoverClient['runtime']; processClaim: boolean }>()
   // A live daemon-client MCP names the worker it serves and the host that started it (some hosts write no worker
   // session record). The worker counts as upgraded only when that host is exactly its recorded launch process.
   const workerHosts = new Map<string, ProcessIdentity[]>()
@@ -225,7 +224,6 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
     const servedHost = (workerHosts.get(worker.id) ?? []).some(host => launched.some(v => v.pid === host.pid
       && sameStartTime(v.startTime, host.startTime) && v.executable === host.executable))
     const runtime = upgradedWorkers.has(worker.id) || servedHost ? 'daemon-client' : 'legacy'
-    workerProcesses.set(worker.id, { identity, runtime, processClaim })
     const full = [
       ...(has(launch, 'process') ? [identityOf(launch.process)] : []),
       ...(has(report, 'hostProcess') ? [identityOf(report!.hostProcess)] : []),
@@ -240,18 +238,7 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
     add({ kind: 'worker', source: file, label: String(worker.name ?? worker.tag ?? name), cwd: worker.dir, host: worker.host,
       runtime, checks, ...(!processClaim ? { bindingOnly: true } : {}), ...(reportFile ? { evidence: [reportFile] } : {}) }, identity, verdict)
   }
-  // Pre-session-directory plugins leave one record in each linked worktree's Git directory.
-  const gitDirs = [commonDir, ...entries(path.join(commonDir, 'worktrees')).map(n => path.join(commonDir, 'worktrees', n))]
-  for (const dir of gitDirs) {
-    const file = path.join(dir, 'room-session.json'), session = read(file)
-    if (session) {
-      const worker = workerProcesses.get(session.worker_id)
-      const identity = identityOf(session) ?? identityOf({ pid: session.hostPid }) ?? worker?.identity
-      const processClaim = has(session, 'pid') || has(session, 'hostPid') || worker?.processClaim
-      add({ kind: 'legacy-session', source: file, label: String(session.session_id ?? dir), cwd: session.cwd, host: session.host,
-        runtime: options.currentSessionId && session.session_id === options.currentSessionId ? 'daemon-client' : worker?.runtime ?? 'legacy', ...(!processClaim ? { bindingOnly: true } : {}) }, identity)
-    }
-  }
+  // Room 0.16 room-session.json files are not part of the 0.17 runtime inventory.
   // Only a listener that proved it is this clone's process counts; a live pid alone does not.
   state.daemonOwns = !options.forStart && state.owner?.runtime === 'daemon' && state.owner.authenticated === true && state.owner.liveness === 'alive'
   state.blocked = state.issues.length > 0 || !!(state.owner && state.owner.liveness !== 'dead' && state.owner.runtime !== 'daemon')

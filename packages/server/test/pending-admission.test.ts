@@ -17,7 +17,7 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${port}`
   const { YPERSISTENCE: _volume, ...inherited } = process.env
   servers.start({ env: { ...inherited, PORT: String(port), HOST: '127.0.0.1', ROOM_SERVER: '', NODE_ENV: 'test',
-    GITHUB_CLIENT_ID: 'fake', ROOM_TEST_UPGRADE_DELAY_MS: '1000', ROOM_MAX_PENDING_ADMISSIONS: '1', ROOM_MAX_PENDING_PER_ADDRESS: '1' }, stdio: 'ignore' })
+    GITHUB_CLIENT_ID: 'fake', ROOM_TEST_UPGRADE_DELAY_MS: '1000' }, stdio: 'ignore' }, undefined, { maxPendingAdmissions: 1, maxPendingPerAddress: 1 })
   let started = false
   for (let i = 0; i < 100; i++) {
     try { if ((await fetch(base + '/health')).ok) { started = true; break } } catch { /* starting */ }

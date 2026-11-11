@@ -121,10 +121,11 @@ describe('room server with the fake GitHub issuer', () => {
   it('refuses new 0.16 branch population and keeps schema-2 access', async () => {
     const session = await login('cutover')
     const room = 'github.com/cutover/project'
-    const oldText = `update Room to 0.17 or later: this repository now has one room for all branches (${room})`
+    const oldText = `Room 0.16 clients are refused for ${room}; use v0.17.47, the last release that can migrate, then update Room`
+    const oldCreateText = `Room 0.16 clients are refused for ${room}/main; use v0.17.47, the last release that can migrate, then update Room`
     const oldOpen = await post('/rooms', { room: `${room}/main`, session })
     expect(oldOpen.status).toBe(403)
-    expect(await oldOpen.text()).toBe(oldText)
+    expect(await oldOpen.text()).toBe(oldCreateText)
     expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
     expect((await post('/view-token', { room, schema: 2 })).status).toBe(401)
     const migrated = await post('/view-token', { room, session, schema: 2 })
@@ -136,7 +137,7 @@ describe('room server with the fake GitHub issuer', () => {
     ] as const) {
       const refused = await post(route, body)
       expect(refused.status).toBe(403)
-      expect(await refused.text()).toBe(oldText)
+      expect(await refused.text()).toBe(route === '/rooms' ? oldCreateText : oldText)
     }
     // Admission comes first: without a login the upgrade text is not an oracle for which repositories have rooms.
     expect((await post('/view-token', { room: `${room}/main` })).status).toBe(401)
@@ -344,8 +345,8 @@ it('bounds rooms scans per identity and globally, shares admission checks, and s
   try {
     const scanPort = await freePort(), scanBase = `http://127.0.0.1:${scanPort}`
     child = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(scanPort), ROOM_SERVER: '', ROOM_TOKEN: '',
-      GITHUB_CLIENT_ID: 'synthetic-client', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_MAX_ROOM_LISTS: '2',
-      NODE_OPTIONS: `--import=${preload}` }, stdio: 'ignore' })
+      GITHUB_CLIENT_ID: 'synthetic-client', NODE_ENV: 'test', YPERSISTENCE: dir,
+      NODE_OPTIONS: `--import=${preload}` }, stdio: 'ignore' }, undefined, { maxRoomLists: 2 })
     for (let i = 0; i < 200; i++) {
       if (child.exitCode !== null) throw new Error('scan server exited')
       try { if ((await fetch(scanBase + '/health')).ok) break } catch { /* starting */ }

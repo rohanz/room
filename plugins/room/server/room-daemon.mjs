@@ -1131,14 +1131,14 @@ var init_function = __esm({
     "use strict";
     init_object();
     init_equality();
-    callAll = (fs11, args3, i = 0) => {
+    callAll = (fs10, args3, i = 0) => {
       try {
-        for (; i < fs11.length; i++) {
-          fs11[i](...args3);
+        for (; i < fs10.length; i++) {
+          fs10[i](...args3);
         }
       } finally {
-        if (i < fs11.length) {
-          callAll(fs11, args3, i + 1);
+        if (i < fs10.length) {
+          callAll(fs10, args3, i + 1);
         }
       }
     };
@@ -3206,15 +3206,15 @@ var init_yjs = __esm({
           sortAndMergeDeleteSet(ds);
           transaction.afterState = getStateVector(transaction.doc.store);
           doc.emit("beforeObserverCalls", [transaction, doc]);
-          const fs11 = [];
+          const fs10 = [];
           transaction.changed.forEach(
-            (subs, itemtype) => fs11.push(() => {
+            (subs, itemtype) => fs10.push(() => {
               if (itemtype._item === null || !itemtype._item.deleted) {
                 itemtype._callObserver(transaction, subs);
               }
             })
           );
-          fs11.push(() => {
+          fs10.push(() => {
             transaction.changedParentTypes.forEach((events, type) => {
               if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
                 events = events.filter(
@@ -3225,19 +3225,19 @@ var init_yjs = __esm({
                   event._path = null;
                 });
                 events.sort((event1, event2) => event1.path.length - event2.path.length);
-                fs11.push(() => {
+                fs10.push(() => {
                   callEventHandlerListeners(type._dEH, events, transaction);
                 });
               }
             });
-            fs11.push(() => doc.emit("afterTransaction", [transaction, doc]));
-            fs11.push(() => {
+            fs10.push(() => doc.emit("afterTransaction", [transaction, doc]));
+            fs10.push(() => {
               if (transaction._needFormattingCleanup) {
                 cleanupYTextAfterTransaction(transaction);
               }
             });
           });
-          callAll(fs11, []);
+          callAll(fs10, []);
         } finally {
           if (doc.gc) {
             tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -3778,10 +3778,10 @@ var init_yjs = __esm({
       }
     };
     getPathTo = (parent, child) => {
-      const path12 = [];
+      const path11 = [];
       while (child._item !== null && child !== parent) {
         if (child._item.parentSub !== null) {
-          path12.unshift(child._item.parentSub);
+          path11.unshift(child._item.parentSub);
         } else {
           let i = 0;
           let c = (
@@ -3794,12 +3794,12 @@ var init_yjs = __esm({
             }
             c = c.right;
           }
-          path12.unshift(i);
+          path11.unshift(i);
         }
         child = /** @type {AbstractType<any>} */
         child._item.parent;
       }
-      return path12;
+      return path11;
     };
     warnPrematureAccess = () => {
       warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -8251,13 +8251,13 @@ function msgPaths(m) {
   if ("path" in m) return typeof m.path === "string" ? [m.path] : [];
   return [];
 }
-function scopeCovers(scope, path12) {
-  return Array.isArray(scope?.paths) && scope.paths.some((p) => typeof p === "string" && containsPath(p, path12));
+function scopeCovers(scope, path11) {
+  return Array.isArray(scope?.paths) && scope.paths.some((p) => typeof p === "string" && containsPath(p, path11));
 }
 function messageAreas(m, scopes) {
   const out = /* @__PURE__ */ new Set();
   if (m.type === "scope") out.add(m.area);
-  for (const path12 of msgPaths(m)) for (const scope of scopes) if (scope && typeof scope.area === "string" && scopeCovers(scope, path12)) out.add(scope.area);
+  for (const path11 of msgPaths(m)) for (const scope of scopes) if (scope && typeof scope.area === "string" && scopeCovers(scope, path11)) out.add(scope.area);
   return Array.from(out).sort();
 }
 function ledger(messages, scopes, q = {}) {
@@ -8842,16 +8842,16 @@ function workerMemory(doc) {
     const manifest = manifests.get(key);
     if (!manifest) continue;
     const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence);
-    const texts = entries.flatMap(([path12, entry]) => {
-      const value2 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key)?.get(path12) : void 0;
-      return value2 ? [[path12, value2.toString()]] : [];
+    const texts = entries.flatMap(([path11, entry]) => {
+      const value2 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key)?.get(path11) : void 0;
+      return value2 ? [[path11, value2.toString()]] : [];
     });
-    const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path12]) => path12));
+    const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path11]) => path11));
     for (const prefix2 of head.textPrefixes ?? []) if (!prefix2.endsWith("/") && !manifest.has(prefix2)) shared.add(prefix2);
     const baseTexts = [...doc.getMap("basetextFlat")].flatMap(([key2, value2]) => {
       const prefix2 = `${worker.name}\0${head.base}:`;
-      const path12 = key2.startsWith(prefix2) ? key2.slice(prefix2.length) : void 0;
-      return path12 !== void 0 && shared.has(path12) ? [[path12, value2]] : [];
+      const path11 = key2.startsWith(prefix2) ? key2.slice(prefix2.length) : void 0;
+      return path11 !== void 0 && shared.has(path11) ? [[path11, value2]] : [];
     });
     const p = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? "released" }, git, entries, texts, baseTexts };
     if (matchesRevision(p, latest) && !contradicted(doc, p)) publications.set(worker.id, p);
@@ -8988,16 +8988,16 @@ var init_base = __esm({
           }
         }
       }
-      addToPath(path12, added, removed, oldPosInc, options) {
-        const last2 = path12.lastComponent;
+      addToPath(path11, added, removed, oldPosInc, options) {
+        const last2 = path11.lastComponent;
         if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
           return {
-            oldPos: path12.oldPos + oldPosInc,
+            oldPos: path11.oldPos + oldPosInc,
             lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
           };
         } else {
           return {
-            oldPos: path12.oldPos + oldPosInc,
+            oldPos: path11.oldPos + oldPosInc,
             lastComponent: { count: 1, added, removed, previousComponent: last2 }
           };
         }
@@ -9527,14 +9527,14 @@ var init_doc = __esm({
         const live = this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath));
         if (live !== void 0) return live;
         const retained = retainedPublication(this, person);
-        return retained?.head.base === sha ? retained.baseTexts.find(([path12]) => path12 === relpath)?.[1] : void 0;
+        return retained?.head.base === sha ? retained.baseTexts.find(([path11]) => path11 === relpath)?.[1] : void 0;
       }
       /** Remove only this participant's entries that no longer back their live work. */
       reconcileBaseTexts(person, origin, baseSha) {
         const head = this.manifestHead.get(person);
         const base = baseSha ?? head?.base;
         const current = head ? this.manifest.get(manifestKey(person, head.fence)) : void 0;
-        const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path12]) => `${base}:${path12}`));
+        const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path11]) => `${base}:${path11}`));
         this.doc.transact(() => {
           const prefix2 = this.baseTextPrefix(person);
           for (const key of this.ownedBaseTexts.keys()) {
@@ -9934,9 +9934,6 @@ function validMessageShape(value2) {
 }
 function isRoomNotice(m) {
   return m.from === "room" && m.fromKind === "bot";
-}
-function isLegacyBranchNotice(m) {
-  return m.type === "note" && m.fromKind === "bot" && (m.from === "room" || /^\?[0-9a-f]{16}$/.test(m.from)) && typeof m.text === "string" && /^you switched to \S+; the room is for \S+;/.test(m.text);
 }
 function messageKind(m) {
   const kind = MessageKinds[m.type];
@@ -13709,13 +13706,13 @@ var require_websocket_server = __commonJS({
 });
 
 // packages/relay/src/daemon-bin.ts
-import fs10 from "node:fs";
-import path11 from "node:path";
-
-// packages/relay/src/daemon.ts
 import fs9 from "node:fs";
 import path10 from "node:path";
-import crypto6 from "node:crypto";
+
+// packages/relay/src/daemon.ts
+import fs8 from "node:fs";
+import path9 from "node:path";
+import crypto5 from "node:crypto";
 
 // packages/hub-core/src/protocol.ts
 init_encoding();
@@ -14290,6 +14287,36 @@ function compactMinDeleted(raw) {
   return raw === "off" || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 1e4;
 }
 
+// packages/shared/src/retired-env.ts
+var RETIRED_ENVIRONMENT = Object.freeze({
+  server: [
+    "ROOM_ARCHIVE_LIST_MAX_KEYS",
+    "ROOM_AUDIT_SCAN_MB",
+    "ROOM_AWARENESS_IDS_PER_ROOM",
+    "ROOM_AWARENESS_MESSAGES_PER_MINUTE",
+    "ROOM_MAX_BODY_READS",
+    "ROOM_MAX_EXPORTS",
+    "ROOM_MAX_HTTP_RESPONSES",
+    "ROOM_MAX_PENDING_ADMISSIONS",
+    "ROOM_MAX_PENDING_LOGINS",
+    "ROOM_MAX_PENDING_PER_ADDRESS",
+    "ROOM_MAX_PR_OPERATIONS",
+    "ROOM_MAX_QUEUED_MB",
+    "ROOM_MAX_ROOM_LISTS",
+    "ROOM_VIEW_MAX_PER_ROOM",
+    "ROOM_VIEW_MAX_TOTAL",
+    "ROOM_LEGACY_DAYS",
+    "ROOM_MIGRATION_MAX_READ_MB",
+    "ROOM_MIGRATION_MAX_RECORDS",
+    "ROOM_MIGRATION_MAX_SOURCES"
+  ],
+  client: [
+    "ROOM_GIT_TIMEOUT_MS",
+    "ROOM_IDLE_LEASE_MS",
+    "ROOM_STALE_DAYS"
+  ]
+});
+
 // packages/hub-core/src/hub.ts
 var MAINTENANCE_MS = 6e4;
 var MAX_HUB_FRAME_BYTES = 96 * 1024;
@@ -14801,7 +14828,7 @@ var RoomHub = class {
   }
   hello(conn, req, fail) {
     if (req.proto !== HUB_PROTO) {
-      return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`);
+      return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later (Room 0.16 is refused; use v0.17.47, the last release that can migrate)`);
     }
     if (typeof req.sessionId !== "string" || !req.sessionId || req.sessionId.length > MAX_HOLDER_FIELD_LENGTH || typeof req.client !== "string" || req.client.length > 128 || req.schema !== 2) return fail("invalid", "hello needs a supported schema, client and session");
     this.greeted.add(conn);
@@ -15999,8 +16026,8 @@ function localViewKey(key, room) {
 function viewTicketProof(viewKey, room, ts, nonce) {
   return mac(viewKey, `ticket\0${room}\0${ts}\0${nonce}`);
 }
-function localProofHeader(key, method, path12, port, ts = Date.now(), nonce = crypto.randomBytes(16).toString("hex")) {
-  return `Room-Proof ${ts}.${nonce}.${mac(key, `client\0${method.toUpperCase()}\0${path12}\0${port}\0${ts}\0${nonce}`)}`;
+function localProofHeader(key, method, path11, port, ts = Date.now(), nonce = crypto.randomBytes(16).toString("hex")) {
+  return `Room-Proof ${ts}.${nonce}.${mac(key, `client\0${method.toUpperCase()}\0${path11}\0${port}\0${ts}\0${nonce}`)}`;
 }
 var ProofVerifier = class {
   constructor(key, port, now = Date.now) {
@@ -16012,7 +16039,7 @@ var ProofVerifier = class {
   port;
   now;
   seen = /* @__PURE__ */ new Map();
-  verify(header, method, path12) {
+  verify(header, method, path11) {
     if (typeof header !== "string") return false;
     const match = /^Room-Proof (\d{13})\.([a-f0-9]{32})\.([a-f0-9]{64})$/.exec(header);
     if (!match) return false;
@@ -16021,7 +16048,7 @@ var ProofVerifier = class {
     if (Math.abs(ts - now) > PROOF_WINDOW_MS) return false;
     for (const [n, expiry] of this.seen) if (expiry <= now) this.seen.delete(n);
     if (this.seen.has(nonce) || this.seen.size >= REPLAY_CACHE_MAX) return false;
-    const expected = mac(this.key, `client\0${method.toUpperCase()}\0${path12}\0${this.port}\0${ts}\0${nonce}`);
+    const expected = mac(this.key, `client\0${method.toUpperCase()}\0${path11}\0${this.port}\0${ts}\0${nonce}`);
     if (!sameProof(proof, expected)) return false;
     this.seen.set(nonce, now + PROOF_WINDOW_MS);
     return true;
@@ -16175,9 +16202,6 @@ function loadMemory(commonDir, room, log2 = stderr) {
     log2(error.message);
     throw error;
   }
-}
-function saveMemory(commonDir, room, doc, log2 = stderr, warnings = sharedWarnings) {
-  return writeMemory(commonDir, room, doc, log2, warnings) === void 0;
 }
 function writeMemory(commonDir, room, doc, log2, warnings, failure, generation) {
   const file = memoryFile(commonDir, room);
@@ -16385,334 +16409,11 @@ async function finalSave(memories, delays = FINAL_SAVE_RETRY_MS, generation) {
   }
 }
 
-// packages/relay/src/local-migrate.ts
-init_yjs();
-import crypto3 from "node:crypto";
-import fs7 from "node:fs";
-import path8 from "node:path";
-var empty2 = () => ({ messages: [], claims: [], scopes: [], scopeSnapshots: {}, sources: {}, messageSources: {}, identities: {}, complete: false });
-var ledgerFile = (common, room) => path8.join(common, "room", "relay", `migrated-${crypto3.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
-var legacyDir = (common) => path8.join(common, "room-local");
-function oldRunning(common, probe) {
-  try {
-    const info = JSON.parse(fs7.readFileSync(path8.join(common, "room-local.json"), "utf8"));
-    const observed = probe(info.pid);
-    if (!observed) return false;
-    if (info.startTime && observed.startTime && !sameStartTime(info.startTime, observed.startTime)) return false;
-    if (info.executable && observed.executable && info.executable !== observed.executable) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function readLedger(common, room) {
-  const scoped = ledgerFile(common, room);
-  let file = scoped;
-  if (!fs7.existsSync(scoped)) {
-    const old = path8.join(common, "room", "relay", "migrated.json");
-    try {
-      const candidate = JSON.parse(fs7.readFileSync(old, "utf8"));
-      const names = Object.keys(candidate.sources ?? {});
-      if (names.length && names.every((name) => name === room || name.startsWith(`${room}/`))) file = old;
-    } catch {
-    }
-  }
-  let value2;
-  try {
-    value2 = JSON.parse(fs7.readFileSync(file, "utf8"));
-  } catch {
-    return empty2();
-  }
-  const ledger2 = { messages: value2.messages ?? [], claims: value2.claims ?? [], scopes: value2.scopes ?? [], scopeSnapshots: value2.scopeSnapshots ?? {}, sources: value2.sources ?? {}, messageSources: value2.messageSources ?? {}, identities: value2.identities ?? {}, complete: !!value2.complete };
-  if (file !== scoped) writeLedger(common, room, ledger2);
-  return ledger2;
-}
-function writeLedger(common, room, ledger2) {
-  const file = ledgerFile(common, room), temp = `${file}.${process.pid}-${crypto3.randomBytes(4).toString("hex")}.tmp`;
-  privateStateDirectory(path8.dirname(file));
-  try {
-    fs7.writeFileSync(temp, JSON.stringify(ledger2) + "\n", { flag: "wx", mode: 384 });
-    fs7.renameSync(temp, file);
-  } finally {
-    fs7.rmSync(temp, { force: true });
-  }
-}
-var DEFAULT_LIMITS = { fileBytes: ROOM_DOC_MAX_BYTES, files: 64, totalBytes: 2 * ROOM_DOC_MAX_BYTES };
-var SUMMARIES_MAX = 1024;
-var SUMMARY_NAMES_MAX = 1e4;
-var summaries = /* @__PURE__ */ new Map();
-function remember(key, revision, persons) {
-  summaries.delete(key);
-  if (persons.length > SUMMARY_NAMES_MAX) return;
-  summaries.set(key, { revision, persons });
-  if (summaries.size > SUMMARIES_MAX) summaries.delete(summaries.keys().next().value);
-}
-function personsOf(source) {
-  const persons = /* @__PURE__ */ new Set();
-  const add = (person) => {
-    if (person) persons.add(person);
-  };
-  for (const person of source.scopes.keys()) add(person);
-  for (const claim of source.claims.values()) add(claim.by);
-  for (const person of source.overlays.keys()) add(person);
-  for (const person of source.legacyDeleted.keys()) add(person);
-  for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
-    if (!isRoomNotice(msg)) add(msg.from);
-    add(msg.to);
-  }
-  return [...persons];
-}
-function sources(common, room) {
-  try {
-    return fs7.readdirSync(legacyDir(common)).filter((file) => file.endsWith(".ydoc")).flatMap((file) => {
-      let name;
-      try {
-        name = decodeURIComponent(file.slice(0, -5));
-      } catch {
-        throw new Error(`invalid legacy snapshot name: ${file}`);
-      }
-      if (name !== room && !name.startsWith(`${room}/`)) return [];
-      const full2 = path8.join(legacyDir(common), file);
-      const stat = fs7.statSync(full2);
-      return [{ file: full2, name, mtime: stat.mtimeMs, size: stat.size, revision: `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` }];
-    });
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  }
-}
-function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = probeProcess, limits = DEFAULT_LIMITS) {
-  let files;
-  try {
-    files = sources(common, room);
-  } catch (error) {
-    log2(`local migration: cannot enumerate ${legacyDir(common)}: ${String(error)}`);
-    new RoomDoc(targetDoc).metaMap.set("localMigrating", 1);
-    if (!saveMemory(common, room, targetDoc, log2)) throw new Error("local migration could not save the new room snapshot");
-    return true;
-  }
-  const running = oldRunning(common, probe);
-  const ledger2 = readLedger(common, room);
-  if (ledger2.complete) return false;
-  if (!files.length && !running) return false;
-  const decoded = [];
-  try {
-    return catchUpDecoded(common, room, targetDoc, log2, limits, files, running, ledger2, decoded);
-  } finally {
-    for (const doc of decoded) doc.destroy();
-  }
-}
-function catchUpDecoded(common, room, targetDoc, log2, limits, files, running, ledger2, decoded) {
-  const target = new RoomDoc(targetDoc);
-  const messages = new Set(ledger2.messages), claims = new Set(ledger2.claims), scopes = new Set(ledger2.scopes);
-  const existing = /* @__PURE__ */ new Set([...target.bus.toArray().map((m) => m.id), ...target.mail.keys()]);
-  const noticeKey = (m) => `${m.type}\0${m.to ?? ""}\0${JSON.stringify(m.text ?? null)}`;
-  const notices = new Set([...target.bus.toArray(), ...target.mail.values()].filter(isRoomNotice).map(noticeKey));
-  const occurrences = new Map(Object.entries(ledger2.identities).map(([person, names]) => [person, new Set(names)]));
-  const mark = (person, source) => {
-    if (!person) return;
-    let names = occurrences.get(person);
-    if (!names) {
-      names = /* @__PURE__ */ new Set();
-      occurrences.set(person, names);
-    }
-    names.add(source);
-  };
-  const loaded = [];
-  let unreadable = false, deferred = false, decodedBytes = 0;
-  for (const { file, name, mtime, size: size2, revision } of files) {
-    const imported = ledger2.sources[name] === mtime;
-    const key = `${common}\0${file}`;
-    const summary = summaries.get(key);
-    if (imported && summary?.revision === revision) {
-      for (const person of summary.persons) mark(person, name);
-      continue;
-    }
-    if (size2 > limits.fileBytes) {
-      log2(`local migration: cannot read ${file}: ${size2} bytes exceeds the ${limits.fileBytes}-byte snapshot limit`);
-      unreadable = true;
-      continue;
-    }
-    if (decoded.length >= limits.files || decodedBytes + size2 > limits.totalBytes) {
-      deferred = true;
-      continue;
-    }
-    decodedBytes += size2;
-    const doc = new Doc();
-    decoded.push(doc);
-    try {
-      applyUpdate(doc, fs7.readFileSync(file));
-    } catch (error) {
-      log2(`local migration: cannot read ${file}: ${String(error)}`);
-      unreadable = true;
-      continue;
-    }
-    const source = new RoomDoc(doc);
-    const persons = personsOf(source);
-    for (const person of persons) mark(person, name);
-    remember(key, revision, persons);
-    if (!imported) loaded.push({ name, mtime, source });
-  }
-  const aliases = targetDoc.getMap("aliases");
-  const placeholder = (person, source) => `?${crypto3.createHash("sha256").update(`${source}\0${person}`).digest("hex").slice(0, 16)}`;
-  const translated = (person, source) => {
-    const by = placeholder(person, source);
-    return aliases.get(by) ?? ((occurrences.get(person)?.size ?? 0) > 1 ? by : person);
-  };
-  const unresolved = targetDoc.getMap("unresolved");
-  let changed = false;
-  let scanned = false;
-  targetDoc.transact(() => {
-    for (const [person, found] of occurrences) if (found.size > 1) for (const source of found) {
-      const key = `${source}\0${person}`, by = placeholder(person, source);
-      if (!aliases.has(by) && !unresolved.has(key)) {
-        unresolved.set(key, { placeholder: by, claims: [] });
-        changed = true;
-      }
-    }
-    for (const [person, prior] of Object.entries(ledger2.identities)) {
-      if (prior.length !== 1 || (occurrences.get(person)?.size ?? 0) <= 1) continue;
-      const source = prior[0], by = translated(person, source), key = `${source}\0${person}`;
-      const old = unresolved.get(key) ?? { placeholder: by, claims: [] };
-      const moved = [...old.claims];
-      for (const [id2, claim] of target.claims) {
-        if (claim.by !== person || claim.origin !== source) continue;
-        target.claims.delete(id2);
-        if (!moved.some((item) => item.id === id2)) moved.push({ ...claim, by });
-        changed = true;
-      }
-      const oldScope = target.scopes.get(person);
-      const importedScope = !!oldScope && ledger2.scopeSnapshots[key] === JSON.stringify(oldScope);
-      const scope = importedScope ? { ...oldScope, by } : old.scope;
-      if (importedScope) {
-        target.scopes.delete(person);
-        changed = true;
-      }
-      for (const [id2, message] of target.mail) {
-        if (ledger2.messageSources[id2] !== source || message.from !== person && message.to !== person) continue;
-        target.mail.set(id2, {
-          ...message,
-          from: message.from === person ? by : message.from,
-          ...message.to === person ? { to: by } : {}
-        });
-        changed = true;
-      }
-      if (by.startsWith("?")) {
-        if (moved.length || scope) {
-          unresolved.set(key, { placeholder: by, claims: moved, ...scope ? { scope } : {} });
-          changed = true;
-        }
-      } else {
-        for (const claim of moved) if (!target.claims.has(claim.id)) {
-          target.claims.set(claim.id, { ...claim, by });
-          changed = true;
-        }
-        if (scope && !target.scopes.has(by)) {
-          const copy2 = { ...scope, by };
-          target.scopes.set(by, copy2);
-          ledger2.scopeSnapshots[key] = JSON.stringify(copy2);
-          changed = true;
-        }
-        if (unresolved.has(key)) {
-          unresolved.delete(key);
-          changed = true;
-        }
-      }
-    }
-  });
-  for (const { name, mtime, source } of loaded) {
-    scanned = true;
-    targetDoc.transact(() => {
-      for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
-        if (messages.has(msg.id)) continue;
-        const skip = isLegacyBranchNotice(msg) || isRoomNotice(msg) && notices.has(noticeKey(msg));
-        if (!existing.has(msg.id) && !skip) {
-          if (isRoomNotice(msg)) notices.add(noticeKey(msg));
-          const copy2 = { ...msg, from: isRoomNotice(msg) ? msg.from : translated(msg.from, name), ...msg.to ? { to: translated(msg.to, name) } : {} };
-          if (msg.to) {
-            if (!source.seen(msg.to).has(msg.id)) {
-              target.mail.set(msg.id, copy2);
-              existing.add(msg.id);
-              changed = true;
-            }
-          } else {
-            target.bus.push([copy2]);
-            existing.add(msg.id);
-            changed = true;
-          }
-        }
-        messages.add(msg.id);
-        ledger2.messageSources[msg.id] = name;
-      }
-      for (const claim of source.claims.values()) {
-        if (claims.has(claim.id)) continue;
-        const by = translated(claim.by, name);
-        const { anchor: _anchor, ...rest } = claim;
-        const copy2 = { ...rest, by, origin: name };
-        if (by.startsWith("?")) {
-          const key = `${name}\0${claim.by}`;
-          const old = unresolved.get(key) ?? { placeholder: by, claims: [] };
-          if (!old.claims.some((item) => item.id === claim.id)) {
-            unresolved.set(key, { ...old, claims: [...old.claims, copy2] });
-            changed = true;
-          }
-        } else if (!target.claims.has(claim.id)) {
-          target.claims.set(claim.id, copy2);
-          changed = true;
-        }
-        claims.add(claim.id);
-      }
-      for (const [person, scope] of source.scopes) {
-        const key = `${name}\0${person}`;
-        if (scopes.has(key)) continue;
-        const by = translated(person, name);
-        const copy2 = { ...scope, by, origin: name };
-        if (by.startsWith("?")) {
-          const old = unresolved.get(key) ?? { placeholder: by, claims: [] };
-          unresolved.set(key, { ...old, scope: copy2 });
-          changed = true;
-        } else if (!target.scopes.has(by)) {
-          target.scopes.set(by, copy2);
-          ledger2.scopeSnapshots[key] = JSON.stringify(copy2);
-          changed = true;
-        }
-        scopes.add(key);
-      }
-    });
-    ledger2.sources[name] = mtime;
-  }
-  const pending = running || unreadable || deferred;
-  if (target.metaMap.get("localMigrating") !== Number(pending)) {
-    target.metaMap.set("localMigrating", Number(pending));
-    changed = true;
-  }
-  const completionChanged = ledger2.complete !== !pending;
-  ledger2.complete = !pending;
-  if ((scanned || changed || completionChanged) && !saveMemory(common, room, targetDoc, log2)) throw new Error("local migration could not save the new room snapshot");
-  ledger2.messages = [...messages];
-  ledger2.claims = [...claims];
-  ledger2.scopes = [...scopes];
-  ledger2.identities = Object.fromEntries([...occurrences].map(([person, names]) => [person, [...names].sort()]));
-  if (scanned || changed || completionChanged) writeLedger(common, room, ledger2);
-  return pending;
-}
-function forgetLegacyLocal(common, room) {
-  for (const { file } of sources(common, room)) fs7.rmSync(file, { force: true });
-  fs7.rmSync(ledgerFile(common, room), { force: true });
-  const old = path8.join(common, "room", "relay", "migrated.json");
-  try {
-    const ledger2 = JSON.parse(fs7.readFileSync(old, "utf8"));
-    const names = Object.keys(ledger2.sources ?? {});
-    if (names.length && names.every((name) => name === room || name.startsWith(`${room}/`))) fs7.rmSync(old, { force: true });
-  } catch {
-  }
-}
-
 // packages/relay/src/index.ts
-import crypto5 from "node:crypto";
-import fs8 from "node:fs";
+import crypto4 from "node:crypto";
+import fs7 from "node:fs";
 import http2 from "node:http";
-import path9 from "node:path";
+import path8 from "node:path";
 
 // node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -16989,7 +16690,7 @@ var applyAwarenessUpdate = (awareness, update, origin) => {
 };
 
 // packages/relay/src/secure.ts
-import crypto4 from "node:crypto";
+import crypto3 from "node:crypto";
 var MAGIC = Buffer.from("room-secure-v1");
 var LABEL = Buffer.from("room-relay-v2\0relay\0");
 var INFO_C2S = Buffer.from("room-relay-v2 c2s");
@@ -17012,12 +16713,12 @@ var SecureSession = class {
   get ready() {
     return !!this.tx;
   }
-  clientHello(nonce = crypto4.randomBytes(16)) {
+  clientHello(nonce = crypto3.randomBytes(16)) {
     if (this.role !== "client" || this.cn || nonce.length !== 16) throw new Error("invalid client hello");
     this.cn = Buffer.from(nonce);
     return Buffer.concat([MAGIC, this.cn]);
   }
-  relayHello(frame, nonce = crypto4.randomBytes(16)) {
+  relayHello(frame, nonce = crypto3.randomBytes(16)) {
     if (this.role !== "relay" || this.cn || frame.length !== MAGIC.length + 16 || nonce.length !== 16 || !Buffer.from(frame.subarray(0, MAGIC.length)).equals(MAGIC)) throw new Error("invalid relay hello");
     this.cn = Buffer.from(frame.subarray(MAGIC.length));
     this.sn = Buffer.from(nonce);
@@ -17028,16 +16729,16 @@ var SecureSession = class {
   acceptRelayHello(frame) {
     if (this.role !== "client" || !this.cn || this.sn || frame.length !== MAGIC.length + 48 || !Buffer.from(frame.subarray(0, MAGIC.length)).equals(MAGIC)) throw new Error("invalid relay proof");
     this.sn = Buffer.from(frame.subarray(MAGIC.length, MAGIC.length + 16));
-    if (!crypto4.timingSafeEqual(Buffer.from(frame.subarray(MAGIC.length + 16)), this.proof())) throw new Error("invalid relay proof");
+    if (!crypto3.timingSafeEqual(Buffer.from(frame.subarray(MAGIC.length + 16)), this.proof())) throw new Error("invalid relay proof");
     this.derive();
   }
   proof() {
-    return crypto4.createHmac("sha256", this.key).update(LABEL).update(this.cn).update(this.sn).update(Buffer.from([0])).update(this.room).digest();
+    return crypto3.createHmac("sha256", this.key).update(LABEL).update(this.cn).update(this.sn).update(Buffer.from([0])).update(this.room).digest();
   }
   derive() {
     const salt = Buffer.concat([this.cn, this.sn]);
-    const c2s = Buffer.from(crypto4.hkdfSync("sha256", this.key, salt, INFO_C2S, 32));
-    const s2c = Buffer.from(crypto4.hkdfSync("sha256", this.key, salt, INFO_S2C, 32));
+    const c2s = Buffer.from(crypto3.hkdfSync("sha256", this.key, salt, INFO_C2S, 32));
+    const s2c = Buffer.from(crypto3.hkdfSync("sha256", this.key, salt, INFO_S2C, 32));
     this.tx = this.role === "client" ? c2s : s2c;
     this.rx = this.role === "client" ? s2c : c2s;
   }
@@ -17048,13 +16749,13 @@ var SecureSession = class {
   }
   encrypt(data) {
     if (!this.tx) throw new Error("handshake incomplete");
-    const cipher = crypto4.createCipheriv("aes-256-gcm", this.tx, this.iv(this.sent++));
+    const cipher = crypto3.createCipheriv("aes-256-gcm", this.tx, this.iv(this.sent++));
     return Buffer.concat([cipher.update(data), cipher.final(), cipher.getAuthTag()]);
   }
   decrypt(data) {
     if (!this.rx || data.length < 16) throw new Error("invalid encrypted frame");
     const frame = Buffer.from(data);
-    const decipher = crypto4.createDecipheriv("aes-256-gcm", this.rx, this.iv(this.received));
+    const decipher = crypto3.createDecipheriv("aes-256-gcm", this.rx, this.iv(this.received));
     decipher.setAuthTag(frame.subarray(frame.length - 16));
     const plain = Buffer.concat([decipher.update(frame.subarray(0, -16)), decipher.final()]);
     this.received++;
@@ -17299,7 +17000,6 @@ function getDoc(docs, name, opts) {
   const memory = opts.commonDir ? new RoomMemory(opts.commonDir, decodeURIComponent(name), opts.log) : void 0;
   const doc = memory?.doc ?? new Doc({ gc: true });
   if (doc.getMap("meta").get("schemaVersion") !== 2) doc.getMap("meta").set("schemaVersion", 2);
-  if (opts.commonDir) catchUpLocal(opts.commonDir, decodeURIComponent(name), doc, opts.log);
   const awareness = new Awareness(doc);
   awareness.setLocalState(null);
   const meter = new DocSizeMeter(() => encodeStateAsUpdate(doc).byteLength, opts.docCap?.meter);
@@ -17551,7 +17251,7 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
         v: 1,
         re: frame.id,
         ok: true,
-        selectionId: crypto5.randomBytes(16).toString("hex"),
+        selectionId: crypto4.randomBytes(16).toString("hex"),
         selection: selected.selection,
         compat: opts.compat ?? CURRENT_COMPAT,
         generation: docGeneration(selectedDoc.doc) ?? "0",
@@ -17840,26 +17540,26 @@ function relayConnectionHandler(docs, opts) {
     }
   };
 }
-var LOCAL_FILE = path9.join("room", "relay.json");
+var LOCAL_FILE = path8.join("room", "relay.json");
 function relayFile(commonDir) {
-  return path9.join(commonDir, LOCAL_FILE);
+  return path8.join(commonDir, LOCAL_FILE);
 }
 function deterministicPort(commonDir) {
   let real = commonDir;
   try {
-    real = fs8.realpathSync.native(commonDir);
+    real = fs7.realpathSync.native(commonDir);
   } catch {
   }
-  const h = crypto5.createHash("sha1").update("schema-2\0").update(real).digest();
+  const h = crypto4.createHash("sha1").update("schema-2\0").update(real).digest();
   return 4e4 + h.readUInt32BE(0) % 2e4;
 }
 function cloneId(commonDir) {
   let real = commonDir;
   try {
-    real = fs8.realpathSync.native(commonDir);
+    real = fs7.realpathSync.native(commonDir);
   } catch {
   }
-  return crypto5.createHash("sha256").update(real).digest("hex");
+  return crypto4.createHash("sha256").update(real).digest("hex");
 }
 function compatibilityDetail(error) {
   const changes = error.requiredChanges.map((change) => `${change.action} ${change.side} ${change.contract}${change.capability ? ` ${change.capability}` : ""}${change.range ? ` to ${change.range.min}-${change.range.max}` : change.versions ? ` to ${change.versions.join(",")}` : ""}`);
@@ -17995,7 +17695,7 @@ function startRelay(port, opts = {}) {
               res.end("too many pending tickets");
               return;
             }
-            const ticket = crypto5.randomBytes(16).toString("hex");
+            const ticket = crypto4.randomBytes(16).toString("hex");
             tickets.set(ticket, { room, expires: now + ticketTtl });
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
@@ -18054,8 +17754,7 @@ function startRelay(port, opts = {}) {
             const room = url.searchParams.get("room") ?? "";
             const d = docs.get(encodeURIComponent(room));
             if (d?.memory) d.memory.forget();
-            else if (opts.commonDir) fs8.rmSync(memoryFile(opts.commonDir, room), { force: true });
-            if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room);
+            else if (opts.commonDir) fs7.rmSync(memoryFile(opts.commonDir, room), { force: true });
             res.writeHead(204);
             res.end();
           } catch {
@@ -18092,11 +17791,6 @@ function startRelay(port, opts = {}) {
         } catch (error) {
           opts.log?.(`hub maintenance ${name}: ${error instanceof Error ? error.message : String(error)}`);
         }
-        if (opts.commonDir && d.memory) try {
-          catchUpLocal(opts.commonDir, decodeURIComponent(name), d.doc, opts.log);
-        } catch (error) {
-          opts.log?.(`local migration: ${error instanceof Error ? error.message : String(error)}`);
-        }
       }
     }, 1e3);
     ticker.unref?.();
@@ -18117,7 +17811,7 @@ Connection: close\r
         if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
         if (obsolete(req, url)) return refuse(400, "use Authorization: Room-Proof or a browser ticket");
         if (url.searchParams.has("negotiate") && url.searchParams.get("negotiate") !== "1") return refuse(426, "unsupported bootstrap; update this client");
-        if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: this local room uses schema 2");
+        if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: Room 0.16 peers are refused; use v0.17.47, the last release that can migrate, before upgrading");
         try {
           decodeURIComponent((req.url ?? "/").split("?")[0]);
         } catch {
@@ -18232,9 +17926,9 @@ function discovery(commonDir) {
   const file = relayFile(commonDir);
   let raw;
   try {
-    if (fs9.statSync(file).size > 8192) throw new Error("discovery exceeds size limit");
+    if (fs8.statSync(file).size > 8192) throw new Error("discovery exceeds size limit");
     verifyPrivatePath(file);
-    raw = fs9.readFileSync(file, "utf8");
+    raw = fs8.readFileSync(file, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return void 0;
     throw e;
@@ -18271,13 +17965,13 @@ var WriterIdleClock = class {
   }
 };
 async function startLocalDaemon(opts) {
-  const commonDir = fs9.realpathSync.native(opts.commonDir);
+  const commonDir = fs8.realpathSync.native(opts.commonDir);
   const log2 = opts.log ?? (() => {
   });
   const phase = (name) => log2(`startup pid ${process.pid}: ${name}`);
   phase("state check");
   await primePrivateState(commonDir);
-  privateStateDirectory(path10.join(commonDir, "room"));
+  privateStateDirectory(path9.join(commonDir, "room"));
   phase("state verified");
   phase("lease acquisition");
   const lock = AuthorityLock.take(commonDir);
@@ -18289,7 +17983,7 @@ async function startLocalDaemon(opts) {
   let relay;
   try {
     const previous = discovery(commonDir);
-    const key = previous?.key ?? crypto6.randomBytes(32).toString("hex");
+    const key = previous?.key ?? crypto5.randomBytes(32).toString("hex");
     const own = probeOwnProcess();
     if (!own?.startTime || !own.executable) throw new Error("cannot establish daemon process birth identity");
     const identity = { pid: process.pid, startTime: own.startTime, executable: own.executable };
@@ -18298,7 +17992,7 @@ async function startLocalDaemon(opts) {
     const now = opts.now ?? Date.now;
     let nextHistoryCheck = now() + 6e4, compactionBlocked = false;
     const startedAt = Date.now();
-    const nonce = crypto6.randomUUID();
+    const nonce = crypto5.randomUUID();
     let ready = false;
     let stopRequested = false;
     let compactionGeneration;
@@ -18315,7 +18009,7 @@ async function startLocalDaemon(opts) {
       draining = true;
       relay.setDraining(true);
       if (!compactionGeneration) {
-        if (relay.canCompact()) compactionGeneration = crypto6.randomUUID();
+        if (relay.canCompact()) compactionGeneration = crypto5.randomUUID();
         else log2("local daemon graceful stop preserves generation: snapshot would shed content");
       }
       stopping = relay.close(saved, compactionGeneration).then(() => {
@@ -18384,7 +18078,7 @@ async function startLocalDaemon(opts) {
           log2("local daemon compaction disabled for this process: snapshot would shed content");
         } else if (over) {
           log2(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted})`);
-          compactionGeneration = crypto6.randomUUID();
+          compactionGeneration = crypto5.randomUUID();
           stopRequested = true;
         }
       }
@@ -18410,7 +18104,7 @@ async function openPreferred(port, open, ownerAnswers) {
   }
 }
 async function stopLocalDaemon(commonDir, timeoutMs = 15e3, expectedNonce) {
-  const canonical = fs9.realpathSync.native(commonDir);
+  const canonical = fs8.realpathSync.native(commonDir);
   const info = discovery(canonical);
   if (expectedNonce !== void 0 && info?.nonce !== expectedNonce) return "different daemon instance";
   if (!info || info.runtime !== "daemon" || !info.nonce || !info.lead || info.lead === true || info.lead.pid !== info.pid) throw new Error("no verifiable daemon identity in discovery; preserve state and inspect before stopping");
@@ -18446,40 +18140,40 @@ var value = (flag) => {
 var log = () => {
 };
 try {
-  const commonDir = fs10.realpathSync.native(value("--common-dir"));
-  if (!path11.isAbsolute(commonDir)) throw new Error("daemon common directory must be absolute");
+  const commonDir = fs9.realpathSync.native(value("--common-dir"));
+  if (!path10.isAbsolute(commonDir)) throw new Error("daemon common directory must be absolute");
   if (args2[0] === "stop") {
     await stopLocalDaemon(commonDir);
     process.stdout.write("Daemon saved and process exit verified.\n");
   } else {
     if (args2[0] && !args2[0].startsWith("--") || !args2.includes("--startup-report")) throw new Error("usage: room-daemon.mjs stop --common-dir <absolute git common directory> (Room starts the daemon itself on join)");
     await primePrivateState(commonDir);
-    privateStateDirectory(path11.join(commonDir, "room"));
-    const file = path11.join(commonDir, "room", "daemon.log");
+    privateStateDirectory(path10.join(commonDir, "room"));
+    const file = path10.join(commonDir, "room", "daemon.log");
     let created = false;
     try {
-      const fd = fs10.openSync(file, "wx", 384);
-      fs10.closeSync(fd);
+      const fd = fs9.openSync(file, "wx", 384);
+      fs9.closeSync(fd);
       created = true;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     }
     verifyPrivatePath(file, created);
-    for (const retained of [`${file}.1`, `${file}.2`]) if (fs10.existsSync(retained)) verifyPrivatePath(retained);
+    for (const retained of [`${file}.1`, `${file}.2`]) if (fs9.existsSync(retained)) verifyPrivatePath(retained);
     log = (line) => {
       try {
         const record = `${(/* @__PURE__ */ new Date()).toISOString()} ${line.slice(0, 2048).replace(/[\r\n]/g, " ")}
 `;
-        if (fs10.existsSync(file)) verifyPrivatePath(file);
-        if (fs10.existsSync(file) && fs10.statSync(file).size + Buffer.byteLength(record) > 1024 * 1024) {
-          if (fs10.existsSync(`${file}.1`)) verifyPrivatePath(`${file}.1`);
-          if (fs10.existsSync(`${file}.2`)) verifyPrivatePath(`${file}.2`);
-          fs10.rmSync(`${file}.2`, { force: true });
-          if (fs10.existsSync(`${file}.1`)) fs10.renameSync(`${file}.1`, `${file}.2`);
-          fs10.renameSync(file, `${file}.1`);
+        if (fs9.existsSync(file)) verifyPrivatePath(file);
+        if (fs9.existsSync(file) && fs9.statSync(file).size + Buffer.byteLength(record) > 1024 * 1024) {
+          if (fs9.existsSync(`${file}.1`)) verifyPrivatePath(`${file}.1`);
+          if (fs9.existsSync(`${file}.2`)) verifyPrivatePath(`${file}.2`);
+          fs9.rmSync(`${file}.2`, { force: true });
+          if (fs9.existsSync(`${file}.1`)) fs9.renameSync(`${file}.1`, `${file}.2`);
+          fs9.renameSync(file, `${file}.1`);
         }
-        const created2 = !fs10.existsSync(file);
-        fs10.appendFileSync(file, record, { mode: 384 });
+        const created2 = !fs9.existsSync(file);
+        fs9.appendFileSync(file, record, { mode: 384 });
         verifyPrivatePath(file, created2);
       } catch {
       }
@@ -18496,7 +18190,7 @@ try {
   const report = args2.indexOf("--startup-report");
   if (report >= 0 && args2[report + 1]) {
     try {
-      fs10.writeFileSync(args2[report + 1], cause.slice(0, 2048), { flag: "wx", mode: 384 });
+      fs9.writeFileSync(args2[report + 1], cause.slice(0, 2048), { flag: "wx", mode: 384 });
     } catch {
     }
   }

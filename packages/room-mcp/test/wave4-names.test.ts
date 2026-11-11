@@ -47,7 +47,7 @@ it('M2 detaches a lapsed name holder so another live session can publish the che
 
 it('M6 keeps the H1 journal pending until the hub accepts and retries the same notice ID', async () => {
   const dir = temporary(), doc = new RoomDoc()
-  const registry = await WorkerRegistry.open(dir, { migrate: false, watch: false })
+  const registry = await WorkerRegistry.open(dir, { watch: false })
   doc.addClaim({ path: 'x', from: 1, to: 1, by: 'ada', byKind: 'agent', intent: 'edit' })
   doc.setScope({ by: 'ada', byKind: 'agent', area: 'old', summary: 'old', paths: ['x'], at: 1 })
   const ids: string[] = []
@@ -68,7 +68,7 @@ it('M6 keeps the H1 journal pending until the hub accepts and retries the same n
 it('M6 cannot finish the idle leave while a pending notice has no name lease', async () => {
   const dir = temporary(), room = new RoomDoc()
   execFileSync('git', ['init', '-q', dir])
-  const registry = await WorkerRegistry.open(path.join(dir, '.git'), { migrate: false, watch: false })
+  const registry = await WorkerRegistry.open(path.join(dir, '.git'), { watch: false })
   room.addClaim({ path: 'x', from: 1, to: 1, by: 'ada', byKind: 'agent', intent: 'edit' })
   await registry.reconcileIdleClaims({ roomKey: 'local/repo', sessionId: 's', participant: 'ada', idleEpoch: 'idle-1', host: 'shared-app-server',
     lastActivityMs: 0, monotonicMs: () => IDLE_CLAIMS_MS, doc: room, ownsParticipant: () => true, postNotice: () => ({ ok: false }) })
@@ -81,7 +81,7 @@ it('M6 cannot finish the idle leave while a pending notice has no name lease', a
 it('M6 replays a crashed H1 notice before a replacement process reaches eight hours idle', async () => {
   const dir = temporary(), room = new RoomDoc()
   execFileSync('git', ['init', '-q', dir])
-  const registry = await WorkerRegistry.open(path.join(dir, '.git'), { migrate: false, watch: false })
+  const registry = await WorkerRegistry.open(path.join(dir, '.git'), { watch: false })
   room.participants.set('ada\0holder', { sessionId: 's', epoch: 1 })
   room.addClaim({ path: 'x', from: 1, to: 1, by: 'ada', byKind: 'agent', intent: 'edit' })
   const ids: string[] = []

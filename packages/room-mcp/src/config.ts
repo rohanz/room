@@ -15,23 +15,19 @@ import { legacyLocalBranchRoom } from './room-name.js'
 const TEAM_SERVER_REQUIRED = 'No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.'
 export const LOCAL = 'local'
 const DEFAULT_MAX_WORKERS = 8
-/** Display only (room_state's stale-claim label). Deletion is the hub's fixed expiry (ROOM_STALE_MS in @room/shared). */
-const DEFAULT_STALE_DAYS = 7
 
 export type ConfigRule = 'argument' | 'env' | 'remembered' | 'default'
 export interface ConfigArgs {
   server?: string; where?: string; name?: string; owner?: string; tag?: string; kind?: string
   share?: string; shareExplicit?: boolean; credentialsPath?: string; credentials?: string; token?: string; logFile?: string
-  maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
+  maxWorkers?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
   dir: string; server: string; teamServer?: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareExplicit: boolean; shareWarning?: string
-  credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
+  credentialsPath: string; token?: string; logFile?: string; maxWorkers: number
   room?: string; web?: string; roomUrl?: string
   workerId?: string
-  /** A remembered Room 0.16 per-branch local room and its repository room; a join to that room migrates the choice. */
-  legacyLocalRoom?: { from: string; to: string }
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -74,14 +70,14 @@ export function resolveShare(raw: unknown, source = 'share'): { level: ShareLeve
   return level ? { level } : { level: 'intent', warning: `${source}='${String(raw)}' is not a level; sharing plans only` }
 }
 
-async function readRememberedChoice(dir: string): Promise<{ where?: string; room?: string; legacy?: { from: string; to: string } }> {
+async function readRememberedChoice(dir: string): Promise<{ where?: string; room?: string }> {
   try {
     const file = path.join(await gitCommonDir(dir), 'room-choice.json')
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; room?: unknown; schema?: unknown }
     const where = value(parsed.where), room = value(parsed.room)
     // Only a choice written before 0.17 (no schema mark) can hold a 0.16 per-branch local room.
     const to = room && normaliseWhere(where) === LOCAL && parsed.schema === undefined ? legacyLocalBranchRoom(room, path.basename(await mainWorktree(dir))) : undefined
-    return to ? { where, legacy: { from: room!, to } } : { where, room }
+    return { where, room: to ? undefined : room }
   } catch { return {} }
 }
 
@@ -134,9 +130,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareExplicit, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
-    staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
     room: explicitRoom ?? (whereRule === 'remembered' && where === LOCAL ? rememberedChoice.room : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
-    ...(where === LOCAL && rememberedChoice.legacy ? { legacyLocalRoom: rememberedChoice.legacy } : {}),
   }
 }
 

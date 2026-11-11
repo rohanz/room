@@ -177,7 +177,7 @@ describe('worker registry read cache', () => {
       const file = join(registry.root, 'runs', record.id, `1.${kind}.json`)
       fs.mkdirSync(path.dirname(file), { recursive: true })
       writeFileSync(file, '{malformed')
-      const restarted = await WorkerRegistry.open(common, { migrate: false, watch: false, liveness: () => 'dead' })
+      const restarted = await WorkerRegistry.open(common, { watch: false, liveness: () => 'dead' })
       try {
         const snapshot = await restarted.snapshot()
         expect(snapshot.available && snapshot.blockers).toEqual(expect.arrayContaining([expect.stringContaining(`1.${kind}.json`)]))

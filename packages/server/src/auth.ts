@@ -19,7 +19,7 @@ import crypto from 'node:crypto'
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose'
 import { FileStore, type Store, type StoredSession } from './store.js'
 import { assertValidParticipantName, validParticipantName } from './names.js'
-import { envCount } from './settings.js'
+import { SERVER_FAIRNESS } from './settings.js'
 
 export type { StoredSession } from './store.js'
 export type Provider = 'github' | 'oidc'
@@ -50,7 +50,7 @@ export interface AuthOptions {
   sessionTtlMs?: number
   /** How long a started login may take before the client must start again. Default 15 min. */
   loginTtlMs?: number
-  /** Login attempts awaiting completion (ROOM_MAX_PENDING_LOGINS). Default 1000. */
+  /** Login attempts awaiting completion; defaults to the fixed server fairness budget. */
   maxPendingLogins?: number
   log?: (line: string) => void
   onSessionRemoved?: (session: string, reason: 'session expired' | 'logged out', removed?: StoredSession) => void
@@ -128,7 +128,7 @@ export class Auth {
     this.now = o.now ?? Date.now
     this.ttl = o.sessionTtlMs ?? 90 * 24 * 60 * 60 * 1000
     this.loginTtl = o.loginTtlMs ?? 15 * 60 * 1000
-    this.maxPending = o.maxPendingLogins ?? envCount(process.env, 'ROOM_MAX_PENDING_LOGINS', 1000)
+    this.maxPending = o.maxPendingLogins ?? SERVER_FAIRNESS.maxPendingLogins
     this.ready = this.load()
   }
   private async load(): Promise<void> {

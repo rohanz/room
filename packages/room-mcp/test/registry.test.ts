@@ -177,7 +177,7 @@ describe('worker identity and durable exits', () => {
   })
 
   it('reuses a tag only after retirement, with a fresh id; an old exit does not alter the new run', async () => {
-    const root = storeRoot(), store = await WorkerRegistry.open(root, { migrate: false, watch: false,
+    const root = storeRoot(), store = await WorkerRegistry.open(root, { watch: false,
       identity: token, liveness: () => 'alive' })
     const first = record(root, 'w_first'), next = record(root, 'w_next')
     await store.writeIntent({ ...first, phase: 'intent', runs: [{ ...first.runs[0], launch: undefined }] })
@@ -191,7 +191,7 @@ describe('worker identity and durable exits', () => {
   })
 
   it('records an unwitnessed exit with unknown cause and no death interrupt', async () => {
-    const root = storeRoot(), store = await WorkerRegistry.open(root, { migrate: false, watch: false,
+    const root = storeRoot(), store = await WorkerRegistry.open(root, { watch: false,
       identity: token, liveness: () => 'dead' })
     const w = record(root, 'w_dead')
     await store.writeIntent({ ...w, phase: 'intent', runs: [{ ...w.runs[0], launch: undefined }] })

@@ -10,7 +10,7 @@ argument, then `ROOM_SERVER`, legacy `ROOM_URL`, the choice remembered in the cl
 state), then the default. The
 settings: `ROOM_SERVER` (`local` by default, `hosted`, or a `ws(s)://` URL),
 `ROOM_NAME` / `ROOM_OWNER` / `ROOM_TAG` / `ROOM_KIND` (identity), `ROOM_SHARE` (sharing level),
-`ROOM_CREDENTIALS`, `ROOM_TOKEN`, `ROOM_LOG_FILE`, `ROOM_MAX_WORKERS`, `ROOM_STALE_DAYS`,
+`ROOM_CREDENTIALS`, `ROOM_TOKEN`, `ROOM_LOG_FILE`, `ROOM_MAX_WORKERS`,
 `ROOM_ROOM` (explicit room name, how workers get the lead's room), `ROOM_WEB`, and, for a
 dispatched worker, `ROOM_WORKER_ID` / `ROOM_WORKER_RUN` / `ROOM_LAUNCH_NONCE`. Nothing is required: with nothing set a
 session is in a local room.
@@ -188,7 +188,7 @@ Besides tool replies, the MCP process watches the room and posts on your behalf:
 - a `notify` when a file you changed no longer merges cleanly with a teammate's version (an `fyi` when it does again).
 
 The hub (team server or local relay), not this process, removes an offline participant's overlay, scope and claims
-after its fixed seven days. `ROOM_STALE_DAYS` (default 7) only changes when `room_state` marks offline claims `stale`.
+after its fixed seven days. `room_state` uses that same fixed threshold to mark offline claims `stale`.
 
 Merge previews behind the conflict notices run at most four per ten seconds per client, coalescing
 further changes, and a pair whose texts have not changed is not re-merged.

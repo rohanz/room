@@ -97,18 +97,6 @@ describe('retired worker record retention', () => {
     } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('removes nothing before migration has finished', async () => {
-    const dir = repo()
-    try {
-      const { registry, record } = await seedRegistryWorker(dir, 'old')
-      await mutateWorkerFixture(registry, record.id, prior => ({ ...prior, phase: 'abandoned', seq: prior.seq + 1 }))
-      fs.utimesSync(path.join(registry.root, 'workers', `${record.id}.json`), new Date(0), new Date(0))
-      fs.writeFileSync(path.join(registry.root, 'migration.json'), JSON.stringify({ v: 1, sources: {}, done: false }))
-      expect(await registry.pruneRetired(ROOM_STALE_MS)).toEqual([])
-      expect((await registry.read(record.id))?.phase).toBe('abandoned')
-    } finally { rmSync(dir, { recursive: true, force: true }) }
-  })
-
   /**
    * Forced interleavings: `beginOperation(id, 'prune')` is where retention takes the record's operation lease,
    * so a hook there runs between the candidate snapshot and the decision made under the lease.
@@ -131,7 +119,7 @@ describe('retired worker record retention', () => {
     })
   }
   const otherInstance = (registry: WorkerRegistry) => WorkerRegistry.open(registry.commonDir,
-    { identity: { ...registry.instance, nonce: `other-${registry.instance.nonce}` }, watch: false, migrate: false })
+    { identity: { ...registry.instance, nonce: `other-${registry.instance.nonce}` }, watch: false })
 
   it('keeps a record whose operation lease another instance takes mid-prune (a borrower resume)', async () => {
     const dir = repo()

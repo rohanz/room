@@ -35,9 +35,9 @@ this region before (Fly status page: "Depot builder failures"); the classic one 
 A deploy restarts the machine; expect one `502` for up to a minute, then `200` in under 100 ms.
 Watch it: `for i in 1 2 3; do sleep 30; curl -s -o /dev/null -w "%{http_code}\n" https://room-rohanz.fly.dev/health; done`.
 
-## 0.17 cutover
+## Older state
 
-The stopped-machine snapshot, inventory pre-flight and restored-volume rollback for the 0.16 to 0.17 cutover are in [the upgrade guide](../docs/upgrading.md#hosted-fly-deployment). Nobody is known to run a 0.16 server any more; the procedure is kept for the record.
+The 0.16 migration path ended with v0.17.47. Current servers refuse unmigrated registries without loading their documents; migrate with v0.17.47 before deploying a current server onto that volume. See [the upgrade notice](../docs/upgrading.md#room-016-upgrade-path-retired).
 
 After a server deploy that also changed the plugin bundle, refresh the local installs so tests
 run against the shipped code:
@@ -70,7 +70,7 @@ Environment in `deploy/fly.toml`: `PORT=8080`, `YPERSISTENCE=/data` (volume `roo
 per-address rate limits (login starts, websocket upgrades) would count every user as one address.
 Any other Fly app running this image (staging) needs the same line.
 Optional tuning, all with defaults in `.env.example`: `ROOM_IDLE_DAYS`, `ROOM_DOC_MAX_MB`,
-`ROOM_LOAD_MAX_MB` (32 MB stored per migration document; other cold loads/joins use the larger of it and `ROOM_DOC_MAX_MB`), `ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables. The member identity guard
+`ROOM_LOAD_MAX_MB` (cold loads/joins use the larger of its 32 MB default and twice `ROOM_DOC_MAX_MB`), `ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables. The member identity guard
 is observe-only unless `ROOM_IDENTITY_GUARD` is literally `enforce`: objected updates are applied
 unchanged and their logs and `identity_violation` audits are limited to once per login per minute.
 `enforce` is experimental because rejecting a causal update can desynchronise that client.

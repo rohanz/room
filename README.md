@@ -42,7 +42,9 @@ One team room covers **every branch of a repository**. You need push access to i
 
 Team rooms are self-hosted; Room has no default public server. Say **“join the room at wss://room.example.com”** to choose and remember your team’s server. Alternatively launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; its shared app-server daemon does not inherit shell `ROOM_*` variables. The agent explains what the clone will share on its first team join. Say **“share plans only”** or **“only my declared files”** to narrow sharing.
 
-[Documentation index](docs/README.md) · [Coordinate a task](#coordinate-a-task) · [Reference and troubleshooting](docs/reference.md) · [Upgrade from 0.16](docs/upgrading.md)
+[Documentation index](docs/README.md) · [Coordinate a task](#coordinate-a-task) · [Reference and troubleshooting](docs/reference.md) · [Upgrading](docs/upgrading.md)
+
+Old 0.16 local files do not block 0.17 sessions: Room leaves them untouched. Ask **“is Room set up right?”** to list leftover filenames; v0.17.47 can import them, or they are safe to delete if no import is needed. Old branch-room choices fall back to the repository room; schema-2 and custom choices still work. Servers continue to refuse unmigrated 0.16 data.
 
 ## Defaults, and how to change them
 
@@ -58,12 +60,12 @@ Team rooms are self-hosted; Room has no default public server. Say **“join the
 | Collection ends worker resumption | Default apply collection brings output back uncommitted and unstaged, then retires the finished worker. Keep it available while follow-ups or requirement revisions remain. | Defer collection or use `room_collect(keep=true)` (apply only) to retain the worker for follow-ups; later collection applies only new changes. |
 | Worker dependencies linked, Room's variables kept out | A worker's `node_modules` links to your installed packages, with workspace packages pointing at the worker's own sources, so its tests run its code; the spawn reply warns when Room cannot link. The worker's shell commands do not see Room's `ROOM_*` variables. See [workers](docs/reference.md#workers-and-previews). | A worker can delete its linked `node_modules` and install its own. |
 | Automatic wake | Claude Code 2.1.224+ (2.1.234+ on native Windows) uses its cross-session inbox when available; otherwise messages remain owed for tools/hooks. Codex's shared app-server delivers addressed questions, eligible interrupts and the lead’s own worker completions mid-turn as tool output after the running tool finishes; idle threads and unavailable mid-turn delivery use its queue. See [wake paths](docs/reference.md#wake-paths). | Set `ROOM_WAKE=socket` to explicitly select the Claude inbox socket or `ROOM_WAKE=off` to stop wakes on both hosts (messages still wait in the inbox); `ROOM_WAKE=auto` restores the default. |
-| 30-minute idle lease | An unheld Codex app-server session is retired after 30 minutes idle. | Set `ROOM_IDLE_LEASE_MS` to a positive number of milliseconds. |
+| 30-minute idle lease | An unheld Codex app-server session is retired after 30 minutes idle. | Fixed; not configurable. |
 | 4 GiB nominal preview cache | Merge previews with checks reuse a cached worktree. Eviction runs after a preview; active or locked entries and temporary checkouts can exceed the limit, so it is not a disk quota. `ROOM_PREVIEW_CACHE_GB=0` turns reuse off. | Set `ROOM_PREVIEW_CACHE_GB` to the desired GiB limit. |
 | Automatic name tag | When one login has more than one session, Room adds a clone or host tag such as `rohanz+claude` to keep identities separate. | Set `ROOM_TAG` before launching the agent. |
 | Automatic Git base fetch | Room may fetch a missing base commit from the room's remote, at most once per SHA per five minutes. | Set `ROOM_AUTO_FETCH=0` to disable it. |
-| Seven-day participant expiry | After seven days offline, the room's hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state. Owed ledger messages remain. | Fixed; not configurable. `ROOM_STALE_DAYS` only changes when `room_state` marks an offline participant's claims `stale`. |
-| Server cleanup after 30 days | The server closes repositories idle for 30 days and removes legacy branch records 30 days after migration. | Server operators can set `ROOM_IDLE_DAYS` and `ROOM_LEGACY_DAYS`. |
+| Seven-day participant expiry | After seven days offline, the room's hub (team server or local relay) removes that participant's overlay, scope, claims and other owned coordination state. Owed ledger messages remain. | Fixed; `room_state` uses the same seven days for its offline claim `stale` label. |
+| Server cleanup after 30 days | The server closes repositories idle for 30 days and removes migration archives after a fixed 30 days. | Server operators can set `ROOM_IDLE_DAYS`. |
 | Server size caps | The team server accepts up to 64 MiB per live room document and 16 MiB per WebSocket message. A local room applies the same rule to its live document at 64 MiB: once a room is over the cap, writers are refused (close 4413) and reads continue. Its snapshots above 64 MiB are skipped, preserving the previous snapshot. Its identity guard observes by default. | Server operators can set `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, and experimental `ROOM_IDENTITY_GUARD=enforce`. |
 
 ## How people use it

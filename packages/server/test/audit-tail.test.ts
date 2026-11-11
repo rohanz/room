@@ -84,7 +84,7 @@ describe('audit tail', () => {
 })
 
 describe('audit rotation and retention', () => {
-  it('rotates into segments that listings and the evidence read cover in order', async () => {
+  it('rotates into segments that bounded listings cover in order', async () => {
     const dir = tmp()
     const s = new FileStore({ dir, auditRotateBytes: 600 })
     for (const at of range(1, 100)) await s.audit(entry(at))
@@ -93,7 +93,6 @@ describe('audit rotation and retention', () => {
     for (const f of segments) expect(fs.statSync(path.join(dir, f)).size).toBeLessThanOrEqual(600)
     expect(await s.readAudit({ limit: 1000 })).toEqual({ entries: range(1, 100).map(entry), complete: true, gaps: [] })
     expect(await s.readAudit({ limit: 3 })).toMatchObject({ entries: range(98, 100).map(entry), complete: true })
-    expect(await s.readAllAudit({ limit: 1000, maxBytes: 1 << 20 })).toEqual({ entries: range(1, 100).map(entry), complete: true })
     // a restarted server continues the segment sequence instead of overwriting one
     const again = new FileStore({ dir, auditRotateBytes: 600 })
     for (const at of range(101, 130)) await again.audit(entry(at))
@@ -117,7 +116,6 @@ describe('audit rotation and retention', () => {
     // a request starting after the pruned history is unaffected
     expect(await s.readAudit({ since: later + 35 })).toEqual({ entries: range(35, 39).map(i => entry(later + i)), complete: true, gaps: [] })
     // migration evidence needs the whole audit: once anything was pruned it is never complete
-    expect(await s.readAllAudit({ limit: 1000, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
     // a restart keeps that knowledge
     expect((await new FileStore({ dir }).readAudit({ limit: 1000 })).gaps).toEqual(['pruned'])
   })
@@ -152,14 +150,6 @@ describe('audit reads racing rotation', () => {
     for (let i = 1; i < tail.entries.length; i++) expect(tail.entries[i]!.at).toBeGreaterThan(tail.entries[i - 1]!.at)
   })
 
-  it('the evidence read is incomplete when retention runs during it', async () => {
-    const { s } = await twoEvents()
-    let rotated = false
-    const all = await whenOpening('audit.log', async () => { if (!rotated) { rotated = true; await s.audit(entry(3)) } }, () => s.readAllAudit({ limit: 1000, maxBytes: 1 << 20 }))
-    expect(rotated).toBe(true)
-    expect(all).toEqual({ entries: [], complete: false })
-  })
-
   it('a listed segment that vanishes before it is opened makes the read incomplete', async () => {
     const dir = tmp(), s = new FileStore({ dir, auditRotateBytes: line })
     await s.audit(entry(1)); await s.audit(entry(2))
@@ -169,7 +159,6 @@ describe('audit reads racing rotation', () => {
     // event 3 rotates audit.log back into a fresh audit.log.1
     await s.audit(entry(3))
     expect(fs.existsSync(path.join(dir, 'audit.log.1'))).toBe(true)
-    expect(await whenOpening('audit.log.1', gone, () => s.readAllAudit({ limit: 1000, maxBytes: 1 << 20 }))).toEqual({ entries: [], complete: false })
   })
 
   it('an audit that keeps rotating under the read is reported as rotated, with no entries', async () => {

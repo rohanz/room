@@ -1,12 +1,13 @@
+import { removePreparation } from './worker-preparation.js'
 import { workerTagFile, withWorkerTag } from './worker-tags.js'
-import { legacyWorkerHost, retainedSessionMissing } from './hosts/lifecycle.js'
+import { retainedSessionMissing } from './hosts/lifecycle.js'
 import type { HostId } from './hosts/types.js'
 /** The local source of truth for worker operations. No replicated document grants local authority. */
 import { privateStateDirectory } from '@room/relay'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { boundedGitSync } from '@room/roomd/baseline'
 import { performance } from 'node:perf_hooks'
 import * as Y from 'yjs'
 import { completionId, completionMessage, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
@@ -23,16 +24,9 @@ import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape,
 import { WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
 import { sameStartTime } from '@room/relay/process'
 
-export interface LegacySource {
-  key: string; tag: string; dir: string; branch: string; host: HostId
-  oldId?: string; model?: string; task?: string; said?: string; keptWorktree?: string; share?: WorkerRecord['share']
-}
 export interface RegistryOptions {
-  liveness?: LivenessProbe; now?: () => number; identity?: InstanceToken
-  /** An import adapter can supply decoded 0.16 snapshots; default discovery scans owned git worktrees. */
-  sources?: (commonDir: string) => LegacySource[]; migrate?: boolean; watch?: boolean
+  liveness?: LivenessProbe; now?: () => number; identity?: InstanceToken; watch?: boolean
 }
-interface MigrationMap { v: 1; sources: Record<string, { id: string; state: 'assigned' | 'imported' }>; done: boolean }
 const readJson = <T>(file: string): T | undefined => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
   catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return undefined; throw e }
@@ -188,80 +182,6 @@ async function leaseRetry<T>(fn: () => T, deadline = performance.now() + GUARD_W
     catch (error) { await pauseForGuard(deadline, error) }
   }
 }
-function commitExists(commonDir: string, oid: unknown): oid is string {
-  if (typeof oid !== 'string' || !/^[0-9a-f]{40,64}$/.test(oid)) return false
-  try { execFileSync('git', ['--git-dir', commonDir, 'cat-file', '-e', `${oid}^{commit}`], { stdio: 'ignore' }); return true }
-  catch { return false }
-}
-function legacySession(dir: string, oldId: string | undefined, host: LegacySource['host']): string | undefined {
-  if (!oldId) return undefined
-  try {
-    const gitDir = execFileSync('git', ['-C', dir, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
-    const local = readJson<{ worker_id?: string; host?: string; session_id?: string }>(path.join(gitDir, 'room-session.json'))
-    return local?.worker_id === oldId && local.host === host && typeof local.session_id === 'string' ? local.session_id : undefined
-  } catch { return undefined }
-}
-
-class LegacySnapshotUnavailable extends Error {}
-/** The display fields of a 0.16 snapshot's tag-keyed `workers` entry. */
-interface LegacyWorkerEntry { id?: string; dir?: string; host: HostId; model?: string; task?: string; summary?: string }
-/** The old CRDT is display evidence only: it never supplies pid, session, base or capability. */
-function legacyDisplay(commonDir: string): Map<string, Pick<LegacySource, 'oldId' | 'host' | 'model' | 'task' | 'said' | 'keptWorktree'>> {
-  const found = new Map<string, Pick<LegacySource, 'oldId' | 'host' | 'model' | 'task' | 'said' | 'keptWorktree'>>()
-  const canonical = (dir: string): string => { try { return fs.realpathSync(dir) } catch { return path.resolve(dir) } }
-  for (const file of files(path.join(commonDir, 'room-local'), '.ydoc')) {
-    const doc = new Y.Doc()
-    try {
-      if (fs.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MiB`)
-      Y.applyUpdate(doc, fs.readFileSync(file))
-      const room = new RoomDoc(doc)
-      for (const worker of doc.getMap<LegacyWorkerEntry>('workers').values()) {
-        if (!worker.dir || !worker.id) continue
-        found.set(canonical(worker.dir), { oldId: worker.id, host: worker.host, model: worker.model,
-          task: worker.task, said: worker.summary })
-      }
-      for (const retired of room.retiredWorkers()) {
-        if (!retired.keptWorktree) continue
-        const prior = found.get(canonical(retired.keptWorktree))
-        found.set(canonical(retired.keptWorktree), { ...prior, host: retired.host, model: retired.model,
-          task: retired.task, said: retired.summary, keptWorktree: retired.keptWorktree })
-      }
-    } catch (error) {
-      process.stderr.write(`[room] cannot import legacy worktrees while ${file} is unreadable: ${error}\n`)
-      throw new LegacySnapshotUnavailable(`unreadable legacy snapshot: ${file}`)
-    }
-    finally { doc.destroy() }
-  }
-  return found
-}
-
-/** Conservative local discovery: only Git's own worktree list and canonical Room paths are imported. */
-function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
-  let output: string
-  try { output = execFileSync('git', ['--git-dir', commonDir, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }) }
-  catch { return [] }
-  const registered = new Set([...output.matchAll(/^worktree (.+)$/gm)].map(match => {
-    try { return fs.realpathSync(match[1]) } catch { return path.resolve(match[1]) }
-  }))
-  const display = legacyDisplay(commonDir)
-  const out: LegacySource[] = []
-  for (const block of output.split(/\n\s*\n/)) {
-    const dir = /^worktree (.+)$/m.exec(block)?.[1]
-    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]
-    if (!dir || !branch?.startsWith('room/')) continue
-    const tag = branch.slice(5)
-    if (path.basename(dir) !== tag || !dir.includes(`${path.sep}.room${path.sep}workers${path.sep}`)) continue
-    let canonical: string
-    try { canonical = fs.realpathSync(dir) } catch { continue }
-    const ownerCheckout = path.dirname(path.dirname(path.dirname(canonical)))
-    if (!registered.has(ownerCheckout) || !roomWorkerPathMatchesBranch(ownerCheckout, canonical, branch)) continue
-    const prior = display.get(canonical)
-    out.push({ key: `worktree:${canonical}`, tag, dir: canonical, branch,
-      host: legacyWorkerHost(prior?.host), ...(prior ?? {}) })
-  }
-  return out
-}
-
 /**
  * A record whose lifecycle is over. Only an unended borrower needs its owner's record: retention (pruneRetired)
  * and the inventory's owner check (#list) both decide by this one rule.
@@ -279,7 +199,7 @@ export class FileWorkerStore {
   private readonly heldOperations = new Map<string, string>()
   private timer?: ReturnType<typeof setInterval>
   private watchQueued = false
-  private constructor(readonly commonDir: string, private readonly options: RegistryOptions, private readonly readOnly = false) {
+  private constructor(readonly commonDir: string, options: RegistryOptions, private readonly readOnly = false) {
     this.root = path.join(commonDir, 'room', 'registry')
     this.alive = options.liveness ?? liveness
     this.now = options.now ?? Date.now
@@ -288,15 +208,15 @@ export class FileWorkerStore {
 
   static async open(commonDir: string, options: RegistryOptions = {}): Promise<FileWorkerStore> {
     const registry = new FileWorkerStore(commonDir, options)
-    if (options.migrate !== false) await registry.migrate()
+    privateStateDirectory(registry.root)
     await registry.reconcile()
     if (options.watch !== false) registry.watch()
     return registry
   }
 
-  /** No lifecycle initialization, recovery, migration, or background work for display readers. */
+  /** No lifecycle initialization, recovery or background work for display readers. */
   static async openReader(commonDir: string, options: RegistryOptions = {}): Promise<FileWorkerStore> {
-    return new FileWorkerStore(commonDir, { ...options, migrate: false, watch: false }, true)
+    return new FileWorkerStore(commonDir, { ...options, watch: false }, true)
   }
   close(): void { clearInterval(this.timer); this.timer = undefined; for (const watcher of this.watchers.splice(0)) watcher.close() }
   private watch(): void {
@@ -960,10 +880,9 @@ export class FileWorkerStore {
   /**
    * Retention: remove retired and abandoned records older than `maxAgeMs` (their room archive entry is the durable
    * copy), with their run facts, adoption and the tag reservation that still names them. A record whose kept
-   * worktree still exists, or whose checkout a live record borrows, stays. Nothing is removed before migration ends.
+   * worktree still exists, or whose checkout a live record borrows, stays. Old import journals are not used by this registry.
    */
   async pruneRetired(maxAgeMs: number): Promise<WorkerRecord[]> {
-    if (!readJson<MigrationMap>(path.join(this.root, 'migration.json'))?.done) return []
     const borrowers = (records: WorkerRecord[]) => new Set(records.filter(record => !ended(record))
       .flatMap(record => [record.sharedWith, this.#worktreeOwner(record)?.id]).filter(Boolean))
     /** Every retention predicate, on one reading of the registry; undefined keeps the record. */
@@ -1241,22 +1160,14 @@ export class FileWorkerStore {
       && !Object.keys(prep.previousCarryRefs ?? {}).length) return
     const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
     if (!roomWorkerPathMatchesBranch(leadDir, record.dir, record.branch, false)) throw new Error(`unsafe preparation path for ${record.id}`)
-    const run = (...args: string[]): string => execFileSync('git', ['--git-dir', this.commonDir, ...args], { encoding: 'utf8' }).trim()
-    if (prep.created === true && fs.existsSync(record.dir)) {
-      const listing = run('worktree', 'list', '--porcelain')
-      const canonical = fs.realpathSync(record.dir)
-      const registered = listing.split('\n').filter(line => line.startsWith('worktree ')).some(line => {
-        try { return fs.realpathSync(line.slice(9)) === canonical } catch { return false }
-      })
-      if (!registered) throw new Error(`unregistered preparation worktree ${record.dir}`)
-      run('worktree', 'remove', '--force', record.dir)
-    }
-    if (prep.branchCreated === true && prep.branchExisted === false) {
-      const ref = `refs/heads/${record.branch}`
-      let exists = false
-      try { run('show-ref', '--verify', '--quiet', ref); exists = true }
-      catch (e) { if ((e as { status?: number }).status !== 1) throw e }
-      if (exists) run('branch', '-D', record.branch)
+    const run = (...args: string[]): string => boundedGitSync(this.commonDir, ['--git-dir', this.commonDir, ...args]).toString().trim()
+    if (prep.created !== true) return
+    try {
+      removePreparation(this.commonDir, record.dir, { id: record.id, nonce: record.runs[0].nonce, branch: record.branch },
+        prep.branchCreated === true && prep.branchExisted === false)
+    } catch (error) {
+      process.stderr.write(`[room] ${error instanceof Error ? error.message : String(error)}; cleanup stopped; remaining preparation resources retained\n`)
+      return
     }
     const refs = prep.previousCarryRefs
     if (refs && typeof refs === 'object' && !Array.isArray(refs)) {
@@ -1458,80 +1369,4 @@ export class FileWorkerStore {
     if (externalChange) this.changed()
   }
 
-  private async migrate(): Promise<void> {
-    const file = path.join(this.root, 'migration.json')
-    if (readJson<MigrationMap>(file)?.done) return
-    const lock = path.join(this.root, 'migration.lock')
-    let acquired = false
-    const deadline = performance.now() + GUARD_WAIT_MS
-    while (performance.now() < deadline) {
-      if (createExclusive(lock, this.identity)) { acquired = true; break }
-      if (readJson<MigrationMap>(file)?.done) return
-      if (await leaseRetry(() => recover(lock, () => true), deadline)) continue
-      // Migration is a startup barrier. A second MCP process waits for the
-      // first to finish; an unreadable/live holder is never stolen on an elapsed-time guess.
-      await new Promise<void>(resolve => setTimeout(resolve, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance.now()))))
-    }
-    if (!acquired) throw new Error('registry migration in progress')
-    try {
-      const map = readJson<MigrationMap>(file) ?? { v: 1 as const, sources: {}, done: false }
-      if (map.done) return
-      let sources: LegacySource[]
-      try { sources = (this.options.sources ?? discoverLegacyWorktrees)(this.commonDir) }
-      catch (error) {
-        // Do not mark migration done: a repaired snapshot must still supply its retirements.
-        if (error instanceof LegacySnapshotUnavailable) return
-        throw error
-      }
-      for (const source of sources) {
-        if (!map.sources[source.key]) {
-          map.sources[source.key] = { id: id(), state: 'assigned' }
-          writeAtomic(file, map)
-        }
-        const target = map.sources[source.key]
-        if (target.state === 'imported') continue
-        this.importLegacy(source, target.id)
-        target.state = 'imported'
-        writeAtomic(file, map)
-      }
-      map.done = true
-      writeAtomic(file, map)
-    } finally {
-      // compare-and-release normalizes bare token files as well as holder envelopes.
-      await leaseRetry(() => compareAndRelease(lock, this.identity))
-    }
-  }
-
-  private importLegacy(source: LegacySource, workerId: string): void {
-    const file = this.workerFile(workerId)
-    const carryFile = path.join(this.commonDir, 'room-carry', `${source.tag}.json`)
-    const migratedCarryFile = `${carryFile}.migrated`
-    if (!missing(file)) {
-      if (fs.existsSync(carryFile) && !fs.existsSync(migratedCarryFile)) fs.renameSync(carryFile, migratedCarryFile)
-      return
-    }
-    const token = this.identity
-    const carryRecord = readJson<{ base?: unknown; carriedBase?: unknown }>(carryFile)
-    const base = commitExists(this.commonDir, carryRecord?.base) ? carryRecord.base : undefined
-    const carriedBase = commitExists(this.commonDir, carryRecord?.carriedBase) ? carryRecord.carriedBase : undefined
-    const carry = base && (!carryRecord?.carriedBase || carriedBase) ? 'delta' : 'copy'
-    const hostSessionId = legacySession(source.dir, source.oldId, source.host)
-    const record: WorkerRecord = {
-      v: 1, id: workerId, tag: source.tag, name: '', mode: 'local', room: '',
-      lead: { participant: '', room: '', instance: token }, host: source.host, model: source.model,
-      budget: { threads: 1, memGb: 1, nice: 10 }, share: source.share ?? 'intent', task: source.task ?? 'legacy worker',
-      dir: source.dir, outside: false, branch: source.branch, prep: { step: 'prepared' }, base,
-      carriedBase, hostSessionId,
-      capabilities: { resume: !!hostSessionId, signal: false, collect: carry },
-      phase: source.keptWorktree ? 'retired' : 'active', keptWorktree: source.keptWorktree,
-      cleanup: source.keptWorktree ? { legacy: 'done' } : undefined,
-      runs: [{ n: 1, mode: 'fresh', intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: 0, promptMsgIds: [], launcher: token, launch: { outcome: 'imported' }, logStart: 0 }],
-      legacy: { id: source.key, source: source.dir, said: source.said, unowned: true }, createdAt: this.now(), seq: 1,
-    }
-    withWorkerTag(this.root, source.tag, () => {
-      createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() })
-      createExclusive(file, record)
-    })
-    if (fs.existsSync(carryFile) && !fs.existsSync(migratedCarryFile)) fs.renameSync(carryFile, migratedCarryFile)
-  }
 }

@@ -75,6 +75,22 @@ export async function levelDbOf(provider: LevelProvider): Promise<LevelDb> {
   return db
 }
 
+/** Exact-key presence, including an interrupted write with no discovery vector.
+ * Two key-only seeks, each limited to one key; errors are never treated as absence.
+ * Run on the handle, outside y-leveldb's error-swallowing transaction wrapper. */
+export async function levelDocumentExists(db: LevelDb, name: string): Promise<boolean> {
+  const hasPrefix = (prefix: Key): Promise<boolean> => new Promise((resolve, reject) => {
+    let found = false, ended = false
+    // String suffixes sort before the numeric sentinel in y-leveldb's compound encoding.
+    db.createReadStream({ gte: prefix, lt: [...prefix, 0], keys: true, values: false, limit: 1, highWaterMark: 1 })
+      .on('data', () => { found = true })
+      .on('error', reject)
+      .on('end', () => { ended = true; resolve(found) })
+      .on('close', () => { if (!ended) reject(new Error('document existence probe closed early')) })
+  })
+  return await hasPrefix(['v1_sv', name]) || await hasPrefix(['v1', name])
+}
+
 interface StoredTable { level: number; file: number; bytes: number; first: Buffer; last: Buffer }
 interface StoredTables { tables: StoredTable[]; names: Buffer[]; firstVector: Buffer; memtableSlack: number }
 // Snappy's best case copies 64 bytes with a 3-byte tag (~21.3x); 24x leaves headroom.
@@ -215,20 +231,4 @@ async function* records(db: LevelDb, name: string): AsyncGenerator<{ key: Key; v
 /** Consumer demand controls the iterator, keeping only one raw record queued. */
 export async function* levelStoredUpdates(db: LevelDb, name: string): AsyncGenerator<Uint8Array> {
   for await (const record of records(db, name)) yield record.value
-}
-
-/** Copy frozen raw records in bounded batches. Publish discovery last so a partial copy is replayed.
- *  Export and copy read each stored record whole: memory is bounded by the largest record, not the message cap. */
-export async function levelCopyRaw(db: LevelDb, from: string, to: string): Promise<void> {
-  if (from === to) throw new Error('raw copy requires distinct document names')
-  let batch: { type: 'put'; key: Key; value: Uint8Array }[] = [], bytes = 0
-  const flush = async () => { if (batch.length) await db.batch(batch); batch = []; bytes = 0 }
-  for await (const { key, value } of records(db, from)) {
-    if (bytes + value.byteLength > 1048576) await flush()
-    batch.push({ type: 'put', key: ['v1', to, 'update', key[3]], value }); bytes += value.byteLength
-    if (bytes >= 1048576 || batch.length >= 64) await flush()
-  }
-  await flush()
-  const vector = await db.get(['v1_sv', from])
-  await db.batch([{ type: 'put', key: ['v1_sv', to], value: vector }])
 }

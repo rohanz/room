@@ -126,3 +126,19 @@ it('routes compatibility admission through the identity facet', async () => {
     expect(b.bound()).toEqual({ id: 'wrapper-thread', host: 'codex' })
   } finally { admit.mockRestore() }
 })
+
+it('ignores old hook state without copying it into a 0.17 session or renaming its files', async () => {
+  vi.resetModules()
+  const { codexIdentity } = await import('../src/hosts/codex-identity.js')
+  const b = await binding()
+  codexIdentity.admitToolSession('legacy-hook-test')
+  const common = b.commonDir()!, old = path.join(common, 'room-session.json')
+  const before = '{"session_id":"legacy-hook-test"}\n'
+  fs.writeFileSync(old, before)
+  fs.writeFileSync(path.join(common, 'room-hook-seen.json'), '{"companyTold":true}\n')
+  expect(b.dir()).toContain(path.join('room', 'sessions'))
+  expect(fs.readFileSync(old, 'utf8')).toBe(before)
+  expect(fs.readFileSync(path.join(common, 'room-hook-seen.json'), 'utf8')).toBe('{"companyTold":true}\n')
+  expect(fs.existsSync(path.join(common, 'room', 'sessions'))).toBe(false)
+  expect(fs.existsSync(old + '.migrated')).toBe(false)
+})

@@ -25,11 +25,6 @@ export function patchPublisher(dir: string, tag: string): (bytes: Buffer) => Pro
 /** Seed a durable record for tests of operations formerly stored in room-carry JSON. */
 export async function seedRegistryWorker(dir: string, tag: string, patch: Partial<WorkerRecord> = {}): Promise<{ registry: WorkerRegistry; record: WorkerRecord }> {
   const common = await gitCommonDir(dir)
-  const migration = path.join(common, 'room', 'registry', 'migration.json')
-  if (!fs.existsSync(migration)) {
-    fs.mkdirSync(path.dirname(migration), { recursive: true })
-    fs.writeFileSync(migration, JSON.stringify({ v: 1, sources: {}, done: true }))
-  }
   const registry = await registryForDir(dir)
   const id = registry.newId(), now = Date.now()
   const record: WorkerRecord = {
@@ -61,11 +56,6 @@ export interface FixtureWorker {
 
 async function migrated(dir: string): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
-  const migration = path.join(common, 'room', 'registry', 'migration.json')
-  if (!fs.existsSync(migration)) {
-    fs.mkdirSync(path.dirname(migration), { recursive: true })
-    fs.writeFileSync(migration, JSON.stringify({ v: 1, sources: {}, done: true }))
-  }
   return registryForDir(dir)
 }
 

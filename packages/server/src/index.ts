@@ -45,8 +45,8 @@ import { CredentialSockets, PermissionRevalidator, ConnectionReservations, Pendi
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
-import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
+import { archiveDocumentNames, closeDocumentNames, safeRoomRegistry } from './registry.js'
+import { levelDbOf, levelDocumentExists, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, classifyDoc } from './inventory.js'
 import { DOC_SIZE_CAP_CODE, HUB_ORIGIN, selectContract, LEGACY_COMPAT, legacyHello, parseAdvertisement,
   BOOTSTRAP_MAX_PENDING, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, BOOTSTRAP_MAX_BUFFERED_BYTES, BOOTSTRAP_MAX_BYTES,
@@ -63,6 +63,9 @@ import {
   MAX_PR_NOTES_PER_PRINCIPAL, MAX_PR_LISTS_PER_PRINCIPAL, PR_OPERATIONS_PER_MINUTE, limits,
 } from './limits.js'
 import { settingsFromEnv } from './settings.js'
+import { warnRetiredEnvironment } from '@room/shared'
+
+warnRetiredEnvironment('server', process.env, line => console.warn(line))
 
 const PORT = Number(process.env.PORT ?? 1234)
 /** Capacities and byte budgets: an invalid explicit setting stops startup instead of silently disabling a cap. */
@@ -167,8 +170,7 @@ const prOperationRate = new RateLimit(PR_OPERATIONS_PER_MINUTE, 60_000)
 const MAX_HTTP_RESPONSES = settings.maxHttpResponses
 const MAX_ROOM_LISTS = settings.maxRoomLists
 const MAX_ROOM_LISTS_PER_PRINCIPAL = 1
-const archiveListSetting = Number(process.env.ROOM_ARCHIVE_LIST_MAX_KEYS ?? 1000)
-const ARCHIVE_LIST_MAX_KEYS = Number.isFinite(archiveListSetting) ? Math.min(1000, Math.max(0, Math.floor(archiveListSetting))) : 1000
+const ARCHIVE_LIST_MAX_KEYS = 1000
 const httpResponses = new WorkSlots(MAX_HTTP_RESPONSES, MAX_HTTP_RESPONSES_PER_PRINCIPAL, outbound)
 const roomListResponses = new WorkSlots(MAX_ROOM_LISTS, MAX_ROOM_LISTS_PER_PRINCIPAL, outbound)
 const roomListRate = new RateLimit(LISTS_PER_MINUTE, 60_000)
@@ -180,7 +182,6 @@ const canonical = (name: string, schema2 = false) => {
   if (parsed.github || schema2 || rooms.has(parsed.name)) return parsed.repo
   return [...rooms].find(([, entry]) => entry.branches.includes(parsed.name) || entry.legacy?.includes(parsed.name))?.[0] ?? parsed.name
 }
-const oldBranchRepo = (name: string) => name.split('/').slice(0, name.split('/')[0]?.toLowerCase() === 'github.com' ? 3 : name.startsWith('git/') ? 4 : 2).join('/')
 async function loadRoomsWithRetry(): Promise<Record<string, OpenRepo>> {
   let delay = 1000
   for (;;) {
@@ -193,28 +194,22 @@ async function loadRoomsWithRetry(): Promise<Record<string, OpenRepo>> {
   }
 }
 const roomsLoaded = auth.ready.then(loadRoomsWithRetry).then(all => {
-  for (const [key, value] of Object.entries(safeRoomRegistry(all))) {
-    const name = parseRoomName(key, true)!.repo
-    const previous = rooms.get(name)
-    if (!previous) {
-      rooms.set(name, { ...value, branches: [...new Set(value.branches ?? [])],
-        legacy: [...new Set([...(value.legacy ?? []), ...(key === name ? [] : [key])])] })
-      continue
-    }
-    const earliest = previous.at <= value.at ? previous : value
-    const progress = previous.plan || previous.migratedAt ? previous : value.plan || value.migratedAt ? value : earliest
-    rooms.set(name, { ...progress, by: earliest.by, at: Math.min(previous.at, value.at),
-      lastSeen: Math.max(previous.lastSeen ?? 0, value.lastSeen ?? 0) || undefined,
-      branches: [...new Set([...previous.branches, ...value.branches])],
-      legacy: [...new Set([...(previous.legacy ?? []), ...(value.legacy ?? []), ...(key === name ? [] : [key])])] })
-  }
-  if (Object.keys(all).some(key => !rooms.has(key))) return saveRooms()
-}).catch(e => console.log(`could not load the room registry: ${e instanceof Error ? e.message : e}`))
+  for (const [name, entry] of Object.entries(safeRoomRegistry(all))) rooms.set(name, entry)
+}).catch(error => {
+  console.error(`room registry refused: ${error instanceof Error ? error.message : error}`)
+  process.exit(1)
+})
 let roomSaveQueue: Promise<void> = Promise.resolve()
 let roomSaveRetry: ReturnType<typeof setTimeout> | undefined
-function saveRooms(): Promise<void> {
-  const snapshot = Object.fromEntries(rooms)
-  const saving = roomSaveQueue.then(() => store.saveRooms(snapshot))
+function saveRooms(registration?: { name: string; entry: OpenRepo }): Promise<void> {
+  const saving = roomSaveQueue.then(async () => {
+    // Take the snapshot when this save runs, so queued saves cannot undo a registration.
+    const snapshot = Object.fromEntries(rooms)
+    if (registration) snapshot[registration.name] = registration.entry
+    await store.saveRooms(snapshot)
+    // A new room is visible only after its registry entry is durable.
+    if (registration) rooms.set(registration.name, registration.entry)
+  })
   roomSaveQueue = saving.catch(error => {
     console.log(`could not save room registry: ${error instanceof Error ? error.message : error}`)
     if (!roomSaveRetry) { roomSaveRetry = setTimeout(() => { roomSaveRetry = undefined; void saveRooms().catch(() => {}) }, 1000); roomSaveRetry.unref?.() }
@@ -222,7 +217,7 @@ function saveRooms(): Promise<void> {
   return saving
 }
 const NOT_OPEN = (room: string) => `no room for ${canonical(room)} yet: open one with room_create (or POST /rooms)`
-const upgradeText = (repo: string) => `update Room to 0.17 or later: this repository now has one room for all branches (${repo})`
+const upgradeText = (repo: string) => `Room 0.16 clients are refused for ${repo}; use v0.17.47, the last release that can migrate, then update Room`
 const oldLinkText = 'this link was for a branch room that no longer exists; ask a teammate for a new link'
 
 /** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting;
@@ -247,6 +242,14 @@ const memoryProvider: PersistenceProvider & { getAllDocNames(): Promise<string[]
 }
 const provider = () => (getPersistence() as { provider?: PersistenceProvider & { getAllDocNames?(): Promise<string[]> } } | null)?.provider
 const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...docs.keys()])]
+async function storedDocumentExists(name: string): Promise<boolean> {
+  const p = provider()
+  if (p === memoryProvider) return memoryDocs.has(name)
+  try {
+    if (isLevelProvider(p)) return await levelDocumentExists(await levelDbOf(p), name)
+  } catch { /* Unknown storage state must never authorize a write. */ }
+  throw new HttpFailure(503, 'could not check stored room data; retry')
+}
 let tableScan: ReturnType<typeof levelStoredTables> | undefined, testTableScans = 0
 const storedTables = async (names?: readonly string[]) => {
   if (tableScan) return tableScan
@@ -267,13 +270,6 @@ const storedSize = async (name: string, limit = LOAD_MAX_BYTES, tables?: Awaited
   const bytes = memoryDocs.get(name)?.byteLength ?? 0
   return { bytes, updates: memoryDocs.has(name) ? 1 : 0, over: bytes > limit }
 }
-const copyRaw = async (from: string, to: string): Promise<void> => {
-  const p = provider()
-  if (isLevelProvider(p)) return levelCopyRaw(await levelDbOf(p), from, to)
-  const update = memoryDocs.get(from)
-  if (!update) throw new Error('raw copy source missing')
-  memoryDocs.set(to, update)
-}
 let inventoryScan: ReturnType<typeof takeInventory> | undefined, testInventoryScans = 0
 async function inventorySnapshot() {
   if (inventoryScan) return inventoryScan
@@ -290,11 +286,11 @@ async function inventorySnapshot() {
   try { return await work } finally { inventoryScan = undefined }
 }
 // No startup inventory: loads are size-checked lazily (loadDoc), and operators run
-// scripts/room-inventory.mts or GET /admin/inventory, which sizes from table metadata on request.
+// GET /admin/inventory, which sizes from table metadata on request.
 const loadDoc = async (name: string): Promise<Y.Doc> => {
   const live = docs.get(name)
   if (live) return live
-  // Migration uses ROOM_LOAD_MAX_MB; live loads leave headroom for snapshot + appended updates.
+  // Cold loads leave headroom for snapshot + appended updates.
   if ((await storedSize(name, Math.max(LOAD_MAX_BYTES, 2 * DOC_MAX_BYTES))).over) throw new HttpFailure(507, 'room document too large to load')
   return provider()!.getYDoc(name)
 }
@@ -355,34 +351,14 @@ async function freezeDocs(names: string[], reason: string): Promise<void> {
   }
   for (const name of names) await hubs.flushName(name)
 }
-async function migrateOpenRepo(repo: string): Promise<void> {
-  await locks.run(repo, async () => {
-    const r = rooms.get(repo)
-    if (!r || r.migratedAt) return
-    let tables: ReturnType<typeof storedTables> | undefined
-    const changed = async (work: () => Promise<unknown>) => { tables = undefined; try { await work() } finally { tables = undefined } }
-    await migrateRepo(repo, r, {
-      list: listDocs, load: loadDoc, write: (name, update) => changed(() => writeDoc(name, update)), clear: name => changed(() => clearDoc(name)), save: saveRooms,
-      stored: async (name, limit) => storedSize(name, limit, await (tables ??= storedTables())),
-      copyRaw: (from, to) => changed(() => copyRaw(from, to)),
-      audit: (limit, maxBytes) => store.readAllAudit({ limit, maxBytes }),
-      release: (name, doc) => { if (docs.get(name) !== doc) doc.destroy() },
-      freeze: names => changed(() => freezeDocs(names, upgradeText(repo))),
-      revoke: async names => {
-        const set = new Set(names)
-        for (const [token, value] of viewTokens) if (set.has(value.room) || parseRoomName(value.room)?.repo === repo) { viewTokens.delete(token); credentialSockets.close({ kind: 'view', value: token }, 4403, 'view access revoked') }
-        saveViewTokens()
-      },
-    }, new Set(rooms.keys()))
-  })
-}
 /** Repos nobody has connected to for ROOM_IDLE_DAYS (default 30) are closed automatically: their
  *  shared uncommitted work is deleted. 0 disables. Checked hourly and at startup. */
+const LEGACY_ARCHIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const IDLE_MS = settings.idleMs
 async function expireIdle() {
   const cutoff = Date.now() - IDLE_MS
   for (const [repo, r] of Array.from(rooms)) {
-    if (r.migratedAt && r.legacy?.length && Date.now() - r.migratedAt > settings.legacyMs) {
+    if (r.migratedAt && r.legacy?.length && Date.now() - r.migratedAt > LEGACY_ARCHIVE_TTL_MS) {
       await locks.run(repo, async () => {
         const current = rooms.get(repo)
         if (!current?.legacy?.length || !current.migratedAt) return
@@ -391,7 +367,7 @@ async function expireIdle() {
         if (!live) await hubs.flushName(repo)
         const doc = await loadDoc(repo)
         try {
-          for (const name of migrationSources(repo, current, current.legacy, new Set(rooms.keys()))) await clearDoc(name)
+          for (const name of archiveDocumentNames(repo, current, current.legacy, new Set(rooms.keys()))) await clearDoc(name)
           if (doc.getMap('unresolved').size) {
             doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
             if (!live) {
@@ -416,7 +392,7 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
     const r = rooms.get(repo)
     if (!r) return []
     if (oldClient && r.mode === 'repo') return undefined
-    const names = new Set(closeDocumentNames(repo, r, await listDocs(), new Set(rooms.keys())))
+    const names = new Set(closeDocumentNames(repo, r, new Set(rooms.keys())))
     for (const name of names) await hubs.flushName(name)
     rooms.delete(repo); await saveRooms()
     for (const [key, value] of viewTokens) if (names.has(value.room)) { viewTokens.delete(key); credentialSockets.close({ kind: 'view', value: key }, 4403, 'view access revoked') }
@@ -494,7 +470,7 @@ const server = http.createServer((req, res) => {
   if (['session', 'token', 'gh'].some(key => url.searchParams.has(key)) && req.method === 'GET') {
     const legacy = !url.searchParams.has('schema') && (url.searchParams.has('token') || url.searchParams.has('gh'))
     res.writeHead(legacy ? 403 : 400)
-    res.end(legacy ? 'update Room to 0.17 or later: this server no longer accepts credentials in URLs' : 'send credentials in Authorization or X-Room-Token headers')
+    res.end(legacy ? 'update Room to 0.17 or later: Room 0.16 URL credentials are refused; use v0.17.47, the last release that can migrate, before upgrading' : 'send credentials in Authorization or X-Room-Token headers')
     return
   }
   let responseWork: ResponseWork | undefined
@@ -541,7 +517,7 @@ const server = http.createServer((req, res) => {
     if (stateRoute && !reserveResponse(creds(o))) return
     const releaseWork = responseWork?.hold()
     try { await fn(o) }
-    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (res.headersSent) { if (!res.writableEnded) res.destroy(); return } if (!res.writableEnded) text(e instanceof HttpFailure ? e.status : e instanceof MigrationReadFailure || e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, e instanceof HttpFailure || e instanceof MigrationReadFailure ? e.message : 'room server operation failed; retry') }
+    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (res.headersSent) { if (!res.writableEnded) res.destroy(); return } if (!res.writableEnded) text(e instanceof HttpFailure ? e.status : e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, e instanceof HttpFailure ? e.message : 'room server operation failed; retry') }
     finally { releaseWork?.() }
   }).catch(e => { if (!res.writableEnded && !res.destroyed) text(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'request body failed') }); return }
 
@@ -693,44 +669,35 @@ const server = http.createServer((req, res) => {
     }
     const room = str(o.room)
     if (!room) return text(400, 'room required')
-    if (!parseRoomName(room, o.schema === 2) || o.schema !== 2 && !parseRoomName(oldBranchRepo(roomNameOf(room)), true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
+    if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`open refused: ${v.why}`); return text(v.status, v.why) }
     const by = v.login ?? str(o.by)
     const requested = roomNameOf(room)
-    const name = o.schema === 2 ? canonical(requested, true) : canonical(oldBranchRepo(requested))
+    const name = canonical(requested, true)
     let created = false
     await locks.run(name, async () => {
       const existing = rooms.get(name)
-      if (o.schema !== 2 && (!existing || existing.mode === 'repo' || requested !== name && !existing.branches.includes(requested))) return text(403, upgradeText(name))
+      if (o.schema !== 2) return text(403, upgradeText(name))
       if (!existing) {
         if (rooms.size + pendingRoomCreations >= MAX_ROOMS) return text(503, 'server room limit reached')
         pendingRoomCreations++
-        let reserved = true
         try {
+        // A new room may use K only if no stored document already occupies exactly K.
+        // Reopening this same registered room skips this guard; documents at other keys are irrelevant.
+        if (docs.has(name) || await storedDocumentExists(name))
+          return text(409, `existing room data at ${name} is refused; use v0.17.47, the last release that can migrate, and inspect it before reopening`)
+        // An opened room may have no stored document. Its first connection creates it through
+        // the hub's normal persistence path. Creation therefore has only one durable write.
+        await saveRooms({ name, entry: { by, at: Date.now(), branches: [], mode: 'repo', migratedAt: Date.now() } })
         created = true
-        const priorDocs = await listDocs()
-        const oldDocs = o.schema === 2 && priorDocs.some(doc => doc === name || parseRoomName(doc)?.github && parseRoomName(doc)?.repo === name)
-        const fresh = !priorDocs.includes(name) && !oldDocs
-        rooms.set(name, { by, at: Date.now(), branches: [], mode: o.schema === 2 && !oldDocs ? 'repo' : 'branch',
-          ...(o.schema === 2 && !oldDocs ? { migratedAt: Date.now() } : {}) })
-        pendingRoomCreations--; reserved = false // the registry entry now accounts for this slot
-        if (o.schema === 2 && !oldDocs) {
-          const empty = new Y.Doc(); empty.getMap('meta').set('schemaVersion', 2)
-          await writeDoc(name, Y.encodeStateAsUpdate(empty))
-        }
-        await saveRooms()
-        if (fresh) hubs.markFresh(name)
+        hubs.markFresh(name)
         console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`)
         audit({ event: 'room_opened', room: name, login: by, id: v.id })
-        } catch (error) { rooms.delete(name); throw error }
-        finally { if (reserved) pendingRoomCreations-- }
+        } finally { pendingRoomCreations-- }
       }
-      const opened = rooms.get(name)
-      // rc2 retains recorded 0.16 branches but never expands their document population.
     })
     if (res.writableEnded) return
-    if (o.schema === 2) await migrateOpenRepo(name)
     json(created ? 201 : 200, { repo: name, created, ...rooms.get(name),
       ...(o.schema === 2 ? { room: name, hub: 1 } : {}), ...(v.login ? { login: v.login } : {}) })
   })
@@ -781,7 +748,6 @@ const server = http.createServer((req, res) => {
     if (!entry) return text(404, NOT_OPEN(repo))
     if (o.schema !== 2 && entry.mode === 'repo') return text(403, upgradeText(repo))
     if (o.schema !== 2 && roomNameOf(room) !== repo && !entry.branches.includes(roomNameOf(room))) return text(403, upgradeText(repo))
-    if (o.schema === 2) await migrateOpenRepo(repo)
     const name = o.schema === 2 ? repo : roomNameOf(room)
     const principal = v.id ?? (v.provider ? `${v.provider}:${v.login}` : creds(o).token ? `token:${crypto.createHash('sha256').update(creds(o).token!).digest('hex')}` : `open:${clientIp(req)}`)
     const view = await locks.run(repo, async () => {
@@ -836,7 +802,7 @@ const server = http.createServer((req, res) => {
     if (o.view) return text(403, 'view tokens cannot export an archive')
     const parsed = parseRoomName(name)
     const owner = archiveOwnerOf(name) ?? (parsed?.github ? parsed.repo : undefined)
-    const repo = [...rooms].find(([key, r]) => (!owner || key === owner) && r.legacy?.includes(name) && migrationSources(key, r, [name], new Set(rooms.keys())).includes(name))?.[0]
+    const repo = [...rooms].find(([key, r]) => (!owner || key === owner) && r.legacy?.includes(name) && archiveDocumentNames(key, r, [name], new Set(rooms.keys())).includes(name))?.[0]
     if (!repo) return text(!archiveOwnerOf(name) && !parseRoomName(name) ? 400 : 404, 'archive not found')
     const v = await admitted(repo, creds(o))
     if (cancellation.cancelled()) return
@@ -1008,6 +974,7 @@ const droppedWrite = (room: string) => () => {
 const COMPACT_MIN_DELETED = compactMinDeleted(process.env.ROOM_COMPACT_MIN_DELETED)
 /** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
 const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), leaseFile: room => serverLeaseFile(process.env.YPERSISTENCE, PORT, room), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
+  registered: room => rooms.has(room),
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) },
   compaction: { minDeleted: COMPACT_MIN_DELETED, generation: () => crypto.randomBytes(16).toString('hex') } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
@@ -1108,7 +1075,7 @@ server.on('upgrade', (req, socket, head) => {
   const schema2 = negotiating || url.searchParams.get('schema') === '2'
   const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
   if (schema2 && ['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
-  if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 403, 'update Room to 0.17 or later: this server no longer accepts credentials in URLs', roomName)
+  if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 403, 'update Room to 0.17 or later: Room 0.16 URL credentials are refused; use v0.17.47, the last release that can migrate, before upgrading', roomName)
   const accept = async (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential; offer?: CompatAdvertisement } = {}) => {
     const principal = opts.id ?? (opts.login ? `login:${opts.login}` : opts.credential ? `${opts.credential.kind}:${crypto.createHash('sha256').update(opts.credential.value).digest('hex')}` : `ip:${address}`)
     const release = connectionCounts.reserve(repo, principal)
@@ -1121,9 +1088,7 @@ server.on('upgrade', (req, socket, head) => {
       if (abandoned()) return
       const current = rooms.get(repo)
       if (!current) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
-      if (!schema2 && current.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
-      if (!schema2 && current.mode !== 'repo' && roomName !== repo && !current.branches.includes(roomName)) return refuse(socket, 403, upgradeText(repo), roomName)
-      if (schema2 && !current.migratedAt) return refuse(socket, 503, 'room migration is not complete; retry', roomName)
+      if (!schema2) return refuse(socket, 403, upgradeText(repo), roomName)
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
       if (opts.readOnly) {
         const token = viewTokens.get(opts.credential?.value ?? '')
@@ -1132,7 +1097,7 @@ server.on('upgrade', (req, socket, head) => {
             current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? oldLinkText : 'Forbidden: view token invalid for this room', roomName)
       }
       // Finish loading before the HTTP upgrade: after handleUpgrade the client may send immediately.
-      // Holding the repo lock also makes the socket visible to migration's freeze step.
+      // Hold the repo lock until the socket is attached, so close cannot miss it.
       if (!docs.has(docKey) && (await storedSize(docKey, Math.max(LOAD_MAX_BYTES, 2 * DOC_MAX_BYTES))).over)
         return refuse(socket, 507, 'room document too large to load', roomName)
       await hubs.flush(getYDoc(docKey, true))
@@ -1324,7 +1289,6 @@ server.on('upgrade', (req, socket, head) => {
     const retry = failedAdmissionLimit.check(clientIp(req))
     return retry ? refuse(socket, 429, `Too Many Requests; retry after ${retry} seconds`, roomName) : refuse(socket, v.status, v.why, roomName)
   }
-  if (schema2 && !negotiating) await migrateOpenRepo(repo)
   if (abandoned()) return
   return accept({ login: v.login, id: v.id, provider: v.provider, credential: c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined })
   })

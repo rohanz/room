@@ -14,7 +14,7 @@ import type { RetiredWorker } from '@room/shared'
 import { safeId, safeTag } from './worker-codecs.js'
 import { requireWorkerInventory, type WorkerInventory, requireWorkerEvidence, workerEvidence, type BlockedWorkerEvidence, recordStatus, snapshotRead, snapshotReserved, snapshotFreshness, type WorkerQuery, type WorkerStore, type WorkerSnapshot, type AvailableWorkerSnapshot, type WorkerFacts, type WorkerCommand, type WorkerFreshness } from './worker-store.js'
 import { IdleClaimsJournal } from './idle-claims.js'
-export type { RegistryOptions, LegacySource } from './worker-file-store.js'
+export type { RegistryOptions } from './worker-file-store.js'
 export type { IdleClaimsAction } from './idle-claims.js'
 export { workerLogFile, backgroundAtExit } from './worker-file-store.js'
 export type { WorkerSnapshot, WorkerCommand, WorkerFreshness, WorkerStore } from './worker-store.js'
@@ -83,7 +83,7 @@ async function admitOnce(dir: string, env: NodeJS.ProcessEnv = process.env,
   const id = env.ROOM_WORKER_ID
   if (!id) return
   const room = env.ROOM_ROOM ?? ''
-  if (!id.startsWith('w_')) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: update the Room plugin for the lead\'s host')
+  if (!id.startsWith('w_')) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: use v0.17.47, the last release that can migrate, then update the Room plugin for the lead\'s host')
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, registryEnvironmentSession(env))

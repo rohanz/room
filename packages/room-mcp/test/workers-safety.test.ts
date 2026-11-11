@@ -3,6 +3,7 @@ import { requireWorkerInventory } from '../src/worker-store.js'
 import { base, createTools, dir, fakeSession, lead, ownedLegacyWorker, pair, realRepo, scratchRepos, setupLead } from './workers-fixture.js'
 import { finishSignalShutdown } from '../src/index.js'
 import { setParticipantBase } from '@room/shared/testing'
+import * as workerBaseline from '@room/roomd/baseline'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,10 +12,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '../src/session.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { parsePsLstartUtc, probeProcess, workerProcessOwnership, type SpawnSpec } from '../src/worker-process.js'
-import { registryForDir } from '../src/worker-registry.js'
+import { Rooms } from '../src/registry.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { finishFixtureProcess, fixtureLiveness, fixtureProcess } from './fixtures/process-liveness.js'
 import { workspaceRepo } from './fixtures/workspace-repo.js'
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { registerWorkers, workerByTag } from './registry-fixture.js'
 
 describe('worker safety', () => {
@@ -375,6 +378,139 @@ describe('worker safety', () => {
     expect((await registry.reserved('existing'))).toBeUndefined()
     expect((await registry.occupancy())).toBe(0)
   })
+  it('refuses a retry subdirectory and names the recorded checkout root', async () => {
+    const { repo, head } = realRepo(), t = setupLead(repo, head)
+    expect(await t.leadTools.call('room_spawn', { tag: 'owner', task: 'x' })).toContain('spawned owner')
+    const registry = await registryForDir(repo), owner = (await registry.reserved('owner'))!
+    const subdir = join(owner.dir, 'src')
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(subdir)
+    expect(await t.leadTools.call('room_spawn', { tag: 'retry', task: 'x', dir: subdir }))
+      .toContain(`dir must name the recorded worker checkout root ${realpathSync(owner.dir)}`)
+    expect(await registry.reserved('retry')).toBeUndefined()
+    expect(t.specs).toHaveLength(1)
+  })
+
+  it('journals creation only after its own Git worktree add succeeds', async () => {
+    const { repo, git } = realRepo()
+    const prepared = await prepareWorktree(repo, 'witnessed', 'rohanz', { carry: false, onStep: async (step, facts) => {
+      if (facts.created || facts.branchCreated) {
+        expect(existsSync(join(repo, '.room/workers/witnessed/.git'))).toBe(true)
+        expect(git('-C', join(repo, '.room/workers/witnessed'), 'branch', '--show-current')).toBe('room/witnessed')
+      }
+      if (step === 'plan') expect(facts.created).not.toBe(true)
+    } })
+    expect(prepared.created).toBe(true)
+  })
+
+  it('does not remove a checkout that appears after preparation is planned but before Git add', async () => {
+    const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
+    const command = registry.command.bind(registry), orphan = join(repo, '.room/workers/raced-plan')
+    const spawn = vi.fn(() => { throw new Error('must not launch') })
+    const tools = createTools({ getSession: () => t.session, setSession: () => {}, cwd: repo, spawner: spawn })
+    vi.spyOn(registry, 'command').mockImplementation(async (...args) => {
+      const result = await command(...args)
+      if (args[1].type === 'prepare-step' && args[1].step === 'plan') {
+        git('worktree', 'add', '-q', '-b', 'room/raced-plan', orphan)
+        writeFileSync(join(orphan, 'precious.txt'), 'keep this')
+      }
+      return result
+    })
+    expect(await tools.call('room_spawn', { tag: 'raced-plan', task: 'x' })).toContain('error:')
+    expect(readFileSync(join(orphan, 'precious.txt'), 'utf8')).toBe('keep this')
+    expect((await registry.reserved('raced-plan'))?.prep.created).not.toBe(true)
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse creation authority after removing a checkout for a snapshot retry', async () => {
+    const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
+    const orphan = join(repo, '.room/workers/retry-race'), command = registry.command.bind(registry)
+    let committed = false, replaced = false
+    vi.spyOn(registry, 'command').mockImplementation(async (...args) => {
+      const result = await command(...args)
+      if (!committed && args[1].type === 'prepare-step' && args[1].step === 'worktree' && args[1].facts.created) {
+        committed = true
+        writeFileSync(join(repo, 'modified.txt'), 'new lead commit')
+        git('add', 'modified.txt'); git('commit', '-qm', 'lead moved during carry')
+      }
+      return result
+    })
+    const gitRead = workerBaseline.boundedGitSync
+    vi.spyOn(workerBaseline, 'boundedGitSync').mockImplementation((...args) => {
+      const result = gitRead(...args)
+      if (!replaced && args[1].includes('worktree') && args[1].includes('remove') && args[1].includes(orphan)) {
+        replaced = true
+        git('worktree', 'add', '-q', '-b', 'user-replacement', orphan)
+        writeFileSync(join(orphan, 'precious.txt'), 'replacement work')
+      }
+      return result
+    })
+    const spawn = vi.fn(() => { throw new Error('must not launch') })
+    const tools = createTools({ getSession: () => t.session, setSession: () => {}, cwd: repo, spawner: spawn })
+    expect(await tools.call('room_spawn', { tag: 'retry-race', task: 'x' })).toContain('error:')
+    expect(replaced).toBe(true)
+    expect(existsSync(join(orphan, 'precious.txt'))).toBe(true)
+    expect(readFileSync(join(orphan, 'precious.txt'), 'utf8')).toBe('replacement work')
+    expect((await registry.reserved('retry-race'))?.prep.created).not.toBe(true)
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('keeps the existing outside non-Git directory rule (Room namespace: %s)', async roomPath => {
+    const { repo, head } = realRepo(), { repo: other } = realRepo(), t = setupLead(repo, head)
+    const target = roomPath ? join(other, '.room/workers/unrecorded') : join(other, 'user-folder')
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(target, { recursive: true })
+    // Remove Git metadata so this is definitely not inside any worktree.
+    rmSync(join(other, '.git'), { recursive: true, force: true })
+    writeFileSync(join(target, 'precious.txt'), 'user work')
+    delete t.session!.local
+    const reply = await t.leadTools.call('room_spawn', { tag: 'plain', task: 'x', dir: target, allowOutside: true })
+    if (roomPath) {
+      expect(reply).toContain('Room has no live record')
+      expect(t.specs).toHaveLength(0)
+    } else {
+      expect(reply).toContain('spawned plain')
+      const registry = await registryForDir(repo), record = (await registry.reserved('plain'))!
+      expect(record).toMatchObject({ outside: true, capabilities: { collect: 'none' }, prep: { created: false } })
+      t.exits[0](0)
+      await vi.waitFor(async () => expect((await workerByTag(repo, 'plain'))?.status).toBe('done'))
+      expect(await t.leadTools.call('room_collect', { tag: 'plain', discard: true })).toContain(`kept ${target}`)
+    }
+    expect(readFileSync(join(target, 'precious.txt'), 'utf8')).toBe('user work')
+  })
+
+  it('keeps an outside user checkout on an unborn branch non-owning', async () => {
+    const { repo, head } = realRepo(), other = realRepo(), t = setupLead(repo, head)
+    other.git('checkout', '--orphan', 'user-unborn')
+    delete t.session!.local
+    expect(await t.leadTools.call('room_spawn', { tag: 'unborn', task: 'x', dir: other.repo, allowOutside: true }))
+      .toContain('spawned unborn')
+    expect(await (await registryForDir(repo)).reserved('unborn')).toMatchObject({ outside: true, capabilities: { collect: 'none' } })
+  })
+
+  it('refuses an outside Room worker directory that inherits an ordinary parent checkout', async () => {
+    const { repo, head } = realRepo(), other = realRepo(), t = setupLead(repo, head)
+    const target = join(other.repo, '.room/workers/unrecorded')
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'precious.txt'), 'keep me')
+    delete t.session!.local
+    expect(await t.leadTools.call('room_spawn', { tag: 'parent-checkout', task: 'x', dir: target, allowOutside: true }))
+      .toContain('Room has no live record')
+    expect(t.specs).toHaveLength(0)
+    expect(readFileSync(join(target, 'precious.txt'), 'utf8')).toBe('keep me')
+  })
+
+  it.each(['lead on room branch', 'moved inside checkout'] as const)('keeps the existing inside-directory refusal text (%s)', async kind => {
+    const { repo, head, git } = realRepo(), t = setupLead(repo, head)
+    let target = repo
+    if (kind === 'lead on room branch') git('checkout', '-q', '-b', 'room/user-lead')
+    else { target = join(repo, 'moved'); git('worktree', 'add', '-q', '-b', 'room/moved', target) }
+    expect(await t.leadTools.call('room_spawn', { tag: 'inside', task: 'x', dir: target }))
+      .toBe(`error: ${target} is not an owned Room worktree for inside; supply its .room/workers/inside checkout or omit dir`)
+    expect(t.specs).toHaveLength(0)
+  })
+
   it('collects the new worker after an abandoned record reused its tag (F-M4)', async () => {
     const t = setupLead()
     const registry = await registryForDir(dir)
@@ -396,22 +532,128 @@ describe('worker safety', () => {
     await vi.waitFor(async () => expect((await workerByTag(dir, 'money'))?.status).toBe('done'), { timeout: 15_000 })
     expect(await t.leadTools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
   })
-  it('does not relaunch a preexisting Room checkout as a new supplied-dir worker', async () => {
-    // The one-time migration scan must see the checkout. Other tests open and close the
-    // shared fixture registry, so use a fresh repository for this startup assertion.
-    const { repo, head } = realRepo()
+  it.each(['bare', 'same', 'other'] as const)('does not relaunch a preexisting Room checkout (%s)', async mode => {
+    const { repo, head, git } = realRepo()
     const prepared = await prepareWorktree(repo, 'same', 'rohanz')
     const t = setupLead(repo, head)
     writeFileSync(join(repo, 'lead-only.txt'), 'lead edit')
-    try {
-      const registry = await registryForDir(repo)
-      await vi.waitFor(async () => expect((await registry.reserved('same'))).toMatchObject({
-        tag: 'same', phase: 'active', runs: [{ launch: { outcome: 'imported' } }],
-      }), { timeout: 15_000 })
-      const reply = await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir: prepared.dir, host: 'codex', model: 'worker-model' })
-      expect(reply).toContain('tag in use: same')
-      expect(t.specs).toHaveLength(0)
-    } finally { rmSync(join(repo, 'lead-only.txt'), { force: true }) }
+    writeFileSync(join(prepared.dir, 'modified.txt'), 'orphan tracked edit\n')
+    writeFileSync(join(prepared.dir, 'orphan-only.txt'), 'orphan untracked edit\n')
+    const registry = await registryForDir(repo)
+    expect(await registry.reserved('same')).toBeUndefined()
+    const before = git('show-ref')
+    const reply = await t.leadTools.call('room_spawn', { tag: mode === 'other' ? 'other' : 'same', task: 'inspect',
+      ...(mode !== 'bare' ? { dir: prepared.dir } : {}), host: 'codex', model: 'worker-model' })
+    if (mode === 'bare') expect(reply).toContain('worktree same is unmanaged')
+    else {
+      expect(reply).toContain(`worktree ${realpathSync(prepared.dir)}`)
+      expect(reply).toContain('branch room/same')
+      expect(reply).toContain('Room has no live record')
+      expect(reply).toContain('git worktree remove')
+      expect(reply).toContain('git branch -D')
+      expect(reply).toContain('choose another tag')
+    }
+    expect(t.specs).toHaveLength(0)
+    expect(await registry.reserved('same')).toBeUndefined()
+    expect(requireWorkerInventory(await registry.list())).toEqual([])
+    expect(existsSync(join(registry.root, 'tags', 'same.json'))).toBe(false)
+    expect(existsSync(join(repo, '.room/workers/same.log'))).toBe(false)
+    expect(existsSync(join(prepared.dir, 'lead-only.txt'))).toBe(false)
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('orphan tracked edit\n')
+    expect(readFileSync(join(prepared.dir, 'orphan-only.txt'), 'utf8')).toBe('orphan untracked edit\n')
+    expect(git('show-ref')).toBe(before)
+  })
+  it('refuses before writing intent when the supplied Git worktree cannot be inspected', async () => {
+    const { repo, head } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
+    const readGit = workerBaseline.boundedGitSync
+    vi.spyOn(workerBaseline, 'boundedGitSync').mockImplementation((dir, args, options) => {
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') throw new Error('cannot read Git worktree inventory')
+      return readGit(dir, args, options)
+    })
+    expect(await t.leadTools.call('room_spawn', { tag: 'uncertain', task: 'x', dir: repo })).toContain('cannot read Git worktree inventory')
+    expect(t.specs).toHaveLength(0)
+    expect(requireWorkerInventory(await registry.list())).toEqual([])
+    expect(existsSync(join(registry.root, 'tags', 'uncertain.json'))).toBe(false)
+    expect(existsSync(join(repo, '.room/workers/uncertain'))).toBe(false)
+  })
+
+  it.each(['path', 'branch'] as const)('refuses an unrecorded checkout occupying only the canonical %s', async occupied => {
+    const { repo, head, git } = realRepo()
+    const target = join(repo, occupied === 'path' ? '.room/workers/same' : 'moved-worker')
+    git('worktree', 'add', '-q', '-b', occupied === 'path' ? 'different-branch' : 'room/same', target)
+    const t = setupLead(repo, head), registry = await registryForDir(repo)
+    const refs = git('show-ref')
+    expect(await t.leadTools.call('room_spawn', { tag: 'same', task: 'x' })).toContain('unmanaged')
+    expect(t.specs).toHaveLength(0)
+    expect(requireWorkerInventory(await registry.list())).toEqual([])
+    expect(existsSync(join(registry.root, 'tags', 'same.json'))).toBe(false)
+    expect(git('show-ref')).toBe(refs)
+    expect(existsSync(target)).toBe(true)
+  })
+
+  it('leaves an unrecorded checkout and its files alone during collect, discard, state, reconciliation and hourly retention', async () => {
+    const { repo, head, git } = realRepo()
+    const prepared = await prepareWorktree(repo, 'same', 'rohanz')
+    writeFileSync(join(prepared.dir, 'modified.txt'), 'orphan tracked edit\n')
+    writeFileSync(join(prepared.dir, 'orphan-only.txt'), 'orphan untracked edit\n')
+    const t = setupLead(repo, head), registry = await registryForDir(repo)
+    const refs = git('show-ref')
+    expect(await t.leadTools.call('room_state', {})).not.toContain('workers (1):')
+    // Even a surviving room archive cannot grant local ownership of this checkout.
+    t.a.doc.getArray('retiredWorkers').push([{ id: 'w_missing', tag: 'same', name: 'rohanz+same', lead: 'rohanz',
+      host: 'codex', task: 'old', summary: 'old', outcome: 'done', finishedAt: 1, retiredAt: 1,
+      keptWorktree: prepared.dir }])
+    for (const args of [{ tag: 'same' }, { tag: 'same', mode: 'copy', paths: ['modified.txt'] },
+      { tag: 'same', discard: true }, { tag: 'same', discard: true, force: true }]) {
+      expect(await t.leadTools.call('room_collect', args)).toMatch(/no (?:worker same owned by you|local registry record)/)
+    }
+    expect(await t.leadTools.call('room_state', {})).toContain('same (done, kept: worktree at')
+    await registry.reconcile()
+    expect(await registry.pruneRetired(0)).toEqual([])
+    const rooms = new Rooms({ primary: () => t.session, setPrimary: () => {}, attach: () => ({ stop() {} }),
+      probe: () => undefined, listCwdProcesses: () => [] })
+    rooms.track(t.session!)
+    try { await rooms.autoRetire() } finally { rooms.remove(t.session!) }
+    expect(requireWorkerInventory(await registry.list())).toEqual([])
+    expect(t.a.retiredWorkers()[0].keptWorktree).toBe(prepared.dir)
+    expect(readFileSync(join(prepared.dir, 'modified.txt'), 'utf8')).toBe('orphan tracked edit\n')
+    expect(readFileSync(join(prepared.dir, 'orphan-only.txt'), 'utf8')).toBe('orphan untracked edit\n')
+    expect(readFileSync(join(repo, 'modified.txt'), 'utf8')).toBe('before\n')
+    expect(existsSync(join(repo, 'orphan-only.txt'))).toBe(false)
+    expect(git('show-ref')).toBe(refs)
+  })
+
+  it('leaves a checkout intact when retention prunes an ended record without a kept-worktree marker', async () => {
+    const { repo, head } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
+    expect(await t.leadTools.call('room_spawn', { tag: 'pruned', task: 'old' })).toContain('spawned pruned')
+    t.exits[0](0)
+    await vi.waitFor(async () => expect((await workerByTag(repo, 'pruned'))?.status).toBe('done'))
+    const record = (await registry.reserved('pruned'))!
+    // Fault injection: retention can remove an ended record lacking a kept marker.
+    // It owns only those facts and never removes the surviving checkout itself.
+    await mutateWorkerFixture(registry, record.id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
+    writeFileSync(join(record.dir, 'orphan-only.txt'), 'retain me')
+    expect((await registry.pruneRetired(0)).map(record => record.id)).toEqual([record.id])
+    expect(await registry.reserved('pruned')).toBeUndefined()
+    expect(readFileSync(join(record.dir, 'orphan-only.txt'), 'utf8')).toBe('retain me')
+    expect(await t.leadTools.call('room_spawn', { tag: 'pruned', task: 'x', dir: record.dir })).toContain('Room has no live record')
+    expect(t.specs).toHaveLength(1)
+  })
+
+  it('does not recover ownership after the registry directory is deleted and reopened', async () => {
+    const { repo, head } = realRepo(), t = setupLead(repo, head)
+    expect(await t.leadTools.call('room_spawn', { tag: 'lost', task: 'x' })).toContain('spawned lost')
+    t.exits[0](0)
+    const root = (await registryForDir(repo)).root
+    await vi.waitFor(async () => expect((await workerByTag(repo, 'lost'))?.status).toBe('done'))
+    await closeRegistryForDir(repo)
+    rmSync(root, { recursive: true, force: true })
+    const registry = await registryForDir(repo)
+    expect(await registry.reserved('lost')).toBeUndefined()
+    expect(await t.leadTools.call('room_spawn', { tag: 'lost', task: 'x', dir: join(repo, '.room/workers/lost') }))
+      .toContain('Room has no live record')
+    expect(t.specs).toHaveLength(1)
+    expect(requireWorkerInventory(await registry.list())).toEqual([])
   })
   it('gives a new worktree its own workspace packages in node_modules, or tells the lead and the worker it could not', async () => {
     const linked = workspaceRepo()

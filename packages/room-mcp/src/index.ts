@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util'
 import path from 'node:path'
 import { RoomMcpServer } from './mcp-server.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { displayName } from '@room/shared'
+import { displayName, warnRetiredEnvironment } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
@@ -27,7 +27,7 @@ import { admitCallSessions } from './session.js'
 import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { admittedWorkspace, createWorkspaceBinding } from './workspace.js'
-import { PresenceEnd, attachingParentReader, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
+import { PresenceEnd, attachingParentReader, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, IDLE_LEASE_MS } from './presence-end.js'
 import { presenceKind } from './hosts/selection.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
@@ -89,6 +89,7 @@ export function createBundleUpdateNotice(file: string): () => string {
 }
 
 async function main() {
+  warnRetiredEnvironment('client', process.env, log)
   let closing = false
   const timing = new ToolTimingTracker({ log })
   registerPrepareGitTiming()
@@ -158,7 +159,7 @@ async function main() {
       // Host kind, parent and lease come from this process's parent and environment, which never change while it lives.
       const presenceHostKind = presenceKind()
       const attachingParent = attachingParentReader()
-      const idleLeaseMs = resolveIdleLeaseMs(process.env.ROOM_IDLE_LEASE_MS)
+      const idleLeaseMs = IDLE_LEASE_MS
       presence = new PresenceEnd({
         hostKind: presenceHostKind,
         idleLeaseMs,

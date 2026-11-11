@@ -7,7 +7,7 @@ import { Bridge } from '../bridge.js'
 import { pidPresent, signalWorker, terminateWorktreeProcesses, workerProcessLive } from '../worker-process.js'
 import { workerPortsInUse } from '../worker-config.js'
 import { WORKER_EFFORTS } from '../hosts/types.js'
-import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
+import { assertNewWorkerWorktree, suppliedWorkerCheckout, prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
 import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
@@ -30,6 +30,7 @@ import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
 import { localWorkerView } from '../worker-projector.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
+import { withPreparationIdentity } from '../worker-preparation.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
 import { localWorkers, openWorkerReader, registryForDir } from '../worker-registry.js'
 import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
@@ -215,32 +216,51 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const dir = suppliedDir ?? path.join(s.dir, '.room', 'workers', tag)
       if (suppliedDir && !fs.existsSync(dir)) return `error: ${dir} does not exist`
       const relative = path.relative(s.dir, dir)
-      const outside = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+      const outsidePath = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
       // A local relay is keyed by the lead's clone. A worker in another repository cannot join it.
       if (suppliedDir && s.local) {
         let sameClone = false
         try { sameClone = await realGitCommonDir(s.dir) === await realGitCommonDir(dir) } catch { /* plain folder */ }
         if (!sameClone) return `error: ${dir} is another repository; a worker there cannot join this local room. Start a lead in ${dir} instead: its room is that repository's own local room, and give your human that room's link.`
       }
-      if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
+      if (outsidePath && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
       if (suppliedDir) {
         const canonical = path.relative(fs.realpathSync(s.dir), fs.realpathSync(dir))
         if ((canonical === '..' || canonical.startsWith(`..${path.sep}`) || path.isAbsolute(canonical)) && a.allowOutside !== true) {
           return `error: ${dir} resolves outside this repo; a worker's directory must be in this repo`
         }
       }
-      const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
-      const sharedOwner = suppliedDir && !outside ? (requireWorkerInventory(await registry.list())).find(record => !record.sharedWith && !['retiring', 'retired', 'abandoned'].includes(record.phase)
-        && record.lead.participant === s.me.name && path.resolve(record.dir) === path.resolve(dir)) : undefined
-      if (suppliedDir && !outside && !await isOwnedWorkerWorktree(s.dir,
-        sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch }
-          : { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
-        return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
-      }
+      const reserved = await registry.reserved(tag)
+      const reusable = reserved?.phase === 'abandoned' || reserved?.phase === 'retired' && !reserved.keptWorktree
+        && reserved.cleanup && Object.values(reserved.cleanup).every(value => value === 'done')
+      const tagBusy = reserved && !reusable
+      let branch = `room/${tag}`, sharedOwner: WorkerRecord | undefined
+      try {
+        if (suppliedDir) {
+          const supplied = suppliedWorkerCheckout(dir, requireWorkerInventory(await registry.list()).filter(record =>
+            record.lead.participant === s.me.name && record.lead.room === s.roomName))
+          branch = supplied.branch
+          if (supplied.owner && !supplied.atRoot)
+            return `error: dir must name the recorded worker checkout root ${supplied.root}; a subdirectory cannot be used for a retry`
+          sharedOwner = outsidePath ? undefined : supplied.owner
+          if (!outsidePath && !await isOwnedWorkerWorktree(s.dir,
+            sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch }
+              : { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
+            return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
+          }
+          if (tagBusy) return `error: tag in use: ${tag}`
+          if (supplied.refusal) return `error: ${supplied.refusal}`
+        } else {
+          if (tagBusy) return `error: tag in use: ${tag}`
+          if (!reserved) assertNewWorkerWorktree(s.dir, tag)
+        }
+      } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+      // Supplied directories never create ownership: only a recorded borrow can collect.
+      const outside = !!suppliedDir && !sharedOwner
       const worker = workerAdapter(host)
       const hostSessionId = worker.freshSessionId()
       const usedPorts = workerPortsInUse((requireWorkerInventory(await registry.list())))
-      const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: !suppliedDir && !fs.existsSync(dir) }
+      const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: false }
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
@@ -261,9 +281,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!suppliedDir) {
           await registry.command(id, { type: 'prepare-start' })
           try {
-            prepared = await timed('prepare', () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, {
+            prepared = await timed('prepare', () => withPreparationIdentity({ id, nonce }, () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, {
               linkExclusions: linkPaths, carry: a.carry !== false,
-              onStep: async (step, facts) => { await registry.command(id, { type: 'prepare-step', step, facts }) } }))
+              onStep: async (step, facts) => { await registry.command(id, { type: 'prepare-step', step, facts }) } })))
             base = prepared.base; created = prepared.created
             carried = prepared.carried; carryFailed = prepared.carryFailed ?? false; carryError = prepared.carryError
             carriedBase = prepared.carriedBase; carriedUntracked = prepared.carriedUntracked; skippedCarry = prepared.skippedCarry
@@ -362,7 +382,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (warning) out.push(warning)
         }
         out.push(...deps.reply, ...launched.warnings)
-        if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
+        if (outside) out.push(`note: ${dir} is an existing user checkout; Room does not own or collect its files or change its Git state.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
       } catch (error) {

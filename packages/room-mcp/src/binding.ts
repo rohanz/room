@@ -9,7 +9,6 @@ import path from 'node:path'
 import { boundSession, sessionDirectory, syntheticSessionId } from './session.js'
 import { admittedIdentityKey } from './hosts/selection.js'
 import { probeOwnProcess, probeProcessNow, type ProcessInfo } from './worker-process.js'
-import { migrateLocalState } from './local-migration.js'
 
 export interface SessionBinding {
   /** The bound host session, or undefined until the shared Codex app-server supplies its thread ID. */
@@ -30,8 +29,6 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   let parent: ReturnType<typeof identity> | null | undefined
   let parentArgs: string | undefined
   let cached: { at: number; identityKey?: string; value: ReturnType<SessionBinding['bound']> } | undefined
-  let ownGitDir: string | undefined
-  const migrated = new Set<string>()
   // A repository found once never moves. A folder that is not one yet (git init after the session started) is
   // re-checked once a second, and git runs again only once a `.git` entry exists in the folder or a parent:
   // an idle session in a plain folder stats a few paths and spawns nothing.
@@ -64,15 +61,7 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
     dir: () => {
       const b = bound(), dir = common()
       if (!b || !dir) return undefined
-      const target = sessionDirectory(dir, b.id)
-      if (!migrated.has(b.id)) {
-        try {
-          ownGitDir ??= execFileSync('git', ['-C', cwd, 'rev-parse', '--absolute-git-dir'],
-            { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-          if (migrateLocalState(ownGitDir, target, b.id, path.join(dir, 'room', 'registry'))) migrated.add(b.id)
-        } catch { /* retry on the next call; local migration must never block Room */ }
-      }
-      return target
+      return sessionDirectory(dir, b.id)
     },
     commonDir: common,
   }

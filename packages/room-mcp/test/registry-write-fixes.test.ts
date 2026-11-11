@@ -46,7 +46,7 @@ function fixture() {
   })
   return { root, dir, git, record }
 }
-const open = (root: string) => WorkerRegistry.open(root, { identity: token, migrate: false, watch: false })
+const open = (root: string) => WorkerRegistry.open(root, { identity: token, watch: false })
 
 describe('reviewed worker write failures', () => {
   for (const mode of ['fresh', 'resume'] as const) it(`owns and stops a ${mode} child when the launch fact write fails (M8)`, async () => {
@@ -145,7 +145,7 @@ describe('reviewed worker write failures', () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' })
     children.push(child)
     let live = true
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await WorkerRegistry.open(root, { identity: token, watch: false,
       liveness: () => live ? 'alive' : 'dead' })
     signal.handler = (pid, worker) => {
       if (pid !== child.pid || (worker as { processStartTime?: string }).processStartTime !== 'child-born') return false
@@ -171,7 +171,7 @@ describe('reviewed worker write failures', () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: outside, stdio: 'ignore' })
     children.push(child)
     let live = true
-    const store = await WorkerRegistry.open(path.join(root, '.git'), { identity: token, migrate: false, watch: false,
+    const store = await WorkerRegistry.open(path.join(root, '.git'), { identity: token, watch: false,
       liveness: identity => identity.pid === child.pid && live ? 'alive' : 'dead' })
     const signalled: number[] = []
     signal.handler = pid => { signalled.push(pid); live = false; return child.kill('SIGTERM') }
@@ -215,7 +215,7 @@ describe('reviewed worker write failures', () => {
       const child = pid === host.pid ? host : pid === mcp.pid ? mcp : undefined
       return child?.kill('SIGTERM') ?? false
     }
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await WorkerRegistry.open(root, { identity: token, watch: false,
       liveness: p => alive.has(p.pid) ? 'alive' : 'dead' })
     await store.writeIntent(record('w_chain'))
     await mutateWorkerFixture(store, 'w_chain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
@@ -238,7 +238,7 @@ describe('reviewed worker write failures', () => {
   it('keeps the worktree and stop step pending when the admitted host cannot be verified (N2)', async () => {
     const { root, dir, git, record } = fixture()
     git('worktree', 'add', '-qb', 'room/tests', dir)
-    const store = await WorkerRegistry.open(root, { identity: token, migrate: false, watch: false,
+    const store = await WorkerRegistry.open(root, { identity: token, watch: false,
       liveness: p => p.pid === 4243 ? 'unknown' : 'dead' })
     await store.writeIntent(record('w_uncertain'))
     await mutateWorkerFixture(store, 'w_uncertain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
@@ -274,7 +274,7 @@ it.each(['tag-only', 'tag-and-op', 'reused-tag'])('recovers a crash after tag pu
   const dead = { ...token, pid: 99999999, startTime: 'dead', nonce: 'dead-instance' }
   const intent = { ...record('w_crash'), tag: 'crash', name: 'lead+crash',
     lead: { ...record('w_crash').lead, instance: dead }, runs: [{ ...record('w_crash').runs[0], launcher: dead }] }
-  const writer = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: dead, liveness: () => 'dead' })
+  const writer = await WorkerRegistry.open(common, { watch: false, identity: dead, liveness: () => 'dead' })
   if (boundary === 'reused-tag') {
     const old = { ...intent, id: 'w_old' }
     await writer.writeIntent(old)
@@ -293,7 +293,7 @@ it.each(['tag-only', 'tag-and-op', 'reused-tag'])('recovers a crash after tag pu
     spy.mockRestore(); writer.close()
     expect(fs.existsSync(path.join(writer.root, 'tags/crash.json'))).toBe(true)
     expect(fs.existsSync(path.join(writer.root, 'workers/w_crash.op'))).toBe(boundary !== 'tag-only')
-    next = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: token, liveness: () => 'dead' })
+    next = await WorkerRegistry.open(common, { watch: false, identity: token, liveness: () => 'dead' })
     await next.reconcile()
     const snapshot = await next.snapshot()
     expect.soft(snapshot.available && snapshot.blockers).toEqual([])
@@ -308,7 +308,7 @@ it.each(['alive', 'unknown', 'run', 'quarantine', 'adoption', 'op-holder', 'op-l
   const { root, record } = fixture(), common = path.join(root, '.git')
   const dead = { ...token, pid: 99999999, startTime: 'dead', nonce: 'dead-instance' }
   let probes = 0
-  const registry = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: token, liveness: () => {
+  const registry = await WorkerRegistry.open(common, { watch: false, identity: token, liveness: () => {
     if (condition === 'alive' || condition === 'unknown') return condition
     if (condition === 'op-live' || condition === 'op-unknown') return ++probes === 1 ? 'dead' : condition === 'op-live' ? 'alive' : 'unknown'
     return 'dead'
@@ -355,7 +355,7 @@ it.each(['alive', 'unknown', 'run', 'quarantine', 'adoption', 'op-holder', 'op-l
 it.each(['reservation', 'payload', 'run'])('rechecks orphan evidence after acquiring capacity and tag guards: %s', async changed => {
   const { root, record } = fixture(), common = path.join(root, '.git')
   const dead = { ...token, pid: 99999999, startTime: 'dead', nonce: 'dead-instance' }
-  const registry = await WorkerRegistry.open(common, { migrate: false, watch: false, identity: token, liveness: () => 'dead' })
+  const registry = await WorkerRegistry.open(common, { watch: false, identity: token, liveness: () => 'dead' })
   const tagFile = path.join(registry.root, 'tags/crash.json'), payload = path.join(registry.root, 'workers/w_crash.json')
   fs.mkdirSync(path.dirname(tagFile), { recursive: true }); fs.mkdirSync(path.dirname(payload), { recursive: true })
   fs.writeFileSync(tagFile, JSON.stringify({ id: 'w_crash', holder: dead, at: 1 }))

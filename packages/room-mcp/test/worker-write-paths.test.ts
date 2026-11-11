@@ -28,7 +28,7 @@ function fixture(): { root: string; record: WorkerRecord } {
   return { root, record }
 }
 const open = (root: string, nonce = 'lead', alive: 'alive' | 'dead' = 'alive') => WorkerRegistry.open(root,
-  { identity: token(nonce), migrate: false, watch: false, liveness: () => alive })
+  { identity: token(nonce), watch: false, liveness: () => alive })
 
 describe('registry write paths', () => {
   it('retains a late host session through completion, an operation lease, and lead restart', async () => {

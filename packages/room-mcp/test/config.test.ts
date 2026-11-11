@@ -89,8 +89,9 @@ describe('resolveConfig', () => {
   it('resolves identity, paths, secrets and numeric defaults without mutating env', async () => {
     const dir = repo()
     const env = { ROOM_NAME: 'env-name', ROOM_OWNER: 'env-owner', ROOM_TAG: 'env-tag', ROOM_KIND: 'bot', ROOM_TOKEN: 'env-token', ROOM_LOG_FILE: '/env/log', ROOM_CREDENTIALS: '/env/creds', ROOM_STALE_DAYS: '11' }
-    const c = await resolveConfig({ dir, env, args: { name: 'arg-name', tag: 'arg-tag', kind: 'ci', token: 'arg-token', logFile: '/arg/log', credentialsPath: '/arg/creds', staleDays: 4 } })
-    expect(c).toMatchObject({ name: 'arg-name', owner: 'env-owner', tag: 'arg-tag', kind: 'ci', token: 'arg-token', logFile: '/arg/log', credentialsPath: '/arg/creds', staleDays: 4, maxWorkers: 8 })
+    const c = await resolveConfig({ dir, env, args: { name: 'arg-name', tag: 'arg-tag', kind: 'ci', token: 'arg-token', logFile: '/arg/log', credentialsPath: '/arg/creds' } })
+    expect(c).toMatchObject({ name: 'arg-name', owner: 'env-owner', tag: 'arg-tag', kind: 'ci', token: 'arg-token', logFile: '/arg/log', credentialsPath: '/arg/creds', maxWorkers: 8 })
+    expect(c).not.toHaveProperty('staleDays')
     expect(env.ROOM_TOKEN).toBe('env-token')
   })
 })

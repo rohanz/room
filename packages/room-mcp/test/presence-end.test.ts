@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, joinedPresenceWorkers, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, joinedPresenceWorkers, PresenceEnd, attachingParentReader, hostRecordAlive, hostSessionAlive, idleLeaseTickMs, releaseIdleHeld, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
 import type { ProcessInfo } from '@room/relay/process'
 import { writeSessionRecord, type Session } from '../src/session.js'
 
@@ -79,11 +79,8 @@ describe('presence end and the idle lease (registry §18)', () => {
     }
   })
 
-  it('accepts only positive integer lease milliseconds from the environment', () => {
-    expect(resolveIdleLeaseMs('2000')).toBe(2_000)
-    for (const raw of [undefined, '', '0', '-1', '1.5', '1e3', 'garbage', '9007199254740992']) {
-      expect(resolveIdleLeaseMs(raw), String(raw)).toBe(IDLE_LEASE_MS)
-    }
+  it('bounds the tick for explicitly injected short test leases', () => {
+    expect(IDLE_LEASE_MS).toBe(30 * 60_000)
     expect(idleLeaseTickMs(500)).toBe(500)
     expect(idleLeaseTickMs(2_000)).toBe(1_000)
   })

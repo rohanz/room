@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { auditKeepFiles, envMegabytes } from './settings.js'
 
-/** The migration step is a commit record; publish a complete registry snapshot before proceeding. */
+/** Publish one complete registry/session snapshot durably before acknowledging it. */
 export function writeAtomicFile(file: string, content: string): void {
   const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
   const fd = fs.openSync(temporary, 'wx', 0o600)
@@ -42,8 +42,6 @@ export interface OpenRepo {
 export interface StoredSession { login: string; id?: string; provider: 'github' | 'oidc'; ghToken?: string; at: number }
 type AuditEvent = 'login' | 'logout' | 'room_opened' | 'room_closed' | 'join' | 'refused' | 'identity_violation' | 'document_purged'
 export interface AuditEntry { at: number; event: AuditEvent; login?: string; id?: string; provider?: string; room?: string; reason?: string; readOnly?: boolean }
-/** The whole audit, or `complete: false` (and no entries) when any of it could be missing or unreadable. */
-export interface AuditRead { entries: AuditEntry[]; complete: boolean }
 /** Why entries in a requested range may be missing: the scan's byte budget or deadline ran out before it
  *  reached the range's start, a line could not be read, older history was deleted (by retention, or a
  *  segment vanished during the read), or the audit kept rotating while the read opened it (retry). */
@@ -72,18 +70,18 @@ const gapList = (gaps: Set<AuditGap>) => GAP_ORDER.filter(g => gaps.has(g))
 
 /** Reads audit segments (oldest first, already opened so rotation cannot move them away) backwards in
  *  bounded chunks, keeping at most `limit` entries at or after `since`. Entries are appended in time
- *  order, so the first one older than `since` ends the scan. `strict` stops at the first unreadable line. */
-async function scanAuditTail(handles: { fd: fs.promises.FileHandle; size: number }[], o: Required<AuditQuery> & { strict?: boolean },
+ *  order, so the first one older than `since` ends the scan. */
+async function scanAuditTail(handles: { fd: fs.promises.FileHandle; size: number }[], o: Required<AuditQuery>,
   now: () => number = Date.now): Promise<{ entries: AuditEntry[]; gaps: Set<AuditGap>; reachedStart: boolean }> {
   const out: AuditEntry[] = [], gaps = new Set<AuditGap>()
   const deadline = now() + o.deadlineMs
   let scanned = 0
-  /** false: stop scanning (limit reached, older than since, or strict failure). */
+  /** false: stop scanning (limit reached or older than since). */
   const take = (line: Buffer): boolean => {
     if (!line.length) return true
     let e: unknown
     try { e = JSON.parse(line.toString('utf8')) } catch { e = undefined }
-    if (!isEntry(e) || typeof e.at !== 'number') { gaps.add('unreadable'); return !o.strict }
+    if (!isEntry(e) || typeof e.at !== 'number') { gaps.add('unreadable'); return true }
     if (e.at < o.since) return false
     out.push(e)
     return out.length < o.limit
@@ -113,13 +111,12 @@ async function scanAuditTail(handles: { fd: fs.promises.FileHandle; size: number
         end = nl
       }
       carry = Buffer.from(buf.subarray(0, end))
-      if (carry.length > AUDIT_MAX_LINE_BYTES) { gaps.add('unreadable'); if (o.strict) return { entries: out.reverse(), gaps, reachedStart: false }; carry = Buffer.alloc(0); discarding = true }
+      if (carry.length > AUDIT_MAX_LINE_BYTES) { gaps.add('unreadable'); carry = Buffer.alloc(0); discarding = true }
     }
     if (!discarding && !take(carry)) return { entries: out.reverse(), gaps, reachedStart: false }
   }
   return { entries: out.reverse(), gaps, reachedStart: true }
 }
-const incomplete = (): AuditRead => ({ entries: [], complete: false })
 const isEntry = (e: unknown): e is AuditEntry => !!e && typeof e === 'object' && !Array.isArray(e)
 
 /** A JSON object of records. Only a missing file is empty: an unreadable, torn or non-object file
@@ -232,8 +229,6 @@ export interface Store {
   audit(e: AuditEntry): Promise<void>
   /** The newest entries at or after `since` (ms), oldest first, at most `limit`, within a scan budget. */
   readAudit(o?: AuditQuery): Promise<AuditTail>
-  /** Every entry, oldest first, as evidence: incomplete past `limit` entries or `maxBytes` stored, or with any unreadable entry. */
-  readAllAudit(o: { limit: number; maxBytes: number }): Promise<AuditRead>
   close(): Promise<void>
 }
 
@@ -430,17 +425,6 @@ export class FileStore implements Store {
       return { entries: r.entries, complete: !gaps.length, gaps }
     })
   }
-  /** The in-memory audit drops its oldest entries past MEM_AUDIT_MAX, and retention may have deleted
-   *  segments, so only a never-pruned audit file within the bounds can be complete. */
-  async readAllAudit(o: { limit: number; maxBytes: number }): Promise<AuditRead> {
-    if (!this.auditFile) return incomplete()
-    return withAuditHandles(this.auditFile, o.maxBytes + 1, async ({ handles, all, pruned, vanished, rotated }) => {
-      if (rotated || vanished || !all || pruned !== undefined || handles.reduce((n, h) => n + h.size, 0) > o.maxBytes) return incomplete()
-      const r = await scanAuditTail(handles, { since: -Infinity, limit: o.limit + 1, maxScanBytes: o.maxBytes, deadlineMs: AUDIT_SCAN_DEADLINE_MS, strict: true }, this.now)
-      if (!r.reachedStart || r.gaps.size || r.entries.length > o.limit) return incomplete()
-      return { entries: r.entries, complete: true }
-    })
-  }
   async close(): Promise<void> { /* nothing open */ }
 }
 
@@ -515,15 +499,6 @@ export class PgStore implements Store {
   async readAudit(o: AuditQuery = {}): Promise<AuditTail> {
     const { rows } = await (await this.db()).query(`SELECT data FROM room_audit WHERE at >= $1 ORDER BY id DESC LIMIT $2`, [o.since ?? 0, o.limit ?? 1000])
     return { entries: rows.map(r => r.data as AuditEntry).reverse(), complete: true, gaps: [] }
-  }
-  /** Counted before it is fetched, so an oversized audit is refused without loading it; LIMIT bounds rows added in between. */
-  async readAllAudit(o: { limit: number; maxBytes: number }): Promise<AuditRead> {
-    const db = await this.db()
-    const { rows: [size] } = await db.query(`SELECT count(*) AS n, coalesce(sum(octet_length(data::text)), 0) AS bytes FROM room_audit`)
-    if (!(Number(size?.n) <= o.limit && Number(size?.bytes) <= o.maxBytes)) return incomplete()
-    const { rows } = await db.query(`SELECT data FROM room_audit ORDER BY id LIMIT $1`, [o.limit + 1])
-    if (rows.length > o.limit || !rows.every(r => isEntry(r.data))) return incomplete()
-    return { entries: rows.map(r => r.data as AuditEntry), complete: true }
   }
   async close(): Promise<void> { await this.pool?.end(); this.pool = undefined }
 }

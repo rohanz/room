@@ -129,10 +129,12 @@ describe('room_spawn / room_done / room_collect discard', () => {
     })
     const first = setup(), second = setup()
     try {
-      await Promise.all([
+      const replies = await Promise.all([
         first.leadTools.call('room_spawn', { tag: 'one', task: 'serve' }),
         second.leadTools.call('room_spawn', { tag: 'two', task: 'serve' }),
       ])
+      expect(replies[0]).toContain('spawned one')
+      expect(replies[1]).toContain('spawned two')
       expect(first.specs[0].env.PORT).not.toBe(second.specs[0].env.PORT)
     } finally {
       await first.leadTools.shutdown()

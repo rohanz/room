@@ -27,7 +27,6 @@ import { fixtureId, registerWorkers, seedRegistryWorker, type FixtureWorker } fr
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import { visiblePeer } from './fixtures/visible.js'
-import { catchUpLocal } from '@room/relay/local-migrate'
 import { claimDigest } from '@room/roomd'
 import { AutoJoin } from '../src/auto-join.js'
 import { createHandlerState } from '../src/tools/state.js'
@@ -347,11 +346,13 @@ describe('session gating', () => {
     } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy(); await dropRegistry() }
   })
 
-  it('renders stale claims using the resolved staleDays argument', async () => {
-    const config = await resolveConfig({ dir, env: { ROOM_STALE_DAYS: '7' }, args: { staleDays: 1 } })
+  it('renders stale claims at the hub expiry threshold despite a retired environment override', async () => {
+    const config = await resolveConfig({ dir, env: { ROOM_STALE_DAYS: '1' } })
     const t = setup({ config })
     const c = t.other.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 2, intent: 'old work' })
     t.other.claims.set(c.id, { ...c, at: Date.now() - 2 * 86400000 })
+    expect(await t.tools.call('room_state', {})).not.toContain('[stale: owner offline]')
+    t.other.claims.set(c.id, { ...c, at: Date.now() - 8 * 86400000 })
     expect(await t.tools.call('room_state', {})).toContain('stale')
   })
   it('refuses tools before join and gates until synced', async () => {
@@ -615,14 +616,10 @@ describe('session gating', () => {
 
   it('adopts validated migrated claims and scope once, then clears later stale facts', async () => {
     const t = setup({ joined: false })
-    const old = new RoomDoc(new Y.Doc())
-    old.setScope({ by: 'Rohan', byKind: 'agent', area: 'legacy', summary: 'migrated', paths: ['app.py'] })
-    const claim = old.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Rohan', byKind: 'agent', intent: 'migrated' })
-    old.claims.set(claim.id, { ...claim, claimedHash: claimDigest(COMMITTED, 1, 1) })
-    const common = join(dir, '.git'), oldDir = join(common, 'room-local')
-    mkdirSync(oldDir, { recursive: true })
-    writeFileSync(join(oldDir, `${encodeURIComponent('local/repo/main')}.ydoc`), Y.encodeStateAsUpdate(old.doc))
-    catchUpLocal(common, 'local/repo', t.room.doc)
+    const origin = 'local/repo/main'
+    t.room.scopes.set('Rohan', { by: 'Rohan', byKind: 'agent', area: 'legacy', summary: 'migrated', paths: ['app.py'], at: 1, origin })
+    const claim = t.room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Rohan', byKind: 'agent', intent: 'migrated' })
+    t.room.claims.set(claim.id, { ...claim, claimedHash: claimDigest(COMMITTED, 1, 1), origin })
     expect(t.room.claims.get(claim.id)?.origin).toBe('local/repo/main')
     await t.tools.call('room_join', {})
     expect(t.room.scope('Rohan')).toMatchObject({ area: 'legacy' })

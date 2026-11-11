@@ -36,6 +36,18 @@ function owner(common: string, pid = 100, runtime?: string) {
 }
 
 describe('drained daemon cutover', () => {
+  it('skips old per-worktree session files without reading them or trusting their process claims', async () => {
+    const { common } = fixture(), old = path.join(common, 'room-session.json')
+    write(old, { session_id: 'old', hostPid: 100, pid: 100 })
+    const read = vi.spyOn(fs, 'readFileSync')
+    try {
+      const state = await inspectDaemonCutover(common, inspectOptions)
+      expect(state.blocked).toBe(false)
+      expect(read.mock.calls.some(([file]) => String(file) === old)).toBe(false)
+      expect(state.clients.some(client => client.source === old)).toBe(false)
+    } finally { read.mockRestore() }
+  })
+
   it('remembers exact drained bytes, but judges changed/new records and old-owner takeover', async () => {
     const { common } = fixture()
     owner(common, 300)
@@ -280,7 +292,7 @@ describe('drained daemon cutover', () => {
     expect(fs.existsSync(path.join(common, 'room/daemon-cutover.json'))).toBe(false)
     expect(fs.readFileSync(file, 'utf8')).toBe(before)
   })
-  it.each(['room/sessions/invalid/session.json', 'room-session.json'])('blocks a non-numeric hostPid in %s', async location => {
+  it.each(['room/sessions/invalid/session.json'])('blocks a non-numeric hostPid in %s', async location => {
     const { common } = fixture()
     const file = path.join(common, location)
     write(file, { session_id: 'invalid', hostPid: '200' })
@@ -313,7 +325,7 @@ describe('drained daemon cutover', () => {
     expect(daemonCutoverRows(state).join(' ')).toContain('binding only')
     await requireDaemonRuntime(common, inspectOptions)
     const record = JSON.parse(fs.readFileSync(path.join(common, 'room/daemon-cutover.json'), 'utf8'))
-    expect(record.disregardedBindings).toEqual(['room/registry/workers/imported.json', 'room-session.json'])
+    expect(record.disregardedBindings).toEqual(['room/registry/workers/imported.json'])
   })
   it.each(['unbound', 'moved'] as const)('recognises the admitted current worker while its binding is %s, before the marker is published there', async binding => {
     const { common, linked } = fixture()

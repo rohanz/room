@@ -5,10 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { keyEncoding, LeveldbPersistence } from 'y-leveldb'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, RAW_PER_SST_BYTE, levelStoredUpdates, levelCopyRaw, levelReplace, levelReadTables, levelLoad } from '../src/stored.js'
-import { migrateRepo, type MigrationIO } from '../src/migrate.js'
-import type { OpenRepo } from '../src/store.js'
-import { takeInventory, formatInventory } from '../src/inventory.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, RAW_PER_SST_BYTE, levelStoredUpdates, levelReplace, levelReadTables, levelLoad } from '../src/stored.js'
+import { takeInventory } from '../src/inventory.js'
 
 const cleanups: (() => Promise<void>)[] = []
 it('opens each higher-level successor even when the global one-past-end key is in another level', () => {
@@ -192,7 +190,6 @@ it('reports the known final-block residual of an oversized update-only level-0 t
   // Later names may still read the huge final block via an L0 index successor; pre-flight flags the table.
   const inventory = await takeInventory(['large'], {}, (name, limit) => levelStoredSize(db, name, limit, tables), 8 * 1048576, tables)
   expect(inventory.tables).toContainEqual({ level: 0, file: huge.file, bytes: huge.bytes, smallest: 'large', largest: 'large' })
-  expect(formatInventory(inventory)).toContain('tables over budget:')
 }, 60_000)
 it('streams all records in clock order and reproduces the document', async () => {
   const f = await fixture(), doc = new Y.Doc(), updates: Uint8Array[] = []
@@ -201,36 +198,3 @@ it('streams all records in clock order and reproduces the document', async () =>
   expect(doc.getText('text').toString()).toBe(f.doc.getText('text').toString())
   f.doc.destroy(); doc.destroy()
 })
-it('copies raw records and the discovery state vector without loading, and replays idempotently', async () => {
-  const f = await fixture()
-  await levelCopyRaw(f.db, 'from', 'to')
-  await levelCopyRaw(f.db, 'from', 'to')
-  expect(await f.provider.getAllDocNames()).toContain('to')
-  expect(await levelStoredSize(f.db, 'to')).toEqual(await levelStoredSize(f.db, 'from'))
-  const copy = await f.provider.getYDoc('to')
-  expect(copy.getText('text').toString()).toBe(f.doc.getText('text').toString())
-  copy.destroy(); f.doc.destroy()
-})
-it('migrates a single 40 MB canonical snapshot through the real raw-copy path', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-stored-migrate-')), repo = 'github.com/o/r'
-  let provider = new LeveldbPersistence(dir)
-  cleanups.push(async () => { await provider.destroy(); fs.rmSync(dir, { recursive: true, force: true }) })
-  const old = new Y.Doc(); old.getMap('padding').set('random', new Uint8Array(crypto.randomBytes(40 * 1048576)))
-  await provider.storeUpdate(repo, Y.encodeStateAsUpdate(old)); old.destroy()
-  await provider.destroy(); provider = new LeveldbPersistence(dir)
-  const db = await levelDbOf(provider), entry: OpenRepo = { at: 1, branches: [], mode: 'branch' }
-  const io: MigrationIO = {
-    list: () => provider.getAllDocNames(), load: name => provider.getYDoc(name),
-    stored: (name, limit) => levelStoredSize(db, name, limit), copyRaw: (from, to) => levelCopyRaw(db, from, to),
-    write: (name, update) => provider.storeUpdate(name, update), clear: name => provider.clearDocument(name),
-    freeze: async () => {}, revoke: async () => {}, save: async () => {},
-  }
-  await migrateRepo(repo, entry, io)
-  expect(entry.migratedAt).toBeGreaterThan(0)
-  expect(entry.step).toBe('written')
-  expect(entry.legacy).toContain(entry.plan!.moved)
-  expect(await levelStoredSize(db, entry.plan!.moved!)).toMatchObject({ updates: 1, over: false })
-  const archived = await provider.getYDoc(entry.plan!.moved!)
-  expect((archived.getMap('padding').get('random') as Uint8Array).byteLength).toBe(40 * 1048576)
-  archived.destroy()
-}, 60_000)
