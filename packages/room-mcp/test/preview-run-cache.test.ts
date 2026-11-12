@@ -2,8 +2,9 @@ import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
-import { afterEach, expect, it, vi } from 'vitest'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { previewCachePath, runInMergedTree } from '../src/tools/files.js'
 import { collectedTreeEvidence } from '../src/preview-evidence.js'
 import * as evidence from '../src/preview-evidence.js'
@@ -34,6 +35,27 @@ function fixture(scale: boolean | number = false) {
 
 afterEach(async () => { for (const root of roots.splice(0)) await disposePreviewFixture(root) }, 120_000)
 
+/** Builds the scale repository in a child process: writing tens of thousands of files in this
+ * process would hold the test worker's event loop, which the watchdog ends after 120 s under load. */
+async function scaleFixture(count: number) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-cache-test-'))
+  roots.push(repo)
+  const script = `
+const fs = require('node:fs'), path = require('node:path'), { execFileSync } = require('node:child_process')
+const [repo, count] = [process.argv[1], Number(process.argv[2])]
+const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
+git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.com')
+for (let i = 0; i < count; i++) {
+  const dir = path.join(repo, 'src', String(Math.floor(i / 100)).padStart(2, '0'))
+  if (i % 100 === 0) fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'f' + String(i).padStart(5, '0') + '.txt'), 'base ' + i + '\\n')
+}
+fs.writeFileSync(path.join(repo, '.gitignore'), 'target/\\n')
+git('add', '.'); git('commit', '-qm', 'base'); process.stdout.write(git('rev-parse', 'HEAD'))`
+  const { stdout } = await promisify(execFile)(process.execPath, ['-e', script, repo, String(count)], { encoding: 'utf8' })
+  return { repo, ancestor: stdout.trim(), session: () => ({ dir: repo }) as Session }
+}
+
 it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes only two merged paths on a warm preview', async () => {
   const { ancestor, session } = fixture(true)
   const counts = { firstBase: 0, secondBase: 0, secondWrites: [] as string[] }
@@ -47,8 +69,13 @@ it.skipIf(process.env.TEST_SCALE !== '1')('reuses the 5,000-file base and writes
   expect(second.text).toMatch(/setup .*cached base.*check /)
 }, 120_000)
 
-it.skipIf(process.env.TEST_SCALE !== '1').each([5_000, 50_000])('keeps the event loop responsive throughout a preview with a check (%i files)', async count => {
-  const { repo, ancestor, session } = fixture(count)
+describe.skipIf(process.env.TEST_SCALE !== '1').each([5_000, 50_000])('a preview of %i files', count => {
+  // Building the repository is setup, with its own budget: it is slow while the rest of the suite loads the disk.
+  let built: Awaited<ReturnType<typeof scaleFixture>>
+  beforeAll(async () => { built = await scaleFixture(count) }, 600_000)
+
+  it('keeps the event loop responsive throughout a preview with a check', async () => {
+  const { repo, ancestor, session } = built
   const fingerprint = vi.spyOn(evidence, 'fingerprintTree')
   const gate = vi.spyOn(evidence, 'validateFingerprintSync')
   let maxDelay = 0
@@ -75,7 +102,8 @@ it.skipIf(process.env.TEST_SCALE !== '1').each([5_000, 50_000])('keeps the event
   } finally { clearInterval(timer); remove.mockRestore(); fingerprint.mockRestore(); gate.mockRestore() }
   process.stdout.write(JSON.stringify({ files: count, finalSynchronousGateMs: 0, fingerprints: 0, gateCalls: 0, previewAndCollectMaxDelayMs: maxDelay }) + '\n')
   expect(maxDelay).toBeLessThan(200)
-}, 120_000)
+  }, 120_000)
+})
 
 it('repairs a dirty cache before the check and retains ignored build outputs', async () => {
   const { repo, ancestor, session } = fixture()

@@ -157,6 +157,11 @@ jobs:
 
       - name: Run tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test
+
+      # A separate pass: only the files with scale and responsiveness cases, one file at a time.
+      - name: Run scale tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           TEST_SCALE: '1'
         run: env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test

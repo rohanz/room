@@ -18,3 +18,16 @@ const watchdog = startWatchdog({ describe: () => {
   return [file, state.currentTestName].filter(Boolean).join(' > ')
 } })
 beforeEach(watchdog.beat)
+
+// Signalling pid 0 signals the caller's whole process group: every test worker, vitest and npm.
+// `Number('')` is 0, so an empty pid file read by a test is enough. Refuse it and say which test asked.
+const kill = process.kill.bind(process)
+process.kill = ((pid: number, signal?: string | number) => {
+  if (pid === 0) {
+    const state = expect.getState()
+    const message = `[test guard] refused process.kill(0, ${String(signal)}) from ${state.testPath ?? 'unknown file'} > ${state.currentTestName ?? ''}`
+    process.stderr.write(message + '\n')
+    throw new Error(message)
+  }
+  return kill(pid, signal)
+}) as typeof process.kill

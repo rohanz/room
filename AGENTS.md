@@ -123,7 +123,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   A test worker whose event loop stands still for 120 s, or whose file runs past 15 minutes, is reported by
   `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
-- Deliberate scale and responsiveness tests are opt-in: `TEST_SCALE=1 npm test`. The default run skips these large synthetic repositories and soak cases; CI sets `TEST_SCALE=1` so they remain required coverage.
+- Deliberate scale and responsiveness tests are a separate pass: `TEST_SCALE=1 npm test` runs only the test files that contain such cases, one file at a time (`vitest.shared.ts`), because they build repositories of thousands of files and measure event-loop stalls, and running them beside the rest of the suite starved both. The default run skips those cases. CI runs both passes, so they remain required coverage; before a release run both locally.
 - Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
   (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin and tag `v<version>`.
   The bump also appends the new tag to `scripts/compat-pins.json`; right after `git tag v<version>` run `node scripts/compat-pins.mjs <version> --pin-commit`

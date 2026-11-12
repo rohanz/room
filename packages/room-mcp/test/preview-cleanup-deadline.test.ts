@@ -9,6 +9,14 @@ import { clearPreviewQuarantine, previewQuarantinePath, quarantinePreview, setPr
 import type { Session } from '../src/session.js'
 
 const posix = process.platform === 'darwin' || process.platform === 'linux'
+/** The pid a child wrote, or undefined while the file is missing, empty or not a positive integer.
+ * `Number('')` is 0, and signalling pid 0 signals this test run's whole process group. */
+const pidFrom = (file: string): number | undefined => {
+  let text: string
+  try { text = fs.readFileSync(file, 'utf8').trim() } catch { return undefined }
+  const pid = Number(text)
+  return text !== '' && Number.isInteger(pid) && pid > 0 ? pid : undefined
+}
 afterEach(() => setPreviewCleanupForTests())
 
 async function lockFreed(entry: string): Promise<void> {
@@ -27,7 +35,7 @@ async function fixture(useCache: boolean) {
   process.env.ROOM_PREVIEW_CACHE_GB = useCache ? '4' : '0'
   git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test')
   fs.writeFileSync(path.join(root, 'app.txt'), 'BASE\n'); git('add', '.'); git('commit', '-qm', 'base')
-  const killPidFile = (file: string) => { try { process.kill(Number(fs.readFileSync(file, 'utf8')), 'SIGKILL') } catch { /* gone */ } }
+  const killPidFile = (file: string) => { const pid = pidFrom(file); if (pid !== undefined) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
   return {
     root, head: git('rev-parse', 'HEAD'), killPidFile,
     async dispose(...pidFiles: string[]) {
@@ -79,8 +87,9 @@ it('quarantines a cached tree an escaped process may still use: later checks run
     // Neither reset nor reused while the escaped process lives.
     expect(fs.readFileSync(path.join(cache, 'app.txt'), 'utf8')).toBe('FIRST\n')
     f.killPidFile(pidFile)
-    const pid = Number(fs.readFileSync(pidFile, 'utf8'))
-    for (let n = 0; n < 100; n++) { try { process.kill(pid, 0) } catch { break } await new Promise(r => setTimeout(r, 50)) }
+    const pid = pidFrom(pidFile)
+    expect(pid).toBeDefined()
+    for (let n = 0; n < 100; n++) { try { process.kill(pid!, 0) } catch { break } await new Promise(r => setTimeout(r, 50)) }
     const third = await runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'THIRD\n']]), `pwd; cat app.txt; echo '1 passed'`)
     expect(third.passed, third.text).toBe(true)
     expect(third.text).toContain(cache)
@@ -109,7 +118,8 @@ it('stops the check when the tool call is cancelled', async () => {
   const pidFile = path.join(f.root, 'check.pid')
   try {
     const controller = new AbortController()
-    const watcher = setInterval(() => { if (fs.existsSync(pidFile)) { clearInterval(watcher); controller.abort() } }, 20)
+    // Cancel only once the pid is fully written: the file exists, empty, between the child's open and write.
+    const watcher = setInterval(() => { if (pidFrom(pidFile) !== undefined) { clearInterval(watcher); controller.abort() } }, 20)
     const started = Date.now()
     const result = await runInMergedTree({ dir: f.root } as Session, f.head, new Map([['app.txt', 'FIRST\n']]),
       `node -e ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`)}`,
@@ -119,7 +129,9 @@ it('stops the check when the tool call is cancelled', async () => {
     expect(result.passed).toBe(false)
     expect(result.text).toMatch(/cancelled/)
     expect(result.text).toContain('command completion: incomplete')
-    expect(() => process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 0)).toThrow()
+    const checkPid = pidFrom(pidFile)
+    expect(checkPid).toBeDefined()
+    expect(() => process.kill(checkPid!, 0)).toThrow()
     // A completed cancellation still resets the cache.
     expect(fs.readFileSync(path.join(await previewCachePath(f.root), 'app.txt'), 'utf8')).toBe('BASE\n')
   } finally { await f.dispose(pidFile) }
