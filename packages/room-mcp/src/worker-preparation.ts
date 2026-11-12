@@ -53,7 +53,6 @@ export function witnessPreparation(dir: string, branch: string, identity: Prepar
   if (trimLine(smallFile(path.join(adminDir, 'HEAD'))) !== (branch === 'HEAD' ? branchOid : `ref: refs/heads/${branch}`)) throw new Error('worktree branch changed before witness')
   const witness: PreparationWitness = { v: 1, ...identity, branch, adminDir, dev: String(stat.dev), ino: String(stat.ino), token: randomUUID(), root, branchOid }
   const marker = path.join(adminDir, PREPARATION_WITNESS_FILE)
-  if (fs.existsSync(marker)) throw new Error('worktree witness already exists')
   if (!createExclusive(marker, witness)) throw new Error('worktree witness already exists')
   verifyPreparation(dir, witness)
   return witness

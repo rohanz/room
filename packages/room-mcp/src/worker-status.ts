@@ -33,10 +33,10 @@ export interface RunReport {
   /** `k` numbers the run's reports from 1 (absent: 1); `posted` names the completion message last posted. */
   done?: { at: number; summary: string; changed: string[]; k?: number }; posted?: string
 }
-export type PrepStep = 'root' | 'plan' | 'worktree' | 'branch' | 'carry-commit' | 'carry-refs' | 'untracked' | 'prepared'
+export type PrepStep = 'root' | 'plan' | 'worktree' | 'carry-commit' | 'carry-refs' | 'prepared'
 export interface PrepJournal {
-  step: PrepStep; worktreeExisted?: boolean; branchExisted?: boolean
-  previousCarryRefs?: Record<string, string | null>; untrackedTree?: string
+  step: PrepStep; branchExisted?: boolean
+  previousCarryRefs?: Record<string, string | null>
   created?: boolean; branchCreated?: boolean
   identityRequired?: boolean; root?: RootReceipt; witness?: PreparationWitness; branchOid?: string
 }

@@ -17,7 +17,7 @@ import { terminateWorktreeProcesses } from './worker-process.js'
 import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
 
-import { retainWorkerItem, retainedWorkerLines } from './worker-retained.js'
+import { clearRetainedWorkerItem, retainWorkerItem, retainedWorkerLines } from './worker-retained.js'
 import { writeWorkerRef, deleteWorkerRef, deleteWorkerRecordRef, restoreWorkerRef, preserveWorkerBranch, deletePreservedWorkerBranch, operationBranchReceipt } from './worker-refs.js'
 import { canonicalMissingWorkerPath, rootIdentity, verifyWorkerCheckout, retainCheckout, removeWorkerRegistration, PREPARATION_WITNESS_FILE, preparationIdentity, witnessPreparation, removePreparation, verifyPreparation, type PreparationIdentity, type PreparationWitness } from './worker-preparation.js'
 
@@ -324,24 +324,18 @@ export function prepareWorkerLinks(repoDir: string, workerDir: string, requested
     }
     return { p, source, target, directory: stat.isDirectory() }
   })
-  const made = new Map<string, { dev: bigint; ino: bigint; birthtimeNs: bigint }>()
+  const attempted: string[] = []
   try {
     for (const link of links) {
+      attempted.push(link.target)
       fs.mkdirSync(path.dirname(link.target), { recursive: true })
       fs.symlinkSync(link.source, link.target, link.directory ? 'dir' : 'file')
-      const stat = fs.lstatSync(link.target, { bigint: true })
-      made.set(link.target, { dev: stat.dev, ino: stat.ino, birthtimeNs: stat.birthtimeNs })
     }
   } catch (e) {
-    for (const [target, proof] of [...made].reverse()) {
-      try {
-        const stat = fs.lstatSync(target, { bigint: true })
-        if (stat.isSymbolicLink() && stat.dev === proof.dev && stat.ino === proof.ino && stat.birthtimeNs === proof.birthtimeNs) fs.unlinkSync(target)
-        else retainWorkerItem(commonGitDirFromDotGit(repoDir), { kind: stat.isDirectory() ? 'directory' : 'file', path: target, reason: 'input-link rollback creation identity changed; retained in place' })
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    }
+    for (const target of attempted) retainWorkerItem(commonGitDirFromDotGit(repoDir), { kind: 'file', path: target, reason: 'input-link setup did not complete; output retained in place' })
     throw e
   }
+  for (const target of attempted) clearRetainedWorkerItem(commonGitDirFromDotGit(repoDir), 'file', target)
   return links.map(l => l.p)
 }
 
@@ -481,7 +475,7 @@ async function prepareWorktreeAttempt(repoDir: string, tag: string, leadName: st
     try { previousCarryRefs[ref] = (await git(repoDir, ['rev-parse', '--verify', ref])).trim() } catch { /* absent */ }
   }
   const base = await preparationCommit(repoDir, 'HEAD', 'HEAD')
-  await onStep?.('plan', { worktreeExisted: false, branchExisted: false,
+  await onStep?.('plan', { branchExisted: false,
     previousCarryRefs: Object.fromEntries([carryRef(tag), carriedUntrackedRef(tag)].map(ref => [ref, previousCarryRefs[ref] ?? null])) })
   // Git accepts an existing empty directory: only our exclusive mkdir proves root creation.
   privateStateDirectory(dir, { exclusive: true })

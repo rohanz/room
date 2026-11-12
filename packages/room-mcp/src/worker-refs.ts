@@ -96,15 +96,17 @@ export function preserveWorkerBranch(common: string, worker: { id: string; tag: 
   if (!captured.tip || captured.reason || captured.absent) return captured
   const tip = captured.tip, recoveryRef = `refs/room/recovery/${worker.tag}/${tip}`
   try {
+    validRef(recoveryRef)
+    if (!/^[0-9a-f]{40,64}$/.test(tip)) throw new Error('invalid worker ref OID')
     const existing = directEntry(common, recoveryRef)
     // for-each-ref omits dangling symrefs, so inspect the name as well.
     if (existing?.[2] || symbolicName(common, recoveryRef)) throw new Error('recovery name is already occupied by a symbolic ref; retained without following it')
     if (existing) {
       if (existing[1] !== tip) throw new Error('recovery name is already occupied by another ref')
-    } else writeWorkerRef(common, recoveryRef, tip, worker.id, '0'.repeat(tip.length))
+    } else run(common, ['update-ref', '--no-deref', recoveryRef, tip, '0'.repeat(tip.length)])
     return { tip, recoveryRef }
   } catch (error) {
-    const reason = `could not preserve operation branch tip: ${String(error)}`
+    const reason = `could not preserve operation branch tip under ${recoveryRef}: ${String(error)}`
     retainWorkerItem(common, { kind: 'branch', path: `refs/heads/${worker.branch}`, id: worker.id, tag: worker.tag, reason })
     return { tip, reason }
   }
@@ -127,8 +129,7 @@ function mutatePreservedRef(common: string, worker: { id: string; tag: string },
   try {
     const expectedRef = `refs/room/recovery/${worker.tag}/${receipt.tip}`
     if (receipt.recoveryRef !== expectedRef) throw new Error('recovery ref receipt does not match this worker/tip')
-    const entry = run(common, ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(symref)', expectedRef])
-      .split('\n').map(line => line.split('\0')).find(fields => fields[0] === expectedRef)
+    const entry = directEntry(common, expectedRef)
     if (!entry || entry[1] !== receipt.tip || entry[2]) throw new Error('preserved commit is no longer pinned by its exact recovery ref')
   } catch (error) {
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: String(error) })

@@ -31749,14 +31749,16 @@ function preserveWorkerBranch(common, worker, captured = captureWorkerBranch(com
   if (!captured.tip || captured.reason || captured.absent) return captured;
   const tip = captured.tip, recoveryRef = `refs/room/recovery/${worker.tag}/${tip}`;
   try {
+    validRef(recoveryRef);
+    if (!/^[0-9a-f]{40,64}$/.test(tip)) throw new Error("invalid worker ref OID");
     const existing = directEntry(common, recoveryRef);
     if (existing?.[2] || symbolicName(common, recoveryRef)) throw new Error("recovery name is already occupied by a symbolic ref; retained without following it");
     if (existing) {
       if (existing[1] !== tip) throw new Error("recovery name is already occupied by another ref");
-    } else writeWorkerRef(common, recoveryRef, tip, worker.id, "0".repeat(tip.length));
+    } else run2(common, ["update-ref", "--no-deref", recoveryRef, tip, "0".repeat(tip.length)]);
     return { tip, recoveryRef };
   } catch (error2) {
-    const reason = `could not preserve operation branch tip: ${String(error2)}`;
+    const reason = `could not preserve operation branch tip under ${recoveryRef}: ${String(error2)}`;
     retainWorkerItem(common, { kind: "branch", path: `refs/heads/${worker.branch}`, id: worker.id, tag: worker.tag, reason });
     return { tip, reason };
   }
@@ -31786,7 +31788,7 @@ function mutatePreservedRef(common, worker, ref, receipt, next) {
   try {
     const expectedRef = `refs/room/recovery/${worker.tag}/${receipt.tip}`;
     if (receipt.recoveryRef !== expectedRef) throw new Error("recovery ref receipt does not match this worker/tip");
-    const entry = run2(common, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", expectedRef]).split("\n").map((line) => line.split("\0")).find((fields) => fields[0] === expectedRef);
+    const entry = directEntry(common, expectedRef);
     if (!entry || entry[1] !== receipt.tip || entry[2]) throw new Error("preserved commit is no longer pinned by its exact recovery ref");
   } catch (error2) {
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: String(error2) });
@@ -31904,7 +31906,6 @@ function witnessPreparation(dir, branch, identity4, root, branchOid) {
   if (trimLine(smallFile(path23.join(adminDir, "HEAD"))) !== (branch === "HEAD" ? branchOid : `ref: refs/heads/${branch}`)) throw new Error("worktree branch changed before witness");
   const witness = { v: 1, ...identity4, branch, adminDir, dev: String(stat4.dev), ino: String(stat4.ino), token: randomUUID3(), root, branchOid };
   const marker = path23.join(adminDir, PREPARATION_WITNESS_FILE);
-  if (fs23.existsSync(marker)) throw new Error("worktree witness already exists");
   if (!createExclusive(marker, witness)) throw new Error("worktree witness already exists");
   verifyPreparation(dir, witness);
   return witness;
@@ -47275,26 +47276,18 @@ function prepareWorkerLinks(repoDir, workerDir, requested) {
     }
     return { p, source, target, directory: stat4.isDirectory() };
   });
-  const made = /* @__PURE__ */ new Map();
+  const attempted = [];
   try {
     for (const link of links) {
+      attempted.push(link.target);
       fs57.mkdirSync(path57.dirname(link.target), { recursive: true });
       fs57.symlinkSync(link.source, link.target, link.directory ? "dir" : "file");
-      const stat4 = fs57.lstatSync(link.target, { bigint: true });
-      made.set(link.target, { dev: stat4.dev, ino: stat4.ino, birthtimeNs: stat4.birthtimeNs });
     }
   } catch (e) {
-    for (const [target, proof] of [...made].reverse()) {
-      try {
-        const stat4 = fs57.lstatSync(target, { bigint: true });
-        if (stat4.isSymbolicLink() && stat4.dev === proof.dev && stat4.ino === proof.ino && stat4.birthtimeNs === proof.birthtimeNs) fs57.unlinkSync(target);
-        else retainWorkerItem(commonGitDirFromDotGit(repoDir), { kind: stat4.isDirectory() ? "directory" : "file", path: target, reason: "input-link rollback creation identity changed; retained in place" });
-      } catch (error2) {
-        if (error2.code !== "ENOENT") throw error2;
-      }
-    }
+    for (const target of attempted) retainWorkerItem(commonGitDirFromDotGit(repoDir), { kind: "file", path: target, reason: "input-link setup did not complete; output retained in place" });
     throw e;
   }
+  for (const target of attempted) clearRetainedWorkerItem(commonGitDirFromDotGit(repoDir), "file", target);
   return links.map((l) => l.p);
 }
 function patchArgs(base, exclusions, staged = false) {
@@ -47405,7 +47398,6 @@ async function prepareWorktreeAttempt(repoDir, tag, leadName, options, retry) {
   }
   const base = await preparationCommit(repoDir, "HEAD", "HEAD");
   await onStep?.("plan", {
-    worktreeExisted: false,
     branchExisted: false,
     previousCarryRefs: Object.fromEntries([carryRef(tag), carriedUntrackedRef(tag)].map((ref) => [ref, previousCarryRefs[ref] ?? null]))
   });
@@ -62257,7 +62249,7 @@ function handlers4(state) {
       const worker = workerAdapter(host2);
       const hostSessionId = worker.freshSessionId();
       const usedPorts = workerPortsInUse(requireWorkerInventory(await registry2.list()));
-      const prep = { step: "plan", identityRequired: !suppliedDir, worktreeExisted: fs65.existsSync(dir), created: false };
+      const prep = { step: "plan", identityRequired: !suppliedDir, created: false };
       const record2 = {
         v: 1,
         id: id3,

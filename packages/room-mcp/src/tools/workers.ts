@@ -262,7 +262,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const worker = workerAdapter(host)
       const hostSessionId = worker.freshSessionId()
       const usedPorts = workerPortsInUse((requireWorkerInventory(await registry.list())))
-      const prep = { step: 'plan' as const, identityRequired: !suppliedDir, worktreeExisted: fs.existsSync(dir), created: false }
+      const prep = { step: 'plan' as const, identityRequired: !suppliedDir, created: false }
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
