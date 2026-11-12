@@ -3,7 +3,7 @@ import { collectResolvedWorkerMetadata } from './worker-metadata-gc.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ROOM_STALE_MS } from '@room/shared'
-import { leaseToken, liveness, withGuard } from './leases.js'
+import { leaseToken, liveness, recover } from './leases.js'
 import type { ProcessProbe } from '@room/relay/process'
 
 /**
@@ -56,12 +56,10 @@ export const GC_RULES: GcRule[] = [
   { path: 'relay/<room>.ydoc', owner: 'daemon', lifetime: { kind: 'owner' },
     match: inDir('relay', n => !isTemp(n)) },
   { path: '*.tmp (any directory)', owner: 'MCP session', lifetime: { kind: 'temp' }, match: e => isTemp(e.name ?? e.top) },
-  { path: 'hub/authority.lock', owner: 'daemon', lifetime: { kind: 'dead-holder' }, match: inDir('hub', n => n === 'authority.lock') },
-  // The async lease primitive recovers these on demand. A collector's separate
+  // Only an acquirer can recover a dead lock under the lease protocol. A separate
   // dead-holder check and unlink could remove a newly acquired live successor.
-  { path: 'worktree-operation.guard (+ .guard)', owner: 'MCP session', lifetime: { kind: 'owner' },
-    match: e => e.name === undefined && /^worktree-operation(?:\.guard)+$/.test(e.top) },
-  { path: '*.guard (any directory)', owner: 'MCP session', lifetime: { kind: 'dead-holder' }, match: e => (e.name ?? e.top).endsWith('.guard') },
+  { path: 'hub/authority.lock', owner: 'daemon', lifetime: { kind: 'owner' }, match: inDir('hub', n => n === 'authority.lock') },
+  { path: '*.guard (any directory)', owner: 'MCP session', lifetime: { kind: 'owner' }, match: e => (e.name ?? e.top).endsWith('.guard') },
   { path: 'hub-leases/<room>.json', owner: 'daemon', lifetime: { kind: 'keep' }, match: inDir('hub-leases', n => n.endsWith('.json')) },
   { path: 'daemon.log*', owner: 'daemon', lifetime: { kind: 'owner' }, match: e => e.name === undefined && /^daemon\.log(\.\d+)?$/.test(e.top) },
   { path: 'daemon-cutover.json, daemon-cutover-resolutions.json', owner: 'none', lifetime: { kind: 'age', ms: ROOM_STALE_MS },
@@ -89,7 +87,7 @@ export const GC_RULES: GcRule[] = [
 export interface GcOptions { now?: () => number; probe?: ProcessProbe; /** Judge only: report what would go and what is unknown, remove nothing. */ dryRun?: boolean }
 export interface GcResult { removed: string[]; unknown: string[] }
 
-/** One pass over `<commonDir>/room`. Read-only until each removal; a file it cannot judge stays. */
+/** One pass over `<commonDir>/room`. Lease removals recheck under their guard; an unjudgeable file stays. */
 export function collectLocalState(commonDir: string, options: GcOptions = {}): GcResult {
   const now = options.now ?? Date.now
   const root = path.join(commonDir, 'room')
@@ -125,14 +123,12 @@ export function collectLocalState(commonDir: string, options: GcOptions = {}): G
       case 'age': return !isDir && olderThan(target, life.ms) ? remove(target) : undefined
       case 'dead-holder': {
         if (isDir || !deadHolderIdle(target)) return
-        if (path.basename(path.dirname(target)) === 'preview-evidence' && /^[a-f0-9]{64}-publication(?:\.guard)+$/.test(path.basename(target)) && !options.dryRun) {
-          // Let the lease primitive recheck/recover this exact holder and release
-          // its own nonce. Blind removal could unlink a newly acquired successor.
-          try { withGuard(target.slice(0, -'.guard'.length), () => { removed.push(target) }, options.probe) }
-          catch { /* A live/unknown successor keeps its guard. */ }
-          return
-        }
-        return remove(target)
+        if (options.dryRun) return remove(target)
+        // The first reading only selects a candidate. Recheck both the holder
+        // and idle age under the same guard used by name/publisher mutations.
+        try { if (recover(target, () => deadHolderIdle(target), options.probe)) removed.push(target) }
+        catch { /* A busy guard or unreadable successor is retained. */ }
+        return
       }
       case 'orphan-sharing': return !isDir && orphanSharing(target) ? remove(target) : undefined
       case 'session-dir': {

@@ -41524,16 +41524,12 @@ function collectLocalState(commonDir2, options = {}) {
         return !isDir2 && olderThan(target, life.ms) ? remove(target) : void 0;
       case "dead-holder": {
         if (isDir2 || !deadHolderIdle(target)) return;
-        if (path46.basename(path46.dirname(target)) === "preview-evidence" && /^[a-f0-9]{64}-publication(?:\.guard)+$/.test(path46.basename(target)) && !options.dryRun) {
-          try {
-            withGuard(target.slice(0, -".guard".length), () => {
-              removed.push(target);
-            }, options.probe);
-          } catch {
-          }
-          return;
+        if (options.dryRun) return remove(target);
+        try {
+          if (recover(target, () => deadHolderIdle(target), options.probe)) removed.push(target);
+        } catch {
         }
-        return remove(target);
+        return;
       }
       case "orphan-sharing":
         return !isDir2 && orphanSharing(target) ? remove(target) : void 0;
@@ -41601,16 +41597,10 @@ var init_local_state_gc = __esm({
         match: inDir("relay", (n) => !isTemp(n))
       },
       { path: "*.tmp (any directory)", owner: "MCP session", lifetime: { kind: "temp" }, match: (e) => isTemp(e.name ?? e.top) },
-      { path: "hub/authority.lock", owner: "daemon", lifetime: { kind: "dead-holder" }, match: inDir("hub", (n) => n === "authority.lock") },
-      // The async lease primitive recovers these on demand. A collector's separate
+      // Only an acquirer can recover a dead lock under the lease protocol. A separate
       // dead-holder check and unlink could remove a newly acquired live successor.
-      {
-        path: "worktree-operation.guard (+ .guard)",
-        owner: "MCP session",
-        lifetime: { kind: "owner" },
-        match: (e) => e.name === void 0 && /^worktree-operation(?:\.guard)+$/.test(e.top)
-      },
-      { path: "*.guard (any directory)", owner: "MCP session", lifetime: { kind: "dead-holder" }, match: (e) => (e.name ?? e.top).endsWith(".guard") },
+      { path: "hub/authority.lock", owner: "daemon", lifetime: { kind: "owner" }, match: inDir("hub", (n) => n === "authority.lock") },
+      { path: "*.guard (any directory)", owner: "MCP session", lifetime: { kind: "owner" }, match: (e) => (e.name ?? e.top).endsWith(".guard") },
       { path: "hub-leases/<room>.json", owner: "daemon", lifetime: { kind: "keep" }, match: inDir("hub-leases", (n) => n.endsWith(".json")) },
       { path: "daemon.log*", owner: "daemon", lifetime: { kind: "owner" }, match: (e) => e.name === void 0 && /^daemon\.log(\.\d+)?$/.test(e.top) },
       {

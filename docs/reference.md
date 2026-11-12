@@ -182,14 +182,13 @@ Every file Room keeps under the clone's common Git directory, in `room/`, has on
 | `relay/<room>.ydoc` | daemon | owner: forgotten with the room (`room_close`) |
 | `relay/migrated*.json` | daemon | keep: completion evidence from a prior 0.17 import; no new migration runs |
 | `*.tmp (any directory)` | MCP session | 1 h: an atomic write that never finished |
-| `hub/authority.lock` | daemon | holder dead and 1 h idle |
-| `worktree-operation.guard (+ .guard)` | MCP session | owner-managed |
-| `*.guard (any directory)` | MCP session | holder dead and 1 h idle |
+| `hub/authority.lock` | daemon | owner: the next relay acquirer recovers a dead holder |
+| `*.guard (any directory)` | MCP session | owner: acquisition recovers dead holders, including nested recovery guards and `worktree-operation.guard` |
 | `hub-leases/<room>.json` | daemon | keep |
 | `daemon.log*` | daemon | owner: rotates at 1 MB, two generations |
 | `daemon-cutover.json, daemon-cutover-resolutions.json` | none | 7 d: obsolete cutover records |
-| `names/<hash>.json` | MCP session | holder dead and 1 h idle |
-| `publishers/<hash>.json` | MCP session | holder dead and 1 h idle |
+| `names/<hash>.json` | MCP session | holder dead and 1 h idle, rechecked under the lease guard |
+| `publishers/<hash>.json` | MCP session | holder dead and 1 h idle, rechecked under the lease guard |
 | `sessions/<session>/` | MCP session (hooks write `hook*.json`, `session.json`, `runtime.json`) | 7 d since the newest file |
 | `sessions/idle-episode.json` | MCP session | 7 d |
 | `hook-receipts/<hash>.json` | hooks | 7 d |
@@ -205,6 +204,8 @@ Every file Room keeps under the clone's common Git directory, in `room/`, has on
 | `registry/migration.*` | lead MCP | keep: completion evidence from a prior 0.17 import; journals are not read or replayed; incomplete imports do not block schema-2 workers |
 | `registry/quarantine/*` | MCP session | 30 d |
 | `storage-gate.json, storage-gate/, preflight/` | none | remove: written by no shipped Room version |
+
+The collector does not individually reclaim lock files. A crash can leave a small JSON token (usually a few hundred bytes) at each abandoned guard path; paths nobody acquires again can remain indefinitely. There is no clone-wide count limit across distinct names, checkouts and worker/run IDs. The lease primitive limits recursive acquisition to 13 guard levels; an orphaned outer guard can remain until recovery reaches it, and a fully stale chain at that limit exceeds automatic recovery. The authority lock has one fixed path per clone. See the [lock recovery audit](superpowers/2026-11-13-guard-gc-audit.md) for families and other collector races.
 
 Credentials live in `~/.config/room/credentials.json`, subject to `XDG_CONFIG_HOME` or `ROOM_CREDENTIALS`. `ROOM_LOG_FILE` changes the log location. The log is mode 0600 and rotates at 1 MB with one older generation. Temporary merge directories use the OS temp directory.
 

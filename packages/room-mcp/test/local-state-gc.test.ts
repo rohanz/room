@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ROOM_STALE_MS } from '@room/shared'
 import { collectLocalState, GC_RULES, GC_TEMP_AGE_MS } from '../src/local-state-gc.js'
-import { withGuard, withGuardAsyncOperation } from '../src/leases.js'
+import { withGuardAsyncOperation } from '../src/leases.js'
 
 const dirs: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -51,25 +51,6 @@ describe('local state collector', () => {
     expect(synchronous).not.toHaveBeenCalled()
     expect(left(c)).toEqual([])
   })
-  it('preserves a live successor of a stale preview publisher guard', () => {
-    const c = commonDir(), prefix = 'a'.repeat(64) + '-'
-    const guard = touch(c, `preview-evidence/${prefix}publication.guard`, now - 2 * HOUR, token(200))
-    const stat = fs.statSync.bind(fs)
-    let replaced = false
-    vi.spyOn(fs, 'statSync').mockImplementation((...args) => {
-      const result = stat(...args)
-      if (String(args[0]) === guard && !replaced) {
-        replaced = true
-        fs.writeFileSync(guard, JSON.stringify(token(100)))
-        fs.utimesSync(guard, now / 1000, now / 1000)
-      }
-      return result
-    })
-    collectLocalState(c, { now: () => now, probe })
-    expect(replaced).toBe(true)
-    expect(fs.existsSync(guard)).toBe(true)
-    expect(JSON.parse(fs.readFileSync(guard, 'utf8')).pid).toBe(100)
-  })
   it('ages out preview evidence and abandoned writes while preserving recent records', () => {
     const c = commonDir()
     touch(c, 'preview-evidence/old.json', now - ROOM_STALE_MS - 1)
@@ -107,10 +88,10 @@ describe('local state collector', () => {
     expect(result.unknown.sort()).toEqual(['mystery-dir', 'mystery.json', 'sessions/stray.json'])
     expect(left(c)).toEqual([
       'browser/new.html', 'compat/new.json', 'daemon.log', 'daemon.log.1',
-      'hook-receipts/r2.json', 'hub-leases/abc.json', 'hub/incarnation.json',
+      'hook-receipts/r2.json', 'hub-leases/abc.json', 'hub/authority.lock', 'hub/incarnation.json',
       'mystery-dir/a.json', 'mystery.json',
       'names/alive.json', 'names/dead-recent.json', 'names/garbage.json', 'names/unknown.json',
-      'profiles/new.cpuprofile', 'publishers/dead-active.json', 'publishers/y.json.guard',
+      'profiles/new.cpuprofile', 'publishers/dead-active.json', 'publishers/x.json.guard', 'publishers/y.json.guard',
       'registry/migration.json', 'registry/quarantine/w.json.bad-2', 'registry/workers/w1.json',
       'relay.json', 'relay/migrated-abc.json', 'relay/room.ydoc', 'relay/room.ydoc.2-cd.tmp',
       'sessions/fresh/cursor.json', 'sessions/mixed/cursor.json', 'sessions/mixed/runtime.json', 'sessions/stray.json',
