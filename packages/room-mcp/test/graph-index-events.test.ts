@@ -64,6 +64,39 @@ describe('GraphIndex overlay events', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
+  it('never publishes ready at the head revision while a withdrawn path is still being re-indexed', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t\n')
+    let hold = false, entered!: () => void, release!: () => void
+    const inside = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0,
+      parser: { stop() {}, async parse(path, texts) {
+        if (hold) { hold = false; entered(); await gate }
+        return parseInWorker(path, texts)
+      } },
+    })
+    const current = () => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')?.sourceRev === room.manifestHead.get('Rohan')?.rev
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(current)
+      const head = room.manifestHead.get('Rohan')!
+      room.manifestHead.set('Rohan', { ...head, rev: head.rev + 1, complete: false })
+      await gi.whenIdle()
+      hold = true
+      room.manifestHead.set('Rohan', { ...head, rev: head.rev + 2, complete: true })
+      await inside
+      // The publication a settled refresh schedules can run while the next refresh is still parsing.
+      await (gi as unknown as { publish(status: 'ready'): Promise<void> }).publish('ready')
+      expect(current()).toBe(false)
+      release()
+      await gi.whenIdle()
+      await eventually(current)
+      expect(room.graphs.get('Rohan')?.paths).toEqual(['utils.py'])
+    } finally { release(); gi.stop(); room.doc.destroy() }
+  })
+
   it('M2 withdraws a signature synchronously when its path becomes excluded', async () => {
     const room = new RoomDoc()
     room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
@@ -133,7 +166,7 @@ describe('GraphIndex overlay events', () => {
         gi.start(); await gi.whenIdle()
         await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')!.paths.includes('api.py'))
         // Leave a publication queued from an earlier refresh, then hold deletion parsing.
-        // That publication may stamp the new provenance before the observation is ready.
+        // No publication may call the new revision ready before the observation is indexed.
         await gi.refresh('consumer.py'); await gi.whenIdle()
         blockDeletion = true
         deleteFixture(room, 'B', 'api.py', { base: commit })
@@ -142,17 +175,13 @@ describe('GraphIndex overlay events', () => {
           room.manifestHead.set('B', { ...head, level, textPrefixes: ['api.py'], rev: head.rev + 1 })
         }
         await inside
-        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.sourceRev === room.manifestHead.get('B')?.rev)
-        expect(room.graphs.get('B')?.observed).toEqual([])
+        await (gi as unknown as { publish(status: 'ready'): Promise<void> }).publish('ready')
+        expect(room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.sourceRev === room.manifestHead.get('B')?.rev).toBe(false)
         release()
         await gi.whenIdle()
-        // whenIdle drains indexing, not publication. Ready + sourceRev can already
-        // describe a partial snapshot from the earlier timer, so await its content.
-        await eventually(() => {
-          const graph = room.graphs.get('B')
-          return graph?.status === 'ready' && graph.sourceRev === room.manifestHead.get('B')?.rev &&
-            !!graph.observed?.some(change => change.path === 'api.py' && change.symbol === 'call' && change.kind === 'delete')
-        })
+        // whenIdle drains indexing, not publication; ready at the head revision is the complete snapshot.
+        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.sourceRev === room.manifestHead.get('B')?.rev)
+        expect(room.graphs.get('B')?.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call', kind: 'delete' }))
         const fresh = new RoomDoc()
         try {
           Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))

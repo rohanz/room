@@ -471,7 +471,8 @@ describe('GraphIndex', () => {
       gi.start()
       await Promise.race([gi.ready, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ready waited for supersessions')), 2000))])
       expect(edits).toBeGreaterThan(1)
-      expect(room.graphs.get('Rohan')?.status).toBe('ready')
+      // Readiness is local; the published snapshot is not ready while the path is still being superseded.
+      expect(room.graphs.get('Rohan')?.status).toBe('indexing')
     } finally { gi.stop(); room.doc.destroy() }
   })
 

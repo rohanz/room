@@ -82,12 +82,11 @@ describe.skipIf(process.env.TEST_SCALE !== '1').each([5_000, 50_000])('a preview
   let previous = performance.now()
   const timer = setInterval(() => { const now = performance.now(); maxDelay = Math.max(maxDelay, now - previous - 10); previous = now }, 10)
   // A slow filesystem made the old synchronous deletion of 5,000 scratch files stall the MCP.
+  const synchronousDeletes: string[] = []
   const originalRemove = fs.rmSync.bind(fs)
   const remove = vi.spyOn(fs, 'rmSync').mockImplementation(((file: fs.PathLike, options?: fs.RmOptions) => {
-    if (String(file).includes('room-merge-')) {
-      const until = performance.now() + 250
-      while (performance.now() < until) { /* emulate slow scratch deletion */ }
-    }
+    // Named directly, with the caller: a stall figure alone cannot tell this from a slow disk.
+    if (String(file).includes('room-merge-')) synchronousDeletes.push(`${String(file)}\n${new Error().stack}`)
     return originalRemove(file, options)
   }) as typeof fs.rmSync)
   try {
@@ -101,6 +100,7 @@ describe.skipIf(process.env.TEST_SCALE !== '1').each([5_000, 50_000])('a preview
     await new Promise<void>(resolve => setTimeout(resolve, 0))
   } finally { clearInterval(timer); remove.mockRestore(); fingerprint.mockRestore(); gate.mockRestore() }
   process.stdout.write(JSON.stringify({ files: count, finalSynchronousGateMs: 0, fingerprints: 0, gateCalls: 0, previewAndCollectMaxDelayMs: maxDelay }) + '\n')
+  expect(synchronousDeletes).toEqual([])
   expect(maxDelay).toBeLessThan(200)
   }, 120_000)
 })

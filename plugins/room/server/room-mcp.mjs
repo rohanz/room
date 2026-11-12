@@ -36476,6 +36476,10 @@ var init_graph_index = __esm({
         if (this.stopped) return;
         if (generation !== this.generation) return;
         if (this.degradedPaths.size) status = "error";
+        if (status === "ready" && this.pending.size) {
+          if (!withdrawal) return;
+          status = "indexing";
+        }
         const authorization = this.publicationKey();
         const sourceHead = this.room.manifestHead.get(this.me);
         const sourceFence = sourceHead?.fence, sourceRev = sourceHead?.rev;
