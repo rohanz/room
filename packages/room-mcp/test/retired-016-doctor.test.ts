@@ -3,8 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
-import { legacyLocalFiles, evaluateDoctor, formatDoctor } from '../src/doctor.js'
-import type { DoctorFacts } from '../src/hosts/diagnostics.js'
 import { collectLocalState } from '../src/local-state-gc.js'
 import { resolveConfig } from '../src/config.js'
 import { rememberTag } from '../src/choice.js'
@@ -22,25 +20,6 @@ function repo() {
   return { dir, linked, common: path.join(dir, '.git'), git }
 }
 const write = (file: string, text = 'never read these private bytes') => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); return file }
-const report = (files: string[]) => formatDoctor(evaluateDoctor({ repo: true, claudeCli: false, codexCli: false, legacyLocalFiles: files } as DoctorFacts))
-
-it.each(['room-hook-seen.json', 'room-state.json', 'room-hook-activity.json', 'room-write-intents-previous.json', 'previous.notice-lock'])('reports the 0.16-only hook file %s without opening it', name => {
-  const { common } = repo(), file = write(path.join(common, name))
-  const read = vi.spyOn(fs, 'readFileSync')
-  const files = legacyLocalFiles(common)
-  expect(read.mock.calls.some(([p]) => String(p) === file)).toBe(false)
-  expect(files).toContain(name)
-  expect(report(files)).toContain(name)
-})
-
-it('reports a hook-only leftover in a linked worktree Git directory', () => {
-  const { common, linked } = repo()
-  const own = execFileSync('git', ['-C', linked, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
-  write(path.join(own, 'room-hook-seen.json'))
-  const read = vi.spyOn(fs, 'readFileSync')
-  expect(legacyLocalFiles(common)).toContain(`worktrees/${path.basename(own)}/room-hook-seen.json`)
-  expect(read).not.toHaveBeenCalled()
-})
 
 it('ignores linked-worktree old choices without rewriting them but retains schema-2 and custom choices', async () => {
   const { dir, linked, common } = repo(), file = path.join(common, 'room-choice.json'), room = await localRoomName(linked)
@@ -62,7 +41,7 @@ it.each(['', '   ', '!!!'])('refuses an explicit empty/invalid local room %j bef
   expect(fs.existsSync(path.join(common, 'room', 'relay.json'))).toBe(false)
 })
 
-it('preserves old journals and sources through GC and diagnoses linked leftovers using only names', () => {
+it('preserves old journals and sources through GC without reading their contents', () => {
   const { common, linked } = repo()
   const own = execFileSync('git', ['-C', linked, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
   const files = [write(path.join(common, 'room/registry/migration.json'), '{"done":false}'),
@@ -72,34 +51,9 @@ it('preserves old journals and sources through GC and diagnoses linked leftovers
   for (const file of files) fs.utimesSync(file, new Date(0), new Date(0))
   const read = vi.spyOn(fs, 'readFileSync')
   collectLocalState(common, { probe: () => undefined })
-  const names = legacyLocalFiles(common)
-  expect(names).toContain(`worktrees/${path.basename(own)}/room-session.json`)
   expect(read.mock.calls.some(([p]) => files.includes(String(p)))).toBe(false)
   read.mockRestore()
   expect(files.map(file => fs.readFileSync(file))).toEqual(before)
-})
-
-it('keeps diagnostic output and enumeration bounded and omits its line when no old state exists', () => {
-  const { common } = repo()
-  expect(legacyLocalFiles(common)).toEqual([])
-  expect(report([])).not.toContain('Room 0.16 local leftovers')
-  for (let n = 0; n < 1000; n++) write(path.join(common, 'room-local', `${n}-${'x'.repeat(120)}.ydoc`))
-  const open = vi.spyOn(fs, 'opendirSync'), read = vi.spyOn(fs, 'readFileSync')
-  const names = legacyLocalFiles(common)
-  expect(names.length).toBeLessThanOrEqual(6)
-  expect(open.mock.calls.length).toBeLessThanOrEqual(3)
-  expect(read).not.toHaveBeenCalled()
-  const line = report(names).split('\n').find(row => row.includes('Room 0.16 local leftovers'))!
-  expect(line.length).toBeLessThan(700)
-})
-
-it('caps a no-match directory scan at 256 names without opening any candidate file', () => {
-  const { common } = repo()
-  for (let n = 0; n < 1000; n++) write(path.join(common, 'room-local', `${n}.tmp`))
-  const entries = vi.spyOn(fs.Dir.prototype, 'readSync'), read = vi.spyOn(fs, 'readFileSync')
-  expect(legacyLocalFiles(common)).toEqual([])
-  expect(entries).toHaveBeenCalledTimes(256)
-  expect(read).not.toHaveBeenCalled()
 })
 
 it('uses a separate port when an unrelated old-format relay occupies the preferred port', async () => {

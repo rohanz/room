@@ -174,13 +174,12 @@ it('delivers automatic-join disclosure on the first tool reply only', async () =
   expect(await tools.call('room_state', {})).not.toContain('note for your human')
 })
 
-it('finds private worktree metadata from a nested directory and migrates legacy metadata', () => {
+it('finds private worktree metadata from a nested directory', () => {
   const nested = join(dir, 'nested')
   mkdirSync(nested)
   const metadata = { room: 'ws://team/repo', name: 'Ada', dir }
-  writeFileSync(join(dir, '.room.json'), JSON.stringify(metadata))
+  writeFileSync(join(dir, '.git', 'room.json'), JSON.stringify(metadata))
   expect(findRoomFile(nested)).toMatchObject(metadata)
-  expect(existsSync(join(dir, '.room.json'))).toBe(false)
   expect(existsSync(join(dir, '.git', 'room.json'))).toBe(true)
   expect(findRoomFile(nested)).toMatchObject(metadata)
 })

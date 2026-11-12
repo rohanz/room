@@ -164,8 +164,6 @@ export class RoomDoc {
     }, origin)
     return paths.size
   }
-  /** Decoding only: 0.16 branch-room snapshots can still contain deletion markers. */
-  get legacyDeleted(): Y.Map<Y.Map<true>> { return this.doc.getMap<Y.Map<true>>('deleted') }
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }

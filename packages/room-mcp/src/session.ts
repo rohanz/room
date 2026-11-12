@@ -26,7 +26,7 @@ import { primePrivateState, primePrivateDirectory, ensureLocalDaemon, relayHealt
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
-import { RoomDoc, STALE_REPLICA_CODE, STALE_REPLICA_REASON, assertValidParticipantName, roomConnection, canonicalRepo, roomKey, type Claim, type Identity, type Kind, type Msg, type Scope } from '@room/shared'
+import { RoomDoc, STALE_REPLICA_CODE, STALE_REPLICA_REASON, assertValidParticipantName, roomConnection, canonicalRepo, roomKey, type Identity, type Kind, type Msg } from '@room/shared'
 import { GraphIndex, type GraphSeed } from './graph-index.js'
 import { checkoutLead, endCheckoutLead } from './checkout-lead.js'
 import { withdrawFormerPublisher } from '@room/roomd/publisher'
@@ -728,7 +728,6 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
       },
       onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
       host: sessionHost(), ...resolveSessionRuntime(binding.dir()) }))
-    if (lease.fence()) claimLegacyIdentity(started.roomDoc, options.dir, name)
   } catch (e) { await publishing?.detach(); await lease.end(); hub.close(); closeProbe(); throw e }
   // The daemon's connection carries the hub from here (one client per session): the lease's clock and epoch move with it.
   hub.attach(hubTransport(started.provider))
@@ -737,12 +736,10 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   post = createPost(started.roomDoc, hub, () => lease.held(), () => lease.paused())
   try { if (lease.fence()) await started.validateMigratedClaims() }
   catch (error) { await publishing?.detach(); await lease.end(); await started.stop(); hub.close(); throw error }
-  const stopLegacyWatch = watchLegacyIdentity(started.roomDoc, readRoomFile(options.dir)?.legacy, name,
-    () => lease.fence(), () => started.validateMigratedClaims())
   {
     const stop = started.stop.bind(started)
     // Ending presence: withdraw and detach the publisher lease, release the hub lease while the connection is up, then stop.
-    started.stop = async (reason?: string) => { stopLegacyWatch(); stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
+    started.stop = async (reason?: string) => { stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
   }
   daemon = started
   const publicationActivity = async () => { await publishing?.activity() }
@@ -814,47 +811,6 @@ function watchSessionRecords({ daemon, binding, sessionId, boundAtJoin, hostCurr
     onHookActivity: listener => { hookActivity = listener },
     onRebind: listener => { rebindListener = listener; watchRecords() },
   }
-}
-
-/** Resolve an ambiguous 0.16 branch-room identity using this worktree's old room.json. */
-function claimLegacyIdentity(room: RoomDoc, dir: string, name: string): boolean {
-  return reclaimLegacyIdentity(room, readRoomFile(dir)?.legacy, name)
-}
-
-function reclaimLegacyIdentity(room: RoomDoc, legacy: { room: string; name: string } | undefined, name: string): boolean {
-  if (!legacy) return false
-  let oldRoom: string
-  try { oldRoom = decodeRoom(new URL(legacy.room).pathname.replace(/^\/+/, '')) } catch { return false }
-  const unresolved = room.doc.getMap<{ placeholder: string; claims: Claim[]; scope?: Scope }>('unresolved')
-  const key = `${oldRoom}\0${legacy.name}`
-  const entry = unresolved.get(key)
-  if (!entry) return false
-  room.doc.transact(() => {
-    for (const claim of entry.claims) if (!room.claims.has(claim.id)) room.claims.set(claim.id, { ...claim, by: name })
-    if (entry.scope && !room.scopes.has(name)) room.scopes.set(name, { ...entry.scope, by: name })
-    for (const [id, message] of room.mail) {
-      if (message.from !== entry.placeholder && message.to !== entry.placeholder) continue
-      room.mail.set(id, { ...message, from: message.from === entry.placeholder ? name : message.from,
-        ...(message.to === entry.placeholder ? { to: name } : {}) } as Msg)
-    }
-    room.doc.getMap<string>('aliases').set(entry.placeholder, name)
-    unresolved.delete(key)
-  })
-  return true
-}
-
-/** Local catch-up can add unresolved facts after a session has joined. Reclaim them
- * only while this session still holds its current name fence. */
-export function watchLegacyIdentity(room: RoomDoc, legacy: { room: string; name: string } | undefined,
-  name: string, fence: () => string | undefined, validate: () => Promise<void>): () => void {
-  const unresolved = room.doc.getMap('unresolved')
-  const check = () => {
-    if (!fence() || !reclaimLegacyIdentity(room, legacy, name)) return
-    void validate().catch(() => {})
-  }
-  unresolved.observe(check)
-  check()
-  return () => unresolved.unobserve(check)
 }
 
 /** Another fresh session in the room shows `name` as the publisher of its checkout (manifest §5.7). */

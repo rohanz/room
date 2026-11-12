@@ -64,7 +64,7 @@ it('keeps a stored requested level on a default reopen and accepts an explicit o
   expect(explicitJoin.requested).toBe('full')
 })
 
-it('migrates a matching legacy sharing level and retained grant into a durable clone-wide floor', async () => {
+it('keeps the clone-wide sharing floor and ignores retired retained grants', async () => {
   const dir = checkout()
   const choice = path.join(dir, '.git', 'room-choice.json')
   const oldGrant = path.join(dir, '.git', 'room-retained-declared.json')
@@ -72,9 +72,9 @@ it('migrates a matching legacy sharing level and retained grant into a durable c
   fs.writeFileSync(oldGrant, JSON.stringify({ room: 'repo/main', participant: 'alice', server: 'ws://team', paths: ['src/kept.py'] }))
   const store = await PolicyStore.open({ dir, room: 'repo/main', participant: 'alice', server: 'ws://team' })
   expect(store.requested).toBe('declared')
-  expect(store.retained).toEqual(['src/kept.py'])
+  expect(store.retained).toEqual([])
   expect(store.disclosed).toEqual({ level: 'declared', version: 1 })
-  expect(fs.existsSync(oldGrant)).toBe(false)
+  expect(fs.existsSync(oldGrant)).toBe(true)
   expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBe('declared')
   expect(JSON.parse(fs.readFileSync(path.join(dir, '.git', 'room', 'sharing', 'legacy-baseline.json'), 'utf8')).level).toBe('declared')
 })

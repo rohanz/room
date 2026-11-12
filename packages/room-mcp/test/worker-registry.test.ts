@@ -34,8 +34,8 @@ it('passes a discovered Codex binding to admission without host ID environment v
     expect(admit).toHaveBeenCalledTimes(2)
   } finally { read.mockRestore(); admit.mockRestore(); await closeRegistryForDir(dir) }
 })
-it('refuses a worker launched by an older Room before it can publish', async () => {
-  await expect(admitWorkerEnvironment('/tmp', { ROOM_WORKER_ID: 'lead/tag#1', ROOM_ROOM: 'local/repo/main' })).rejects.toThrow("this worker runs Room 0.17 but its lead runs an older Room")
+it('refuses an invalid worker ID before it can publish', async () => {
+  await expect(admitWorkerEnvironment('/tmp', { ROOM_WORKER_ID: 'lead/tag#1', ROOM_ROOM: 'local/repo/main' })).rejects.toThrow("invalid Room worker ID")
 })
 it.each(['local/repo/special', 'git/gitlab.com/group/subgroup/repo'])('admits a current worker in the exact explicit room %s', async room => {
   const dir = common()

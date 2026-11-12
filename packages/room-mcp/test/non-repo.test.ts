@@ -180,7 +180,7 @@ describe('remembered state is only used for the same repository', () => {
 
   it("never reads another repository's room metadata from a nested repository", () => {
     const outer = initRepo(tempDir('room-outer-'))
-    fs.writeFileSync(path.join(outer, '.room.json'), JSON.stringify({ room: 'ws://team/outer', name: 'Ada', dir: outer }))
+    fs.writeFileSync(path.join(outer, '.git', 'room.json'), JSON.stringify({ room: 'ws://team/outer', name: 'Ada', dir: outer }))
     fs.mkdirSync(path.join(outer, 'vendor'))
     const inner = initRepo(path.join(outer, 'vendor'))
     fs.mkdirSync(path.join(inner, 'src'))

@@ -176,7 +176,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ps = presences(s)
       const ownGit = participantRecord(s.room, s.me.name)?.git
       out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''})`)
-      if (s.room.metaMap.get('localMigrating')) out.push('migrating from a running Room 0.16 session')
       const unresolved = s.room.doc.getMap<UnresolvedEntry>('unresolved')
       if (unresolved.size) {
         const messagesTo = new Map<string, number>()

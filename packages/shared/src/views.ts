@@ -576,8 +576,8 @@ export interface UnresolvedEntry { placeholder: string; claims?: readonly unknow
 
 /** One plain line per ambiguous migrated name: what is owed to it and who it could be. `messagesTo`
  *  counts mail addressed to each placeholder. At most `maxNames` lines and three candidates per line.
- *  A name with nothing owed has no line (nobody needs to rejoin for it), and Room's own bot `room` never
- *  has one: it cannot be asked to rejoin. */
+ *  A name with nothing retained has no line, and Room's own bot `room` never
+ *  has one. Rejoining no longer reclaims these historical placeholders. */
 export function unresolvedLines(roomName: string, entries: Iterable<[string, UnresolvedEntry]>, messagesTo: ReadonlyMap<string, number>, maxNames = 5): string[] {
   const all = new Map<string, { candidates: string[]; messages: number; claims: number; scopes: number }>()
   for (const [key, entry] of entries) {
@@ -599,7 +599,7 @@ export function unresolvedLines(roomName: string, entries: Iterable<[string, Unr
     const owed = [group.messages ? plural(group.messages, 'message') : '', group.claims ? plural(group.claims, 'claim') : ''].filter(Boolean).join(' and ')
       || 'a declared scope'
     const names = group.candidates.slice(0, 3).join(' or ') + (group.candidates.length > 3 ? `, +${group.candidates.length - 3} more` : '')
-    return `${owed} for an unresolved name (${names}): ask them to rejoin`
+    return `${owed} for an unresolved name (${names}): retained migration history`
   })
   if (groups.size > maxNames) out.push(`+${groups.size - maxNames} more unresolved names`)
   return out

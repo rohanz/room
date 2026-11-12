@@ -9,7 +9,6 @@ import * as Y from 'yjs'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { closeRegistryForDir, WorkerRegistry } from '../src/worker-registry.js'
 import { createSessionBinding } from '../src/binding.js'
-import { runDoctor } from '../src/doctor.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 
 const roots: string[] = [], sessions: Session[] = []
@@ -68,19 +67,8 @@ it.each(['complete-leftovers', 'session-only', 'snapshots-only', 'incomplete-imp
   for (const [file, before] of saved) {
     if (scenario === 'old-room-file' && file.endsWith('/room.json')) {
       const current = JSON.parse(fs.readFileSync(file, 'utf8'))
-      expect(current.legacy).toEqual(alias)
+      expect(current.legacy).toBeUndefined()
       expect(current.room).toBe(session.roomUrl)
     } else expect(fs.readFileSync(file)).toEqual(before)
-  }
-  if (scenario === 'complete-leftovers') {
-    const report = await runDoctor(dir, { inSession: true, selected: { server: 'local' }, sessionBound: true })
-    const line = report.split('\n').find(row => row.includes('Room 0.16 local leftovers'))!
-    expect(line).toContain('room-session.json')
-    expect(line).toContain('room-local.json')
-    expect(line.indexOf('room-local.json')).toBeLessThan(line.indexOf('room-session.json'))
-    expect(line).toContain('Room 0.17 does not use them')
-    expect(line).toContain('v0.17.47 can import them')
-    expect(line).toContain('safe to delete')
-    expect(line.length).toBeLessThan(700)
   }
 }, 20_000)

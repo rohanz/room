@@ -72,7 +72,7 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
   const id = env.ROOM_WORKER_ID
   if (!id) return
   const room = env.ROOM_ROOM ?? ''
-  if (!id.startsWith('w_')) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: use v0.17.47, the last release that can migrate, then update the Room plugin for the lead\'s host')
+  if (!id.startsWith('w_')) throw new Error('invalid Room worker ID')
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, registryEnvironmentSession(env))

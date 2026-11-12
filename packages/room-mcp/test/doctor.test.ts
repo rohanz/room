@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { evaluateDoctor, formatDoctor, probeHealth, probeCredential, runDoctor, hookCompatibilityWarning, legacyLocalFiles } from '../src/doctor.js'
+import { evaluateDoctor, formatDoctor, probeHealth, probeCredential, runDoctor, hookCompatibilityWarning } from '../src/doctor.js'
 import { type DoctorFacts } from '../src/hosts/diagnostics.js'
 import { hookVersion } from '../src/hosts/install-io.js'
 import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted } from '../src/hosts/codex-install.js'
@@ -113,15 +113,6 @@ describe('doctor report', () => {
     const rows = evaluateDoctor(base())
     expect(rows.every(r => r.level === 'PASS')).toBe(true)
     expect(formatDoctor(rows).split('\n').length).toBeLessThan(25)
-  })
-  it('lists ignored old local names in one bounded informational line', () => {
-    const rows = evaluateDoctor({ ...base(), legacyLocalFiles: ['room-session.json', 'room-local.json', ...Array(100).fill('room-local/old.ydoc')] })
-    const row = rows.find(r => r.name === 'Room 0.16 local leftovers')!
-    expect(row.level).toBe('INFO')
-    expect(formatDoctor([row])).toMatch(/Room 0.17 does not use them; v0.17.47 can import them; safe to delete/)
-    expect(formatDoctor([row]).split('\n')).toHaveLength(1)
-    expect(formatDoctor([row]).length).toBeLessThan(700)
-    expect(evaluateDoctor(base()).some(r => r.name === row.name)).toBe(false)
   })
   it('warns with the canonical relay collision sentence and fix', () => {
     const warning = "an older Room session (pid 321) still holds this room's relay on 127.0.0.1:46115; quit it or reconnect Room there"
@@ -429,16 +420,4 @@ describe('host installation evidence', () => {
       path.join(hooksRoot, 'hooks', 'common.mjs'), path.join(home, 'config.toml'),
     ])
   })
-})
-
-it('discovers old local filenames without opening any old contents and caps directory enumeration', () => {
-  const common = mkdtempSync(path.join(os.tmpdir(), 'room-old-names-'))
-  for (const name of ['room-session.json', 'room-local.json', 'room-local/local%2Frepo%2Fmain.ydoc', 'room-carry/old.json', 'worktrees/linked/room-session.json']) {
-    mkdirSync(path.dirname(path.join(common, name)), { recursive: true }); writeFileSync(path.join(common, name), 'never open')
-  }
-  const read = vi.spyOn(requireFs, 'readFileSync')
-  try {
-    expect(legacyLocalFiles(common).sort()).toEqual(['room-session.json', 'room-local.json', 'room-local/local%2Frepo%2Fmain.ydoc', 'room-carry/old.json', 'worktrees/linked/room-session.json'].sort())
-    expect(read).not.toHaveBeenCalled()
-  } finally { read.mockRestore(); requireFs.rmSync(common, { recursive: true, force: true }) }
 })

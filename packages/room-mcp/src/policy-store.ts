@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { containsPath, normalizeCoordinationPath, repoRoomOf } from '@room/shared'
-import { commonGitDirFromDotGit, gitCommonDir, worktreeGitDirFromDotGit, type ShareLevel } from '@room/roomd'
+import { containsPath, normalizeCoordinationPath } from '@room/shared'
+import { commonGitDirFromDotGit, gitCommonDir, type ShareLevel } from '@room/roomd'
 import { policyFromLevel, type SharingPolicy } from '@room/roomd/policy'
 import { withGuard, writeAtomic } from './leases.js'
 import { choiceFile } from './choice.js'
@@ -91,19 +91,6 @@ export class PolicyStore {
       record = { ...record, worktree, declared: emptyGrant(), updatedAt: Date.now() }
       writeAtomic(file, record)
     }
-    // Idempotent local migration: a crash after the new record write can replay the old path set.
-    const privateGit = worktreeGitDirFromDotGit(dir)
-    for (const name of fs.readdirSync(privateGit).filter(n => n === 'room-retained-declared.json' || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
-      const oldFile = path.join(privateGit, name)
-      let legacy: { room?: string; participant?: string; server?: string; paths?: unknown }
-      try { legacy = JSON.parse(fs.readFileSync(oldFile, 'utf8')) as typeof legacy } catch { continue }
-      const sameRoom = legacy.room === room || repoRoomOf(legacy.room ?? '', candidate => candidate === room) === room
-      if (!sameRoom || legacy.participant !== participant || (server && legacy.server !== server) || !Array.isArray(legacy.paths)) continue
-      const retained = clean([...record.declared.retained, ...legacy.paths.filter((p): p is string => typeof p === 'string')])
-      record = { ...record, declared: { ...record.declared, retained }, updatedAt: Date.now() }
-      writeAtomic(file, record)
-      fs.rmSync(oldFile, { force: true })
-    }
     const store = new PolicyStore(file, record)
     store.ceiling = ceiling
     store.publisher = publisher
@@ -187,18 +174,10 @@ export class PolicyStore {
     return this.update(old => ({ ...old, disclosed: { level, version }, updatedAt: Date.now() }), false)
   }
 
-  static retire(dir: string, room: string, participant: string, server?: string): void {
+  static retire(dir: string, room: string, participant: string): void {
     const hash = createHash('sha256').update(room).update('\0').update(participant).digest('hex')
     const file = path.join(commonGitDirFromDotGit(dir), 'room', 'sharing', `${hash}.json`)
     fs.rmSync(file, { force: true })
-    const privateGit = worktreeGitDirFromDotGit(dir)
-    for (const name of fs.readdirSync(privateGit).filter(n => n === 'room-retained-declared.json' || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
-      const legacyFile = path.join(privateGit, name)
-      let legacy: { room?: string; participant?: string; server?: string }
-      try { legacy = JSON.parse(fs.readFileSync(legacyFile, 'utf8')) as typeof legacy } catch { continue }
-      const sameRoom = legacy.room === room || repoRoomOf(legacy.room ?? '', candidate => candidate === room) === room
-      if (sameRoom && legacy.participant === participant && (!server || legacy.server === server)) fs.rmSync(legacyFile, { force: true })
-    }
   }
 }
 

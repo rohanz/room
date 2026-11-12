@@ -223,7 +223,7 @@ async function main() {
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
       }
 
-      // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
+      // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior private room.json, or
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.
       const chosen = startup.server
       log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
@@ -245,7 +245,7 @@ async function main() {
             return s
           }
           // The clone's origin decides the repository room. ROOM_URL (runner) or a
-          // prior .room.json only fill in when the clone has no origin.
+          // prior private room.json only fill in when the clone has no origin.
           const options = await startupJoinOptions(root, chosen, startup.room)
           if (options) return joinSession({ ...options, localReplica: startupReplica, log })
           log(`ready; ${dir} has no git origin — call room_join with a room name`)

@@ -9449,10 +9449,6 @@ var init_doc = __esm({
         }, origin);
         return paths.size;
       }
-      /** Decoding only: 0.16 branch-room snapshots can still contain deletion markers. */
-      get legacyDeleted() {
-        return this.doc.getMap("deleted");
-      }
       get scopes() {
         return this.doc.getMap("scopes");
       }
@@ -15095,7 +15091,7 @@ var RoomHub = class {
   }
   hello(conn, req, fail) {
     if (req.proto !== HUB_PROTO) {
-      return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later (Room 0.16 is refused; use v0.17.47, the last release that can migrate)`);
+      return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room client to speak protocol ${HUB_PROTO}`);
     }
     if (typeof req.sessionId !== "string" || !req.sessionId || req.sessionId.length > MAX_HOLDER_FIELD_LENGTH || typeof req.client !== "string" || req.client.length > 128 || req.schema !== 2) return fail("invalid", "hello needs a supported schema, client and session");
     this.greeted.add(conn);

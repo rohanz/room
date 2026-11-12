@@ -31,7 +31,7 @@ it('lists an ambiguous migrated name once, with its owed messages and candidates
     room.mail.set('q2', question('q2', '?feature'))
     room.mail.set('q3', question('q3', 'dee'))
   })
-  expect(out).toContain('2 messages and 1 claim for an unresolved name (ben on main or ben on feature/x): ask them to rejoin')
+  expect(out).toContain('2 messages and 1 claim for an unresolved name (ben on main or ben on feature/x): retained migration history')
   expect(out).not.toContain('unresolved from')
 })
 
@@ -58,7 +58,7 @@ it('bounds the candidate names and the number of unresolved lines', async () => 
       room.mail.set(`p${i}`, question(`p${i}`, `?p${i}`))
     }
   })
-  expect(out).toContain('1 message for an unresolved name (ben on b0 or ben on b1 or ben on b2, +2 more): ask them to rejoin')
+  expect(out).toContain('1 message for an unresolved name (ben on b0 or ben on b1 or ben on b2, +2 more): retained migration history')
   expect(out.split('\n').filter(line => line.includes('for an unresolved name'))).toHaveLength(5)
   expect(out).toContain('+4 more unresolved names')
 })

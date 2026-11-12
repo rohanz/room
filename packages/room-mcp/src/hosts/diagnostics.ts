@@ -24,7 +24,7 @@ export interface DoctorFacts {
   deliveryHost?: string
   server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string; serverCompat?: unknown
   credential?: boolean; credentialError?: string; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
-  hookCompatibility?: string; relayFile?: string; relayHealth?: boolean; legacyLocalFiles?: string[]; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
+  hookCompatibility?: string; relayFile?: string; relayHealth?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
 }
 
 function triple(raw?: string): number[] | undefined {

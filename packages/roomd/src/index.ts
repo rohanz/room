@@ -4,7 +4,7 @@
  * Other participants' overlays are coordination context only. They never write
  * into this clone.
  */
-import { readRoomFile, roomFilePath } from './room-file.js'
+import { roomFilePath } from './room-file.js'
 export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH, type RepoPathSyntax, type RepoLeafPolicy, type RepoContainmentOptions } from './repo-path.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
 export { readBoundedFileSync } from './bounded-read.js'
@@ -826,16 +826,13 @@ class Daemon implements Roomd {
 
   private writeRoomFile(): void {
     try {
-      const previous = readRoomFile(this.dir) // Keep the old identity for ambiguous-claim recovery.
-      const legacy = previous?.legacy ?? (previous?.room && previous.room !== this.roomUrl && previous.name
-        ? { room: previous.room, name: previous.name } : undefined)
       const file = roomFilePath(this.dir), temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
       try {
-        fs.writeFileSync(temp, JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir, ...(legacy ? { legacy } : {}) }, null, 2) + '\n', { mode: 0o600 })
+        fs.writeFileSync(temp, JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir }, null, 2) + '\n', { mode: 0o600 })
         fs.renameSync(temp, file)
       } finally { fs.rmSync(temp, { force: true }) }
     } catch (error) {
-      this.log(`warn: could not write ${ROOM_FILE}: ${errMsg(error)}`)
+      this.log(`warn: could not write private room.json: ${errMsg(error)}`)
     }
   }
 

@@ -28,7 +28,7 @@ export async function retireWorker(rooms: Rooms, s: Session, id: string, archive
   const registry = await registryForDir(s.dir)
   const record = (await registry.read(id))
   if (!record) return
-  if (!record.outside && fs.existsSync(path.join(record.dir, '.git'))) PolicyStore.retire(record.dir, record.room, record.name, new URL(s.roomUrl).origin)
+  if (!record.outside && fs.existsSync(path.join(record.dir, '.git'))) PolicyStore.retire(record.dir, record.room, record.name)
   await registry.beginRetirement(id, archive, extra)
   await rooms.project()
 }
@@ -102,7 +102,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
   const terminated: string[] = []
   const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
   // retireWorker ends sharing only while the checkout exists; end it before the checkout goes.
-  if (record && fs.existsSync(path.join(w.dir, '.git'))) PolicyStore.retire(w.dir, record.room, record.name, new URL(s.roomUrl).origin)
+  if (record && fs.existsSync(path.join(w.dir, '.git'))) PolicyStore.retire(w.dir, record.room, record.name)
   // The exit code may be unknown, not failed: the process is gone and nothing in the worktree differs from what was collected.
   try {
     if (!await cleanupWorker(s.dir, { ...w, status: 'done', exitCode: 0 }, { collected: true, terminatedProcesses: terminated, processOptions: { probe: processes.probe, list: processes.list }, leadName, workers: ownership, preservation })) {

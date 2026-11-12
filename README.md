@@ -44,7 +44,7 @@ Team rooms are self-hosted; Room has no default public server. Say **“join the
 
 [Documentation index](docs/README.md) · [Coordinate a task](#coordinate-a-task) · [Reference and troubleshooting](docs/reference.md) · [Upgrading](docs/upgrading.md)
 
-Old 0.16 local files do not block 0.17 sessions: Room leaves them untouched. Ask **“is Room set up right?”** to list leftover filenames; v0.17.47 can import them, or they are safe to delete if no import is needed. Old branch-room choices fall back to the repository room; schema-2 and custom choices still work. Servers continue to refuse unmigrated 0.16 data.
+Old 0.16 local files do not block 0.17 sessions: Room leaves them untouched. v0.17.47 is the last release that can import them; current diagnostics do not list those leftovers. Old branch-room choices fall back to the repository room; schema-2 and custom choices still work. Servers continue to refuse unmigrated 0.16 data.
 
 ## Defaults, and how to change them
 

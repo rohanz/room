@@ -21,11 +21,11 @@ const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', se
 const local = { local: true } as const
 
 describe('hub in process', () => {
-  it('refuses a 0.16 protocol without greeting it and names the last migrating release', async () => {
+  it('refuses an unsupported protocol without greeting it and names the required protocol', async () => {
     const h = host({ fresh: true }), hub = await startHub(h), conn = {}
     try {
       const before = Y.encodeStateAsUpdate(h.doc.doc)
-      expect(hub.handle(conn, { ...hello, proto: 0 }, local)).toMatchObject({ ok: false, reason: 'version', text: expect.stringContaining('v0.17.47') })
+      expect(hub.handle(conn, { ...hello, proto: 0 }, local)).toMatchObject({ ok: false, reason: 'version', text: expect.stringContaining('update Room client to speak protocol 1') })
       expect(hub.handle(conn, { v: 1, id: 'acquire', op: 'acquire', name: 'old', holder: holder('s') }, local)).toMatchObject({ ok: false, reason: 'hello-first' })
       expect(Y.encodeStateAsUpdate(h.doc.doc)).toEqual(before)
     } finally { hub.stop() }

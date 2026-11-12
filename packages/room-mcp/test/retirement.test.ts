@@ -13,7 +13,6 @@ import { join } from 'node:path'
 import { RoomDoc, manifestPaths } from '@room/shared'
 import { WorkerRegistry, closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
-import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
 import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'
@@ -704,23 +703,6 @@ it('clears a dismissed dirty worker sharing record while keeping another room', 
   expect(existsSync(w.dir)).toBe(true)
   expect(existsSync(sharing)).toBe(false)
   expect(existsSync(other)).toBe(true)
-  r.close()
-})
-
-it('removes a matching legacy grant during retirement so it cannot migrate on a later join', async () => {
-  const { dir } = repo(), r = registry(dir)
-  const prepared = await prepareWorktree(dir, 'w', 'lead')
-  const w = { ...worker(prepared.dir), base: prepared.base, status: 'dismissed' as const }
-  writeFileSync(join(w.dir, 'a'), 'dirty work')
-  const legacy = join(worktreeGitDirFromDotGit(w.dir), 'room-retained-declared.json')
-  writeFileSync(legacy, JSON.stringify({ server: 'ws://team', room: r.s.roomName, participant: w.name, paths: ['a'] }))
-  await registerWorkers(r.s, [w])
-  await r.rooms.autoRetire()
-  expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('dismissed')
-  expect(existsSync(w.dir)).toBe(true)
-  expect(existsSync(legacy)).toBe(false)
-  const reopened = await PolicyStore.open({ dir: w.dir, room: r.s.roomName, participant: w.name, server: 'ws://team', requested: 'declared' })
-  expect(reopened.retained).toEqual([])
   r.close()
 })
 
