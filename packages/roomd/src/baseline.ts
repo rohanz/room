@@ -9,12 +9,14 @@ import os from 'node:os'
 import nodePath from 'node:path'
 import { CARRIED_PATH, containedRepoPath, validRepoPath } from './repo-path.js'
 import { missingGitCwd, observeGit, timeoutMs, wholeTreeTimeoutMs, UNKNOWN_WHOLE_TREE_PATHS } from './git.js'
+import { assertGitWorktreeOperation, isGitWorktreeCommand } from './git-worktree-lock.js'
 
 /**
  * Bounded binary Git reads used by the few synchronous carry/recovery operations. `stdinFile` is opened
  * as the child's stdin: a synchronous child fed large `input` through a pipe can wait for EOF forever.
  */
 export function boundedGitSync(dir: string, args: string[], options: { input?: Buffer; stdinFile?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number; wholeTreePaths?: number } = {}): Buffer {
+  if (isGitWorktreeCommand(args)) assertGitWorktreeOperation(dir)
   const { wholeTreePaths, stdinFile, ...execOptions } = options
   const timeout = wholeTreePaths === undefined ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths)
   const stdin = stdinFile === undefined ? 'pipe' : fs.openSync(stdinFile, 'r')

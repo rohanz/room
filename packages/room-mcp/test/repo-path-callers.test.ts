@@ -1,3 +1,4 @@
+import { seedRegistryWorker } from './registry-fixture.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
@@ -132,19 +133,27 @@ it('carry distinguishes contained, escaping, and absolute symlink leaves', async
   ]))
 })
 
-it('rollback recovery skips invalid recorded paths before writing them', async () => {
-  const prepared = await prepareWorktree(lead, 'recover', 'lead')
+it('cleanup failure never reconstructs invalid recorded paths at a public checkout', async () => {
+  const { registry, record } = await seedRegistryWorker(lead, 'recover')
+  const prepared = await prepareWorktree(lead, 'recover', 'lead', { identity: { id: record.id, nonce: record.runs[0].nonce } })
+  await registry.command(record.id, { type: 'prepare-step', step: 'prepared', facts: { witness: prepared.witness, root: prepared.witness?.root, identityRequired: true, branchOid: prepared.branchOid } })
   const invalid = ['../escape', 'a//b', 'a/./b', 'a/../b', '/tmp/nope']
-  const w = { tag: 'recover', name: 'lead+recover', lead: 'lead', dir: prepared.dir, branch: prepared.branch,
+  const w = { id: record.id, tag: 'recover', name: 'lead+recover', lead: 'lead', dir: prepared.dir, branch: prepared.branch,
     status: 'done', exitCode: 0, carriedUntracked: invalid.map(rel => ({ path: rel, sha: '0'.repeat(40) })) } as LocalWorker
-  // Fail a late cleanup step (the carry record it used to delete is registry state since registry step 3).
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
-  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/recover "*) echo "late failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
-  const originalPath = process.env.PATH
-  process.env.PATH = bin + path.delimiter + originalPath
+  const baseline = await import('@room/roomd/baseline'), run = baseline.boundedGitSync
+  let failed = false
+  const spy = vi.spyOn(baseline, 'boundedGitSync').mockImplementation((...args) => {
+    if (args[1].includes('update-ref') && args[1].includes('--stdin') && args[2]?.input?.toString().includes('delete refs/heads/room/recover ')) {
+      failed = true
+      throw new Error('late branch transaction failure')
+    }
+    return run(...args)
+  })
   startsPreviewMaintenance = true
-  try { await expect(cleanupWorker(lead, w, { collected: true, discarded: true, processOptions: { list: () => [] } })).rejects.toThrow(/cleanup failed:.*late failure.*reconstructed base/) }
-  finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
+  try { expect(await cleanupWorker(lead, w, { collected: true, discarded: true, processOptions: { list: () => [] } })).toBe(true) }
+  finally { spy.mockRestore() }
+  expect(failed).toBe(true)
+  expect(fs.existsSync(prepared.dir)).toBe(false)
   expect(fs.existsSync(path.join(lead, 'escape'))).toBe(false)
 })
 

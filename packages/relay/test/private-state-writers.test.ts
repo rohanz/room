@@ -12,8 +12,8 @@ const nonState: Record<string, Record<string, number>> = {
   'room-mcp/src/port-reservations.ts': { 'directory, { recursive: true, mode: 0o700 }': 1 }, // per-user config
   'room-mcp/src/worker-process.ts': { 'path.dirname(spec.logFile), { recursive: true }': 1 }, // checkout worker log
   'room-mcp/src/worker-artifacts.ts': { dir: 1 }, // worker shell-environment artifacts in the worktree's .room folder (moved from worker-shell-env.ts)
-  'room-mcp/src/worker-git.ts': { 'path.dirname(link.target), { recursive: true }': 1, 'path.dirname(dir), { recursive: true }': 1, 'path.dirname(target), { recursive: true }': 1, 'path.dirname(file), { recursive: true }': 1, dir: 1, target: 1, 'path.dirname(destination), { recursive: true }': 1 }, // checkout/worktree files
-  'room-mcp/src/worker-deps.ts': { dst: 1, to: 2 }, // node_modules links inside a worktree
+  'room-mcp/src/worker-git.ts': { 'path.dirname(link.target), { recursive: true }': 1, 'path.dirname(dir), { recursive: true }': 1, 'path.dirname(target), { recursive: true }': 1, dir: 1, target: 1, 'path.dirname(destination), { recursive: true }': 1 }, // checkout/worktree files
+  'room-mcp/src/worker-deps.ts': { at: 1 }, // node_modules containers inside a worktree, through one retry-aware helper
   'room-mcp/src/timing.ts': { 'markerDir, { recursive: true, mode: 0o700 }': 1 }, // tmpdir preview marker
   'room-mcp/src/tools/collect.ts': { 'path.dirname(dst), { recursive: true }': 1 }, // user checkout output
   'room-mcp/src/tools/files.ts': { at: 1, 'root, { recursive: true, mode: 0o700 }': 1 }, // checkout output and room-preview cache

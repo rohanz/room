@@ -15468,13 +15468,13 @@ function verifyPosixPath(file, stat = fs.lstatSync(file)) {
     throw new Error(`Room state must be owned by the current user and private: ${file}`);
   }
 }
-function initializePrivateDirectory(dir, repair) {
+function initializePrivateDirectory(dir, repair, exclusive = false) {
   let created = false;
   try {
     fs.mkdirSync(dir, { mode: 448 });
     created = true;
   } catch (error) {
-    if (error.code !== "EEXIST") throw error;
+    if (exclusive || error.code !== "EEXIST") throw error;
   }
   const stat = fs.lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`);
@@ -15678,8 +15678,13 @@ function underVerifiedRoomRoot(file) {
   const known = verifiedWindows.get(windowsKey(dir));
   return !!known?.subtree && known.identity === windowsIdentity(dir);
 }
-function privateStateDirectory(dir) {
+function privateStateDirectory(dir, options = {}) {
   dir = path2.resolve(dir);
+  if (options.exclusive) {
+    initializePrivateDirectory(dir, false, true);
+    if (process.platform === "win32") windowsAcl(dir, true);
+    return;
+  }
   const { directories, root, inState } = privateDirectoryPath(dir);
   if (!fs2.statSync(path2.dirname(inState ? root : dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
   for (const directory of inState ? directories : [dir]) {

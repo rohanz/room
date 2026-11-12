@@ -1,3 +1,5 @@
+import { seedRegistryWorker } from './registry-fixture.js'
+import { retainedWorkerLines } from '../src/worker-retained.js'
 import { preparedTest } from './fixtures/prepared-test.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
@@ -254,34 +256,39 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   it('removes the private carry refs after normal worker cleanup without a carry owner record', async () => {
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
-    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', { linkExclusions: [] })
+    const { registry, record: owner } = await seedRegistryWorker(repo, 'retired')
+    const prepared = await prepareWorktree(repo, 'retired', 'rohanz', { linkExclusions: [], identity: { id: owner.id, nonce: owner.runs[0].nonce } })
+    await registry.command(owner.id, { type: 'prepare-step', step: 'prepared', facts: { witness: prepared.witness, root: prepared.witness?.root, identityRequired: true, branchOid: prepared.branchOid } })
     expect(git(repo, 'rev-parse', 'refs/room/carry/retired')).toBe(prepared.base)
     expect(git(repo, 'ls-tree', '-r', '--name-only', 'refs/room/carry-untracked/retired')).toBe('untracked.txt')
     const record = path.join(repo, '.git', 'room-carry', 'retired.json')
     expect(fs.existsSync(record)).toBe(false)
-    const w = { tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
+    const w = { id: owner.id, tag: 'retired', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0 } as Parameters<typeof cleanupWorker>[1]
     startsPreviewMaintenance = true
     expect(await cleanupWorker(repo, w, { collected: true, processOptions: { list: () => [] } })).toBe(true)
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry/retired')).toThrow()
     expect(() => git(repo, 'rev-parse', '--verify', 'refs/room/carry-untracked/retired')).toThrow()
     expect(fs.existsSync(record)).toBe(false)
   })
-  it('restores the worker worktree and private refs when cleanup fails late', async () => {
+  it('keeps a failed-CAS branch without rebuilding the checkout or restoring deleted refs', async () => {
     put(repo, 'shared.txt', lines([2, 'W']))
     put(repo, 'untracked.txt', 'private WIP\n')
-    const prepared = await prepareWorktree(repo, 'cleanup-fails', 'rohanz')
+    const { registry, record: owner } = await seedRegistryWorker(repo, 'cleanup-fails')
+    const prepared = await prepareWorktree(repo, 'cleanup-fails', 'rohanz', { identity: { id: owner.id, nonce: owner.runs[0].nonce } })
+    await registry.command(owner.id, { type: 'prepare-step', step: 'prepared', facts: { witness: prepared.witness, root: prepared.witness?.root, identityRequired: true, branchOid: prepared.branchOid } })
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
-    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/cleanup-fails "*) echo "forced late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" update-ref --no-deref --stdin "*) echo "forced late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     const originalPath = process.env.PATH
     process.env.PATH = bin + path.delimiter + originalPath
-    const w = { tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
+    const w = { id: owner.id, tag: 'cleanup-fails', branch: prepared.branch, dir: prepared.dir, status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof cleanupWorker>[1]
     startsPreviewMaintenance = true
-    try { await expect(cleanupWorker(repo, w, { collected: true, processOptions: { list: () => [] } })).rejects.toThrow(/cleanup/) }
+    try { expect(await cleanupWorker(repo, w, { collected: true, processOptions: { list: () => [] } })).toBe(true) }
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
-    expect(fs.existsSync(prepared.dir)).toBe(true)
+    expect(fs.existsSync(prepared.dir)).toBe(false)
     expect(git(repo, 'rev-parse', `refs/heads/${prepared.branch}`)).toBeTruthy()
-    expect(git(repo, 'rev-parse', 'refs/room/carry-untracked/cleanup-fails')).toBeTruthy()
-    expect(read(prepared.dir, 'untracked.txt')).toBe('private WIP\n')
+    expect(() => git(repo, 'rev-parse', 'refs/room/carry-untracked/cleanup-fails')).toThrow()
+    expect(retainedWorkerLines(path.join(repo, '.git')).join('\n')).toContain('refs/heads/room/cleanup-fails')
+    expect(read(repo, 'untracked.txt')).toBe('private WIP\n')
   })
   it('does not put unchanged copied untracked files in a discard recovery patch', async () => {
     put(repo, 'notes.txt', 'lead WIP\n')
@@ -416,8 +423,11 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const after = leadState()
     expect(after.head).toBe(before.head); expect(after.index).toBe(before.index); expect(after.cached).toBe(before.cached)
     expect(reply).toContain('cleaned up two')
-    // The branch tip is the lead's carry commit, not the worker's own work: no recovery ref is left behind.
-    expect(git(repo, 'for-each-ref', 'refs/room/recovery')).toBe('')
+    // The operation pins even a lead carry tip, while keeping the normal reply quiet.
+    const recovery = git(repo, 'for-each-ref', '--format=%(refname)', 'refs/room/recovery/two/').split('\n')
+    expect(recovery).toHaveLength(1)
+    expect(git(repo, 'rev-parse', recovery[0])).toBe(recovery[0].split('/').at(-1))
+    expect(reply).not.toContain('branch recovery ref:')
   })
 
   it('(3) two workers spawned at different moments of the lead\'s WIP are collected together', async () => {

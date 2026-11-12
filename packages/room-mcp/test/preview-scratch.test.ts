@@ -136,7 +136,8 @@ describe('saveWorkerScratch', () => {
 
   it('replaces a tag\'s folder on a re-collect and names files it did not save', () => {
     const { root, lead, worker } = roots()
-    put(lead, '.room/scratch/w1/old.log', 'stale\n')
+    put(worker, 'old.log', 'stale\n')
+    expect(saveWorkerScratch(lead, [{ tag: 'w1', root: worker, paths: ['old.log'] }]).saved.get('w1')).toEqual(['old.log'])
     put(worker, 'build.log', 'fresh\n')
     fs.writeFileSync(path.join(worker, 'huge.log'), Buffer.alloc(5 * 1024 * 1024 + 1))
     fs.writeFileSync(path.join(root, 'secret'), 'outside\n')

@@ -662,7 +662,7 @@ it('keeps uncommitted work visible until the lead commits and merges it; merged 
 })
 
 it('retires clean zero-commit and legacy workers as clean, and archives dismissed dirty file counts', async () => {
-  const { dir } = repo(), r = registry(dir)
+  const { dir, git } = repo(), r = registry(dir)
   const prepared = await prepareWorktree(dir, 'w')
   const w = { ...worker(prepared.dir), base: prepared.base }
   await registerWorkers(r.s, [w])
@@ -678,6 +678,8 @@ it('retires clean zero-commit and legacy workers as clean, and archives dismisse
   await registerWorkers(r.s, [legacy])
   await r.rooms.autoRetire()
   expect(r.room.retiredWorkers().at(-1)?.outcome).toBe('clean')
+  // Committed output is pinned before CAS cleanup; tag reuse needs no manual step.
+  expect(git('branch', '--list', w.branch)).toBe('')
   await prepareWorktree(dir, 'w')
   writeFileSync(join(w.dir, 'a'), 'three')
   writeFileSync(join(w.dir, 'new'), 'untracked')

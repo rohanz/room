@@ -683,9 +683,7 @@ describe('resumed worker boundaries', () => {
     const t = setup(1, async (repo, tag) => {
       entered()
       await prepared
-      const workerDir = join(repo, '.room', 'workers', tag)
-      mkdirSync(workerDir, { recursive: true })
-      return { dir: workerDir, branch: `room/${tag}`, created: true }
+      return prepareWorktree(repo, tag)
     })
     await t.seed('waiting')
     const spawn = t.tools.call('room_spawn', { tag: 'starting', task: 'test', host: 'claude' })

@@ -1,3 +1,4 @@
+import { retainedWorkerLines } from '../worker-retained.js'
 import { daemonCutoverRows, inspectDaemonCutover } from '../daemon-cutover.js'
 import path from 'node:path'
 import { createSessionBinding } from '../binding.js'
@@ -140,7 +141,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return undefined
         }) : undefined
         const cutover = common ? [identityIssue, ...daemonCutoverRows(await inspectDaemonCutover(common, current))].filter(Boolean).join('\n') : ''
-        return [report, cutover, active?.local ? localDaemonLine(active) : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
+        const retainedCommon = await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => undefined)
+        return [report, cutover, ...(retainedCommon ? retainedWorkerLines(retainedCommon) : []), active?.local ? localDaemonLine(active) : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
       }
       const s = S()
       await loadAreas(s)
@@ -337,7 +339,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
         out.push(...formatWorkerLines(await Promise.all((await Promise.all((await myWorkers(ws)).map(async worker => { const view = (await localWorkerView(ws, worker.id)); return view ? [{ worker, view }] : [] }))).flat().map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker: view, dir: worker.dir, processGone, changedCount: await workerChangedCount(ws, worker, processGone), activity: liveWorkerActivity(ws.dir, worker, processGone, now()), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(ws, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
-      return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
+      return [(a.all === true ? out.join('\n') : compactState(out, summarizedClaims)), ...await gitCommonDir(s.dir).then(retainedWorkerLines, () => [])].join('\n')
     },
 
   }

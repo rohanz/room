@@ -1,3 +1,4 @@
+import type { PreparationWitness } from './worker-preparation.js'
 /** Storage-neutral lifecycle facts and serializable, named record commands. */
 import type { PrepJournal, PrepStep, Run, RunReport, ExitObservation, WorkerRecord } from './worker-status.js'
 import type { Liveness, ProcessIdentity } from './leases.js'
@@ -53,7 +54,7 @@ export interface WorkerFreshness {
 export type WorkerCommand =
   | { type: 'prepare-start' }
   | { type: 'prepare-step'; step: PrepStep; facts: Partial<PrepJournal> }
-  | { type: 'prepare-finish'; facts: Partial<Pick<WorkerRecord, 'base' | 'carriedBase' | 'carriedUntracked' | 'skippedCarry' | 'keptPublication'>>; created: boolean; branchCreated?: boolean }
+  | { type: 'prepare-finish'; facts: Partial<Pick<WorkerRecord, 'base' | 'carriedBase' | 'carriedUntracked' | 'skippedCarry' | 'keptPublication'>>; created: boolean; branchCreated?: boolean; witness?: PreparationWitness; branchOid?: string }
   | { type: 'launch'; run: number; nonce?: string; launch: Run['launch']; phase?: WorkerRecord['phase']; port?: number; nice?: number; link?: string[]; hostSessionId?: string }
   | { type: 'activate' }
   | { type: 'run-prompts'; run: number; promptMsgIds: string[] }
@@ -72,6 +73,7 @@ export function applyWorkerCommand(old: WorkerRecord, command: WorkerCommand): W
     case 'prepare-step': return { ...next, prep: { ...old.prep, ...command.facts, step: command.step } }
     case 'prepare-finish': return { ...next, ...command.facts, phase: 'prepared', prep: { ...old.prep,
       step: 'prepared', created: command.created, branchCreated: command.branchCreated,
+      witness: command.witness ?? old.prep.witness, root: old.prep.root ?? command.witness?.root, branchOid: command.branchOid ?? old.prep.branchOid,
       branchExisted: old.prep.branchExisted ?? (command.branchCreated ? false : undefined) } }
     case 'activate': return { ...next, phase: 'active' }
     case 'launch': {
@@ -88,9 +90,12 @@ export function applyWorkerCommand(old: WorkerRecord, command: WorkerCommand): W
     case 'run-posted':
       if (!old.runs.some(run => run.n === command.run)) throw new Error('worker run missing')
       return { ...next, runs: old.runs.map(value => value.n === command.run ? { ...value, posted: command.messageId } : value) }
-    case 'collect-keep': return { ...next, base: command.base, collectedKeep: true, carriedBase: undefined,
+    case 'collect-keep': {
+      const { branchCleanup: _operationReceipt, ...kept } = next
+      return { ...kept, base: command.base, collectedKeep: true, carriedBase: undefined,
       carriedUntracked: undefined, collectPending: undefined, phase: 'active',
       keptPublication: command.keptPublication && { ...command.keptPublication, base: command.base } }
+    }
     case 'kept-publication':
       if (old.base !== command.expectedBase) throw new Error('worker base changed')
       return { ...next, keptPublication: command.publication }

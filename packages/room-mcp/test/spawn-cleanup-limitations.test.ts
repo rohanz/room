@@ -16,7 +16,7 @@ async function realCleanup() {
 
 // Existing v0.17.47 limitation: preparation completion grants authority by record/path
 // without preventing another actor from replacing the checkout before promotion.
-it.fails('does not promote a markerless replacement to established ownership at prepare-finish', async () => {
+it('does not promote a markerless replacement to established ownership at prepare-finish', async () => {
   await realCleanup()
   const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   const command = registry.command.bind(registry), dir = path.join(repo, '.room/workers/promote')
@@ -47,7 +47,7 @@ it.fails('does not promote a markerless replacement to established ownership at 
 
 // Existing v0.17.47 limitation: trusted/discard accepts unfinished records after their
 // operation lease is released or recovered, including a matching foreign checkout.
-it.fails.each(['intent', 'preparing'] as const)('discard never turns a markerless %s record into cleanup authority', async phase => {
+it.each(['intent', 'preparing'] as const)('discard never turns a markerless %s record into cleanup authority', async phase => {
   await realCleanup()
   const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   const dir = path.join(repo, '.room/workers/pending'), id = registry.newId()
@@ -91,7 +91,7 @@ it.fails('does not remove a foreign replacement between witness verification and
 
 // Existing v0.17.47 limitation: branch deletion is not conditional on the previous tip;
 // another actor can recreate the now-free branch between checkout removal and branch -D.
-it.fails('does not delete a foreign replacement branch after removing the witnessed checkout', async () => {
+it('does not delete a foreign replacement branch after removing the witnessed checkout', async () => {
   const { repo, git } = realRepo(), prepared = await workerGit.prepareWorktree(repo, 'branch-race', 'lead', { carry: false })
   git('commit', '--allow-empty', '-qm', 'new foreign tip')
   const foreignTip = git('rev-parse', 'HEAD'), run = baseline.boundedGitSync
@@ -113,10 +113,12 @@ it.fails('does not delete a foreign replacement branch after removing the witnes
 
 // Acceptance regression from removing preparation's unconditional prune: a missing,
 // detached registration has no checkout or room/tag branch to take ownership of.
-it('can spawn after a detached checkout was deleted and only its stale registration remains', async () => {
+it('refuses a foreign detached stale registration without deleting its admin entry', async () => {
   const { repo, head, git } = realRepo(), dir = path.join(repo, '.room/workers/stale')
   git('worktree', 'add', '-q', '--detach', dir)
   fs.rmSync(dir, { recursive: true })
   const t = setupLead(repo, head)
-  expect(await t.leadTools.call('room_spawn', { tag: 'stale', task: 'x' })).toContain('spawned stale')
+  const before = git('worktree', 'list', '--porcelain', '-z')
+  expect(await t.leadTools.call('room_spawn', { tag: 'stale', task: 'x' })).toContain('error:')
+  expect(git('worktree', 'list', '--porcelain', '-z')).toBe(before)
 })

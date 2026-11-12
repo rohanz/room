@@ -27,7 +27,7 @@ function fixture(): { root: string; record: WorkerRecord } {
   }
   return { root, record }
 }
-const open = (root: string, nonce = 'lead', alive: 'alive' | 'dead' = 'alive') => WorkerRegistry.open(root,
+const open = (root: string, nonce = 'lead', alive: 'alive' | 'dead' = 'alive') => WorkerRegistry.open(fs.existsSync(path.join(root, '.git')) ? path.join(root, '.git') : root,
   { identity: token(nonce), watch: false, liveness: () => alive })
 
 describe('registry write paths', () => {
@@ -212,7 +212,7 @@ describe('registry write paths', () => {
     expect((await observer.read(record.id))?.phase).toBe('retiring')
     expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })
     expect(fs.existsSync(record.dir)).toBe(false)
-    expect(fs.readFileSync(path.join(root, 'room/registry/patches/w_write.patch'), 'utf8')).toContain('recover me')
+    expect(fs.readFileSync(path.join(lead.root, 'patches/w_write.patch'), 'utf8')).toContain('recover me')
   }, 30_000)
 
   it('restores an interrupted collect to active with a partial apply warning', async () => {

@@ -1,3 +1,5 @@
+import { PREPARATION_WITNESS_FILE, verifyPreparation, type PreparationWitness } from '../src/worker-preparation.js'
+import { worktreeGitDirFromDotGit } from '@room/roomd'
 import { exitedPid } from '../../relay/test/exited-pid.js'
 import { requireWorkerInventory } from '../src/worker-store.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
@@ -26,7 +28,7 @@ export function patchPublisher(dir: string, tag: string): (bytes: Buffer) => Pro
 export async function seedRegistryWorker(dir: string, tag: string, patch: Partial<WorkerRecord> = {}): Promise<{ registry: WorkerRegistry; record: WorkerRecord }> {
   const common = await gitCommonDir(dir)
   const registry = await registryForDir(dir)
-  const id = registry.newId(), now = Date.now()
+  const id = patch.id ?? registry.newId(), now = Date.now()
   const record: WorkerRecord = {
     v: 1, id, tag, name: `lead+${tag}`, mode: 'local', room: 'local/test/main',
     lead: { participant: 'lead', room: 'local/test/main', instance: registry.instance }, host: 'claude',
@@ -84,6 +86,22 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
         capabilities: { resume: !!w.hostSessionId, signal: !!w.pid, collect: w.base ? 'delta' : 'copy' },
         phase: 'prepared', runs: [run], createdAt: w.startedAt ?? Date.now(), seq: 1,
       }
+      // Direct prepareWorktree fixtures predate the registry-assigned ID. Bind only a
+      // genuine creation receipt to the synthetic record, as production's spawn context does.
+      if (!w.sharedWith && !w.outside) try {
+        const marker = path.join(worktreeGitDirFromDotGit(w.dir), PREPARATION_WITNESS_FILE)
+        const original = JSON.parse(fs.readFileSync(marker, 'utf8')) as PreparationWitness
+        verifyPreparation(w.dir, original)
+        const witness = { ...original, id, nonce: run.nonce }
+        fs.writeFileSync(marker, JSON.stringify(witness))
+        initial.prep = { ...initial.prep, witness, root: witness.root, branchOid: w.base ?? witness.branchOid }
+        const receipts = path.join(registry.root, 'ref-writes')
+        for (const name of fs.existsSync(receipts) ? fs.readdirSync(receipts) : []) {
+          const file = path.join(receipts, name), receipt = JSON.parse(fs.readFileSync(file, 'utf8'))
+          if (receipt.owner === original.id) fs.writeFileSync(file, JSON.stringify({ ...receipt, owner: id }))
+        }
+      } catch { /* Markerless/corrupt fixtures remain explicit legacy/uncertain records. */ }
+      if (!initial.prep.branchOid) initial.prep.branchOid = w.base ?? session.room.meta.base
       try { await registry.writeIntent(initial) }
       catch { continue }
       const pid = w.pid > 0 ? w.pid : exitedPid()

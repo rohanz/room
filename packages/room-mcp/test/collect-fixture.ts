@@ -40,6 +40,13 @@ vi.mock('@room/roomd/git', async importOriginal => {
     return result
   } }
 })
+vi.mock('../src/worker-refs.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/worker-refs.js')>()
+  return { ...actual, writeWorkerRecordRef: (...args: Parameters<typeof actual.writeWorkerRecordRef>) => {
+    actual.writeWorkerRecordRef(...args)
+    if (args[1].startsWith('refs/room/collect-head/')) collectRefHook.call?.(args[1])
+  } }
+})
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', async importOriginal => ({ ...await importOriginal<typeof import('../src/tools/claims.js')>(), releaseClaimsOnDone: release }))
 let root: string, lead: string, worker: string, base: string

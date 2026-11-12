@@ -2,6 +2,9 @@ import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { setImmediate } from 'node:timers/promises'
+import path from 'node:path'
+import { isGitWorktreeCommand, withGitWorktreeOperation } from './git-worktree-lock.js'
+export { isGitWorktreeCommand, withGitWorktreeOperation } from './git-worktree-lock.js'
 
 export type GitObserver = (args: readonly string[], elapsedMs: number) => void
 let gitObserver: GitObserver | undefined
@@ -71,6 +74,15 @@ export class GitOutputTooLarge extends Error {
 const stderrDetail = (stderr: string) => stderr.length > GIT_STDERR_MAX_BYTES ? stderr.slice(0, GIT_STDERR_MAX_BYTES) : stderr
 
 export function git(dir: string, args: string[], configuredTimeoutMs?: number): Promise<string> {
+  if (isGitWorktreeCommand(args)) {
+    const at = args.indexOf('--git-dir')
+    const explicit = at >= 0 ? args[at + 1] : args.find(arg => arg.startsWith('--git-dir='))?.slice(10)
+    return withGitWorktreeOperation(explicit ? path.resolve(dir, explicit) : dir, () => gitUnqueued(dir, args, configuredTimeoutMs))
+  }
+  return gitUnqueued(dir, args, configuredTimeoutMs)
+}
+
+function gitUnqueued(dir: string, args: string[], configuredTimeoutMs?: number): Promise<string> {
   const timeout = timeoutMs(configuredTimeoutMs)
   const done = observeGit(args)
   return new Promise((resolve, reject) => {

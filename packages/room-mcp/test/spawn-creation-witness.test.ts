@@ -33,14 +33,15 @@ it('recognizes case-equivalent Room directories with a renamed branch on case-in
   expect(requireWorkerInventory(await registry.list())).toEqual([])
 })
 
-it('records witnessed creation when Git succeeds in a pre-existing empty directory', async () => {
+it('refuses an existing empty directory instead of claiming its creation', async () => {
   const { repo, head } = realRepo(), t = setupLead(repo, head)
   const target = path.join(repo, '.room/workers/fresh')
   fs.mkdirSync(target, { recursive: true })
-  expect(await t.leadTools.call('room_spawn', { tag: 'fresh', task: 'x' })).toContain('spawned fresh')
-  const record = (await (await registryForDir(repo)).reserved('fresh'))!
-  // Git itself successfully creates the checkout in this empty directory; this is witnessed creation.
-  expect(record.prep.created).toBe(true)
+  const before = fs.statSync(target, { bigint: true })
+  expect(await t.leadTools.call('room_spawn', { tag: 'fresh', task: 'x' })).toContain('error:')
+  expect(t.specs).toHaveLength(0)
+  expect(fs.statSync(target, { bigint: true }).ino).toBe(before.ino)
+  expect(fs.readdirSync(target)).toEqual([])
 })
 
 it('refuses a no-dir spawn at a prunable orphan before intent and preserves its Git entry', async () => {

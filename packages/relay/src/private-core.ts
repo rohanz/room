@@ -23,10 +23,10 @@ export function verifyPosixPath(file: string, stat = fs.lstatSync(file)): void {
 /** POSIX repairs only an owned directory through a no-follow descriptor. On Windows this is deliberately
  * plain creation: hooks initially inherit the Git directory ACL. The MCP/daemon's first root inspection
  * protects room/ and normalizes existing descendants; subsequent plain children inherit that private ACL. */
-export function initializePrivateDirectory(dir: string, repair: boolean): void {
+export function initializePrivateDirectory(dir: string, repair: boolean, exclusive = false): void {
   let created = false
   try { fs.mkdirSync(dir, { mode: 0o700 }); created = true }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+  catch (error) { if (exclusive || (error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
   const stat = fs.lstatSync(dir)
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`)
   if (process.platform === 'win32') return

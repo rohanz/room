@@ -1,9 +1,11 @@
+import { commonGitDirFromDotGit } from '@room/roomd'
+import { retainWorkerItem, clearRetainedWorkerItem } from './worker-retained.js'
 /**
  * A worker worktree lives inside the lead's clone, so with no node_modules of its own Node resolves
  * packages from the lead's install, and a workspace package resolves to the lead's sources. This gives
  * the worktree its own node_modules: a directory of links to the lead's installed packages, except that
  * workspace packages link to the worktree's own package directories. A repository without workspaces gets
- * the same links to the lead's install, so `./node_modules/.bin` scripts run there. Nothing is installed or copied.
+ * the same links to the lead's install, so `./node_modules/.bin` scripts run there. No dependency install runs; executable shims may be copied.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -22,8 +24,10 @@ interface WorkspaceLinkResult {
   names: string[]
   /** The repository declares workspaces (package.json or pnpm-workspace.yaml). */
   workspaces: boolean
-  /** Why nothing was linked. */
+  /** Why setup did not complete; may name retained partial output. */
   reason?: string
+  /** Setup left output in place; notes must not claim node_modules is absent. */
+  retainedOutput?: boolean
   /** Editable installs in the lead's .venv of packages whose sources are the lead's checkout. */
   python?: string[]
 }
@@ -137,7 +141,7 @@ function editablePythonInstalls(leadDir: string, workerDir: string): string[] {
 
 /**
  * Give a new worker worktree its own node_modules. Bounded in time, never throws: on any failure or
- * timeout it removes what it made and says why, and the worktree resolves packages from the lead's clone.
+ * timeout it deletes nothing and reports retained output. Existing installs are never resumed.
  */
 export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
   options: { timeoutMs?: number; now?: () => number } = {}): Promise<WorkspaceLinkResult> {
@@ -153,7 +157,8 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
   }
   let python: string[] = []
   try { python = editablePythonInstalls(leadDir, workerDir) } catch { /* reported only when found */ }
-  const created: string[] = []
+  // Paths for diagnostics only: no identity observations or cleanup authority.
+  const attempted = new Set<string>()
   let names: string[] = []
   const patterns = workspacePatterns(leadDir)
   const workspaces = !!patterns
@@ -179,17 +184,21 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
     const dirs = ['', ...[...packages.values()].filter(rel => isDir(path.join(leadDir, rel, 'node_modules')) && isRealDir(path.join(workerDir, rel)))]
     // A node_modules holding only tool caches (vitest's .vite, .cache) is not an install; link beside them.
     const cachesOnly = (dir: string) => !lstat(dir) || (isRealDir(dir) && fs.readdirSync(dir).every(e => e.startsWith('.') && e !== '.bin'))
+    const cacheRoots = new Set<string>()
     for (const rel of dirs) {
-      // Without workspaces, a worktree that already has its own node_modules (a tracked one) needs no note.
-      if (!cachesOnly(path.join(workerDir, rel, 'node_modules'))) return result(workspaces ? { linked: false, reason: `${path.join(rel, 'node_modules')} already exists in the worktree` } : { linked: false })
+      const at = path.join(workerDir, rel, 'node_modules')
+      if (lstat(at)) cacheRoots.add(at)
+      if (!cachesOnly(at)) return result({ linked: false, retainedOutput: true,
+        reason: `${path.join(rel, 'node_modules')} already exists in the worktree; inspect and delete ${at} (or discard the worker) before running dependency setup again` })
     }
     // Links Git could see would be collected into the lead; only link where Git ignores node_modules.
     const probes = dirs.map(rel => path.posix.join(rel, 'node_modules', '.room-probe'))
     const ignored = new Set((await git(workerDir, ['check-ignore', '--', ...probes], Math.max(1, deadline - now())).catch(() => '')).split('\n').filter(Boolean))
     const tracked = probes.filter(p => !ignored.has(p))
     if (tracked.length) return result({ linked: false, reason: `Git does not ignore ${path.posix.dirname(tracked[0])}` })
-    const link = (target: string, at: string) => {
-      const type = process.platform === 'win32' ? (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() ? 'junction' : 'file') : undefined
+    const directory = (at: string) => { attempted.add(at); fs.mkdirSync(at) }
+    const link = (target: string, at: string, relative = false) => {
+      const type = process.platform === 'win32' ? (!relative && fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() ? 'junction' : 'file') : undefined
       fs.symlinkSync(target, at, type)
     }
     const leadReal = fs.realpathSync(leadDir)
@@ -206,41 +215,49 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
       link(target, to)
     }
     const mirror = async (src: string, dst: string) => {
-      const existed = !!lstat(dst)
-      if (!existed) { fs.mkdirSync(dst); created.push(dst) }
+      // The sole reuse exception is the caches-only node_modules root checked above.
+      if (cacheRoots.has(dst)) attempted.add(dst)
+      else directory(dst)
       for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
         await tick()
         const from = path.join(src, entry.name), to = path.join(dst, entry.name)
-        if (existed && (!entry.name.startsWith('.') || entry.name === '.bin')) created.push(to)
         if (entry.name === '.bin' && entry.isDirectory()) {
-          // Relative bin links resolve through this node_modules, so a workspace package's bin runs the worktree's
-          // code; shims (pnpm, Windows) are small scripts that find their package relative to themselves.
-          fs.mkdirSync(to)
+          // Relative links resolve through this worktree's node_modules; copied shims do too.
+          directory(to)
           for (const bin of fs.readdirSync(from, { withFileTypes: true })) {
             await tick()
             const source = path.join(from, bin.name), target = path.join(to, bin.name)
-            if (bin.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(source), target)
-            else if (bin.isFile()) { fs.copyFileSync(source, target); fs.chmodSync(target, fs.statSync(source).mode) }
+            if (bin.isSymbolicLink()) link(fs.readlinkSync(source), target, true)
+            else if (bin.isFile()) fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL)
           }
         } else if (entry.name.startsWith('.')) {
-          continue // package-manager state and caches (.package-lock.json, .modules.yaml, .pnpm, .vite) stay the lead's
+          continue // package-manager state and caches stay the lead's; existing worker caches stay untouched
         } else if (entry.name.startsWith('@') && entry.isDirectory()) {
-          fs.mkdirSync(to)
-          for (const scoped of fs.readdirSync(from)) {
+          directory(to)
+          for (const name of fs.readdirSync(from)) {
             await tick()
-            linkPackage(path.join(from, scoped), path.join(to, scoped), `${entry.name}/${scoped}`)
+            linkPackage(path.join(from, name), path.join(to, name), `${entry.name}/${name}`)
           }
         } else linkPackage(from, to, entry.name)
       }
     }
     // Mirror from the install's real location, so its relative links resolve as they do for the lead; nothing is written there.
     for (const rel of dirs) await mirror(fs.realpathSync(path.join(leadDir, rel, 'node_modules')), path.join(workerDir, rel, 'node_modules'))
+    for (const at of attempted) clearRetainedWorkerItem(commonGitDirFromDotGit(leadDir), 'directory', at)
     return result({ linked: true })
   } catch (error) {
-    // Remove only what this step made. fs.rmSync removes links without following them, so the lead's install is never touched.
-    for (const made of created.reverse()) try { fs.rmSync(made, { recursive: true, force: true }) } catch { /* reported below */ }
+    // Never delete setup output, including empty directories. A later owned-worktree
+    // discard/collect or the user handles it; these names are only for reporting.
+    const retained: string[] = []
+    for (const at of attempted) {
+      try { fs.lstatSync(at) } catch (failure) { if ((failure as NodeJS.ErrnoException).code === 'ENOENT') continue }
+      retained.push(at)
+      retainWorkerItem(commonGitDirFromDotGit(leadDir), { kind: 'directory', path: at, reason: 'dependency setup did not complete; output retained in place' })
+    }
     const reason = error instanceof TimedOut ? `linking timed out after ${timeoutMs} ms` : `linking failed: ${error instanceof Error ? error.message : String(error)}`
-    return result({ linked: false, reason })
+    return result({ linked: false, ...(retained.length ? { retainedOutput: true } : {}), reason: reason + (retained.length ? '; retained dependency output: ' + retained.join(', ')
+      + '; inspect and delete the retained node_modules directories (or discard the worker) before running dependency setup again'
+      : '; dependency setup path: ' + path.join(workerDir, 'node_modules')) })
   }
 }
 
@@ -253,7 +270,8 @@ export function workspaceDepsNotes(result: WorkspaceLinkResult): { reply: string
       reply.push('node_modules: links to your install')
       prompt.push(`node_modules here links the lead's installed packages. To change dependencies, delete node_modules first (that removes only the links), then install.`)
     } else if (result.reason) {
-      const warning = 'this worktree has no node_modules of its own, so `./node_modules/.bin/...` scripts fail there'
+      const warning = result.retainedOutput ? 'dependency setup is incomplete in this worktree'
+        : 'this worktree has no node_modules of its own, so `./node_modules/.bin/...` scripts fail there'
       reply.push(`warning: ${warning} (${result.reason})`)
       prompt.push(`Warning: ${warning} (${result.reason}); install dependencies in this worktree before relying on them.`)
     }

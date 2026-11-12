@@ -1,3 +1,6 @@
+import { commonGitDirFromDotGit } from '@room/roomd'
+import { retainedWorkerLines } from '../worker-retained.js'
+import { writeWorkerRecordRef } from '../worker-refs.js'
 import { idleWakeAdvice } from '../hosts/prompt.js'
 import { requireWorkerEvidence } from '../worker-store.js'
 import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
@@ -264,7 +267,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               catch (error) { return `error: rebased ${tag} onto your HEAD but could not record its new base (${error instanceof Error ? error.message : String(error)}); nothing sent. A preview or collect may count your commits as its changes.` }
               // The registry base is durable before changing the legacy keep anchor.
               if (moved.kept) {
-                try { await git(s.dir, ['update-ref', collectHeadRef(record.tag, record.id), moved.base]) }
+                try { writeWorkerRecordRef(registry.commonDir, collectHeadRef(record.tag, record.id), moved.base, record) }
                 catch (error) { return `error: rebased ${tag} and recorded its new base but could not update its collection ref (${error instanceof Error ? error.message : String(error)}); nothing sent. Send again to resume it.` }
               }
               const came = refreshedCommits(moved.commits)
@@ -439,6 +442,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         else if (questionId) onRecipient()
       })
     }
+  const send = handlers.room_send
+  handlers.room_send = async args => {
+    const reply = await send(args)
+    const session = state.ctx?.getSession?.()
+    return session ? [reply, ...retainedWorkerLines(commonGitDirFromDotGit(session.dir))].join('\n') : reply
+  }
   return handlers
 }
 

@@ -1,3 +1,5 @@
+import type { WorkerRegistry } from './worker-registry.js'
+import { privateStateDirectory } from '@room/relay'
 import { workerTagFile, withWorkerTag } from './worker-tags.js'
 import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
@@ -8,14 +10,16 @@ import path from 'node:path'
 import { isRegenerableBuildPath } from '@room/shared'
 import type { LocalWorker, WorkerRecord } from './worker-status.js'
 import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, commonGitDirFromDotGit, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
+import { git, UNKNOWN_WHOLE_TREE_PATHS, withGitWorktreeOperation } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
 import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
 
-import { preparationIdentity, witnessPreparation, removePreparation, verifyPreparation, type PreparationIdentity, type PreparationWitness } from './worker-preparation.js'
+import { retainWorkerItem, retainedWorkerLines } from './worker-retained.js'
+import { writeWorkerRef, deleteWorkerRef, deleteWorkerRecordRef, restoreWorkerRef, preserveWorkerBranch, deletePreservedWorkerBranch, operationBranchReceipt } from './worker-refs.js'
+import { canonicalMissingWorkerPath, rootIdentity, verifyWorkerCheckout, retainCheckout, removeWorkerRegistration, PREPARATION_WITNESS_FILE, preparationIdentity, witnessPreparation, removePreparation, verifyPreparation, type PreparationIdentity, type PreparationWitness } from './worker-preparation.js'
 
 const WORKERS_DIR = path.join('.room', 'workers')
 
@@ -208,15 +212,19 @@ export function inheritWorkerRefs(commonDir: string, owner: Pick<LocalWorker, 't
   const sources = privateWorkerRefs(owner), targets = privateWorkerRefs(retry)
   const refs = boundedGitSync(commonDir, ['--git-dir', commonDir, 'for-each-ref', '--format=%(refname) %(objectname)', ...sources]).toString()
   const values = new Map(refs.trim().split('\n').filter(Boolean).map(line => line.split(' ') as [string, string]))
-  const commands = sources.map((ref, index) => values.has(ref) ? `update ${targets[index]} ${values.get(ref)}` : `delete ${targets[index]}`)
-  boundedGitSync(commonDir, ['--git-dir', commonDir, 'update-ref', '--stdin'], { input: Buffer.from(commands.join('\n') + '\n') })
+  for (const [index, ref] of sources.entries()) {
+    const value = values.get(ref)
+    if (value) {
+      try { writeWorkerRef(commonDir, targets[index], value, retry.id, '0'.repeat(value.length)) }
+      catch (error) { retainWorkerItem(commonDir, { kind: 'ref', path: targets[index], id: retry.id, reason: `inheritance target was occupied or could not be created; retained without overwriting: ${String(error)}` }) }
+    }
+    // A missing source has no output to inherit, and grants no deletion authority.
+  }
 }
 
 /** A detached borrower owns only its pins; never delete its owner's refs or checkout. */
-export function removeWorkerRefs(commonDir: string, worker: Pick<LocalWorker, 'tag' | 'id'>): void {
-  boundedGitSync(commonDir, ['--git-dir', commonDir, 'update-ref', '--stdin'], {
-    input: Buffer.from(privateWorkerRefs(worker).map(ref => `delete ${ref}\n`).join('')),
-  })
+export function removeWorkerRefs(commonDir: string, worker: WorkerRecord): void {
+  for (const ref of privateWorkerRefs(worker)) deleteWorkerRecordRef(commonDir, ref, worker)
 }
 
 /** Compare checkout output against the lead, including commits after collection's captured HEAD. */
@@ -234,7 +242,11 @@ export async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, ca
 }
 
 /** Prune a vanished Room checkout, preserving any branch commits absent from the lead HEAD. */
-export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker, manageBranch = true): Promise<string | undefined> {
+export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker, manageBranch = true, store?: Pick<WorkerRegistry, 'read'>): Promise<string | undefined> {
+  const common = await realGitCommonDir(leadDir)
+  const { registryForDir } = await import('./worker-registry.js')
+  const record = await (store ?? await registryForDir(leadDir)).read(w.id)
+  const branchCleanup = manageBranch ? preserveWorkerBranch(common, w, operationBranchReceipt(common, w.id) ?? record?.branchCleanup) : undefined
   if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
     throw new Error(`worker ${w.dir} is not an owned Room worktree`)
   }
@@ -243,14 +255,25 @@ export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker
   // Dynamic import avoids a module-initialization cycle: preview tools read workerOwnedPaths from here.
   const { removePreviewCache } = await import('./tools/files.js')
   await removePreviewCache(w.dir, leadDir)
-  await git(leadDir, ['worktree', 'prune'])
-  if (!manageBranch) return undefined
-  const state = await workerRealState(leadDir, w, { branch: true })
-  if (state.branch === 'absent') return `branch ${w.branch} was already absent`
-  const count = state.branchAhead!
-  if (count) return `branch ${w.branch} kept: it has ${count} commit${count === 1 ? '' : 's'} not in your HEAD`
-  await git(leadDir, ['branch', '-D', w.branch])
-  return `branch ${w.branch} deleted (it has no commits of its own beyond your HEAD)`
+  const witness = w.prep?.witness
+  if (witness) {
+    try {
+      if (witness.id !== w.id || w.creationNonce && witness.nonce !== w.creationNonce) throw new Error('registration witness belongs to another worker/run')
+      await removeWorkerRegistration(common, witness.adminDir, witness, w.dir)
+    }
+    catch (error) { retainWorkerItem(common, { kind: 'registration', path: witness.adminDir, id: w.id, tag: w.tag, reason: String(error) }) }
+  } else {
+    // No markerless missing registration is guessed from a reused pathname.
+    for (const admin of workerAdminsAt(common, w.dir)) retainWorkerItem(common, { kind: 'registration', path: admin, id: w.id, tag: w.tag, reason: 'no recorded worktree marker; inspect and remove manually' })
+  }
+  let branchDetail: string | undefined
+  if (manageBranch) {
+    const state = await workerRealState(leadDir, w, { branch: true })
+    if (state.branch === 'absent') branchDetail = `branch ${w.branch} was already absent`
+    else if (state.branchAhead) branchDetail = retainWorkerItem(common, { kind: 'branch', path: `refs/heads/${w.branch}`, id: w.id, tag: w.tag, reason: `has ${state.branchAhead} commit${state.branchAhead === 1 ? '' : 's'} not in your HEAD; inspect before removing` })
+    else branchDetail = deletePreservedWorkerBranch(common, w, branchCleanup!) ?? `branch ${w.branch} cleanup checked against its preserved operation tip`
+  }
+  return [branchDetail, ...retainedWorkerLines(common)].filter(Boolean).join('\n') || undefined
 }
 
 /** Porcelain entries missing from a fresh worktree; Room's own directory is excluded. */
@@ -301,14 +324,24 @@ export function prepareWorkerLinks(repoDir: string, workerDir: string, requested
     }
     return { p, source, target, directory: stat.isDirectory() }
   })
-  const made: string[] = []
+  const made = new Map<string, { dev: bigint; ino: bigint; birthtimeNs: bigint }>()
   try {
     for (const link of links) {
       fs.mkdirSync(path.dirname(link.target), { recursive: true })
       fs.symlinkSync(link.source, link.target, link.directory ? 'dir' : 'file')
-      made.push(link.target)
+      const stat = fs.lstatSync(link.target, { bigint: true })
+      made.set(link.target, { dev: stat.dev, ino: stat.ino, birthtimeNs: stat.birthtimeNs })
     }
-  } catch (e) { for (const target of made.reverse()) fs.unlinkSync(target); throw e }
+  } catch (e) {
+    for (const [target, proof] of [...made].reverse()) {
+      try {
+        const stat = fs.lstatSync(target, { bigint: true })
+        if (stat.isSymbolicLink() && stat.dev === proof.dev && stat.ino === proof.ino && stat.birthtimeNs === proof.birthtimeNs) fs.unlinkSync(target)
+        else retainWorkerItem(commonGitDirFromDotGit(repoDir), { kind: stat.isDirectory() ? 'directory' : 'file', path: target, reason: 'input-link rollback creation identity changed; retained in place' })
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    }
+    throw e
+  }
   return links.map(l => l.p)
 }
 
@@ -317,6 +350,7 @@ export interface PreparedWorktree {
   branch: string
   created: boolean
   witness?: PreparationWitness
+  branchOid?: string
   /** The branch may predate a newly created checkout. */
   branchCreated?: boolean
   /** Ref values to restore if preparation is rolled back; absent refs were created here. */
@@ -341,7 +375,7 @@ const pathExcluded = (rel: string, exclusions: string[]) => exclusions.some(p =>
 function patchArgs(base: string, exclusions: string[], staged = false): string[] {
   return ['diff', ...(staged ? ['--cached'] : []), '--binary', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', base, '--', '.', ...exclusions]
 }
-function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sha: string }[]): string | undefined {
+function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sha: string }[], owner: string): string | undefined {
   if (!paths.length) return undefined
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-index-'))
   const env = { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }
@@ -357,20 +391,19 @@ function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sh
     fs.writeFileSync(info, entries.join(''), { mode: 0o600 })
     run(['update-index', '-z', '--index-info'], paths.length, info)
     const tree = run(['write-tree'], paths.length)
-    run(['update-ref', carriedUntrackedRef(tag), tree])
+    writeWorkerRef(commonGitDirFromDotGit(dir), carriedUntrackedRef(tag), tree, owner)
     return tree
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }
 /** Roll back only a newly prepared worktree; do not remove reused worker output. */
 export async function cleanupPreparedWorktree(repoDir: string, prepared: PreparedWorktree): Promise<void> {
   if (!prepared.created) return
-  if (!prepared.witness) throw new Error(`kept preparation ${prepared.dir}: no worktree identity witness`)
-  removePreparation(await realGitCommonDir(repoDir), prepared.dir, prepared.witness, !!prepared.branchCreated)
-  for (const ref of [carryRef(prepared.branch.slice(5)), carriedUntrackedRef(prepared.branch.slice(5))]) {
-    const previous = prepared.previousCarryRefs?.[ref]
-    if (previous) await internalGit(repoDir, ['update-ref', ref, previous])
-    else try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* no ref was created */ }
-  }
+  const common = await realGitCommonDir(repoDir)
+  if (!prepared.witness) throw new Error(retainCheckout(common, prepared, 'no worktree identity witness'))
+  try { await removePreparation(common, prepared.dir, { ...prepared.witness, branchOid: prepared.branchOid ?? prepared.witness.branchOid }, !!prepared.branchCreated) }
+  catch (error) { throw new Error(retainCheckout(common, prepared, String(error))) }
+  for (const ref of [carryRef(prepared.branch.slice(5)), carriedUntrackedRef(prepared.branch.slice(5))])
+    restoreWorkerRef(common, ref, prepared.previousCarryRefs?.[ref], prepared.witness.id)
 }
 
 export interface PrepareWorktreeOptions {
@@ -383,25 +416,54 @@ export interface PrepareWorktreeOptions {
   identity?: PreparationIdentity
 }
 
+/** Validate a commit where it is read, before using it as a checkout base or ref value. */
+async function preparationCommit(dir: string, revision: string, label: string): Promise<string> {
+  let value: string
+  try { value = (await git(dir, ['rev-parse', '--verify', `${revision}^{commit}`])).trim() }
+  catch (error) {
+    const unborn = label === 'HEAD' ? '; make a first commit before spawning workers if HEAD is unborn' : ''
+    throw new Error(`${label} is not a commit or could not be read: ${String(error)}${unborn}`, { cause: error })
+  }
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) throw new Error(`${label} returned an invalid commit OID`)
+  return value
+}
+
 /** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
 export function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', options: PrepareWorktreeOptions = {}): Promise<PreparedWorktree> {
   return prepareWorktreeAttempt(repoDir, tag, leadName, { ...options, identity: options.identity ?? preparationIdentity() }, 0)
 }
 
-/** Drop only this absent path's stale registration; Git remove also respects worktree locks. */
-function removeAbsentWorkerRegistration(repoDir: string, dir: string): void {
-  if (lstatOrUndefined(dir)) return
-  const target = path.join(filesystemPath(path.dirname(dir)), path.basename(dir))
-  const entries = boundedGitSync(repoDir, ['worktree', 'list', '--porcelain', '-z']).toString().split('\0\0')
-  const stale = entries.some(entry => {
-    const fields = entry.split('\0'), registered = fields.find(field => field.startsWith('worktree '))?.slice(9)
-    if (!registered || path.basename(registered) !== path.basename(dir) || !fields.some(field => field === 'prunable' || field.startsWith('prunable '))) return false
-    try { return path.join(filesystemPath(path.dirname(registered)), path.basename(registered)) === target }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error }
+/** Admin entries are found by their own backlink, never removed through a reusable checkout path. */
+function workerAdminsAt(common: string, dir: string): string[] {
+  let names: string[]
+  try { names = fs.readdirSync(path.join(common, 'worktrees')) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error }
+  const target = path.join(canonicalMissingWorkerPath(dir), '.git')
+  return names.map(name => path.join(common, 'worktrees', name)).filter(admin => {
+    try { return path.resolve(admin, fs.readFileSync(path.join(admin, 'gitdir'), 'utf8').trim()) === target } catch { return false }
   })
-  if (stale && !lstatOrUndefined(dir)) {
-    // No force and no branch deletion: clear just Git's entry for the missing checkout.
-    boundedGitSync(repoDir, ['-c', 'core.hooksPath=/dev/null', 'worktree', 'remove', dir])
+}
+async function removeAbsentWorkerRegistration(repoDir: string, dir: string): Promise<void> {
+  if (lstatOrUndefined(dir)) return
+  // Preserve listing errors and reappearance checks; prunable is observation, never authority.
+  await git(repoDir, ['worktree', 'list', '--porcelain', '-z'])
+  if (lstatOrUndefined(dir)) throw new Error(`worker path reappeared: ${dir}`)
+  const common = await realGitCommonDir(repoDir)
+  const { registryForDir } = await import('./worker-registry.js')
+  const records = requireWorkerInventory(await (await registryForDir(repoDir)).list())
+  for (const admin of workerAdminsAt(common, dir)) {
+    try {
+      const marker = path.join(admin, PREPARATION_WITNESS_FILE), stat = fs.lstatSync(marker)
+      if (!stat.isFile() || stat.size > 4096) throw new Error('not a small regular worktree marker')
+      const witness = JSON.parse(fs.readFileSync(marker, 'utf8')) as PreparationWitness
+      const owner = records.find(record => record.id === witness.id)
+      if (owner && !['retired', 'abandoned'].includes(owner.phase)) throw new Error('marker owner is still live')
+      if (lstatOrUndefined(dir)) throw new Error('checkout reappeared')
+      await removeWorkerRegistration(common, admin, witness, dir)
+    } catch (error) {
+      const quote = (text: string) => "'" + text.replace(/'/g, "'\\''") + "'"
+      const reason = `cannot verify ended/absent Room owner (${String(error)}); inspect it, then run git -C ${quote(repoDir)} worktree remove ${quote(dir)} only after confirming the checkout is still absent`
+      throw new Error(retainWorkerItem(common, { kind: 'registration', path: admin, reason }))
+    }
   }
 }
 
@@ -413,22 +475,27 @@ async function prepareWorktreeAttempt(repoDir: string, tag: string, leadName: st
   if (['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some(p => fs.existsSync(path.join(gitDir, p)))) throw new Error('finish the merge or rebase before spawning workers')
   assertNewWorkerWorktree(repoDir, tag)
   fs.mkdirSync(path.dirname(dir), { recursive: true })
-  removeAbsentWorkerRegistration(repoDir, dir)
+  await removeAbsentWorkerRegistration(repoDir, dir)
   const previousCarryRefs: Record<string, string> = {}
   for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
     try { previousCarryRefs[ref] = (await git(repoDir, ['rev-parse', '--verify', ref])).trim() } catch { /* absent */ }
   }
-  let base: string
-  try { base = (await git(repoDir, ['rev-parse', '--verify', 'HEAD'])).trim() }
-  catch { throw new Error('make a first commit before spawning workers') }
+  const base = await preparationCommit(repoDir, 'HEAD', 'HEAD')
   await onStep?.('plan', { worktreeExisted: false, branchExisted: false,
     previousCarryRefs: Object.fromEntries([carryRef(tag), carriedUntrackedRef(tag)].map(ref => [ref, previousCarryRefs[ref] ?? null])) })
-  await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
-  let witness = witnessPreparation(dir, branch, options.identity!)
-  // Creation flags are hints; removal still requires this specific Git-admin witness.
-  await onStep?.('worktree', { created: true, branchCreated: true })
+  // Git accepts an existing empty directory: only our exclusive mkdir proves root creation.
+  privateStateDirectory(dir, { exclusive: true })
+  const root = rootIdentity(dir)
+  await onStep?.('root', { root, identityRequired: true })
+  let witness = await withGitWorktreeOperation(repoDir, async () => {
+    await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
+    return witnessPreparation(dir, branch, options.identity!, root, base)
+  })
+  let branchOid = base
+  // Journal successful writes, never infer them at cleanup time.
+  await onStep?.('worktree', { created: true, branchCreated: true, witness, branchOid })
   if (!carry) {
-    const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, witness, previousCarryRefs, base }
+    const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, witness, branchOid, previousCarryRefs, base }
     await onStep?.('prepared', { created: true, branchCreated: true })
     return result
   }
@@ -492,49 +559,66 @@ async function prepareWorktreeAttempt(repoDir: string, tag: string, leadName: st
         const latest = carriedContentHashes(repoDir, carriedUntracked.map(c => c.path))
         copiedStable = carriedUntracked.every(({ sha }, i) => latest[i] === sha)
       } catch (error) { if (error instanceof Error && error.message.includes('timed out')) throw error; copiedStable = false }
-      return (await git(repoDir, ['rev-parse', 'HEAD'])).trim() === base && latestPatch === patch && latestUntracked.join('\0') === untracked.join('\0') && copiedStable
+      return await preparationCommit(repoDir, 'HEAD', 'HEAD') === base && latestPatch === patch && latestUntracked.join('\0') === untracked.join('\0') && copiedStable
     }
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
     const staged = (await internalGit(dir, ['diff', '--cached', '--no-renames', '--name-only', '-z'])).split('\0').filter(Boolean)
+    let commit = branchOid
     if (staged.length) {
       await onStep?.('carry-commit', {})
-      await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', `user.name=${ROOM_CARRY_IDENTITY.authorName}`, '-c', `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
+      const tree = (await internalGit(dir, ['write-tree'])).trim()
+      // commit-tree returns the exact object Room produced; do not adopt a later public HEAD read.
+      const produced = (await git(dir, ['-c', `user.name=${ROOM_CARRY_IDENTITY.authorName}`, '-c', `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, '-c', 'commit.gpgsign=false', 'commit-tree', tree, '-p', branchOid, '-m', carriedSubject(leadName)])).trim()
+      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(produced)) throw new Error('carry commit returned an invalid commit OID')
+      commit = await preparationCommit(dir, produced, 'carry commit')
+      if (commit !== produced) throw new Error('carry commit is not a commit object')
+      writeWorkerRef(await realGitCommonDir(repoDir), `refs/heads/${branch}`, commit, options.identity!.id, branchOid)
+      branchOid = commit
+      await onStep?.('carry-commit', { branchOid })
     }
-    const commit = (await git(dir, ['rev-parse', 'HEAD'])).trim()
     const paths = [...new Set([...staged, ...carriedUntracked.map(x => x.path)])].sort()
     if (paths.length) await onStep?.('carry-refs', {})
-    if (paths.length) await internalGit(repoDir, ['update-ref', carryRef(tag), commit])
-    retainUntrackedTree(repoDir, tag, carriedUntracked)
+    if (paths.length) writeWorkerRef(await realGitCommonDir(repoDir), carryRef(tag), commit, options.identity!.id)
+    retainUntrackedTree(repoDir, tag, carriedUntracked, options.identity!.id)
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
-    const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, witness, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
+    const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, witness, branchOid, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
     await onStep?.('prepared', { created: true, branchCreated: true })
     return result
   } catch (e) {
     if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
       // Relinquish the old checkout before removing it: a retry may find a replacement.
       await onStep?.('plan', { created: false, branchCreated: false })
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, witness, previousCarryRefs })
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, witness, branchOid, previousCarryRefs })
       if (retry >= 2) throw new Error('lead changed repeatedly during carry; try spawning again when HEAD is stable')
       return prepareWorktreeAttempt(repoDir, tag, leadName, options, retry + 1)
     }
     try {
       verifyPreparation(dir, witness)
-      await internalGit(dir, ['reset', '--hard', base])
+      writeWorkerRef(await realGitCommonDir(repoDir), `refs/heads/${branch}`, base, options.identity!.id, branchOid)
+      branchOid = base
+      verifyPreparation(dir, witness)
+      await internalGit(dir, ['read-tree', '--reset', '-u', base])
       verifyPreparation(dir, witness)
       await internalGit(dir, ['clean', '-fdx'])
-      for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
-        if (previousCarryRefs[ref]) await internalGit(repoDir, ['update-ref', ref, previousCarryRefs[ref]])
-        else try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* ref was never written */ }
-      }
+      branchOid = base
+      await onStep?.('carry-commit', { branchOid })
+      for (const ref of [carryRef(tag), carriedUntrackedRef(tag)])
+        restoreWorkerRef(await realGitCommonDir(repoDir), ref, previousCarryRefs[ref], options.identity!.id)
     } catch {
       // Relinquish the old checkout before removing it: a retry may find a replacement.
       await onStep?.('plan', { created: false, branchCreated: false })
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, witness, previousCarryRefs })
-      await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
-      witness = witnessPreparation(dir, branch, options.identity!)
-      await onStep?.('worktree', { created: true, branchCreated: true })
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, witness, branchOid, previousCarryRefs })
+      privateStateDirectory(dir, { exclusive: true })
+      const retryRoot = rootIdentity(dir)
+      await onStep?.('root', { root: retryRoot, identityRequired: true })
+      witness = await withGitWorktreeOperation(repoDir, async () => {
+        await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base])
+        return witnessPreparation(dir, branch, options.identity!, retryRoot, base)
+      })
+      branchOid = base
+      await onStep?.('worktree', { created: true, branchCreated: true, witness, branchOid })
     }
-    return { dir, branch, created: true, branchCreated: true, witness, previousCarryRefs, base, carryFailed: true, carryError: (e as Error).message }
+    return { dir, branch, created: true, branchCreated: true, witness, branchOid, previousCarryRefs, base, carryFailed: true, carryError: (e as Error).message }
   }
 }
 
@@ -550,6 +634,8 @@ export interface CleanupWorkerOptions {
   workers?: Iterable<WorktreeOwnershipRecord>
   /** Receives what kept the worktree, instead of logging a recovery ref. */
   preservation?: WorkerCleanupPreservation
+  /** Recovery must not re-enter registryForDir while this store is still opening. */
+  registry?: Pick<WorkerRegistry, 'read' | 'list' | 'worktreeOwner' | 'checkoutUsers'>
 }
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
@@ -557,17 +643,30 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
   const { collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = [], preservation } = options
   // All lifecycle paths converge here. The owner operation lease must be held by
   // callers while checking this snapshot and removing the checkout.
+  const common = await realGitCommonDir(leadDir)
+  const { registryForDir } = await import('./worker-registry.js')
+  const registry = options.registry ?? await registryForDir(leadDir)
+  let ownerRecord: WorkerRecord | undefined
   const available = async () => {
     if (!w.id) return true // Legacy direct callers have no registry capability.
-    const { registryForDir } = await import('./worker-registry.js')
-    const registry = await registryForDir(leadDir)
     const record = (await registry.read(w.id))
+    ownerRecord = record
     if (!record) return w.branch === `room/${w.tag}` && (requireWorkerInventory(await registry.list())).every(peer =>
       path.resolve(peer.dir) !== path.resolve(w.dir) || peer.tag === w.tag)
     return !record.sharedWith && !(await registry.worktreeOwner(record))
       && requireWorkerEvidence(await registry.checkoutUsers(record)).length === 0
   }
   if (!await available()) return false
+  if (!roomWorkerPathMatchesBranch(filesystemPath(leadDir), filesystemPath(w.dir), w.branch, true)) return false
+  const verify = () => {
+    try {
+      if (!ownerRecord) throw new Error('no authoritative local worker record')
+      if (ownerRecord.tag !== w.tag || ownerRecord.branch !== w.branch || filesystemPath(ownerRecord.dir) !== filesystemPath(w.dir)) throw new Error('cleanup target differs from its authoritative record')
+      verifyWorkerCheckout(common, ownerRecord)
+    } catch (error) { throw new Error(retainCheckout(common, w, error instanceof Error ? error.message : String(error))) }
+  }
+  verify()
+  const branchCleanup = preserveWorkerBranch(common, w, operationBranchReceipt(common, w.id) ?? ownerRecord?.branchCleanup)
   if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
   if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== 'cleanup') return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
@@ -575,10 +674,6 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     .filter(dir => dir !== w.dir && isInsideRoot(fs.realpathSync(w.dir), dir))
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(', ')}`)
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
-  const refs = new Map<string, string>()
-  for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
-    try { refs.set(ref, (await git(leadDir, ['rev-parse', '--verify', ref])).trim()) } catch { /* absent on older workers */ }
-  }
   if (!await available()) return false
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
   try {
@@ -590,8 +685,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     // writing there); ordinary collection already applied the worker's final tree under its operation lease.
     let retainedOwner = false
     if (!discarded && w.id) {
-      const { registryForDir } = await import('./worker-registry.js')
-      const owner = await (await registryForDir(leadDir)).read(w.id)
+      const owner = await registry.read(w.id)
       retainedOwner = owner?.phase === 'retired' && !!owner.keptWorktree && !!owner.archive?.keptReason?.startsWith('shared checkout: ')
     }
     if (retainedOwner) {
@@ -619,53 +713,24 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
       }
       return false
     }
-    // Only the worker's own commits need a handle: a tip that is the lead's carry commit or the base is the lead's.
-    const ownCommits = tip !== refs.get(carryRef(w.tag)) && tip !== w.base
-    let reachable = true
-    if (ownCommits) try { await git(leadDir, ['merge-base', '--is-ancestor', tip, 'HEAD']) } catch { reachable = false }
-    if (!reachable) {
-      const ref = `refs/room/recovery/${w.tag}/${tip}`
-      await internalGit(leadDir, ['update-ref', ref, tip])
-      if (preservation) preservation.recoveryRef = ref
-      else console.info(`worker ${w.tag} branch recovery ref: ${ref}`)
+    // The operation's single read is already pinned, including any foreign commit
+    // found there. CAS can erase only that exact name/value; a later move survives.
+    if (branchCleanup.recoveryRef && branchCleanup.tip !== w.base) {
+      if (preservation) preservation.recoveryRef = branchCleanup.recoveryRef
+      else console.info(`worker ${w.tag} branch recovery ref: ${branchCleanup.recoveryRef}`)
     }
-    await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
-    await internalGit(leadDir, ['branch', '-D', w.branch])
-    for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])
-    for (const ref of [collectHeadRef(w.tag, w.id), collectBaseRef(w.tag, w.id)]) {
-      try { await internalGit(leadDir, ['update-ref', '-d', ref]) } catch { /* legacy collection */ }
-    }
+    await withGitWorktreeOperation(common, () => {
+      verify()
+      boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', 'worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
+    })
+    deletePreservedWorkerBranch(common, w, branchCleanup)
+    for (const ref of privateWorkerRefs(w)) deleteWorkerRecordRef(common, ref, ownerRecord!)
   } catch (error) {
-    const recovery = w.id ? path.join(await realGitCommonDir(leadDir), 'room', 'registry', 'patches', `${w.id}.patch`) : undefined
-    const recoveryNote = recovery && fs.existsSync(recovery) ? `actual worker edits are in ${recovery}` : `collected edits are in ${leadDir}`
-    try {
-      let branchExists = true
-      try { await git(leadDir, ['rev-parse', '--verify', `refs/heads/${w.branch}`]) } catch { branchExists = false }
-      if (!branchExists) await internalGit(leadDir, ['branch', w.branch, head])
-      if (!fs.existsSync(path.join(w.dir, '.git'))) {
-        await internalGit(leadDir, ['worktree', 'add', '-q', w.dir, w.branch])
-        await linkWorkspaceDeps(leadDir, w.dir)
-      }
-      for (const [ref, sha] of refs) await internalGit(leadDir, ['update-ref', ref, sha])
-      for (const entry of w.carriedUntracked ?? []) {
-        if (!validRepoPath(entry.path, RECORDED_PATH)) continue
-        const file = path.join(w.dir, entry.path)
-        if (fs.existsSync(file)) continue
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        const mode = (await git(leadDir, ['ls-tree', carriedUntrackedRef(w.tag), '--', entry.path])).split(' ')[0]
-        if (mode === '120000') fs.symlinkSync(boundedGitSync(leadDir, ['cat-file', 'blob', entry.sha]).toString(), file)
-        else {
-          const bytes = boundedGitSync(leadDir, ['cat-file', '--filters', '--path=' + entry.path, entry.sha])
-          fs.writeFileSync(file, bytes, { mode: entry.mode ?? 0o644 })
-          fs.chmodSync(file, entry.mode ?? 0o644)
-        }
-      }
-    } catch (restore) { throw new Error(`cleanup failed: ${(error as Error).message}; could not restore ${w.dir}: ${(restore as Error).message}; ${recoveryNote}`) }
-    throw new Error(`cleanup failed: ${(error as Error).message}; reconstructed base at ${w.dir}; ${recoveryNote}`)
+    // Reconstructing/resetting the public path can overwrite a different checkout after partial cleanup.
+    throw new Error(retainCheckout(common, w, `cleanup incomplete: ${error instanceof Error ? error.message : String(error)}; inspect retained files and refs before retrying`))
   }
   if (w.id) {
-    const { registryForDir } = await import('./worker-registry.js')
-    const record = await (await registryForDir(leadDir)).read(w.id)
+    const record = await registry.read(w.id)
     if (record) cleanupWorkerLogs(leadDir, record)
   }
   return true
@@ -694,9 +759,8 @@ export function cleanupWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'i
     for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) {
       try { fs.rmSync(path.join(parent, WORKERS_DIR, tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
     }
-    for (const dir of [path.join(parent, WORKERS_DIR), path.join(parent, '.room')]) {
-      try { fs.rmdirSync(dir) } catch { /* another worker or a locked log keeps the directory */ }
-    }
+    // Public parent directories have no creation receipt. Leave them routinely;
+    // they are not cleanup candidates or retained worker items.
     return true
   })
 }
@@ -705,6 +769,8 @@ export function cleanupWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'i
 export async function saveDiscardPatch(leadDir: string, w: LocalWorker,
   publish: (bytes: Buffer) => Promise<string>): Promise<string | undefined> {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
+  const common = await realGitCommonDir(leadDir)
+  let keepScratch = false
   try {
     const run = (args: string[], wholeTreePaths?: number) => boundedGit(w.dir, args, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') })
     const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
@@ -720,11 +786,18 @@ export async function saveDiscardPatch(leadDir: string, w: LocalWorker,
     const verifyDir = path.join(scratch, 'verify')
     const verifyPatch = path.join(scratch, 'verify.patch')
     fs.writeFileSync(verifyPatch, patch, { mode: 0o600 })
+    privateStateDirectory(verifyDir, { exclusive: true })
+    const root = rootIdentity(verifyDir)
+    keepScratch = true
     await internalGit(leadDir, ['worktree', 'add', '-q', '--detach', verifyDir, base])
+    const witness = witnessPreparation(verifyDir, 'HEAD', preparationIdentity(), root, base)
     try { boundedGitSync(verifyDir, ['apply', '--binary', verifyPatch]) }
-    finally { await internalGit(leadDir, ['worktree', 'remove', '--force', verifyDir]) }
+    finally { await removePreparation(common, verifyDir, witness, false); keepScratch = false }
     return publish(patch)
-  } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
+  } finally {
+    if (keepScratch) retainWorkerItem(common, { kind: 'directory', path: scratch, id: w.id, tag: w.tag, reason: 'discard verification cleanup could not prove ownership; retained in place' })
+    else fs.rmSync(scratch, { recursive: true, force: true })
+  }
 }
 
 /** Per-file cap for carry at spawn; collection (collect.ts) uses the same ceiling. */
@@ -733,6 +806,8 @@ export const CARRY_FILE_LIMIT = 5 * 1024 * 1024
 /** Carry's limits bound saved scratch too. */
 const SCRATCH_FILE_LIMIT = CARRY_FILE_LIMIT, SCRATCH_TOTAL_LIMIT = 50 * 1024 * 1024
 const SCRATCH_DIR = path.join('.room', 'scratch')
+// Scratch from an earlier process has no current creation receipt: retain it rather than guess.
+const scratchRoots = new Map<string, ReturnType<typeof rootIdentity>>()
 
 /**
  * Copy workers' scratch (untracked logs and temp files collect does not bring in) to <lead>/.room/scratch/<tag>/
@@ -755,8 +830,19 @@ export function saveWorkerScratch(leadRoot: string, workers: readonly { tag: str
     const target = path.join(leadRoot, SCRATCH_DIR, tag)
     try { if (fs.lstatSync(target).isSymbolicLink()) { refuse(`${SCRATCH_DIR}/${tag} is a link`); continue } }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
-    fs.rmSync(target, { recursive: true, force: true })
+    if (fs.existsSync(target)) {
+      const known = scratchRoots.get(target), actual = rootIdentity(target)
+      if (!known || known.dev !== actual.dev || known.ino !== actual.ino || known.birthtimeNs !== actual.birthtimeNs) {
+        const reason = `scratch ownership receipt is unknown or changed; kept ${target}`
+        const common = commonGitDirFromDotGit(leadRoot)
+        if (fs.existsSync(path.join(common, 'HEAD'))) retainWorkerItem(common, { kind: 'directory', path: target, tag, reason })
+        refuse(reason); continue
+      }
+      fs.rmSync(target, { recursive: true })
+    }
     fs.mkdirSync(target)
+    if (scratchRoots.size >= 1024) scratchRoots.delete(scratchRoots.keys().next().value!)
+    scratchRoots.set(target, rootIdentity(target))
     for (const p of list) {
       const skip = (reason: string) => skipped.push({ tag, path: p, reason })
       if (!validRepoPath(p, MATERIALIZED_PATH)) { skip('unsafe path'); continue }

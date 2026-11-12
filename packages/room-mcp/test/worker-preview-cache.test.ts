@@ -1,3 +1,4 @@
+import { seedRegistryWorker } from './registry-fixture.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -35,7 +36,8 @@ async function fixture() {
   expect(preview.passed, preview.text).toBe(true)
   await waitForPreviewSweepForTests()
   const cache = await previewCachePath(workerDir)
-  const worker = { id: 'w_w1', tag: 'w1', name: 'lead+w1', lead: 'lead', host: 'codex', task: 'task',
+  const { record } = await seedRegistryWorker(root, 'w1')
+  const worker = { id: record.id, tag: 'w1', name: 'lead+w1', lead: 'lead', host: 'codex', task: 'task',
     dir: workerDir, branch: 'room/w1', pid: 0, startedAt: 1, status: 'done', exitCode: 0,
     budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' } as LocalWorker
   const listed = () => git('worktree', 'list', '--porcelain')

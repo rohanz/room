@@ -1,3 +1,4 @@
+import { seedRegistryWorker } from './registry-fixture.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
@@ -85,6 +86,7 @@ describe('worker lifecycle cleanup', () => {
       git('commit', '-qm', 'base')
       const dir = join(root, '.room', 'workers', 'a')
       git('worktree', 'add', '-qb', 'room/a', dir)
+      await seedRegistryWorker(root, 'a', { id: 'w_a' })
       const names: string[] = []
       const signal = vi.fn()
       expect(await cleanupWorker(root, done('a', dir), { collected: true, terminatedProcesses: names, processOptions: {

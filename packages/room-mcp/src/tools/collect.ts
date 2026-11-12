@@ -1,3 +1,5 @@
+import { writeWorkerRecordRef } from '../worker-refs.js'
+import { retainedWorkerLines } from '../worker-retained.js'
 import { validPid } from '@room/relay/process'
 import { requireWorkerInventory } from '../worker-store.js'
 import { requireWorkerEvidence } from '../worker-store.js'
@@ -430,10 +432,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const childLead = { ...s, dir: fs.existsSync(w.dir) ? w.dir : s.dir, me: { ...s.me, name: w.name } } as Session
         const result = await roomCollect({ tag: child.tag, discard: true, force: true }, new Set([...discarding, w.name]), childLead)
         childResults.push(result)
-        // A child's reply may start with the borrowers it detached first; its own
-        // outcome is the last line.
-        const own = result.slice(result.lastIndexOf('\n') + 1)
-        if (!own.startsWith('discarded ') && !own.startsWith('stopped ')) {
+        // A child's reply may start with detached borrowers; its last lifecycle
+        // outcome precedes any appended retained-item diagnostics.
+        const own = result.split('\n').reverse().find(line => /^(discarded |stopped |detached |error:)/.test(line)) ?? ''
+        if (!own.startsWith('discarded ') && !own.startsWith('stopped ') && !own.startsWith('detached ')) {
           await registry.interruptDiscard(lock, `could not dispose of nested worker ${child.tag}: ${result}`)
           return `error: could not dispose of nested worker ${child.tag}: ${result}; retained ${w.dir}`
         }
@@ -764,8 +766,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     // Keep the exact source HEAD and merge baseline used by this collection. A
     // retained shared checkout may receive another commit before its last user exits.
     for (const { w } of selected) {
-      await git(lead.dir, ['update-ref', collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name)!])
-      await git(lead.dir, ['update-ref', collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!])
+      const record = result.inputs.records.get(w.name)!
+      writeWorkerRecordRef(registry.commonDir, collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name)!, record)
+      writeWorkerRecordRef(registry.commonDir, collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!, record)
     }
     // No await from this final identity gate through the last destination write.
     // Restore originals on any write failure.
@@ -981,7 +984,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
           if (result.removed) {
             retire(w.summary ?? '')
-            out.push('cleaned up ' + w.tag + ': temporary files, branch and logs')
+            out.push('cleaned up ' + w.tag + ': temporary files and logs; branch cleanup uses its recovery-pinned operation tip')
             if (result.recoveryRef) out.push('branch recovery ref: ' + result.recoveryRef)
             if (result.terminated.length) out.push('stopped processes from ' + w.tag + ': ' + result.terminated.join(', '))
           } else {
@@ -1016,9 +1019,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       endLease?.()
       const review = new CollectionReview(registry.root, session.dir)
       review.assertClear()
-      return roomCollect(a)
+      const reply = await roomCollect(a)
+      return [reply, ...retainedWorkerLines(registry.commonDir)].join('\n')
     }) }
-    catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+    catch (error) { return [`error: ${error instanceof Error ? error.message : String(error)}`, ...retainedWorkerLines(registry.commonDir)].join('\n') }
     finally { endLease?.() }
   } }
 }

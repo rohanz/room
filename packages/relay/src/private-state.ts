@@ -209,8 +209,13 @@ function underVerifiedRoomRoot(file: string): boolean {
   return !!known?.subtree && known.identity === windowsIdentity(dir)
 }
 /** POSIX repairs the requested path from room/ down; Windows verifies the root and its existing subtree once. */
-export function privateStateDirectory(dir: string): void {
+export function privateStateDirectory(dir: string, options: { exclusive?: boolean } = {}): void {
   dir = path.resolve(dir)
+  if (options.exclusive) {
+    initializePrivateDirectory(dir, false, true)
+    if (process.platform === 'win32') windowsAcl(dir, true)
+    return
+  }
   const { directories, root, inState } = privateDirectoryPath(dir)
   // Never inspect or repair checkout ancestors: the Git directory already permits installing executable hooks.
   // Directory.CreateDirectory on Windows is recursive; never let it create checkout ancestors.

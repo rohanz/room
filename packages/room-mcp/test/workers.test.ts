@@ -262,7 +262,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const tools = createTools({
       getSession: () => session, setSession: s => { session = s }, cwd: dir,
       spawner: () => { throw new Error('spawn failed') },
-      worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: false }),
+      worktree: (repo, tag) => prepareWorktree(repo, tag),
     })
     expect(await tools.call('room_spawn', { tag: 'failed', task: 'x' })).toContain('spawn failed')
     expect(existsSync(join(process.env.XDG_CONFIG_HOME!, 'room', 'ports', '4400'))).toBe(false)
@@ -289,7 +289,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
   })
 
   it('keeps the 0.10.2 missing-work note on every carry fallback', async () => {
-    const t = setup(async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true,
+    const t = setup(async (repo, tag) => ({ ...await prepareWorktree(repo, tag, 'rohanz', { carry: false }),
       ...(tag === 'carried' ? { base: 'f'.repeat(40), carried: { count: 1, commit: 'f'.repeat(40) } } : { base, carryFailed: true }) }), 3)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
@@ -302,7 +302,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
   })
 
   it('says once per lead session that an explicit carry=false leaves uncommitted work out', async () => {
-    const t = setup(async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true, base }), 3)
+    const t = setup((repo, tag) => prepareWorktree(repo, tag, 'rohanz', { carry: false }), 3)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
       const first = await t.leadTools.call('room_spawn', { tag: 'head1', task: 'a', carry: false })
@@ -618,7 +618,7 @@ describe('review fixes: workers', () => {
     // The lead joined with a token in the URL: only the session knows it, not the environment.
     let ls: Session | null = { ...fakeSession(a, lead, false), roomUrl: 'ws://team.example/local%2Fx', token } as Session
     const specs: SpawnSpec[] = []
-    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined, spawner: spec => { specs.push(spec); return { pid: 5, started: Promise.resolve(), onExit: () => {}, kill: () => true } }, worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }) })
+    const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined, spawner: spec => { specs.push(spec); return { pid: 5, started: Promise.resolve(), onExit: () => {}, kill: () => true } }, worktree: (repo, tag) => prepareWorktree(repo, tag) })
     await tools.call('room_spawn', { tag: 'w', task: 't' })
     expect(specs[0].env.ROOM_SERVER).toBe('ws://team.example')
     expect(specs[0].env.ROOM_TOKEN).toBe(token)
@@ -811,7 +811,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const tools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined,
       spawner: spec => { specs.push(spec); return { pid: 7, started: Promise.resolve(), onExit: () => {}, kill: () => true } },
-      worktree: async (repo, tag) => { entered(); await gate; return { dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true } },
+      worktree: async (repo, tag) => { entered(); await gate; return prepareWorktree(repo, tag) },
     })
     const first = tools.call('room_spawn', { tag: 'money', task: 'one' })
     await preparing // the first spawn holds the reservation before the second races it
@@ -991,7 +991,7 @@ describe('worker compute budgets', () => {
     vi.spyOn(os, 'totalmem').mockReturnValue(24 * 1024 ** 3)
     const t = setupLead() // maxWorkers = 2, so reserve six threads each
     const replies = await Promise.all(['a', 'b', 'c'].map(tag => t.leadTools.call('room_spawn', { tag, task: 'train' })))
-    expect(t.specs).toHaveLength(2)
+    expect(t.specs, replies.join('\n---\n')).toHaveLength(2)
     expect(t.specs.map(s => s.env.ROOM_WORKER_THREADS)).toEqual(['6', '6'])
     expect(t.specs.map(s => s.env.ROOM_WORKER_MEM_GB)).toEqual(['12', '12'])
     expect(replies.filter(r => r.includes('budget in prompt:'))).toHaveLength(2)
@@ -1206,7 +1206,6 @@ describe('spawn inputs and effort', () => {
     const t = setupLead()
     const source = 'spawn-linked-input'
     const dest = join(dir, '.room', 'workers', 'linked')
-    mkdirSync(dest, { recursive: true })
     writeFileSync(join(dir, source), 'training data')
     writeFileSync(join(dir, '.roomlinks'), `# shared inputs\n\n${source} # comment\n`)
     try {

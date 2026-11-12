@@ -223,7 +223,8 @@ it('removes the env file with the worker logs, and hook files older versions lef
   fs.mkdirSync(workers, { recursive: true })
   for (const name of ['w.log', 'w.mcp.log', 'w.env.sh', 'w.shell-env.mjs']) fs.writeFileSync(path.join(workers, name), '')
   cleanupWorkerLogs(lead, { id: 'w_test', dir: path.join(workers, 'w'), tag: 'w', outside: false })
-  expect(fs.existsSync(path.join(lead, '.room'))).toBe(false)
+  expect(fs.readdirSync(path.join(lead, '.room/workers'))).toEqual([])
+  expect(fs.existsSync(path.join(lead, '.room'))).toBe(true)
 })
 
 it('gives a Claude worker the env file and keeps PORT and thread caps; Codex filters its shell instead', async () => {

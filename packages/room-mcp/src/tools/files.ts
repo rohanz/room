@@ -1,6 +1,6 @@
 import { asyncFilter } from '../async-filter.js'
 import { checkoutPublisherName } from '../checkout-publication.js'
-import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
+import { git, gitCommitMissing, gitWholeTree, isGitTimeout, isGitWorktreeCommand, withGitWorktreeOperation } from '@room/roomd/git'
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
 import { boundedTwoFilesPatch } from './reader-diff.js'
 import { readDiffCache, DIFF_RESTART } from '../read-diff-cache.js'
@@ -803,10 +803,11 @@ const gitSetup = (dir: string, args: string[]) => {
   const store = previewProcesses.getStore()
   const lock = store?.lock
   if (!lock) return git(dir, args, SETUP_TIMEOUT_MS)
-  return runTrackedProcess('git', args, { cwd: dir, timeout: SETUP_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, lock, signal: store?.signal }).then(result => {
+  const run = () => runTrackedProcess('git', args, { cwd: dir, timeout: SETUP_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, lock, signal: store?.signal }).then(result => {
     if (result.code) throw new Error(`git ${args.join(' ')} failed: ${result.stderr.trim() || `exit ${result.code}`}`)
     return result.stdout
   })
+  return isGitWorktreeCommand(args) ? withGitWorktreeOperation(dir, run) : run()
 }
 const PROBE_TIMEOUT_MS = 3000
 let processProbeForTests: ((pid: number) => Promise<string | null | undefined>) | undefined

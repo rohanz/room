@@ -1,3 +1,5 @@
+import { commonGitDirFromDotGit } from '@room/roomd'
+import { writeWorkerRecordRef, deleteWorkerRecordRef } from './worker-refs.js'
 /** Refresh: rebase a stopped worker's branch onto the lead's HEAD, keeping its uncommitted edits uncommitted. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -10,7 +12,7 @@ import { boundedGit, boundedGitSync } from '@room/roomd/baseline'
 import { ROOM_CARRY_IDENTITY, roomWorkerPathMatchesBranch } from './worker-state.js'
 import type { WorkerRecord } from './worker-status.js'
 
-type RefreshSource = Pick<WorkerRecord, 'id' | 'tag' | 'dir' | 'branch' | 'base' | 'carriedBase' | 'carriedUntracked' | 'link'>
+type RefreshSource = Pick<WorkerRecord, 'id' | 'tag' | 'dir' | 'branch' | 'base' | 'carriedBase' | 'carriedUntracked' | 'link'> & Partial<Pick<WorkerRecord, 'prep' | 'collectedKeep'>>
 
 export type RefreshOutcome =
   | { kind: 'refused'; reason: string }
@@ -266,8 +268,8 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
     if (first && ROOM_CARRY_IDENTITY.isRoomCarryCommit(name, email, subject)) carriedBase = first
   }
   const newBase = carriedBase ?? target
-  if (carriedBase) await internalGit(leadDir, ['update-ref', carryRef(w.tag), carriedBase])
-  else if (carried) await internalGit(leadDir, ['update-ref', '-d', carryRef(w.tag)]).catch(() => { /* never written */ })
+  if (carriedBase) writeWorkerRecordRef(commonGitDirFromDotGit(leadDir), carryRef(w.tag), carriedBase, w)
+  else if (carried) deleteWorkerRecordRef(commonGitDirFromDotGit(leadDir), carryRef(w.tag), w)
   // A carried untracked file your commits now track is part of the base, no longer carried.
   const tracked = new Set(lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', newBase]), '\0'))
   const carriedUntracked = w.carriedUntracked?.filter(entry => !tracked.has(entry.path))

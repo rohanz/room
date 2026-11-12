@@ -1,3 +1,5 @@
+import type { BranchCleanupReceipt } from './worker-refs.js'
+import type { PreparationWitness, RootReceipt } from './worker-preparation.js'
 import type { HostId } from './hosts/types.js'
 /** Durable facts, not the room document, determine a local worker's lifecycle. */
 import type { RetiredWorker, ShareLevel, WorkerStatus, WorkerStopReason, WorkerView } from '@room/shared'
@@ -31,11 +33,12 @@ export interface RunReport {
   /** `k` numbers the run's reports from 1 (absent: 1); `posted` names the completion message last posted. */
   done?: { at: number; summary: string; changed: string[]; k?: number }; posted?: string
 }
-export type PrepStep = 'plan' | 'worktree' | 'branch' | 'carry-commit' | 'carry-refs' | 'untracked' | 'prepared'
+export type PrepStep = 'root' | 'plan' | 'worktree' | 'branch' | 'carry-commit' | 'carry-refs' | 'untracked' | 'prepared'
 export interface PrepJournal {
   step: PrepStep; worktreeExisted?: boolean; branchExisted?: boolean
   previousCarryRefs?: Record<string, string | null>; untrackedTree?: string
   created?: boolean; branchCreated?: boolean
+  identityRequired?: boolean; root?: RootReceipt; witness?: PreparationWitness; branchOid?: string
 }
 interface DiscardPlan {
   force: boolean; children: string[]; steps: Partial<Record<'children' | 'stop' | 'patch' | 'cleanup' | 'prune', boolean>>
@@ -57,6 +60,8 @@ export interface WorkerRecord {
   /** Collection applied this worker's output but could not confirm its host's clean exit. The record stays live,
    * with its worktree, until a later collect or the auto-retire sweep sees the process gone and finishes cleanup. */
   collectPending?: { at: number; reason: string }
+  /** This operation's direct branch tip, preserved before deletion; no record-version migration. */
+  branchCleanup?: BranchCleanupReceipt
   /** A post-operation full scan proves the lead published the kept/carried input.
    * Paths are bounded verification inputs, never a history of guessed stale hashes. */
   keptPublication?: {
@@ -145,6 +150,7 @@ export interface LocalWorker {
   pid: number; processStartTime?: string; startedAt: number
   status: 'running' | 'done' | 'failed' | 'dismissed'
   summary?: string; exitCode?: number; finishedAt?: number
+  prep?: PrepJournal; creationNonce?: string; phase?: WorkerRecord['phase']; outside?: boolean
   stopReason?: Exclude<WorkerStopReason, 'discarded'>
 }
 
@@ -159,6 +165,7 @@ export function realStateInput(record: WorkerRecord, status: WorkerStatusResult)
   return {
     id: record.id, tag: record.tag, name: record.name, lead: record.lead.participant, host: record.host,
     model: record.model, effort: record.effort, budget: record.budget, share: record.share, link: record.link,
+    prep: record.prep, creationNonce: record.runs[0].nonce, phase: record.phase, outside: record.outside,
     task: record.task, dir: record.dir, branch: record.branch, sharedWith: record.sharedWith, base: record.base, carriedBase: record.carriedBase,
     carriedUntracked: record.carriedUntracked, port: record.port, startedAt: record.createdAt,
     pid: signal ? launch.pid : 0, processStartTime: signal ? launch.process!.startTime : undefined,

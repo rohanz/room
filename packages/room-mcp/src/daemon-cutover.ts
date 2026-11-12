@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { withGitWorktreeOperation } from '@room/roomd/git'
 import { cloneId, privateStateDirectory, relayIdentity, verifyPrivatePath } from '@room/relay'
 import { liveness, writeAtomic, type Liveness, type ProcessIdentity } from '@room/relay/leases'
 import { sameStartTime, type ProcessProbe } from '@room/relay/process'
@@ -125,7 +126,7 @@ export async function inspectDaemonCutover(commonDir: string, options: InspectOp
     state.clients.push({ ...client, sha256, ...(skipped ? { skipped: true, reason: resolution ? `resolved by operator at ${new Date(resolution.at).toISOString()}` : 'unchanged record previously drained' } : {}), ...(identity ? { pid: identity.pid } : !client.bindingOnly && !skipped ? { reason: 'process identity is missing or malformed' } : {}), liveness })
   }
   try {
-    const { stdout } = await exec('git', ['--git-dir', commonDir, 'worktree', 'list', '--porcelain', '-z'], { timeout: 5000, maxBuffer: MAX_RECORD_BYTES })
+    const { stdout } = await withGitWorktreeOperation(commonDir, () => exec('git', ['--git-dir', commonDir, 'worktree', 'list', '--porcelain', '-z'], { timeout: 5000, maxBuffer: MAX_RECORD_BYTES }))
     state.worktrees = stdout.split('\0').filter(v => v.startsWith('worktree ')).map(v => v.slice(9))
   } catch (e) { state.issues.push(`Cannot inventory linked worktrees: ${(e as Error).message}`) }
 

@@ -1,4 +1,5 @@
-import { removePreparation } from './worker-preparation.js'
+import { deleteWorkerRef, restoreWorkerRef, preserveWorkerBranch, captureWorkerBranch, operationBranchReceipt } from './worker-refs.js'
+import { removePreparation, verifyWorkerCheckout, retainCheckout } from './worker-preparation.js'
 import { workerTagFile, withWorkerTag } from './worker-tags.js'
 import { retainedSessionMissing } from './hosts/lifecycle.js'
 import type { HostId } from './hosts/types.js'
@@ -405,6 +406,8 @@ export class FileWorkerStore {
       || path.resolve(worktreeRecord.dir) !== path.resolve(candidate.dir)
       || worktreeRecord.sharedWith) return undefined
     if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return undefined
+    try { verifyWorkerCheckout(this.commonDir, worktreeRecord) }
+    catch (error) { retainCheckout(this.commonDir, worktreeRecord, String(error)); return undefined }
     return { record: candidate, status }
   }
   /** Only process/record management: an outside checkout never grants a worktree capability. */
@@ -533,6 +536,10 @@ export class FileWorkerStore {
   async command(id: string, command: WorkerCommand, expectedSeq?: number): Promise<WorkerRecord> {
     return this.update(id, old => {
       if (expectedSeq !== undefined && old.seq !== expectedSeq) throw new Error('worker seq changed')
+      if (command.type === 'prepare-finish' && !old.outside && !old.sharedWith) {
+        try { verifyWorkerCheckout(this.commonDir, { ...old, prep: { ...old.prep, witness: command.witness ?? old.prep.witness, branchOid: command.branchOid ?? old.prep.branchOid } }) }
+        catch (error) { throw new Error(retainCheckout(this.commonDir, old, error instanceof Error ? error.message : String(error))) }
+      }
       return applyWorkerCommand(old, command)
     })
   }
@@ -695,7 +702,27 @@ export class FileWorkerStore {
 
   async beginOperation(id: string, op: 'resume' | 'stop' | 'collect' | 'discard' | 'prune'): Promise<boolean> {
     const file = this.opFile(id)
-    if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
+    const acquired = async () => {
+      this.heldOperations.set(id, op)
+      try {
+        const record = this.#read(id)
+        if (record && ['collect', 'discard'].includes(op) && !record.outside && !record.sharedWith
+          && !['intent', 'preparing', 'abandoned'].includes(record.phase)) {
+          // A restarted discard is the same durable operation, not permission to
+          // adopt a moved tip. A new user attempt starts from active instead.
+          const branchCleanup = record.phase === 'discarding' && record.branchCleanup
+            ? record.branchCleanup : captureWorkerBranch(this.commonDir, record)
+          // Lease admission must not advance the worker's revision: retirement
+          // validates that its pre-lease record still matches. Normal phase
+          // transitions below copy this receipt into v1 facts for crash replay.
+          const current = this.#readFact(file, (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
+          if (current?.holder.nonce !== this.identity.nonce) throw new Error('worker operation lease changed before branch receipt publication')
+          writeAtomic(file, { op, holder: this.identity, at: this.now(), branchCleanup })
+        }
+        return true
+      } catch (error) { await this.finishOperation(id); throw error }
+    }
+    if (createExclusive(file, { op, holder: this.identity, at: this.now() })) return acquired()
     const existing = this.#readFact(file, (value): value is { op: string; holder: InstanceToken; at: number } =>
       object(value) && typeof value.op === 'string' && tokenShape(value.holder) && typeof value.at === 'number')
     if (existing?.holder.nonce === this.identity.nonce) {
@@ -704,7 +731,7 @@ export class FileWorkerStore {
     }
     if (existing && this.alive(existing.holder) === 'dead') {
       await leaseRetry(() => recover(file, () => true))
-      if (createExclusive(file, { op, holder: this.identity, at: this.now() })) { this.heldOperations.set(id, op); return true }
+      if (createExclusive(file, { op, holder: this.identity, at: this.now() })) return acquired()
     }
     throw new Error(`worker operation lease held by another instance: ${id}`)
   }
@@ -851,8 +878,15 @@ export class FileWorkerStore {
     return this.update(id, old => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1)!.n, ...(cause ? { cause } : {}) }, seq: old.seq + 1 }))
   }
 
+  private pinOperationBranch(record: WorkerRecord): import('./worker-refs.js').BranchCleanupReceipt | undefined {
+    if (record.outside || record.sharedWith || ['intent', 'preparing', 'abandoned'].includes(record.phase)) return undefined
+    const receipt = preserveWorkerBranch(this.commonDir, record, operationBranchReceipt(this.commonDir, record.id))
+    const lease = readJson<{ holder: InstanceToken; op: string; at: number }>(this.opFile(record.id))
+    if (lease?.holder.nonce === this.identity.nonce) writeAtomic(this.opFile(record.id), { ...lease, branchCleanup: receipt })
+    return receipt
+  }
   async beginCollect(id: string): Promise<WorkerRecord> {
-    return this.update(id, old => ({ ...old, phase: 'collecting', interrupted: undefined, seq: old.seq + 1 }))
+    return this.update(id, old => ({ ...old, prep: ['intent', 'preparing'].includes(old.phase) ? { ...old.prep, identityRequired: true } : old.prep, phase: 'collecting', interrupted: undefined, seq: old.seq + 1 }))
   }
   /** A collection that did not finish returns the worker to `active`; a finished one retires it (beginRetirement). */
   async abortCollect(id: string): Promise<WorkerRecord> {
@@ -950,7 +984,7 @@ export class FileWorkerStore {
   }
 
   async beginDiscard(id: string, force: boolean, children: string[]): Promise<WorkerRecord> {
-    return this.update(id, old => ({ ...old, phase: 'discarding',
+    return this.update(id, old => ({ ...old, branchCleanup: this.pinOperationBranch(old), prep: ['intent', 'preparing'].includes(old.phase) ? { ...old.prep, identityRequired: true } : old.prep, phase: 'discarding',
       discard: { force, children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
   }
   async markDiscardStep(id: string, step: keyof NonNullable<WorkerRecord['discard']>['steps']): Promise<WorkerRecord> {
@@ -1016,6 +1050,8 @@ export class FileWorkerStore {
     const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
     const status = this.#status(id)
     if (!status) return
+    const { WorkerRegistry } = await import('./worker-registry.js')
+    const cleanupRegistry = WorkerRegistry.fromStore(this)
     const own = realStateInput(record, status)
     const workers = requireWorkerInventory(this.#list()).flatMap(value => {
       const current = this.#status(value.id)
@@ -1030,6 +1066,10 @@ export class FileWorkerStore {
       if (user.phase !== 'discarding') await this.beginDiscard(user.id, true, [])
       await this.replayDiscard(user.id, publishPatch)
       if (!['retiring', 'retired'].includes(this.#read(user.id)?.phase ?? '')) return
+    }
+    if (!record.outside && !borrowed && fs.existsSync(record.dir)) {
+      try { verifyWorkerCheckout(this.commonDir, record) }
+      catch (error) { throw new Error(retainCheckout(this.commonDir, record, String(error))) }
     }
     const owned = !record.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
     if (!record.outside && !borrowed && !owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
@@ -1105,11 +1145,11 @@ export class FileWorkerStore {
     }
     if (!record.discard!.steps.cleanup) {
       if (owned) {
-        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers })) return
+        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers, registry: cleanupRegistry })) return
       } else if (record.outside) {
         cleanupWorkerLogs(leadDir, record)
       } else if (!borrowed) {
-        await pruneMissingWorkerWorktree(leadDir, own)
+        await pruneMissingWorkerWorktree(leadDir, own, true, cleanupRegistry)
         cleanupWorkerLogs(leadDir, record)
       } else cleanupWorkerLogs(leadDir, record)
       await this.markDiscardStep(id, 'cleanup')
@@ -1158,31 +1198,38 @@ export class FileWorkerStore {
     this.changed(id)
   }
 
-  private rollbackPreparation(record: WorkerRecord): void {
+  private async rollbackPreparation(record: WorkerRecord): Promise<void> {
     const prep = record.prep
     if (record.sharedWith) { removeWorkerRefs(this.commonDir, record); return }
     // A supplied directory has no resources for this preparation to undo.
     if (prep.created !== true && prep.branchCreated !== true
-      && !Object.keys(prep.previousCarryRefs ?? {}).length) return
+      && !Object.keys(prep.previousCarryRefs ?? {}).length) {
+      if (!record.outside) {
+        if (fs.existsSync(record.dir)) retainCheckout(this.commonDir, record, 'preparation has no completed creation witness; retained in place')
+        deleteWorkerRef(this.commonDir, `refs/heads/${record.branch}`, record.id)
+      }
+      return
+    }
     const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
     if (!roomWorkerPathMatchesBranch(leadDir, record.dir, record.branch, false)) throw new Error(`unsafe preparation path for ${record.id}`)
-    const run = (...args: string[]): string => boundedGitSync(this.commonDir, ['--git-dir', this.commonDir, ...args]).toString().trim()
-    if (prep.created !== true) return
+    if (prep.created !== true) {
+      if (fs.existsSync(record.dir)) retainCheckout(this.commonDir, record, 'preparation has no completed creation witness; retained in place')
+      deleteWorkerRef(this.commonDir, `refs/heads/${record.branch}`, record.id)
+      return
+    }
     try {
-      removePreparation(this.commonDir, record.dir, { id: record.id, nonce: record.runs[0].nonce, branch: record.branch },
+      await removePreparation(this.commonDir, record.dir, { ...record.prep.witness, id: record.id, nonce: record.runs[0].nonce, branch: record.branch, branchOid: record.prep.branchOid, root: record.prep.root },
         prep.branchCreated === true && prep.branchExisted === false)
     } catch (error) {
-      process.stderr.write(`[room] ${error instanceof Error ? error.message : String(error)}; cleanup stopped; remaining preparation resources retained\n`)
+      const reason = retainCheckout(this.commonDir, record, error instanceof Error ? error.message : String(error))
+      process.stderr.write(`[room] ${reason}; remaining preparation resources retained\n`)
       return
     }
     const refs = prep.previousCarryRefs
     if (refs && typeof refs === 'object' && !Array.isArray(refs)) {
       for (const [ref, oid] of Object.entries(refs)) {
         if (!/^refs\/room\/(carry|carry-untracked)\/[A-Za-z0-9._/-]+$/.test(ref)) throw new Error(`unsafe preparation ref ${ref}`)
-        if (typeof oid === 'string' && /^[0-9a-f]{40,64}$/.test(oid)) run('update-ref', ref, oid)
-        else if (oid === null) {
-          try { run('update-ref', '-d', ref) } catch (e) { if ((e as { status?: number }).status !== 1) throw e }
-        }
+        restoreWorkerRef(this.commonDir, ref, typeof oid === 'string' ? oid : undefined, record.id)
       }
     }
   }
@@ -1190,7 +1237,7 @@ export class FileWorkerStore {
   async abandonPreparation(id: string): Promise<void> {
     const record = this.#read(id)
     if (!record || record.runs.at(-1)?.launch) return
-    if (record.sharedWith || record.phase === 'preparing' || record.phase === 'prepared') this.rollbackPreparation(record)
+    if (record.sharedWith || record.phase === 'preparing' || record.phase === 'prepared') await this.rollbackPreparation(record)
     await this.update(id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
   }
 
@@ -1318,7 +1365,7 @@ export class FileWorkerStore {
       }
       if (record.phase === 'preparing' && this.alive(run.launcher) === 'dead') {
         yielded = true
-        this.rollbackPreparation(record)
+        await this.rollbackPreparation(record)
         await this.update(record.id, old => ({ ...old, phase: 'abandoned', seq: old.seq + 1 }))
         continue
       }

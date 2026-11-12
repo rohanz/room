@@ -1,3 +1,5 @@
+import { retainedWorkerLines } from '../worker-retained.js'
+import { verifyWorkerCheckout, retainCheckout } from '../worker-preparation.js'
 import { workerRuntimeForHost } from '../hosts/selection.js'
 import { workerContractWarning } from '../hosts/codex-worker-warning.js'
 import { requireWorkerInventory } from '../worker-store.js'
@@ -260,7 +262,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const worker = workerAdapter(host)
       const hostSessionId = worker.freshSessionId()
       const usedPorts = workerPortsInUse((requireWorkerInventory(await registry.list())))
-      const prep = { step: 'plan' as const, worktreeExisted: fs.existsSync(dir), created: false }
+      const prep = { step: 'plan' as const, identityRequired: !suppliedDir, worktreeExisted: fs.existsSync(dir), created: false }
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
@@ -292,13 +294,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const publication = base && carried?.paths?.length
           ? await timed('carry-publication', () => acknowledgeKeptPublication(s, undefined, carried!.paths!)) : undefined
-        await registry.command(id, { type: 'prepare-finish', created, branchCreated: prepared?.branchCreated,
+        await registry.command(id, { type: 'prepare-finish', created, branchCreated: prepared?.branchCreated, witness: prepared?.witness, branchOid: prepared?.branchOid,
           facts: !suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined } : {} })
         if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { throw new Error(`could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const deps = created ? workspaceDepsNotes(await linkWorkspaceDeps(s.dir, dir)) : { reply: [] }
+        if (!outside && !sharedOwner) {
+          const current = await registry.read(id)
+          if (!current) throw new Error('worker record disappeared before launch')
+          try { verifyWorkerCheckout(registry.commonDir, current) }
+          catch (error) { throw new Error(retainCheckout(registry.commonDir, current, String(error))) }
+        }
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try {
           launched = await timed('launch', () => launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
@@ -384,10 +392,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(...deps.reply, ...launched.warnings)
         if (outside) out.push(`note: ${dir} is an existing user checkout; Room does not own or collect its files or change its Git state.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
-        return out.join('\n')
+        return [out.join('\n'), ...retainedWorkerLines(registry.commonDir)].join('\n')
       } catch (error) {
         if (!childOwned) await registry.abandonPreparation(id).catch(cleanup => { state.log(`worker preparation cleanup: ${cleanup}`) })
-        return `error: ${error instanceof Error ? error.message : String(error)}`
+        return [`error: ${error instanceof Error ? error.message : String(error)}`, ...retainedWorkerLines(registry.commonDir)].join('\n')
       } finally { await registry.finishOperation(id) }
     },
 

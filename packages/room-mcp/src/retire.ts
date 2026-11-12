@@ -157,7 +157,7 @@ export async function finishPendingCollect(s: Session, rooms: Rooms, id: string,
       return [kept(result.reason), ...result.lines ?? []].join('\n')
     }
     await retireWorker(rooms, s, id, (await archive(w.summary ?? '')))
-    return `cleaned up ${w.tag}: temporary files, branch and logs` + (result.terminated.length ? `\nstopped processes from ${w.tag}: ${result.terminated.join(', ')}` : '')
+    return `cleaned up ${w.tag}: temporary files and logs; branch disposition is listed by room_state` + (result.terminated.length ? `\nstopped processes from ${w.tag}: ${result.terminated.join(', ')}` : '')
   } finally { await registry.finishOperation(id) }
 }
 
@@ -291,10 +291,17 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     const current = async () => (await registry.freshness(record.id))?.revision === captured.revision && !rooms.hasHandle(s, w) && rooms.tracking(s)
     const retiredAt = Date.now()
     if (state.worktree === 'vanished') {
-      try { await pruneMissingWorkerWorktree(s.dir, w) } catch { continue }
       if (!await current()) continue
-      await retireWorker(rooms, s, record.id, (await registry.archiveOf(record, { summary: 'worktree was already gone', finishedAt: w.finishedAt ?? retiredAt,
-        retiredAt, disposition: 'discarded' })))
+      try { await registry.beginOperation(record.id, 'collect') } catch { continue }
+      try {
+        const fresh = await registry.read(record.id)
+        if (!fresh || fresh.seq !== record.seq || rooms.hasHandle(s, w) || !rooms.tracking(s)) continue
+        await pruneMissingWorkerWorktree(s.dir, w)
+        if ((await registry.read(record.id))?.seq !== fresh.seq || rooms.hasHandle(s, w) || !rooms.tracking(s)) continue
+        await retireWorker(rooms, s, record.id, (await registry.archiveOf(fresh, { summary: 'worktree was already gone', finishedAt: w.finishedAt ?? retiredAt,
+          retiredAt, disposition: 'discarded' })))
+      } catch { /* Preserve uncertain checkout/branch facts for a later operation. */ }
+      finally { await registry.finishOperation(record.id) }
       continue
     }
     const workers = (await Promise.all((requireWorkerInventory(await registry.list())).map(async other => { const st = (await registry.status(other.id)); return st ? [realStateInput(other, st)] : [] }))).flat()

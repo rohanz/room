@@ -93,7 +93,7 @@ it('retains a preparing record with a mismatched durable record identity after r
   } finally { reopened.close() }
 })
 
-it.each(['collect', 'discard'] as const)('keeps established %s authority when its preparation witness is absent', async action => {
+it.each(['collect', 'discard'] as const)('keeps pre-change established %s authority when its preparation witness is absent', async action => {
   const actual = await vi.importActual<typeof workerGit>('../src/worker-git.js')
   vi.mocked(workerGit.cleanupWorker).mockImplementation(actual.cleanupWorker)
   vi.mocked(workerGit.ignoredWorkerArtifacts).mockImplementation(actual.ignoredWorkerArtifacts)
@@ -101,12 +101,14 @@ it.each(['collect', 'discard'] as const)('keeps established %s authority when it
   const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   expect(await t.leadTools.call('room_spawn', { tag: 'established', task: 'x' })).toContain('spawned established')
   const record = (await registry.reserved('established'))!
+  await mutateWorkerFixture(registry, record.id, old => ({ ...old, prep: { step: 'prepared', created: true, branchCreated: true }, seq: old.seq + 1 }))
   fs.rmSync(path.join(git('-C', record.dir, 'rev-parse', '--absolute-git-dir'), PREPARATION_WITNESS_FILE))
   t.exits[0](0)
   await vi.waitFor(async () => expect((await registry.status(record.id))?.status).toBe('done'))
   const reply = await t.leadTools.call('room_collect', { tag: 'established', ...(action === 'discard' ? { discard: true } : {}) })
   expect(fs.existsSync(record.dir), reply).toBe(false)
   expect(git('branch', '--list', record.branch)).toBe('')
+  expect(reply).not.toContain('retained worker items')
 })
 
 it('refuses damaged Git metadata found in an ancestor of a supplied directory', async () => {
@@ -140,7 +142,7 @@ it('does not prune unrelated unrecorded worktree metadata while preparing a fres
   expect(git('worktree', 'list', '--porcelain')).toContain(registered)
 })
 
-it('clears only the absent canonical registration when reusing a stale tag', async () => {
+it('refuses an unmarked canonical stale registration and preserves every unrelated entry', async () => {
   const { repo, head, git } = realRepo(), target = path.join(repo, '.room/workers/stale')
   const unrelated = [path.join(repo, '.room/workers/other'), path.join(repo, 'other\ncheckouts/stale')]
   for (const dir of [target, ...unrelated]) git('worktree', 'add', '-q', '--detach', dir)
@@ -149,7 +151,7 @@ it('clears only the absent canonical registration when reusing a stale tag', asy
   })).map(entry => ({ ...entry, backlink: fs.readFileSync(path.join(entry.admin, 'gitdir'), 'utf8') }))
   for (const dir of [target, ...unrelated]) fs.rmSync(dir, { recursive: true })
   const t = setupLead(repo, head)
-  expect(await t.leadTools.call('room_spawn', { tag: 'stale', task: 'x' })).toContain('spawned stale')
+  expect(await t.leadTools.call('room_spawn', { tag: 'stale', task: 'x' })).toContain('error:')
   const listing = git('worktree', 'list', '--porcelain', '-z')
   for (const entry of preserved) {
     expect(listing).toContain(`worktree ${entry.root}\0`)
@@ -180,7 +182,7 @@ it('rechecks the witness before fallback clean after a foreign replacement follo
   let replaced = false
   vi.spyOn(gitCommands, 'git').mockImplementation(async (...args) => {
     const result = await run(...args)
-    if (!replaced && args[0] === target && args[1].includes('reset')) {
+    if (!replaced && args[0] === target && args[1].includes('read-tree')) {
       replaced = true
       git('worktree', 'remove', '--force', target)
       git('worktree', 'add', '-q', '-b', 'user-fallback', target)

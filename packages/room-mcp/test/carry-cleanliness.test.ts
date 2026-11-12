@@ -1,3 +1,4 @@
+import { retainedWorkerLines } from '../src/worker-retained.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { patchPublisher } from './registry-fixture.js'
@@ -100,19 +101,22 @@ describe('carry and discard safety', () => {
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
   })
 
-  it('reports a reconstructed base and recovery location after late cleanup failure', async () => {
-    const prepared = await prepareWorktree(root, 'rollback', 'lead')
+  it('retains a branch and recovery patch after late cleanup failure without reconstructing a checkout', async () => {
+    const { registry, record } = await seedRegistryWorker(root, 'rollback')
+    const prepared = await prepareWorktree(root, 'rollback', 'lead', { identity: { id: record.id, nonce: record.runs[0].nonce } })
+    await registry.command(record.id, { type: 'prepare-step', step: 'prepared', facts: { witness: prepared.witness, root: prepared.witness?.root, identityRequired: true, branchOid: prepared.branchOid } })
     fs.writeFileSync(path.join(prepared.dir, 'base.txt'), 'worker edit\n')
-    const worker = { tag: 'rollback', dir: prepared.dir, base: prepared.base, branch: prepared.branch,
+    const worker = { id: record.id, tag: 'rollback', dir: prepared.dir, base: prepared.base, branch: prepared.branch,
       status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as LocalWorker
     const patch = await saveDiscardPatch(root, worker, patchPublisher(root, worker.tag))
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
-    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/rollback "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" update-ref --no-deref --stdin "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = bin + path.delimiter + originalPath
     startsPreviewMaintenance = true
-    try { await expect(cleanupWorker(root, worker, { collected: true, discarded: true, processOptions: { list: () => [] } })).rejects.toThrow(/cleanup failed:.*late cleanup failure/) }
+    try { expect(await cleanupWorker(root, worker, { collected: true, discarded: true, processOptions: { list: () => [] } })).toBe(true) }
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
-    expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
+    expect(fs.existsSync(prepared.dir)).toBe(false)
+    expect(retainedWorkerLines(path.join(root, '.git')).join('\n')).toContain('refs/heads/room/rollback')
     expect(fs.readFileSync(patch!, 'utf8')).toContain('worker edit')
   })
 

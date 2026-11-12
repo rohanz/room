@@ -289,13 +289,14 @@ describe('WorkerRegistry durable store', () => {
     fs.writeFileSync(path.join(dir, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
     const workerDir = path.join(dir, '.room', 'workers', 'tests')
     fs.mkdirSync(path.dirname(workerDir), { recursive: true })
-    git('worktree', 'add', '-qb', 'room/tests', workerDir)
-    witnessPreparation(workerDir, 'room/tests', { id: intent().id, nonce: intent().runs[0].nonce })
+    const creationBase = git('rev-parse', 'HEAD')
+    git('worktree', 'add', '-qb', 'room/tests', workerDir, creationBase)
+    witnessPreparation(workerDir, 'room/tests', { id: intent().id, nonce: intent().runs[0].nonce }, undefined, creationBase)
     const commonDir = path.resolve(dir, git('rev-parse', '--git-common-dir'))
     const store = await openRegistry(commonDir, { liveness: () => 'alive' })
     await store.writeIntent({ ...intent(), dir: workerDir, phase: 'preparing', prep: {
       step: 'worktree', worktreeExisted: false, branchExisted: false, created: true, branchCreated: true,
-      previousCarryRefs: {},
+      previousCarryRefs: {}, branchOid: creationBase,
     } })
     const restarted = await openRegistry(commonDir, { liveness: () => 'dead' })
     expect((await restarted.read('w_01'))?.phase).toBe('abandoned')

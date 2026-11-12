@@ -173,7 +173,7 @@ describe('nested lead: a worker that leads workers', () => {
     const tools = createTools({
       getSession: () => s, setSession: x => { s = x }, cwd: top, maxWorkers: 4, probe: () => undefined, listCwdProcesses: () => [],
       spawner: spec => { specs.push(spec); return { pid: 900 + specs.length, started: Promise.resolve(), onExit: () => {}, kill: () => true } },
-      worktree: async (repo, tag) => ({ dir: path.join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }),
+      worktree: (repo, tag) => prepareWorktree(repo, tag),
     })
     for (const tag of ['ship', 'cat']) expect(await tools.call('room_spawn', { tag, task: 'one docstring', host: 'codex' })).toContain(`spawned ${tag}`)
     const mem = specs.reduce((sum, spec) => sum + Number(spec.env.ROOM_WORKER_MEM_GB), 0)
