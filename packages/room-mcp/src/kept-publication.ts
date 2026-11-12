@@ -59,13 +59,6 @@ async function acknowledgeOnce(s: Session, previous: Publication | undefined, pa
             return hash(Buffer.from(text, 'latin1'))
           } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return null }
         }
-        for (const p of pending.paths) {
-          if (!validRepoPath(p, DISK_READ_PATH)) return pending
-          required.set(p, await diskHash(p))
-        }
-        // Fixed after-images prevent an in-flight pre-application scan from being
-        // acknowledged merely because its revision advanced.
-        for (const { p, after } of written) if (required.has(p)) required.set(p, after === null ? null : hash(after))
         await s.daemon.reconcileGitChanges()
         await s.daemon.settle()
         const publisher = checkoutPublisher(s) ?? s.me.name
@@ -75,6 +68,17 @@ async function acknowledgeOnce(s: Session, previous: Publication | undefined, pa
           || !meta?.fenceValid || !record?.holder || head.fence !== s.daemon.fence || head.fence !== record.git?.fence
           || head.base !== record.git.base || record.git.head !== expectedHead || String(record.holder.epoch) !== head.fence) return pending
         const entries = s.room.manifest.get(`${publisher}\0${head.fence}`)
+        for (const p of pending.paths) {
+          if (!validRepoPath(p, DISK_READ_PATH) || !meta.roomSalt) return pending
+          // An excluded path is never consumed as published text. Keep that
+          // coverage fact, but do not let a carried build artifact prevent the
+          // acknowledgement of all the source files that are actually shared.
+          if (!entries?.has(p) && head.excluded.includes(digestPath(meta.roomSalt, p))) continue
+          required.set(p, await diskHash(p))
+        }
+        // Fixed after-images still reject a stale scan or a delivery replaced
+        // before verification; excluded bytes are checked by preview coverage.
+        for (const { p, after } of written) if (required.has(p)) required.set(p, after === null ? null : hash(after))
         const base = await gitBlobInfoMany(s.dir, head.base, pending.paths)
         const normalized: string[] = []
         for (const [p, expected] of required) {

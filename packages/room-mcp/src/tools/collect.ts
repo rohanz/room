@@ -1,5 +1,6 @@
 import { recoveryRefDescription, writeWorkerRecordRef } from '../worker-refs.js'
 import { retainedWorkerLines } from '../worker-retained.js'
+import { verifyWorkerCheckout } from '../worker-preparation.js'
 import { validPid } from '@room/relay/process'
 import { requireWorkerInventory } from '../worker-store.js'
 import { requireWorkerEvidence } from '../worker-store.js'
@@ -104,7 +105,7 @@ async function sameFileBytes(a: string, b: string, size: number): Promise<boolea
 const ownershipRecords = async (s: Session) => [...s.room.retiredWorkers(), ...(await localWorkers(s.dir))]
 
 async function stopOwnedWorktreeProcesses(leadDir: string, w: LocalWorker, leadName: string, workers: Iterable<LocalWorker | RetiredWorker>, errors?: string[], probe?: ProcessProbe, list?: CwdProcessLister): Promise<string[]> {
-  if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return []
+  if (!decideStop(await workerRealState(leadDir, w, { ownership: true, allowBranchChange: true, leadName, workers })).cwd) return []
   if (w.id) {
     const registry = await registryForDir(leadDir)
     const record = (await registry.read(w.id))
@@ -233,6 +234,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const parent = (await registry.reservedByTagOrName(record.lead.participant))
       return `${w.tag} belongs to ${record.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? 'PARENT'} discard=true force=true to save recovery patches`
     }
+    if (record) try {
+      verifyWorkerCheckout(registry.commonDir, record, true)
+      const branch = (await git(record.dir, ['branch', '--show-current'])).trim()
+      if (branch !== record.branch) return `${w.tag}: checkout is ${branch ? `on ${branch}` : 'at detached HEAD'}, expected ${record.branch}; inspect its work and switch back to ${record.branch} before collecting, or room_collect(tag="${w.tag}", discard=true) to discard it with recovery pins`
+    } catch { /* Missing or unreadable worktrees retain the capability diagnostic. */ }
     return `${w.tag}: no local worker capability (worktree missing or unmanaged)`
   }
   const holdingWorker = async (tag: string, from: Session): Promise<Session> => {
@@ -418,7 +424,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (unsafe) return unsafe
       const children = (await descendants(s, w))
       if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
-      const beforePlan = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, leadName: s.me.name, workers: (await ownershipRecords(s)) })
+      const beforePlan = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, allowBranchChange: true, leadName: s.me.name, workers: (await ownershipRecords(s)) })
       const ignoredBefore = !borrowed && decideDiscard(beforePlan) === 'cleanup' ? await ignoredWorkerArtifacts(w, s.dir) : []
       if (ignoredBefore.length && a.force !== true) return ignoredDiscardRefusal(w.tag, w.dir, ignoredBefore)
       await registry.beginDiscard(lock, a.force === true, children.map(child => child.id!).filter(Boolean))
@@ -472,7 +478,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // A failed inspection is not an empty process table. Do not publish a
       // recovery snapshot or delete a checkout whose writers we cannot inspect.
       if (cleanupErrors.length) throw new Error(cleanupErrors.join('; '))
-      const afterStop = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, leadName: s.me.name, workers: (await ownershipRecords(s)) })
+      const afterStop = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, allowBranchChange: true, leadName: s.me.name, workers: (await ownershipRecords(s)) })
       const missing = !workerRecord?.outside && !borrowed && decideDiscard(afterStop) === 'prune'
       let missingDetail: string | undefined
       if (missing) {

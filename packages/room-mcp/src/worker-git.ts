@@ -12,7 +12,7 @@ import type { LocalWorker, WorkerRecord } from './worker-status.js'
 import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, commonGitDirFromDotGit, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS, withGitWorktreeOperation } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
+import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
 import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
@@ -659,13 +659,13 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     try {
       if (!ownerRecord) throw new Error('no authoritative local worker record')
       if (ownerRecord.tag !== w.tag || ownerRecord.branch !== w.branch || filesystemPath(ownerRecord.dir) !== filesystemPath(w.dir)) throw new Error('cleanup target differs from its authoritative record')
-      verifyWorkerCheckout(common, ownerRecord)
+      verifyWorkerCheckout(common, ownerRecord, discarded)
     } catch (error) { throw new Error(retainCheckout(common, w, error instanceof Error ? error.message : String(error))) }
   }
   verify()
   const branchCleanup = preserveWorkerBranch(common, w, operationBranchReceipt(common, w.id) ?? ownerRecord?.branchCleanup)
   if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
-  if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== 'cleanup') return false
+  if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers, discarded)) return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
     .filter(line => line.startsWith('worktree ')).map(line => line.slice('worktree '.length))
     .filter(dir => dir !== w.dir && isInsideRoot(fs.realpathSync(w.dir), dir))
@@ -715,6 +715,18 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     const recoveryRefs = new Set(branchCleanup.recoveryRef ? [branchCleanup.recoveryRef] : [])
     await withGitWorktreeOperation(common, () => {
       verify()
+      if (discarded) {
+        let branch = ''
+        try { branch = boundedGitSync(w.dir, ['symbolic-ref', '--no-recurse', '-q', 'HEAD']).toString().trim() } catch { /* detached HEAD */ }
+        if (branch !== `refs/heads/${w.branch}`) {
+          // No yield between capturing/pinning detached HEAD and removal. Leave
+          // an unrelated checked-out branch intact; only our branch uses CAS.
+          const checkoutHead = boundedGitSync(w.dir, ['rev-parse', 'HEAD']).toString().trim()
+          const checkoutPin = preserveWorkerBranch(common, w, { tip: checkoutHead })
+          if (!checkoutPin.recoveryRef) throw new Error(`cannot preserve checkout HEAD ${checkoutHead}`)
+          recoveryRefs.add(checkoutPin.recoveryRef)
+        }
+      }
       boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', 'worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     })
     deletePreservedWorkerBranch(common, w, branchCleanup)

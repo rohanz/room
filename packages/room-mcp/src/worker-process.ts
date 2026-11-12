@@ -269,7 +269,26 @@ export function listCwdProcesses(platform: NodeJS.Platform = process.platform): 
   return result
 }
 
-/** Signal only a process with a cwd at or below the resolved worktree root. */
+/** Resolve cleanup authority here, before even listing processes. Stored records
+ * may contain malformed paths; no caller can turn an empty path into its cwd. */
+async function workerProcessRoot(dir: string): Promise<string> {
+  if (!path.isAbsolute(dir)) throw new Error('worktree process cleanup requires an absolute worker checkout path')
+  const root = fs.realpathSync(dir)
+  if (path.basename(path.dirname(root)) !== 'workers' || path.basename(path.dirname(path.dirname(root))) !== '.room')
+    throw new Error('worktree process cleanup requires a Room worker checkout')
+  const { openWorkerReader } = await import('./worker-registry.js')
+  const { verifyWorkerCheckout } = await import('./worker-preparation.js')
+  const reader = await openWorkerReader(root)
+  try {
+    const record = await reader.reserved(path.basename(root))
+    if (!record || !path.isAbsolute(record.dir) || fs.realpathSync(record.dir) !== root || record.branch !== `room/${record.tag}`)
+      throw new Error('worktree process cleanup requires an owned local worker record')
+    verifyWorkerCheckout(reader.commonDir, record, true)
+  } finally { reader.close() }
+  return root
+}
+
+/** Signal only a process with a cwd at or below a verified worker checkout. */
 export async function terminateWorktreeProcesses(dir: string, options: {
   list?: CwdProcessLister
   signal?: (pid: number, signal: NodeJS.Signals) => void
@@ -277,7 +296,7 @@ export async function terminateWorktreeProcesses(dir: string, options: {
   sleep?: (ms: number) => Promise<void>
   protectedPids?: number[]
 } = {}): Promise<string[]> {
-  const root = fs.existsSync(dir) ? fs.realpathSync(dir) : path.resolve(dir)
+  const root = await workerProcessRoot(dir)
   const protectedPids = new Set([process.pid, process.ppid, ...(options.protectedPids ?? [])])
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig))
   const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))

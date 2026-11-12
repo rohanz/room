@@ -20,7 +20,7 @@ export type WorktreeOwnershipRecord = Pick<LocalWorker, 'name' | 'tag' | 'lead' 
   | Pick<RetiredWorker, 'name' | 'tag' | 'lead' | 'keptWorktree'>
 
 /** Cwd-wide cleanup requires a canonical Room worktree at every level back to this lead. */
-export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<LocalWorker, 'name' | 'dir' | 'branch' | 'tag' | 'lead'>, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<LocalWorker, 'name' | 'dir' | 'branch' | 'tag' | 'lead'>, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = [], allowBranchChange = false): Promise<boolean> {
   const byName = new Map([...workers].map(record => [record.name, record]))
   const chain = [w]
   const seen = new Set([w.name])
@@ -50,7 +50,9 @@ export async function isOwnedWorkerWorktree(leadDir: string, w: Pick<LocalWorker
       const expected = path.join(parentRoot, '.room', 'workers', path.basename(record.dir))
       if (workerRoot !== fs.realpathSync(expected)) return false
       if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record.dir)) return false
-      if ((await git(record.dir, ['branch', '--show-current'])).trim() !== record.branch) return false
+      // Only the target may leave its branch; callers must separately verify its
+      // creation marker before using this path check for discard authority.
+      if (!(allowBranchChange && record === w) && (await git(record.dir, ['branch', '--show-current'])).trim() !== record.branch) return false
       parentDir = record.dir
       parentName = record.name
     }
@@ -123,6 +125,7 @@ async function workerCommitCount(runGit: typeof git, dir: string, ref: string, l
 /** Select expensive probes at each call site. Git in a vanished checkout is never attempted. */
 export async function workerRealState(leadDir: string, w: LocalWorker, options: {
   ownership?: boolean; branch?: boolean; git?: boolean; process?: boolean
+  allowBranchChange?: boolean
   leadName?: string; workers?: Iterable<WorktreeOwnershipRecord>; hasHandle?: boolean
   probe?: (pid: number) => ProcessInfo | undefined
   probes?: WorkerStateProbes
@@ -137,7 +140,7 @@ export async function workerRealState(leadDir: string, w: LocalWorker, options: 
     status: w.status, exitCode: w.exitCode, dismissed: w.status === 'dismissed',
   }
   if (options.process) state.process = options.hasHandle ? 'ours' : (deps.process ?? (worker => workerProcessOwnership(worker.pid, worker, options.probe)))(w)
-  if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers)
+  if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers, ...options.allowBranchChange ? [true] as const : [])
   if (options.branch) {
     const ref = `refs/heads/${w.branch}`
     state.branch = (await runGit(leadDir, ['for-each-ref', '--format=%(refname)', ref])).split('\n').includes(ref) ? 'present' : 'absent'

@@ -10,7 +10,7 @@ import { gitMergeFile } from '../merge.js'
 import { carryRef, collectHeadRef, workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
-import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
+import { REGENERABLE_BUILD_DIRS, acceptedGit, digestPath, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
 import type { HandlerState } from './context.js'
 import { openWorkerReader, registryForDir, type WorkerReader } from '../worker-registry.js'
 import { requireWorkerEvidence, snapshotRead, snapshotReserved, workerEvidence, type AvailableWorkerSnapshot } from '../worker-store.js'
@@ -443,7 +443,6 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: 'manifest updating or holder changed' })
     if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt)) gaps.push({ person, why: 'room salt missing or invalid; exclusion coverage cannot be certified' })
     if (snap.head.coverage.kind === 'none') gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` })
-    if (snap.head.excluded.length) gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` })
   }
   const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
     const worker = previewWorker(session, person)
@@ -567,6 +566,11 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     .map(([name]) => rootFor(name)).filter((name): name is string => name !== undefined))
   const anchor = lineageRoots.size === 1 ? allSides.find(side => side.person === [...lineageRoots][0]) : undefined
   const anchorName = anchor?.person ?? caller.me.name
+  // The lead supplies the starting tree. Its unshared output is a gap only
+  // where a contributor needs that path; per-path version checks below enforce
+  // that. Other contributors' undisclosed edits still make the preview partial.
+  for (const [person, { session, snap }] of snapshots) if (person !== anchorName && !previewWorker(session, person) && snap?.head.excluded.length)
+    gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` })
   const anchored = !!anchor && anchorName !== caller.me.name
   const depth = (name: string): number => {
     const seen = new Set<string>()
@@ -710,6 +714,46 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       linkedInputs: workerOwnedPaths(records.get(person)) }
   })
   const diskDirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
+  if (anchored) {
+    const snap = snapshots.get(anchorName)?.snap
+    const excluded = new Set(snap?.roomSalt ? [...pathSet].filter(p => snap.head.excluded.includes(digestPath(snap.roomSalt!, p))) : [])
+    // A kept snapshot may contain carried build output, so enumeration against
+    // the common ancestor alone does not mean a worker changed that file.
+    for (const { person, session } of contributors) {
+      if (!excluded.size) break
+      const baseline = proven.get(person)
+      if (!baseline) { excluded.clear(); break }
+      const worker = previewWorker(session, person)
+      const dir = worker?.dir ?? (person === caller.me.name ? caller.dir : undefined)
+      // The full baseline chooses exactly one source per path. A carried
+      // untracked file's absence from the commit is not evidence of equality.
+      let blobs: Map<string, GitBlobInfo | undefined>
+      try { blobs = await gitBlobInfoMany(caller.dir, baseline.sha, [...excluded].filter(p => !baseline.untracked.has(p))) }
+      catch { excluded.clear(); break }
+      if (dir) {
+        const untracked = new Map([...baseline.untracked].filter(([p]) => excluded.has(p)))
+        let unchanged: Set<string>
+        try {
+          // Only present baseline blobs can certify a tracked path. Neither
+          // commit-level nor disk-level absence proves an excluded path equal.
+          unchanged = await carriedCommitUnchangedPaths({ ...baseline, dir }, [...excluded].filter(p => blobs.get(p)))
+          for (const p of carriedUnchangedPaths({ ...baseline, dir, untracked })) unchanged.add(p)
+        } catch { excluded.clear(); break }
+        for (const p of excluded) if (!unchanged.has(p)) excluded.delete(p)
+      } else {
+        // A complete publication against this exact commit certifies its
+        // present base blobs. Missing entries cannot certify untracked files.
+        const own = snapshots.get(person)?.snap
+        for (const p of excluded) if (!blobs.get(p) || !own?.fenceValid || !own.head.complete || own.head.base !== baseline.sha
+          || own.head.coverage.kind !== 'all' || !own.roomSalt || own.entries.has(p)
+          || own.head.excluded.includes(digestPath(own.roomSalt, p))) excluded.delete(p)
+      }
+    }
+    for (const p of excluded) {
+      pathSet.delete(p)
+      ignoredNotes.push(`NOT previewed (workers unchanged; excluded by ${anchorName}): ${p}`)
+    }
+  }
   for (const p of pathSet) {
     await new Promise<void>(resolve => setImmediate(resolve))
     let excluded = false

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
-import { RoomDoc, manifestKey, participantRecord, snapshotMetadata } from '@room/shared'
+import { RoomDoc, digestPath, manifestKey, participantRecord, snapshotMetadata } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, type Roomd } from '@room/roomd'
@@ -241,6 +241,19 @@ it('does not use Git-clean absence to acknowledge fixed after-images that differ
   const t = await realPublisherFixture()
   const proof = await acknowledgeKeptPublication(t.s, undefined, ['a.txt'], [{ p: 'a.txt', after: Buffer.from('missing delivery\r\n') }])
   expect(proof.pending).toBe(true)
+})
+
+it('acknowledges a real post-carry scan with a size-excluded bundle, retaining its exclusion', async () => {
+  const t = await realPublisherFixture()
+  const bundle = 'bundle.mjs'
+  t.write(bundle, 'bundle\n'.repeat(100_000))
+  t.write('b.txt', 'carried source edit\n')
+  const proof = await acknowledgeKeptPublication(t.s, undefined, [bundle, 'b.txt'])
+  expect(proof.pending).toBe(false)
+  expect(keptPublicationMatches(t.s, proof)).toBe(true)
+  const head = t.room.manifestHead.get('lead')!
+  expect(head.excluded).toContain(digestPath(t.room.ensureRoomSalt(), bundle))
+  expect(t.room.manifest.get(manifestKey('lead', head.fence))?.has(bundle)).toBe(false)
 })
 
 it('rechecks exact CRLF bytes after filtered hashing before accepting Git-clean absence', async () => {

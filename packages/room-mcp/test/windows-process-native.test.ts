@@ -32,7 +32,7 @@ describe.skipIf(process.platform !== 'win32')('native Windows process identity a
       expect(processChain(child.pid)[0]).toEqual({ pid: child.pid, ...info })
       expect(signalWorker(child.pid, 'SIGTERM', undefined, undefined, { host: 'codex', processStartTime: `${info.startTime}:reused` })).toBe(false)
       expect(await quiesceWorktreeProcesses(dir)).toBe(false)
-      await expect(terminateWorktreeProcesses(dir)).rejects.toThrow('worktree process inspection is unsupported on win32')
+      await expect(terminateWorktreeProcesses(dir)).rejects.toThrow('worktree process cleanup requires a Room worker checkout')
       expect(await stopWorkerWithEscalation({ terminate: () => child.kill(), force: () => child.killForce!(), exited: () => exited })).toBe(true)
       await waitClosed()
       expect(probeProcessNow(child.pid)).toBeUndefined()

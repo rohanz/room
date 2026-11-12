@@ -3,9 +3,9 @@ import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
 import { finishSignalShutdown } from '../src/index.js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { allocateWorkerPort, workerPortsInUse, workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
@@ -26,16 +26,29 @@ import { testPolicyStore } from './policy-fixture.js'
 const done = (tag: string, dir: string): LocalWorker => ({ id: `w_${tag}`, tag, name: `lead+${tag}`, lead: 'lead', host: 'codex', task: 'task', dir, branch: `room/${tag}`,
   pid: 0, startedAt: 1, status: 'done', exitCode: 0, budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' })
 
+const processRoots: string[] = []
+afterEach(async () => { for (const root of processRoots.splice(0)) await disposePreviewFixture(root, { registries: [root] }) })
+async function processWorktree(): Promise<string> {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'room-process-root-'))); processRoots.push(root)
+  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' })
+  git('init', '-q'); git('-c', 'user.name=Test', '-c', 'user.email=test@test', 'commit', '--allow-empty', '-qm', 'base')
+  const dir = join(root, '.room/workers/a')
+  git('worktree', 'add', '-qb', 'room/a', dir)
+  await seedRegistryWorker(root, 'a', { id: 'w_a' })
+  return dir
+}
+
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {
+    const dir = await processWorktree()
     const signal = vi.fn()
     let afterTerm = false
-    const killed = await terminateWorktreeProcesses('/repo/.room/workers/a', {
+    const killed = await terminateWorktreeProcesses(dir, {
       list: () => [
-        { pid: 101, cwd: '/repo/.room/workers/a', command: 'astro dev' },
-        { pid: 102, cwd: '/repo/.room/workers/a/sub', command: 'vite' },
-        { pid: 103, cwd: '/repo/.room/workers/ab', command: 'outside' },
-        { pid: process.pid, cwd: '/repo/.room/workers/a', command: 'room' },
+        { pid: 101, cwd: dir, command: 'astro dev' },
+        { pid: 102, cwd: join(dir, 'sub'), command: 'vite' },
+        { pid: 103, cwd: dir + 'b', command: 'outside' },
+        { pid: process.pid, cwd: dir, command: 'room' },
       ],
       signal,
       probe: pid => !afterTerm || pid === 102 ? {} : undefined,
@@ -63,10 +76,11 @@ describe('worker lifecycle cleanup', () => {
   })
 
   it('rechecks cwd before KILL so a moved process is left alone', async () => {
+    const dir = await processWorktree()
     const signal = vi.fn()
     let calls = 0
-    await terminateWorktreeProcesses('/repo/.room/workers/a', {
-      list: () => [{ pid: 102, cwd: ++calls <= 2 ? '/repo/.room/workers/a' : '/repo/other', command: 'vite' }],
+    await terminateWorktreeProcesses(dir, {
+      list: () => [{ pid: 102, cwd: ++calls <= 2 ? dir : '/repo/other', command: 'vite' }],
       signal,
       probe: () => ({}),
       sleep: async () => {},
@@ -262,10 +276,11 @@ it('treats view sentinel zero as no recorded process', () => {
 })
 
 it('never probes or signals malformed worktree pids during TERM or KILL', async () => {
+  const dir = await processWorktree()
   const signal = vi.fn(), probe = vi.fn(() => ({}))
   const invalid = [0, -1, 1.5, 2147483648, NaN, '123' as unknown as number]
-  await terminateWorktreeProcesses('/repo/worker', {
-    list: () => [...invalid, 123].map(pid => ({ pid, cwd: '/repo/worker', command: 'test' })),
+  await terminateWorktreeProcesses(dir, {
+    list: () => [...invalid, 123].map(pid => ({ pid, cwd: dir, command: 'test' })),
     signal, probe, sleep: async () => {},
   })
   expect(signal.mock.calls).toEqual([[123, 'SIGTERM'], [123, 'SIGKILL']])

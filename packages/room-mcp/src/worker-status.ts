@@ -62,8 +62,9 @@ export interface WorkerRecord {
   collectPending?: { at: number; reason: string }
   /** This operation's direct branch tip, preserved before deletion; no record-version migration. */
   branchCleanup?: BranchCleanupReceipt
-  /** A post-operation full scan proves the lead published the kept/carried input.
-   * Paths are bounded verification inputs, never a history of guessed stale hashes. */
+  /** A post-operation full scan verifies shared kept/carried inputs. Excluded
+   * paths retain their coverage gaps when a preview needs them. Paths are bounded
+   * verification inputs, never a history of guessed stale hashes. */
   keptPublication?: {
     paths: string[]; pending: boolean; overflow?: boolean; base?: string
     ack?: { publisher: string; sessionId: string; fence: string; rev: number; roomSalt?: string }

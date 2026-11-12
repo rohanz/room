@@ -408,8 +408,8 @@ export class FileWorkerStore {
     if (!worktreeRecord || worktreeRecord.lead.participant !== lead.participant
       || path.resolve(worktreeRecord.dir) !== path.resolve(candidate.dir)
       || worktreeRecord.sharedWith) return undefined
-    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return undefined
-    try { verifyWorkerCheckout(this.commonDir, worktreeRecord) }
+    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers, allowVanished)) return undefined
+    try { verifyWorkerCheckout(this.commonDir, worktreeRecord, allowVanished) }
     catch (error) { retainCheckout(this.commonDir, worktreeRecord, String(error)); return undefined }
     return { record: candidate, status }
   }
@@ -1088,10 +1088,10 @@ export class FileWorkerStore {
       if (!['retiring', 'retired'].includes(this.#read(user.id)?.phase ?? '')) return
     }
     if (!record.outside && !borrowed && fs.existsSync(record.dir)) {
-      try { verifyWorkerCheckout(this.commonDir, record) }
+      try { verifyWorkerCheckout(this.commonDir, record, true) }
       catch (error) { throw new Error(retainCheckout(this.commonDir, record, String(error))) }
     }
-    const owned = !record.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
+    const owned = !record.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers, true)
     if (!record.outside && !borrowed && !owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
     if (!record.discard.steps.children) {
       for (const childId of record.discard.children) {

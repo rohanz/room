@@ -57,7 +57,7 @@ export function witnessPreparation(dir: string, branch: string, identity: Prepar
   verifyPreparation(dir, witness)
   return witness
 }
-export function verifyPreparation(dir: string, expected: PreparationIdentity & { branch: string; adminDir?: string; token?: string; root?: RootReceipt }, commonDir?: string): PreparationWitness {
+export function verifyPreparation(dir: string, expected: PreparationIdentity & { branch: string; adminDir?: string; token?: string; root?: RootReceipt }, commonDir?: string, allowBranchChange = false): PreparationWitness {
   try {
     const { adminDir, common } = adminOf(dir)
     if (commonDir && fs.realpathSync.native(commonDir) !== common) throw new Error('worktree belongs to another clone')
@@ -69,18 +69,18 @@ export function verifyPreparation(dir: string, expected: PreparationIdentity & {
     if (expected.root && !value.root) throw new Error('missing root creation receipt')
     if (value.root) verifyRoot(dir, value.root)
     if (expected.root) verifyRoot(dir, expected.root)
-    if (trimLine(smallFile(path.join(adminDir, 'HEAD'))) !== (expected.branch === 'HEAD' ? value.branchOid : `ref: refs/heads/${expected.branch}`)) throw new Error('worktree branch changed')
+    if (!allowBranchChange && trimLine(smallFile(path.join(adminDir, 'HEAD'))) !== (expected.branch === 'HEAD' ? value.branchOid : `ref: refs/heads/${expected.branch}`)) throw new Error('worktree branch changed')
     return value
   } catch (error) {
     throw new Error(`kept preparation ${dir}: cannot verify its worktree identity (${error instanceof Error ? error.message : String(error)})`)
   }
 }
 /** Established old records retain their historical recorded-facts verification, never new/unfinished ones. */
-export function verifyWorkerCheckout(common: string, record: Pick<WorkerRecord, 'id' | 'dir' | 'branch' | 'prep' | 'runs' | 'phase' | 'outside' | 'sharedWith'>): void {
+export function verifyWorkerCheckout(common: string, record: Pick<WorkerRecord, 'id' | 'dir' | 'branch' | 'prep' | 'runs' | 'phase' | 'outside' | 'sharedWith'>, allowBranchChange = false): void {
   if (record.outside || record.sharedWith) throw new Error('supplied or borrowed checkout is non-owning')
   if (record.prep.root) verifyRoot(record.dir, record.prep.root)
   if (record.prep.witness) {
-    const verified = verifyPreparation(record.dir, { ...record.prep.witness, id: record.id, nonce: record.runs[0].nonce, branch: record.branch }, common)
+    const verified = verifyPreparation(record.dir, { ...record.prep.witness, id: record.id, nonce: record.runs[0].nonce, branch: record.branch }, common, allowBranchChange)
     if (record.prep.identityRequired && !verified.root) throw new Error('missing root creation receipt')
     return
   }
@@ -90,7 +90,7 @@ export function verifyWorkerCheckout(common: string, record: Pick<WorkerRecord, 
   let markerExists = false
   try { fs.lstatSync(marker); markerExists = true } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   if (record.prep.identityRequired || ['intent', 'preparing'].includes(record.phase) || markerExists) {
-    const verified = verifyPreparation(record.dir, { id: record.id, nonce: record.runs[0].nonce, branch: record.branch, ...(record.prep.root ? { root: record.prep.root } : {}) }, common)
+    const verified = verifyPreparation(record.dir, { id: record.id, nonce: record.runs[0].nonce, branch: record.branch, ...(record.prep.root ? { root: record.prep.root } : {}) }, common, allowBranchChange)
     if (record.prep.identityRequired && !verified.root) throw new Error('missing root creation receipt')
   } else if (trimLine(smallFile(path.join(adminDir, 'HEAD'))) !== `ref: refs/heads/${record.branch}`) throw new Error('legacy checkout branch changed')
 }

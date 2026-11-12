@@ -17,6 +17,15 @@ Keep ordinary worktrees at `.room/workers/<tag>` and worker records at `v:1`.
 The existing `dir=` refusals and tag-in-use precedence remain. A supplied or
 borrowed directory never gains destruction authority.
 
+Explicit discard may remove a witnessed checkout after it detaches HEAD or
+switches branches: branch state is not checkout identity. All marker, root,
+admin/backlink and repository checks still apply; markerless legacy checkouts
+still require their recorded branch. Collection refuses a changed branch and
+names the current state, the expected branch and the discard command. Discard
+pins both checkout HEAD and the recorded worker branch tip before removal;
+it never deletes an unrelated checked-out branch. Branch deletion still uses
+the captured original name/value and retains symbolic or later-moved refs.
+
 Before attachment, Room creates the final root with exclusive **non-recursive**
 `mkdir`. EEXIST refuses even an empty directory. Record device, inode and birth
 time from that directory before `git worktree add`, and require the post-add root

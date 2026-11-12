@@ -32081,6 +32081,20 @@ var init_worker_refs = __esm({
 });
 
 // packages/room-mcp/src/worker-preparation.ts
+var worker_preparation_exports = {};
+__export(worker_preparation_exports, {
+  PREPARATION_WITNESS_FILE: () => PREPARATION_WITNESS_FILE,
+  canonicalMissingWorkerPath: () => canonicalMissingWorkerPath,
+  preparationIdentity: () => preparationIdentity,
+  removePreparation: () => removePreparation,
+  removeWorkerRegistration: () => removeWorkerRegistration,
+  retainCheckout: () => retainCheckout,
+  rootIdentity: () => rootIdentity,
+  verifyPreparation: () => verifyPreparation,
+  verifyWorkerCheckout: () => verifyWorkerCheckout,
+  withPreparationIdentity: () => withPreparationIdentity,
+  witnessPreparation: () => witnessPreparation
+});
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { randomUUID as randomUUID4 } from "node:crypto";
 import fs22 from "node:fs";
@@ -32114,7 +32128,7 @@ function witnessPreparation(dir, branch, identity4, root, branchOid) {
   verifyPreparation(dir, witness);
   return witness;
 }
-function verifyPreparation(dir, expected, commonDir2) {
+function verifyPreparation(dir, expected, commonDir2, allowBranchChange = false) {
   try {
     const { adminDir, common } = adminOf(dir);
     if (commonDir2 && fs22.realpathSync.native(commonDir2) !== common) throw new Error("worktree belongs to another clone");
@@ -32124,17 +32138,17 @@ function verifyPreparation(dir, expected, commonDir2) {
     if (expected.root && !value5.root) throw new Error("missing root creation receipt");
     if (value5.root) verifyRoot(dir, value5.root);
     if (expected.root) verifyRoot(dir, expected.root);
-    if (trimLine(smallFile(path23.join(adminDir, "HEAD"))) !== (expected.branch === "HEAD" ? value5.branchOid : `ref: refs/heads/${expected.branch}`)) throw new Error("worktree branch changed");
+    if (!allowBranchChange && trimLine(smallFile(path23.join(adminDir, "HEAD"))) !== (expected.branch === "HEAD" ? value5.branchOid : `ref: refs/heads/${expected.branch}`)) throw new Error("worktree branch changed");
     return value5;
   } catch (error2) {
     throw new Error(`kept preparation ${dir}: cannot verify its worktree identity (${error2 instanceof Error ? error2.message : String(error2)})`);
   }
 }
-function verifyWorkerCheckout(common, record2) {
+function verifyWorkerCheckout(common, record2, allowBranchChange = false) {
   if (record2.outside || record2.sharedWith) throw new Error("supplied or borrowed checkout is non-owning");
   if (record2.prep.root) verifyRoot(record2.dir, record2.prep.root);
   if (record2.prep.witness) {
-    const verified = verifyPreparation(record2.dir, { ...record2.prep.witness, id: record2.id, nonce: record2.runs[0].nonce, branch: record2.branch }, common);
+    const verified = verifyPreparation(record2.dir, { ...record2.prep.witness, id: record2.id, nonce: record2.runs[0].nonce, branch: record2.branch }, common, allowBranchChange);
     if (record2.prep.identityRequired && !verified.root) throw new Error("missing root creation receipt");
     return;
   }
@@ -32149,7 +32163,7 @@ function verifyWorkerCheckout(common, record2) {
     if (error2.code !== "ENOENT") throw error2;
   }
   if (record2.prep.identityRequired || ["intent", "preparing"].includes(record2.phase) || markerExists) {
-    const verified = verifyPreparation(record2.dir, { id: record2.id, nonce: record2.runs[0].nonce, branch: record2.branch, ...record2.prep.root ? { root: record2.prep.root } : {} }, common);
+    const verified = verifyPreparation(record2.dir, { id: record2.id, nonce: record2.runs[0].nonce, branch: record2.branch, ...record2.prep.root ? { root: record2.prep.root } : {} }, common, allowBranchChange);
     if (record2.prep.identityRequired && !verified.root) throw new Error("missing root creation receipt");
   } else if (trimLine(smallFile(path23.join(adminDir, "HEAD"))) !== `ref: refs/heads/${record2.branch}`) throw new Error("legacy checkout branch changed");
 }
@@ -32902,8 +32916,26 @@ function listCwdProcesses(platform = process.platform) {
   }
   return result2;
 }
+async function workerProcessRoot(dir) {
+  if (!path27.isAbsolute(dir)) throw new Error("worktree process cleanup requires an absolute worker checkout path");
+  const root = fs25.realpathSync(dir);
+  if (path27.basename(path27.dirname(root)) !== "workers" || path27.basename(path27.dirname(path27.dirname(root))) !== ".room")
+    throw new Error("worktree process cleanup requires a Room worker checkout");
+  const { openWorkerReader: openWorkerReader2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
+  const { verifyWorkerCheckout: verifyWorkerCheckout2 } = await Promise.resolve().then(() => (init_worker_preparation(), worker_preparation_exports));
+  const reader = await openWorkerReader2(root);
+  try {
+    const record2 = await reader.reserved(path27.basename(root));
+    if (!record2 || !path27.isAbsolute(record2.dir) || fs25.realpathSync(record2.dir) !== root || record2.branch !== `room/${record2.tag}`)
+      throw new Error("worktree process cleanup requires an owned local worker record");
+    verifyWorkerCheckout2(reader.commonDir, record2, true);
+  } finally {
+    reader.close();
+  }
+  return root;
+}
 async function terminateWorktreeProcesses(dir, options = {}) {
-  const root = fs25.existsSync(dir) ? fs25.realpathSync(dir) : path27.resolve(dir);
+  const root = await workerProcessRoot(dir);
   const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
   const sleep = options.sleep ?? ((ms2) => new Promise((resolve6) => setTimeout(resolve6, ms2)));
@@ -33192,7 +33224,7 @@ function roomWorkerPathMatchesBranch(leadDir, workerDir, branch, nested = false)
   if (relative3.length < 3 || relative3.length % 3 !== 0 || !nested && relative3.length !== 3) return false;
   return relative3.every((part, i) => i % 3 === 0 ? part === ".room" : i % 3 === 1 ? part === "workers" : validRepoPath(part, RECORDED_PATH)) && branch === `room/${relative3.at(-1)}`;
 }
-async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
+async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = [], allowBranchChange = false) {
   const byName = new Map([...workers].map((record2) => [record2.name, record2]));
   const chain = [w];
   const seen = /* @__PURE__ */ new Set([w.name]);
@@ -33222,7 +33254,7 @@ async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
       const expected = path28.join(parentRoot, ".room", "workers", path28.basename(record2.dir));
       if (workerRoot !== fs26.realpathSync(expected)) return false;
       if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record2.dir)) return false;
-      if ((await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
+      if (!(allowBranchChange && record2 === w) && (await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
       parentDir = record2.dir;
       parentName = record2.name;
     }
@@ -33266,7 +33298,7 @@ async function workerRealState(leadDir, w, options = {}) {
     dismissed: w.status === "dismissed"
   };
   if (options.process) state.process = options.hasHandle ? "ours" : (deps.process ?? ((worker) => workerProcessOwnership(worker.pid, worker, options.probe)))(w);
-  if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers);
+  if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers, ...options.allowBranchChange ? [true] : []);
   if (options.branch) {
     const ref = `refs/heads/${w.branch}`;
     state.branch = (await runGit(leadDir, ["for-each-ref", "--format=%(refname)", ref])).split("\n").includes(ref) ? "present" : "absent";
@@ -42980,11 +43012,6 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
             return null;
           }
         };
-        for (const p of pending2.paths) {
-          if (!validRepoPath(p, DISK_READ_PATH)) return pending2;
-          required2.set(p, await diskHash(p));
-        }
-        for (const { p, after } of written) if (required2.has(p)) required2.set(p, after === null ? null : hash3(after));
         await s.daemon.reconcileGitChanges();
         await s.daemon.settle();
         const publisher = checkoutPublisher(s) ?? s.me.name;
@@ -42992,6 +43019,12 @@ async function acknowledgeOnce(s, previous, paths, written, timeoutMs2) {
         const record2 = meta2?.record, head = meta2?.head;
         if (publisher !== s.me.name || !head?.complete || head.level !== "full" || head.coverage.kind !== "all" || !meta2?.fenceValid || !record2?.holder || head.fence !== s.daemon.fence || head.fence !== record2.git?.fence || head.base !== record2.git.base || record2.git.head !== expectedHead || String(record2.holder.epoch) !== head.fence) return pending2;
         const entries = s.room.manifest.get(`${publisher}\0${head.fence}`);
+        for (const p of pending2.paths) {
+          if (!validRepoPath(p, DISK_READ_PATH) || !meta2.roomSalt) return pending2;
+          if (!entries?.has(p) && head.excluded.includes(digestPath(meta2.roomSalt, p))) continue;
+          required2.set(p, await diskHash(p));
+        }
+        for (const { p, after } of written) if (required2.has(p)) required2.set(p, after === null ? null : hash3(after));
         const base = await gitBlobInfoMany(s.dir, head.base, pending2.paths);
         const normalized2 = [];
         for (const [p, expected] of required2) {
@@ -43235,7 +43268,6 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: "manifest updating or holder changed" });
     if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt)) gaps.push({ person, why: "room salt missing or invalid; exclusion coverage cannot be certified" });
     if (snap.head.coverage.kind === "none") gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` });
-    if (snap.head.excluded.length) gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` });
   }
   const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
     const worker = previewWorker(session, person);
@@ -43359,6 +43391,8 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const lineageRoots = new Set([...records].filter(([, record2]) => includedNames.has(record2.lead.participant)).map(([name]) => rootFor(name)).filter((name) => name !== void 0));
   const anchor3 = lineageRoots.size === 1 ? allSides.find((side) => side.person === [...lineageRoots][0]) : void 0;
   const anchorName = anchor3?.person ?? caller.me.name;
+  for (const [person, { session, snap }] of snapshots) if (person !== anchorName && !previewWorker(session, person) && snap?.head.excluded.length)
+    gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` });
   const anchored = !!anchor3 && anchorName !== caller.me.name;
   const depth = (name) => {
     const seen = /* @__PURE__ */ new Set();
@@ -43496,6 +43530,46 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     };
   });
   const diskDirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
+  if (anchored) {
+    const snap = snapshots.get(anchorName)?.snap;
+    const excluded = new Set(snap?.roomSalt ? [...pathSet].filter((p) => snap.head.excluded.includes(digestPath(snap.roomSalt, p))) : []);
+    for (const { person, session } of contributors) {
+      if (!excluded.size) break;
+      const baseline2 = proven.get(person);
+      if (!baseline2) {
+        excluded.clear();
+        break;
+      }
+      const worker = previewWorker(session, person);
+      const dir = worker?.dir ?? (person === caller.me.name ? caller.dir : void 0);
+      let blobs;
+      try {
+        blobs = await gitBlobInfoMany(caller.dir, baseline2.sha, [...excluded].filter((p) => !baseline2.untracked.has(p)));
+      } catch {
+        excluded.clear();
+        break;
+      }
+      if (dir) {
+        const untracked = new Map([...baseline2.untracked].filter(([p]) => excluded.has(p)));
+        let unchanged;
+        try {
+          unchanged = await carriedCommitUnchangedPaths({ ...baseline2, dir }, [...excluded].filter((p) => blobs.get(p)));
+          for (const p of carriedUnchangedPaths({ ...baseline2, dir, untracked })) unchanged.add(p);
+        } catch {
+          excluded.clear();
+          break;
+        }
+        for (const p of excluded) if (!unchanged.has(p)) excluded.delete(p);
+      } else {
+        const own2 = snapshots.get(person)?.snap;
+        for (const p of excluded) if (!blobs.get(p) || !own2?.fenceValid || !own2.head.complete || own2.head.base !== baseline2.sha || own2.head.coverage.kind !== "all" || !own2.roomSalt || own2.entries.has(p) || own2.head.excluded.includes(digestPath(own2.roomSalt, p))) excluded.delete(p);
+      }
+    }
+    for (const p of excluded) {
+      pathSet.delete(p);
+      ignoredNotes.push(`NOT previewed (workers unchanged; excluded by ${anchorName}): ${p}`);
+    }
+  }
   for (const p of pathSet) {
     await new Promise((resolve6) => setImmediate(resolve6));
     let excluded = false;
@@ -47391,7 +47465,7 @@ async function cleanupWorker(leadDir, w, options = {}) {
     try {
       if (!ownerRecord) throw new Error("no authoritative local worker record");
       if (ownerRecord.tag !== w.tag || ownerRecord.branch !== w.branch || filesystemPath(ownerRecord.dir) !== filesystemPath(w.dir)) throw new Error("cleanup target differs from its authoritative record");
-      verifyWorkerCheckout(common, ownerRecord);
+      verifyWorkerCheckout(common, ownerRecord, discarded);
     } catch (error2) {
       throw new Error(retainCheckout(common, w, error2 instanceof Error ? error2.message : String(error2)));
     }
@@ -47399,7 +47473,7 @@ async function cleanupWorker(leadDir, w, options = {}) {
   verify();
   const branchCleanup = preserveWorkerBranch(common, w, operationBranchReceipt(common, w.id) ?? ownerRecord?.branchCleanup);
   if (!discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
-  if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== "cleanup") return false;
+  if (!await isOwnedWorkerWorktree(leadDir, w, leadName, workers, discarded)) return false;
   const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && isInsideRoot(fs55.realpathSync(w.dir), dir));
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(", ")}`);
   const head = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
@@ -47442,6 +47516,19 @@ async function cleanupWorker(leadDir, w, options = {}) {
     const recoveryRefs = new Set(branchCleanup.recoveryRef ? [branchCleanup.recoveryRef] : []);
     await withGitWorktreeOperation(common, () => {
       verify();
+      if (discarded) {
+        let branch = "";
+        try {
+          branch = boundedGitSync(w.dir, ["symbolic-ref", "--no-recurse", "-q", "HEAD"]).toString().trim();
+        } catch {
+        }
+        if (branch !== `refs/heads/${w.branch}`) {
+          const checkoutHead = boundedGitSync(w.dir, ["rev-parse", "HEAD"]).toString().trim();
+          const checkoutPin = preserveWorkerBranch(common, w, { tip: checkoutHead });
+          if (!checkoutPin.recoveryRef) throw new Error(`cannot preserve checkout HEAD ${checkoutHead}`);
+          recoveryRefs.add(checkoutPin.recoveryRef);
+        }
+      }
       boundedGitSync(common, ["--git-dir", common, "-c", "core.hooksPath=/dev/null", "worktree", "remove", ...collected ? ["--force"] : [], w.dir]);
     });
     deletePreservedWorkerBranch(common, w, branchCleanup);
@@ -48109,9 +48196,9 @@ var init_worker_file_store = __esm({
         }
         const worktreeRecord = this.#worktreeOwner(candidate) ?? candidate;
         if (!worktreeRecord || worktreeRecord.lead.participant !== lead.participant || path57.resolve(worktreeRecord.dir) !== path57.resolve(candidate.dir) || worktreeRecord.sharedWith) return void 0;
-        if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return void 0;
+        if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.#status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers, allowVanished)) return void 0;
         try {
-          verifyWorkerCheckout(this.commonDir, worktreeRecord);
+          verifyWorkerCheckout(this.commonDir, worktreeRecord, allowVanished);
         } catch (error2) {
           retainCheckout(this.commonDir, worktreeRecord, String(error2));
           return void 0;
@@ -48887,12 +48974,12 @@ var init_worker_file_store = __esm({
           }
           if (!record2.outside && !borrowed && fs56.existsSync(record2.dir)) {
             try {
-              verifyWorkerCheckout(this.commonDir, record2);
+              verifyWorkerCheckout(this.commonDir, record2, true);
             } catch (error2) {
               throw new Error(retainCheckout(this.commonDir, record2, String(error2)));
             }
           }
-          const owned = !record2.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
+          const owned = !record2.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers, true);
           if (!record2.outside && !borrowed && !owned && fs56.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
           if (!record2.discard.steps.children) {
             for (const childId of record2.discard.children) {
@@ -67026,6 +67113,7 @@ function handlers9(state) {
 // packages/room-mcp/src/tools/collect.ts
 init_worker_refs();
 init_worker_retained();
+init_worker_preparation();
 init_process();
 init_worker_store();
 init_worker_store();
@@ -67121,7 +67209,7 @@ async function sameFileBytes(a, b, size2) {
 }
 var ownershipRecords = async (s) => [...s.room.retiredWorkers(), ...await localWorkers(s.dir)];
 async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors, probe, list) {
-  if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return [];
+  if (!decideStop(await workerRealState(leadDir, w, { ownership: true, allowBranchChange: true, leadName, workers })).cwd) return [];
   if (w.id) {
     const registry2 = await registryForDir(leadDir);
     const record2 = await registry2.read(w.id);
@@ -67249,6 +67337,12 @@ function handlers10(state) {
     if (record2 && record2.lead.participant !== s.me.name) {
       const parent = await registry2.reservedByTagOrName(record2.lead.participant);
       return `${w.tag} belongs to ${record2.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? "PARENT"} discard=true force=true to save recovery patches`;
+    }
+    if (record2) try {
+      verifyWorkerCheckout(registry2.commonDir, record2, true);
+      const branch = (await git(record2.dir, ["branch", "--show-current"])).trim();
+      if (branch !== record2.branch) return `${w.tag}: checkout is ${branch ? `on ${branch}` : "at detached HEAD"}, expected ${record2.branch}; inspect its work and switch back to ${record2.branch} before collecting, or room_collect(tag="${w.tag}", discard=true) to discard it with recovery pins`;
+    } catch {
     }
     return `${w.tag}: no local worker capability (worktree missing or unmanaged)`;
   };
@@ -67426,7 +67520,7 @@ function handlers10(state) {
       if (unsafe) return unsafe;
       const children = await descendants(s, w);
       if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`;
-      const beforePlan = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, leadName: s.me.name, workers: await ownershipRecords(s) });
+      const beforePlan = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, allowBranchChange: true, leadName: s.me.name, workers: await ownershipRecords(s) });
       const ignoredBefore = !borrowed && decideDiscard(beforePlan) === "cleanup" ? await ignoredWorkerArtifacts(w, s.dir) : [];
       if (ignoredBefore.length && a.force !== true) return ignoredDiscardRefusal(w.tag, w.dir, ignoredBefore);
       await registry2.beginDiscard(lock, a.force === true, children.map((child) => child.id).filter(Boolean));
@@ -67471,7 +67565,7 @@ function handlers10(state) {
       }
       if (!borrowed && !workerRecord?.outside) terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, await ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses));
       if (cleanupErrors.length) throw new Error(cleanupErrors.join("; "));
-      const afterStop = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, leadName: s.me.name, workers: await ownershipRecords(s) });
+      const afterStop = await workerRealState(s.dir, w, { ownership: !workerRecord?.outside, allowBranchChange: true, leadName: s.me.name, workers: await ownershipRecords(s) });
       const missing = !workerRecord?.outside && !borrowed && decideDiscard(afterStop) === "prune";
       let missingDetail;
       if (missing) {
