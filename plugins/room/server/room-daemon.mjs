@@ -8060,6 +8060,20 @@ var init_yjs = __esm({
   }
 });
 
+// packages/shared/src/notice-subjects.ts
+function retiredNoticeMatcher(workers) {
+  const ids = new Set([...workers].map((worker) => worker.id).filter(Boolean));
+  return (m) => conflictNotice(m) && !!m.noticeSubjects?.some((subject) => !!subject.workerId && ids.has(subject.workerId));
+}
+var conflictNotice;
+var init_notice_subjects = __esm({
+  "packages/shared/src/notice-subjects.ts"() {
+    "use strict";
+    init_messages();
+    conflictNotice = (m) => validMessageShape(m) && m.from === "room" && m.id.startsWith("cf:") && ["merge-conflict", "conflict", "contract"].includes(m.type);
+  }
+});
+
 // packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
@@ -8498,6 +8512,7 @@ var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
+    init_notice_subjects();
     init_bus_index();
     init_ledger();
     init_messages();
@@ -9355,6 +9370,7 @@ var init_doc = __esm({
   "packages/shared/src/doc.ts"() {
     "use strict";
     init_delivery();
+    init_notice_subjects();
     init_worker_memory();
     init_claims();
     init_messages();
@@ -9512,6 +9528,34 @@ var init_doc = __esm({
         if (names.size) retireRecipient(this, names, at);
         return names;
       }
+      /** The single retirement cleanup seam, replayed by retention to heal saved or late state. */
+      retireWorkerState(workers, at, post) {
+        const retired = [...workers];
+        const notice = retiredNoticeMatcher(retired);
+        this.doc.transact(() => {
+          const names = this.retireWorkerMail(retired, at);
+          const ids = new Set(retired.map((worker) => worker.id));
+          const cached = this.doc.getMap("completedPublications");
+          for (const [key, value2] of cached) if (ids.has(value2.worker.id)) cached.delete(key);
+          for (const name of names) {
+            this.clearWorkerCoordination(name, "retired", post);
+            this.coordination.delete(name);
+            this.manifestHead.delete(name);
+            for (const key of [...this.manifest.keys()]) if (key === name || key.startsWith(name + "\0")) this.manifest.delete(key);
+            for (const key of [...this.participants.keys()]) if (key.startsWith(name + "\0")) this.participants.delete(key);
+            this.colors.delete(name);
+            this.seen(name).clear();
+          }
+          const conflicts = this.doc.getMap("conflicts");
+          for (const [key, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key);
+          for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id);
+          for (const m of [...this.messages(), ...this.mail.values()]) {
+            if (!notice(m)) continue;
+            if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? "", from: m.from, outcome: "expired", at });
+            this.mail.delete(m.id);
+          }
+        });
+      }
       /**
        * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
        * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
@@ -9520,22 +9564,8 @@ var init_doc = __esm({
        */
       retireWorker(id2, archived, post) {
         if (archived.id !== id2) throw new Error("retirement id does not match record");
-        const name = archived.name;
         this.doc.transact(() => {
-          const cached = this.doc.getMap("completedPublications");
-          for (const [key, value2] of cached) if (value2.worker.id === id2) cached.delete(key);
-          if (this.retireWorkerMail([archived], archived.retiredAt).has(name)) {
-            this.clearWorkerCoordination(name, "retired", post);
-            const conflicts = this.doc.getMap("conflicts");
-            for (const [key, slot] of conflicts) if (slot.owner === name) conflicts.delete(key);
-            this.manifestHead.delete(name);
-            for (const key of [...this.manifest.keys()]) if (key.startsWith(`${name}\0`)) this.manifest.delete(key);
-            for (const key of [...this.overlays.keys()]) if (key.startsWith(`${name}\0`)) this.overlays.delete(key);
-            for (const key of [...this.participants.keys()]) if (key.startsWith(`${name}\0`)) this.participants.delete(key);
-            this.colors.delete(name);
-            this.seen(name).clear();
-          }
-          this.workerViews.delete(id2);
+          this.retireWorkerState([archived], archived.retiredAt, post);
           const archive = this.doc.getArray("retiredWorkers");
           if (!archive.toArray().some((r) => r.id === id2)) {
             archive.push([compactRetiredWorker(archived)]);
@@ -9920,6 +9950,7 @@ function validMessageShape(value2) {
   if (m.fromKind !== void 0 && !["human", "agent", "bot", "ci"].includes(m.fromKind)) return false;
   if (m.at !== void 0 && !num("at")) return false;
   if (m.seq !== void 0 && !num("seq")) return false;
+  if (m.noticeSubjects !== void 0 && (!Array.isArray(m.noticeSubjects) || !m.noticeSubjects.length || m.noticeSubjects.length > 2 || !m.noticeSubjects.every((subject) => subject && typeof subject === "object" && !Array.isArray(subject) && Object.keys(subject).every((key) => ["name", "workerId"].includes(key)) && typeof subject.name === "string" && subject.name.length > 0 && subject.name.length <= 4096 && (subject.workerId === void 0 || typeof subject.workerId === "string" && subject.workerId.length > 0 && subject.workerId.length <= 512)))) return false;
   const common = ["id", "type", "from", "fromKind", "to", "priority", "at", "seq", "copyOf"];
   const fields = {
     claim: ["claimId", "path", "from_line", "to_line", "intent", "plans"],
@@ -9928,9 +9959,9 @@ function validMessageShape(value2) {
     question: ["text"],
     note: ["text", "inReplyTo"],
     answer: ["inReplyTo", "text"],
-    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom", "merges"],
-    "merge-conflict": ["path", "text", "clearedFrom"],
-    contract: ["path", "symbol", "text"],
+    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom", "merges", "noticeSubjects"],
+    "merge-conflict": ["path", "text", "clearedFrom", "noticeSubjects"],
+    contract: ["path", "symbol", "text", "noticeSubjects"],
     scope: ["area", "summary", "paths"],
     base: ["base", "prev", "commits", "paths", "summary"],
     pushed: ["branch", "upstream", "fromSha", "toSha", "commits", "paths", "summary", "rewrite"],

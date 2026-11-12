@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { retiredNoticeMatcher } from './notice-subjects.js'
 import { BusIndex } from './bus-index.js'
 import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
@@ -98,7 +99,9 @@ export function highestSeq(doc: RoomDoc): number {
 export function owed(doc: RoomDoc, me: Pick<Identity, 'name'>, cursor: DeliveryCursor, route: MessageRouteContext,
   relevant: (m: Msg) => boolean = () => true): Msg[] {
   const out = new Map<string, Msg>()
+  const retiredNotice = retiredNoticeMatcher(doc.retiredWorkers())
   const offer = (m: Msg) => {
+    if (retiredNotice(m)) return
     if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out.set(m.id, m)
   }
   // Addressed messages are owed whenever they were sent, except to a worker that took over the name after them.

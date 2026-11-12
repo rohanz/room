@@ -452,6 +452,58 @@ describe('derived pair slots', () => {
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
+  it('keeps checking an offline participant and an unretired worker, and stops checking a retired worker', async () => {
+    const f = fixture()
+    f.holder('L'); f.holder('W'); f.entry('L', 'lead edit\n'); f.entry('W', 'worker edit\n')
+    const set = new ConflictSet(f.session('L')), key = slotKey('L', 'merge', 'W', 'x')
+    try {
+      await set.reconcile('live worker and lead conflict')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
+      f.post.mockClear()
+      const session = f.session('L')
+      for (const [id, state] of session.awareness.getStates()) if (state.user?.name === 'W') session.awareness.getStates().delete(id)
+      // An offline participant's published work still stands, so the conflict does too.
+      await set.reconcile('offline standalone publication')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
+      f.room.participants.set('W\0holder', { ...f.room.participants.get('W\0holder')!, workerId: 'worker-id' })
+      f.room.workerViews.set('worker-id', { id: 'worker-id', name: 'W', lead: 'L', fence: '1', status: 'done' } as any)
+      await set.reconcile('finished worker remains unretired')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
+      f.post.mockClear()
+      f.room.doc.getArray('retiredWorkers').push([{ id: 'worker-id', name: 'W' }])
+      await set.reconcile('retired worker with late live roots')
+      expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
+      expect(f.post).not.toHaveBeenCalled()
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['W', 'L'])('uses carried untracked text as the complete ancestor from %s and preserves real conflicts', async owner => {
+    const f = fixture(), path = 'carried.txt'
+    f.holder('W'); f.holder('L'); f.entry('W', undefined); f.entry('L', undefined)
+    const base = 'one\ntwo\nthree\nfour\nfive\n'
+    writeFileSync(join(f.dir, path), base)
+    const blob = execFileSync('git', ['-C', f.dir, 'hash-object', '-w', path], { encoding: 'utf8' }).trim()
+    const baseline: Baseline = { worker: 'W', sha: f.base, dir: f.dir, carriedCommit: false, untracked: new Map([[path, { sha: blob }]]) }
+    const publish = (name: string, text: string, rev: number) => {
+      f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: rev, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), path, text)
+      f.room.manifestHead.set(name, { ...f.room.manifestHead.get(name)!, rev, semRev: rev })
+    }
+    publish('W', base.replace('one', 'worker'), 1); publish('L', base.replace('five', 'lead'), 1)
+    const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0,
+      person => person === 'W' ? { baseline, lead: 'L' } : undefined)
+    const key = slotKey(owner, 'merge', owner === 'W' ? 'L' : 'W', path)
+    try {
+      await set.reconcile('independent edits to carried addition')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('clean')
+      expect(f.post.mock.calls.filter(c => c[1]?.type === 'merge-conflict')).toEqual([])
+      publish('L', base.replace('one', 'lead competing'), 2)
+      await set.reconcile('real conflict in carried addition')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
+      expect(f.post.mock.calls.some(c => c[1]?.type === 'merge-conflict')).toBe(true)
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it.each(['W', 'L'])('uses the kept worker baseline for live merge comparison from %s', async owner => {
     const f = fixture()
     const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()

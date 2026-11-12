@@ -167,10 +167,11 @@ it.each(['w1', 'owner-worker'])('retiring either endpoint (%s) ends both copies 
 })
 
 
-it('a successor can deliver the identical conflict after w1 already retired', async () => {
-  const f = await fixture(), p = publications(f)
+it('a managed successor can deliver the identical conflict after w1 already retired', async () => {
+  const f = await fixture(true), p = publications(f)
   await p.set.reconcile('w1')
   const first = f.pending()[0]!
+  f.room.retireWorker('w1', { id: 'w1', name: 'B', lead: 'A', tag: 'B', task: '', summary: '', files: [], fileCount: 0, retiredAt: Date.now() } as any, () => {})
   await retireNoticeDependencies(f.s, retiredW1 as any, () => true)
   expect(f.pending()).toEqual([])
   p.replaceWorker('w2')

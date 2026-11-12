@@ -70,32 +70,38 @@ export class NoticeLifecycle {
   }
 
   /** A proposed binding becomes an id only after this exact registration is accepted by the hub. */
-  private async registeredId(from: Identity, body: PostBody<Msg>, baselineId: string, names: string[]): Promise<string | undefined> {
+  private async registeredNotice(from: Identity, body: PostBody<Msg>, baselineId: string, names: string[]): Promise<Msg | undefined> {
     // Holder identity precedes the projected worker view. Missing holders mean unknown, never non-worker.
     // The hub independently checks the complete binding against its private leases.
     const holders = names.map(name => participantRecord(this.s.room, name)?.holder)
     const proposed = this.supported() && holders.every(Boolean)
       ? workerNoticeId(baselineId, holders.flatMap(holder => holder?.workerId ? [holder.workerId] : [])) : undefined
     if (!proposed) return undefined
+    // This binding is stored only by the hub's accepted registration. In particular,
+    // a rejected replica worker ID must never leak into the ordinary fallback post.
+    const msg = outgoing(from, { ...body, noticeSubjects: holders.flatMap((holder, i) => holder?.workerId
+      ? [{ name: names[i]!, workerId: holder.workerId }] : []) }, proposed)
     const producer = this.producer(names), record = this.records().find(([key]) => key === producer)?.[1]
     const reply = await this.send({ action: 'register', producer, expected: record?.revision ?? 0, operation: nonce(),
-      evidence: noticeEvidence(this.s.room, names), episode: nonce(), msg: outgoing(from, body, proposed) })
+      evidence: noticeEvidence(this.s.room, names), episode: nonce(), msg })
     if (reply.managed !== true) {
       this.fallback(reply.fallback ?? 'unconfirmed registration')
       return undefined
     }
-    return proposed
+    return { ...msg, at: Date.now() } as Msg
   }
 
   /** Keep baseline identity for every refused, failed or unconfirmed registration, including transport retries. */
   register(from: Identity, body: PostBody<Msg>, baselineId: string, names: string[], valid: () => boolean, baseline: Post = this.s.post): Promise<PostResult> {
+    body = { ...body }
+    delete body.noticeSubjects
     return this.serial(async () => {
       const refused = (text: string): PostResult => ({ ok: false,
         msg: { ...outgoing(from, body, baselineId), at: Date.now() } as Msg, reason: 'unreachable', text })
       if (!valid() || !this.s.lease?.fence()) return refused('notice lease unavailable')
       try {
-        const id = await this.registeredId(from, body, baselineId, names)
-        if (id !== undefined) return { ok: true, msg: { ...outgoing(from, body, id), at: Date.now() } as Msg }
+        const msg = await this.registeredNotice(from, body, baselineId, names)
+        if (msg !== undefined) return { ok: true, msg }
       } catch (error) {
         if (!valid() || !this.s.lease?.fence()) return refused(`notice registration: ${String(error)}`)
         this.fallback(error instanceof HubError ? error.reason : 'unavailable')

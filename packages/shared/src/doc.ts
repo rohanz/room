@@ -1,4 +1,5 @@
 import { deliveryIndex, retireRecipient } from './delivery.js'
+import { retiredNoticeMatcher } from './notice-subjects.js'
 import { retainedPublication, publicationRevisionCurrent, type CompletedPublication } from './worker-memory.js'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
@@ -222,6 +223,36 @@ export class RoomDoc {
     return names
   }
 
+  /** The single retirement cleanup seam, replayed by retention to heal saved or late state. */
+  retireWorkerState(workers: Iterable<Pick<RetiredWorker, 'id' | 'name'>>, at: number, post: ReleasePoster): void {
+    const retired = [...workers]
+    const notice = retiredNoticeMatcher(retired)
+    this.doc.transact(() => {
+      const names = this.retireWorkerMail(retired, at)
+      const ids = new Set(retired.map(worker => worker.id))
+      const cached = this.doc.getMap<CompletedPublication>('completedPublications')
+      for (const [key, value] of cached) if (ids.has(value.worker.id)) cached.delete(key)
+      for (const name of names) {
+        this.clearWorkerCoordination(name, 'retired', post)
+        this.coordination.delete(name)
+        this.manifestHead.delete(name)
+        for (const key of [...this.manifest.keys()]) if (key === name || key.startsWith(name + '\0')) this.manifest.delete(key)
+        for (const key of [...this.participants.keys()]) if (key.startsWith(name + '\0')) this.participants.delete(key)
+        this.colors.delete(name)
+        this.seen(name).clear()
+      }
+      const conflicts = this.doc.getMap<{ owner: string; other: string }>('conflicts')
+      for (const [key, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key)
+      for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id)
+      // End saved baseline notices as well as managed ones, even if their producer or hub exited.
+      for (const m of [...this.messages(), ...this.mail.values()]) {
+        if (!notice(m)) continue
+        if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? '', from: m.from, outcome: 'expired', at })
+        this.mail.delete(m.id)
+      }
+    })
+  }
+
   /**
    * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
    * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
@@ -230,22 +261,8 @@ export class RoomDoc {
    */
   retireWorker(id: string, archived: RetiredWorker & { id: string }, post: ReleasePoster): void {
     if (archived.id !== id) throw new Error('retirement id does not match record')
-    const name = archived.name
     this.doc.transact(() => {
-      const cached = this.doc.getMap<CompletedPublication>('completedPublications')
-      for (const [key, value] of cached) if (value.worker.id === id) cached.delete(key)
-      if (this.retireWorkerMail([archived], archived.retiredAt).has(name)) {
-        this.clearWorkerCoordination(name, 'retired', post)
-        const conflicts = this.doc.getMap<{ owner?: string }>('conflicts')
-        for (const [key, slot] of conflicts) if (slot.owner === name) conflicts.delete(key)
-        this.manifestHead.delete(name)
-        for (const key of [...this.manifest.keys()]) if (key.startsWith(`${name}\u0000`)) this.manifest.delete(key)
-        for (const key of [...this.overlays.keys()]) if (key.startsWith(`${name}\u0000`)) this.overlays.delete(key)
-        for (const key of [...this.participants.keys()]) if (key.startsWith(`${name}\u0000`)) this.participants.delete(key)
-        this.colors.delete(name)
-        this.seen(name).clear()
-      }
-      this.workerViews.delete(id)
+      this.retireWorkerState([archived], archived.retiredAt, post)
       const archive = this.doc.getArray<RetiredWorker>('retiredWorkers')
       if (!archive.toArray().some(r => r.id === id)) {
         archive.push([compactRetiredWorker(archived)])

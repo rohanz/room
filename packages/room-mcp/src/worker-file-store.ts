@@ -16,7 +16,7 @@ import { compareAndRelease, createExclusive, liveness, recover, replace, withGua
 import { scanRunLog, runLogIdentity } from './run-log-facts.js'
 import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
-import type { RetiredWorker } from '@room/shared'
+import type { RetiredWorker, ReleasePoster } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
@@ -911,19 +911,20 @@ export class FileWorkerStore {
   }
 
   /**
-   * End mail only for this lead's known workers with no live tag in this clone. The capacity guard
+   * Heal ended records from this clone (including departed leads), plus this lead's archived workers.
+   * With no live tag in this clone, the capacity guard
    * excludes tag creation/reuse through the inventory check and the synchronous document transaction.
    * Room history supplies names after record pruning; only the complete local registry proves no successor.
    */
-  async retireWorkerMail(room: RoomDoc, lead: string, roomName: string): Promise<void> {
+  async retireWorkerMail(room: RoomDoc, lead: string, roomName: string, post: ReleasePoster = () => {}): Promise<void> {
     await guarded(path.join(this.root, 'capacity'), () => {
       const records = requireWorkerInventory(this.#list())
       const liveTags = new Set(records.filter(record => !ended(record)).map(record => record.tag))
       const workers = [
-        ...records.filter(record => record.lead.participant === lead && (record.room === roomName || record.projectedInto === roomName)),
+        ...records.filter(record => ended(record) && (record.room === roomName || record.projectedInto === roomName)),
         ...room.retiredWorkers().filter(record => record.lead === lead),
       ].filter(record => !liveTags.has(record.tag))
-      room.retireWorkerMail(workers, this.now())
+      room.retireWorkerState(workers, this.now(), post)
     })
   }
 

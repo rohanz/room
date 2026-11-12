@@ -78,6 +78,8 @@ export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'ans
 export type MsgType = keyof MessageMap & string
 
 export interface MsgBase {
+  /** Participants whose versions this automatic conflict notice concerns. Worker IDs fence tag reuse. */
+  noticeSubjects?: { name: string; workerId?: string }[]
   id: string
   type: MsgType
   priority: Priority

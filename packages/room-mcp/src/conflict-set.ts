@@ -480,6 +480,21 @@ export class ConflictSet {
   }
 
   /**
+   * Every participant view is a peer, as before, except a worker that has been retired: an offline
+   * participant's claims and published work still stand, a retired worker's do not.
+   */
+  private peerCurrent(view: ParticipantView | undefined, retired = new Set(this.team.room.retiredWorkers().map(worker => worker.id))): boolean {
+    if (!view) return false
+    const id = view.holder?.workerId ?? participantRecord(this.team.room, view.name)?.proj?.projectedFrom ?? this.team.room.workerViewOf(view.name)?.id
+    return !(id && retired.has(id))
+  }
+
+  private peers(views: ParticipantView[]) {
+    const retired = new Set(this.team.room.retiredWorkers().map(worker => worker.id))
+    return neighbours(views.filter(view => this.peerCurrent(view, retired)), this.owner)
+  }
+
+  /**
    * One check pass's carried-baseline lookup: each participant's registry facts are read at most once per
    * pass. The immutable facts carry a revision, revalidated asynchronously before settlement.
    * Synchronous publication guards use that supplied snapshot and observed invalidation only:
@@ -487,7 +502,7 @@ export class ConflictSet {
    */
   private async carriedPass(): Promise<CarriedPass> {
     const reader = await openWorkerReader(this.team.dir)
-    const names = new Set([this.owner, ...neighbours(participantsView(this.team.room, this.team.awareness, Date.now()), this.owner).names()])
+    const names = new Set([this.owner, ...this.peers(participantsView(this.team.room, this.team.awareness, Date.now())).names()])
     const tokens = new Map<string, string>(), records = new Map<string, Awaited<ReturnType<typeof reader.reserved>>>()
     const tagOf = (participant: string) => {
       const plus = participant.lastIndexOf('+')
@@ -554,7 +569,7 @@ export class ConflictSet {
     })
     const graphFacts = contracts ? [graph?.base, graph?.status, graph?.sourceFence,
       graph?.sourceRev === theirs?.head.rev, graph?.truncated, graph?.observedTruncated, graph?.observed, graph?.uncoveredPaths, graph?.uncoveredTruncated] : undefined
-    return hash(JSON.stringify([metadata(mine), metadata(theirs), room.roomSalt, claims, entries(mine), entries(theirs), graphFacts,
+    return hash(JSON.stringify([this.peerCurrent(views.find(view => view.name === other)), metadata(mine), metadata(theirs), room.roomSalt, claims, entries(mine), entries(theirs), graphFacts,
       worker ? [worker.id, worker.lead, worker.status, worker.run] : undefined,
       contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : undefined,
       carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : undefined,
@@ -564,7 +579,7 @@ export class ConflictSet {
   private inputsKey(): string {
     const carriedOf: CarriedLookup = participant => this.carriedValues.get(participant)
     const room = this.team.room, views = participantsView(room, this.team.awareness, Date.now())
-    const names = neighbours(views, this.owner).names().filter(name => this.owner === this.team.me.name || name !== this.team.me.name)
+    const names = this.peers(views).names().filter(name => this.owner === this.team.me.name || name !== this.team.me.name)
     return JSON.stringify([this.team.lease?.fence(), names.map(name => [name, this.pairInputs(name, views, carriedOf)]),
       room.openClaims().filter(c => c.by === this.owner),
       [...room.workerViews.values()].filter(w => w.lead === this.owner).map(w => [w.id, w.status, w.run])])
@@ -740,7 +755,7 @@ export class ConflictSet {
     this.guard = () => authority() && carriedOf.current() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) &&
       (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) &&
       JSON.stringify(room.openClaims().filter(c => c.by === this.owner)) === claimInputs
-    const nb = neighbours(views, this.owner)
+    const nb = this.peers(views)
     const names = new Set(nb.names())
     for (const [key, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) await this.drop(key)
     names.delete(this.owner)
@@ -821,7 +836,12 @@ export class ConflictSet {
         const changed = async (snap: ParticipantSnapshot, base: string) => {
           try {
             const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${mergeBase}..${base}`])
-            return new Set([...snap.entries.keys(), ...committed.split('\0').filter(Boolean)])
+            // The ordinary lead has no Git deletion or manifest entry after deleting a
+            // carried untracked file. Include that baseline's paths on the lead side;
+            // current reads still decide whether either version actually conflicts.
+            const carriedLead = ours?.lead === other ? other : theirsCarried?.lead === this.owner ? this.owner : undefined
+            return new Set([...snap.entries.keys(), ...committed.split('\0').filter(Boolean),
+              ...(snap.name === carriedLead ? baseline?.untracked.keys() ?? [] : [])])
           } catch { return undefined }
         }
         const [aPaths, bPaths] = await Promise.all([changed(mine, ownGit.base), changed(theirs, theirGit.base)])
@@ -877,6 +897,7 @@ export class ConflictSet {
           const sharedBase = sharedPaths.has(path) ? sharedBaselines![0] : undefined
           const inputs = hash(JSON.stringify([ownGit.base, theirGit.base, mergeBase, ownGit.anchored, theirGit.anchored,
             mine.head.semRev, theirs.head.semRev, sideInput(mine, path), sideInput(theirs, path),
+            baseline ? [baseline.sha, baseline.untracked.get(path)?.sha] : undefined,
             sharedBase ? sharedBaselines!.map(base => [base.sha, base.untracked.get(path)?.sha]) : undefined,
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path)] : undefined]))
           const prior = this.slots.get(key)
@@ -915,8 +936,8 @@ export class ConflictSet {
           }
           let ancestor: string | undefined
           try {
-            if (sharedBase) {
-              const read = await boundedBaseline(this.team.dir, sharedBase, path)
+            if (sharedBase || baseline) {
+              const read = await boundedBaseline(this.team.dir, (sharedBase ?? baseline)!, path)
               if (read.kind === 'unavailable') throw read.error
               ancestor = read.kind === 'available' ? read.text : undefined
             } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path)

@@ -92,14 +92,19 @@ export function validMessageShape(value: unknown): value is Msg {
   if (m.fromKind !== undefined && !['human', 'agent', 'bot', 'ci'].includes(m.fromKind as string)) return false
   if (m.at !== undefined && !num('at')) return false
   if (m.seq !== undefined && !num('seq')) return false
+  if (m.noticeSubjects !== undefined && (!Array.isArray(m.noticeSubjects) || !m.noticeSubjects.length || m.noticeSubjects.length > 2 ||
+    !m.noticeSubjects.every(subject => subject && typeof subject === 'object' && !Array.isArray(subject) &&
+      Object.keys(subject).every(key => ['name', 'workerId'].includes(key)) &&
+      typeof subject.name === 'string' && subject.name.length > 0 && subject.name.length <= 4096 &&
+      (subject.workerId === undefined || typeof subject.workerId === 'string' && subject.workerId.length > 0 && subject.workerId.length <= 512)))) return false
   const common = ['id', 'type', 'from', 'fromKind', 'to', 'priority', 'at', 'seq', 'copyOf']
   const fields: Record<string, string[]> = {
     claim: ['claimId', 'path', 'from_line', 'to_line', 'intent', 'plans'],
     release: ['claimId', 'path', 'summary', 'unfulfilled'],
     changed: ['paths', 'summary', 'symbols'],
     question: ['text'], note: ['text', 'inReplyTo'], answer: ['inReplyTo', 'text'],
-    conflict: ['claimId', 'otherClaimId', 'path', 'text', 'clearedFrom', 'merges'],
-    'merge-conflict': ['path', 'text', 'clearedFrom'], contract: ['path', 'symbol', 'text'],
+    conflict: ['claimId', 'otherClaimId', 'path', 'text', 'clearedFrom', 'merges', 'noticeSubjects'],
+    'merge-conflict': ['path', 'text', 'clearedFrom', 'noticeSubjects'], contract: ['path', 'symbol', 'text', 'noticeSubjects'],
     scope: ['area', 'summary', 'paths'], base: ['base', 'prev', 'commits', 'paths', 'summary'],
     pushed: ['branch', 'upstream', 'fromSha', 'toSha', 'commits', 'paths', 'summary', 'rewrite'],
     plan: ['status', 'claimId', 'path', 'plan', 'replacedBy', 'text'], done: ['tag', 'summary', 'changed'],

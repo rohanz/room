@@ -8505,6 +8505,20 @@ var init_yjs = __esm({
   }
 });
 
+// packages/shared/src/notice-subjects.ts
+function retiredNoticeMatcher(workers) {
+  const ids = new Set([...workers].map((worker) => worker.id).filter(Boolean));
+  return (m) => conflictNotice(m) && !!m.noticeSubjects?.some((subject) => !!subject.workerId && ids.has(subject.workerId));
+}
+var conflictNotice;
+var init_notice_subjects = __esm({
+  "packages/shared/src/notice-subjects.ts"() {
+    "use strict";
+    init_messages();
+    conflictNotice = (m) => validMessageShape(m) && m.from === "room" && m.id.startsWith("cf:") && ["merge-conflict", "conflict", "contract"].includes(m.type);
+  }
+});
+
 // packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
@@ -8762,7 +8776,9 @@ function highestSeq(doc) {
 }
 function owed(doc, me, cursor, route, relevant = () => true) {
   const out = /* @__PURE__ */ new Map();
+  const retiredNotice = retiredNoticeMatcher(doc.retiredWorkers());
   const offer = (m) => {
+    if (retiredNotice(m)) return;
     if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out.set(m.id, m);
   };
   const mine = (m) => addressedTo(m, me.name) && (cursor.addressedFrom === void 0 || (m.seq ?? 0) > cursor.addressedFrom);
@@ -8800,6 +8816,7 @@ var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
+    init_notice_subjects();
     init_bus_index();
     init_ledger();
     init_messages();
@@ -9800,6 +9817,7 @@ var init_doc = __esm({
   "packages/shared/src/doc.ts"() {
     "use strict";
     init_delivery();
+    init_notice_subjects();
     init_worker_memory();
     init_claims();
     init_messages();
@@ -9957,6 +9975,34 @@ var init_doc = __esm({
         if (names.size) retireRecipient(this, names, at);
         return names;
       }
+      /** The single retirement cleanup seam, replayed by retention to heal saved or late state. */
+      retireWorkerState(workers, at, post) {
+        const retired = [...workers];
+        const notice = retiredNoticeMatcher(retired);
+        this.doc.transact(() => {
+          const names = this.retireWorkerMail(retired, at);
+          const ids = new Set(retired.map((worker) => worker.id));
+          const cached3 = this.doc.getMap("completedPublications");
+          for (const [key3, value5] of cached3) if (ids.has(value5.worker.id)) cached3.delete(key3);
+          for (const name of names) {
+            this.clearWorkerCoordination(name, "retired", post);
+            this.coordination.delete(name);
+            this.manifestHead.delete(name);
+            for (const key3 of [...this.manifest.keys()]) if (key3 === name || key3.startsWith(name + "\0")) this.manifest.delete(key3);
+            for (const key3 of [...this.participants.keys()]) if (key3.startsWith(name + "\0")) this.participants.delete(key3);
+            this.colors.delete(name);
+            this.seen(name).clear();
+          }
+          const conflicts = this.doc.getMap("conflicts");
+          for (const [key3, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key3);
+          for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id);
+          for (const m of [...this.messages(), ...this.mail.values()]) {
+            if (!notice(m)) continue;
+            if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? "", from: m.from, outcome: "expired", at });
+            this.mail.delete(m.id);
+          }
+        });
+      }
       /**
        * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
        * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
@@ -9965,22 +10011,8 @@ var init_doc = __esm({
        */
       retireWorker(id3, archived, post) {
         if (archived.id !== id3) throw new Error("retirement id does not match record");
-        const name = archived.name;
         this.doc.transact(() => {
-          const cached3 = this.doc.getMap("completedPublications");
-          for (const [key3, value5] of cached3) if (value5.worker.id === id3) cached3.delete(key3);
-          if (this.retireWorkerMail([archived], archived.retiredAt).has(name)) {
-            this.clearWorkerCoordination(name, "retired", post);
-            const conflicts = this.doc.getMap("conflicts");
-            for (const [key3, slot] of conflicts) if (slot.owner === name) conflicts.delete(key3);
-            this.manifestHead.delete(name);
-            for (const key3 of [...this.manifest.keys()]) if (key3.startsWith(`${name}\0`)) this.manifest.delete(key3);
-            for (const key3 of [...this.overlays.keys()]) if (key3.startsWith(`${name}\0`)) this.overlays.delete(key3);
-            for (const key3 of [...this.participants.keys()]) if (key3.startsWith(`${name}\0`)) this.participants.delete(key3);
-            this.colors.delete(name);
-            this.seen(name).clear();
-          }
-          this.workerViews.delete(id3);
+          this.retireWorkerState([archived], archived.retiredAt, post);
           const archive = this.doc.getArray("retiredWorkers");
           if (!archive.toArray().some((r) => r.id === id3)) {
             archive.push([compactRetiredWorker(archived)]);
@@ -10814,6 +10846,7 @@ function validMessageShape(value5) {
   if (m.fromKind !== void 0 && !["human", "agent", "bot", "ci"].includes(m.fromKind)) return false;
   if (m.at !== void 0 && !num("at")) return false;
   if (m.seq !== void 0 && !num("seq")) return false;
+  if (m.noticeSubjects !== void 0 && (!Array.isArray(m.noticeSubjects) || !m.noticeSubjects.length || m.noticeSubjects.length > 2 || !m.noticeSubjects.every((subject) => subject && typeof subject === "object" && !Array.isArray(subject) && Object.keys(subject).every((key3) => ["name", "workerId"].includes(key3)) && typeof subject.name === "string" && subject.name.length > 0 && subject.name.length <= 4096 && (subject.workerId === void 0 || typeof subject.workerId === "string" && subject.workerId.length > 0 && subject.workerId.length <= 512)))) return false;
   const common = ["id", "type", "from", "fromKind", "to", "priority", "at", "seq", "copyOf"];
   const fields = {
     claim: ["claimId", "path", "from_line", "to_line", "intent", "plans"],
@@ -10822,9 +10855,9 @@ function validMessageShape(value5) {
     question: ["text"],
     note: ["text", "inReplyTo"],
     answer: ["inReplyTo", "text"],
-    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom", "merges"],
-    "merge-conflict": ["path", "text", "clearedFrom"],
-    contract: ["path", "symbol", "text"],
+    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom", "merges", "noticeSubjects"],
+    "merge-conflict": ["path", "text", "clearedFrom", "noticeSubjects"],
+    contract: ["path", "symbol", "text", "noticeSubjects"],
     scope: ["area", "summary", "paths"],
     base: ["base", "prev", "commits", "paths", "summary"],
     pushed: ["branch", "upstream", "fromSha", "toSha", "commits", "paths", "summary", "rewrite"],
@@ -38718,10 +38751,11 @@ var init_notice_lifecycle2 = __esm({
         return producer;
       }
       /** A proposed binding becomes an id only after this exact registration is accepted by the hub. */
-      async registeredId(from2, body, baselineId, names) {
+      async registeredNotice(from2, body, baselineId, names) {
         const holders = names.map((name) => participantRecord(this.s.room, name)?.holder);
         const proposed = this.supported() && holders.every(Boolean) ? workerNoticeId(baselineId, holders.flatMap((holder) => holder?.workerId ? [holder.workerId] : [])) : void 0;
         if (!proposed) return void 0;
+        const msg = outgoing(from2, { ...body, noticeSubjects: holders.flatMap((holder, i) => holder?.workerId ? [{ name: names[i], workerId: holder.workerId }] : []) }, proposed);
         const producer = this.producer(names), record2 = this.records().find(([key3]) => key3 === producer)?.[1];
         const reply = await this.send({
           action: "register",
@@ -38730,16 +38764,18 @@ var init_notice_lifecycle2 = __esm({
           operation: nonce(),
           evidence: noticeEvidence(this.s.room, names),
           episode: nonce(),
-          msg: outgoing(from2, body, proposed)
+          msg
         });
         if (reply.managed !== true) {
           this.fallback(reply.fallback ?? "unconfirmed registration");
           return void 0;
         }
-        return proposed;
+        return { ...msg, at: Date.now() };
       }
       /** Keep baseline identity for every refused, failed or unconfirmed registration, including transport retries. */
       register(from2, body, baselineId, names, valid, baseline = this.s.post) {
+        body = { ...body };
+        delete body.noticeSubjects;
         return this.serial(async () => {
           const refused = (text2) => ({
             ok: false,
@@ -38749,8 +38785,8 @@ var init_notice_lifecycle2 = __esm({
           });
           if (!valid() || !this.s.lease?.fence()) return refused("notice lease unavailable");
           try {
-            const id3 = await this.registeredId(from2, body, baselineId, names);
-            if (id3 !== void 0) return { ok: true, msg: { ...outgoing(from2, body, id3), at: Date.now() } };
+            const msg = await this.registeredNotice(from2, body, baselineId, names);
+            if (msg !== void 0) return { ok: true, msg };
           } catch (error2) {
             if (!valid() || !this.s.lease?.fence()) return refused(`notice registration: ${String(error2)}`);
             this.fallback(error2 instanceof HubError ? error2.reason : "unavailable");
@@ -42066,7 +42102,7 @@ async function sweepClone(session, registry2, rooms) {
     rooms.log(`nothing-to-collect retirement: ${error2}`);
   }
   try {
-    for (const held2 of rooms.all()) await registry2.retireWorkerMail(held2.room, held2.me.name, held2.roomName);
+    for (const held2 of rooms.all()) await registry2.retireWorkerMail(held2.room, held2.me.name, held2.roomName, releasePoster(held2.post));
   } catch (error2) {
     rooms.log(`retired worker mail: ${error2}`);
   }
@@ -42084,6 +42120,7 @@ var NOTHING_TO_COLLECT, GC_EVERY_MS, collectedAt;
 var init_retire = __esm({
   "packages/room-mcp/src/retire.ts"() {
     "use strict";
+    init_post();
     init_worker_store();
     init_worker_store();
     init_src();
@@ -48816,19 +48853,21 @@ var init_worker_file_store = __esm({
         }));
       }
       /**
-       * End mail only for this lead's known workers with no live tag in this clone. The capacity guard
+       * Heal ended records from this clone (including departed leads), plus this lead's archived workers.
+       * With no live tag in this clone, the capacity guard
        * excludes tag creation/reuse through the inventory check and the synchronous document transaction.
        * Room history supplies names after record pruning; only the complete local registry proves no successor.
        */
-      async retireWorkerMail(room, lead, roomName) {
+      async retireWorkerMail(room, lead, roomName, post = () => {
+      }) {
         await guarded3(path57.join(this.root, "capacity"), () => {
           const records = requireWorkerInventory(this.#list());
           const liveTags = new Set(records.filter((record2) => !ended(record2)).map((record2) => record2.tag));
           const workers = [
-            ...records.filter((record2) => record2.lead.participant === lead && (record2.room === roomName || record2.projectedInto === roomName)),
+            ...records.filter((record2) => ended(record2) && (record2.room === roomName || record2.projectedInto === roomName)),
             ...room.retiredWorkers().filter((record2) => record2.lead === lead)
           ].filter((record2) => !liveTags.has(record2.tag));
-          room.retireWorkerMail(workers, this.now());
+          room.retireWorkerState(workers, this.now(), post);
         });
       }
       /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
@@ -60624,6 +60663,19 @@ var ConflictSet = class _ConflictSet {
     if (this.team.provider.synced) this.schedule(0);
   }
   /**
+   * Every participant view is a peer, as before, except a worker that has been retired: an offline
+   * participant's claims and published work still stand, a retired worker's do not.
+   */
+  peerCurrent(view, retired = new Set(this.team.room.retiredWorkers().map((worker) => worker.id))) {
+    if (!view) return false;
+    const id3 = view.holder?.workerId ?? participantRecord(this.team.room, view.name)?.proj?.projectedFrom ?? this.team.room.workerViewOf(view.name)?.id;
+    return !(id3 && retired.has(id3));
+  }
+  peers(views) {
+    const retired = new Set(this.team.room.retiredWorkers().map((worker) => worker.id));
+    return neighbours(views.filter((view) => this.peerCurrent(view, retired)), this.owner);
+  }
+  /**
    * One check pass's carried-baseline lookup: each participant's registry facts are read at most once per
    * pass. The immutable facts carry a revision, revalidated asynchronously before settlement.
    * Synchronous publication guards use that supplied snapshot and observed invalidation only:
@@ -60631,7 +60683,7 @@ var ConflictSet = class _ConflictSet {
    */
   async carriedPass() {
     const reader = await openWorkerReader(this.team.dir);
-    const names = /* @__PURE__ */ new Set([this.owner, ...neighbours(participantsView(this.team.room, this.team.awareness, Date.now()), this.owner).names()]);
+    const names = /* @__PURE__ */ new Set([this.owner, ...this.peers(participantsView(this.team.room, this.team.awareness, Date.now())).names()]);
     const tokens = /* @__PURE__ */ new Map(), records = /* @__PURE__ */ new Map();
     const tagOf = (participant) => {
       const plus = participant.lastIndexOf("+");
@@ -60715,6 +60767,7 @@ var ConflictSet = class _ConflictSet {
       graph?.uncoveredTruncated
     ] : void 0;
     return hash(JSON.stringify([
+      this.peerCurrent(views.find((view) => view.name === other)),
       metadata(mine),
       metadata(theirs),
       room.roomSalt,
@@ -60731,7 +60784,7 @@ var ConflictSet = class _ConflictSet {
   inputsKey() {
     const carriedOf = (participant) => this.carriedValues.get(participant);
     const room = this.team.room, views = participantsView(room, this.team.awareness, Date.now());
-    const names = neighbours(views, this.owner).names().filter((name) => this.owner === this.team.me.name || name !== this.team.me.name);
+    const names = this.peers(views).names().filter((name) => this.owner === this.team.me.name || name !== this.team.me.name);
     return JSON.stringify([
       this.team.lease?.fence(),
       names.map((name) => [name, this.pairInputs(name, views, carriedOf)]),
@@ -60924,7 +60977,7 @@ var ConflictSet = class _ConflictSet {
     const authority = () => !this.stopped && this.team.lease?.fence() === leaseFence;
     const claimInputs = JSON.stringify(room.openClaims().filter((c) => c.by === this.owner));
     this.guard = () => authority() && carriedOf.current() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims().filter((c) => c.by === this.owner)) === claimInputs;
-    const nb = neighbours(views, this.owner);
+    const nb = this.peers(views);
     const names = new Set(nb.names());
     for (const [key3, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) await this.drop(key3);
     names.delete(this.owner);
@@ -61010,7 +61063,12 @@ var ConflictSet = class _ConflictSet {
         const changed = async (snap, base) => {
           try {
             const committed = await git(this.team.dir, ["diff", "--no-renames", "--name-only", "-z", `${mergeBase2}..${base}`]);
-            return /* @__PURE__ */ new Set([...snap.entries.keys(), ...committed.split("\0").filter(Boolean)]);
+            const carriedLead = ours?.lead === other ? other : theirsCarried?.lead === this.owner ? this.owner : void 0;
+            return /* @__PURE__ */ new Set([
+              ...snap.entries.keys(),
+              ...committed.split("\0").filter(Boolean),
+              ...snap.name === carriedLead ? baseline?.untracked.keys() ?? [] : []
+            ]);
           } catch {
             return void 0;
           }
@@ -61076,6 +61134,7 @@ var ConflictSet = class _ConflictSet {
             theirs.head.semRev,
             sideInput(mine, path80),
             sideInput(theirs, path80),
+            baseline ? [baseline.sha, baseline.untracked.get(path80)?.sha] : void 0,
             sharedBase ? sharedBaselines.map((base) => [base.sha, base.untracked.get(path80)?.sha]) : void 0,
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path80)] : void 0
           ]));
@@ -61128,8 +61187,8 @@ var ConflictSet = class _ConflictSet {
           }
           let ancestor;
           try {
-            if (sharedBase) {
-              const read3 = await boundedBaseline(this.team.dir, sharedBase, path80);
+            if (sharedBase || baseline) {
+              const read3 = await boundedBaseline(this.team.dir, sharedBase ?? baseline, path80);
               if (read3.kind === "unavailable") throw read3.error;
               ancestor = read3.kind === "available" ? read3.text : void 0;
             } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path80);

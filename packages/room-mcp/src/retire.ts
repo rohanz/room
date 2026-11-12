@@ -1,3 +1,4 @@
+import { releasePoster } from './post.js'
 import { requireWorkerInventory } from './worker-store.js'
 import { requireWorkerEvidence } from './worker-store.js'
 /** Retirement keyed by worker ID (registry §12): the registry records it, each room's projector cleans up. */
@@ -474,7 +475,7 @@ async function sweepClone(session: Session, registry: Registry, rooms: Rooms): P
   } catch (error) { rooms.log(`nothing-to-collect retirement: ${error}`) }
   // Like the steps around it: a failure here is logged and the rest of the pass still runs.
   try {
-    for (const held of rooms.all()) await registry.retireWorkerMail(held.room, held.me.name, held.roomName)
+    for (const held of rooms.all()) await registry.retireWorkerMail(held.room, held.me.name, held.roomName, releasePoster(held.post))
   } catch (error) { rooms.log(`retired worker mail: ${error}`) }
   await registry.pruneRetired(ROOM_STALE_MS).catch(error => { rooms.log(`retired record retention: ${error}`) })
   try {
