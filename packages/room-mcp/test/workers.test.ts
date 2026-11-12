@@ -666,7 +666,7 @@ describe('review fixes: workers', () => {
     // by the worktree this file's mocked cleanupWorker leaves behind.
     expect((await (await registryForDir(dir)).read(firstId))?.phase).toBe('retired')
     await vi.waitFor(() => expect(t.a.retiredWorkers().some(w => w.tag === 'money')).toBe(true), { timeout: 15_000 })
-    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain('worktree money is unmanaged')
+    expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'second' })).toContain(`${join('.room', 'workers', 'money')} already exists and Room has no record of creating it`)
     t.exits[0](1) // the first process finally dies
     expect((await (await registryForDir(dir)).read(firstId))).toMatchObject({ id: firstId, tag: 'money' })
     // and while a process is alive the tag cannot be reused

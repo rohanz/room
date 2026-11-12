@@ -25,10 +25,13 @@ const WORKERS_DIR = path.join('.room', 'workers')
 
 /** Existing paths/branches are never preparation resources, even when they look like ours. */
 export function assertNewWorkerWorktree(repoDir: string, tag: string): void {
-  if (fs.existsSync(path.join(repoDir, WORKERS_DIR, tag, '.git'))) throw new Error(`worktree ${tag} is unmanaged; discard it by tag first`)
+  const rel = path.join(WORKERS_DIR, tag)
+  // lstat: a dangling link at the path is also something Room did not create.
+  if (fs.lstatSync(path.join(repoDir, rel), { throwIfNoEntry: false }))
+    throw new Error(`${rel} already exists and Room has no record of creating it, so it is left alone; move or delete it yourself, or use another worker name`)
   const branch = `refs/heads/room/${tag}`
   const refs = boundedGitSync(repoDir, ['for-each-ref', '--format=%(refname)', branch]).toString().split('\n')
-  if (refs.includes(branch)) throw new Error(`branch room/${tag} is unmanaged; discard it by tag first`)
+  if (refs.includes(branch)) throw new Error(`branch room/${tag} already exists and Room has no record of creating it, so it is left alone; delete it yourself (git branch -D room/${tag}), or use another worker name`)
 }
 
 /** A Git discovery failure is definite only when no ancestor has even a damaged .git entry. */

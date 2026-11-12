@@ -43,13 +43,13 @@ describe('worker plumbing', () => {
   it('creates a worktree on branch room/<tag> and refuses an unmanaged reuse', async () => {
     const w1 = await prepareWorktree(dir, 'money')
     expect(w1.base).toBe(base); expect(w1.created).toBe(true); expect(w1.branch).toBe('room/money'); expect(existsSync(join(w1.dir, 'app.py'))).toBe(true)
-    await expect(prepareWorktree(dir, 'money')).rejects.toThrow(/unmanaged/)
+    await expect(prepareWorktree(dir, 'money')).rejects.toThrow(/Room has no record of creating it/)
   })
 
   it('refuses a stale branch when a worker directory was deleted', async () => {
     const first = await prepareWorktree(dir, 'deleted')
     rmSync(first.dir, { recursive: true, force: true })
-    await expect(prepareWorktree(dir, 'deleted')).rejects.toThrow(/branch room\/deleted is unmanaged/)
+    await expect(prepareWorktree(dir, 'deleted')).rejects.toThrow(/branch room\/deleted already exists and Room has no record of creating it/)
   })
 
   it('carries tracked and non-ignored untracked work into a worker-local base commit', async () => {
@@ -124,7 +124,7 @@ describe('worker plumbing', () => {
     expect(first).toMatchObject({ base: head, created: true })
     expect(first.carried).toBeUndefined()
     writeFileSync(join(repo, 'later.txt'), 'later')
-    await expect(prepareWorktree(repo, 'clean', 'rohanz')).rejects.toThrow(/unmanaged/)
+    await expect(prepareWorktree(repo, 'clean', 'rohanz')).rejects.toThrow(/Room has no record of creating it/)
     expect(existsSync(join(first.dir, 'later.txt'))).toBe(false)
     expect(git('rev-parse', 'room/clean')).toBe(head)
   })
@@ -194,7 +194,7 @@ describe('worker plumbing', () => {
       spawner: () => { throw new Error('forced launch failure') },
     })
     try {
-      expect(await tools.call('room_spawn', { tag: 'survivor', task: 'continue work' })).toContain('unmanaged')
+      expect(await tools.call('room_spawn', { tag: 'survivor', task: 'continue work' })).toContain('Room has no record of creating it')
       expect(git('rev-parse', '--verify', 'refs/heads/room/survivor')).toBe(workerHead)
       expect(git('show', 'room/survivor:worker.txt')).toBe('preserved worker work')
       expect(git('rev-parse', 'refs/room/carry/survivor')).toBe(carryHead)

@@ -1205,7 +1205,7 @@ export class FileWorkerStore {
     if (prep.created !== true && prep.branchCreated !== true
       && !Object.keys(prep.previousCarryRefs ?? {}).length) {
       if (!record.outside) {
-        if (fs.existsSync(record.dir)) retainCheckout(this.commonDir, record, 'preparation has no completed creation witness; retained in place')
+        if (fs.existsSync(record.dir)) retainCheckout(this.commonDir, record, 'Room has no record of creating this folder; left in place')
         deleteWorkerRef(this.commonDir, `refs/heads/${record.branch}`, record.id)
       }
       return
@@ -1213,7 +1213,7 @@ export class FileWorkerStore {
     const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
     if (!roomWorkerPathMatchesBranch(leadDir, record.dir, record.branch, false)) throw new Error(`unsafe preparation path for ${record.id}`)
     if (prep.created !== true) {
-      if (fs.existsSync(record.dir)) retainCheckout(this.commonDir, record, 'preparation has no completed creation witness; retained in place')
+      if (fs.existsSync(record.dir)) retainCheckout(this.commonDir, record, 'Room has no record of creating this folder; left in place')
       deleteWorkerRef(this.commonDir, `refs/heads/${record.branch}`, record.id)
       return
     }

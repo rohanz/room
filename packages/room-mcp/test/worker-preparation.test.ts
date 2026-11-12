@@ -108,7 +108,7 @@ it.each(['collect', 'discard'] as const)('keeps pre-change established %s author
   const reply = await t.leadTools.call('room_collect', { tag: 'established', ...(action === 'discard' ? { discard: true } : {}) })
   expect(fs.existsSync(record.dir), reply).toBe(false)
   expect(git('branch', '--list', record.branch)).toBe('')
-  expect(reply).not.toContain('retained worker items')
+  expect(reply).not.toContain('left in place because Room cannot confirm')
 })
 
 it('refuses damaged Git metadata found in an ancestor of a supplied directory', async () => {

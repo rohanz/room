@@ -927,7 +927,7 @@ describe('room_collect', () => {
     try {
       const result = await t.call({ tag: 'test', discard: true })
       expect(result).toMatch(/^discarded test; recovery patch: .*kept for a week/)
-      expect(result).not.toContain('retained worker items')
+      expect(result).not.toContain('left in place because Room cannot confirm')
       expect(pidAlive(child.pid!)).toBe(false)
       expect(fs.existsSync(worker)).toBe(false)
       expect(git(lead, 'branch', '--list', 'room/test')).toBe('')

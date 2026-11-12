@@ -222,14 +222,14 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   it('refuses to reuse a stale worker directory switched to another branch', async () => {
     const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })
     git(prepared.dir, 'switch', '-qc', 'unrelated')
-    await expect(prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })).rejects.toThrow(/unmanaged/)
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })).rejects.toThrow(/Room has no record of creating it/)
   })
   it('refuses a replacement repository at a former worker path', async () => {
     const prepared = await prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })
     git(repo, 'worktree', 'remove', '--force', prepared.dir)
     fs.mkdirSync(prepared.dir, { recursive: true })
     git(prepared.dir, 'init', '-q', '-b', 'room/replacement')
-    await expect(prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })).rejects.toThrow(/unmanaged/)
+    await expect(prepareWorktree(repo, 'replacement', 'rohanz', { linkExclusions: [] })).rejects.toThrow(/Room has no record of creating it/)
   })
   it('can spawn from HEAD without carrying tracked or untracked lead changes', async () => {
     put(repo, 'shared.txt', lines([2, 'lead edit']))

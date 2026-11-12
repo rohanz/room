@@ -152,7 +152,7 @@ it.each(['collect', 'discard', 'keep-collect'] as const)('r2: normal committed %
   if (action === 'keep-collect') {
     const kept = await t.leadTools.call('room_collect', { tag, keep: true })
     expect(kept).not.toContain('error:')
-    expect(kept).not.toContain('retained worker items')
+    expect(kept).not.toContain('left in place because Room cannot confirm')
     expect(fs.existsSync(record.dir)).toBe(true)
     expect((await registry.read(record.id))?.branchCleanup).toBeUndefined()
     expect(git('for-each-ref', '--format=%(refname)', `refs/room/recovery/${tag}/`)).toBe('')

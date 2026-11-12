@@ -984,7 +984,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
           if (result.removed) {
             retire(w.summary ?? '')
-            out.push('cleaned up ' + w.tag + ': temporary files and logs; branch cleanup uses its recovery-pinned operation tip')
+            out.push('cleaned up ' + w.tag + ': temporary files and logs')
             if (result.recoveryRef) out.push('branch recovery ref: ' + result.recoveryRef)
             if (result.terminated.length) out.push('stopped processes from ' + w.tag + ': ' + result.terminated.join(', '))
           } else {

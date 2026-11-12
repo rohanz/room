@@ -50,6 +50,6 @@ it('worker stop state lives in the common gitdir across worktrees and is keyed b
 it('a prepared worker worktree cannot be silently reused by a later launch', async () => {
   const { root } = repo()
   const prepared = await prepareWorktree(root, 'two', 'lead')
-  await expect(prepareWorktree(root, 'two', 'lead')).rejects.toThrow(/unmanaged/)
+  await expect(prepareWorktree(root, 'two', 'lead')).rejects.toThrow(/Room has no record of creating it/)
   expect(prepared.dir).toBe(path.join(root, '.room', 'workers', 'two'))
 })

@@ -31629,7 +31629,7 @@ function retainedWorkerItems(common) {
 }
 function retainedWorkerLines(common) {
   const items = retainedWorkerItems(common);
-  return items.length ? ["retained worker items (ownership checks; no automatic expiry):", ...items.map((item) => `  ${item.tag ? item.tag + ": " : ""}kept ${item.kind} ${item.path}: ${item.reason}`)] : [];
+  return items.length ? ["left in place because Room cannot confirm it created them (each note clears once you remove the item):", ...items.map((item) => `  ${item.tag ? item.tag + ": " : ""}kept ${item.kind} ${item.path}: ${item.reason}`)] : [];
 }
 var directory, itemFile;
 var init_worker_retained = __esm({
@@ -47013,10 +47013,12 @@ import fs57 from "node:fs";
 import os13 from "node:os";
 import path57 from "node:path";
 function assertNewWorkerWorktree(repoDir, tag) {
-  if (fs57.existsSync(path57.join(repoDir, WORKERS_DIR, tag, ".git"))) throw new Error(`worktree ${tag} is unmanaged; discard it by tag first`);
+  const rel = path57.join(WORKERS_DIR, tag);
+  if (fs57.lstatSync(path57.join(repoDir, rel), { throwIfNoEntry: false }))
+    throw new Error(`${rel} already exists and Room has no record of creating it, so it is left alone; move or delete it yourself, or use another worker name`);
   const branch = `refs/heads/room/${tag}`;
   const refs = boundedGitSync(repoDir, ["for-each-ref", "--format=%(refname)", branch]).toString().split("\n");
-  if (refs.includes(branch)) throw new Error(`branch room/${tag} is unmanaged; discard it by tag first`);
+  if (refs.includes(branch)) throw new Error(`branch room/${tag} already exists and Room has no record of creating it, so it is left alone; delete it yourself (git branch -D room/${tag}), or use another worker name`);
 }
 function hasGitEntry(dir) {
   for (let at = fs57.realpathSync.native(dir); ; ) {
@@ -49195,7 +49197,7 @@ var init_worker_file_store = __esm({
         }
         if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) {
           if (!record2.outside) {
-            if (fs58.existsSync(record2.dir)) retainCheckout(this.commonDir, record2, "preparation has no completed creation witness; retained in place");
+            if (fs58.existsSync(record2.dir)) retainCheckout(this.commonDir, record2, "Room has no record of creating this folder; left in place");
             deleteWorkerRef(this.commonDir, `refs/heads/${record2.branch}`, record2.id);
           }
           return;
@@ -49203,7 +49205,7 @@ var init_worker_file_store = __esm({
         const leadDir = record2.outside ? path58.dirname(this.commonDir) : path58.dirname(path58.dirname(path58.dirname(record2.dir)));
         if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
         if (prep.created !== true) {
-          if (fs58.existsSync(record2.dir)) retainCheckout(this.commonDir, record2, "preparation has no completed creation witness; retained in place");
+          if (fs58.existsSync(record2.dir)) retainCheckout(this.commonDir, record2, "Room has no record of creating this folder; left in place");
           deleteWorkerRef(this.commonDir, `refs/heads/${record2.branch}`, record2.id);
           return;
         }
@@ -68226,7 +68228,7 @@ function handlers10(state) {
           });
           if (result3.removed) {
             retire(w.summary ?? "");
-            out.push("cleaned up " + w.tag + ": temporary files and logs; branch cleanup uses its recovery-pinned operation tip");
+            out.push("cleaned up " + w.tag + ": temporary files and logs");
             if (result3.recoveryRef) out.push("branch recovery ref: " + result3.recoveryRef);
             if (result3.terminated.length) out.push("stopped processes from " + w.tag + ": " + result3.terminated.join(", "));
           } else {

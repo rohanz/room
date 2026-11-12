@@ -544,7 +544,7 @@ describe('worker safety', () => {
     const before = git('show-ref')
     const reply = await t.leadTools.call('room_spawn', { tag: mode === 'other' ? 'other' : 'same', task: 'inspect',
       ...(mode !== 'bare' ? { dir: prepared.dir } : {}), host: 'codex', model: 'worker-model' })
-    if (mode === 'bare') expect(reply).toContain('worktree same is unmanaged')
+    if (mode === 'bare') expect(reply).toContain(`${join('.room', 'workers', 'same')} already exists and Room has no record of creating it`)
     else {
       expect(reply).toContain(`worktree ${realpathSync(prepared.dir)}`)
       expect(reply).toContain('branch room/same')
@@ -583,7 +583,7 @@ describe('worker safety', () => {
     git('worktree', 'add', '-q', '-b', occupied === 'path' ? 'different-branch' : 'room/same', target)
     const t = setupLead(repo, head), registry = await registryForDir(repo)
     const refs = git('show-ref')
-    expect(await t.leadTools.call('room_spawn', { tag: 'same', task: 'x' })).toContain('unmanaged')
+    expect(await t.leadTools.call('room_spawn', { tag: 'same', task: 'x' })).toContain('Room has no record of creating it')
     expect(t.specs).toHaveLength(0)
     expect(requireWorkerInventory(await registry.list())).toEqual([])
     expect(existsSync(join(registry.root, 'tags', 'same.json'))).toBe(false)

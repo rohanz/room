@@ -51,5 +51,5 @@ function retainedWorkerItems(common: string): RetainedWorkerItem[] {
 }
 export function retainedWorkerLines(common: string): string[] {
   const items = retainedWorkerItems(common)
-  return items.length ? ['retained worker items (ownership checks; no automatic expiry):', ...items.map(item => `  ${item.tag ? item.tag + ': ' : ''}kept ${item.kind} ${item.path}: ${item.reason}`)] : []
+  return items.length ? ['left in place because Room cannot confirm it created them (each note clears once you remove the item):', ...items.map(item => `  ${item.tag ? item.tag + ': ' : ''}kept ${item.kind} ${item.path}: ${item.reason}`)] : []
 }

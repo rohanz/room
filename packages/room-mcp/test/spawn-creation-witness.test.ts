@@ -50,7 +50,7 @@ it('refuses a no-dir spawn at a prunable orphan before intent and preserves its 
   fs.rmSync(orphan, { recursive: true })
   const t = setupLead(repo, head), registry = await registryForDir(repo), intent = vi.spyOn(registry, 'writeIntent')
   const listing = git('worktree', 'list', '--porcelain'), refs = git('show-ref')
-  expect(await t.leadTools.call('room_spawn', { tag: 'prunable', task: 'x' })).toContain('branch room/prunable is unmanaged')
+  expect(await t.leadTools.call('room_spawn', { tag: 'prunable', task: 'x' })).toContain('branch room/prunable already exists and Room has no record of creating it')
   expect(intent.mock.calls.length).toBe(0)
   expect(git('worktree', 'list', '--porcelain')).toBe(listing)
   expect(git('show-ref')).toBe(refs)
