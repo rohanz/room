@@ -148,11 +148,27 @@ function ownToken(): InstanceToken {
   return { pid: process.pid, startTime: current?.startTime ?? '', executable: current?.executable ?? '', sessionId: `mcp:${process.pid}:${current?.startTime ?? 'unknown'}`, nonce: randomUUID() }
 }
 
+/** A failed post-link fsync or temp cleanup never returns a token to withGuard's
+ * finally. Roll back our nonce here, including when an EEXIST attempt's cleanup
+ * fails: a different holder must remain untouched. Share this boundary across
+ * synchronous authority guards and asynchronous preview publisher guards. */
+function createGuardSafely(file: string, token: InstanceToken, create: () => boolean): boolean
+function createGuardSafely(file: string, token: InstanceToken, create: () => Promise<boolean>): Promise<boolean>
+function createGuardSafely(file: string, token: InstanceToken, create: () => boolean | Promise<boolean>): boolean | Promise<boolean> {
+  try {
+    const created = create()
+    return typeof created === 'boolean' ? created : created.catch(async error => {
+      await releaseGuardAsync(file, token)
+      throw error
+    })
+  } catch (error) { releaseGuard(file, token); throw error }
+}
+
 /** Guard acquisition recovers a dead guard through its own guard; a live or unreadable holder blocks. */
 function acquireGuard(file: string, probe: ProcessProbe, depth = 0): InstanceToken {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`)
   const token = ownToken()
-  if (createExclusive(file, token)) return token
+  if (createGuardSafely(file, token, () => createExclusive(file, token))) return token
   const previous = read(file)
   const previousHolder = previous && leaseToken(previous)
   if (!previousHolder || liveness(previousHolder, probe) !== 'dead') throw new Error(`lease guard busy: ${file}`)
@@ -165,7 +181,7 @@ function acquireGuard(file: string, probe: ProcessProbe, depth = 0): InstanceTok
       syncDirectory(path.dirname(file))
     }
   } finally { releaseGuard(`${file}.guard`, outer) }
-  if (createExclusive(file, token)) return token
+  if (createGuardSafely(file, token, () => createExclusive(file, token))) return token
   throw new Error(`lease guard busy: ${file}`)
 }
 
@@ -186,6 +202,101 @@ export function withGuard<T>(file: string, fn: () => T extends PromiseLike<unkno
     return result
   }
   finally { releaseGuard(guard, token) }
+}
+
+// Preview publishers can await disk durability without holding the MCP event loop.
+// Synchronous authority/registry callers retain synchronous durability. Both paths
+// link only fully synced JSON: an unreadable guard cannot be reclaimed.
+async function syncDirectoryAsync(dir: string): Promise<void> {
+  let handle: fs.promises.FileHandle | undefined
+  try { handle = await fs.promises.open(dir, 'r'); await handle.sync() }
+  catch (e) { if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e }
+  finally { await handle?.close() }
+}
+
+async function ensureDurableDirectoryAsync(dir: string, holdsFile = true): Promise<void> {
+  const parent = path.dirname(dir)
+  if (parent === dir) {
+    if (!(await fs.promises.stat(dir)).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
+    return
+  }
+  await ensureDurableDirectoryAsync(parent, false)
+  let present = true
+  try { await fs.promises.access(dir) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; present = false }
+  // Creating a directory is rare and stays with the one synchronous creation policy above;
+  // only the flush of an existing directory's parent, which every call pays, is asynchronous.
+  if (!present) ensureDurableDirectory(dir, holdsFile)
+  else await syncDirectoryAsync(parent)
+}
+
+async function createGuardAsync(file: string, token: InstanceToken): Promise<boolean> {
+  const dir = path.dirname(file)
+  await ensureDurableDirectoryAsync(dir)
+  // Match orphan-temp cleanup without a synchronous directory fsync on recovery.
+  for (const name of await fs.promises.readdir(dir)) {
+    const match = tempPattern.exec(name)
+    if (!match) continue
+    const pid = Number(match[1])
+    if (!validPid(pid)) continue
+    const observed = probeProcess(pid)
+    if (observed && (match[2] === 'u' || !observed.startTime || startMarker(observed.startTime) === match[2])) continue
+    if (pidAlive(pid)) continue
+    try { await fs.promises.unlink(path.join(dir, name)); await syncDirectoryAsync(dir) }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  }
+  const start = probeOwnProcess()?.startTime
+  const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : 'u'}-n${randomUUID()}.tmp`
+  try {
+    const handle = await fs.promises.open(temp, 'wx', 0o600)
+    try { await handle.writeFile(JSON.stringify(token) + '\n'); await handle.sync() }
+    finally { await handle.close() }
+    try { await fs.promises.link(temp, file) }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false; throw e }
+    await syncDirectoryAsync(dir)
+    return true
+  } finally { await fs.promises.rm(temp, { force: true }); await syncDirectoryAsync(dir) }
+}
+
+async function readGuardAsync(file: string): Promise<InstanceToken | undefined> {
+  try { return leaseToken(JSON.parse(await fs.promises.readFile(file, 'utf8'))) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
+}
+
+async function releaseGuardAsync(file: string, token: InstanceToken): Promise<void> {
+  if ((await readGuardAsync(file))?.nonce === token.nonce) {
+    await fs.promises.unlink(file)
+    await syncDirectoryAsync(path.dirname(file))
+  }
+}
+
+async function acquireGuardAsync(file: string, probe: ProcessProbe, depth = 0): Promise<InstanceToken> {
+  if (depth > 12) throw new Error(`too many stale lease guards at ${file}`)
+  const token = ownToken()
+  if (await createGuardSafely(file, token, () => createGuardAsync(file, token))) return token
+  const previous = await readGuardAsync(file)
+  if (!previous || liveness(previous, probe) !== 'dead') throw new Error(`lease guard busy: ${file}`)
+  const outer = await acquireGuardAsync(`${file}.guard`, probe, depth + 1)
+  try {
+    const latest = await readGuardAsync(file)
+    if (latest && liveness(latest, probe) === 'dead') {
+      await fs.promises.unlink(file)
+      await syncDirectoryAsync(path.dirname(file))
+    }
+  } finally { await releaseGuardAsync(`${file}.guard`, outer) }
+  if (await createGuardSafely(file, token, () => createGuardAsync(file, token))) return token
+  throw new Error(`lease guard busy: ${file}`)
+}
+
+/** Async durable acquisition/release; the decision itself must remain synchronous. */
+export async function withGuardAsync<T>(file: string, fn: () => T extends PromiseLike<unknown> ? never : T, probe: ProcessProbe = probeProcess): Promise<T> {
+  const guard = `${file}.guard`
+  const token = await acquireGuardAsync(guard, probe)
+  try {
+    const result = fn()
+    if (result && typeof (result as { then?: unknown }).then === 'function') throw new TypeError('lease guard callback must be synchronous')
+    return result
+  } finally { await releaseGuardAsync(guard, token) }
 }
 
 export function replace(file: string, expect: (content: Record<string, any>) => boolean, next: object): boolean {

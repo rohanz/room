@@ -18469,10 +18469,22 @@ function ownToken() {
   const current3 = probeOwnProcess();
   return { pid: process.pid, startTime: current3?.startTime ?? "", executable: current3?.executable ?? "", sessionId: `mcp:${process.pid}:${current3?.startTime ?? "unknown"}`, nonce: randomUUID() };
 }
+function createGuardSafely(file2, token, create6) {
+  try {
+    const created = create6();
+    return typeof created === "boolean" ? created : created.catch(async (error2) => {
+      await releaseGuardAsync(file2, token);
+      throw error2;
+    });
+  } catch (error2) {
+    releaseGuard(file2, token);
+    throw error2;
+  }
+}
 function acquireGuard(file2, probe, depth = 0) {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file2}`);
   const token = ownToken();
-  if (createExclusive(file2, token)) return token;
+  if (createGuardSafely(file2, token, () => createExclusive(file2, token))) return token;
   const previous = read(file2);
   const previousHolder = previous && leaseToken(previous);
   if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file2}`);
@@ -18487,7 +18499,7 @@ function acquireGuard(file2, probe, depth = 0) {
   } finally {
     releaseGuard(`${file2}.guard`, outer);
   }
-  if (createExclusive(file2, token)) return token;
+  if (createGuardSafely(file2, token, () => createExclusive(file2, token))) return token;
   throw new Error(`lease guard busy: ${file2}`);
 }
 function releaseGuard(file2, token) {
@@ -18506,6 +18518,119 @@ function withGuard(file2, fn, probe = probeProcess) {
     return result2;
   } finally {
     releaseGuard(guard, token);
+  }
+}
+async function syncDirectoryAsync(dir) {
+  let handle;
+  try {
+    handle = await fs12.promises.open(dir, "r");
+    await handle.sync();
+  } catch (e) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
+  } finally {
+    await handle?.close();
+  }
+}
+async function ensureDurableDirectoryAsync(dir, holdsFile = true) {
+  const parent = path11.dirname(dir);
+  if (parent === dir) {
+    if (!(await fs12.promises.stat(dir)).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
+    return;
+  }
+  await ensureDurableDirectoryAsync(parent, false);
+  let present = true;
+  try {
+    await fs12.promises.access(dir);
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+    present = false;
+  }
+  if (!present) ensureDurableDirectory(dir, holdsFile);
+  else await syncDirectoryAsync(parent);
+}
+async function createGuardAsync(file2, token) {
+  const dir = path11.dirname(file2);
+  await ensureDurableDirectoryAsync(dir);
+  for (const name of await fs12.promises.readdir(dir)) {
+    const match = tempPattern.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!validPid(pid)) continue;
+    const observed = probeProcess(pid);
+    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
+    if (pidAlive(pid)) continue;
+    try {
+      await fs12.promises.unlink(path11.join(dir, name));
+      await syncDirectoryAsync(dir);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  const start = probeOwnProcess()?.startTime;
+  const temp = `${file2}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
+  try {
+    const handle = await fs12.promises.open(temp, "wx", 384);
+    try {
+      await handle.writeFile(JSON.stringify(token) + "\n");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await fs12.promises.link(temp, file2);
+    } catch (e) {
+      if (e.code === "EEXIST") return false;
+      throw e;
+    }
+    await syncDirectoryAsync(dir);
+    return true;
+  } finally {
+    await fs12.promises.rm(temp, { force: true });
+    await syncDirectoryAsync(dir);
+  }
+}
+async function readGuardAsync(file2) {
+  try {
+    return leaseToken(JSON.parse(await fs12.promises.readFile(file2, "utf8")));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+async function releaseGuardAsync(file2, token) {
+  if ((await readGuardAsync(file2))?.nonce === token.nonce) {
+    await fs12.promises.unlink(file2);
+    await syncDirectoryAsync(path11.dirname(file2));
+  }
+}
+async function acquireGuardAsync(file2, probe, depth = 0) {
+  if (depth > 12) throw new Error(`too many stale lease guards at ${file2}`);
+  const token = ownToken();
+  if (await createGuardSafely(file2, token, () => createGuardAsync(file2, token))) return token;
+  const previous = await readGuardAsync(file2);
+  if (!previous || liveness(previous, probe) !== "dead") throw new Error(`lease guard busy: ${file2}`);
+  const outer = await acquireGuardAsync(`${file2}.guard`, probe, depth + 1);
+  try {
+    const latest = await readGuardAsync(file2);
+    if (latest && liveness(latest, probe) === "dead") {
+      await fs12.promises.unlink(file2);
+      await syncDirectoryAsync(path11.dirname(file2));
+    }
+  } finally {
+    await releaseGuardAsync(`${file2}.guard`, outer);
+  }
+  if (await createGuardSafely(file2, token, () => createGuardAsync(file2, token))) return token;
+  throw new Error(`lease guard busy: ${file2}`);
+}
+async function withGuardAsync(file2, fn, probe = probeProcess) {
+  const guard = `${file2}.guard`;
+  const token = await acquireGuardAsync(guard, probe);
+  try {
+    const result2 = fn();
+    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
+    return result2;
+  } finally {
+    await releaseGuardAsync(guard, token);
   }
 }
 function replace2(file2, expect, next) {
@@ -44399,7 +44524,7 @@ async function guardedPublisher(root, prefix2, fn) {
   for (; ; ) {
     let entered = false;
     try {
-      return withGuard(path52.join(root, prefix2 + "publication"), (() => {
+      return await withGuardAsync(path52.join(root, prefix2 + "publication"), (() => {
         entered = true;
         return fn();
       }));
@@ -48007,19 +48132,20 @@ var init_worker_file_store = __esm({
             for (const record2 of records) if (record2.sharedWith && !known.has(record2.sharedWith) && !ended(record2))
               this.invalid(this.workerFile(record2.sharedWith), "unavailable shared owner record");
           }
+          const byId = new Map(records.map((record2) => [record2.id, record2]));
           if (!recordOnly) for (const file2 of files(path57.join(this.root, "tags"), ".json")) {
             const tag = path57.basename(file2, ".json");
             if (!safeTag(tag)) this.invalid(file2, "invalid reservation filename", true);
-            else this.#reserved(tag, orphanTags);
+            else this.#reserved(tag, orphanTags, byId);
           }
           return records;
         });
       }
       /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
-      #reserved(tag, orphanTags) {
+      #reserved(tag, orphanTags, records) {
         if (!safeTag(tag)) return void 0;
         const reservation = this.#readFact(this.tagFile(tag), (value5) => object4(value5) && typeof value5.id === "string" && safeId(value5.id));
-        const record2 = reservation ? this.#read(reservation.id) : void 0;
+        const record2 = reservation ? records?.get(reservation.id) ?? this.#read(reservation.id) : void 0;
         if (reservation && !record2) orphanTags?.add(tag);
         if (reservation && (!record2 || record2.tag !== tag)) this.invalid(this.tagFile(tag), "unavailable reserved record");
         return record2;
@@ -48030,10 +48156,10 @@ var init_worker_file_store = __esm({
         return requireWorkerInventory(this.#list()).find((record2) => record2.name === tagOrName && this.#reserved(record2.tag)?.id === record2.id);
       }
       /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
-      #worktreeOwner(record2) {
-        if (record2.sharedWith) return this.#read(record2.sharedWith);
+      #worktreeOwner(record2, records) {
+        if (record2.sharedWith) return records ? records.find((peer) => peer.id === record2.sharedWith) : this.#read(record2.sharedWith);
         if (path57.basename(record2.dir) === record2.tag && record2.branch === `room/${record2.tag}`) return void 0;
-        return requireWorkerInventory(this.#list()).find((peer) => peer.id !== record2.id && !peer.sharedWith && path57.resolve(peer.dir) === path57.resolve(record2.dir) && path57.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`);
+        return (records ?? requireWorkerInventory(this.#list())).find((peer) => peer.id !== record2.id && !peer.sharedWith && path57.resolve(peer.dir) === path57.resolve(record2.dir) && path57.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`);
       }
       #status(id3) {
         const record2 = this.#read(id3);
@@ -48690,7 +48816,7 @@ var init_worker_file_store = __esm({
        * worktree still exists, or whose checkout a live record borrows, stays. Old import journals are not used by this registry.
        */
       async pruneRetired(maxAgeMs) {
-        const borrowers = (records2) => new Set(records2.filter((record2) => !ended(record2)).flatMap((record2) => [record2.sharedWith, this.#worktreeOwner(record2)?.id]).filter(Boolean));
+        const borrowers = (records2) => new Set(records2.filter((record2) => !ended(record2)).flatMap((record2) => [record2.sharedWith, this.#worktreeOwner(record2, records2)?.id]).filter(Boolean));
         const expiredAt = (record2, borrowed) => {
           if (!ended(record2) || borrowed.has(record2.id)) return void 0;
           if (record2.keptWorktree && fs57.existsSync(record2.keptWorktree)) return void 0;

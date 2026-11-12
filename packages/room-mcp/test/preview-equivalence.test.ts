@@ -354,8 +354,8 @@ describe('review3 latest attempt snapshot', () => {
     fs.writeFileSync(script, `
       import fs from 'node:fs';
       import { fingerprintTree, beginPreviewAttempt } from ${JSON.stringify(new URL('../src/preview-evidence.ts', import.meta.url).href)};
-      const link = fs.linkSync.bind(fs);
-      fs.linkSync = (...args) => { try { return link(...args) } catch (error) {
+      const link = fs.promises.link.bind(fs.promises);
+      fs.promises.link = async (...args) => { try { return await link(...args) } catch (error) {
         if (String(args[1]) === ${JSON.stringify(guard + '.guard')} && error.code === 'EEXIST') fs.writeFileSync(${JSON.stringify(contended)}, 'waiting');
         throw error;
       } };

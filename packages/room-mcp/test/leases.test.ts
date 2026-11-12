@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanupOrphanTemps, compareAndRelease, createExclusive, liveness, recover, replace, withGuard, type InstanceToken } from '../src/leases.js'
+import { cleanupOrphanTemps, compareAndRelease, createExclusive, liveness, recover, replace, withGuard, withGuardAsync, type InstanceToken } from '../src/leases.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -41,6 +41,136 @@ function output(child: ChildProcess): Promise<string> {
 }
 
 describe('local leases', () => {
+  it.each((['sync', 'async'] as const).flatMap(mode => (['directory sync', 'temp cleanup'] as const).map(failure => [mode, failure] as const)))('releases an acquired guard after post-link failure (%s, %s)', async (mode, failure) => {
+    const file = leaseFile(), guard = `${file}.guard`, dir = path.dirname(file)
+    let injected = false, entered = false
+    const fail = () => {
+      if (!injected && fs.existsSync(guard)) {
+        injected = true
+        throw Object.assign(new Error(`one-shot ${failure} failure`), { code: 'EIO' })
+      }
+    }
+    if (mode === 'sync') {
+      if (failure === 'directory sync') {
+        const sync = fs.fsyncSync.bind(fs)
+        vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => { if (fs.fstatSync(fd).isDirectory()) fail(); return sync(fd) })
+      } else {
+        const rm = fs.rmSync.bind(fs)
+        vi.spyOn(fs, 'rmSync').mockImplementation((...args) => { if (String(args[0]).endsWith('.tmp')) fail(); return rm(...args) })
+      }
+    } else if (failure === 'directory sync') {
+      const open = fs.promises.open.bind(fs.promises)
+      vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+        const handle = await open(...args)
+        if (String(args[0]) === dir) {
+          const sync = handle.sync.bind(handle)
+          vi.spyOn(handle, 'sync').mockImplementation(async () => { fail(); await sync() })
+        }
+        return handle
+      })
+    } else {
+      const rm = fs.promises.rm.bind(fs.promises)
+      vi.spyOn(fs.promises, 'rm').mockImplementation(async (...args) => { if (String(args[0]).endsWith('.tmp')) fail(); return rm(...args) })
+    }
+    try {
+      const callback = () => { entered = true }
+      if (mode === 'sync') expect(() => withGuard(file, callback)).toThrow(`one-shot ${failure} failure`)
+      else await expect(withGuardAsync(file, callback)).rejects.toThrow(`one-shot ${failure} failure`)
+      expect(injected).toBe(true)
+      expect(entered).toBe(false)
+    } finally { vi.restoreAllMocks() }
+    expect(fs.existsSync(guard), 'failed acquisition left its live guard installed').toBe(false)
+    if (mode === 'sync') expect(withGuard(file, () => 'retry')).toBe('retry')
+    else await expect(withGuardAsync(file, () => 'retry')).resolves.toBe('retry')
+  })
+
+  it.each(['sync', 'async'] as const)('keeps a different nonce when failed acquisition cleans up (%s)', async mode => {
+    const file = leaseFile(), guard = `${file}.guard`, successor = token('successor')
+    const replaceAndFail = () => {
+      fs.unlinkSync(guard)
+      fs.writeFileSync(guard, JSON.stringify(successor))
+      throw Object.assign(new Error('post-link failure'), { code: 'EIO' })
+    }
+    if (mode === 'sync') {
+      const link = fs.linkSync.bind(fs)
+      vi.spyOn(fs, 'linkSync').mockImplementation((...args) => { link(...args); replaceAndFail() })
+    } else {
+      const link = fs.promises.link.bind(fs.promises)
+      vi.spyOn(fs.promises, 'link').mockImplementation(async (...args) => { await link(...args); replaceAndFail() })
+    }
+    try {
+      if (mode === 'sync') expect(() => withGuard(file, () => 1)).toThrow('post-link failure')
+      else await expect(withGuardAsync(file, () => 1)).rejects.toThrow('post-link failure')
+    } finally { vi.restoreAllMocks() }
+    expect(JSON.parse(fs.readFileSync(guard, 'utf8'))).toEqual(successor)
+  })
+
+  it('uses the same exclusion protocol for async and sync guard holders', async () => {
+    const file = leaseFile()
+    expect(await withGuardAsync(file, () => {
+      expect(() => withGuard(file, () => 'overlap')).toThrow(/lease guard busy/)
+      return 'held'
+    })).toBe('held')
+    expect(withGuard(file, () => 'next')).toBe('next')
+    let pending!: Promise<unknown>
+    withGuard(file, () => { pending = withGuardAsync(file, () => 'overlap') })
+    // The synchronous holder has released before the async contender can publish.
+    expect(await pending).toBe('overlap')
+  })
+
+  it('recovers dead nested guards asynchronously without synchronous fsync', async () => {
+    const file = leaseFile(), guard = `${file}.guard`
+    fs.writeFileSync(guard, JSON.stringify(token('dead', 500)))
+    fs.writeFileSync(`${guard}.guard`, JSON.stringify(token('also-dead', 501)))
+    const sync = vi.spyOn(fs, 'fsyncSync')
+    try {
+      expect(await withGuardAsync(file, () => 'recovered', () => undefined)).toBe('recovered')
+      expect(sync).not.toHaveBeenCalled()
+    } finally { sync.mockRestore() }
+    expect(fs.readdirSync(path.dirname(file))).toEqual([])
+  })
+
+  it('keeps unreadable async guards and releases after an invalid callback', async () => {
+    const file = leaseFile(), guard = `${file}.guard`
+    fs.writeFileSync(guard, '{}')
+    await expect(withGuardAsync(file, () => 1, () => undefined)).rejects.toThrow(/lease guard busy/)
+    expect(fs.readFileSync(guard, 'utf8')).toBe('{}')
+    fs.unlinkSync(guard)
+    await expect(withGuardAsync(file, (async () => 1) as never)).rejects.toThrow(/synchronous/)
+    expect(fs.existsSync(guard)).toBe(false)
+    await expect(withGuardAsync(file, () => { throw new Error('callback failed') })).rejects.toThrow('callback failed')
+    expect(fs.existsSync(guard)).toBe(false)
+  })
+
+  it('syncs async guard contents before linking, and cleans a failed write', async () => {
+    const file = leaseFile()
+    const open = fs.promises.open.bind(fs.promises)
+    let synced = false
+    const opening = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args)
+      if (args[1] === 'wx') {
+        const sync = handle.sync.bind(handle)
+        vi.spyOn(handle, 'sync').mockImplementation(async () => { await sync(); synced = true })
+      }
+      return handle
+    })
+    const link = fs.promises.link.bind(fs.promises)
+    const linking = vi.spyOn(fs.promises, 'link').mockImplementation(async (...args) => {
+      expect(synced).toBe(true)
+      return link(...args)
+    })
+    try { await withGuardAsync(file, () => 1) }
+    finally { opening.mockRestore(); linking.mockRestore() }
+    const failure = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args)
+      if (args[1] === 'wx') vi.spyOn(handle, 'sync').mockRejectedValue(new Error('sync failed'))
+      return handle
+    })
+    try { await expect(withGuardAsync(file, () => 1)).rejects.toThrow('sync failed') }
+    finally { failure.mockRestore() }
+    expect(fs.readdirSync(path.dirname(file))).toEqual([])
+  })
+
   it('admits exactly one of two creators in separate processes', async () => {
     const file = leaseFile()
     const a = launch('create', file, `${file}.a`, `${file}.go`)

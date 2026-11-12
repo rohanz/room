@@ -16132,10 +16132,22 @@ function ownToken() {
   const current = probeOwnProcess();
   return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
 }
+function createGuardSafely(file, token, create6) {
+  try {
+    const created = create6();
+    return typeof created === "boolean" ? created : created.catch(async (error) => {
+      await releaseGuardAsync(file, token);
+      throw error;
+    });
+  } catch (error) {
+    releaseGuard(file, token);
+    throw error;
+  }
+}
 function acquireGuard(file, probe, depth = 0) {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
   const token = ownToken();
-  if (createExclusive(file, token)) return token;
+  if (createGuardSafely(file, token, () => createExclusive(file, token))) return token;
   const previous = read(file);
   const previousHolder = previous && leaseToken(previous);
   if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
@@ -16150,7 +16162,7 @@ function acquireGuard(file, probe, depth = 0) {
   } finally {
     releaseGuard(`${file}.guard`, outer);
   }
-  if (createExclusive(file, token)) return token;
+  if (createGuardSafely(file, token, () => createExclusive(file, token))) return token;
   throw new Error(`lease guard busy: ${file}`);
 }
 function releaseGuard(file, token) {
@@ -16169,6 +16181,31 @@ function withGuard(file, fn, probe = probeProcess) {
     return result;
   } finally {
     releaseGuard(guard, token);
+  }
+}
+async function syncDirectoryAsync(dir) {
+  let handle;
+  try {
+    handle = await fs4.promises.open(dir, "r");
+    await handle.sync();
+  } catch (e) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
+  } finally {
+    await handle?.close();
+  }
+}
+async function readGuardAsync(file) {
+  try {
+    return leaseToken(JSON.parse(await fs4.promises.readFile(file, "utf8")));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+async function releaseGuardAsync(file, token) {
+  if ((await readGuardAsync(file))?.nonce === token.nonce) {
+    await fs4.promises.unlink(file);
+    await syncDirectoryAsync(path5.dirname(file));
   }
 }
 function compareAndRelease(file, token) {

@@ -331,19 +331,22 @@ export class FileWorkerStore {
         for (const record of records) if (record.sharedWith && !known.has(record.sharedWith) && !ended(record))
           this.invalid(this.workerFile(record.sharedWith), 'unavailable shared owner record')
       }
+      const byId = new Map(records.map(record => [record.id, record]))
       if (!recordOnly) for (const file of files(path.join(this.root, 'tags'), '.json')) {
         const tag = path.basename(file, '.json')
         if (!safeTag(tag)) this.invalid(file, 'invalid reservation filename', true)
-        else this.#reserved(tag, orphanTags)
+        else this.#reserved(tag, orphanTags, byId)
       }
       return records
     })
   }
   /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
-  #reserved(tag: string, orphanTags?: Set<string>): WorkerRecord | undefined {
+  #reserved(tag: string, orphanTags?: Set<string>, records?: ReadonlyMap<string, WorkerRecord>): WorkerRecord | undefined {
     if (!safeTag(tag)) return undefined
     const reservation = this.#readFact(this.tagFile(tag), (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id))
-    const record = reservation ? this.#read(reservation.id) : undefined
+    // Missing entries still need the direct read's quarantine evidence (and may
+    // have appeared since enumeration); reuse only successfully decoded records.
+    const record = reservation ? records?.get(reservation.id) ?? this.#read(reservation.id) : undefined
     if (reservation && !record) orphanTags?.add(tag)
     if (reservation && (!record || record.tag !== tag)) this.invalid(this.tagFile(tag), 'unavailable reserved record')
     return record
@@ -354,10 +357,10 @@ export class FileWorkerStore {
     return requireWorkerInventory(this.#list()).find(record => record.name === tagOrName && this.#reserved(record.tag)?.id === record.id)
   }
   /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
-  #worktreeOwner(record: WorkerRecord): WorkerRecord | undefined {
-    if (record.sharedWith) return this.#read(record.sharedWith)
+  #worktreeOwner(record: WorkerRecord, records?: readonly WorkerRecord[]): WorkerRecord | undefined {
+    if (record.sharedWith) return records ? records.find(peer => peer.id === record.sharedWith) : this.#read(record.sharedWith)
     if (path.basename(record.dir) === record.tag && record.branch === `room/${record.tag}`) return undefined
-    return requireWorkerInventory(this.#list()).find(peer => peer.id !== record.id && !peer.sharedWith
+    return (records ?? requireWorkerInventory(this.#list())).find(peer => peer.id !== record.id && !peer.sharedWith
       && path.resolve(peer.dir) === path.resolve(record.dir)
       && path.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`)
   }
@@ -941,7 +944,7 @@ export class FileWorkerStore {
    */
   async pruneRetired(maxAgeMs: number): Promise<WorkerRecord[]> {
     const borrowers = (records: WorkerRecord[]) => new Set(records.filter(record => !ended(record))
-      .flatMap(record => [record.sharedWith, this.#worktreeOwner(record)?.id]).filter(Boolean))
+      .flatMap(record => [record.sharedWith, this.#worktreeOwner(record, records)?.id]).filter(Boolean))
     /** Every retention predicate, on one reading of the registry; undefined keeps the record. */
     const expiredAt = (record: WorkerRecord, borrowed: Set<string | undefined>): number | undefined => {
       if (!ended(record) || borrowed.has(record.id)) return undefined

@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { withGuard } from './leases.js'
+import { withGuardAsync } from './leases.js'
 import { assertCollectLease } from './collect-lease.js'
 import { boundedGitSync } from '@room/roomd/baseline'
 import { batchBudget, sortedCopy, normalizedPaths, boundedJson } from './preview-batches.js'
@@ -223,7 +223,7 @@ async function guardedPublisher<T>(root: string, prefix: string, fn: () => T): P
   const deadline = performance.now() + 30_000
   for (;;) {
     let entered = false
-    try { return withGuard<T>(path.join(root, prefix + 'publication'), (() => { entered = true; return fn() }) as () => T extends PromiseLike<unknown> ? never : T) }
+    try { return await withGuardAsync<T>(path.join(root, prefix + 'publication'), (() => { entered = true; return fn() }) as () => T extends PromiseLike<unknown> ? never : T) }
     catch (error) {
       if (entered || !(error instanceof Error) || !error.message.startsWith('lease guard busy: ')) throw error
       if (performance.now() >= deadline) throw new Error('preview publisher guard wait exceeded 30000 ms')
