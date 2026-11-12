@@ -124,7 +124,8 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
 - Deliberate scale and responsiveness tests are opt-in: `TEST_SCALE=1 npm test`. The default run skips these large synthetic repositories and soak cases; CI sets `TEST_SCALE=1` so they remain required coverage.
-- Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
+- Release: Run a daemon soak before releases that touch relay, daemon or room-mcp.
+  `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
   (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin and tag `v<version>`.
   The bump also appends the new tag to `scripts/compat-pins.json`; right after `git tag v<version>` run `node scripts/compat-pins.mjs <version> --pin-commit`
   so the pin records the commit, and commit that before publishing. The matrix refuses every unfrozen existing tag, including the manifest version; only its single pre-tag candidate may remain pending. `npx tsx scripts/compat-matrix.mts` runs the pinned old/new server and relay pairs locally (CI's `compat` job does the same);
