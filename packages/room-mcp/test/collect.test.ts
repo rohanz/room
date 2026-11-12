@@ -17,6 +17,7 @@ import { pidAlive, signalWorker } from '../src/worker-process.js'
 import { localWorkers, registryForDir } from '../src/worker-registry.js'
 import { finishWorker, workerByTag } from './registry-fixture.js'
 import { finishFixtureProcess } from './fixtures/process-liveness.js'
+import { collectRecoveryRefs } from '../src/worker-refs.js'
 describe('room_collect', () => {
 
   it('preserves scratch handling and stays finished through automatic retirement after keep', async () => {
@@ -465,7 +466,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(path.join(lead, '.room', 'discarded'))).toBe(false)
     expect(fs.existsSync(worker)).toBe(true)
     const forced = await t.call({ tag: 'test', discard: true, force: true })
-    expect(forced).toMatch(/^discarded test; recovery patch: \S+\.patch \(kept for a week\); deleted without a copy: .*\.venv\/.*data\/tmp\//)
+    expect(forced).toMatch(/^discarded test; recovery patch: \S+\.patch \(kept for a week\); branch recovery ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\); deleted without a copy: .*\.venv\/.*data\/tmp\//)
     const patch = fs.readFileSync(forced.match(/recovery patch: (\S+\.patch)/)![1], 'utf8')
     expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/file.txt b/file.txt'])
     expect(fs.existsSync(worker)).toBe(false)
@@ -501,7 +502,7 @@ describe('room_collect', () => {
   it('discards worker and clears its overlay, claims, scope and presence', async () => {
     const t = setup('failed')
     seedPresence(t)
-    expect(await t.call({ tag: 'test', discard: true })).toMatch(/^discarded test(?:\n|$)/)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
     await expectRetired(t)
   })
 
@@ -531,7 +532,7 @@ describe('room_collect', () => {
     expect((await workerByTag(lead, 'test'))).toBeDefined()
   })
 
-  it.each([false, true])('removes a recovery-pinned merged-commit branch after discarding a vanished worktree (pruned first: %s)', async pruned => {
+  it.each([false, true])('pins a merged-commit branch after discarding a vanished worktree (pruned first: %s)', async pruned => {
     const t = setup()
     seedPresence(t)
     git(lead, 'branch', 'room/og-cards')
@@ -545,7 +546,11 @@ describe('room_collect', () => {
     const reply = await t.call({ tag: 'test', discard: true })
     expect(reply).toContain('discarded test; its worktree was already gone')
     expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
-    expect(git(lead, 'rev-parse', `refs/room/recovery/test/${commit}`)).toBe(commit)
+    const pin = `refs/room/recovery/test/${commit}`
+    expect(git(lead, 'rev-parse', `${pin}^{commit}`)).toBe(commit)
+    expect(reply).toContain(`branch recovery ref: ${pin} (kept for seven days)`)
+    expect(collectRecoveryRefs(path.join(lead, '.git'))).toEqual([])
+    expect(() => git(lead, 'cat-file', '-e', commit)).not.toThrow()
     expect(reply).not.toContain('kept branch refs/heads/room/test')
     expect(git(lead, 'rev-parse', 'room/og-cards')).toBe(otherBranch)
     expect((await workerByTag(lead, 'test'))).toBeUndefined()
@@ -975,7 +980,7 @@ describe('room_collect', () => {
     const old = new Date(Date.now() - 8 * 86400_000)
     fs.utimesSync(path.join(lead, '.git/room/registry/patches/w_old.patch'), old, old)
     put(lead, '.room/workers/test.log', 'log')
-    expect(await t.call({ tag: 'test', discard: true })).toMatch(/^discarded test(?:\n|$)/)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
     await (await registryForDir(lead)).reconcile()
     expect(fs.existsSync(path.join(lead, '.git/room/registry/patches/w_old.patch'))).toBe(false)
     expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(true)
@@ -985,7 +990,7 @@ describe('room_collect', () => {
   it('keeps recent patches and another worker folder until the last cleanup', async () => {
     const t = setup(); second(t)
     put(lead, '.room/workers/second.log', 'log'); put(lead, '.room/workers/test.log', 'log')
-    expect(await t.call({ tag: 'test', discard: true })).toMatch(/^discarded test(?:\n|$)/)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
     expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(true)
     expect(await t.call({ tag: 'second' })).toContain('cleaned up second')
     expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(true)
@@ -994,7 +999,7 @@ describe('room_collect', () => {
 
   it('retains recovery patches younger than a week', async () => {
     const t = setup(); put(lead, '.room/discarded/recent.patch', 'recent')
-    expect(await t.call({ tag: 'test', discard: true })).toMatch(/^discarded test(?:\n|$)/)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
     expect(fs.readFileSync(path.join(lead, '.room/discarded/recent.patch'), 'utf8')).toBe('recent')
   })
 

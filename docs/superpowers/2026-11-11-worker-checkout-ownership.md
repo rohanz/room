@@ -1,5 +1,9 @@
 # Worker checkout ownership: retain in place on uncertainty
 
+Recovery-ref creation and lifetime were revised on 2026-11-12; see
+[recovery ref retention](2026-11-12-recovery-ref-retention.md). The historical
+permanent-pin policy below is superseded; checkout ownership guarantees remain.
+
 Revised 2026-11-11 after independent review of b6f0cb2c. The review is preserved
 unchanged in [worker-checkout-ownership-review.md](2026-11-11-worker-checkout-ownership-review.md)
 (from d12a1d04). It reproduced empty-root adoption, symbolic-ref target deletion

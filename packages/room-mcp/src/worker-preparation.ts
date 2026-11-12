@@ -118,21 +118,22 @@ export function canonicalMissingWorkerPath(dir: string): string {
     }
   }
 }
-/** Remove only a witnessed admin entry, independently of the reusable checkout path. */
+/** Remove only a witnessed admin entry for a genuinely missing worker checkout. */
 export async function removeWorkerRegistration(common: string, admin: string, expected: PreparationWitness, dir: string): Promise<void> {
   await withGitWorktreeOperation(common, () => {
     const realCommon = fs.realpathSync.native(common)
-    const expectedBacklink = path.join(canonicalMissingWorkerPath(dir), '.git')
-    if (path.resolve(admin, trimLine(smallFile(path.join(admin, 'gitdir')))) !== expectedBacklink) throw new Error('registration moved away from the recorded root')
+    const gitdir = path.join(canonicalMissingWorkerPath(dir), '.git')
+    if (path.dirname(admin) !== path.join(realCommon, 'worktrees') || !fs.lstatSync(admin).isDirectory()) throw new Error('unsafe admin entry')
+    if (path.resolve(admin, trimLine(smallFile(path.join(admin, 'gitdir')))) !== gitdir) throw new Error('registration moved away from the recorded root')
+    if (fs.realpathSync.native(path.resolve(admin, trimLine(smallFile(path.join(admin, 'commondir'))))) !== realCommon) throw new Error('registration common directory changed')
+    if (fs.existsSync(path.join(admin, 'locked'))) throw new Error('user-locked registration retained')
     try { fs.lstatSync(dir); throw new Error('checkout reappeared; registration retained') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    if (path.dirname(admin) !== path.join(realCommon, 'worktrees') || admin !== expected.adminDir) throw new Error('unsafe admin entry')
+    if (admin !== expected.adminDir) throw new Error('unsafe admin entry')
     const marker = JSON.parse(smallFile(path.join(admin, PREPARATION_WITNESS_FILE))) as PreparationWitness
     const stat = fs.lstatSync(admin, { bigint: true })
     if (!stat.isDirectory() || marker.v !== 1 || typeof marker.id !== 'string' || !marker.id || typeof marker.nonce !== 'string' || !marker.nonce || typeof marker.token !== 'string' || !marker.token || marker.id !== expected.id || marker.nonce !== expected.nonce || marker.token !== expected.token
       || marker.dev !== String(stat.dev) || marker.ino !== String(stat.ino) || marker.adminDir !== admin) throw new Error('registration identity changed')
-    if (fs.realpathSync.native(path.resolve(admin, trimLine(smallFile(path.join(admin, 'commondir'))))) !== realCommon) throw new Error('registration common directory changed')
     if (trimLine(smallFile(path.join(admin, 'HEAD'))) !== (marker.branch === 'HEAD' ? marker.branchOid : `ref: refs/heads/${marker.branch}`)) throw new Error('registration branch changed')
-    if (fs.existsSync(path.join(admin, 'locked'))) throw new Error('user-locked registration retained')
     fs.rmSync(admin, { recursive: true })
   })
   clearRetainedWorkerItem(common, 'registration', admin)

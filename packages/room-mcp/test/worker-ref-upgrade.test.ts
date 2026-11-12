@@ -60,7 +60,7 @@ it('upgrades twice-kept carry and delta pins through refresh and real cleanup', 
   expect(reply).not.toContain('left in place because Room cannot confirm')
   expect(fs.existsSync(worker.dir), reply).toBe(false)
   expect(git(repo, 'for-each-ref', '--format=%(refname)', `refs/room/carry/${worker.tag}`, `refs/room/carry-untracked/${worker.tag}`, collectHeadRef(worker.tag, worker.id), collectBaseRef(worker.tag, worker.id))).toBe('')
-  for (const oid of oldPins) expect(git(repo, 'rev-parse', `refs/room/recovery/${worker.tag}/${oid}`)).toBe(oid)
+  for (const oid of oldPins) expect(git(repo, 'rev-parse', `refs/room/recovery/${worker.tag}/${oid}^{}`)).toBe(oid)
   expect((await registry.read(worker.id))?.phase).toBe('retired')
   expect(await t.call('room_spawn', { tag: worker.tag, task: 'reuse', carry: false })).toContain('spawned ' + worker.tag)
 })
@@ -100,7 +100,7 @@ it('atomically retains a moved legacy unknown pin and preserves its captured tre
     expect(deleteWorkerRecordRef(registry.commonDir, ref, record)).toContain(`kept ref ${ref}`)
     expect(moved).toBe(true)
     expect(git(repo, 'rev-parse', ref)).toBe(foreign)
-    expect(git(repo, 'rev-parse', `refs/room/recovery/${worker.tag}/${captured}`)).toBe(captured)
+    expect(git(repo, 'rev-parse', `refs/room/recovery/${worker.tag}/${captured}^{}`)).toBe(captured)
   } finally { spy.mockRestore(); await registry.finishOperation(worker.id) }
 })
 

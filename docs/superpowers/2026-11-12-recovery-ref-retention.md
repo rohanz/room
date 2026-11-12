@@ -1,0 +1,13 @@
+# Recovery pins and preview registrations
+
+Before removing a worker branch, Room pins its captured tip at `refs/room/recovery/<tag>/<sha>`. The ref points to an annotated tag created with `git mktag`: target object (worker commit or legacy carried-untracked tree), fixed `Room <room@localhost>` tagger, creation date and first message line `Room recovery pin`. A unique tag name distinguishes recreation even within one clock second. Ref creation is absent-only; reuse preserves the existing object and date. Collect and discard report every pin once, including legacy private-ref snapshots. Keep does not create a cleanup pin. Recovery stays one command: `git branch <name> <ref>` for branch-tip pins; `git log <ref>` also peels the tag.
+
+The hourly local-state pass expires Room-marked tags after seven days using CAS on the tag object ID. Legacy commit refs (including 0.17.48 pins), unmarked tags, symbolic refs and unreadable objects remain untouched. Future dates or clock changes only delay or advance expiry of that pin. No pin-expiry receipt remains; authorized-write receipts for mutable worker refs still prove replacement/deletion authority and are removed after the ref is gone.
+
+Git 2.45.2 cannot atomically assert a direct ref with deletion: the direct-ref precheck stays adjacent to CAS. A same-OID symbolic replacement in that window loses its name but preserves its target. Branch deletion materializes the exact recovery object as direct in its transaction. Real-Git tests cover peeling, GC reachability, packed refs, tag-OID CAS, recreation, foreign objects and this documented limit.
+
+Preview maintenance never sweeps registrations. Git expires vanished worktrees under `gc.worktreePruneExpire` (three months by default). After add refuses at a confirmed-absent cache path, one read-only Git worktree listing looks up only that path. Room retries with one `--force` if unlocked, two only for its `room preview cache` lock reason; foreign or empty lock reasons fail the preview with an unlock/prune remedy. Other missing or present registrations, including missing gitfiles and symlinked backlinks, stay untouched.
+
+## Known limit: taking over a crashed preview cache path
+
+When `git worktree add` refuses Room's exact cache path because a registration is left from a crash, Room reads that one registration and forces the add only if the directory is absent and the lock reason is Room's own. Git offers no way to make that read and the forced add one step, so a lock placed on that same absent path between the two is overridden. Reaching it takes a process re-locking Room's own deleted cache folder within milliseconds; Room does not defend against that.

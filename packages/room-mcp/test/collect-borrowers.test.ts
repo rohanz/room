@@ -176,7 +176,7 @@ describe('room_collect', () => {
     expect(result).toContain('cleaned up test')
     expect(result).toContain(`branch recovery ref: ${ref}`)
     expect(fs.existsSync(worker)).toBe(false)
-    expect(git(lead, 'rev-parse', ref)).toBe(tip)
+    expect(git(lead, 'rev-parse', ref + '^{}')).toBe(tip)
     expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
     expect(result).not.toContain('kept branch refs/heads/room/test')
   })

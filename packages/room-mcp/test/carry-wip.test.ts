@@ -423,11 +423,11 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const after = leadState()
     expect(after.head).toBe(before.head); expect(after.index).toBe(before.index); expect(after.cached).toBe(before.cached)
     expect(reply).toContain('cleaned up two')
-    // The operation pins even a lead carry tip, while keeping the normal reply quiet.
+    // The operation pins even a lead carry tip, and every pin Room creates is named once: it expires in seven days.
     const recovery = git(repo, 'for-each-ref', '--format=%(refname)', 'refs/room/recovery/two/').split('\n')
     expect(recovery).toHaveLength(1)
-    expect(git(repo, 'rev-parse', recovery[0])).toBe(recovery[0].split('/').at(-1))
-    expect(reply).not.toContain('branch recovery ref:')
+    expect(git(repo, 'rev-parse', recovery[0] + '^{}')).toBe(recovery[0].split('/').at(-1))
+    expect(reply.split(`branch recovery ref: ${recovery[0]} (kept for seven days)`)).toHaveLength(2)
   })
 
   it('(3) two workers spawned at different moments of the lead\'s WIP are collected together', async () => {

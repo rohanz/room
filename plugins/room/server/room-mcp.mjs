@@ -31690,7 +31690,7 @@ var init_worker_retained = __esm({
 // packages/room-mcp/src/worker-refs.ts
 import fs22 from "node:fs";
 import path22 from "node:path";
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash9, randomUUID as randomUUID3 } from "node:crypto";
 function validRef(ref) {
   if (!/^refs\/(heads|room)\/[A-Za-z0-9._/-]+$/.test(ref) || ref.includes("..")) throw new Error(`unsafe worker ref ${ref}`);
 }
@@ -31798,8 +31798,18 @@ function preserveWorkerBranch(common, worker, captured = captureWorkerBranch(com
     const existing = directEntry(common, recoveryRef);
     if (existing?.[2] || symbolicName(common, recoveryRef)) throw new Error("recovery name is already occupied by a symbolic ref; retained without following it");
     if (existing) {
-      if (existing[1] !== tip) throw new Error("recovery name is already occupied by another ref");
-    } else run2(common, ["update-ref", "--no-deref", recoveryRef, tip, "0".repeat(tip.length)]);
+      if (run2(common, ["rev-parse", `${existing[1]}^{}`]) !== tip) throw new Error("recovery name is already occupied by another ref");
+    } else {
+      const tag = `object ${tip}
+type ${run2(common, ["cat-file", "-t", tip])}
+tag room-recovery-${randomUUID3()}
+tagger Room <room@localhost> ${Math.floor(Date.now() / 1e3)} +0000
+
+Room recovery pin
+`;
+      const oid = boundedGitSync(common, ["--git-dir", common, "mktag"], { input: Buffer.from(tag) }).toString().trim();
+      run2(common, ["update-ref", "--no-deref", recoveryRef, oid, "0".repeat(oid.length)]);
+    }
     return { tip, recoveryRef };
   } catch (error2) {
     const reason = `could not preserve operation branch tip under ${recoveryRef}: ${String(error2)}`;
@@ -31829,11 +31839,13 @@ function mutatePreservedRef(common, worker, ref, receipt, next) {
     }
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: receipt.reason ?? (receipt.absent ? "branch was absent at operation start; later name retained" : "no preserved operation tip") });
   }
+  let pinOid;
   try {
     const expectedRef = `refs/room/recovery/${worker.tag}/${receipt.tip}`;
     if (receipt.recoveryRef !== expectedRef) throw new Error("recovery ref receipt does not match this worker/tip");
     const entry = directEntry(common, expectedRef);
-    if (!entry || entry[1] !== receipt.tip || entry[2]) throw new Error("preserved commit is no longer pinned by its exact recovery ref");
+    if (!entry || entry[2] || run2(common, ["rev-parse", `${entry[1]}^{}`]) !== receipt.tip) throw new Error("preserved commit is no longer pinned by its exact recovery ref");
+    pinOid = entry[1];
   } catch (error2) {
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: String(error2) });
   }
@@ -31842,7 +31854,7 @@ function mutatePreservedRef(common, worker, ref, receipt, next) {
     const mutation = next ? `update ${ref} ${next} ${receipt.tip}` : `delete ${ref} ${receipt.tip}`;
     const commands = `start
 option no-deref
-update ${receipt.recoveryRef} ${receipt.tip} ${receipt.tip}
+update ${receipt.recoveryRef} ${pinOid} ${pinOid}
 ${mutation}
 prepare
 commit
@@ -31876,6 +31888,49 @@ function clearRefReceipt(common, ref, owner) {
   } catch {
   }
 }
+function recoveryPin(common, oid) {
+  const tag = run2(common, ["cat-file", "tag", oid]);
+  const match = /^object [a-f0-9]{40,64}\ntype (?:commit|tree)\ntag [^\n]+\ntagger Room <room@localhost> (\d+) \+0000\n\nRoom recovery pin(?:\n|$)/.exec(tag);
+  return match && Number.isSafeInteger(Number(match[1])) ? { createdAt: Number(match[1]) * 1e3 } : void 0;
+}
+function recoveryRefDescription(common, ref) {
+  try {
+    if (recoveryPin(common, run2(common, ["rev-parse", ref]))) return `${ref} (kept for seven days)`;
+  } catch {
+  }
+  return `${ref} (creation time unrecorded; retained for manual inspection)`;
+}
+function collectRecoveryRefs(common, now = Date.now(), dryRun = false) {
+  const removed = [];
+  let refs;
+  try {
+    refs = run2(common, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/room/recovery/"]);
+  } catch {
+    return removed;
+  }
+  for (const line of refs.split("\n")) {
+    const [ref, oid] = line.split("\0");
+    try {
+      const pin = recoveryPin(common, oid);
+      if (!pin || now - pin.createdAt < RECOVERY_REF_AGE_MS) continue;
+      const entry = directEntry(common, ref);
+      if (!entry || entry[1] !== oid || entry[2] || symbolicName(common, ref)) continue;
+      if (!dryRun) {
+        const input = `start
+option no-deref
+delete ${ref} ${oid}
+prepare
+commit
+`;
+        boundedGitSync(common, ["--git-dir", common, "-c", "core.hooksPath=/dev/null", "update-ref", "--no-deref", "--stdin"], { input: Buffer.from(input) });
+        clearRetainedWorkerItem(common, "ref", ref);
+      }
+      removed.push(ref);
+    } catch {
+    }
+  }
+  return removed;
+}
 function legacyRefExpectation(common, ref, worker) {
   if (!worker.prep || worker.prep.identityRequired || recordedWorkerRef(common, ref, worker.id)) return {};
   const carry = `refs/room/carry/${worker.tag}`, head = `refs/room/collect-head/${worker.tag}/${worker.id}`;
@@ -31888,9 +31943,10 @@ function legacyRefExpectation(common, ref, worker) {
   if (!/^[a-f0-9]{40,64}$/.test(entry[1])) throw new Error("invalid legacy private ref value");
   return { preserved: preserveWorkerBranch(common, worker, { tip: entry[1] }) };
 }
-function writeWorkerRecordRef(common, ref, oid, worker) {
+function writeWorkerRecordRef(common, ref, oid, worker, recoveryRefs) {
   try {
     const { expected, preserved } = legacyRefExpectation(common, ref, worker);
+    if (preserved?.recoveryRef) recoveryRefs?.add(preserved.recoveryRef);
     if (!preserved) return writeWorkerRef(common, ref, oid, worker.id, expected);
     const retained = mutatePreservedRef(common, worker, ref, preserved, oid);
     if (retained) throw new Error(retained);
@@ -31898,15 +31954,16 @@ function writeWorkerRecordRef(common, ref, oid, worker) {
     throw new Error(retainWorkerItem(common, { kind: "ref", path: ref, id: worker.id, tag: worker.tag, reason: String(error2) }));
   }
 }
-function deleteWorkerRecordRef(common, ref, worker) {
+function deleteWorkerRecordRef(common, ref, worker, recoveryRefs) {
   try {
     const { expected, preserved } = legacyRefExpectation(common, ref, worker);
+    if (preserved?.recoveryRef) recoveryRefs?.add(preserved.recoveryRef);
     return preserved ? mutatePreservedRef(common, worker, ref, preserved) : deleteWorkerRef(common, ref, worker.id, expected);
   } catch (error2) {
     return retainWorkerItem(common, { kind: "ref", path: ref, id: worker.id, tag: worker.tag, reason: String(error2) });
   }
 }
-var file, run2, directEntry;
+var RECOVERY_REF_AGE_MS, file, run2, directEntry;
 var init_worker_refs = __esm({
   "packages/room-mcp/src/worker-refs.ts"() {
     "use strict";
@@ -31914,6 +31971,7 @@ var init_worker_refs = __esm({
     init_baseline();
     init_leases2();
     init_worker_retained();
+    RECOVERY_REF_AGE_MS = 7 * 24 * 60 * 60 * 1e3;
     file = (common, ref) => path22.join(common, "room", "registry", "ref-writes", createHash9("sha256").update(ref).digest("hex") + ".json");
     run2 = (common, args2) => boundedGitSync(common, ["--git-dir", common, "-c", "core.hooksPath=/dev/null", ...args2]).toString().trim();
     directEntry = (common, ref) => run2(common, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", ref]).split("\n").map((line) => line.split("\0")).find((fields) => fields[0] === ref);
@@ -31922,7 +31980,7 @@ var init_worker_refs = __esm({
 
 // packages/room-mcp/src/worker-preparation.ts
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 import fs23 from "node:fs";
 import path23 from "node:path";
 function rootIdentity(dir) {
@@ -31948,7 +32006,7 @@ function witnessPreparation(dir, branch, identity4, root, branchOid) {
   if (root) verifyRoot(dir, root);
   const { adminDir } = adminOf(dir), stat4 = fs23.statSync(adminDir, { bigint: true });
   if (trimLine(smallFile(path23.join(adminDir, "HEAD"))) !== (branch === "HEAD" ? branchOid : `ref: refs/heads/${branch}`)) throw new Error("worktree branch changed before witness");
-  const witness = { v: 1, ...identity4, branch, adminDir, dev: String(stat4.dev), ino: String(stat4.ino), token: randomUUID3(), root, branchOid };
+  const witness = { v: 1, ...identity4, branch, adminDir, dev: String(stat4.dev), ino: String(stat4.ino), token: randomUUID4(), root, branchOid };
   const marker = path23.join(adminDir, PREPARATION_WITNESS_FILE);
   if (!createExclusive(marker, witness)) throw new Error("worktree witness already exists");
   verifyPreparation(dir, witness);
@@ -32020,21 +32078,22 @@ function canonicalMissingWorkerPath(dir) {
 async function removeWorkerRegistration(common, admin, expected, dir) {
   await withGitWorktreeOperation(common, () => {
     const realCommon = fs23.realpathSync.native(common);
-    const expectedBacklink = path23.join(canonicalMissingWorkerPath(dir), ".git");
-    if (path23.resolve(admin, trimLine(smallFile(path23.join(admin, "gitdir")))) !== expectedBacklink) throw new Error("registration moved away from the recorded root");
+    const gitdir = path23.join(canonicalMissingWorkerPath(dir), ".git");
+    if (path23.dirname(admin) !== path23.join(realCommon, "worktrees") || !fs23.lstatSync(admin).isDirectory()) throw new Error("unsafe admin entry");
+    if (path23.resolve(admin, trimLine(smallFile(path23.join(admin, "gitdir")))) !== gitdir) throw new Error("registration moved away from the recorded root");
+    if (fs23.realpathSync.native(path23.resolve(admin, trimLine(smallFile(path23.join(admin, "commondir"))))) !== realCommon) throw new Error("registration common directory changed");
+    if (fs23.existsSync(path23.join(admin, "locked"))) throw new Error("user-locked registration retained");
     try {
       fs23.lstatSync(dir);
       throw new Error("checkout reappeared; registration retained");
     } catch (error2) {
       if (error2.code !== "ENOENT") throw error2;
     }
-    if (path23.dirname(admin) !== path23.join(realCommon, "worktrees") || admin !== expected.adminDir) throw new Error("unsafe admin entry");
+    if (admin !== expected.adminDir) throw new Error("unsafe admin entry");
     const marker = JSON.parse(smallFile(path23.join(admin, PREPARATION_WITNESS_FILE)));
     const stat4 = fs23.lstatSync(admin, { bigint: true });
     if (!stat4.isDirectory() || marker.v !== 1 || typeof marker.id !== "string" || !marker.id || typeof marker.nonce !== "string" || !marker.nonce || typeof marker.token !== "string" || !marker.token || marker.id !== expected.id || marker.nonce !== expected.nonce || marker.token !== expected.token || marker.dev !== String(stat4.dev) || marker.ino !== String(stat4.ino) || marker.adminDir !== admin) throw new Error("registration identity changed");
-    if (fs23.realpathSync.native(path23.resolve(admin, trimLine(smallFile(path23.join(admin, "commondir"))))) !== realCommon) throw new Error("registration common directory changed");
     if (trimLine(smallFile(path23.join(admin, "HEAD"))) !== (marker.branch === "HEAD" ? marker.branchOid : `ref: refs/heads/${marker.branch}`)) throw new Error("registration branch changed");
-    if (fs23.existsSync(path23.join(admin, "locked"))) throw new Error("user-locked registration retained");
     fs23.rmSync(admin, { recursive: true });
   });
   clearRetainedWorkerItem(common, "registration", admin);
@@ -32084,7 +32143,7 @@ var init_worker_preparation = __esm({
     PREPARATION_WITNESS_FILE = "room-preparation.json";
     identityContext = new AsyncLocalStorage2();
     withPreparationIdentity = (identity4, work) => identityContext.run(identity4, work);
-    preparationIdentity = () => identityContext.getStore() ?? { id: randomUUID3(), nonce: randomUUID3() };
+    preparationIdentity = () => identityContext.getStore() ?? { id: randomUUID4(), nonce: randomUUID4() };
     trimLine = (text2) => text2.replace(/\r?\n$/, "");
     smallFile = (file2) => {
       const stat4 = fs23.lstatSync(file2);
@@ -36709,7 +36768,7 @@ var init_presence = __esm({
 
 // packages/room-mcp/src/owned-file.ts
 import fs34 from "node:fs";
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 function ownerPid(file2) {
   try {
     const raw = fs34.readFileSync(file2, "utf8");
@@ -36722,7 +36781,7 @@ function ownerPid(file2) {
   }
 }
 function acquireOwnedFile(file2, record2) {
-  const token = JSON.stringify({ ...record2, nonce: randomUUID4() });
+  const token = JSON.stringify({ ...record2, nonce: randomUUID5() });
   const create6 = () => {
     let fd;
     try {
@@ -37833,7 +37892,7 @@ var init_publisher_lease = __esm({
 // packages/room-mcp/src/names.ts
 import fs38 from "node:fs";
 import path38 from "node:path";
-import { createHash as createHash15, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash15, randomUUID as randomUUID6 } from "node:crypto";
 function nameLeaseFile(commonDir2, roomKey2, name) {
   return path38.join(commonDir2, "room", "names", `${createHash15("sha256").update(`${roomKey2}\0${name}`).digest("hex")}.json`);
 }
@@ -37893,7 +37952,7 @@ async function releaseLocalName(file2, token) {
 }
 function processToken(sessionId, probe) {
   const own2 = probe ? probe(process.pid) : probeOwnProcess();
-  return { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId, nonce: randomUUID5() };
+  return { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId, nonce: randomUUID6() };
 }
 async function acquireName(options) {
   const passed2 = /* @__PURE__ */ new Map();
@@ -41387,6 +41446,7 @@ function collectLocalState(commonDir2, options = {}) {
       judge({ top: entry.name, name: child.name, isDir: child.isDirectory() }, `${entry.name}/${child.name}`);
     }
   }
+  removed.push(...collectRecoveryRefs(commonDir2, now(), options.dryRun));
   removed.push(...collectResolvedWorkerMetadata(commonDir2, options.dryRun));
   return { removed, unknown: unknown2 };
 }
@@ -41394,6 +41454,7 @@ var HOUR, DAY, GC_TEMP_AGE_MS, DEAD_HOLDER_IDLE_MS, top, inDir, isTemp, GC_DIREC
 var init_local_state_gc = __esm({
   "packages/room-mcp/src/local-state-gc.ts"() {
     "use strict";
+    init_worker_refs();
     init_worker_metadata_gc();
     init_src();
     init_leases2();
@@ -41448,8 +41509,9 @@ var init_local_state_gc = __esm({
       { path: "profiles/*.cpuprofile", owner: "MCP session", lifetime: { kind: "age", ms: ROOM_STALE_MS }, match: inDir("profiles", (n) => n.endsWith(".cpuprofile")) },
       { path: "preview-evidence/*.json", owner: "MCP session", lifetime: { kind: "age", ms: ROOM_STALE_MS }, match: inDir("preview-evidence", (n) => n.endsWith(".json")) },
       { path: "registry/migration.*", owner: "lead MCP", lifetime: { kind: "keep" }, match: inDir("registry", (n) => n.startsWith("migration.")) },
+      { path: "registry/ref-writes", owner: "MCP session", lifetime: { kind: "owner" }, match: inDir("registry", (n) => n === "ref-writes") },
       {
-        path: "registry/workers, tags, adoptions, runs, patches, collect, retained, ref-writes",
+        path: "registry/workers, tags, adoptions, runs, patches, collect, retained",
         owner: "lead MCP",
         lifetime: { kind: "owner" },
         match: inDir("registry", (n) => n !== "quarantine")
@@ -41535,7 +41597,7 @@ async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
   } catch (error2) {
     return { removed: false, reason: "cleanup incomplete: " + (error2 instanceof Error ? error2.message : String(error2)).slice(0, 300) };
   }
-  return { removed: true, terminated, ...preservation.recoveryRef ? { recoveryRef: preservation.recoveryRef } : {} };
+  return { removed: true, terminated, recoveryRefs: preservation.recoveryRefs };
 }
 async function finishPendingCollect(s, rooms, id3, processes) {
   const registry2 = await registryForDir(s.dir);
@@ -41931,7 +41993,7 @@ var init_retire = __esm({
 
 // packages/room-mcp/src/registry.ts
 import fs46 from "node:fs";
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 import path48 from "node:path";
 import { AsyncLocalStorage as AsyncLocalStorage4 } from "node:async_hooks";
 function withToolSignal(signal, run3) {
@@ -42222,7 +42284,7 @@ var init_registry = __esm({
         let run3;
         try {
           const next = await registry2.resume(record2.id, config2.maxWorkers, {
-            nonce: randomUUID6(),
+            nonce: randomUUID7(),
             logStart,
             logFile,
             busFrontier: highestSeq(s.room)
@@ -44183,7 +44245,7 @@ var init_preview_batches = __esm({
 });
 
 // packages/room-mcp/src/preview-evidence.ts
-import { createHash as createHash20, randomUUID as randomUUID7 } from "node:crypto";
+import { createHash as createHash20, randomUUID as randomUUID8 } from "node:crypto";
 import { execFile as execFile11 } from "node:child_process";
 import fs52 from "node:fs";
 import os11 from "node:os";
@@ -44379,7 +44441,7 @@ function readEvidenceSync(file2) {
   }
 }
 function writeEvidenceSync(file2, text2) {
-  const temporary = `${file2}.${randomUUID7()}.tmp`;
+  const temporary = `${file2}.${randomUUID8()}.tmp`;
   try {
     fs52.writeFileSync(temporary, text2, { mode: 384, flag: "wx" });
     fs52.renameSync(temporary, file2);
@@ -44390,7 +44452,7 @@ function writeEvidenceSync(file2, text2) {
 async function beginPreviewAttempt(clone2, command3, at = (/* @__PURE__ */ new Date()).toISOString()) {
   const { root, prefix: prefix2 } = await location2(clone2);
   const file2 = evidenceFile(root, prefix2);
-  const pending2 = { version: 3, nonce: randomUUID7(), tree: null, head: null, command: command3, at, complete: false, exitCode: null, passed: false };
+  const pending2 = { version: 3, nonce: randomUUID8(), tree: null, head: null, command: command3, at, complete: false, exitCode: null, passed: false };
   const initial = await boundedJson(pending2, MAX_RECORD_BYTES);
   await guardedPublisher(root, prefix2, () => writeEvidenceSync(file2, initial));
   return async (tree, completion, head = null, final) => {
@@ -45089,7 +45151,7 @@ __export(files_exports, {
 });
 import { execFile as execFile13, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage6 } from "node:async_hooks";
-import { createHash as createHash21, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash21, randomUUID as randomUUID9 } from "node:crypto";
 import fs55 from "node:fs";
 import os12 from "node:os";
 import path55 from "node:path";
@@ -45980,8 +46042,8 @@ async function slotRegistration(repoDir, slot) {
   if (gitfile !== void 0) {
     const match = /^gitdir: (.+)\s*$/m.exec(gitfile);
     if (!match) return "foreign";
-    const common = await fs55.promises.realpath(await gitCommonDir(repoDir));
-    const parent = path55.join(common, "worktrees");
+    const common2 = await fs55.promises.realpath(await gitCommonDir(repoDir));
+    const parent = path55.join(common2, "worktrees");
     let admin;
     try {
       admin = await fs55.promises.realpath(path55.resolve(slot, match[1]));
@@ -45989,31 +46051,26 @@ async function slotRegistration(repoDir, slot) {
       return "foreign";
     }
     if (path55.dirname(admin) !== parent) return "foreign";
-    let backlink, ownDir;
+    let backlink, ownDir2;
     try {
       backlink = (await fs55.promises.readFile(path55.join(admin, "gitdir"), "utf8")).replace(/\n$/, "");
-      ownDir = await fs55.promises.realpath(slot);
+      ownDir2 = await fs55.promises.realpath(slot);
     } catch {
       return "foreign";
     }
-    return backlink === path55.join(ownDir, ".git") ? "valid" : "foreign";
+    return backlink === path55.join(ownDir2, ".git") ? "valid" : "foreign";
   }
-  const listed = await gitSetup(repoDir, ["worktree", "list", "--porcelain"]);
-  const same = async (other) => {
-    try {
-      return await fs55.promises.realpath(other) === await fs55.promises.realpath(slot);
-    } catch {
-      return false;
-    }
-  };
-  for (const line of listed.split(/\n/)) {
-    if (line.startsWith("worktree ") && await same(line.slice(9))) return "missing-git";
+  const common = await fs55.promises.realpath(await gitCommonDir(repoDir));
+  const ownDir = await fs55.promises.realpath(slot).catch(() => void 0);
+  if (ownDir) for (const admin of await fs55.promises.readdir(path55.join(common, "worktrees")).catch(() => [])) {
+    const recorded = await fs55.promises.readFile(path55.join(common, "worktrees", admin, "gitdir"), "utf8").catch(() => void 0);
+    if (recorded && path55.resolve(common, "worktrees", admin, recorded.replace(/\r?\n$/, "")) === path55.join(ownDir, ".git")) return "missing-git";
   }
   return "unregistered";
 }
 async function lockPreviewEntry(repoDir, entry) {
   try {
-    await gitSetup(repoDir, ["worktree", "lock", "--reason", "room preview cache", entry]);
+    await gitSetup(repoDir, ["worktree", "lock", "--reason", PREVIEW_LOCK_REASON, entry]);
   } catch (error2) {
     if (await slotRegistration(repoDir, entry) !== "valid") throw error2;
     const gitfile = await fs55.promises.readFile(path55.join(entry, ".git"), "utf8");
@@ -46042,7 +46099,6 @@ async function removePreviewEntry(repoDir, entry, partial2 = false) {
       }
       if (await slotRegistration(repoDir, entry) !== "valid") throw new Error("registration changed before removal");
       await gitSetup(repoDir, ["worktree", "remove", "--force", entry]);
-      await gitSetup(repoDir, ["worktree", "prune"]);
     } else if (state === "unregistered" && partial2) {
       const stat4 = await fs55.promises.lstat(entry).catch(() => void 0);
       if (stat4?.isSymbolicLink()) throw new Error("unsafe preview cache link");
@@ -46195,7 +46251,25 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   }
   if (!stat4) {
     observe?.baseMaterialized?.();
-    await gitSetup(cloneDir, ["worktree", "add", "--detach", "--quiet", dir, ancestor]);
+    const add2 = async (force = []) => {
+      try {
+        await fs55.promises.lstat(dir);
+        throw new Error("preview cache path reappeared before creation");
+      } catch (error2) {
+        if (error2.code !== "ENOENT") throw error2;
+      }
+      await gitSetup(cloneDir, ["worktree", "add", ...force, "--detach", "--quiet", dir, ancestor]);
+    };
+    try {
+      await add2();
+    } catch (error2) {
+      const entries = (await gitSetup(cloneDir, ["worktree", "list", "--porcelain", "-z"])).split("\0\0");
+      const registration = entries.map((entry) => entry.split("\0")).find((fields) => fields[0] === `worktree ${dir}`);
+      if (!registration) throw error2;
+      const locked = registration.find((field) => field === "locked" || field.startsWith("locked "));
+      if (locked && locked !== `locked ${PREVIEW_LOCK_REASON}`) throw new ForeignPreviewLock(`preview cache ${dir} has a foreign Git lock; inspect it, then use git worktree unlock or git worktree prune`);
+      await add2(locked ? ["--force", "--force"] : ["--force"]);
+    }
   }
   if (await slotRegistration(cloneDir, dir) !== "valid") throw new Error("preview slot registration is not reciprocal");
   await lockPreviewEntry(cloneDir, dir);
@@ -46312,6 +46386,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
           reused = await preparePreviewCache(s.dir, dir, ancestor, source, observe);
           cacheReady = true;
         } catch (error2) {
+          if (error2 instanceof ForeignPreviewLock) throw error2;
           release?.assertOwned();
           await removePreviewEntry(s.dir, dir, true);
           console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
@@ -46581,7 +46656,7 @@ preview evidence is NOT passed: ${evidenceFailure}`;
 }
 async function materializeGitTree(cloneDir, ref, destination) {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`);
-  const index = path55.join(destination, `.room-preview-index-${randomUUID8()}`);
+  const index = path55.join(destination, `.room-preview-index-${randomUUID9()}`);
   const env = { ...process.env, GIT_INDEX_FILE: index };
   const deadline = performance4.now() + SETUP_TIMEOUT_MS;
   const run3 = (args2) => new Promise((resolve6, reject) => {
@@ -46599,7 +46674,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     await fs55.promises.rm(index, { force: true });
   }
 }
-var defs2, ownDiskText, previewGenerations, executable, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, PreviewCancelled, PreviewCleanupIncomplete, previewProcesses, previewProcessGate, CLEANUP_GRACE_MS, KILL_AFTER_MS, cleanupForTests, previewGroupAlive, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
+var defs2, ownDiskText, previewGenerations, executable, SETUP_TIMEOUT_MS, checkLimits, PreviewProcessLimit, outputTail, plainDuration, timeLimit, outputCap, PreviewCancelled, PreviewCleanupIncomplete, previewProcesses, previewProcessGate, CLEANUP_GRACE_MS, KILL_AFTER_MS, cleanupForTests, previewGroupAlive, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, PREVIEW_LOCK_REASON, ForeignPreviewLock, warnedEntries, previewMigrations, previewEvictions, stoppedPreviewChecks, STOPPED_PREVIEW_HISTORY, STOPPED_PREVIEW_TEXT_BYTES, narrowPreviewAdvice;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -46707,6 +46782,9 @@ var init_files = __esm({
     checkoutConfigKeys = /* @__PURE__ */ new Set(["core.autocrlf", "core.eol", "core.safecrlf", "core.symlinks", "core.filemode", "core.ignorecase", "core.precomposeunicode", "core.attributesfile"]);
     gitEnvTrue = (value5) => /^(true|yes|on)$/i.test(value5?.trim() ?? "") || /^[+-]?\d+$/.test(value5?.trim() ?? "") && Number(value5) !== 0;
     gitLine = (output) => output.replace(/\r?\n$/, "");
+    PREVIEW_LOCK_REASON = "room preview cache";
+    ForeignPreviewLock = class extends Error {
+    };
     warnedEntries = /* @__PURE__ */ new Set();
     previewMigrations = /* @__PURE__ */ new Set();
     previewEvictions = /* @__PURE__ */ new Set();
@@ -46934,7 +47012,7 @@ async function pruneMissingWorkerWorktree(leadDir, w, manageBranch = true, store
     else if (state.branchAhead) branchDetail = retainWorkerItem(common, { kind: "branch", path: `refs/heads/${w.branch}`, id: w.id, tag: w.tag, reason: `has ${state.branchAhead} commit${state.branchAhead === 1 ? "" : "s"} not in your HEAD; inspect before removing` });
     else branchDetail = deletePreservedWorkerBranch(common, w, branchCleanup) ?? `branch ${w.branch} cleanup checked against its preserved operation tip`;
   }
-  return [branchDetail, ...retainedWorkerLines(common)].filter(Boolean).join("\n") || void 0;
+  return [branchDetail, ...branchCleanup?.recoveryRef ? [`branch recovery ref: ${recoveryRefDescription(common, branchCleanup.recoveryRef)}`] : [], ...retainedWorkerLines(common)].filter(Boolean).join("\n") || void 0;
 }
 async function uncommittedCount(dir) {
   const out = await git(dir, ["status", "--porcelain", "--untracked-files=normal"]);
@@ -47338,18 +47416,18 @@ async function cleanupWorker(leadDir, w, options = {}) {
       };
       return false;
     }
-    if (branchCleanup.recoveryRef && branchCleanup.tip !== w.base) {
-      if (preservation) preservation.recoveryRef = branchCleanup.recoveryRef;
-      else console.info(`worker ${w.tag} branch recovery ref: ${branchCleanup.recoveryRef}`);
-    }
+    const recoveryRefs = new Set(branchCleanup.recoveryRef ? [branchCleanup.recoveryRef] : []);
     await withGitWorktreeOperation(common, () => {
       verify();
       boundedGitSync(common, ["--git-dir", common, "-c", "core.hooksPath=/dev/null", "worktree", "remove", ...collected ? ["--force"] : [], w.dir]);
     });
     deletePreservedWorkerBranch(common, w, branchCleanup);
-    for (const ref of privateWorkerRefs(w)) deleteWorkerRecordRef(common, ref, ownerRecord);
+    for (const ref of privateWorkerRefs(w)) deleteWorkerRecordRef(common, ref, ownerRecord, recoveryRefs);
+    if (preservation) preservation.recoveryRefs = [...recoveryRefs];
+    else for (const ref of recoveryRefs) console.info(`worker ${w.tag} branch recovery ref: ${recoveryRefDescription(common, ref)}`);
   } catch (error2) {
-    throw new Error(retainCheckout(common, w, `cleanup incomplete: ${error2 instanceof Error ? error2.message : String(error2)}; inspect retained files and refs before retrying`));
+    const pinned = branchCleanup.recoveryRef ? `branch recovery ref: ${recoveryRefDescription(common, branchCleanup.recoveryRef)}; ` : "";
+    throw new Error(pinned + retainCheckout(common, w, `cleanup incomplete: ${error2 instanceof Error ? error2.message : String(error2)}; inspect retained files and refs before retrying`));
   }
   if (w.id) {
     const record2 = await registry2.read(w.id);
@@ -59933,7 +60011,7 @@ init_context();
 init_disk_text();
 init_worker_registry();
 import fs62 from "node:fs";
-import { createHash as createHash25, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash25, randomUUID as randomUUID10 } from "node:crypto";
 var hash = (value5) => createHash25("sha256").update(value5).digest("hex");
 var slotKey = (owner, kind, other, path80, subject = "") => [owner, kind, other, path80, subject].join("\0");
 var noticeId = (key3, epoch, episode) => `cf:${hash(key3)}:${epoch}${episode ? `:${episode}` : ""}`;
@@ -60033,7 +60111,7 @@ var ConflictSlots = class {
       fence,
       checkedAt: now,
       ...possibleEpisode,
-      ...(result2.kind === "contract" || result2.kind === "edit-in-claim") && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID9() } : {},
+      ...(result2.kind === "contract" || result2.kind === "edit-in-claim") && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID10() } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       // A cleared slot re-checked clean (or unreadable) keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...(result2.status === "clean" || result2.status === "unknown") && prev?.settled === "clean" && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {},
@@ -61535,7 +61613,7 @@ init_hosts();
 init_selection();
 init_src();
 import fs64 from "node:fs";
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 import os15 from "node:os";
 import path63 from "node:path";
 init_src4();
@@ -61896,7 +61974,7 @@ function handlers4(state) {
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
       const registry2 = await registryForDir(s.dir);
-      const id3 = registry2.newId(), nonce2 = randomUUID10();
+      const id3 = registry2.newId(), nonce2 = randomUUID11();
       const owner = s.me.owner ?? s.me.name, name = `${owner}+${tag}`;
       const { server, isWorker } = workerOrigin(s);
       const count = await registry2.occupancy();
@@ -62329,7 +62407,7 @@ import path70 from "node:path";
 // packages/room-mcp/src/browser-open.ts
 init_src3();
 import { spawn as spawn6 } from "node:child_process";
-import { createHash as createHash26, randomUUID as randomUUID11 } from "node:crypto";
+import { createHash as createHash26, randomUUID as randomUUID12 } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
 import path64 from "node:path";
 function launchBrowserHandler(command3, args2) {
@@ -62363,7 +62441,7 @@ async function openRoomBrowser(url, directory2, options = {}) {
   privateStateDirectory(directory2);
   const destination = new URLSearchParams(parsed.hash.slice(1)).get("room") ?? parsed.href.split("#")[0];
   const name = createHash26("sha256").update(destination).digest("hex").slice(0, 24);
-  const entry = path64.join(directory2, `${name}.html`), temporary = path64.join(directory2, `${randomUUID11()}.tmp`);
+  const entry = path64.join(directory2, `${name}.html`), temporary = path64.join(directory2, `${randomUUID12()}.tmp`);
   try {
     await writeFile(temporary, html, { mode: 384, flag: "wx" });
     await rename(temporary, entry);
@@ -62952,7 +63030,7 @@ async function hostDoctorFacts(dir, inSession, modulePath) {
 }
 
 // packages/room-mcp/src/doctor.ts
-var minimumGit = [2, 31, 0];
+var minimumGit = [2, 36, 0];
 function formatDeliveryHealth(h) {
   if (!h) return "";
   const status = h.path;
@@ -62984,7 +63062,7 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
   const rows = [];
   const add2 = (level, name, finding, fix) => rows.push({ level, name, finding, fix });
   add2(atLeast2(f.node, [22, 0, 0]) ? "PASS" : "FAIL", "Node", f.node ? `${f.node} (need 22+)` : "not found", "Install Node 22 or newer");
-  add2(atLeast2(f.git, minimumGit) ? "PASS" : "FAIL", "Git", f.git ? `${f.git} (need 2.31+)` : "not found", "Install Git 2.31 or newer");
+  add2(atLeast2(f.git, minimumGit) ? "PASS" : "FAIL", "Git", f.git ? `${f.git} (need 2.36+)` : "not found", "Install Git 2.36 or newer");
   add2(f.repo ? "PASS" : "FAIL", "repository", f.repo ? "Git checkout with a commit" : "not a Git checkout with a commit", "Run this from a committed Git checkout");
   rows.push(...hostDoctorRows(f, version3));
   if (f.configError) add2("FAIL", "Room config", f.configError, "Correct ROOM_SERVER or ROOM_URL, then retry");
@@ -64553,7 +64631,7 @@ init_worker_state();
 import fs70 from "node:fs";
 import path71 from "node:path";
 import os18 from "node:os";
-import { randomUUID as randomUUID12 } from "node:crypto";
+import { randomUUID as randomUUID13 } from "node:crypto";
 import { execFile as execFile15 } from "node:child_process";
 var MAX_LISTED = 10;
 var OPERATIONS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"];
@@ -64754,7 +64832,7 @@ async function refreshWorkerBase(leadDir, w) {
   } catch {
     return refuse(`${w.dir} has unmerged files`);
   }
-  const marker = `room: refresh snapshot ${randomUUID12()}`;
+  const marker = `room: refresh snapshot ${randomUUID13()}`;
   const restore = async () => {
     await internalGit2(w.dir, ["reset", "-q", "--soft", from2]);
     await internalGit2(w.dir, ["read-tree", savedIndex]);
@@ -65386,7 +65464,7 @@ init_disk_text();
 init_git();
 import fs72 from "node:fs";
 import path72 from "node:path";
-import { createHash as createHash27, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash27, randomUUID as randomUUID14 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -65395,7 +65473,7 @@ var HooksBridge = class {
   }
   s;
   o;
-  writer = randomUUID13();
+  writer = randomUUID14();
   timer = null;
   unobserve = [];
   stopped = false;
@@ -66101,7 +66179,7 @@ init_leases2();
 init_worker_store();
 import fs74 from "node:fs";
 import path74 from "node:path";
-import { createHash as createHash28, randomUUID as randomUUID14 } from "node:crypto";
+import { createHash as createHash28, randomUUID as randomUUID15 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text2) {
@@ -66155,7 +66233,7 @@ var Ledger = class {
     return !holder || holder.sessionId === this.o.sessionId();
   }
   open(kind, leaseMs = kind === "hook" ? this.o.hookLeaseMs ?? HOOK_LEASE_MS : REPLY_LEASE_MS) {
-    return new Batch(randomUUID14(), kind, leaseMs);
+    return new Batch(randomUUID15(), kind, leaseMs);
   }
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
   bind(s) {
@@ -67182,7 +67260,7 @@ function handlers10(state) {
           list.insert(index, [entry]);
         });
       }
-      if (preservation.recoveryRef) return `cleaned up ${fresh.tag}; branch recovery ref: ${preservation.recoveryRef}`;
+      if (preservation.recoveryRefs?.length) return `cleaned up ${fresh.tag}; ` + preservation.recoveryRefs.map((ref) => "branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("; ");
     } finally {
       await registry2.finishOperation(owner.id);
     }
@@ -67322,7 +67400,7 @@ function handlers10(state) {
       });
       await registry2.markDiscardStep(active.id, "prune");
       await retireWorker(rooms, s, active.id, { ...r, summary: "discarded", disposition: "discarded", keptWorktree: void 0 }, { keptWorktree: void 0 });
-      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : "discarded " + r.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRef ? "; branch recovery ref: " + preservation.recoveryRef : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : "discarded " + r.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRefs?.map((ref) => "; branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("") ?? "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
     } catch (e) {
       await registry2.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {
       });
@@ -67462,7 +67540,7 @@ function handlers10(state) {
         outcome: "dismissed",
         disposition: "discarded"
       });
-      return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : workerRecord?.outside || decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRef ? "; branch recovery ref: " + preservation.recoveryRef : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
+      return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : workerRecord?.outside || decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRefs?.map((ref) => "; branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("") ?? "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
     } catch (e) {
       await registry2.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {
       });
@@ -67693,7 +67771,7 @@ function handlers10(state) {
     }
     return { heads, result: result2, snapshots, changes, destinations };
   };
-  const applyMergePlan = async (run3, selected, workerRoots, plan2, collectStarted) => {
+  const applyMergePlan = async (run3, selected, workerRoots, plan2, collectStarted, recoveryRefs) => {
     const { lead, leadRoot, registry: registry2 } = run3;
     const { heads, result: result2, snapshots, changes, destinations } = plan2;
     for (const { w } of selected) if (w.id) {
@@ -67702,8 +67780,8 @@ function handlers10(state) {
     }
     for (const { w } of selected) {
       const record2 = result2.inputs.records.get(w.name);
-      writeWorkerRecordRef(registry2.commonDir, collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name), record2);
-      writeWorkerRecordRef(registry2.commonDir, collectBaseRef(w.tag, w.id), result2.deltaBases.get(w.name), record2);
+      writeWorkerRecordRef(registry2.commonDir, collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name), record2, recoveryRefs);
+      writeWorkerRecordRef(registry2.commonDir, collectBaseRef(w.tag, w.id), result2.deltaBases.get(w.name), record2, recoveryRefs);
     }
     for (const { p, identity: identity4 } of destinations) {
       if (!sameIdentity(identity4, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + " changed during collection; nothing written, retry");
@@ -67754,6 +67832,7 @@ function handlers10(state) {
     const workerRoots = /* @__PURE__ */ new Map();
     const workerLocks = [];
     const collectStarted = /* @__PURE__ */ new Set();
+    const recoveryRefs = /* @__PURE__ */ new Set();
     const timing = currentToolTiming();
     let endPhase = timing?.begin("inspect");
     const nextPhase = (name) => {
@@ -67833,7 +67912,7 @@ function handlers10(state) {
       const plan2 = await prepareMergePlan(run3, selected, workerRoots);
       if ("refusal" in plan2) return plan2.refusal;
       const { result: result2, snapshots, changes } = plan2;
-      await applyMergePlan(run3, selected, workerRoots, plan2, collectStarted);
+      await applyMergePlan(run3, selected, workerRoots, plan2, collectStarted, recoveryRefs);
       out.push("Changes from " + selected.map((x) => x.w.tag).join(", ") + ": " + (changes.map((x) => x.p).join(", ") || "already present") + ". Nothing committed or staged.");
       const scratchSelected = selected.filter(({ w }) => result2.scratch.has(w.name));
       const scratchNote = scratchCollectNote(
@@ -67936,7 +68015,7 @@ function handlers10(state) {
           if (result3.removed) {
             retire(w.summary ?? "");
             out.push("cleaned up " + w.tag + ": temporary files and logs");
-            if (result3.recoveryRef) out.push("branch recovery ref: " + result3.recoveryRef);
+            for (const ref of result3.recoveryRefs ?? []) recoveryRefs.add(ref);
             if (result3.terminated.length) out.push("stopped processes from " + w.tag + ": " + result3.terminated.join(", "));
           } else {
             out.push(`kept ${w.tag}: ${result3.reason}`, ...result3.lines ?? []);
@@ -67951,11 +68030,12 @@ function handlers10(state) {
         await finishOne();
       }
       out.push(await collectedTreeEvidence(leadRoot));
+      for (const ref of recoveryRefs) out.push("branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref));
       return out.join("\n");
     } catch (e) {
       for (const id3 of collectStarted) await registry2.abortCollect(id3).catch(() => {
       });
-      return [...out, "error: " + (e instanceof Error ? e.message : String(e))].join("\n");
+      return [...out, ...[...recoveryRefs].map((ref) => "branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)), "error: " + (e instanceof Error ? e.message : String(e))].join("\n");
     } finally {
       endPhase?.();
       for (const workerLock of workerLocks) await registry2.finishOperation(workerLock);

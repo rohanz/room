@@ -19,11 +19,11 @@ function branchFixture() {
   return { ...f, common, worker, tip, pin: `refs/room/recovery/r2/${tip}` }
 }
 
-it.each(['other', 'missing', 'dangling', 'symbolic-same', 'symbolic-other'] as const)(
+it.each(['other', 'missing', 'dangling', 'symbolic-same', 'symbolic-same-commit', 'symbolic-other'] as const)(
   'r2: atomic branch deletion preserves content when the pin becomes %s', mode => {
     const { common, git, head, worker, tip, pin } = branchFixture()
     const receipt = preserveWorkerBranch(common, worker)
-    const target = 'refs/heads/user-target', targetValue = mode === 'symbolic-same' ? tip : head
+    const target = 'refs/room/user-target', targetValue = mode === 'symbolic-same' ? git('rev-parse', pin) : mode === 'symbolic-same-commit' ? tip : head
     git('update-ref', target, targetValue)
     const run = baseline.boundedGitSync
     let injected = false
@@ -43,7 +43,7 @@ it.each(['other', 'missing', 'dangling', 'symbolic-same', 'symbolic-other'] as c
     if (mode === 'symbolic-same') {
       expect(result).toBeUndefined()
       expect(git('branch', '--list', worker.branch)).toBe('')
-      expect(git('rev-parse', pin)).toBe(tip)
+      expect(git('rev-parse', `${pin}^{commit}`)).toBe(tip)
       expect(() => git('symbolic-ref', '-q', pin)).toThrow()
     } else {
       expect(result).toContain('kept branch')
@@ -160,7 +160,7 @@ it.each(['collect', 'discard', 'keep-collect'] as const)('r2: normal committed %
   const reply = await t.leadTools.call('room_collect', { tag, ...(action === 'discard' ? { discard: true } : {}) })
   expect(fs.existsSync(record.dir), reply).toBe(false)
   expect(git('branch', '--list', record.branch), reply).toBe('')
-  expect(git('rev-parse', `refs/room/recovery/${tag}/${tip}`)).toBe(tip)
+  expect(git('rev-parse', `refs/room/recovery/${tag}/${tip}^{commit}`)).toBe(tip)
   expect(retainedWorkerLines(registry.commonDir), reply).toEqual([])
   expect(await t.leadTools.call('room_spawn', { tag, task: 'reuse' })).toContain('spawned ' + tag)
 })

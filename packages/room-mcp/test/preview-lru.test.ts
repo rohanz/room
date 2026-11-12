@@ -3,10 +3,21 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { evictPreviewLru, previewCapBytes, previewMetaPath, setPreviewLockUnavailableForTests, touchPreview, tryPreviewLock } from '../src/preview-cache.js'
 import { previewCachePath, runInMergedTree, waitForPreviewSweepForTests } from '../src/tools/files.js'
+import * as roomGit from '@room/roomd/git'
 import type { Session } from '../src/session.js'
+
+const gitPasses = vi.hoisted(() => ({ active: false, commands: [] as string[][] }))
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>()
+  return { ...actual, spawn: (...args: Parameters<typeof actual.spawn>) => {
+    const commandArgs = Array.isArray(args[1]) ? args[1] : []
+    if (gitPasses.active && args[0] === 'git' && commandArgs[0] === 'worktree') gitPasses.commands.push(commandArgs)
+    return actual.spawn(...args)
+  } }
+})
 
 const roots: string[] = []
 const maintenanceRoots = new Set<string>()
@@ -18,6 +29,9 @@ afterEach(async () => {
     else await fs.promises.rm(root, { recursive: true, force: true })
   }
   maintenanceRoots.clear()
+  gitPasses.active = false
+  gitPasses.commands.length = 0
+  vi.restoreAllMocks()
   setPreviewLockUnavailableForTests()
   process.env.PATH = originalPath
   if (originalCap === undefined) delete process.env.ROOM_PREVIEW_CACHE_GB
@@ -210,4 +224,30 @@ it('removes an oversized worktree through Git after a preview', async () => {
   await waitForPreviewSweepForTests()
   expect(fs.existsSync(cache)).toBe(false)
   expect(git('worktree', 'list', '--porcelain')).not.toContain(cache)
+})
+
+
+it('evicts only cache entries without global Git worktree list or prune commands', async () => {
+  const { root, git, head } = fixture()
+  const missing = path.join(root, 'temporarily-offline')
+  git('worktree', 'add', '--detach', '-q', missing, head)
+  fs.rmSync(missing, { recursive: true, force: true })
+  // An eligible stale user registration makes a global prune observably destructive.
+  git('config', 'gc.worktreePruneExpire', 'now')
+  const entry = await previewCachePath(root)
+  expect((await runInMergedTree({ dir: root } as Session, head, new Map(), 'echo "1 passed"')).passed).toBe(true)
+  await waitForPreviewSweepForTests()
+  const actual = roomGit.git, globalPasses = gitPasses.commands
+  gitPasses.active = true
+  vi.spyOn(roomGit, 'git').mockImplementation((...args) => {
+    if (args[1][0] === 'worktree') globalPasses.push(args[1])
+    return actual(...args)
+  })
+  process.env.ROOM_PREVIEW_CACHE_GB = '0'
+  expect((await runInMergedTree({ dir: root } as Session, head, new Map(), 'echo "1 passed"')).passed).toBe(true)
+  await waitForPreviewSweepForTests()
+  expect(fs.existsSync(entry)).toBe(false)
+  expect(globalPasses.some(args => args[1] === 'remove')).toBe(true)
+  expect(globalPasses.filter(args => ['list', 'prune'].includes(args[1]))).toEqual([])
+  expect(git('worktree', 'list', '--porcelain')).toContain(missing)
 })

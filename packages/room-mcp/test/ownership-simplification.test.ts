@@ -70,13 +70,16 @@ it.each(['owned', 'supplied'] as const)('a second input failure never unlinks le
   } finally { spy.mockRestore(); unlink.mockRestore() }
 })
 
-it('keeps the immutable recovery pin without writing its mutable-ref receipt', () => {
+it('stores recovery creation time in its tag, keeping only ordinary ref-write receipts', () => {
   const { repo, git, head } = realRepo(), common = path.join(repo, '.git'), worker = { id: 'w_pin', tag: 'pin', branch: 'main' }
   writeWorkerRef(common, 'refs/room/carry/pin', head, worker.id)
   const receipt = preserveWorkerBranch(common, worker)
-  expect(git('rev-parse', receipt.recoveryRef!)).toBe(head)
+  expect(git('rev-parse', `${receipt.recoveryRef!}^{commit}`)).toBe(head)
   const refs = fs.readdirSync(path.join(common, 'room/registry/ref-writes')).map(name => JSON.parse(fs.readFileSync(path.join(common, 'room/registry/ref-writes', name), 'utf8')).ref)
   expect(refs).toEqual(['refs/room/carry/pin'])
+  expect(git('cat-file', '-t', receipt.recoveryRef!)).toBe('tag')
+  expect(git('cat-file', '-p', receipt.recoveryRef!)).toMatch(/tagger Room <room@localhost> \d+ \+0000\n\nRoom recovery pin/)
+
 })
 
 it('names the recovery pin when its write fails before Git supplies a diagnostic', () => {

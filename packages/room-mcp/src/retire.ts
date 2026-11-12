@@ -46,7 +46,7 @@ function cleanupInput(record: WorkerRecord, status: WorkerStatusResult): LocalWo
   return { ...w, pid: launch?.outcome === 'never' ? 0 : -1 }
 }
 /** The checkout was removed, or the reason it cannot be yet (with extra reply lines for the lead). */
-export type CleanupResult = { removed: true; terminated: string[]; recoveryRef?: string } | { removed: false; reason: string; lines?: string[] }
+export type CleanupResult = { removed: true; terminated: string[]; recoveryRefs?: string[] } | { removed: false; reason: string; lines?: string[] }
 export type RemoveCheckoutOptions = {
   /** Retire a finished worker that still uses this checkout (collect's discard path); throws when it cannot. Without it, any user keeps the checkout. */
   retireUser?: (user: WorkerRecord) => Promise<void>
@@ -114,7 +114,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
       return { removed: false, reason: details.join('; ') || 'its worktree could not be removed safely; discard=true removes it with a recovery patch' }
     }
   } catch (error) { return { removed: false, reason: 'cleanup incomplete: ' + (error instanceof Error ? error.message : String(error)).slice(0, 300) } }
-  return { removed: true, terminated, ...(preservation.recoveryRef ? { recoveryRef: preservation.recoveryRef } : {}) }
+  return { removed: true, terminated, recoveryRefs: preservation.recoveryRefs }
 }
 
 /**

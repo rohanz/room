@@ -18,7 +18,7 @@ import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
 
 import { clearRetainedWorkerItem, retainWorkerItem, retainedWorkerLines } from './worker-retained.js'
-import { writeWorkerRef, deleteWorkerRef, deleteWorkerRecordRef, restoreWorkerRef, preserveWorkerBranch, deletePreservedWorkerBranch, operationBranchReceipt } from './worker-refs.js'
+import { writeWorkerRef, deleteWorkerRef, deleteWorkerRecordRef, restoreWorkerRef, preserveWorkerBranch, deletePreservedWorkerBranch, recoveryRefDescription, operationBranchReceipt } from './worker-refs.js'
 import { canonicalMissingWorkerPath, rootIdentity, verifyWorkerCheckout, retainCheckout, removeWorkerRegistration, PREPARATION_WITNESS_FILE, preparationIdentity, witnessPreparation, removePreparation, verifyPreparation, type PreparationIdentity, type PreparationWitness } from './worker-preparation.js'
 
 const WORKERS_DIR = path.join('.room', 'workers')
@@ -200,7 +200,7 @@ export async function ignoredWorkerArtifacts(w: LocalWorker, leadDir: string): P
 export type WorkerCleanupPreservation = {
   ignored: string[]; uncollected: string[]
   commitsAfterCollection?: { sha: string; paths: string[] }
-  recoveryRef?: string
+  recoveryRefs?: string[]
 }
 
 export const collectHeadRef = (tag: string, id: string) => `refs/room/collect-head/${tag}/${id}`
@@ -276,7 +276,7 @@ export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker
     else if (state.branchAhead) branchDetail = retainWorkerItem(common, { kind: 'branch', path: `refs/heads/${w.branch}`, id: w.id, tag: w.tag, reason: `has ${state.branchAhead} commit${state.branchAhead === 1 ? '' : 's'} not in your HEAD; inspect before removing` })
     else branchDetail = deletePreservedWorkerBranch(common, w, branchCleanup!) ?? `branch ${w.branch} cleanup checked against its preserved operation tip`
   }
-  return [branchDetail, ...retainedWorkerLines(common)].filter(Boolean).join('\n') || undefined
+  return [branchDetail, ...(branchCleanup?.recoveryRef ? [`branch recovery ref: ${recoveryRefDescription(common, branchCleanup.recoveryRef)}`] : []), ...retainedWorkerLines(common)].filter(Boolean).join('\n') || undefined
 }
 
 /** Porcelain entries missing from a fresh worktree; Room's own directory is excluded. */
@@ -712,19 +712,21 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
     }
     // The operation's single read is already pinned, including any foreign commit
     // found there. CAS can erase only that exact name/value; a later move survives.
-    if (branchCleanup.recoveryRef && branchCleanup.tip !== w.base) {
-      if (preservation) preservation.recoveryRef = branchCleanup.recoveryRef
-      else console.info(`worker ${w.tag} branch recovery ref: ${branchCleanup.recoveryRef}`)
-    }
+    const recoveryRefs = new Set(branchCleanup.recoveryRef ? [branchCleanup.recoveryRef] : [])
     await withGitWorktreeOperation(common, () => {
       verify()
       boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', 'worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     })
     deletePreservedWorkerBranch(common, w, branchCleanup)
-    for (const ref of privateWorkerRefs(w)) deleteWorkerRecordRef(common, ref, ownerRecord!)
+    for (const ref of privateWorkerRefs(w)) deleteWorkerRecordRef(common, ref, ownerRecord!, recoveryRefs)
+    if (preservation) preservation.recoveryRefs = [...recoveryRefs]
+    else for (const ref of recoveryRefs) console.info(`worker ${w.tag} branch recovery ref: ${recoveryRefDescription(common, ref)}`)
   } catch (error) {
     // Reconstructing/resetting the public path can overwrite a different checkout after partial cleanup.
-    throw new Error(retainCheckout(common, w, `cleanup incomplete: ${error instanceof Error ? error.message : String(error)}; inspect retained files and refs before retrying`))
+    // The pin was written before removal was attempted: say so, or it expires in seven days unannounced.
+    // First, because callers shorten long reasons from the end.
+    const pinned = branchCleanup.recoveryRef ? `branch recovery ref: ${recoveryRefDescription(common, branchCleanup.recoveryRef)}; ` : ''
+    throw new Error(pinned + retainCheckout(common, w, `cleanup incomplete: ${error instanceof Error ? error.message : String(error)}; inspect retained files and refs before retrying`))
   }
   if (w.id) {
     const record = await registry.read(w.id)

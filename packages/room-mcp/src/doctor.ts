@@ -11,7 +11,7 @@ import { gitCommonDir } from '@room/roomd'
 import { collectLocalState } from './local-state-gc.js'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
-const minimumGit = [2, 31, 0] // git rev-parse --path-format=absolute
+const minimumGit = [2, 36, 0] // git worktree list --porcelain -z
 /** INFO states context that proves no problem; it never carries a fix. */
 export type Result = { level: 'PASS' | 'INFO' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
 import { hostDoctorRows, hostDoctorFacts, deliveryLimitation, type DoctorFacts } from './hosts/diagnostics.js'
@@ -49,7 +49,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   const rows: Result[] = []
   const add = (level: Result['level'], name: string, finding: string, fix?: string) => rows.push({ level, name, finding, fix })
   add(atLeast(f.node, [22, 0, 0]) ? 'PASS' : 'FAIL', 'Node', f.node ? `${f.node} (need 22+)` : 'not found', 'Install Node 22 or newer')
-  add(atLeast(f.git, minimumGit) ? 'PASS' : 'FAIL', 'Git', f.git ? `${f.git} (need 2.31+)` : 'not found', 'Install Git 2.31 or newer')
+  add(atLeast(f.git, minimumGit) ? 'PASS' : 'FAIL', 'Git', f.git ? `${f.git} (need 2.36+)` : 'not found', 'Install Git 2.36 or newer')
   add(f.repo ? 'PASS' : 'FAIL', 'repository', f.repo ? 'Git checkout with a commit' : 'not a Git checkout with a commit', 'Run this from a committed Git checkout')
   rows.push(...hostDoctorRows(f, version))
   if (f.configError) add('FAIL', 'Room config', f.configError, 'Correct ROOM_SERVER or ROOM_URL, then retry')

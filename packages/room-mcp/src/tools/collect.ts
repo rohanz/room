@@ -1,4 +1,4 @@
-import { writeWorkerRecordRef } from '../worker-refs.js'
+import { recoveryRefDescription, writeWorkerRecordRef } from '../worker-refs.js'
 import { retainedWorkerLines } from '../worker-retained.js'
 import { validPid } from '@room/relay/process'
 import { requireWorkerInventory } from '../worker-store.js'
@@ -223,7 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           list.insert(index, [entry])
         })
       }
-      if (preservation.recoveryRef) return `cleaned up ${fresh.tag}; branch recovery ref: ${preservation.recoveryRef}`
+      if (preservation.recoveryRefs?.length) return `cleaned up ${fresh.tag}; ` + preservation.recoveryRefs.map(ref => 'branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('; ')
     } finally { await registry.finishOperation(owner.id) }
   }
   const missingCapability = async (s: Session, w: LocalWorker): Promise<string> => {
@@ -370,7 +370,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       })
       await registry.markDiscardStep(active.id, 'prune')
       await retireWorker(rooms, s, active.id, { ...r, summary: 'discarded', disposition: 'discarded', keptWorktree: undefined }, { keptWorktree: undefined })
-      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRef ? '; branch recovery ref: ' + preservation.recoveryRef : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRefs?.map(ref => '; branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('') ?? '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
     } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
     finally { await registry.finishOperation(active.id) }
   }
@@ -515,7 +515,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       })
       return [...sharedResults, ...childResults, (borrowed
         ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}`
-        : workerRecord?.outside || decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRef ? '; branch recovery ref: ' + preservation.recoveryRef : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
+        : workerRecord?.outside || decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRefs?.map(ref => '; branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('') ?? '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
     } catch (e) {
       await registry.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {})
       return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir
@@ -753,7 +753,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
    * on failure), pin each worker's source refs, then write every change after one final identity
    * gate, restoring originals if any write fails.
    */
-  const applyMergePlan = async (run: CollectRun, selected: CollectCandidate[], workerRoots: ReadonlyMap<LocalWorker, string>, plan: MergePlan, collectStarted: Set<string>): Promise<void> => {
+  const applyMergePlan = async (run: CollectRun, selected: CollectCandidate[], workerRoots: ReadonlyMap<LocalWorker, string>, plan: MergePlan, collectStarted: Set<string>, recoveryRefs: Set<string>): Promise<void> => {
     const { lead, leadRoot, registry } = run
     const { heads, result, snapshots, changes, destinations } = plan
     // Start collection and publish the source metadata before the final destination
@@ -767,8 +767,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     // retained shared checkout may receive another commit before its last user exits.
     for (const { w } of selected) {
       const record = result.inputs.records.get(w.name)!
-      writeWorkerRecordRef(registry.commonDir, collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name)!, record)
-      writeWorkerRecordRef(registry.commonDir, collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!, record)
+      writeWorkerRecordRef(registry.commonDir, collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name)!, record, recoveryRefs)
+      writeWorkerRecordRef(registry.commonDir, collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!, record, recoveryRefs)
     }
     // No await from this final identity gate through the last destination write.
     // Restore originals on any write failure.
@@ -822,6 +822,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const workerRoots = new Map<LocalWorker, string>()
     const workerLocks: string[] = []
     const collectStarted = new Set<string>()
+    const recoveryRefs = new Set<string>()
     const timing = currentToolTiming()
     let endPhase = timing?.begin('inspect')
     const nextPhase = (name: string) => { endPhase?.(); endPhase = timing?.begin(name) }
@@ -886,7 +887,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const plan = await prepareMergePlan(run, selected, workerRoots)
       if ('refusal' in plan) return plan.refusal
       const { result, snapshots, changes } = plan
-      await applyMergePlan(run, selected, workerRoots, plan, collectStarted)
+      await applyMergePlan(run, selected, workerRoots, plan, collectStarted, recoveryRefs)
       out.push('Changes from ' + selected.map(x => x.w.tag).join(', ') + ': ' + (changes.map(x => x.p).join(', ') || 'already present') + '. Nothing committed or staged.')
       // Worker scratch is not merged; keep a copy before cleanup removes the worktrees.
       const scratchSelected = selected.filter(({ w }) => result.scratch.has(w.name))
@@ -985,7 +986,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (result.removed) {
             retire(w.summary ?? '')
             out.push('cleaned up ' + w.tag + ': temporary files and logs')
-            if (result.recoveryRef) out.push('branch recovery ref: ' + result.recoveryRef)
+            for (const ref of result.recoveryRefs ?? []) recoveryRefs.add(ref)
             if (result.terminated.length) out.push('stopped processes from ' + w.tag + ': ' + result.terminated.join(', '))
           } else {
             out.push(`kept ${w.tag}: ${result.reason}`, ...result.lines ?? [])
@@ -1001,10 +1002,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         await finishOne()
       }
       out.push(await collectedTreeEvidence(leadRoot))
+      for (const ref of recoveryRefs) out.push('branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref))
       return out.join('\n')
     } catch (e) {
       for (const id of collectStarted) await registry.abortCollect(id).catch(() => {})
-      return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n')
+      return [...out, ...[...recoveryRefs].map(ref => 'branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)), 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n')
     }
     finally { endPhase?.(); for (const workerLock of workerLocks) await registry.finishOperation(workerLock) }
   }

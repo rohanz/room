@@ -2,13 +2,14 @@ import { privateStateDirectory } from '@room/relay'
 /** Ref erasure uses a known authorized write or an operation tip preserved under a recovery ref. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { boundedGitSync } from '@room/roomd/baseline'
 import { writeAtomic } from './leases.js'
 import type { WorkerRecord } from './worker-status.js'
 import { retainWorkerItem, clearRetainedWorkerItem } from './worker-retained.js'
 
 interface RefReceipt { ref: string; oid: string; owner: string }
+export const RECOVERY_REF_AGE_MS = 7 * 24 * 60 * 60 * 1000
 const file = (common: string, ref: string) => path.join(common, 'room', 'registry', 'ref-writes', createHash('sha256').update(ref).digest('hex') + '.json')
 const run = (common: string, args: string[]) => boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', ...args]).toString().trim()
 function validRef(ref: string): void {
@@ -102,8 +103,12 @@ export function preserveWorkerBranch(common: string, worker: { id: string; tag: 
     // for-each-ref omits dangling symrefs, so inspect the name as well.
     if (existing?.[2] || symbolicName(common, recoveryRef)) throw new Error('recovery name is already occupied by a symbolic ref; retained without following it')
     if (existing) {
-      if (existing[1] !== tip) throw new Error('recovery name is already occupied by another ref')
-    } else run(common, ['update-ref', '--no-deref', recoveryRef, tip, '0'.repeat(tip.length)])
+      if (run(common, ['rev-parse', `${existing[1]}^{}`]) !== tip) throw new Error('recovery name is already occupied by another ref')
+    } else {
+      const tag = `object ${tip}\ntype ${run(common, ['cat-file', '-t', tip])}\ntag room-recovery-${randomUUID()}\ntagger Room <room@localhost> ${Math.floor(Date.now() / 1000)} +0000\n\nRoom recovery pin\n`
+      const oid = boundedGitSync(common, ['--git-dir', common, 'mktag'], { input: Buffer.from(tag) }).toString().trim()
+      run(common, ['update-ref', '--no-deref', recoveryRef, oid, '0'.repeat(oid.length)])
+    }
     return { tip, recoveryRef }
   } catch (error) {
     const reason = `could not preserve operation branch tip under ${recoveryRef}: ${String(error)}`
@@ -126,11 +131,13 @@ function mutatePreservedRef(common: string, worker: { id: string; tag: string },
     if (!named && !symbolic) { clearRetainedWorkerItem(common, kind, ref); return }
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: receipt.reason ?? (receipt.absent ? 'branch was absent at operation start; later name retained' : 'no preserved operation tip') })
   }
+  let pinOid: string
   try {
     const expectedRef = `refs/room/recovery/${worker.tag}/${receipt.tip}`
     if (receipt.recoveryRef !== expectedRef) throw new Error('recovery ref receipt does not match this worker/tip')
     const entry = directEntry(common, expectedRef)
-    if (!entry || entry[1] !== receipt.tip || entry[2]) throw new Error('preserved commit is no longer pinned by its exact recovery ref')
+    if (!entry || entry[2] || run(common, ['rev-parse', `${entry[1]}^{}`]) !== receipt.tip) throw new Error('preserved commit is no longer pinned by its exact recovery ref')
+    pinOid = entry[1]
   } catch (error) {
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: String(error) })
   }
@@ -140,7 +147,7 @@ function mutatePreservedRef(common: string, worker: { id: string; tag: string },
     // lock, while a different OID or dangling replacement fails the comparison.
     if (next && !/^[a-f0-9]{40,64}$/.test(next)) throw new Error('invalid ref replacement OID')
     const mutation = next ? `update ${ref} ${next} ${receipt.tip}` : `delete ${ref} ${receipt.tip}`
-    const commands = `start\noption no-deref\nupdate ${receipt.recoveryRef} ${receipt.tip} ${receipt.tip}\n${mutation}\nprepare\ncommit\n`
+    const commands = `start\noption no-deref\nupdate ${receipt.recoveryRef} ${pinOid} ${pinOid}\n${mutation}\nprepare\ncommit\n`
     boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', 'update-ref', '--no-deref', '--stdin'], { input: Buffer.from(commands) })
   } catch (error) {
     return retainWorkerItem(common, { kind, path: ref, id: worker.id, tag: worker.tag, reason: `branch or recovery pin changed, or Git could not complete the transaction: ${String(error)}` })
@@ -174,7 +181,42 @@ function clearRefReceipt(common: string, ref: string, owner: string): void {
   } catch { /* unreadable or concurrently changed evidence stays */ }
 }
 
-/** The four mutable worker-private ref names in v0.17.47; recovery refs never expire. */
+/** Creation evidence lives in the immutable tag object, never in a side receipt. */
+function recoveryPin(common: string, oid: string): { createdAt: number } | undefined {
+  const tag = run(common, ['cat-file', 'tag', oid])
+  const match = /^object [a-f0-9]{40,64}\ntype (?:commit|tree)\ntag [^\n]+\ntagger Room <room@localhost> (\d+) \+0000\n\nRoom recovery pin(?:\n|$)/.exec(tag)
+  return match && Number.isSafeInteger(Number(match[1])) ? { createdAt: Number(match[1]) * 1000 } : undefined
+}
+export function recoveryRefDescription(common: string, ref: string): string {
+  try { if (recoveryPin(common, run(common, ['rev-parse', ref]))) return `${ref} (kept for seven days)` } catch { /* Legacy or unreadable pins remain. */ }
+  return `${ref} (creation time unrecorded; retained for manual inspection)`
+}
+
+/** Only Room-marked annotated pins expire; compare the immutable tag's exact OID. */
+export function collectRecoveryRefs(common: string, now = Date.now(), dryRun = false): string[] {
+  const removed: string[] = []
+  let refs: string
+  try { refs = run(common, ['for-each-ref', '--format=%(refname)%00%(objectname)', 'refs/room/recovery/']) } catch { return removed }
+  for (const line of refs.split('\n')) {
+    const [ref, oid] = line.split('\0')
+    try {
+      const pin = recoveryPin(common, oid)
+      if (!pin || now - pin.createdAt < RECOVERY_REF_AGE_MS) continue
+      // Git 2.45 cannot atomically require a direct ref here; see reference.md.
+      const entry = directEntry(common, ref)
+      if (!entry || entry[1] !== oid || entry[2] || symbolicName(common, ref)) continue
+      if (!dryRun) {
+        const input = `start\noption no-deref\ndelete ${ref} ${oid}\nprepare\ncommit\n`
+        boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', 'update-ref', '--no-deref', '--stdin'], { input: Buffer.from(input) })
+        clearRetainedWorkerItem(common, 'ref', ref)
+      }
+      removed.push(ref)
+    } catch { /* Foreign/unreadable objects and failed comparisons remain. */ }
+  }
+  return removed
+}
+
+/** The four mutable worker-private ref names in v0.17.47. */
 type RefRecord = Pick<WorkerRecord, 'id' | 'tag' | 'branch' | 'base' | 'carriedBase' | 'collectedKeep'> & Partial<Pick<WorkerRecord, 'prep'>>
 function legacyRefExpectation(common: string, ref: string, worker: RefRecord): { expected?: string; preserved?: BranchCleanupReceipt } {
   if (!worker.prep || worker.prep.identityRequired || recordedWorkerRef(common, ref, worker.id)) return {}
@@ -191,9 +233,10 @@ function legacyRefExpectation(common: string, ref: string, worker: RefRecord): {
   if (!/^[a-f0-9]{40,64}$/.test(entry[1])) throw new Error('invalid legacy private ref value')
   return { preserved: preserveWorkerBranch(common, worker, { tip: entry[1] }) }
 }
-export function writeWorkerRecordRef(common: string, ref: string, oid: string, worker: RefRecord): void {
+export function writeWorkerRecordRef(common: string, ref: string, oid: string, worker: RefRecord, recoveryRefs?: Set<string>): void {
   try {
     const { expected, preserved } = legacyRefExpectation(common, ref, worker)
+    if (preserved?.recoveryRef) recoveryRefs?.add(preserved.recoveryRef)
     if (!preserved) return writeWorkerRef(common, ref, oid, worker.id, expected)
     const retained = mutatePreservedRef(common, worker, ref, preserved, oid)
     if (retained) throw new Error(retained)
@@ -201,9 +244,10 @@ export function writeWorkerRecordRef(common: string, ref: string, oid: string, w
     throw new Error(retainWorkerItem(common, { kind: 'ref', path: ref, id: worker.id, tag: worker.tag, reason: String(error) }))
   }
 }
-export function deleteWorkerRecordRef(common: string, ref: string, worker: RefRecord): string | undefined {
+export function deleteWorkerRecordRef(common: string, ref: string, worker: RefRecord, recoveryRefs?: Set<string>): string | undefined {
   try {
     const { expected, preserved } = legacyRefExpectation(common, ref, worker)
+    if (preserved?.recoveryRef) recoveryRefs?.add(preserved.recoveryRef)
     return preserved ? mutatePreservedRef(common, worker, ref, preserved) : deleteWorkerRef(common, ref, worker.id, expected)
   } catch (error) { return retainWorkerItem(common, { kind: 'ref', path: ref, id: worker.id, tag: worker.tag, reason: String(error) }) }
 }

@@ -1,3 +1,4 @@
+import { collectRecoveryRefs } from './worker-refs.js'
 import { collectResolvedWorkerMetadata } from './worker-metadata-gc.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -74,7 +75,8 @@ export const GC_RULES: GcRule[] = [
   { path: 'profiles/*.cpuprofile', owner: 'MCP session', lifetime: { kind: 'age', ms: ROOM_STALE_MS }, match: inDir('profiles', n => n.endsWith('.cpuprofile')) },
   { path: 'preview-evidence/*.json', owner: 'MCP session', lifetime: { kind: 'age', ms: ROOM_STALE_MS }, match: inDir('preview-evidence', n => n.endsWith('.json')) },
   { path: 'registry/migration.*', owner: 'lead MCP', lifetime: { kind: 'keep' }, match: inDir('registry', n => n.startsWith('migration.')) },
-  { path: 'registry/workers, tags, adoptions, runs, patches, collect, retained, ref-writes', owner: 'lead MCP', lifetime: { kind: 'owner' },
+  { path: 'registry/ref-writes', owner: 'MCP session', lifetime: { kind: 'owner' }, match: inDir('registry', n => n === 'ref-writes') },
+  { path: 'registry/workers, tags, adoptions, runs, patches, collect, retained', owner: 'lead MCP', lifetime: { kind: 'owner' },
     match: inDir('registry', n => n !== 'quarantine') },
   { path: 'registry/quarantine/*', owner: 'MCP session', lifetime: { kind: 'age', ms: 30 * DAY }, match: inDir('registry/quarantine', () => true) },
   { path: 'storage-gate.json, storage-gate/, preflight/', owner: 'none', lifetime: { kind: 'foreign' }, match: top(['storage-gate.json', 'storage-gate', 'preflight']) },
@@ -150,6 +152,7 @@ export function collectLocalState(commonDir: string, options: GcOptions = {}): G
       judge({ top: entry.name, name: child.name, isDir: child.isDirectory() }, `${entry.name}/${child.name}`)
     }
   }
+  removed.push(...collectRecoveryRefs(commonDir, now(), options.dryRun))
   removed.push(...collectResolvedWorkerMetadata(commonDir, options.dryRun))
   return { removed, unknown }
 }

@@ -967,6 +967,8 @@ async function checkoutSettings(dir: string): Promise<{ fingerprint: string; spa
 
 function slotSettingsFile(slot: string): string { return path.join(path.dirname(slot), `.checkout-${path.basename(slot)}.json`) }
 
+const PREVIEW_LOCK_REASON = 'room preview cache'
+class ForeignPreviewLock extends Error {}
 type SlotRegistration = 'valid' | 'missing-git' | 'unregistered' | 'foreign'
 
 /** Authenticate both halves of a registration before mutating it. */
@@ -1001,20 +1003,20 @@ async function slotRegistration(repoDir: string, slot: string): Promise<SlotRegi
     catch { return 'foreign' }
     return backlink === path.join(ownDir, '.git') ? 'valid' : 'foreign'
   }
-  const listed = await gitSetup(repoDir, ['worktree', 'list', '--porcelain'])
-  const same = async (other: string) => {
-    try { return await fs.promises.realpath(other) === await fs.promises.realpath(slot) }
-    catch { return false }
-  }
-  for (const line of listed.split(/\n/)) {
-    if (line.startsWith('worktree ') && await same(line.slice(9))) return 'missing-git'
+  // A missing gitfile is not proof that the slot is unregistered: keep partial
+  // registered checkouts until maintenance can remove their exact admin entry.
+  const common = await fs.promises.realpath(await gitCommonDir(repoDir))
+  const ownDir = await fs.promises.realpath(slot).catch(() => undefined)
+  if (ownDir) for (const admin of await fs.promises.readdir(path.join(common, 'worktrees')).catch(() => [] as string[])) {
+    const recorded = await fs.promises.readFile(path.join(common, 'worktrees', admin, 'gitdir'), 'utf8').catch(() => undefined)
+    if (recorded && path.resolve(common, 'worktrees', admin, recorded.replace(/\r?\n$/, '')) === path.join(ownDir, '.git')) return 'missing-git'
   }
   return 'unregistered'
 }
 
 /** Git worktree lock prevents Git pruning; OS locks provide exclusive use. */
 async function lockPreviewEntry(repoDir: string, entry: string): Promise<void> {
-  try { await gitSetup(repoDir, ['worktree', 'lock', '--reason', 'room preview cache', entry]) }
+  try { await gitSetup(repoDir, ['worktree', 'lock', '--reason', PREVIEW_LOCK_REASON, entry]) }
   catch (error) {
     if (await slotRegistration(repoDir, entry) !== 'valid') throw error
     const gitfile = await fs.promises.readFile(path.join(entry, '.git'), 'utf8')
@@ -1044,7 +1046,6 @@ async function removePreviewEntry(repoDir: string, entry: string, partial = fals
       catch { if (await slotRegistration(repoDir, entry) !== 'valid') throw new Error('registration changed during unlock') }
       if (await slotRegistration(repoDir, entry) !== 'valid') throw new Error('registration changed before removal')
       await gitSetup(repoDir, ['worktree', 'remove', '--force', entry])
-      await gitSetup(repoDir, ['worktree', 'prune'])
     } else if (state === 'unregistered' && partial) {
       const stat = await fs.promises.lstat(entry).catch(() => undefined)
       if (stat?.isSymbolicLink()) throw new Error('unsafe preview cache link')
@@ -1212,7 +1213,21 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
   }
   if (!stat) {
     observe?.baseMaterialized?.()
-    await gitSetup(cloneDir, ['worktree', 'add', '--detach', '--quiet', dir, ancestor])
+    const add = async (force: string[] = []) => {
+      try { await fs.promises.lstat(dir); throw new Error('preview cache path reappeared before creation') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      await gitSetup(cloneDir, ['worktree', 'add', ...force, '--detach', '--quiet', dir, ancestor])
+    }
+    try { await add() }
+    catch (error) {
+      // Lookup only the exact missing path after Git refuses; never sweep registrations.
+      const entries = (await gitSetup(cloneDir, ['worktree', 'list', '--porcelain', '-z'])).split('\0\0')
+      const registration = entries.map(entry => entry.split('\0')).find(fields => fields[0] === `worktree ${dir}`)
+      if (!registration) throw error
+      const locked = registration.find(field => field === 'locked' || field.startsWith('locked '))
+      if (locked && locked !== `locked ${PREVIEW_LOCK_REASON}`) throw new ForeignPreviewLock(`preview cache ${dir} has a foreign Git lock; inspect it, then use git worktree unlock or git worktree prune`)
+      await add(locked ? ['--force', '--force'] : ['--force'])
+    }
   }
   if (await slotRegistration(cloneDir, dir) !== 'valid') throw new Error('preview slot registration is not reciprocal')
   await lockPreviewEntry(cloneDir, dir)
@@ -1350,6 +1365,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
           reused = await preparePreviewCache(s.dir, dir, ancestor, source!, observe)
           cacheReady = true
         } catch (error) {
+          if (error instanceof ForeignPreviewLock) throw error
           release?.assertOwned()
           await removePreviewEntry(s.dir, dir, true)
           console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)

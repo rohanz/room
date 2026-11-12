@@ -4,7 +4,7 @@ import path from 'node:path'
 import { expect, it, vi } from 'vitest'
 import * as baseline from '@room/roomd/baseline'
 import * as workerGit from '../src/worker-git.js'
-import { preserveWorkerBranch, deletePreservedWorkerBranch, deleteWorkerRef, writeWorkerRef } from '../src/worker-refs.js'
+import { collectRecoveryRefs, preserveWorkerBranch, deletePreservedWorkerBranch, deleteWorkerRef, writeWorkerRef } from '../src/worker-refs.js'
 import { retainWorkerItem, retainedWorkerLines } from '../src/worker-retained.js'
 import { collectLocalState } from '../src/local-state-gc.js'
 import { linkWorkspaceDeps } from '../src/worker-deps.js'
@@ -39,7 +39,7 @@ it('review: a recovery pin changed after verification cannot authorize erasing i
   let replaced = false
   const spy = vi.spyOn(baseline, 'boundedGitSync').mockImplementation((...args) => {
     if (!replaced && deletesRef(args, `refs/heads/${worker.branch}`)) {
-      git('update-ref', pin, head, tip)
+      git('update-ref', pin, head, git('rev-parse', pin))
       replaced = true
     }
     return run(...args)
@@ -67,7 +67,7 @@ it('review: a recovery write that returns after its value changed retains the br
   const spy = vi.spyOn(baseline, 'boundedGitSync').mockImplementation((...args) => {
     const result = run(...args)
     if (!changed && args[1].includes('update-ref') && args[1].includes(pin)) {
-      git('update-ref', pin, head, tip)
+      git('update-ref', pin, head, git('rev-parse', pin))
       changed = true
     }
     return result
@@ -88,11 +88,11 @@ it.each(['direct-conflict', 'symbolic-conflict', 'packed-same'] as const)('revie
   const receipt = preserveWorkerBranch(common, worker)
   if (mode === 'packed-same') {
     expect(deletePreservedWorkerBranch(common, worker, receipt)).toBeUndefined()
-    expect(git('rev-parse', pin)).toBe(tip)
+    expect(git('rev-parse', `${pin}^{commit}`)).toBe(tip)
     expect(git('branch', '--list', worker.branch)).toBe('')
   } else {
     expect(receipt.reason).toContain('already occupied')
-    expect(git('rev-parse', pin)).toBe(head)
+    expect(git('rev-parse', `${pin}^{commit}`)).toBe(head)
     expect(git('rev-parse', worker.branch)).toBe(tip)
   }
 })
@@ -138,7 +138,10 @@ it('review: the operation pin preserves the current tip, not abandoned worktree-
   expect(deletePreservedWorkerBranch(common, worker, receipt)).toBeUndefined()
   git('gc', '--prune=now')
   expect(() => git('cat-file', '-e', `${abandoned}^{commit}`)).toThrow()
-  expect(git('rev-parse', receipt.recoveryRef!)).toBe(head)
+  expect(receipt.recoveryRef).toBe(`refs/room/recovery/${worker.tag}/${head}`)
+  expect(git('rev-parse', `${receipt.recoveryRef!}^{commit}`)).toBe(head)
+  expect(collectRecoveryRefs(common)).toEqual([])
+  expect(() => git('cat-file', '-e', head)).not.toThrow()
 })
 
 it.each(['replaced-child', 'new-child'] as const)('review: dependency rollback preserves %s inside an unchanged parent', async mode => {
@@ -280,7 +283,7 @@ it.each(['pin-only', 'receipt', 'checkout-removed', 'branch-deleted'] as const)(
     void closeRegistryForDir(repo)
   }
   expect(reopened, 'registry startup must not await itself while replaying discard').toBeDefined()
-  expect(git('rev-parse', `refs/room/recovery/${record.tag}/${tip}`)).toBe(tip)
+  expect(git('rev-parse', `refs/room/recovery/${record.tag}/${tip}^{commit}`)).toBe(tip)
   expect(() => git('cat-file', '-e', `${tip}^{commit}`)).not.toThrow()
   if (stage === 'receipt') {
     expect((await reopened!.read(record.id))?.branchCleanup?.tip).toBe(tip)
@@ -309,7 +312,7 @@ it('review: a different tip installed before operation admission is preserved be
   const reply = await t.leadTools.call('room_collect', { tag: record.tag, discard: true })
   expect(fs.existsSync(record.dir), reply).toBe(false)
   expect(git('branch', '--list', record.branch), reply).toBe('')
-  expect(git('rev-parse', `refs/room/recovery/${record.tag}/${installed}`)).toBe(installed)
+  expect(git('rev-parse', `refs/room/recovery/${record.tag}/${installed}^{commit}`)).toBe(installed)
   git('reflog', 'expire', '--expire=now', '--all')
   git('gc', '--prune=now')
   expect(() => git('cat-file', '-e', `${installed}^{commit}`)).not.toThrow()
