@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { generationGate, FRESH_GENERATION } from '@room/shared'
 import {
-  BASELINE_FIXTURES, BOOTSTRAP_MAX_BYTES, CAPABILITY_REGISTRY, COMPAT_MAX_BYTES,
+  BOOTSTRAP_MAX_BYTES, CAPABILITY_REGISTRY, COMPAT_MAX_BYTES,
   CURRENT_COMPAT, LEGACY_COMPAT, CompatibilityValidationError,
   decodeFrame, encodeFrame, legacyAdvertisement, legacyHello, parseAdvertisement,
-  parseBootstrapAck, parseBootstrapFrame, parseBootstrapHello, selectContract, supportWindow, validateSelection,
+  parseBootstrapAck, parseBootstrapFrame, parseBootstrapHello, selectContract, validateSelection,
   type BootstrapSelection, type CompatAdvertisement, type ContractPolicy,
 } from '../src/index.js'
 
@@ -28,16 +28,12 @@ describe('baseline and advertisement', () => {
     expect(parseAdvertisement(CURRENT_COMPAT)).toEqual(CURRENT_COMPAT)
   })
   it.each([
-    ['0.17.0', 'N'], ['0.17.32', 'N'], ['N', '0.17.0'], ['N', '0.17.32'], ['N', 'N'],
+    ['legacy', 'current'], ['current', 'legacy'], ['current', 'current'],
   ])('%s → %s selects exact baseline', (c, s) => {
-    const client = c === 'N' ? ad({ release: 'diagnostic-new' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
-    const server = s === 'N' ? ad({ release: 'another-build' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
+    const client = c === 'current' ? ad({ release: 'diagnostic-new' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
+    const server = s === 'current' ? ad({ release: 'another-build' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
     expect(selected(client, server)).toEqual({ bootstrap: 1, hub: 1, schema: 2, capabilities: { 'room.generation': 1, 'room.ledger': 1, 'room.manifest': 1,
-      ...(c === 'N' && s === 'N' ? { 'room.notice-lifecycle': 1 } : {}) } })
-  })
-  it('pins exact baseline identities; these tables are contract doubles, not archived process evidence', () => {
-    expect(BASELINE_FIXTURES.map(f => f.release)).toEqual(['0.17.0', '0.17.32'])
-    for (const f of BASELINE_FIXTURES) expect(f.commit).toMatch(/^[a-f0-9]{40}$/)
+      ...(c === 'current' && s === 'current' ? { 'room.notice-lifecycle': 1 } : {}) } })
   })
   it('produces only the strict legacy hello fields', () => {
     expect(legacyHello('r1', 'build', 's1')).toEqual({ v: 1, op: 'hello', id: 'r1', proto: 1, schema: 2, client: 'build', sessionId: 's1' })
@@ -259,16 +255,7 @@ describe('bootstrap shapes', () => {
   })
 })
 
-describe('release-tool support window, separate from runtime contract selection', () => {
-  it.each([
-    ['0.17.0', [17]], ['0.17.32', [17]], ['0.18.0', [17, 18]], ['0.19.99', [17, 18, 19]],
-    ['0.20.0', [17, 18, 19, 20]], ['0.21.0', [18, 19, 20, 21]], ['1.2.0', [0, 1, 2]], ['1.9.0', [6, 7, 8, 9]],
-  ])('%s includes current plus three previous available minors', (current, minors) => {
-    expect(supportWindow(current)).toMatchObject({ minors, minimumOverlapDays: 90, retirement: 'explicit' })
-  })
-  it.each(['0.16.40', 'v0.17.0', '0.17.0-rc1', '0.17', '0.017.0', 'x', '999999999999999999.0.0'])('rejects unsupported current baseline %s', current => {
-    expect(() => supportWindow(current)).toThrow(CompatibilityValidationError)
-  })
+describe('release diagnostics do not select the contract', () => {
   it('does not infer runtime compatibility from release equality', () => {
     expect(selected(ad({ release: '0.1.0' }), ad({ release: '9.9.9' })).schema).toBe(2)
     expect(selectContract(ad({ release: 'same' }), ad({ release: 'same', schemas: { read: [3], write: [3] }, legacy: undefined }), { activeSchema: 3 }).ok).toBe(false)

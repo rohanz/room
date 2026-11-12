@@ -13,11 +13,11 @@
  *    client polls /auth/poll exactly like the device flow. An OIDC session has no GitHub
  *    token: it is admitted to local/ and git/ rooms, never to github.com rooms.
  *
- * Sessions persist through a Store (JSON file by default, Postgres with DATABASE_URL).
+ * Sessions persist in JSON files through FileStore (in-memory when no directory is set).
  */
 import crypto from 'node:crypto'
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose'
-import { FileStore, type Store, type StoredSession } from './store.js'
+import { FileStore, type StoredSession } from './store.js'
 import { assertValidParticipantName, validParticipantName } from './names.js'
 import { SERVER_FAIRNESS } from './settings.js'
 
@@ -41,7 +41,7 @@ export interface AuthOptions {
   production?: boolean
   oidc?: OidcOptions
   /** Where sessions persist. Default: FileStore at sessionsFile, or in memory. */
-  store?: Store
+  store?: FileStore
   /** Shorthand for a FileStore holding only sessions (0600). */
   sessionsFile?: string
   fetch?: typeof fetch
@@ -98,7 +98,7 @@ export class Auth {
   readonly fake: boolean
   /** Resolves once persisted sessions are loaded; index.ts awaits it before listening. */
   readonly ready: Promise<void>
-  private readonly store: Store
+  private readonly store: FileStore
   private readonly fetch: typeof fetch
   private readonly now: () => number
   private readonly ttl: number

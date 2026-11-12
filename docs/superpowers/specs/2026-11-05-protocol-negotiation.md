@@ -1,5 +1,7 @@
 # Protocol negotiation and staged Room upgrades
 
+> **Superseded in part, 2026-11-12.** Room no longer keeps cross-version compatibility: the support window, release pins and the compatibility matrix described here were removed after 0.17.48. See [upgrading](../../upgrading.md). The rest is kept as the design record.
+
 Date: 2026-11-05. Status: proposed; no behavior in this document is shipped unless identified as current. Scope: team server, local relay, room-mcp/embedded roomd, roomagent, browser viewer and hook arbitration. Release numbers identify builds; they do not select wire semantics.
 
 ## Revision 2026-11-05

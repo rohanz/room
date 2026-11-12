@@ -1,4 +1,4 @@
-# Room server (GitHub/OIDC login, LevelDB persistence, optional Postgres store).
+# Room server (GitHub/OIDC login, LevelDB persistence, JSON file store).
 # docker build -t room-server .  or  docker compose -f deploy/docker-compose.yml up -d
 # Builds the server and browser view inside Docker. See deploy/self-hosting.md.
 FROM node:22-slim AS build

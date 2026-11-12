@@ -58,7 +58,7 @@ require('node:net').Server.prototype.listen = function (...args) {
 setTimeout(() => process.exit(2), 6000);
 `)
   const { stdout, stderr } = await promisify(execFile)(process.execPath, ['--require', probe, '--import', 'tsx', 'packages/server/src/index.ts'], {
-    cwd: root, timeout: 10000, env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '', DATABASE_URL: '',
+    cwd: root, timeout: 10000, env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '',
       OIDC_ISSUER: '', YPERSISTENCE: dir, ROOM_IDLE_DAYS: '0', ROOM_TOKEN: '', PORT: '4404' },
   })
   const result = stdout.split('\n').find(line => line.startsWith('RESULT '))
@@ -115,7 +115,7 @@ require('node:net').Server.prototype.listen = function (...args) {
   return this;
 };
 `)
-  const env = { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '', DATABASE_URL: '',
+  const env = { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '',
     OIDC_ISSUER: '', YPERSISTENCE: dir, ROOM_IDLE_DAYS: '0', ROOM_TOKEN: '', PORT: '4404' }
   delete env.ROOM_LEGACY_DAYS
   const { stdout } = await promisify(execFile)(process.execPath, ['--require', probe, '--import', 'tsx', 'packages/server/src/index.ts'],

@@ -51,7 +51,7 @@ use broke and proposes the order of work.
 - **Standalone local daemon.** Consider one instead of the relay living in the first session.
   Follow-up: a cold join racing large broadcasts can hit `stateRequestLimiter`'s 1 MiB queued-output cap and close with 1013 (`too many state requests`); make bounded initial sync reliable for large retained rooms.
 - **Simplification pass** after the trial.
-- **Protocol version negotiation** and a compatibility window, before the user base grows.
+- **A compatibility window**, if and when Room has users on more than one version. Protocol negotiation shipped in 0.17.33; the release-pin matrix that tested old releases against new ones was removed after 0.17.48, while Room has a single user.
 - **Per-person permissions** and validated operations.
 - **The rc2 deferred list:** [2026-09-30-rc2-deferred.md](superpowers/specs/2026-09-30-rc2-deferred.md).
 - **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew. Codex runs only the installed plugin (it has no `--plugin-dir`), so Codex workers of a lead on a development checkout run the installed version; the spawn reply warns on a mismatch. Codex's shared app-server daemon does not pass the shell's `ROOM_*` variables to Room, so `ROOM_SERVER` and similar settings need `codex --no-daemon`.

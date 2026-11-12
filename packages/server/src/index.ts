@@ -18,8 +18,8 @@
  *    admits a github.com room.
  *  - With no login provider and no ROOM_TOKEN configured, non-GitHub rooms are open.
  *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts;
- *    the repo registry, sessions and the audit log (audit.log, JSON lines) live there too unless
- *    DATABASE_URL points at Postgres (see store.ts). GET /audit with Authorization: Bearer <admin session>
+ *    the repo registry, sessions and the audit log (audit.log, JSON lines) live there too.
+ *    GET /audit with Authorization: Bearer <admin session>
  *    for logins in ROOM_ADMINS.
  *  - A repo is opened explicitly once (POST /rooms) before anyone can connect. A websocket
  *    to a repo nobody opened is refused with 404. GET /rooms lists open repos; DELETE /rooms
@@ -34,7 +34,6 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
-import { setupWSConnection, getYDoc, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
 import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, limitStateRequests, sizeCapReason, DocSizeMeter, DocumentIdentityGuard, AwarenessBudget } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } from './names.js'
 import * as Y from 'yjs'
@@ -93,7 +92,11 @@ const isAdmin = (st: { login: string; id?: string; provider?: Provider }) => isA
 const list = (v: string | undefined) => v?.split(',').map(s => s.trim()).filter(Boolean) ?? []
 const oidcIssuer = process.env.OIDC_ISSUER?.trim()
 if (oidcIssuer && !(process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET && process.env.PUBLIC_URL)) { console.error('OIDC_ISSUER is set but OIDC_CLIENT_ID, OIDC_CLIENT_SECRET or PUBLIC_URL is missing'); process.exit(1) }
-const store = storeFromEnv()
+const store = (() => {
+  try { return storeFromEnv() } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1) }
+})()
+// Loading websocket persistence opens LevelDB; validate storage configuration before that side effect.
+const { setupWSConnection, getYDoc, docs, getPersistence, setPersistence } = await import('@y/websocket-server/utils')
 const clientId = process.env.GITHUB_CLIENT_ID?.trim() || undefined
 if (clientId === FAKE_CLIENT_ID && process.env.NODE_ENV === 'production') { console.error(`GITHUB_CLIENT_ID=${FAKE_CLIENT_ID} is the test issuer; it cannot run with NODE_ENV=production`); process.exit(1) }
 const credentialSockets = new CredentialSockets(Date.now, 10000, limits.WS_TICKET_TTL_MS)
@@ -1304,6 +1307,5 @@ void roomsLoaded.then(() => server.listen(PORT, HOST, () => console.log(
   (auth.fake ? ' (FAKE GitHub login: test issuer, any fakeLogin is accepted)' : auth.mode === 'device' ? ' (GitHub login via device flow)' : ' (no GitHub login: github.com rooms refused; set GITHUB_CLIENT_ID)') +
   (auth.providers.includes('oidc') ? ` (OIDC login via ${oidcIssuer})` : '') +
   (TOKEN ? ' (shared token accepted for non-GitHub rooms)' : '') +
-  (process.env.DATABASE_URL ? ' registry/sessions/audit in Postgres' : '') +
   (process.env.YPERSISTENCE ? ` persisting to ${process.env.YPERSISTENCE}` : ' (in-memory: rooms reset on restart)'),
 )))

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Room no longer tests itself against its own old releases.** The release-pin file, the compatibility matrix scripts and the CI job that ran pinned old servers and relays against new ones are removed, with the "three minor releases back" support window. Room has one user and does not promise cross-version interoperation; the live handshake between client, relay and server is unchanged. A release is now: bump, rebuild, CHANGELOG heading, tag.
+- **The Postgres store is removed.** It was never used by the hosted server and had no production testing. A server started with `DATABASE_URL` set now refuses to start, before writing anything, with `DATABASE_URL is no longer supported; remove it and use YPERSISTENCE for file storage`. The `pg` dependency, the compose service and the self-hosting instructions for it are gone.
+- CI's final `test` job now requires the two Windows jobs as well as checks and hygiene.
+
 ## 0.17.48
 
 - **The code index no longer calls a half-built graph ready.** After your shared files changed twice in quick succession (for example coverage going incomplete and back), a publish scheduled by the first re-index could fire during the second and publish a graph marked `ready` at the current revision with files or observed changes missing. Peers treat that combination as authoritative, and the 20-second publish window could keep it standing. A graph is now never published as `ready` while a re-index is queued; withdrawals still go out at once, marked `indexing`.

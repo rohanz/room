@@ -1,5 +1,7 @@
 # Local plumbing plan: order, deletions, release boundaries
 
+> **Superseded in part, 2026-11-12.** Room no longer keeps cross-version compatibility: the support window, release pins and the compatibility matrix described here were removed after 0.17.48. See [upgrading](../../upgrading.md). The rest is kept as the design record.
+
 Date: 2026-11-05. Status: proposed, for the maintainer's ordering decision. Ties together four specs written
 and reviewed today, each by a Codex GPT-6.1 Sol writer and a GPT-6 Astra reviewer with one revision round:
 

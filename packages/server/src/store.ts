@@ -2,8 +2,7 @@
  * Where the server keeps its small, non-document state: the registry of opened repos, login
  * sessions and the audit log. Room documents stay in LevelDB (y-websocket persistence).
  *
- *  - FileStore: JSON files next to the LevelDB data (default; in-memory when no directory is set).
- *  - PgStore:   three tables in Postgres (DATABASE_URL), created on start.
+ * JSON files next to the LevelDB data; in-memory when no directory is set.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -216,22 +215,6 @@ export class SessionWrites {
   }
 }
 
-export interface Store {
-  /** Create tables / directories. Called once before use. */
-  init(): Promise<void>
-  /** Rejects when stored state exists but cannot be read; only absent state is empty. */
-  loadRooms(): Promise<Record<string, OpenRepo>>
-  saveRooms(all: Record<string, OpenRepo>): Promise<void>
-  /** Rejects when stored state exists but cannot be read; only absent state is empty. */
-  loadSessions(): Promise<Record<string, StoredSession>>
-  putSession(id: string, s: StoredSession): Promise<void>
-  deleteSession(id: string): Promise<void>
-  audit(e: AuditEntry): Promise<void>
-  /** The newest entries at or after `since` (ms), oldest first, at most `limit`, within a scan budget. */
-  readAudit(o?: AuditQuery): Promise<AuditTail>
-  close(): Promise<void>
-}
-
 export interface FileStoreOptions {
   /** Directory for rooms.json, sessions.json and audit.log. Omit for in-memory. */
   dir?: string
@@ -321,7 +304,7 @@ async function withAuditHandles<T>(file: string, budget: number, read: (g: Audit
   }
 }
 
-export class FileStore implements Store {
+export class FileStore {
   private readonly sessionsFile?: string
   private readonly roomsFile?: string
   private readonly auditFile?: string
@@ -425,88 +408,11 @@ export class FileStore implements Store {
       return { entries: r.entries, complete: !gaps.length, gaps }
     })
   }
-  async close(): Promise<void> { /* nothing open */ }
 }
 
-/** Minimal shape of a `pg` Pool, so the driver is only loaded when DATABASE_URL is set. */
-interface PgClientLike { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>; release(): void }
-interface PgLike { query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>; connect(): Promise<PgClientLike>; end(): Promise<void> }
-
-export class PgStore implements Store {
-  private pool?: PgLike
-  // One client for the whole transaction: on a Pool each query() may use a different connection.
-  private async transaction(work: (client: PgClientLike) => Promise<void>): Promise<void> {
-    const client = await (await this.db()).connect()
-    try {
-      await client.query('BEGIN')
-      await work(client)
-      await client.query('COMMIT')
-    } catch (e) { try { await client.query('ROLLBACK') } catch { /* connection gone */ } throw e }
-    finally { client.release() }
-  }
-  private readonly roomWrites = new SnapshotWriter<(readonly [string, string])[]>(rows => this.transaction(async client => {
-    await client.query(`DELETE FROM room_repos`)
-    for (const [repo, data] of rows) await client.query(`INSERT INTO room_repos (repo, data) VALUES ($1, $2)`, [repo, data])
-  }))
-  private readonly sessionWrites = new SessionWrites(async ops => {
-    const apply = async (db: Pick<PgLike, 'query'>, id: string, s: StoredSession | null) => {
-      if (s) await db.query(`INSERT INTO room_sessions (id, data, at) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, at = EXCLUDED.at`, [id, JSON.stringify(s), s.at])
-      else await db.query(`DELETE FROM room_sessions WHERE id = $1`, [id])
-    }
-    if (ops.size === 1) { const [[id, s]] = [...ops]; await apply(await this.db(), id!, s!); return }
-    await this.transaction(async client => { for (const [id, s] of ops) await apply(client, id, s) })
-  })
-  constructor(private readonly databaseUrl: string, private readonly connect?: (url: string) => Promise<PgLike>) {}
-
-  private async db(): Promise<PgLike> {
-    if (this.pool) return this.pool
-    const make = this.connect ?? (async (url: string) => {
-      const pg = await import('pg')
-      return new pg.default.Pool({ connectionString: url }) as unknown as PgLike
-    })
-    this.pool = await make(this.databaseUrl)
-    return this.pool
-  }
-
-  async init(): Promise<void> {
-    const db = await this.db()
-    await db.query(`CREATE TABLE IF NOT EXISTS room_repos (repo TEXT PRIMARY KEY, data JSONB NOT NULL)`)
-    await db.query(`CREATE TABLE IF NOT EXISTS room_sessions (id TEXT PRIMARY KEY, data JSONB NOT NULL, at BIGINT NOT NULL)`)
-    await db.query(`CREATE TABLE IF NOT EXISTS room_audit (id BIGSERIAL PRIMARY KEY, at BIGINT NOT NULL, data JSONB NOT NULL)`)
-    await db.query(`CREATE INDEX IF NOT EXISTS room_audit_at ON room_audit (at)`)
-  }
-
-  async loadRooms(): Promise<Record<string, OpenRepo>> {
-    const { rows } = await (await this.db()).query(`SELECT repo, data FROM room_repos`)
-    return Object.fromEntries(rows.map(r => [r.repo as string, r.data as OpenRepo]))
-  }
-  saveRooms(all: Record<string, OpenRepo>): Promise<void> {
-    // Serialized now: the registry may change before the write runs.
-    return this.roomWrites.save(Object.entries(all).map(([repo, data]) => [repo, JSON.stringify(data)] as const))
-  }
-
-  async loadSessions(): Promise<Record<string, StoredSession>> {
-    const { rows } = await (await this.db()).query(`SELECT id, data FROM room_sessions`)
-    return Object.fromEntries(rows.map(r => [r.id as string, r.data as StoredSession]))
-  }
-  putSession(id: string, s: StoredSession): Promise<void> { return this.sessionWrites.put(id, s) }
-  deleteSession(id: string): Promise<void> { return this.sessionWrites.delete(id) }
-
-  async audit(e: AuditEntry): Promise<void> {
-    await (await this.db()).query(`INSERT INTO room_audit (at, data) VALUES ($1, $2)`, [e.at, JSON.stringify(e)])
-  }
-  /** Indexed and LIMITed in the database, so no scan budget applies; the table has no retention. */
-  async readAudit(o: AuditQuery = {}): Promise<AuditTail> {
-    const { rows } = await (await this.db()).query(`SELECT data FROM room_audit WHERE at >= $1 ORDER BY id DESC LIMIT $2`, [o.since ?? 0, o.limit ?? 1000])
-    return { entries: rows.map(r => r.data as AuditEntry).reverse(), complete: true, gaps: [] }
-  }
-  async close(): Promise<void> { await this.pool?.end(); this.pool = undefined }
-}
-
-/** FileStore under YPERSISTENCE (or in memory), unless DATABASE_URL points at Postgres. */
-export function storeFromEnv(env: NodeJS.ProcessEnv = process.env): Store {
-  const url = env.DATABASE_URL?.trim()
-  if (url) return new PgStore(url)
+/** JSON files under YPERSISTENCE, or in memory when no directory is configured. */
+export function storeFromEnv(env: NodeJS.ProcessEnv = process.env): FileStore {
+  if (env.DATABASE_URL?.trim()) throw new Error('DATABASE_URL is no longer supported; remove it and use YPERSISTENCE for file storage')
   return new FileStore({ dir: env.YPERSISTENCE?.trim() || undefined,
     auditRotateBytes: envMegabytes(env, 'ROOM_AUDIT_ROTATE_MB', 64), auditKeepFiles: auditKeepFiles(env) })
 }

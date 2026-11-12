@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { FileStore, PgStore, SessionWrites, SnapshotWriter, StoreBusy, type StoredSession } from '../src/store.js'
+import { FileStore, SessionWrites, SnapshotWriter, StoreBusy, type StoredSession } from '../src/store.js'
 
 function gate() {
   let open!: () => void
@@ -111,30 +111,5 @@ describe('stores use them', () => {
       expect(await s.loadSessions()).toEqual({ a: session(2), b: session(3) })
       expect(renames.filter(f => f.endsWith('sessions.json')).length).toBeLessThanOrEqual(2)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
-  })
-
-  it('PgStore sends a batch in one transaction and a superseded registry snapshot is never written', async () => {
-    const log: string[] = [], sessions = new Map<string, unknown>(), repos = new Map<string, unknown>()
-    const query = async (text: string, values: unknown[] = []) => {
-      await new Promise(r => setTimeout(r, 1))
-      log.push(text.split(/\s+/).slice(0, 3).join(' ') + (values[0] ? ` ${values[0]}` : ''))
-      if (text.startsWith('INSERT INTO room_sessions')) sessions.set(values[0] as string, values[1])
-      else if (text.startsWith('DELETE FROM room_sessions')) sessions.delete(values[0] as string)
-      else if (text.startsWith('DELETE FROM room_repos')) repos.clear()
-      else if (text.startsWith('INSERT INTO room_repos')) repos.set(values[0] as string, values[1])
-      return { rows: [] }
-    }
-    const pool = { query, connect: async () => ({ query, release: () => {} }), end: async () => {} }
-    const s = new PgStore('postgres://x', async () => pool)
-    await Promise.all([
-      s.putSession('s1', session(1)), s.putSession('s2', session(1)), s.putSession('s2', session(2)), s.deleteSession('s1'),
-      s.saveRooms({ 'local/one': { at: 1, branches: [] } }), s.saveRooms({ 'local/two': { at: 2, branches: [] } }), s.saveRooms({ 'local/three': { at: 3, branches: [] } }),
-    ])
-    // s1 is written alone; s2 twice, then s1's deletion, go together as one transaction, the deletion kept.
-    expect(log.filter(l => /room_sessions/.test(l))).toEqual(['INSERT INTO room_sessions s1', 'INSERT INTO room_sessions s2', 'DELETE FROM room_sessions s1'])
-    expect(log.filter(l => l === 'BEGIN')).toHaveLength(3)
-    expect([...sessions.keys()]).toEqual(['s2'])
-    expect(log.filter(l => l.startsWith('INSERT INTO room_repos'))).toEqual(['INSERT INTO room_repos local/one', 'INSERT INTO room_repos local/three'])
-    expect([...repos.keys()]).toEqual(['local/three'])
   })
 })

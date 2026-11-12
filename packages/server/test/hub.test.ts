@@ -282,7 +282,7 @@ describe('the server process', () => {
   })
   async function start(port: number, dir: string): Promise<ChildProcess> {
     const p = servers.start({
-      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), YPERSISTENCE: dir, ROOM_SERVER: '', GITHUB_CLIENT_ID: '', ROOM_TOKEN: '', OIDC_ISSUER: '', DATABASE_URL: '', NODE_ENV: 'test' },
+      env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), YPERSISTENCE: dir, ROOM_SERVER: '', GITHUB_CLIENT_ID: '', ROOM_TOKEN: '', OIDC_ISSUER: '', NODE_ENV: 'test' },
       stdio: 'ignore',
     })
     await waitFor(async () => { try { return (await fetch(`http://127.0.0.1:${port}/health`)).ok } catch { return false } }, 20_000)

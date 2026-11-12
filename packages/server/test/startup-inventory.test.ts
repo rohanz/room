@@ -52,7 +52,7 @@ console.log = (...args) => {
       ['--require', preload, '--import', 'tsx', 'packages/server/src/index.ts'], {
         cwd: repo, timeout: 15_000,
         env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: 'fake',
-          YPERSISTENCE: dir, DATABASE_URL: '', PORT: '4401' },
+          YPERSISTENCE: dir, PORT: '4401' },
       })
     const probe = JSON.parse(stdout.split('\n').find(line => line.startsWith('PROBE '))!.slice(6))
     expect(probe.valueReads).toBe(0)

@@ -61,7 +61,6 @@ Everything is optional. Without any login provider or token the server is open (
 | `ROOM_TRUST_PROXY` | Set to `true` only when a reverse proxy fronts every request. Rate limits and per-address budgets then key on `Fly-Client-IP`, else the last `X-Forwarded-For` entry; without it they key on the socket address, which behind a proxy is the proxy for everyone. | off |
 | `ROOM_SHARE_MAX` | Ceiling on what clients may share into a room: `intent`, `declared` or `full`. | `full` |
 | `ROOM_IDLE_DAYS` | Repos nobody connected to for this many days are closed and their shared work deleted. `0` disables. | `30` |
-| `DATABASE_URL` | Postgres connection string. Moves the repo registry, sessions and audit log into three tables (`room_repos`, `room_sessions`, `room_audit`, created on start). Documents stay in LevelDB. | — |
 | `YPERSISTENCE` | Directory for room documents (LevelDB) plus `rooms.json`, `sessions.json`, `view-tokens.json` and `audit.log`. Unset: everything is in memory and lost on restart. | — (image: `/data`) |
 | `PORT`, `HOST` | Listen address. | `1234`, `0.0.0.0` (image: `8080`) |
 | `ROOM_STATIC` | Directory with the built browser view. | `./public` |
@@ -147,8 +146,7 @@ location / {
 ## Audit log
 
 Every login, logout, room opened/closed, websocket accepted (`join`: login + room) and refused
-(`refused`: reason) is appended as one JSON line to `<YPERSISTENCE>/audit.log` (or the
-`room_audit` table). Admins listed in `ROOM_ADMINS` read it over HTTP with their own session:
+(`refused`: reason) is appended as one JSON line to `<YPERSISTENCE>/audit.log`. Admins listed in `ROOM_ADMINS` read it over HTTP with their own session:
 
 ```sh
 curl -H "Authorization: Bearer <session id>" "https://room.example.com/audit?since=$(($(date +%s%3N) - 86400000))"
@@ -165,7 +163,7 @@ query opened it, with no entries returned: retry). A segment deleted while a que
 once a segment passes `ROOM_AUDIT_ROTATE_MB` (default 64). Nothing is deleted unless
 `ROOM_AUDIT_KEEP_FILES` is set; then older segments are removed after `audit.log.pruned` records it,
 and every later query that reaches into the pruned period reports itself
-incomplete rather than pretending the history is whole. Postgres has no retention setting.
+incomplete rather than pretending the history is whole.
 
 `GET /admin/inventory` lists stored room documents with their sizes for the same admins; an unlisted caller receives `403`. Inventory is available through this authenticated endpoint; the retired 0.16 offline pre-flight is available only in v0.17.47.
 
@@ -178,14 +176,14 @@ Everything is on the `room_data` volume (`/data` in the container): LevelDB room
 ```sh
 docker compose stop room
 docker run --rm -v room_room_data:/data -v "$PWD":/backup alpine tar czf /backup/room-data.tgz -C /data .
-# If DATABASE_URL is configured, run while the container is still stopped:
-pg_dump "$DATABASE_URL" --format=custom --file=room-registry.dump
 docker compose start room
 ```
 
-The volume name is `<project>_room_data`; `docker volume ls` shows it (`room_room_data` for a project directory named `room`, `deploy_room_data` when run from a checkout's `deploy/`). With `DATABASE_URL`, keep `room-registry.dump` beside the volume archive; the volume then holds only the documents. Restore that dump with `pg_restore --clean --if-exists --dbname="$DATABASE_URL" room-registry.dump` while the server is stopped. Stopping the container first keeps LevelDB consistent; a hot copy usually works but is not guaranteed.
+The volume name is `<project>_room_data`; `docker volume ls` shows it (`room_room_data` for a project directory named `room`, `deploy_room_data` when run from a checkout's `deploy/`). Stopping the container first keeps LevelDB consistent; a hot copy usually works but is not guaranteed.
 
 ## Upgrading
+
+A nonempty `DATABASE_URL` is refused at startup; remove the retired option and use the volume for storage.
 
 ```sh
 docker compose pull room

@@ -10,7 +10,6 @@ import { decodeFrame, legacyAdvertisement, legacyHello, selectContract, CURRENT_
 import { readRelayInfo, relayConnectionHandler, relayFile, SecureSession } from '../src/index.js'
 
 // Captured from pinned 0.17.32 SecureSession, with fixed nonces; no current protocol constants generate the fixture.
-// Full archived process pairs belong to scripts/compat-matrix.mts; this regression replays discovery/first frames.
 const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/0.17.32-first-frames.json', import.meta.url), 'utf8'))
 const bytes = (name: string) => Buffer.from(fixture[name], 'hex')
 const cleanup: Array<() => void> = []

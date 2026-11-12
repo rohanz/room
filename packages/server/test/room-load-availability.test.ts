@@ -79,7 +79,7 @@ process.exit(0);
 `)
   const { stdout, stderr } = await promisify(execFile)(process.execPath, ['--import', 'tsx', entry], {
     cwd: root, timeout: 12000,
-    env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '', DATABASE_URL: '',
+    env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '',
       OIDC_ISSUER: '', YPERSISTENCE: dir, ROOM_IDLE_DAYS: '0', ROOM_TOKEN: '', ROOM_ADMINS: '', PORT: '4405' },
   })
   const line = stdout.split('\n').find(line => line.startsWith('RESULT '))

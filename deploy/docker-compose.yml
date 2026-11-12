@@ -10,9 +10,6 @@
 #   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
 #
 # Default: one container, state (LevelDB docs, registry, sessions, audit.log) on the `room_data` volume.
-# With Postgres for registry/sessions/audit:
-#   docker compose --profile postgres up -d
-# and set DATABASE_URL=postgres://room:room@postgres:5432/room in .env (docs stay on the volume).
 
 services:
   room:
@@ -35,22 +32,5 @@ services:
       timeout: 5s
       retries: 3
 
-  postgres:
-    profiles: ["postgres"]
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: room
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-room}
-      POSTGRES_DB: room
-    volumes:
-      - room_pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U room"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
 volumes:
   room_data:
-  room_pg:

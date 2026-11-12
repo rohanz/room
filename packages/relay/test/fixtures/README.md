@@ -11,5 +11,5 @@ sync step 1 (`00 00 00`) and type-7 JSON containing the exact `hello` object in
 property order as stored. Relay plaintext is an empty sync step 1. Neither
 negotiation constants nor a current-client protocol variant produce these vectors.
 
-This is a bounded discovery/first-frame replay regression, not a replacement for
-the archived executable old/new process matrix or real-host release acceptance.
+These vectors cover discovery and first frames on the live legacy admission path.
+The web viewer still uses that path.

@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Auth } from '../src/auth.js'
-import { FileStore } from '../src/store.js'
+import { FileStore, type StoredSession } from '../src/store.js'
 
 type Call = { url: string; body?: any }
 function fakeGitHub(script: { tokenResponses: any[]; login?: string; userStatus?: number }) {
@@ -250,15 +250,13 @@ describe('device-flow auth', () => {
 })
 
 describe('logout of a token the server has not loaded yet', () => {
-  function flakyStore(sessions: Record<string, import('../src/store.js').StoredSession>) {
+  function flakyStore(sessions: Record<string, StoredSession>) {
     const state = { loadFails: true, deleteFails: false, deleted: [] as string[] }
-    const store: import('../src/store.js').Store = {
-      async init() {}, async loadRooms() { return {} }, async saveRooms() {},
-      async loadSessions() { if (state.loadFails) throw new Error('storage down'); return { ...sessions } },
-      async putSession(id, s) { sessions[id] = s },
-      async deleteSession(id) { if (state.deleteFails) throw new Error('storage down'); state.deleted.push(id); delete sessions[id] },
-      async audit() {}, async readAudit() { return [] }, async close() {},
-    }
+    const store = new class extends FileStore {
+      override async loadSessions() { if (state.loadFails) throw new Error('storage down'); return { ...sessions } }
+      override async putSession(id: string, s: StoredSession) { sessions[id] = s }
+      override async deleteSession(id: string) { if (state.deleteFails) throw new Error('storage down'); state.deleted.push(id); delete sessions[id] }
+    }()
     return { store, state }
   }
   it('deletes it from the store, tells the client to retry until that is stored, and never adopts it back', async () => {

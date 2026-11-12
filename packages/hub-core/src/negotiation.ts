@@ -306,28 +306,3 @@ export function parseBootstrapAck(value: unknown): BootstrapAck {
   if (!('op' in f) || f.op !== 'compat-ack') invalid('expected bootstrap ack')
   return f
 }
-
-/** Maintainer decision 3: current plus three minor families back. This never retires an adapter. */
-export const SUPPORTED_MINOR_RELEASES_BACK = 3
-export const FIRST_SUPPORTED_RELEASE = '0.17.0'
-export const MINIMUM_OVERLAP_DAYS = 90
-export const BASELINE_FIXTURES = [
-  { release: '0.17.0', commit: 'ec13dcd83f67895c622410e3d9e8f53b5c5cb7a2' },
-  { release: '0.17.32', commit: '77bf1c448d6ce883b844443204c7c9c7306d0c4c' },
-] as const
-type Release = { major: number; minor: number; patch: number }
-function release(value: string): Release {
-  const m = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value)
-  if (!m) invalid('support policy needs a stable release x.y.z')
-  const [major, minor, patch] = m.slice(1).map(Number)
-  if (![major, minor, patch].every(Number.isSafeInteger)) invalid('release component out of range')
-  return { major, minor, patch }
-}
-/** Release tooling chooses/pins fixtures; this is not a runtime semver admission gate. */
-export function supportWindow(currentRelease: string): { major: number; oldestMinor: number; newestMinor: number; minors: number[]; minimumOverlapDays: number; retirement: 'explicit' } {
-  const current = release(currentRelease)
-  const floor = current.major === 0 ? 17 : 0
-  if (current.minor < floor) invalid('current release predates the stable 0.17 baseline')
-  const oldestMinor = Math.max(floor, current.minor - SUPPORTED_MINOR_RELEASES_BACK)
-  return { major: current.major, oldestMinor, newestMinor: current.minor, minors: Array.from({ length: current.minor - oldestMinor + 1 }, (_, i) => oldestMinor + i), minimumOverlapDays: MINIMUM_OVERLAP_DAYS, retirement: 'explicit' }
-}

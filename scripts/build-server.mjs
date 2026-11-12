@@ -1,4 +1,4 @@
-// Compile the hosted server; native bindings and optional drivers resolve from runtime node_modules.
+// Compile the hosted server; native bindings and optional accelerators resolve from runtime node_modules.
 //
 // Run:        npm run build:server   (from the repository root; paths are cwd-relative). Needs `npm ci`.
 // Overwrites: packages/server/dist/server.mjs (not committed; the image build runs this). Deploys: deploy/DEPLOYING.md.
@@ -10,9 +10,9 @@ await build({
   tsconfig: 'tsconfig.base.json',
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
   outfile: 'packages/server/dist/server.mjs',
-  // level locates leveldown's .node binding relative to its package; pg can load pg-native.
+  // level locates leveldown's .node binding relative to its package.
   // ws has optional native accelerators. Keep one Yjs instance shared with external dependencies.
-  external: ['level', 'leveldown', 'classic-level', 'pg', 'pg-native', 'ws', 'bufferutil', 'utf-8-validate', 'yjs'],
+  external: ['level', 'leveldown', 'classic-level', 'ws', 'bufferutil', 'utf-8-validate', 'yjs'],
   banner: { js: "import { createRequire as __roomCreateRequire } from 'node:module'; import { fileURLToPath as __roomFileURLToPath } from 'node:url'; import { dirname as __roomDirname } from 'node:path'; const require = __roomCreateRequire(import.meta.url); const __filename = __roomFileURLToPath(import.meta.url); const __dirname = __roomDirname(__filename);" },
   logLevel: 'info',
 })

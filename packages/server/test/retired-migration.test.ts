@@ -39,7 +39,7 @@ process.on('exit', () => console.log('PROBE ' + JSON.stringify({valueReads, list
     let failure: { code?: number; stdout?: string; stderr?: string } | undefined
     try {
       await promisify(execFile)(process.execPath, ['--require', probe, '--import', 'tsx', 'packages/server/src/index.ts'], {
-        cwd, timeout: 10_000, env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: 'fake', YPERSISTENCE: dir, DATABASE_URL: '', ROOM_LOAD_MAX_MB: '1' },
+        cwd, timeout: 10_000, env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: 'fake', YPERSISTENCE: dir, ROOM_LOAD_MAX_MB: '1' },
       })
     } catch (error) { failure = error as typeof failure }
     expect(failure?.code).toBe(1)

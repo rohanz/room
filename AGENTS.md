@@ -67,7 +67,7 @@ packages/shared/         one Y.Doc schema: overlays, scopes, claims (with plans)
                          src/parsed.ts holds parser output shared by the indexer and consumers
 packages/server/         y-websocket server: GitHub device login + OIDC (auth.ts), admission (admit.ts),
                          open/close/list repos, GitHub PR proxy, read-only view keys, doc/message caps,
-                         audit, LevelDB docs + File/Pg store (store.ts)
+                         audit, LevelDB docs + JSON file store (store.ts)
 packages/hub-core/       the hub shared by server and relay: name leases, bus order, trim, expiry (hub.ts),
                          hub protocol frames (protocol.ts), the live document size cap (doc-cap.ts)
 packages/relay/          loopback relay for local rooms: discovery file + key, /health, encrypted websockets;
@@ -125,10 +125,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
 - Deliberate scale and responsiveness tests are a separate pass: `TEST_SCALE=1 npm test` runs only the test files that contain such cases, one file at a time (`vitest.shared.ts`), because they build repositories of thousands of files and measure event-loop stalls, and running them beside the rest of the suite starved both. The default run skips those cases. CI runs both passes, so they remain required coverage; before a release run both locally.
 - Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
-  (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin and tag `v<version>`.
-  The bump also appends the new tag to `scripts/compat-pins.json`; right after `git tag v<version>` run `node scripts/compat-pins.mjs <version> --pin-commit`
-  so the pin records the commit, and commit that before publishing. The matrix refuses every unfrozen existing tag, including the manifest version; only its single pre-tag candidate may remain pending. `npx tsx scripts/compat-matrix.mts` runs the pinned old/new server and relay pairs locally (CI's `compat` job does the same);
-  pins are never dropped automatically (`--retire <tag>` refuses a tag inside the three-minor window).
+  (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin, add the CHANGELOG heading and tag `v<version>`.
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
   (the bundle, `plugins/room/web` and tree-sitter grammars are committed; the build copies the
   grammars into `plugins/room/server/grammars`). Installed plugins copy the bundle: reinstall

@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { FileStore, PgStore, MEM_AUDIT_MAX, storeFromEnv, type AuditEntry } from '../src/store.js'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { FileStore, MEM_AUDIT_MAX, storeFromEnv, type AuditEntry } from '../src/store.js'
 
 describe('FileStore', () => {
   it('round-trips rooms, sessions (0600) and audit lines through a directory', async () => {
@@ -129,82 +131,26 @@ describe('FileStore', () => {
     expect(Object.keys(await s.loadRooms())).toEqual(['local/3'])
   })
 
-  it('storeFromEnv picks Postgres only with DATABASE_URL', () => {
+  it('storeFromEnv uses files or memory and refuses the removed DATABASE_URL option', () => {
     expect(storeFromEnv({})).toBeInstanceOf(FileStore)
     expect(storeFromEnv({ YPERSISTENCE: '/tmp/x' })).toBeInstanceOf(FileStore)
-    expect(storeFromEnv({ DATABASE_URL: 'postgres://u:p@h/db' })).toBeInstanceOf(PgStore)
+    expect(storeFromEnv({ DATABASE_URL: '  ' })).toBeInstanceOf(FileStore)
+    expect(() => storeFromEnv({ DATABASE_URL: 'postgres://u:p@h/db' })).toThrow('DATABASE_URL is no longer supported')
   })
 })
 
-describe('PgStore', () => {
-  /** A tiny SQL interpreter for exactly the statements PgStore issues: proves the queries and parameters, not Postgres itself. */
-  function fakePg() {
-    const repos = new Map<string, unknown>(), sessions = new Map<string, unknown>()
-    const audit: { id: number; at: number; data: AuditEntry }[] = []
-    const log: string[] = []
-    let ended = false
-    const query = async (text: string, values: unknown[] = []) => {
-      log.push(text.split(/\s+/).slice(0, 3).join(' '))
-      const rows: Record<string, unknown>[] = []
-      if (/^CREATE|^BEGIN|^COMMIT|^ROLLBACK/.test(text)) return { rows }
-      if (text.startsWith('SELECT repo, data FROM room_repos')) for (const [repo, data] of repos) rows.push({ repo, data })
-      else if (text.startsWith('DELETE FROM room_repos')) repos.clear()
-      else if (text.startsWith('INSERT INTO room_repos')) repos.set(values[0] as string, JSON.parse(values[1] as string))
-      else if (text.startsWith('SELECT id, data FROM room_sessions')) for (const [id, data] of sessions) rows.push({ id, data })
-      else if (text.startsWith('INSERT INTO room_sessions')) sessions.set(values[0] as string, JSON.parse(values[1] as string))
-      else if (text.startsWith('DELETE FROM room_sessions')) sessions.delete(values[0] as string)
-      else if (text.startsWith('INSERT INTO room_audit')) audit.push({ id: audit.length + 1, at: values[0] as number, data: JSON.parse(values[1] as string) })
-      else if (text.startsWith('SELECT data FROM room_audit WHERE')) for (const r of audit.filter(r => r.at >= (values[0] as number)).sort((a, b) => b.id - a.id).slice(0, values[1] as number)) rows.push({ data: r.data })
-      else throw new Error(`unexpected SQL: ${text}`)
-      return { rows }
-    }
-    let clients = 0
-    const connect = async () => { clients++; return { query, release: () => { clients-- } } }
-    return { pool: { query, connect, end: async () => { ended = true } }, log, isEnded: () => ended, openClients: () => clients }
-  }
-
-  it('creates the tables and round-trips through the fake pool (no live Postgres in CI)', async () => {
-    const pg = fakePg()
-    const s = new PgStore('postgres://x', async () => pg.pool)
-    await s.init()
-    expect(pg.log.filter(l => l.startsWith('CREATE TABLE'))).toHaveLength(3)
-    await s.saveRooms({ 'git/gitlab.example.com/grp/app': { by: 'ann@example.com', at: 1, branches: [] } })
-    expect(pg.log.slice(-4)).toEqual(['BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'COMMIT'])
-    expect(await s.loadRooms()).toEqual({ 'git/gitlab.example.com/grp/app': { by: 'ann@example.com', at: 1, branches: [] } })
-    await s.putSession('s1', { login: 'ann@example.com', provider: 'oidc', at: 5 })
-    expect(await s.loadSessions()).toEqual({ s1: { login: 'ann@example.com', provider: 'oidc', at: 5 } })
-    await s.deleteSession('s1')
-    expect(await s.loadSessions()).toEqual({})
-    for (const at of [1, 2, 3]) await s.audit({ at, event: 'join', room: 'r' })
-    expect((await s.readAudit({ since: 2 })).entries.map(e => e.at)).toEqual([2, 3])
-    expect((await s.readAudit({ limit: 2 })).entries.map(e => e.at)).toEqual([2, 3])
-    await s.close()
-    expect(pg.isEnded()).toBe(true)
-  })
-
-  it('overlapping PgStore writes never interleave: each full-table replacement completes before the next begins', async () => {
-    const pg = fakePg()
-    // a slow pool: every query yields, so two unqueued saveRooms would interleave their DELETE/INSERT
-    const slow = { ...pg.pool, connect: async () => { const c = await pg.pool.connect(); return { ...c, query: async (t: string, v?: unknown[]) => { await new Promise<void>(resolve => setImmediate(resolve)); return c.query(t, v) } } } }
-    const s = new PgStore('postgres://x', async () => slow)
-    const a = s.saveRooms({ 'github.com/a/one': { at: 1, branches: [] }, 'github.com/a/two': { at: 1, branches: [] } })
-    const b = s.saveRooms({ 'github.com/a/three': { at: 2, branches: [] } })
-    const c = s.putSession('s1', { login: 'ann', provider: 'github', at: 3 })
-    await Promise.all([a, b, c])
-    // Sessions are another table with their own queue; registry replacements stay whole and in order.
-    const tx = pg.log.filter(l => /^BEGIN|^COMMIT|^DELETE FROM room_repos|^INSERT INTO room_repos/.test(l))
-    expect(tx).toEqual(['BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'INSERT INTO room_repos', 'COMMIT', 'BEGIN', 'DELETE FROM room_repos', 'INSERT INTO room_repos', 'COMMIT'])
-    expect(await s.loadSessions()).toEqual({ s1: { login: 'ann', provider: 'github', at: 3 } })
-    expect(await s.loadRooms()).toEqual({ 'github.com/a/three': { at: 2, branches: [] } })
-    expect(pg.openClients()).toBe(0)
-  })
-
-  it('PgStore.saveRooms runs its transaction on one client and releases it', async () => {
-    const pg = fakePg()
-    const s = new PgStore('postgres://x', async () => pg.pool)
-    await s.saveRooms({ 'github.com/a/b': { at: 1, branches: [] } })
-    expect(pg.openClients()).toBe(0)
-    expect(pg.log.some(l => l.startsWith('BEGIN'))).toBe(true)
-    expect(pg.log.some(l => l.startsWith('COMMIT'))).toBe(true)
-  })
+it('refuses DATABASE_URL at startup before opening file storage, without exposing its value', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-removed-database-'))
+  try {
+    const child = spawnSync(process.execPath, ['--import', 'tsx', 'packages/server/src/index.ts'], {
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, NODE_OPTIONS: '', NODE_ENV: 'test', GITHUB_CLIENT_ID: '', OIDC_ISSUER: '',
+        DATABASE_URL: 'postgres://private-secret@database/room', YPERSISTENCE: dir },
+    })
+    expect(child.error).toBeUndefined()
+    expect(child.status).toBe(1)
+    expect(child.stdout).toBe('')
+    expect(child.stderr).toBe('DATABASE_URL is no longer supported; remove it and use YPERSISTENCE for file storage\n')
+    expect(fs.readdirSync(dir)).toEqual([])
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
