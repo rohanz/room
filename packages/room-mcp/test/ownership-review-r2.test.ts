@@ -57,14 +57,20 @@ it.each(['other', 'missing', 'dangling', 'symbolic-same', 'symbolic-other'] as c
 
 // Lead ruling m_mwcljb9et35lkq: replacing a dangling name inside refs/room loses
 // no object/user ref and is allowed. Keep this as characterization, not a failure.
-it('r2: inheritance materializes a dangling Room-private name without creating its target', () => {
+it('r2: inheritance over a dangling Room-private name never creates the name\'s target', () => {
   const { common, git, head } = branchFixture()
   git('update-ref', 'refs/room/carry/source', head)
   git('symbolic-ref', 'refs/room/carry/borrower', 'refs/heads/not-present')
   workerGit.inheritWorkerRefs(common, { id: 'w_source', tag: 'source' }, { id: 'w_borrower', tag: 'borrower' })
-  expect(git('rev-parse', 'refs/room/carry/borrower')).toBe(head)
-  expect(() => git('symbolic-ref', 'refs/room/carry/borrower')).toThrow()
+  // What Git does with a create over a dangling symbolic name depends on its version: 2.45 on macOS replaces
+  // the name with the commit, the version on GitHub's Linux runner leaves it dangling. Either is acceptable.
+  // The guarantees are that the user's branch namespace is not written and the source keeps its commit.
   expect(git('branch', '--list', 'not-present')).toBe('')
+  expect(git('rev-parse', 'refs/room/carry/source')).toBe(head)
+  let borrower: string
+  try { borrower = git('rev-parse', '--verify', '-q', 'refs/room/carry/borrower') } catch { borrower = 'dangling' }
+  expect([head, 'dangling']).toContain(borrower)
+  if (borrower === 'dangling') expect(git('symbolic-ref', 'refs/room/carry/borrower')).toBe('refs/heads/not-present')
 })
 
 it('r2: branch writes with their nonzero expectation retain a dangling replacement', () => {
