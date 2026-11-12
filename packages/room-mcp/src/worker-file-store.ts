@@ -907,6 +907,23 @@ export class FileWorkerStore {
       seq: old.seq + 1 }))
   }
 
+  /**
+   * End mail only for this lead's known workers with no live tag in this clone. The capacity guard
+   * excludes tag creation/reuse through the inventory check and the synchronous document transaction.
+   * Room history supplies names after record pruning; only the complete local registry proves no successor.
+   */
+  async retireWorkerMail(room: RoomDoc, lead: string, roomName: string): Promise<void> {
+    await guarded(path.join(this.root, 'capacity'), () => {
+      const records = requireWorkerInventory(this.#list())
+      const liveTags = new Set(records.filter(record => !ended(record)).map(record => record.tag))
+      const workers = [
+        ...records.filter(record => record.lead.participant === lead && (record.room === roomName || record.projectedInto === roomName)),
+        ...room.retiredWorkers().filter(record => record.lead === lead),
+      ].filter(record => !liveTags.has(record.tag))
+      room.retireWorkerMail(workers, this.now())
+    })
+  }
+
   /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
   archiveOf(record: WorkerRecord, facts: Partial<RetiredWorker> & Pick<RetiredWorker, 'summary'>): RetiredWorker {
     requireWorkerInventory(this.#list())

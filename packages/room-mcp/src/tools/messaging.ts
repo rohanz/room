@@ -62,6 +62,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const names = { all: () => rooms.all(), presences, myWorkers }
   const known = (s: Session) => knownNames(s, presences)
   type RecipientNotice = { text: string; terminal: boolean } | undefined
+  const willNotAnswer = (name: string, record?: { finishedAt?: number; summary?: string }, verb = 'finished', advice = '', claim = ' and will not answer'): string => {
+    const ago = record?.finishedAt === undefined ? '' : ` ${Math.max(0, Math.floor((now() - record.finishedAt) / 60_000))}m ago`
+    const summary = record?.summary?.replace(/\s+/g, ' ').trim() || 'no summary recorded'
+    return `${name} ${verb}${ago}${claim}; its summary: ${summary}${advice}`
+  }
   const describeRecipient = (s: Session, name: string, workers: LocalWorker[]): RecipientNotice => {
     const present = presences(s).some(p => p.user.name === name)
     const own = workers.find(w => w.name === name)
@@ -84,7 +89,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const resumable = !!own && own.status === 'done' && !!own.hostSessionId && fs.existsSync(own.dir) && !retired
       return { text: resumable
         ? `${name} ${verb}${ago}; message a finished worker to resume it in its worktree. Its summary: ${summary}`
-        : `${name} ${verb}${ago} and will not answer; its summary: ${summary}${!own && !retired && worker?.status === 'done' ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ''}`, terminal: true }
+        : willNotAnswer(name, record, verb, !own && !retired && worker?.status === 'done' ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ''), terminal: true }
     }
     if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined
@@ -101,6 +106,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     } catch { return unavailable() }
   }
   const unavailableQuestion = (s: Session, questionId: string): string | undefined | Promise<string | undefined> => {
+    const outcome = s.room.outcomes.get(questionId)
+    if (outcome?.outcome === 'recipient-retired') {
+      // Retirement ends every message addressed to the worker, answered or not. With the bodies
+      // trimmed nothing says which, so claim only what is known.
+      const retired = s.room.retiredWorkers().filter(w => w.name === outcome.to).sort((a, b) => b.retiredAt - a.retiredAt)[0]
+      return s.room.message(questionId) ? willNotAnswer(outcome.to, retired) : willNotAnswer(outcome.to, retired, 'finished', '', '; no answer to this question is retained')
+    }
     const cached = unavailableQuestions.get(questionId)
     if (cached) return cached
     const question = s.room.message(questionId)

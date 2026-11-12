@@ -472,6 +472,10 @@ async function sweepClone(session: Session, registry: Registry, rooms: Rooms): P
     }
     await rooms.project()
   } catch (error) { rooms.log(`nothing-to-collect retirement: ${error}`) }
+  // Like the steps around it: a failure here is logged and the rest of the pass still runs.
+  try {
+    for (const held of rooms.all()) await registry.retireWorkerMail(held.room, held.me.name, held.roomName)
+  } catch (error) { rooms.log(`retired worker mail: ${error}`) }
   await registry.pruneRetired(ROOM_STALE_MS).catch(error => { rooms.log(`retired record retention: ${error}`) })
   try {
     const { removed } = collectLocalState(await gitCommonDir(dir))

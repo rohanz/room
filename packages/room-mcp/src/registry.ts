@@ -209,9 +209,9 @@ export class Rooms {
     for (const s of others) if (Rooms.joinedBy(s, name)) return s
     return from
   }
-  /** The session whose bus carries a message id, if any of ours does. */
+  /** The session carrying a message body or its terminal outcome, if any of ours does. */
   holdingQuestion(msgId: string, from: Session = this.primary() ?? this.mustHave()): Session | undefined {
-    for (const s of [from, ...this.all().filter(x => x !== from)]) if (s.room.message(msgId)) return s
+    for (const s of [from, ...this.all().filter(x => x !== from)]) if (s.room.message(msgId) || s.room.outcomes.has(msgId)) return s
     return undefined
   }
   private mustHave(): Session { throw new Error('not in a room') }

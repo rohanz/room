@@ -24,8 +24,6 @@ export const OUTCOMES_MAX = 2000
 export const OUTCOMES_BYTES = 256 * KiB
 export const OUTCOMES_TTL_MS = 30 * DAY_MS
 export const RECEIPTS_BYTES = 256 * KiB
-/** One serialized budget for the ledger's memory roots (4 MiB). */
-export const LEDGER_BUDGET = BUS_BYTES + MAIL_BYTES + ARCHIVE_BYTES + OUTCOMES_BYTES + RECEIPTS_BYTES
 export const REPLY_WINDOW_MS = 14 * DAY_MS
 export const OWED_TTL_MS = 14 * DAY_MS
 export const MAX_MESSAGE_BYTES = 64 * KiB
@@ -48,6 +46,21 @@ const byAge = (a: { at: number; id: string }, b: { at: number; id: string }): nu
 const selfSent = (m: Msg): boolean => m.from === m.to && m.fromKind !== 'human'
 const addressedTo = (m: Msg, name: string): boolean => m.to === name && !selfSent(m)
 const receipted = (doc: RoomDoc, name: string, id: string): boolean => doc.seen(name).has(id)
+
+/** End read messages too: retirement removes their receipts in the same transaction. */
+export function retireRecipient(doc: RoomDoc, recipient: string | ReadonlySet<string>, at: number): void {
+  const names = typeof recipient === 'string' ? new Set([recipient]) : recipient
+  const end = (m: Msg): boolean => {
+    if (!validMessageShape(m) || !m.to || !names.has(m.to) || selfSent(m)) return false
+    if (doc.outcomes.get(m.id)?.outcome !== 'recipient-retired')
+      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome: 'recipient-retired', at })
+    return true
+  }
+  doc.doc.transact(() => {
+    for (const [id, m] of doc.mail) if (end(m)) doc.mail.delete(id)
+    for (const m of doc.messages()) end(m)
+  })
+}
 
 /** Addressed, with neither a receipt nor a terminal outcome. */
 function isOwed(doc: RoomDoc, m: Msg): boolean {
@@ -128,8 +141,8 @@ export interface TrimReport { archived: number; mailed: number; expired: number;
 export interface TrimOptions { busKeep?: number; busBytes?: number; origin?: unknown }
 
 /**
- * A pure, idempotent function of `(doc, now)`: every step only adds idempotent entries or removes items,
- * so two trimmers in a partition converge after merge.
+ * Idempotent maintenance run by the room's sole hub. Retirement markers rely on that single trimmer:
+ * another replica must not insert a mail copy after this hub has pruned its retirement marker.
  */
 export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimReport {
   const report: TrimReport = { archived: 0, mailed: 0, expired: 0, evicted: 0, removed: 0 }
@@ -140,7 +153,7 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
   const bus = doc.messages()
   const mail = new Map([...doc.mail.entries()].filter(([id, m]) => typeof id === 'string' && validMessageShape(m)))
   const answered = answeredIds([...bus, ...mail.values()])
-  const eligible = (m: Msg) => replyEligible(m, answered, now)
+  const eligible = (m: Msg) => doc.outcomes.get(m.id)?.outcome !== 'recipient-retired' && replyEligible(m, answered, now)
 
   // 1. Beyond the newest `busKeep`, or beyond BUS_BYTES counted from the newest, messages leave the bus.
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP))
@@ -176,6 +189,12 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
       end(m, 'over-cap'); count--; bytes -= sizeOf(m)
     }
   }
+  // The sender measures bus ∪ mail, so the room-wide owed budget must evict from that same set.
+  let owedBytes = [...pending.values()].reduce((n, m) => n + sizeOf(m), 0)
+  for (const m of [...pending.values()].sort(evictionOrder)) {
+    if (owedBytes <= MAIL_BYTES) break
+    owedBytes -= sizeOf(m); end(m, 'over-cap')
+  }
   let mailCount = stored.size, mailBytes = [...stored.values()].reduce((n, m) => n + sizeOf(m), 0)
   for (const m of [...stored.values()].sort(evictionOrder)) {
     if (mailCount <= MAIL_MAX && mailBytes <= MAIL_BYTES) break
@@ -194,10 +213,16 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
     .map(([id, entry]) => ({ id, at: entry[2], size: id.length + sizeOf(entry), unfulfilled: !!entry[4] }))
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES)
   for (const id of newest(archive.filter(e => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id)
+  // Prune outcomes without retained bodies first. Retirement mail is gone; only bus history needs a marker.
+  const retainedIds = new Set(bus.filter((m, i) => i >= cutoff && !ended.has(m.id)).map(m => m.id))
+  const pinned = new Set([...doc.outcomes].filter(([id, o]) => validOutcome(o) && o.outcome === 'recipient-retired' && retainedIds.has(id)).map(([id]) => id))
   const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id]) => !doc.outcomes.has(id))]
+    .filter(([id]) => !pinned.has(id))
     .filter(([id, o]) => typeof id === 'string' && validOutcome(o) && now - o.at <= OUTCOMES_TTL_MS)
     .map(([id, o]) => ({ id, at: o.at, size: id.length + sizeOf(o) }))
-  const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES)
+  const pinnedBytes = [...pinned].reduce((n, id) => n + id.length + sizeOf(doc.outcomes.get(id)), 0)
+  const keepOutcomes = newest(outcomes, Math.max(0, OUTCOMES_MAX - pinned.size), Math.max(0, OUTCOMES_BYTES - pinnedBytes))
+  for (const id of pinned) keepOutcomes.add(id)
 
   doc.doc.transact(() => {
     for (const [id, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id)
@@ -234,6 +259,8 @@ export class DeliveryIndex {
   private badOutcomes = new Set<string>()
   private outcomeSizes = new Map<string, number>()
   private outcomeBytes = 0
+  private pinnedOutcomes = new Map<string, number>()
+  private pinnedOutcomeBytes = 0
   private mailSizes = new Map<string, number>()
   private mailBytes = 0
   private aliases = new Set<string>()
@@ -326,7 +353,6 @@ export class DeliveryIndex {
     if (o && !this.badOutcomes.has(id)) {
       const size = id.length + sizeOf(o)
       this.outcomeSizes.set(id, size); this.outcomeBytes += size
-      this.oldestOutcome = Math.min(this.oldestOutcome, o.at)
     }
     if (this.bus.count(id)) this.bus.changed.add(id)
   }
@@ -343,6 +369,8 @@ export class DeliveryIndex {
   }
 
   private refresh(id: string, ordered?: readonly Msg[]): void {
+    this.pinnedOutcomeBytes -= this.pinnedOutcomes.get(id) ?? 0
+    this.pinnedOutcomes.delete(id)
     const prior = this.pending.get(id)
     if (prior) {
       const size = this.sizes.get(id)!
@@ -355,6 +383,12 @@ export class DeliveryIndex {
     const mail = this.mailCopies.get(id)
     const bus = this.bus.ids.get(id)
     const candidates = ordered ?? [...(mail?.values() ?? []), ...(bus?.values() ?? [])]
+    const outcome = this.doc.outcomes.get(id)
+    if (bus?.size && validOutcome(outcome) && outcome.outcome === 'recipient-retired') {
+      const size = this.outcomeSizes.get(id) ?? 0
+      this.pinnedOutcomes.set(id, size); this.pinnedOutcomeBytes += size
+    }
+    else if (validOutcome(outcome)) this.oldestOutcome = Math.min(this.oldestOutcome, outcome.at)
     if ((bus?.size ?? 0) > 1) this.duplicateBus.add(id)
     else this.duplicateBus.delete(id)
     const m = candidates.find(m => validMessageShape(m) && isOwed(this.doc, m))
@@ -388,7 +422,7 @@ export class DeliveryIndex {
     const pending = new Map<string, Msg>(), sizes = new Map<string, number>(), recipients = new Map<string, { count: number; bytes: number }>()
     const mailIds = new Map<string, string>(), mailSizes = new Map<string, number>(), outcomeSizes = new Map<string, number>()
     const badMail = new Set<string>(), badOutcomes = new Set<string>(), aliases = new Set<string>(), duplicateBus = new Set<string>()
-    const busCounts = new Map<string, number>()
+    const busCounts = new Map<string, number>(), pinnedOutcomes = new Map<string, number>()
     for (const m of this.doc.messages()) if (typeof m?.id === 'string') busCounts.set(m.id, (busCounts.get(m.id) ?? 0) + 1)
     for (const [id, count] of busCounts) if (count > 1) duplicateBus.add(id)
     let owedBytes = 0, mailBytes = 0, outcomeBytes = 0, oldest = Infinity, oldestOutcome = Infinity
@@ -410,7 +444,8 @@ export class DeliveryIndex {
     for (const [id, o] of this.doc.outcomes) {
       if (!validOutcome(o)) { badOutcomes.add(id); continue }
       const size = id.length + sizeOf(o); outcomeSizes.set(id, size); outcomeBytes += size
-      oldestOutcome = Math.min(oldestOutcome, o.at)
+      if (o.outcome === 'recipient-retired' && busCounts.has(id)) pinnedOutcomes.set(id, size)
+      else oldestOutcome = Math.min(oldestOutcome, o.at)
     }
     const sameMap = <T>(a: ReadonlyMap<string, T>, b: ReadonlyMap<string, T>) => a.size === b.size && [...a].every(([id, value]) => b.get(id) === value)
     const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every(id => b.has(id))
@@ -424,7 +459,8 @@ export class DeliveryIndex {
       || this.mailCopies.size !== new Set(mailIds.values()).size
       || [...mailIds].some(([key, id]) => this.mailCopies.get(id)?.get(key) !== this.doc.mail.get(key))
       || [...this.mailCopies.values()].reduce((n, copies) => n + copies.size, 0) !== mailIds.size)) field = 'mail'
-    if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes)) field = 'outcomes'
+    if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes
+      || !sameMap(pinnedOutcomes, this.pinnedOutcomes) || [...pinnedOutcomes.values()].reduce((n, size) => n + size, 0) !== this.pinnedOutcomeBytes)) field = 'outcomes'
     if (!field && (!sameSet(badMail, this.badMail) || !sameSet(badOutcomes, this.badOutcomes))) field = 'invalid'
     if (!field && (!sameSet(aliases, this.aliases) || !sameSet(duplicateBus, this.duplicateBus) || !sameSet(overCap, this.overCapRecipients))) field = 'certainty'
     // Minima may conservatively lag between writes, but markTrimmed recomputes them.
@@ -437,11 +473,12 @@ export class DeliveryIndex {
     this.pending.clear(); this.recipients.clear(); this.sizes.clear()
     this.badMail.clear(); this.badOutcomes.clear(); this.mailCopies.clear(); this.mailIds.clear(); this.owedBytes = 0
     this.outcomeSizes.clear(); this.outcomeBytes = 0; this.mailSizes.clear(); this.mailBytes = 0
+    this.pinnedOutcomes.clear(); this.pinnedOutcomeBytes = 0
     this.aliases.clear(); this.duplicateBus.clear(); this.overCapRecipients.clear()
     this.oldest = this.oldestOutcome = Infinity; this.clean = false
     for (const id of this.doc.mail.keys()) this.checkMail(id)
     for (const id of this.doc.outcomes.keys()) this.checkOutcome(id)
-    this.refreshMany(new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()]))
+    this.refreshMany(new Set([...this.bus.ids.keys(), ...this.mailCopies.keys(), ...this.outcomeSizes.keys()]))
   }
 
   markTrimmed(now: number, opts: TrimOptions): void {
@@ -449,7 +486,7 @@ export class DeliveryIndex {
     this.cleanBytes = opts.busBytes ?? BUS_BYTES
     // Recompute these minima once per full trim, not per post or tick.
     this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter(m => Number.isFinite(m.at)).map(m => m.at))
-    this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter(o => o && Number.isFinite(o.at)).map(o => o.at))
+    this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes].filter(([id, o]) => !this.pinnedOutcomes.has(id) && o && Number.isFinite(o.at)).map(([, o]) => o.at))
     this.clean = !this.bus.stale && this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size
       && now - this.oldest <= OWED_TTL_MS
   }
@@ -470,10 +507,11 @@ export class DeliveryIndex {
     const mailRisk = this.mailSizes.size > MAIL_MAX || this.mailBytes > MAIL_BYTES
       || retention && (this.mailSizes.size + this.bus.addressedCount > MAIL_MAX || this.mailBytes + this.bus.addressedBytes > MAIL_BYTES)
     return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size
-      && this.outcomeSizes.size <= OUTCOMES_MAX && this.outcomeBytes <= OUTCOMES_BYTES
+      && this.outcomeSizes.size - this.pinnedOutcomes.size <= Math.max(0, OUTCOMES_MAX - this.pinnedOutcomes.size)
+      && this.outcomeBytes - this.pinnedOutcomeBytes <= Math.max(0, OUTCOMES_BYTES - this.pinnedOutcomeBytes)
       && now - this.oldestOutcome <= OUTCOMES_TTL_MS
       && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk))
-      && !(this.outcomeSizes.size && (this.overCapRecipients.size || mailRisk || now - this.oldest > OWED_TTL_MS))
+      && !(this.outcomeSizes.size && (this.overCapRecipients.size || this.owedBytes > MAIL_BYTES || mailRisk || now - this.oldest > OWED_TTL_MS))
   }
 
   trimmed(now: number, opts: TrimOptions): boolean {

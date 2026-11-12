@@ -109,6 +109,36 @@ describe('unavailable addressed recipients', () => {
     expect(ws.room.messages().some(m => m.type === 'question')).toBe(false)
   })
 
+  it('finds a retired question by its outcome in the workers room after its mail body is deleted', async () => {
+    const { rooms, makeSession, addWorker, retire, tools } = fixture()
+    const ws = makeSession('workers'); rooms.add(ws, 'workers')
+    const w = worker()
+    addWorker(ws, w)
+    ws.room.mail.set('gone', { id: 'gone', type: 'question', from: 'lead', fromKind: 'agent', to: w.name, text: 'More?', at: clock, priority: 'notify' })
+    retire(ws, w, { summary: 'Archived fix', outcome: 'merged' })
+    expect(ws.room.message('gone')).toBeUndefined()
+    expect(await tools.room_wait({ questionId: 'gone', timeoutMs: 10 })).toBe('lead+state finished 3m ago; no answer to this question is retained; its summary: Archived fix')
+  })
+
+  it('ends an active question wait when retirement deletes its only body', async () => {
+    const { s, addWorker, retire, state, tools } = fixture()
+    const w = worker({ status: 'running', exitCode: undefined, finishedAt: undefined })
+    addWorker(s, w)
+    vi.mocked(state.workerAlive).mockReturnValue(true)
+    s.room.mail.set('waiting', { id: 'waiting', type: 'question', from: 'lead', fromKind: 'agent', to: w.name, text: 'Ready?', at: clock, priority: 'notify' })
+    const pending = tools.room_wait({ questionId: 'waiting', timeoutMs: 1000 })
+    retire(s, { ...w, finishedAt: clock }, { summary: 'Stopped', outcome: 'clean' })
+    expect(await pending).toBe('lead+state finished 0m ago; no answer to this question is retained; its summary: Stopped')
+  })
+
+  it('uses the terminal outcome even without an archive and after a live successor takes the name', async () => {
+    const { s, addWorker, state, tools } = fixture()
+    addWorker(s, worker({ id: 'successor', status: 'running', exitCode: undefined, finishedAt: undefined }))
+    vi.mocked(state.workerAlive).mockReturnValue(true)
+    s.room.outcomes.set('gone', { from: 'lead', to: 'lead+state', outcome: 'recipient-retired', at: clock })
+    expect(await tools.room_wait({ questionId: 'gone', timeoutMs: 10 })).toBe('lead+state finished; no answer to this question is retained; its summary: no summary recorded')
+  })
+
   it.each(['question', 'note', 'changed', 'answer'])('rejects an unknown addressee before posting %s', async type => {
     const { s, tools } = fixture()
     const sent = await tools.room_send({ type, to: 'nobody', text: 'hello', paths: ['a.ts'], inReplyTo: 'old' })

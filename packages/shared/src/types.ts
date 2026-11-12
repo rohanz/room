@@ -251,7 +251,7 @@ export type ShareLevel = 'intent' | 'declared' | 'full'
 export type Via = 'reply' | 'wait' | 'hook' | 'prompt' | 'agent'
 /** `seen:<P>[msgId]`; `s` is the holder session that got it (provenance, never a filter). Legacy receipts are a number. */
 export interface Receipt { s: string; via: Via; at: number }
-/** Terminal outcome of an addressed message that was never receipted. */
+/** Terminal outcome of addressed delivery. Retirement also ends receipted messages before their receipts are cleared. */
 export interface Outcome { to: string; from: string; outcome: 'expired' | 'over-cap' | 'recipient-retired'; at: number }
 /** A release's plans left undone, kept in the archive for the PR ledger. */
 export interface ArchivedRelease { path: string; plans: Plan[]; summary?: string }

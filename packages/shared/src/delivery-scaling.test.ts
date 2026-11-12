@@ -1,11 +1,11 @@
-// Frozen pre-index implementation: test-only semantic oracle for arbitrary replicated docs.
+// Full-scan semantic oracle, with the room-wide bus ∪ mail budget and retirement retention rules.
 import { expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { admit as indexedAdmit, trim as indexedTrim, deliveryIndex } from './delivery.js'
 import { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
 import { validMessageShape } from './messages.js'
-import type { ArchivedMsg, Msg, Outcome, Scope } from './types.js'
+import type { ArchivedMsg, Msg, Outcome, RetiredWorker, Scope } from './types.js'
 
 // The one delivery ledger: docs/superpowers/specs/2026-09-28-ledger.md ("The trim", "Message lookup").
 
@@ -97,7 +97,7 @@ function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimReport {
   const bus = doc.messages()
   const mail = new Map([...doc.mail.entries()].filter(([id, m]) => typeof id === 'string' && validMessageShape(m)))
   const answered = answeredIds([...bus, ...mail.values()])
-  const eligible = (m: Msg) => replyEligible(m, answered, now)
+  const eligible = (m: Msg) => doc.outcomes.get(m.id)?.outcome !== 'recipient-retired' && replyEligible(m, answered, now)
 
   // 1. Beyond the newest `busKeep`, or beyond BUS_BYTES counted from the newest, messages leave the bus.
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP))
@@ -133,6 +133,11 @@ function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimReport {
       end(m, 'over-cap'); count--; bytes -= sizeOf(m)
     }
   }
+  let owedBytes = [...pending.values()].reduce((n, m) => n + sizeOf(m), 0)
+  for (const m of [...pending.values()].sort(evictionOrder)) {
+    if (owedBytes <= MAIL_BYTES) break
+    owedBytes -= sizeOf(m); end(m, 'over-cap')
+  }
   let mailCount = stored.size, mailBytes = [...stored.values()].reduce((n, m) => n + sizeOf(m), 0)
   for (const m of [...stored.values()].sort(evictionOrder)) {
     if (mailCount <= MAIL_MAX && mailBytes <= MAIL_BYTES) break
@@ -151,10 +156,15 @@ function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimReport {
     .map(([id, entry]) => ({ id, at: entry[2], size: id.length + sizeOf(entry), unfulfilled: !!entry[4] }))
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES)
   for (const id of newest(archive.filter(e => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id)
+  const retainedIds = new Set(bus.filter((m, i) => i >= cutoff && !ended.has(m.id)).map(m => m.id))
+  const pinned = new Set([...doc.outcomes].filter(([id, o]) => o?.outcome === 'recipient-retired' && retainedIds.has(id)).map(([id]) => id))
   const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id]) => !doc.outcomes.has(id))]
+    .filter(([id]) => !pinned.has(id))
     .filter(([id, o]) => typeof id === 'string' && o && Number.isFinite(o.at) && typeof o.to === 'string' && typeof o.from === 'string' && ['expired', 'over-cap', 'recipient-retired'].includes(o.outcome) && now - o.at <= OUTCOMES_TTL_MS)
     .map(([id, o]) => ({ id, at: o.at, size: id.length + sizeOf(o) }))
-  const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES)
+  const pinnedBytes = [...pinned].reduce((n, id) => n + id.length + sizeOf(doc.outcomes.get(id)), 0)
+  const keepOutcomes = newest(outcomes, Math.max(0, OUTCOMES_MAX - pinned.size), Math.max(0, OUTCOMES_BYTES - pinnedBytes))
+  for (const id of pinned) keepOutcomes.add(id)
 
   doc.doc.transact(() => {
     for (const [id, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id)
@@ -205,8 +215,34 @@ const roots = (room: RoomDoc) => ({ bus: room.messages(), mail: room.mail.toJSON
 const clone = (room: RoomDoc) => { const copy = new RoomDoc(); Y.applyUpdate(copy.doc, Y.encodeStateAsUpdate(room.doc)); return copy }
 const message = (id: string, fields: Partial<Msg> = {}): Msg => ({ id, type: 'note', text: 'x', from: 'ada', fromKind: 'agent', priority: 'notify', at: 100, ...fields } as Msg)
 
+it('ends retired mail in one pass at the bus and mail caps', () => {
+  const room = new RoomDoc()
+  const workers = Array.from({ length: 147 }, (_, i) => ({ id: `w-${i}`, name: `lead+w-${i}` }))
+  room.doc.transact(() => {
+    for (let i = 0; i < 2000; i++) {
+      for (const store of ['bus', 'mail']) {
+        let m = message(`${store}-${i}`, { to: workers[i % workers.length].name, text: '' })
+        m = { ...m, text: 'x'.repeat(786 - sizeOf(m)) } as Msg
+        if (store === 'bus') room.bus.push([m]); else room.mail.set(m.id, m)
+      }
+    }
+  })
+  const index = deliveryIndex(room)
+  const started = performance.now()
+  const busScan = vi.spyOn(room.bus, 'toArray'), mailScan = vi.spyOn(room.mail, Symbol.iterator)
+  room.retireWorkerMail(workers, 200)
+  process.stdout.write(`retired mail capped pass ms ${performance.now() - started}\n`)
+  expect(busScan).toHaveBeenCalledTimes(1)
+  expect(mailScan).toHaveBeenCalledTimes(1)
+  busScan.mockRestore(); mailScan.mockRestore()
+  expect(index.owedBytes).toBe(0)
+  expect(room.mail.size).toBe(0)
+  check(room)
+  room.doc.destroy()
+})
+
 // Deterministic random generation, no timing assertions or network.
-it('matches the old admission and trim on arbitrary expired, over-cap and conflicting docs', () => {
+it('matches full-scan admission and trim on arbitrary expired, over-cap and conflicting docs', () => {
   let seed = 48271
   const rand = (max: number) => { seed = (seed * 16807) % 2147483647; return seed % max }
   const now = OWED_TTL_MS + 1000
@@ -261,6 +297,35 @@ function check(room: RoomDoc) {
   index.rebuild()
   expect(index.owedBytes).toBe(before.bytes); expect(index.recipients).toEqual(before.recipients)
 }
+
+it('matches full recomputation after local and remote retirement, receipt removal and name reuse', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room)
+  room.bus.push(Array.from({ length: 200 }, (_, i) => message(`old-${i}`, { to: 'pat' })))
+  room.markSeen('pat', ['old-0'], { s: 's', via: 'reply' })
+  indexedTrim(room, 1000)
+  expect(index.trimmed(1000, {})).toBe(true)
+  const replica = clone(room)
+  deliveryIndex(replica)
+  room.retireWorker('w_old', {
+    id: 'w_old', name: 'pat', tag: 'pat', lead: 'ada', host: 'codex', task: '', summary: '',
+    files: [], fileCount: 0, startedAt: 0, finishedAt: 1, retiredAt: 1000, outcome: 'clean',
+  } satisfies RetiredWorker, () => {})
+  expect(index.owedBytes).toBe(0)
+  expect(index.trimmed(1000, {})).toBe(false)
+  expect(index.certain(1000)).toBe(true)
+  check(room)
+  Y.applyUpdate(replica.doc, Y.encodeStateAsUpdate(room.doc))
+  expect(deliveryIndex(replica).owedBytes).toBe(0)
+  check(replica)
+  room.doc.getArray('retiredWorkers').delete(0, 1)
+  room.bus.push([message('new', { to: 'pat', at: 1001 })])
+  expect([...index.pending.keys()]).toEqual(['new'])
+  check(room)
+  const reloaded = clone(room)
+  check(reloaded)
+  expect(deliveryIndex(reloaded).pending.size).toBe(1)
+  room.doc.destroy(); replica.doc.destroy(); reloaded.doc.destroy()
+})
 
 it('indexes remote updates, out-of-order pending structs, splits, merges, undo and reload', () => {
   const a = new RoomDoc(), b = new RoomDoc()

@@ -8298,6 +8298,19 @@ var init_ledger = __esm({
 });
 
 // packages/shared/src/delivery.ts
+function retireRecipient(doc, recipient, at) {
+  const names = typeof recipient === "string" ? /* @__PURE__ */ new Set([recipient]) : recipient;
+  const end = (m) => {
+    if (!validMessageShape(m) || !m.to || !names.has(m.to) || selfSent(m)) return false;
+    if (doc.outcomes.get(m.id)?.outcome !== "recipient-retired")
+      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome: "recipient-retired", at });
+    return true;
+  };
+  doc.doc.transact(() => {
+    for (const [id2, m] of doc.mail) if (end(m)) doc.mail.delete(id2);
+    for (const m of doc.messages()) end(m);
+  });
+}
 function isOwed(doc, m) {
   return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
 }
@@ -8344,7 +8357,7 @@ function trim(doc, now, opts = {}) {
   const bus = doc.messages();
   const mail = new Map([...doc.mail.entries()].filter(([id2, m]) => typeof id2 === "string" && validMessageShape(m)));
   const answered = answeredIds([...bus, ...mail.values()]);
-  const eligible = (m) => replyEligible(m, answered, now);
+  const eligible = (m) => doc.outcomes.get(m.id)?.outcome !== "recipient-retired" && replyEligible(m, answered, now);
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP));
   for (let i = bus.length - 1, bytes2 = 0; i >= cutoff; i--) {
     bytes2 += sizeOf(bus[i]);
@@ -8383,6 +8396,12 @@ function trim(doc, now, opts = {}) {
       bytes2 -= sizeOf(m);
     }
   }
+  let owedBytes = [...pending.values()].reduce((n, m) => n + sizeOf(m), 0);
+  for (const m of [...pending.values()].sort(evictionOrder)) {
+    if (owedBytes <= MAIL_BYTES) break;
+    owedBytes -= sizeOf(m);
+    end(m, "over-cap");
+  }
   let mailCount = stored.size, mailBytes = [...stored.values()].reduce((n, m) => n + sizeOf(m), 0);
   for (const m of [...stored.values()].sort(evictionOrder)) {
     if (mailCount <= MAIL_MAX && mailBytes <= MAIL_BYTES) break;
@@ -8401,8 +8420,12 @@ function trim(doc, now, opts = {}) {
   const archive = [...doc.archive.entries(), ...archived.entries()].filter(([id2, entry]) => typeof id2 === "string" && Array.isArray(entry) && typeof entry[2] === "number" && Array.isArray(entry[3])).map(([id2, entry]) => ({ id: id2, at: entry[2], size: id2.length + sizeOf(entry), unfulfilled: !!entry[4] }));
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES);
   for (const id2 of newest(archive.filter((e) => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id2);
-  const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id2]) => !doc.outcomes.has(id2))].filter(([id2, o]) => typeof id2 === "string" && validOutcome(o) && now - o.at <= OUTCOMES_TTL_MS).map(([id2, o]) => ({ id: id2, at: o.at, size: id2.length + sizeOf(o) }));
-  const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES);
+  const retainedIds = new Set(bus.filter((m, i) => i >= cutoff && !ended.has(m.id)).map((m) => m.id));
+  const pinned = new Set([...doc.outcomes].filter(([id2, o]) => validOutcome(o) && o.outcome === "recipient-retired" && retainedIds.has(id2)).map(([id2]) => id2));
+  const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id2]) => !doc.outcomes.has(id2))].filter(([id2]) => !pinned.has(id2)).filter(([id2, o]) => typeof id2 === "string" && validOutcome(o) && now - o.at <= OUTCOMES_TTL_MS).map(([id2, o]) => ({ id: id2, at: o.at, size: id2.length + sizeOf(o) }));
+  const pinnedBytes = [...pinned].reduce((n, id2) => n + id2.length + sizeOf(doc.outcomes.get(id2)), 0);
+  const keepOutcomes = newest(outcomes, Math.max(0, OUTCOMES_MAX - pinned.size), Math.max(0, OUTCOMES_BYTES - pinnedBytes));
+  for (const id2 of pinned) keepOutcomes.add(id2);
   doc.doc.transact(() => {
     for (const [id2, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id2);
     for (const [id2, entry] of archived) if (keepArchive.has(id2)) {
@@ -8470,7 +8493,7 @@ function admit(doc, m, now, opts = {}) {
   }
   return caps();
 }
-var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, LEDGER_BUDGET, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, receipted, DeliveryIndex, indexes;
+var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, receipted, DeliveryIndex, indexes;
 var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
@@ -8494,7 +8517,6 @@ var init_delivery = __esm({
     OUTCOMES_BYTES = 256 * KiB;
     OUTCOMES_TTL_MS = 30 * DAY_MS;
     RECEIPTS_BYTES = 256 * KiB;
-    LEDGER_BUDGET = BUS_BYTES + MAIL_BYTES + ARCHIVE_BYTES + OUTCOMES_BYTES + RECEIPTS_BYTES;
     REPLY_WINDOW_MS = 14 * DAY_MS;
     OWED_TTL_MS = 14 * DAY_MS;
     MAX_MESSAGE_BYTES = 64 * KiB;
@@ -8552,6 +8574,8 @@ var init_delivery = __esm({
       badOutcomes = /* @__PURE__ */ new Set();
       outcomeSizes = /* @__PURE__ */ new Map();
       outcomeBytes = 0;
+      pinnedOutcomes = /* @__PURE__ */ new Map();
+      pinnedOutcomeBytes = 0;
       mailSizes = /* @__PURE__ */ new Map();
       mailBytes = 0;
       aliases = /* @__PURE__ */ new Set();
@@ -8623,7 +8647,6 @@ var init_delivery = __esm({
           const size2 = id2.length + sizeOf(o);
           this.outcomeSizes.set(id2, size2);
           this.outcomeBytes += size2;
-          this.oldestOutcome = Math.min(this.oldestOutcome, o.at);
         }
         if (this.bus.count(id2)) this.bus.changed.add(id2);
       }
@@ -8637,6 +8660,8 @@ var init_delivery = __esm({
         for (const id2 of ids) this.refresh(id2, ordered.get(id2));
       }
       refresh(id2, ordered) {
+        this.pinnedOutcomeBytes -= this.pinnedOutcomes.get(id2) ?? 0;
+        this.pinnedOutcomes.delete(id2);
         const prior = this.pending.get(id2);
         if (prior) {
           const size2 = this.sizes.get(id2);
@@ -8652,6 +8677,12 @@ var init_delivery = __esm({
         const mail = this.mailCopies.get(id2);
         const bus = this.bus.ids.get(id2);
         const candidates = ordered ?? [...mail?.values() ?? [], ...bus?.values() ?? []];
+        const outcome = this.doc.outcomes.get(id2);
+        if (bus?.size && validOutcome(outcome) && outcome.outcome === "recipient-retired") {
+          const size2 = this.outcomeSizes.get(id2) ?? 0;
+          this.pinnedOutcomes.set(id2, size2);
+          this.pinnedOutcomeBytes += size2;
+        } else if (validOutcome(outcome)) this.oldestOutcome = Math.min(this.oldestOutcome, outcome.at);
         if ((bus?.size ?? 0) > 1) this.duplicateBus.add(id2);
         else this.duplicateBus.delete(id2);
         const m = candidates.find((m2) => validMessageShape(m2) && isOwed(this.doc, m2));
@@ -8685,7 +8716,7 @@ var init_delivery = __esm({
         const pending = /* @__PURE__ */ new Map(), sizes = /* @__PURE__ */ new Map(), recipients = /* @__PURE__ */ new Map();
         const mailIds = /* @__PURE__ */ new Map(), mailSizes = /* @__PURE__ */ new Map(), outcomeSizes = /* @__PURE__ */ new Map();
         const badMail = /* @__PURE__ */ new Set(), badOutcomes = /* @__PURE__ */ new Set(), aliases = /* @__PURE__ */ new Set(), duplicateBus = /* @__PURE__ */ new Set();
-        const busCounts = /* @__PURE__ */ new Map();
+        const busCounts = /* @__PURE__ */ new Map(), pinnedOutcomes = /* @__PURE__ */ new Map();
         for (const m of this.doc.messages()) if (typeof m?.id === "string") busCounts.set(m.id, (busCounts.get(m.id) ?? 0) + 1);
         for (const [id2, count] of busCounts) if (count > 1) duplicateBus.add(id2);
         let owedBytes = 0, mailBytes = 0, outcomeBytes = 0, oldest = Infinity, oldestOutcome = Infinity;
@@ -8721,7 +8752,8 @@ var init_delivery = __esm({
           const size2 = id2.length + sizeOf(o);
           outcomeSizes.set(id2, size2);
           outcomeBytes += size2;
-          oldestOutcome = Math.min(oldestOutcome, o.at);
+          if (o.outcome === "recipient-retired" && busCounts.has(id2)) pinnedOutcomes.set(id2, size2);
+          else oldestOutcome = Math.min(oldestOutcome, o.at);
         }
         const sameMap = (a, b) => a.size === b.size && [...a].every(([id2, value2]) => b.get(id2) === value2);
         const sameSet = (a, b) => a.size === b.size && [...a].every((id2) => b.has(id2));
@@ -8733,7 +8765,7 @@ var init_delivery = __esm({
           return r.count !== old?.count || r.bytes !== old.bytes;
         }))) field = "recipients";
         if (!field && (!sameMap(mailIds, this.mailIds) || !sameMap(mailSizes, this.mailSizes) || mailBytes !== this.mailBytes || this.mailCopies.size !== new Set(mailIds.values()).size || [...mailIds].some(([key, id2]) => this.mailCopies.get(id2)?.get(key) !== this.doc.mail.get(key)) || [...this.mailCopies.values()].reduce((n, copies) => n + copies.size, 0) !== mailIds.size)) field = "mail";
-        if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes)) field = "outcomes";
+        if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes || !sameMap(pinnedOutcomes, this.pinnedOutcomes) || [...pinnedOutcomes.values()].reduce((n, size2) => n + size2, 0) !== this.pinnedOutcomeBytes)) field = "outcomes";
         if (!field && (!sameSet(badMail, this.badMail) || !sameSet(badOutcomes, this.badOutcomes))) field = "invalid";
         if (!field && (!sameSet(aliases, this.aliases) || !sameSet(duplicateBus, this.duplicateBus) || !sameSet(overCap, this.overCapRecipients))) field = "certainty";
         if (!field && (oldest !== this.oldest || oldestOutcome !== this.oldestOutcome)) field = "oldest";
@@ -8753,6 +8785,8 @@ var init_delivery = __esm({
         this.outcomeBytes = 0;
         this.mailSizes.clear();
         this.mailBytes = 0;
+        this.pinnedOutcomes.clear();
+        this.pinnedOutcomeBytes = 0;
         this.aliases.clear();
         this.duplicateBus.clear();
         this.overCapRecipients.clear();
@@ -8760,19 +8794,19 @@ var init_delivery = __esm({
         this.clean = false;
         for (const id2 of this.doc.mail.keys()) this.checkMail(id2);
         for (const id2 of this.doc.outcomes.keys()) this.checkOutcome(id2);
-        this.refreshMany(/* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()]));
+        this.refreshMany(/* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys(), ...this.outcomeSizes.keys()]));
       }
       markTrimmed(now, opts) {
         this.cleanKeep = opts.busKeep ?? BUS_KEEP;
         this.cleanBytes = opts.busBytes ?? BUS_BYTES;
         this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter((m) => Number.isFinite(m.at)).map((m) => m.at));
-        this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter((o) => o && Number.isFinite(o.at)).map((o) => o.at));
+        this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes].filter(([id2, o]) => !this.pinnedOutcomes.has(id2) && o && Number.isFinite(o.at)).map(([, o]) => o.at));
         this.clean = !this.bus.stale && this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && now - this.oldest <= OWED_TTL_MS;
       }
       certain(now, opts = {}) {
         const retention = this.bus.entries.size > (opts.busKeep ?? BUS_KEEP) || this.bus.bytes > (opts.busBytes ?? BUS_BYTES);
         const mailRisk = this.mailSizes.size > MAIL_MAX || this.mailBytes > MAIL_BYTES || retention && (this.mailSizes.size + this.bus.addressedCount > MAIL_MAX || this.mailBytes + this.bus.addressedBytes > MAIL_BYTES);
-        return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && this.outcomeSizes.size <= OUTCOMES_MAX && this.outcomeBytes <= OUTCOMES_BYTES && now - this.oldestOutcome <= OUTCOMES_TTL_MS && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk)) && !(this.outcomeSizes.size && (this.overCapRecipients.size || mailRisk || now - this.oldest > OWED_TTL_MS));
+        return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && this.outcomeSizes.size - this.pinnedOutcomes.size <= Math.max(0, OUTCOMES_MAX - this.pinnedOutcomes.size) && this.outcomeBytes - this.pinnedOutcomeBytes <= Math.max(0, OUTCOMES_BYTES - this.pinnedOutcomeBytes) && now - this.oldestOutcome <= OUTCOMES_TTL_MS && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk)) && !(this.outcomeSizes.size && (this.overCapRecipients.size || this.owedBytes > MAIL_BYTES || mailRisk || now - this.oldest > OWED_TTL_MS));
       }
       trimmed(now, opts) {
         return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
@@ -9468,17 +9502,25 @@ var init_doc = __esm({
       }
       /**
        * Whether the live state under `name` is worker `id`'s: its holder names `id`, a team projection's
-       * `projectedFrom` does, or, with neither, no other worker's view holds the name. A newer worker or a
-       * standalone participant under the same name never is.
+       * `projectedFrom` does, or, with neither, no participant identity or other worker's view holds the name.
+       * A newer worker or a standalone participant under the same name never is.
        */
       workerOwnsName(id2, name) {
         const record = participantRecord(this, name);
-        return record?.holder ? record.holder.workerId === id2 : record?.proj ? record.proj.projectedFrom === id2 : ![...this.workerViews.values()].some((view) => view.name === name && view.id !== id2);
+        return record?.holder ? record.holder.workerId === id2 : record?.proj ? record.proj.projectedFrom === id2 : !record?.id && ![...this.workerViews.values()].some((view) => view.name === name && view.id !== id2);
+      }
+      /** End a retired worker's mail only while it still owns the name, in one pass for all eligible names. */
+      retireWorkerMail(workers, at) {
+        const names = /* @__PURE__ */ new Set();
+        for (const worker of workers) if (worker.id && this.workerOwnsName(worker.id, worker.name)) names.add(worker.name);
+        if (names.size) retireRecipient(this, names, at);
+        return names;
       }
       /**
        * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
        * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
-       * receipts, participant keys) goes only while `workerOwnsName`. The view goes and the archive gains one entry per ID.
+       * receipts, participant keys) goes only while `workerOwnsName`. Addressed delivery ends with per-message
+       * outcomes before receipts go. The view goes and the archive gains one entry per ID.
        */
       retireWorker(id2, archived, post) {
         if (archived.id !== id2) throw new Error("retirement id does not match record");
@@ -9486,7 +9528,7 @@ var init_doc = __esm({
         this.doc.transact(() => {
           const cached = this.doc.getMap("completedPublications");
           for (const [key, value2] of cached) if (value2.worker.id === id2) cached.delete(key);
-          if (this.workerOwnsName(id2, name)) {
+          if (this.retireWorkerMail([archived], archived.retiredAt).has(name)) {
             this.clearWorkerCoordination(name, "retired", post);
             const conflicts = this.doc.getMap("conflicts");
             for (const [key, slot] of conflicts) if (slot.owner === name) conflicts.delete(key);
@@ -9752,7 +9794,7 @@ var init_doc = __esm({
       get mail() {
         return this.doc.getMap("mail");
       }
-      /** Terminal outcomes of addressed messages that were never receipted. */
+      /** Terminal addressed delivery outcomes; retirement also ends read messages before clearing receipts. */
       get outcomes() {
         return this.doc.getMap("outcomes");
       }

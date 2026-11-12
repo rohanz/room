@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
 import {
-  admit, archiveSummary, BUS_BYTES, LEDGER_BUDGET, MAIL_BYTES, OUTCOMES_MAX, OWED_PER_RECIPIENT,
-  highestSeq, OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim,
+  admit, archiveSummary, BUS_BYTES, MAIL_BYTES, OUTCOMES_MAX, OWED_PER_RECIPIENT,
+  deliveryIndex, highestSeq, OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim,
 } from './delivery.js'
-import type { DeliveryCursor, MessageMap, Msg, MsgType } from './types.js'
+import type { DeliveryCursor, MessageMap, Msg, MsgType, RetiredWorker, WorkerView } from './types.js'
 
 const SHOWN = { s: 'session-1', via: 'reply' } as const
 
@@ -30,7 +30,103 @@ const roots = (room: RoomDoc) => ({
   outcomes: room.outcomes.toJSON(),
 })
 // Budgets count each message serialized on its own.
-const perEntry = (messages: Iterable<Msg>) => [...messages].reduce((n, m) => n + new TextEncoder().encode(JSON.stringify(m)).length, 0)
+const perEntry = (messages: Iterable<unknown>) => [...messages].reduce<number>((n, m) => n + new TextEncoder().encode(JSON.stringify(m)).length, 0)
+
+const retired = (name = P.name, id = 'w_old'): RetiredWorker & { id: string } => ({
+  id, name, tag: name, lead: 'quinn', host: 'codex', task: '', summary: 'done', files: [], fileCount: 0,
+  startedAt: NOW - 2 * DAY, finishedAt: NOW - DAY, retiredAt: NOW, outcome: 'clean',
+})
+const worker = (id: string, startedAt: number): WorkerView => ({
+  id, name: P.name, tag: P.name, lead: 'quinn', host: 'codex', mode: 'local', task: '', branch: 'b',
+  status: 'running', run: 1, startedAt, fence: 'f',
+})
+
+describe('retired recipients', () => {
+  it('ends read and unread debt on retirement and admits later addressed sends', () => {
+    const room = new RoomDoc(), index = deliveryIndex(room)
+    room.workerViews.set('w_old', worker('w_old', NOW - 2 * DAY))
+    const messages = Array.from({ length: 200 }, () => question())
+    push(room, ...messages)
+    room.markSeen(P.name, [messages[0].id], SHOWN)
+    trim(room, NOW)
+    expect(index.owedBytes).toBeGreaterThan(0)
+    room.retireWorker('w_old', retired(), () => {})
+    expect(index.owedBytes).toBe(0)
+    expect(index.recipients.has(P.name)).toBe(false)
+    expect(owed(room, P, cursor(), {})).toEqual([])
+    expect(admit(room, { to: 'kim', type: 'note', text: 'hello' }, NOW)).toEqual({ ok: true })
+    room.doc.destroy()
+  })
+
+  it('owes a reused worker name only messages from its own lifetime, even before it gets a holder', () => {
+    const room = new RoomDoc(), index = deliveryIndex(room)
+    const [old] = push(room, question({ at: NOW - DAY }))
+    room.retireWorker('w_old', retired(), () => {})
+    room.workerViews.set('w_new', worker('w_new', NOW + 10))
+    const [fresh] = push(room, question({ at: NOW + 11 }))
+    expect(ids(owed(room, P, cursor(), {}))).toEqual([fresh.id])
+    expect([...index.pending.keys()]).toEqual([fresh.id])
+    expect(index.pending.has(old.id)).toBe(false)
+    // Reapplying the predecessor's retirement must not end the successor's mail.
+    room.retireWorker('w_old', retired(), () => {})
+    expect([...index.pending.keys()]).toEqual([fresh.id])
+    room.doc.destroy()
+  })
+
+  it('converges when a replica retires while another sends and clears a receipt', () => {
+    const a = new RoomDoc(), b = new RoomDoc()
+    a.workerViews.set('w_old', worker('w_old', NOW - 2 * DAY))
+    const [read] = push(a, question())
+    a.markSeen(P.name, [read.id], SHOWN)
+    Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc))
+    const ai = deliveryIndex(a), bi = deliveryIndex(b)
+    a.retireWorker('w_old', retired(), () => {})
+    const [late] = push(b, question({ at: NOW - 1 }))
+    b.seen(P.name).delete(read.id)
+    const au = Y.encodeStateAsUpdate(a.doc), bu = Y.encodeStateAsUpdate(b.doc)
+    Y.applyUpdate(a.doc, bu); Y.applyUpdate(b.doc, au)
+    // Shared trim cannot infer retirement: the lead retention pass ends this concurrent send later.
+    expect(admit(a, { to: 'kim', text: 'hello' }, NOW + 2)).toEqual({ ok: true })
+    expect(admit(b, { to: 'kim', text: 'hello' }, NOW + 2)).toEqual({ ok: true })
+    expect(ai.pending.has(late.id)).toBe(true); expect(bi.pending.has(late.id)).toBe(true)
+    expect(ids(owed(a, P, cursor(), {}))).toEqual([late.id])
+    expect(ids(owed(b, P, cursor(), {}))).toEqual([late.id])
+    trim(a, NOW + 2); trim(b, NOW + 2)
+    expect(ai.verify()).toBeUndefined(); expect(bi.verify()).toBeUndefined()
+    Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc)); Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc))
+    expect(roots(a)).toEqual(roots(b))
+    a.doc.destroy(); b.doc.destroy()
+  })
+
+  it('keeps only bus-bounded retirement markers across history pruning, reload and TTL', () => {
+    const room = new RoomDoc()
+    const messages = Array.from({ length: 3000 }, (_, i) => question({ to: `lead+w${i % 98}` }))
+    room.doc.transact(() => {
+      for (let i = 0; i < 98; i++) room.doc.getArray<RetiredWorker>('retiredWorkers').push([retired(`lead+w${i}`, `w${i}`)])
+      room.bus.push(messages.slice(0, 1500))
+      for (const m of messages.slice(1500)) room.mail.set(m.id, m)
+    })
+    for (let i = 0; i < 98; i++) room.retireWorker(`w${i}`, retired(`lead+w${i}`, `w${i}`), () => {})
+    trim(room, NOW)
+    expect(room.mail.size).toBe(0)
+    expect(room.outcomes.size).toBeLessThanOrEqual(OUTCOMES_MAX)
+    expect(perEntry(room.outcomes.values()) + [...room.outcomes.keys()].reduce((n, id) => n + id.length, 0)).toBeLessThanOrEqual(256 * 1024)
+    expect(deliveryIndex(room).certain(NOW)).toBe(true)
+    expect(deliveryIndex(room).trimmed(NOW, {})).toBe(true)
+    // Neither pruning the display history nor forgetting old outcome diagnostics may revive these bodies.
+    room.doc.getArray('retiredWorkers').delete(0, 98)
+    trim(room, NOW + 31 * DAY)
+    for (const m of room.messages()) expect(room.outcomes.get(m.id)?.outcome).toBe('recipient-retired')
+    const loaded = new RoomDoc()
+    Y.applyUpdate(loaded.doc, Y.encodeStateAsUpdate(room.doc))
+    const fresh = question({ to: 'lead+w0', at: NOW + 31 * DAY })
+    push(loaded, fresh)
+    expect(ids(owed(loaded, { name: 'lead+w0' }, cursor(), {}))).toEqual([fresh.id])
+    expect(deliveryIndex(loaded).pending.size).toBe(1)
+    expect(deliveryIndex(loaded).verify()).toBeUndefined()
+    room.doc.destroy(); loaded.doc.destroy()
+  })
+})
 
 // A kind that declared its own `to` (a SHA, a branch) would be addressed to a participant nobody holds.
 type RedeclaresTo = { [K in MsgType]: undefined extends MessageMap[K]['to'] ? (MessageMap[K]['to'] extends string | undefined ? never : K) : K }[MsgType]
@@ -182,6 +278,19 @@ describe('trim', () => {
 })
 
 describe('bounds and admission (test 3, MF6, SF4)', () => {
+  it('trims room-wide debt across bus and mail even when each store and recipient is below its cap', () => {
+    const room = new RoomDoc()
+    const messages = Array.from({ length: 60 }, (_, i) => question({ to: `r${i}`, text: 'x'.repeat(40 * 1024) }))
+    push(room, ...messages.slice(0, 30))
+    for (const m of messages.slice(30)) room.mail.set(m.id, m)
+    expect(perEntry(room.messages())).toBeLessThan(BUS_BYTES)
+    expect(perEntry(room.mail.values())).toBeLessThan(MAIL_BYTES)
+    trim(room, NOW)
+    expect(deliveryIndex(room).owedBytes).toBeLessThanOrEqual(MAIL_BYTES)
+    expect([...room.outcomes.values()].some(o => o.outcome === 'over-cap')).toBe(true)
+    expect(admit(room, { to: 'kim', text: 'hello' }, NOW)).toEqual({ ok: true })
+    room.doc.destroy()
+  })
   it('caps an offline recipient’s owed set at 200 with over-cap outcomes and refuses room_send past it', () => {
     const room = new RoomDoc()
     const flood: Msg[] = []
@@ -232,16 +341,12 @@ describe('bounds and admission (test 3, MF6, SF4)', () => {
     expect(admit(room, { type: 'question', to: 'kim', text: 'x'.repeat(60 * 1024) }, NOW)).toMatchObject({ ok: false, reason: expect.stringMatching(/^the room's message store is full \(\d+ KiB owed to others\)$/) })
   })
 
-  it('100 recipients sent one 64 KiB message each: the bus is trimmed by bytes and the ledger stays under 4 MiB', () => {
+  it('100 recipients sent one 64 KiB message each: the bus and mail stay within their byte caps', () => {
     const room = new RoomDoc()
     for (let i = 0; i < 100; i++) push(room, question({ to: `r${i}`, text: 'x'.repeat(64 * 1024 - 300) }))
     trim(room, NOW)
     expect(perEntry(room.messages())).toBeLessThanOrEqual(BUS_BYTES)
     expect(perEntry(room.mail.values())).toBeLessThanOrEqual(MAIL_BYTES)
-    const ledger = new Y.Doc()
-    for (const name of ['mail', 'outcomes', 'archive']) for (const [k, v] of room.doc.getMap(name)) ledger.getMap(name).set(k, v)
-    ledger.getArray('bus').push(room.messages())
-    expect(Y.encodeStateAsUpdate(ledger).byteLength).toBeLessThan(LEDGER_BUDGET)
     const kept = new Set([...ids(room.messages()), ...room.mail.keys()])
     expect(kept.size + room.outcomes.size).toBe(100)
     expect([...room.outcomes.values()].every(o => o.outcome === 'over-cap')).toBe(true)

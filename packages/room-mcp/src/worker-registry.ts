@@ -299,6 +299,7 @@ export class WorkerRegistry {
   abortCollect(...args: Parameters<FileWorkerStore['abortCollect']>): ReturnType<FileWorkerStore['abortCollect']> { return this.backend().abortCollect(...args) }
   deferCollectCleanup(...args: Parameters<FileWorkerStore['deferCollectCleanup']>): ReturnType<FileWorkerStore['deferCollectCleanup']> { return this.backend().deferCollectCleanup(...args) }
   beginRetirement(...args: Parameters<FileWorkerStore['beginRetirement']>): ReturnType<FileWorkerStore['beginRetirement']> { return this.backend().beginRetirement(...args) }
+  retireWorkerMail(...args: Parameters<FileWorkerStore['retireWorkerMail']>): ReturnType<FileWorkerStore['retireWorkerMail']> { return this.backend().retireWorkerMail(...args) }
   pruneRetired(...args: Parameters<FileWorkerStore['pruneRetired']>): ReturnType<FileWorkerStore['pruneRetired']> { return this.backend().pruneRetired(...args) }
   finishCleanup(...args: Parameters<FileWorkerStore['finishCleanup']>): ReturnType<FileWorkerStore['finishCleanup']> { return this.backend().finishCleanup(...args) }
   beginDiscard(...args: Parameters<FileWorkerStore['beginDiscard']>): ReturnType<FileWorkerStore['beginDiscard']> { return this.backend().beginDiscard(...args) }

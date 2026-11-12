@@ -8737,6 +8737,19 @@ var init_ledger = __esm({
 });
 
 // packages/shared/src/delivery.ts
+function retireRecipient(doc, recipient, at) {
+  const names = typeof recipient === "string" ? /* @__PURE__ */ new Set([recipient]) : recipient;
+  const end = (m) => {
+    if (!validMessageShape(m) || !m.to || !names.has(m.to) || selfSent(m)) return false;
+    if (doc.outcomes.get(m.id)?.outcome !== "recipient-retired")
+      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome: "recipient-retired", at });
+    return true;
+  };
+  doc.doc.transact(() => {
+    for (const [id3, m] of doc.mail) if (end(m)) doc.mail.delete(id3);
+    for (const m of doc.messages()) end(m);
+  });
+}
 function isOwed(doc, m) {
   return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
 }
@@ -8782,7 +8795,7 @@ function archiveSummary(doc, area) {
   out.unfulfilled.sort(byAge);
   return out;
 }
-var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_BYTES, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, LEDGER_BUDGET, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, addressedTo, receipted, DeliveryIndex, indexes;
+var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_BYTES, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, addressedTo, receipted, DeliveryIndex, indexes;
 var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
@@ -8804,7 +8817,6 @@ var init_delivery = __esm({
     OUTCOMES_BYTES = 256 * KiB;
     OUTCOMES_TTL_MS = 30 * DAY_MS;
     RECEIPTS_BYTES = 256 * KiB;
-    LEDGER_BUDGET = BUS_BYTES + MAIL_BYTES + ARCHIVE_BYTES + OUTCOMES_BYTES + RECEIPTS_BYTES;
     REPLY_WINDOW_MS = 14 * DAY_MS;
     OWED_TTL_MS = 14 * DAY_MS;
     MAX_MESSAGE_BYTES = 64 * KiB;
@@ -8863,6 +8875,8 @@ var init_delivery = __esm({
       badOutcomes = /* @__PURE__ */ new Set();
       outcomeSizes = /* @__PURE__ */ new Map();
       outcomeBytes = 0;
+      pinnedOutcomes = /* @__PURE__ */ new Map();
+      pinnedOutcomeBytes = 0;
       mailSizes = /* @__PURE__ */ new Map();
       mailBytes = 0;
       aliases = /* @__PURE__ */ new Set();
@@ -8934,7 +8948,6 @@ var init_delivery = __esm({
           const size2 = id3.length + sizeOf(o);
           this.outcomeSizes.set(id3, size2);
           this.outcomeBytes += size2;
-          this.oldestOutcome = Math.min(this.oldestOutcome, o.at);
         }
         if (this.bus.count(id3)) this.bus.changed.add(id3);
       }
@@ -8948,6 +8961,8 @@ var init_delivery = __esm({
         for (const id3 of ids) this.refresh(id3, ordered.get(id3));
       }
       refresh(id3, ordered) {
+        this.pinnedOutcomeBytes -= this.pinnedOutcomes.get(id3) ?? 0;
+        this.pinnedOutcomes.delete(id3);
         const prior = this.pending.get(id3);
         if (prior) {
           const size2 = this.sizes.get(id3);
@@ -8963,6 +8978,12 @@ var init_delivery = __esm({
         const mail = this.mailCopies.get(id3);
         const bus = this.bus.ids.get(id3);
         const candidates = ordered ?? [...mail?.values() ?? [], ...bus?.values() ?? []];
+        const outcome = this.doc.outcomes.get(id3);
+        if (bus?.size && validOutcome(outcome) && outcome.outcome === "recipient-retired") {
+          const size2 = this.outcomeSizes.get(id3) ?? 0;
+          this.pinnedOutcomes.set(id3, size2);
+          this.pinnedOutcomeBytes += size2;
+        } else if (validOutcome(outcome)) this.oldestOutcome = Math.min(this.oldestOutcome, outcome.at);
         if ((bus?.size ?? 0) > 1) this.duplicateBus.add(id3);
         else this.duplicateBus.delete(id3);
         const m = candidates.find((m2) => validMessageShape(m2) && isOwed(this.doc, m2));
@@ -8996,7 +9017,7 @@ var init_delivery = __esm({
         const pending2 = /* @__PURE__ */ new Map(), sizes = /* @__PURE__ */ new Map(), recipients = /* @__PURE__ */ new Map();
         const mailIds = /* @__PURE__ */ new Map(), mailSizes = /* @__PURE__ */ new Map(), outcomeSizes = /* @__PURE__ */ new Map();
         const badMail = /* @__PURE__ */ new Set(), badOutcomes = /* @__PURE__ */ new Set(), aliases = /* @__PURE__ */ new Set(), duplicateBus = /* @__PURE__ */ new Set();
-        const busCounts = /* @__PURE__ */ new Map();
+        const busCounts = /* @__PURE__ */ new Map(), pinnedOutcomes = /* @__PURE__ */ new Map();
         for (const m of this.doc.messages()) if (typeof m?.id === "string") busCounts.set(m.id, (busCounts.get(m.id) ?? 0) + 1);
         for (const [id3, count] of busCounts) if (count > 1) duplicateBus.add(id3);
         let owedBytes = 0, mailBytes = 0, outcomeBytes = 0, oldest = Infinity, oldestOutcome = Infinity;
@@ -9032,7 +9053,8 @@ var init_delivery = __esm({
           const size2 = id3.length + sizeOf(o);
           outcomeSizes.set(id3, size2);
           outcomeBytes += size2;
-          oldestOutcome = Math.min(oldestOutcome, o.at);
+          if (o.outcome === "recipient-retired" && busCounts.has(id3)) pinnedOutcomes.set(id3, size2);
+          else oldestOutcome = Math.min(oldestOutcome, o.at);
         }
         const sameMap = (a, b) => a.size === b.size && [...a].every(([id3, value5]) => b.get(id3) === value5);
         const sameSet = (a, b) => a.size === b.size && [...a].every((id3) => b.has(id3));
@@ -9044,7 +9066,7 @@ var init_delivery = __esm({
           return r.count !== old?.count || r.bytes !== old.bytes;
         }))) field = "recipients";
         if (!field && (!sameMap(mailIds, this.mailIds) || !sameMap(mailSizes, this.mailSizes) || mailBytes !== this.mailBytes || this.mailCopies.size !== new Set(mailIds.values()).size || [...mailIds].some(([key3, id3]) => this.mailCopies.get(id3)?.get(key3) !== this.doc.mail.get(key3)) || [...this.mailCopies.values()].reduce((n, copies) => n + copies.size, 0) !== mailIds.size)) field = "mail";
-        if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes)) field = "outcomes";
+        if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes || !sameMap(pinnedOutcomes, this.pinnedOutcomes) || [...pinnedOutcomes.values()].reduce((n, size2) => n + size2, 0) !== this.pinnedOutcomeBytes)) field = "outcomes";
         if (!field && (!sameSet(badMail, this.badMail) || !sameSet(badOutcomes, this.badOutcomes))) field = "invalid";
         if (!field && (!sameSet(aliases, this.aliases) || !sameSet(duplicateBus, this.duplicateBus) || !sameSet(overCap, this.overCapRecipients))) field = "certainty";
         if (!field && (oldest !== this.oldest || oldestOutcome !== this.oldestOutcome)) field = "oldest";
@@ -9064,6 +9086,8 @@ var init_delivery = __esm({
         this.outcomeBytes = 0;
         this.mailSizes.clear();
         this.mailBytes = 0;
+        this.pinnedOutcomes.clear();
+        this.pinnedOutcomeBytes = 0;
         this.aliases.clear();
         this.duplicateBus.clear();
         this.overCapRecipients.clear();
@@ -9071,19 +9095,19 @@ var init_delivery = __esm({
         this.clean = false;
         for (const id3 of this.doc.mail.keys()) this.checkMail(id3);
         for (const id3 of this.doc.outcomes.keys()) this.checkOutcome(id3);
-        this.refreshMany(/* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()]));
+        this.refreshMany(/* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys(), ...this.outcomeSizes.keys()]));
       }
       markTrimmed(now, opts) {
         this.cleanKeep = opts.busKeep ?? BUS_KEEP;
         this.cleanBytes = opts.busBytes ?? BUS_BYTES;
         this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter((m) => Number.isFinite(m.at)).map((m) => m.at));
-        this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter((o) => o && Number.isFinite(o.at)).map((o) => o.at));
+        this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes].filter(([id3, o]) => !this.pinnedOutcomes.has(id3) && o && Number.isFinite(o.at)).map(([, o]) => o.at));
         this.clean = !this.bus.stale && this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && now - this.oldest <= OWED_TTL_MS;
       }
       certain(now, opts = {}) {
         const retention = this.bus.entries.size > (opts.busKeep ?? BUS_KEEP) || this.bus.bytes > (opts.busBytes ?? BUS_BYTES);
         const mailRisk = this.mailSizes.size > MAIL_MAX || this.mailBytes > MAIL_BYTES || retention && (this.mailSizes.size + this.bus.addressedCount > MAIL_MAX || this.mailBytes + this.bus.addressedBytes > MAIL_BYTES);
-        return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && this.outcomeSizes.size <= OUTCOMES_MAX && this.outcomeBytes <= OUTCOMES_BYTES && now - this.oldestOutcome <= OUTCOMES_TTL_MS && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk)) && !(this.outcomeSizes.size && (this.overCapRecipients.size || mailRisk || now - this.oldest > OWED_TTL_MS));
+        return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && this.outcomeSizes.size - this.pinnedOutcomes.size <= Math.max(0, OUTCOMES_MAX - this.pinnedOutcomes.size) && this.outcomeBytes - this.pinnedOutcomeBytes <= Math.max(0, OUTCOMES_BYTES - this.pinnedOutcomeBytes) && now - this.oldestOutcome <= OUTCOMES_TTL_MS && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk)) && !(this.outcomeSizes.size && (this.overCapRecipients.size || this.owedBytes > MAIL_BYTES || mailRisk || now - this.oldest > OWED_TTL_MS));
       }
       trimmed(now, opts) {
         return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
@@ -9923,17 +9947,25 @@ var init_doc = __esm({
       }
       /**
        * Whether the live state under `name` is worker `id`'s: its holder names `id`, a team projection's
-       * `projectedFrom` does, or, with neither, no other worker's view holds the name. A newer worker or a
-       * standalone participant under the same name never is.
+       * `projectedFrom` does, or, with neither, no participant identity or other worker's view holds the name.
+       * A newer worker or a standalone participant under the same name never is.
        */
       workerOwnsName(id3, name) {
         const record2 = participantRecord(this, name);
-        return record2?.holder ? record2.holder.workerId === id3 : record2?.proj ? record2.proj.projectedFrom === id3 : ![...this.workerViews.values()].some((view) => view.name === name && view.id !== id3);
+        return record2?.holder ? record2.holder.workerId === id3 : record2?.proj ? record2.proj.projectedFrom === id3 : !record2?.id && ![...this.workerViews.values()].some((view) => view.name === name && view.id !== id3);
+      }
+      /** End a retired worker's mail only while it still owns the name, in one pass for all eligible names. */
+      retireWorkerMail(workers, at) {
+        const names = /* @__PURE__ */ new Set();
+        for (const worker of workers) if (worker.id && this.workerOwnsName(worker.id, worker.name)) names.add(worker.name);
+        if (names.size) retireRecipient(this, names, at);
+        return names;
       }
       /**
        * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
        * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
-       * receipts, participant keys) goes only while `workerOwnsName`. The view goes and the archive gains one entry per ID.
+       * receipts, participant keys) goes only while `workerOwnsName`. Addressed delivery ends with per-message
+       * outcomes before receipts go. The view goes and the archive gains one entry per ID.
        */
       retireWorker(id3, archived, post) {
         if (archived.id !== id3) throw new Error("retirement id does not match record");
@@ -9941,7 +9973,7 @@ var init_doc = __esm({
         this.doc.transact(() => {
           const cached3 = this.doc.getMap("completedPublications");
           for (const [key3, value5] of cached3) if (value5.worker.id === id3) cached3.delete(key3);
-          if (this.workerOwnsName(id3, name)) {
+          if (this.retireWorkerMail([archived], archived.retiredAt).has(name)) {
             this.clearWorkerCoordination(name, "retired", post);
             const conflicts = this.doc.getMap("conflicts");
             for (const [key3, slot] of conflicts) if (slot.owner === name) conflicts.delete(key3);
@@ -10207,7 +10239,7 @@ var init_doc = __esm({
       get mail() {
         return this.doc.getMap("mail");
       }
-      /** Terminal outcomes of addressed messages that were never receipted. */
+      /** Terminal addressed delivery outcomes; retirement also ends read messages before clearing receipts. */
       get outcomes() {
         return this.doc.getMap("outcomes");
       }
@@ -41858,6 +41890,11 @@ async function sweepClone(session, registry2, rooms) {
   } catch (error2) {
     rooms.log(`nothing-to-collect retirement: ${error2}`);
   }
+  try {
+    for (const held2 of rooms.all()) await registry2.retireWorkerMail(held2.room, held2.me.name, held2.roomName);
+  } catch (error2) {
+    rooms.log(`retired worker mail: ${error2}`);
+  }
   await registry2.pruneRetired(ROOM_STALE_MS).catch((error2) => {
     rooms.log(`retired record retention: ${error2}`);
   });
@@ -42087,9 +42124,9 @@ var init_registry = __esm({
         for (const s of others) if (_Rooms.joinedBy(s, name)) return s;
         return from2;
       }
-      /** The session whose bus carries a message id, if any of ours does. */
+      /** The session carrying a message body or its terminal outcome, if any of ours does. */
       holdingQuestion(msgId, from2 = this.primary() ?? this.mustHave()) {
-        for (const s of [from2, ...this.all().filter((x) => x !== from2)]) if (s.room.message(msgId)) return s;
+        for (const s of [from2, ...this.all().filter((x) => x !== from2)]) if (s.room.message(msgId) || s.room.outcomes.has(msgId)) return s;
         return void 0;
       }
       mustHave() {
@@ -48531,6 +48568,22 @@ var init_worker_file_store = __esm({
           seq: old.seq + 1
         }));
       }
+      /**
+       * End mail only for this lead's known workers with no live tag in this clone. The capacity guard
+       * excludes tag creation/reuse through the inventory check and the synchronous document transaction.
+       * Room history supplies names after record pruning; only the complete local registry proves no successor.
+       */
+      async retireWorkerMail(room, lead, roomName) {
+        await guarded3(path57.join(this.root, "capacity"), () => {
+          const records = requireWorkerInventory(this.#list());
+          const liveTags = new Set(records.filter((record2) => !ended(record2)).map((record2) => record2.tag));
+          const workers = [
+            ...records.filter((record2) => record2.lead.participant === lead && (record2.room === roomName || record2.projectedInto === roomName)),
+            ...room.retiredWorkers().filter((record2) => record2.lead === lead)
+          ].filter((record2) => !liveTags.has(record2.tag));
+          room.retireWorkerMail(workers, this.now());
+        });
+      }
       /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
       archiveOf(record2, facts) {
         requireWorkerInventory(this.#list());
@@ -49650,6 +49703,9 @@ var init_worker_registry = __esm({
       }
       beginRetirement(...args2) {
         return this.backend().beginRetirement(...args2);
+      }
+      retireWorkerMail(...args2) {
+        return this.backend().retireWorkerMail(...args2);
       }
       pruneRetired(...args2) {
         return this.backend().pruneRetired(...args2);
@@ -64801,6 +64857,11 @@ function handlers8(state) {
   const alias = (s, name) => s.room.doc.getMap("aliases").get(name) ?? name;
   const names = { all: () => rooms.all(), presences, myWorkers };
   const known = (s) => knownNames(s, presences);
+  const willNotAnswer = (name, record2, verb = "finished", advice = "", claim2 = " and will not answer") => {
+    const ago2 = record2?.finishedAt === void 0 ? "" : ` ${Math.max(0, Math.floor((now() - record2.finishedAt) / 6e4))}m ago`;
+    const summary = record2?.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
+    return `${name} ${verb}${ago2}${claim2}; its summary: ${summary}${advice}`;
+  };
   const describeRecipient = (s, name, workers) => {
     const present = presences(s).some((p) => p.user.name === name);
     const own2 = workers.find((w) => w.name === name);
@@ -64818,7 +64879,7 @@ function handlers8(state) {
       const summary = record2.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
       const verb = retired || exited ? "finished" : `reported ${worker.status}`;
       const resumable2 = !!own2 && own2.status === "done" && !!own2.hostSessionId && fs71.existsSync(own2.dir) && !retired;
-      return { text: resumable2 ? `${name} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : `${name} ${verb}${ago2} and will not answer; its summary: ${summary}${!own2 && !retired && worker?.status === "done" ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ""}`, terminal: true };
+      return { text: resumable2 ? `${name} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : willNotAnswer(name, record2, verb, !own2 && !retired && worker?.status === "done" ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ""), terminal: true };
     }
     if (presences(s).some((p) => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false };
     if (present || worker) return void 0;
@@ -64837,6 +64898,11 @@ function handlers8(state) {
     }
   };
   const unavailableQuestion = (s, questionId) => {
+    const outcome = s.room.outcomes.get(questionId);
+    if (outcome?.outcome === "recipient-retired") {
+      const retired = s.room.retiredWorkers().filter((w) => w.name === outcome.to).sort((a, b) => b.retiredAt - a.retiredAt)[0];
+      return s.room.message(questionId) ? willNotAnswer(outcome.to, retired) : willNotAnswer(outcome.to, retired, "finished", "", "; no answer to this question is retained");
+    }
     const cached3 = unavailableQuestions.get(questionId);
     if (cached3) return cached3;
     const question = s.room.message(questionId);

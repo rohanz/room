@@ -1,4 +1,4 @@
-import { deliveryIndex } from './delivery.js'
+import { deliveryIndex, retireRecipient } from './delivery.js'
 import { retainedPublication, publicationRevisionCurrent, type CompletedPublication } from './worker-memory.js'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
@@ -206,20 +206,29 @@ export class RoomDoc {
 
   /**
    * Whether the live state under `name` is worker `id`'s: its holder names `id`, a team projection's
-   * `projectedFrom` does, or, with neither, no other worker's view holds the name. A newer worker or a
-   * standalone participant under the same name never is.
+   * `projectedFrom` does, or, with neither, no participant identity or other worker's view holds the name.
+   * A newer worker or a standalone participant under the same name never is.
    */
   workerOwnsName(id: string, name: string): boolean {
     const record = participantRecord(this, name)
     return record?.holder ? record.holder.workerId === id
       : record?.proj ? record.proj.projectedFrom === id
-      : ![...this.workerViews.values()].some(view => view.name === name && view.id !== id)
+      : !record?.id && ![...this.workerViews.values()].some(view => view.name === name && view.id !== id)
+  }
+
+  /** End a retired worker's mail only while it still owns the name, in one pass for all eligible names. */
+  retireWorkerMail(workers: Iterable<Pick<RetiredWorker, 'id' | 'name'>>, at: number): ReadonlySet<string> {
+    const names = new Set<string>()
+    for (const worker of workers) if (worker.id && this.workerOwnsName(worker.id, worker.name)) names.add(worker.name)
+    if (names.size) retireRecipient(this, names, at)
+    return names
   }
 
   /**
    * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
    * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
-   * receipts, participant keys) goes only while `workerOwnsName`. The view goes and the archive gains one entry per ID.
+   * receipts, participant keys) goes only while `workerOwnsName`. Addressed delivery ends with per-message
+   * outcomes before receipts go. The view goes and the archive gains one entry per ID.
    */
   retireWorker(id: string, archived: RetiredWorker & { id: string }, post: ReleasePoster): void {
     if (archived.id !== id) throw new Error('retirement id does not match record')
@@ -227,7 +236,7 @@ export class RoomDoc {
     this.doc.transact(() => {
       const cached = this.doc.getMap<CompletedPublication>('completedPublications')
       for (const [key, value] of cached) if (value.worker.id === id) cached.delete(key)
-      if (this.workerOwnsName(id, name)) {
+      if (this.retireWorkerMail([archived], archived.retiredAt).has(name)) {
         this.clearWorkerCoordination(name, 'retired', post)
         const conflicts = this.doc.getMap<{ owner?: string }>('conflicts')
         for (const [key, slot] of conflicts) if (slot.owner === name) conflicts.delete(key)
@@ -481,7 +490,7 @@ export class RoomDoc {
   messages(): Msg[] { return this.bus.toArray() }
   /** Addressed messages that left the bus while owed or answerable; written by the trim (delivery.ts). */
   get mail(): Y.Map<Msg> { return this.doc.getMap<Msg>('mail') }
-  /** Terminal outcomes of addressed messages that were never receipted. */
+  /** Terminal addressed delivery outcomes; retirement also ends read messages before clearing receipts. */
   get outcomes(): Y.Map<Outcome> { return this.doc.getMap<Outcome>('outcomes') }
   /** Compact records of every message the trim removed from the bus. */
   get archive(): Y.Map<ArchivedMsg> { return this.doc.getMap<ArchivedMsg>('archive') }
