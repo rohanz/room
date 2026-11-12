@@ -49,15 +49,10 @@ const batch = LevelUP.prototype.batch;
 LevelUP.prototype.batch = function(...args) { writes++; return batch.apply(this, args) };
 let server;
 net.Server.prototype.listen = function() { server = this; return this };
-const { WebSocketServer } = require('ws');
-WebSocketServer.prototype.handleUpgrade = function(req, socket, head, done) {
-  const ws = new EventEmitter(); ws.readyState = 1; ws.bufferedAmount = 0;
-  ws.send = (data, ...args) => args.find(arg => typeof arg === 'function')?.(); ws.ping = () => {};
-  ws.close = ws.terminate = () => { if (ws.readyState === 3) return; ws.readyState = 3; ws.emit('close') };
-  done(ws); socket.completed({ status: 101 });
-};
+const { installNegotiatingUpgrade } = await import(${JSON.stringify(path.join(root, 'packages/server/test/helpers/negotiating-upgrade.ts'))});
+installNegotiatingUpgrade();
 const connect = () => new Promise(resolve => {
-  const req = new EventEmitter(); req.url = '/' + encodeURIComponent(room) + '?schema=2';
+  const req = new EventEmitter(); req.url = '/' + encodeURIComponent(room) + '?schema=2&negotiate=1';
   req.headers = { host: 'localhost' }; req.socket = { remoteAddress: '127.0.0.1' };
   const socket = new EventEmitter(); socket.remoteAddress = '127.0.0.1'; socket.destroyed = false; socket.completed = resolve;
   socket.end = text => resolve({ status: Number(/^HTTP\\/1.1 (\\d+)/.exec(text)?.[1]), body: text });

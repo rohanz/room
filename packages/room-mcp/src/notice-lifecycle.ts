@@ -11,7 +11,7 @@ import { HubError } from './hub-client.js'
 const nonce = () => randomBytes(16).toString('hex')
 const instances = new WeakMap<Session, NoticeLifecycle>()
 export function noticeLifecycle(s: Session): NoticeLifecycle | undefined {
-  if (s.contract?.legacy || s.contract?.capabilities[NOTICE_CAPABILITY] !== 1) return undefined
+  if (s.contract?.capabilities[NOTICE_CAPABILITY] !== 1) return undefined
   let lifecycle = instances.get(s)
   if (!lifecycle) { lifecycle = new NoticeLifecycle(s); instances.set(s, lifecycle) }
   return lifecycle
@@ -25,7 +25,7 @@ export class NoticeLifecycle {
   private readonly accepted = new Map<string, NoticeRecord>()
   private generation?: number
   constructor(private readonly s: Session) {}
-  private supported(): boolean { return !this.s.contract?.legacy && this.s.contract?.capabilities[NOTICE_CAPABILITY] === 1 }
+  private supported(): boolean { return this.s.contract?.capabilities[NOTICE_CAPABILITY] === 1 }
   private fallback(reason: unknown): void {
     const warning = `notice lifecycle TTL fallback: ${String(reason)}`
     if (!this.fallbacks.has(warning)) { this.fallbacks.add(warning); process.stderr.write(`room-mcp: ${warning}\n`) }

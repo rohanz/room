@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { relayConnectionHandler, SecureSession } from '../src/index.js'
 import { saveMemory } from '../src/memory.js'
 import * as Y from 'yjs'
+import { CURRENT_COMPAT, encodeFrame, decodeFrame } from '@room/hub-core'
 
 const dirs: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -30,14 +31,17 @@ class Socket extends EventEmitter {
   terminate() { this.close() }
 }
 
-function loadThroughRelay(dir: string, room: string) {
+async function loadThroughRelay(dir: string, room: string) {
   const docs = new Map(), conn = new Socket()
   relayConnectionHandler(docs, { key: '', commonDir: dir })(conn as unknown as WebSocket,
-    { url: '/' + encodeURIComponent(room) + '?schema=2' } as http.IncomingMessage)
+    { url: '/' + encodeURIComponent(room) + '?schema=2&negotiate=1' } as http.IncomingMessage)
   const secure = new SecureSession('', room, 'client')
   conn.emit('message', secure.clientHello(), true)
   secure.acceptRelayHello(conn.frames.shift()!)
-  conn.emit('message', secure.encrypt(Uint8Array.of(0, 0, 0)), true)
+  conn.emit('message', secure.encrypt(encodeFrame({ v: 1, op: 'compat-hello', id: 'hello', sessionId: 'test', offer: CURRENT_COMPAT })), true)
+  await vi.waitFor(() => expect(conn.frames.length).toBeGreaterThan(0))
+  const selection = decodeFrame(secure.decrypt(conn.frames.shift()!)) as { selectionId: string }
+  conn.emit('message', secure.encrypt(encodeFrame({ v: 1, op: 'compat-ack', id: 'ack', selectionId: selection.selectionId })), true)
   try {
     expect(conn.closure).toBeUndefined()
     expect(docs.size).toBe(1)
@@ -48,7 +52,7 @@ function loadThroughRelay(dir: string, room: string) {
   }
 }
 
-it('accepts completed 0.17 memory when an unrelated process has reused the PID-only legacy discovery', () => {
+it('accepts completed 0.17 memory when an unrelated process has reused the PID-only legacy discovery', async () => {
   const dir = common(), room = 'local/repo', ledger = completed(dir, room)
   const doc = new Y.Doc(); doc.getMap('meta').set('schemaVersion', 2)
   expect(saveMemory(dir, room, doc)).toBe(true); doc.destroy()
@@ -56,7 +60,7 @@ it('accepts completed 0.17 memory when an unrelated process has reused the PID-o
   fs.writeFileSync(discovery, before)
   // Old discovery did not record a birth identity. The old owner has exited; this PID is now another app.
   const read = vi.spyOn(fs, 'readFileSync')
-  loadThroughRelay(dir, room)
+  await loadThroughRelay(dir, room)
   expect(read.mock.calls.some(([file]) => file === discovery || file === ledger)).toBe(false)
   read.mockRestore()
   expect(fs.readFileSync(discovery, 'utf8')).toBe(before)
@@ -65,7 +69,7 @@ it('accepts completed 0.17 memory when an unrelated process has reused the PID-o
 
 // Removed reviewer remedy cases: old local files are ignored under the revised rule, so no local-data refusal remains.
 
-it('keeps completed journals, old snapshots and temporary files byte-identical', () => {
+it('keeps completed journals, old snapshots and temporary files byte-identical', async () => {
   const dir = common(), room = 'local/repo', ledger = completed(dir, room)
   const old = path.join(dir, 'room-local', `${encodeURIComponent(room + '/main')}.ydoc`)
   fs.mkdirSync(path.dirname(old)); fs.writeFileSync(old, 'old source')

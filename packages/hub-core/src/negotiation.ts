@@ -22,7 +22,6 @@ export type CompatAdvertisement = {
   schemas: { read: DocSchema[]; write: DocSchema[] }
   capabilities: CapabilityVersions
   requiredCapabilities?: CapabilityVersions
-  legacy?: { schema: 2; hub: 1 }
   release?: string
 }
 export type CapabilityName = 'room.generation' | 'room.manifest' | 'room.ledger' | 'room.worker-handover' | 'room.daemon' | 'room.notice-lifecycle'
@@ -49,12 +48,10 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CapabilityName, CapabilityCont
   'room.notice-lifecycle': { scope: 'connection', wire: 'optional proto-1 notice-lifecycle requests authorized by private live leases', documentEffects: 'stage 1 same-room exact-id registration with private worker dependencies and worker-retirement endings only; no evaluated endings, restart recovery or projection; unknown/untracked state retains TTL', versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: { 'room.ledger': [1] } } } },
 })
 
-function baseline(): CompatAdvertisement {
-  return { bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] }, capabilities: { 'room.generation': [1], 'room.manifest': [1], 'room.ledger': [1] }, legacy: { schema: 2, hub: 1 } }
-}
-/** Fixed supported 0.17.0–0.17.32 wire profile. Never infer new safety behavior from it. */
-export const LEGACY_COMPAT: CompatAdvertisement = freeze(baseline())
-export const CURRENT_COMPAT: CompatAdvertisement = freeze({ ...baseline(), capabilities: { ...baseline().capabilities, 'room.notice-lifecycle': [1] } })
+export const CURRENT_COMPAT: CompatAdvertisement = freeze({
+  bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] },
+  capabilities: { 'room.generation': [1], 'room.manifest': [1], 'room.ledger': [1], 'room.notice-lifecycle': [1] },
+})
 
 export class CompatibilityValidationError extends Error {
   constructor(message: string) { super(message); this.name = 'CompatibilityValidationError' }
@@ -101,16 +98,13 @@ function text(value: unknown, label: string, max = 256): string {
 export function parseAdvertisement(value: unknown): CompatAdvertisement {
   bounded(value, COMPAT_MAX_BYTES, 'compat')
   const ad = object(value, 'compat')
-  keys(ad, ['bootstrap', 'hub', 'schemas', 'capabilities', 'requiredCapabilities', 'legacy', 'release'], 'compat')
+  // Daemons and open sessions survive an on-machine plugin upgrade. Builds 0.17.38–0.17.48
+  // advertise this advisory fallback field; ignore it without enabling non-negotiating admission.
+  keys(ad, ['bootstrap', 'hub', 'schemas', 'capabilities', 'requiredCapabilities', 'release', 'legacy'], 'compat')
   if (ad.bootstrap !== COMPAT_BOOTSTRAP) invalid('unsupported bootstrap; implement bootstrap 1')
   const schemas = object(ad.schemas, 'schemas'); keys(schemas, ['read', 'write'], 'schemas')
   const result: CompatAdvertisement = { bootstrap: 1, hub: range(ad.hub, 'hub'), schemas: { read: versions(schemas.read, 'schemas.read'), write: versions(schemas.write, 'schemas.write', true) }, capabilities: capabilities(ad.capabilities, 'capabilities') }
   if (ad.requiredCapabilities !== undefined) result.requiredCapabilities = capabilities(ad.requiredCapabilities, 'requiredCapabilities')
-  if (ad.legacy !== undefined) {
-    const legacy = object(ad.legacy, 'legacy'); keys(legacy, ['schema', 'hub'], 'legacy')
-    if (legacy.schema !== 2 || legacy.hub !== 1 || result.hub.min > 1 || !result.schemas.read.includes(2) || !result.schemas.write.includes(2)) invalid('legacy requires the implemented schema-2/proto-1 profile')
-    result.legacy = { schema: 2, hub: 1 }
-  }
   if (ad.release !== undefined) result.release = text(ad.release, 'release', 128)
   return result
 }
@@ -206,16 +200,6 @@ export function selectContract(clientInput: CompatAdvertisement, serverInput: Co
   return lastFailure!
 }
 
-/** Discovery recognition only. Transport security, learned floors and runtime policy remain mandatory. */
-export function legacyAdvertisement(health: unknown): CompatAdvertisement | null {
-  if (!health || typeof health !== 'object' || Array.isArray(health)) return null
-  const h = health as Record<string, unknown>
-  return h.ok === true && h.schema === 2 && h.hub === 1 && !Object.hasOwn(h, 'compat') ? baseline() : null
-}
-export function legacyHello(id: string, client: string, sessionId: string): { v: 1; id: string; op: 'hello'; proto: 1; schema: 2; client: string; sessionId: string } {
-  return { v: 1, id, op: 'hello', proto: 1, schema: 2, client, sessionId }
-}
-
 export type BootstrapHello = { v: 1; op: 'compat-hello'; id: string; sessionId: string; offer: CompatAdvertisement }
 export type BootstrapAck = { v: 1; op: 'compat-ack'; id: string; selectionId: string }
 /** The transport emits this only after revalidation and attachment, before any Yjs frame. */
@@ -238,7 +222,7 @@ export function validateSelection(value: unknown, clientInput: CompatAdvertiseme
     for (const [name, set] of Object.entries(offered)) if (!peer.capabilities[name]?.includes(set[0])) invalid(`selection is outside the ${side} capability offer: ${name}`)
   }
   // Pin only the chosen protocol/capabilities, preserving both sides' requirements and schema sets.
-  const narrow = (peer: CompatAdvertisement): CompatAdvertisement => ({ ...peer, hub: { min: s.hub as number, max: s.hub as number }, capabilities: offered, legacy: undefined })
+  const narrow = (peer: CompatAdvertisement): CompatAdvertisement => ({ ...peer, hub: { min: s.hub as number, max: s.hub as number }, capabilities: offered })
   const result = selectContract(narrow(client), narrow(server), { ...policy, activeSchema: s.schema })
   if (!result.ok) invalid(result.error.text)
   if (Object.keys(result.selection.capabilities).length !== Object.keys(offered).length) invalid('selection includes an unregistered capability or unsupported dependency')

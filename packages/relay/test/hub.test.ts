@@ -76,7 +76,7 @@ const relayEnv: MakeEnv = async clock => {
   }
 }
 
-contractSuite('local relay', relayEnv)
+contractSuite('local relay', relayEnv, { bootstrapGreets: true })
 
 describe('relay hub wiring', () => {
   it('a successor reads leases from the shared clone directory', async () => {

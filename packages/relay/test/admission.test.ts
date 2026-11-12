@@ -11,7 +11,7 @@ import * as decoding from 'lib0/decoding'
 import * as sync from 'y-protocols/sync'
 import { relayConnectionHandler, SecureSession, AuthorityLock, loadMemory, memoryFile, localViewKey } from '../src/index.js'
 import { holderDeadCheck, incarnationFile } from '../src/hub.js'
-import { decodeFrame, encodeFrame } from '@room/hub-core'
+import { CURRENT_COMPAT, decodeFrame, encodeFrame } from '@room/hub-core'
 
 const key = 'synthetic-admission-key'
 type Docs = Parameters<typeof relayConnectionHandler>[0]
@@ -21,6 +21,7 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() 
 
 /** Real authenticated frames at the handler seam: loopback listen is EPERM in this sandbox. */
 class Socket extends EventEmitter {
+  _receiver = { _maxPayload: 100 * 1024 * 1024 }
   readonly OPEN = 1
   readonly CLOSED = 3
   readyState = this.OPEN
@@ -40,14 +41,20 @@ function fixture(options: Partial<Options> = {}) {
     for (const socket of sockets) socket.close()
     for (const d of docs.values()) { d.closed = true; d.hub?.stop(); d.memory?.close(); d.awareness.destroy(); d.doc.destroy() }
   })
-  const connect = (room = 'local/synthetic', ready = true, target = encodeURIComponent(room), view = false) => {
+  const connect = async (room = 'local/synthetic', ready = true, target = encodeURIComponent(room), view = false) => {
     const socket = new Socket(); sockets.push(socket)
-    handler(socket as unknown as WebSocket, { url: `/${target}?schema=2`, ticketView: view } as unknown as http.IncomingMessage)
+    handler(socket as unknown as WebSocket, { url: `/${target}?schema=2&negotiate=1`, ticketView: view } as unknown as http.IncomingMessage)
     const client = new SecureSession(view ? localViewKey(key, room) : key, room, 'client')
     const send = (frame: Uint8Array) => { if (!socket.closure) socket.emit('message', client.encrypt(frame), true) }
     if (ready && !socket.closure) {
       socket.emit('message', client.clientHello(), true)
       client.acceptRelayHello(socket.frames.shift()!)
+      send(encodeFrame({ v: 1, id: 'bootstrap', op: 'compat-hello', sessionId: 'synthetic', offer: CURRENT_COMPAT }))
+      while (!socket.frames.length && !socket.closure) await new Promise(resolve => setTimeout(resolve, 0))
+      if (socket.closure) return { socket, client, send }
+      const selected = decodeFrame(client.decrypt(socket.frames.shift()!)) as { selectionId: string }
+      send(encodeFrame({ v: 1, id: 'ack', op: 'compat-ack', selectionId: selected.selectionId }))
+      client.decrypt(socket.frames.shift()!) // ACK precedes Yjs frames
       const doc = new Y.Doc(), enc = encoding.createEncoder()
       encoding.writeVarUint(enc, 0); sync.writeSyncStep1(enc, doc); doc.destroy()
       send(encoding.toUint8Array(enc))
@@ -71,52 +78,52 @@ describe('relay aggregate admission (A5)', () => {
     expect(() => fixture({ admission: { maxRooms: value } })).toThrow('positive safe integers')
     expect(() => fixture({ awareness: { maxIdsPerRoom: value } })).toThrow('positive safe integers')
   })
-  it('bounds 20 distinct room attempts at the default eight, including disconnected docs', () => {
+  it('bounds 20 distinct room attempts at the default eight, including disconnected docs', async () => {
     const f = fixture()
     for (let i = 0; i < 20; i++) {
-      const c = f.connect(`local/probe-${i}`)
+      const c = (await f.connect(`local/probe-${i}`))
       if (i >= 8) expect(c.socket.closure).toEqual({ code: 1013, reason: 'relay room limit reached' })
       c.socket.close()
     }
     expect(f.docs.size).toBe(8)
     expect([...f.docs.values()].every(d => d.conns.size === 0)).toBe(true)
   })
-  it('reserves pending handshake rooms, releases failed handshakes, and keeps admitted rooms usable', () => {
+  it('reserves pending handshake rooms, releases failed handshakes, and keeps admitted rooms usable', async () => {
     const f = fixture({ admission: { maxRooms: 2 } })
-    const a = f.connect('local/a'), pending = f.connect('local/b', false)
-    expect(f.connect('local/c').socket.closure?.reason).toBe('relay room limit reached')
+    const a = (await f.connect('local/a')), pending = (await f.connect('local/b', false))
+    expect((await f.connect('local/c')).socket.closure?.reason).toBe('relay room limit reached')
     expect(f.docs.size).toBe(1)
     pending.socket.emit('error', new Error('synthetic failure'))
-    const c = f.connect('local/c')
+    const c = (await f.connect('local/c'))
     expect(c.socket.closure).toBeUndefined()
-    expect(f.connect('local/a').socket.closure).toBeUndefined()
+    expect((await f.connect('local/a')).socket.closure).toBeUndefined()
     expect(a.socket.closure).toBeUndefined()
     expect(f.docs.size).toBe(2)
   })
-  it('caps total sockets including handshakes and returns slots once on close/error', () => {
+  it('caps total sockets including handshakes and returns slots once on close/error', async () => {
     const f = fixture({ admission: { maxConnections: 2 } })
-    const a = f.connect('local/a', false), b = f.connect('local/b')
-    expect(f.connect('local/a').socket.closure).toEqual({ code: 1013, reason: 'relay connection limit reached' })
+    const a = (await f.connect('local/a', false)), b = (await f.connect('local/b'))
+    expect((await f.connect('local/a')).socket.closure).toEqual({ code: 1013, reason: 'relay connection limit reached' })
     a.socket.emit('error', new Error('synthetic failure')); a.socket.close()
-    expect(f.connect('local/c').socket.closure).toBeUndefined()
-    expect(f.connect('local/d').socket.closure?.reason).toBe('relay connection limit reached')
+    expect((await f.connect('local/c')).socket.closure).toBeUndefined()
+    expect((await f.connect('local/d')).socket.closure?.reason).toBe('relay connection limit reached')
     expect(b.socket.closure).toBeUndefined()
   })
-  it('caps sockets per room and preserves encoded and legacy room-name routing', () => {
+  it('caps sockets per room and preserves encoded and legacy room-name routing', async () => {
     const f = fixture({ admission: { maxConnectionsPerRoom: 2 } })
-    const a = f.connect('local/legacy', true, 'local/legacy')
-    f.connect('local/legacy')
-    expect(f.connect('local/legacy', false, 'local/legacy').socket.closure).toEqual({ code: 1013, reason: 'relay room connection limit reached' })
-    expect(f.connect('legacy-name').socket.closure).toBeUndefined()
+    const a = (await f.connect('local/legacy', true, 'local/legacy'))
+    await f.connect('local/legacy')
+    expect((await f.connect('local/legacy', false, 'local/legacy')).socket.closure).toEqual({ code: 1013, reason: 'relay room connection limit reached' })
+    expect((await f.connect('legacy-name')).socket.closure).toBeUndefined()
     expect(f.docs.size).toBe(2)
     a.socket.close()
-    expect(f.connect('local/legacy').socket.closure).toBeUndefined()
+    expect((await f.connect('local/legacy')).socket.closure).toBeUndefined()
   })
 })
 
 describe('relay awareness budgets (A5)', () => {
-  it('closes a connection at the default 16 lifetime unique IDs', () => {
-    const f = fixture(), c = f.connect()
+  it('closes a connection at the default 16 lifetime unique IDs', async () => {
+    const f = fixture(), c = (await f.connect())
     for (let id = 1; id <= 40; id++) c.send(presence([[id, 1, { name: `synthetic-${id}` }]]))
     const d = [...f.docs.values()][0]
     expect(c.socket.closure).toEqual({ code: 4429, reason: 'invalid or excessive presence' })
@@ -126,22 +133,22 @@ describe('relay awareness budgets (A5)', () => {
   it.each([
     ['message bytes', { maxMessageBytes: 64 }, [[1, 1, { text: 'x'.repeat(100) }]], 'presence budget exceeded'],
     ['state bytes', { maxStateBytes: 64 }, [[1, 1, { text: 'é'.repeat(40) }]], 'invalid or excessive presence'],
-  ] as const)('refuses excessive %s before applying presence', (_label, awareness, entries, reason) => {
-    const f = fixture({ awareness }), c = f.connect()
+  ] as const)('refuses excessive %s before applying presence', async (_label, awareness, entries, reason) => {
+    const f = fixture({ awareness }), c = (await f.connect())
     c.send(presence(entries as unknown as [number, number, unknown][]))
     expect(c.socket.closure).toEqual({ code: 4429, reason })
     expect([...f.docs.values()][0].awareness.getStates().size).toBe(0)
   })
-  it('enforces the production message and state byte defaults', () => {
+  it('enforces the production message and state byte defaults', async () => {
     for (const size of [17 * 1024, 65 * 1024]) {
-      const f = fixture(), c = f.connect()
+      const f = fixture(), c = (await f.connect())
       c.send(presence([[1, 1, { text: 'x'.repeat(size) }]]))
       expect(c.socket.closure?.code).toBe(4429)
       expect([...f.docs.values()][0].awareness.getStates().size).toBe(0)
     }
   })
-  it('counts unknown removals and unique IDs across removal/re-add cycles', () => {
-    const f = fixture({ awareness: { maxIdsPerConnection: 2 } }), c = f.connect()
+  it('counts unknown removals and unique IDs across removal/re-add cycles', async () => {
+    const f = fixture({ awareness: { maxIdsPerConnection: 2 } }), c = (await f.connect())
     c.send(presence([[1, 1, {}], [1, 2, {}]])) // duplicate batch IDs consume one slot
     c.send(presence([[1, 3, null], [2, 1, null]]))
     c.send(presence([[1, 4, {}]]))
@@ -149,10 +156,10 @@ describe('relay awareness budgets (A5)', () => {
     c.send(presence([[3, 1, null]]))
     expect(c.socket.closure?.code).toBe(4429)
   })
-  it('caps room metadata across connections, keeps removals safe, and prunes stale tombstones', () => {
+  it('caps room metadata across connections, keeps removals safe, and prunes stale tombstones', async () => {
     let now = Date.now()
     const f = fixture({ awareness: { maxIdsPerRoom: 3, now: () => now } })
-    const a = f.connect(), b = f.connect(), d = [...f.docs.values()][0]
+    const a = (await f.connect()), b = (await f.connect()), d = [...f.docs.values()][0]
     a.send(presence([[1, 1, {}], [2, 1, {}]]))
     b.send(presence([[3, 1, {}]]))
     expect(b.socket.closure).toBeUndefined() // full rooms silently drop new presence, as the hosted server does
@@ -171,17 +178,17 @@ describe('relay awareness budgets (A5)', () => {
     expect(d.awareness.getStates().has(3)).toBe(true)
     expect(d.awareness.getStates().has(2)).toBe(true)
   })
-  it('allows echoes from other clients without consuming their ID budgets', () => {
-    const f = fixture({ awareness: { maxIdsPerConnection: 1 } }), a = f.connect(), b = f.connect()
+  it('allows echoes from other clients without consuming their ID budgets', async () => {
+    const f = fixture({ awareness: { maxIdsPerConnection: 1 } }), a = (await f.connect()), b = (await f.connect())
     a.send(presence([[1, 1, { name: 'synthetic-a' }]]))
     b.send(presence([[1, 1, { name: 'synthetic-a' }]]))
     b.send(presence([[2, 1, { name: 'synthetic-b' }]]))
     expect(b.socket.closure).toBeUndefined()
     expect([...f.docs.values()][0].awareness.getStates().size).toBe(2)
   })
-  it('counts a previously owned but pruned ID against room capacity when re-added', () => {
+  it('counts a previously owned but pruned ID against room capacity when re-added', async () => {
     let now = Date.now()
-    const f = fixture({ awareness: { maxIdsPerRoom: 3, maxIdsPerConnection: 3, now: () => now } }), a = f.connect(), b = f.connect()
+    const f = fixture({ awareness: { maxIdsPerRoom: 3, maxIdsPerConnection: 3, now: () => now } }), a = (await f.connect()), b = (await f.connect())
     a.send(presence([[1, 1, {}], [1, 2, null]]))
     const d = [...f.docs.values()][0]
     // Yjs stamps records with its own clock; expire relative to those stamps, not fixture setup.
@@ -193,9 +200,9 @@ describe('relay awareness budgets (A5)', () => {
     expect(d.awareness.getStates().has(1)).toBe(false)
     expect(a.socket.closure).toBeUndefined()
   })
-  it('cleans removed IDs after the echo grace period even without another presence update', () => {
+  it('cleans removed IDs after the echo grace period even without another presence update', async () => {
     let now = Date.now()
-    const f = fixture({ awareness: { now: () => now } }), a = f.connect(), d = [...f.docs.values()][0]
+    const f = fixture({ awareness: { now: () => now } }), a = (await f.connect()), d = [...f.docs.values()][0]
     a.send(presence([[1, 1, {}]])); a.socket.close()
     expect(d.awareness.meta.has(1)).toBe(true)
     // Yjs stamps records with its own clock; expire relative to those stamps, not fixture setup.
@@ -203,9 +210,9 @@ describe('relay awareness budgets (A5)', () => {
     d.presence.prune() // the relay maintenance ticker uses the same operation
     expect(d.awareness.meta.has(1)).toBe(false)
   })
-  it('bounds message frequency and refreshes its minute window', () => {
+  it('bounds message frequency and refreshes its minute window', async () => {
     let now = Date.now()
-    const f = fixture({ awareness: { maxMessagesPerMinute: 2, now: () => now } }), c = f.connect()
+    const f = fixture({ awareness: { maxMessagesPerMinute: 2, now: () => now } }), c = (await f.connect())
     c.send(presence([[1, 1, {}]])); c.send(presence([[1, 1, {}]]))
     now += 60_000
     c.send(presence([[1, 2, {}]])); c.send(presence([[1, 2, {}]]))
@@ -213,19 +220,19 @@ describe('relay awareness budgets (A5)', () => {
     c.send(presence([[1, 2, {}]]))
     expect(c.socket.closure?.reason).toBe('presence budget exceeded')
   })
-  it('rejects malformed presence without affecting another connection', () => {
-    const f = fixture(), a = f.connect(), b = f.connect()
+  it('rejects malformed presence without affecting another connection', async () => {
+    const f = fixture(), a = (await f.connect()), b = (await f.connect())
     a.send(Uint8Array.of(1, 2, 255))
     expect(a.socket.closure?.code).toBe(4429)
     b.send(presence([[1, 1, {}]]))
     expect(b.socket.closure).toBeUndefined()
   })
-  it('preserves read-only viewer awareness behavior while counting its admission slot', () => {
-    const f = fixture({ admission: { maxConnections: 1 } }), view = f.connect('local/synthetic', true, 'local%2Fsynthetic', true)
+  it('preserves read-only viewer awareness behavior while counting its admission slot', async () => {
+    const f = fixture({ admission: { maxConnections: 1 } }), view = (await f.connect('local/synthetic', true, 'local%2Fsynthetic', true))
     view.send(presence([[1, 1, { text: 'x'.repeat(65 * 1024) }]]))
     expect(view.socket.closure).toBeUndefined()
     expect([...f.docs.values()][0].awareness.getStates().size).toBe(0)
-    expect(f.connect().socket.closure?.reason).toBe('relay connection limit reached')
+    expect((await f.connect()).socket.closure?.reason).toBe('relay connection limit reached')
   })
 })
 
@@ -237,7 +244,7 @@ it('preserves live sync, reconnecting awareness, memory flush, and hub requests 
   const f = fixture({ commonDir, admission: { maxRooms: 1, maxConnectionsPerRoom: 1 }, hub: {
     lock, store: incarnationFile(commonDir), mono: () => performance.now(), wall: Date.now, holderDead: holderDeadCheck(),
   } })
-  const a = f.connect(), d = [...f.docs.values()][0], update = new Y.Doc()
+  const a = (await f.connect()), d = [...f.docs.values()][0], update = new Y.Doc()
   update.getText('live').insert(0, 'survives reconnect')
   update.getArray('bus').push([{ id: 'synthetic-memory' }])
   const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); sync.writeUpdate(enc, Y.encodeStateAsUpdate(update)); update.destroy()
@@ -246,7 +253,7 @@ it('preserves live sync, reconnecting awareness, memory flush, and hub requests 
   expect(fs.existsSync(memoryFile(commonDir, 'local/synthetic'))).toBe(true)
   const saved = loadMemory(commonDir, 'local/synthetic')
   expect(saved.getArray('bus').toArray()).toEqual([{ id: 'synthetic-memory' }]); saved.destroy()
-  const b = f.connect()
+  const b = (await f.connect())
   expect([...f.docs.values()][0]).toBe(d)
   b.send(presence([[1, 2, { name: 'synthetic' }]]))
   expect(d.awareness.getStates().get(1)).toEqual({ name: 'synthetic' })

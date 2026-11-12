@@ -1,3 +1,4 @@
+import { teamHealth } from './fixtures/team-server.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -329,6 +330,7 @@ describe('tool timing', () => {
     const tracker = new ToolTimingTracker({ now: () => joinClock.now, log: line => lines.push(line) })
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
+      if (url.endsWith('/health')) return teamHealth()
       if (url.endsWith('/auth/config')) return new Response(JSON.stringify({ providers: [] }), { status: 200 })
       if (url.endsWith('/view-token')) { joinClock.now += 2100; return new Response('refused', { status: 403 }) }
       throw new Error(`unexpected request ${url}`)

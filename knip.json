@@ -73,7 +73,8 @@
     },
     "packages/server": {
       "entry": [
-        "test/**/*.test.ts"
+        "test/**/*.test.ts",
+        "test/helpers/negotiating-upgrade.ts"
       ],
       "project": [
         "src/**/*.ts!",

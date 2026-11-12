@@ -25,7 +25,7 @@ describe('relay sockets', () => {
       expect(await raw('GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')).toMatch(/^HTTP\/1\.1 400 /)
       expect(await raw('GET //[?key=test-key&schema=2 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')).toMatch(/^HTTP\/1\.1 400 /)
       // A well-formed upgrade without the key is still refused: the parser change does not bypass the key check.
-      expect(await raw('GET /local%2Fx?schema=2 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')).toMatch(/^HTTP\/1\.1 403 /)
+      expect(await raw('GET /local%2Fx?schema=2&negotiate=1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')).toMatch(/^HTTP\/1\.1 403 /)
       // A client that resets while its upgrade is being refused must not raise an unhandled EPIPE.
       const reset = (request: string) => new Promise<void>((resolve, reject) => {
         const socket = net.connect(relay.port, '127.0.0.1')

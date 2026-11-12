@@ -84,7 +84,7 @@ it('requires optional negotiation and writable current authority; baseline posts
   const legacy = await fixture(false)
   expect(legacy.publish()).toMatchObject({ ok: false, reason: 'version' })
   expect(legacy.hub.handle(legacy.conn, { v: 1, id: 'base', op: 'post', lease: legacy.lease, auto: true, msg: legacy.message('cf:old') }, local)).toMatchObject({ ok: true })
-  expect(core.selectContract(core.CURRENT_COMPAT, core.LEGACY_COMPAT, { activeSchema: 2 })).toMatchObject({ ok: true, selection: { capabilities: { 'room.ledger': 1 } } })
+  expect(core.selectContract(core.CURRENT_COMPAT, { ...core.CURRENT_COMPAT, capabilities: { 'room.ledger': [1] } }, { activeSchema: 2 })).toMatchObject({ ok: true, selection: { capabilities: { 'room.ledger': 1 } } })
   const f = await fixture()
   expect(f.publish()).toMatchObject({ ok: true })
   const req = { v: 1, id: 'retire', op: 'notice-lifecycle', generation: f.hub.incarnation, lease: f.lease,

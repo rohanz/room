@@ -1,6 +1,8 @@
+import { CURRENT_COMPAT } from '@room/hub-core'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import net from 'node:net'
-import WebSocket from 'ws'
+import type WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -28,9 +30,9 @@ it('refuses a view key that expires during the awaited document load', async () 
   const post = (route: string, body: unknown) => fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
   expect((await post('/rooms', { room, schema: 2 })).status).toBe(201)
   const { view } = await (await post('/view-token', { room, schema: 2 })).json() as { view: string }
-  const { ticket } = await (await post('/ws-ticket', { room, schema: 2, view })).json() as { ticket: string }
+  const { ticket } = await (await post('/ws-ticket', { compat: CURRENT_COMPAT, room, schema: 2, view })).json() as { ticket: string }
   const status = await new Promise<number>((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2&ticket=${ticket}`)
+    const ws = connectSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2&ticket=${ticket}`)
     ws.once('open', () => { ws.close(); reject(Error('expired view was upgraded')) })
     ws.once('unexpected-response', (_request, response) => resolve(response.statusCode ?? 0))
     ws.once('error', reject)

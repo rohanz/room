@@ -18,8 +18,9 @@ describe('relay pre-authentication websocket errors', () => {
       const terminate = vi.fn(() => socket.emit('close'))
       socket.terminate = terminate
       socket.close = vi.fn(() => socket.emit('close'))
+      Object.assign(socket, { _receiver: { _maxPayload: 1000000 } })
       const log = vi.fn()
-      relayConnectionHandler(new Map(), { key: 'test-key', log })(socket as unknown as WebSocket, { url: '/local%2Fx?schema=2' } as http.IncomingMessage)
+      relayConnectionHandler(new Map(), { key: 'test-key', log })(socket as unknown as WebSocket, { url: '/local%2Fx?schema=2&negotiate=1' } as http.IncomingMessage)
       expect(events[0]).toBe('error')
       expect(vi.getTimerCount()).toBe(1)
       expect(() => socket.emit('error', new Error('invalid opcode'))).not.toThrow()

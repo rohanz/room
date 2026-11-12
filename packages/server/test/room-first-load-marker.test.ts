@@ -57,15 +57,10 @@ const request = (method, url, body, headers = {}) => new Promise(resolve => {
 const create = room => request('POST', '/rooms', { room, schema: 2 });
 const close = room => request('DELETE', '/rooms', { room, schema: 2 });
 const list = () => request('GET', '/rooms?schema=2');
-const { WebSocketServer } = require('ws');
-WebSocketServer.prototype.handleUpgrade = function(req, socket, head, done) {
-  const ws = new EventEmitter(); ws.readyState = 1; ws.bufferedAmount = 0;
-  ws.send = (data, ...args) => { const callback = args.find(arg => typeof arg === 'function'); callback?.() }; ws.ping = () => {};
-  ws.close = ws.terminate = () => { if (ws.readyState === 3) return; ws.readyState = 3; ws.emit('close') };
-  done(ws); socket.completed({ status: 101 });
-};
+const { installNegotiatingUpgrade } = await import(${JSON.stringify(path.join(root, 'packages/server/test/helpers/negotiating-upgrade.ts'))});
+installNegotiatingUpgrade();
 const connect = (room, schema = 2) => new Promise(resolve => {
-  const req = new EventEmitter(); req.url = '/' + encodeURIComponent(room) + (schema ? '?schema=' + schema : '');
+  const req = new EventEmitter(); req.url = '/' + encodeURIComponent(room) + (schema ? '?schema=' + schema + '&negotiate=1' : '');
   req.headers = { host: 'localhost' }; req.socket = { remoteAddress: '127.0.0.1' };
   const socket = new EventEmitter(); socket.remoteAddress = '127.0.0.1'; socket.destroyed = false; socket.completed = resolve;
   socket.end = text => resolve({ status: Number(/^HTTP\\/1.1 (\\d+)/.exec(text)?.[1]), body: text });
@@ -208,8 +203,8 @@ const oldPeer = await connect(room, 0), accepted = await connect(room);
 await persisted(room); return { opened, oldPeer, accepted };`)
   if (!restart) expect(connected.opened.status).toBe(201)
   expect(connected.accepted.status, connected.log).toBe(101)
-  expect(connected.oldPeer.status).toBe(403)
-  expect(connected.oldPeer.body).toContain('v0.17.47')
+  expect(connected.oldPeer.status).toBe(426)
+  expect(connected.oldPeer.body).toContain('Room requires negotiated admission; reconnect with negotiate=1')
   const db = new LeveldbPersistence(dir)
   try {
     const doc = await db.getYDoc(name)

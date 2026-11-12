@@ -1,3 +1,4 @@
+import { teamHealth } from './fixtures/team-server.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -84,7 +85,7 @@ it('keeps one repository room, scope and workers when the clone switches branche
 
 it('room_create never returns local state through the same-room fast path', async () => {
   const server = 'ws://open.example'
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config'
     ? Response.json({}) : new Response('missing', { status: 404 })))
   const current = session(`local/${dir.split('/').pop()}`, { local: true })
   const t = branchTools(current)
@@ -99,6 +100,7 @@ it('carries a requested custom destination through login and back to join', asyn
   vi.stubEnv('ROOM_CREDENTIALS', join(dir, 'credentials.json'))
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const path = new URL(url).pathname
+    if (path === '/health') return teamHealth()
     if (path === '/auth/config') return Response.json({ github: 'device' })
     if (path === '/auth/start') return Response.json({ user_code: 'CODE', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 0, device: 'dev' })
     if (path === '/auth/poll') return Response.json({ session: 's'.repeat(64), login: 'Ada', expiresIn: 900 })
@@ -121,13 +123,13 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server]) // preflight refuses before calling join
 })
 
-it('identifies an old server when the 0.17 hub is absent', async () => {
+it('identifies an incompatible server when its negotiation advertisement is absent', async () => {
   const server = 'ws://old-hub.example'
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
     ? Response.json({}) : Response.json({ view: 'v' })))
   const t = branchTools(session(`local/${dir.split('/').pop()}`, { local: true }))
   expect(await t.tools.call('room_join', { where: server, room: 'git/example/repo' }))
-    .toContain('this Room server has no 0.17 hub; ask its operator to deploy Room 0.17')
+    .toContain(`Room server ${server} is incompatible: Room server advertised an invalid compatibility contract; update the server`)
   expect(t.joiner).not.toHaveBeenCalled()
 })
 
@@ -146,6 +148,7 @@ it.each(['argument', 'ROOM_ROOM', 'ROOM_URL', 'remembered'] as const)('retargets
   const rooms: string[] = [], notices: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const endpoint = new URL(url).pathname
+    if (endpoint === '/health') return teamHealth()
     if (endpoint === '/auth/config') return Response.json({ github: 'device' })
     if (endpoint === '/view-token') {
       rooms.push((JSON.parse(String(init?.body)) as { room: string }).room)
@@ -166,6 +169,7 @@ it.each(['room_join', 'room_create'] as const)('%s normalizes legacy GitHub room
   writeFileSync(credentialsPath, JSON.stringify({ [server]: { session: 's'.repeat(64), login: 'Ada', at: Date.now() } }))
   vi.stubEnv('ROOM_CREDENTIALS', credentialsPath)
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname === '/health') return teamHealth()
     if (new URL(url).pathname === '/auth/config') return Response.json({ github: 'device' })
     const room = (JSON.parse(String(init?.body)) as { room: string }).room
     seen.push(room)
@@ -180,7 +184,7 @@ it.each(['room_join', 'room_create'] as const)('%s normalizes legacy GitHub room
 
 it('accepts a nested non-GitHub repository name through explicit join and rejoin', async () => {
   const server = 'ws://nested.example', room = 'git/gitlab.example/group/subgroup/repo'
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => new URL(url).pathname === '/auth/config'
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config'
     ? Response.json({}) : (JSON.parse(String(init?.body)) as { room: string }).room === room
       ? Response.json({ hub: 1 }) : new Response('wrong room', { status: 400 })))
   const t = branchTools(session('local/current', { local: true }))
@@ -195,6 +199,7 @@ it('a team worker preflights its inherited nested ROOM_ROOM unchanged', async ()
   const room = 'git/gitlab.example/group/subgroup/repo', seen: string[] = []
   vi.stubEnv('ROOM_ROOM', room)
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname === '/health') return teamHealth()
     if (new URL(url).pathname === '/auth/config') return Response.json({})
     seen.push((JSON.parse(String(init?.body)) as { room: string }).room)
     return new Response('room not opened', { status: 404 })
@@ -205,7 +210,7 @@ it('a team worker preflights its inherited nested ROOM_ROOM unchanged', async ()
 
 it.each([400, 404])('shows server text and branch hint for non-GitHub HTTP %i', async status => {
   const server = `ws://nested-${status}.example`, room = 'git/gitlab.example/group/subgroup/repo/main'
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config'
     ? Response.json({}) : new Response('server rejected this room', { status })))
   const t = branchTools(session('local/current', { local: true }))
   const reply = await t.tools.call('room_join', { where: server, room })

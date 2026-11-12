@@ -216,10 +216,10 @@ describe('doctor report', () => {
     expect(await probeHealth('https://fixture.invalid/health', fetcher as unknown as typeof fetch)).toEqual({ ok: true, schema: 2, hub: 1, storage: 'failing' })
   })
   it('checks the server schema and hub protocol, including storage failure', () => {
-    const healthy = { ...base(), server: 'wss://fixture.invalid', serverHealth: true, serverSchema: 2, serverHub: 1 }
+    const healthy = { ...base(), server: 'wss://fixture.invalid', serverHealth: true, serverSchema: 2, serverHub: 1, serverCompat: CURRENT_COMPAT }
     expect(evaluateDoctor(healthy).find(r => r.name === 'team server')).toMatchObject({ level: 'PASS' })
-    expect(evaluateDoctor({ ...healthy, serverSchema: undefined }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: expect.stringMatching(/server.*update|update.*server/i) })
-    expect(evaluateDoctor({ ...healthy, serverHub: 2 }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: expect.stringMatching(/server.*contract/i) })
+    expect(evaluateDoctor({ ...healthy, serverCompat: undefined }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: expect.stringMatching(/server.*update|update.*server/i) })
+    expect(evaluateDoctor({ ...healthy, serverCompat: { ...CURRENT_COMPAT, hub: { min: 2, max: 2 } } }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: expect.stringMatching(/client.*protocol/i) })
     expect(evaluateDoctor({ ...healthy, serverStorage: 'failing' }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: "the server's storage is failing" })
   })
   it('reports overlapping contract ranges independently of release and refuses malformed ads', () => {

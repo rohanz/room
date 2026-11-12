@@ -42,7 +42,7 @@ async function fixture(managed = true, ownerWorker?: string) {
   }) as Post
   const s = { room, me: { name: 'A', kind: 'agent' }, roomName: 'r', post,
     lease: { fence: () => epoch === undefined ? undefined : String(epoch), sessionId: 'a' },
-    contract: managed ? { capabilities: { 'room.notice-lifecycle': 1 }, legacy: false } : { capabilities: {}, legacy: true },
+    contract: managed ? { capabilities: { 'room.notice-lifecycle': 1 } } : { capabilities: {} },
     hub: { noticeLifecycle: send, noticeIncarnation: () => hub.incarnation }, provider: { synced: true } } as unknown as Session
   const slots = new ConflictSlots(room, post, () => String(epoch), () => clock++, () => {}, post, () => valid, s)
   const pending = (name = 'A') => owed(room, { name }, { frontier: 0, routed: new Set() }, {}).map(m => m.id)
@@ -189,7 +189,7 @@ it('upgrading an already-open worker conflict publishes one additional incarnati
   const f = await fixture(false), p = publications(f)
   await p.set.reconcile('legacy conflict')
   const baseline = f.pending()[0]!
-  f.s.contract = { capabilities: { 'room.notice-lifecycle': 1 }, legacy: false } as any
+  f.s.contract = { capabilities: { 'room.notice-lifecycle': 1 } } as any
   f.hub.noticeContract(f.conn, { capabilities: { 'room.notice-lifecycle': 1 } })
   p.reconnect()
   for (let n = 0; n < 3; n++) await p.set.reconcile('upgrade replay')
@@ -298,7 +298,7 @@ it.each([false, true])('upgrade and capability flaps add one bound identity and 
     expect(ledger.select(f.s, batch).map(m => m.id)).toEqual([baseline])
     ledger.commit(batch)
   }
-  f.s.contract = { capabilities: { 'room.notice-lifecycle': 1 }, legacy: false } as any
+  f.s.contract = { capabilities: { 'room.notice-lifecycle': 1 } } as any
   f.hub.noticeContract(f.conn, { capabilities: { 'room.notice-lifecycle': 1 } })
   p.reconnect()
   await p.set.reconcile('upgrade')
@@ -309,7 +309,7 @@ it.each([false, true])('upgrade and capability flaps add one bound identity and 
   ledger.select(f.s, batch)
   ledger.commit(batch)
   for (const capable of [false, true, false, true]) {
-    f.s.contract = { capabilities: capable ? { 'room.notice-lifecycle': 1 } : {}, legacy: !capable } as any
+    f.s.contract = { capabilities: capable ? { 'room.notice-lifecycle': 1 } : {} } as any
     const slots = new ConflictSlots(f.room, f.post, f.s.lease.fence()!, () => Date.now(), () => {}, f.post, () => true, f.s)
     await slots.replay('A')
     expect(f.room.messages().map(m => m.id)).toEqual([baseline, bound])

@@ -1,3 +1,4 @@
+import { CURRENT_COMPAT } from '@room/hub-core'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
@@ -16,11 +17,11 @@ describe('local relay credentials', () => {
     try {
       const response = await fetch(`http://127.0.0.1:${relay.port}/ws-ticket`, {
         method: 'POST', headers: { authorization: localProofHeader(key, 'POST', '/ws-ticket', relay.port), 'content-type': 'application/json' },
-        body: JSON.stringify({ room, schema: 2 }),
+        body: JSON.stringify({ room, schema: 2, compat: CURRENT_COMPAT }),
       })
       const { ticket } = await response.json() as { ticket: string }
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${relay.port}/${encodeURIComponent(room)}?schema=2&ticket=${ticket}`)
+        const ws = new WebSocket(`ws://127.0.0.1:${relay.port}/${encodeURIComponent(room)}?schema=2&negotiate=1&ticket=${ticket}`)
         const timeout = setTimeout(() => { ws.terminate(); reject(new Error('malformed frame did not close')) }, 3000)
         ws.once('open', () => {
           // Masked frame with reserved opcode 0xB: ws emits a protocol error on the server socket.
@@ -30,7 +31,7 @@ describe('local relay credentials', () => {
         ws.once('error', () => {})
       })
       expect((await fetch(`http://127.0.0.1:${relay.port}/health`)).status).toBe(200)
-      const path = `/${encodeURIComponent(room)}?schema=2`
+      const path = `/${encodeURIComponent(room)}?schema=2&negotiate=1`
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(`ws://127.0.0.1:${relay.port}${path}`, { headers: { authorization: localProofHeader(key, 'GET', path, relay.port) } })
         ws.once('open', () => { ws.close(); resolve() })
@@ -42,7 +43,7 @@ describe('local relay credentials', () => {
   it('uses port-bound one-use proofs and refuses obsolete credentials', async () => {
     const relay = await startRelay(0, { key })
     const base = `http://127.0.0.1:${relay.port}`
-    const path = `/${encodeURIComponent(room)}?schema=2`
+    const path = `/${encodeURIComponent(room)}?schema=2&negotiate=1`
     const connect = (query: string, headers: Record<string, string> = {}) => new Promise<number>(resolve => {
       const ws = new WebSocket(`ws://127.0.0.1:${relay.port}${path}${query}`, { headers })
       ws.once('open', () => { ws.close(); resolve(101) })
@@ -60,11 +61,11 @@ describe('local relay credentials', () => {
       expect(await connect('&key=test-key')).toBe(400)
       expect(await connect('', { authorization: localProofHeader(key, 'GET', path, relay.port + 1) })).toBe(403)
       for (const body of ['null', '1', '[]', '"x"']) expect((await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body })).status).toBe(400)
-      expect((await fetch(base + '/ws-ticket', { method: 'POST', headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' }, body: JSON.stringify({ room, schema: 2 }) })).status).toBe(400)
-      const nodeTicket = await fetch(base + '/ws-ticket', { method: 'POST', headers: { authorization: localProofHeader(key, 'POST', '/ws-ticket', relay.port), 'content-type': 'application/json' }, body: JSON.stringify({ room, schema: 2 }) })
+      expect((await fetch(base + '/ws-ticket', { method: 'POST', headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' }, body: JSON.stringify({ room, schema: 2, compat: CURRENT_COMPAT }) })).status).toBe(400)
+      const nodeTicket = await fetch(base + '/ws-ticket', { method: 'POST', headers: { authorization: localProofHeader(key, 'POST', '/ws-ticket', relay.port), 'content-type': 'application/json' }, body: JSON.stringify({ room, schema: 2, compat: CURRENT_COMPAT }) })
       expect(nodeTicket.status).toBe(200)
       const ts = Date.now(), viewNonce = crypto.randomBytes(16).toString('hex'), view = localViewKey(key, room)
-      const body = JSON.stringify({ room, schema: 2, ts, nonce: viewNonce, proof: viewTicketProof(view, room, ts, viewNonce) })
+      const body = JSON.stringify({ room, schema: 2, compat: CURRENT_COMPAT, ts, nonce: viewNonce, proof: viewTicketProof(view, room, ts, viewNonce) })
       const minted = await fetch(base + '/ws-ticket', { method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body })
       expect(minted.status).toBe(200)
       expect(minted.headers.get('access-control-allow-origin')).toBe('*')
@@ -74,7 +75,7 @@ describe('local relay credentials', () => {
       expect(await connect(`&ticket=${ticket}`)).toBe(403)
       expect(view).not.toBe(key)
       const nextTs = Date.now(), nextNonce = crypto.randomBytes(16).toString('hex')
-      const nextBody = JSON.stringify({ room, schema: 2, ts: nextTs, nonce: nextNonce, proof: viewTicketProof(view, room, nextTs, nextNonce) })
+      const nextBody = JSON.stringify({ room, schema: 2, compat: CURRENT_COMPAT, ts: nextTs, nonce: nextNonce, proof: viewTicketProof(view, room, nextTs, nextNonce) })
       const viewTicket = (await (await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body: nextBody })).json() as { ticket: string }).ticket
       const viewerDoc = new Y.Doc(), writerDoc = new Y.Doc()
       const viewer = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), viewerDoc, { WebSocketPolyfill: authorizedWebSocket({ viewKey: view }) as never, params: { schema: '2', ticket: viewTicket }, disableBc: true })
@@ -108,7 +109,7 @@ describe('local relay credentials', () => {
       expect(await probeRelay(port, '/tmp/fake-clone', key)).not.toBe('ours')
       const Polyfill = authorizedWebSocket({ key })
       await new Promise<void>(resolve => {
-        const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`)
+        const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2&negotiate=1`)
         ws.once('error', () => resolve())
       })
       expect(captured.join('\n')).not.toContain(key)
@@ -134,8 +135,8 @@ describe('local relay credentials', () => {
       downstream.on('message', data => {
         const frame = Buffer.from(data as Buffer)
         observed.push(Buffer.from(frame))
-        // Leave the hello alone; flip one bit of the first encrypted frame.
-        if (alter && ++frames === 2) frame[0] ^= 1
+        // Flip one bit of the first encrypted document frame after bootstrap.
+        if (alter && ++frames === 1) frame[0] ^= 1
         if (upstream.readyState === WebSocket.OPEN) upstream.send(frame)
         else upstream.once('open', () => upstream.send(frame))
       })
@@ -146,7 +147,7 @@ describe('local relay credentials', () => {
     })
     try {
       const Polyfill = authorizedWebSocket({ key })
-      const path = `/${encodeURIComponent(room)}?schema=2`
+      const path = `/${encodeURIComponent(room)}?schema=2&negotiate=1`
       const ws = new Polyfill(`ws://127.0.0.1:${proxyPort}${path}`)
       await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
       const marker = 'reviewer-plaintext-marker-7361'
@@ -158,9 +159,9 @@ describe('local relay credentials', () => {
       await new Promise(resolve => setTimeout(resolve, 100))
       expect(Buffer.concat(observed).toString()).not.toContain(marker)
       ws.close()
-      alter = true
       const second = new Polyfill(`ws://127.0.0.1:${proxyPort}${path}`)
       await new Promise<void>((resolve, reject) => { second.once('open', resolve); second.once('error', reject) })
+      alter = true
       const closed = new Promise<number>(resolve => second.once('close', code => resolve(code)))
       second.send(Uint8Array.of(0, 0))
       expect(await closed).toBe(1008)
@@ -182,18 +183,22 @@ describe('local relay credentials', () => {
     }))
     try {
       const Polyfill = authorizedWebSocket({ key })
-      const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`)
+      const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2&negotiate=1`)
       await new Promise<void>(resolve => ws.once('close', () => resolve()))
       expect(received).toHaveLength(1)
       expect(received[0]?.subarray(0, 14).toString()).toBe('room-secure-v1')
     } finally { await new Promise<void>(resolve => impostor.close(() => resolve())) }
   })
 
-  // Wait for attachReady's initial document frame, not just the secure hello.
+  // Wait for sync step 2 so the socket is ready for broadcasts after bootstrap.
   const openClient = (port: number) => new Promise<WebSocket>((resolve, reject) => {
     const Polyfill = authorizedWebSocket({ key })
-    const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`)
-    ws.once('message', () => resolve(ws))
+    const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2&negotiate=1`)
+    const receive = (raw: WebSocket.RawData) => {
+      const bytes = new Uint8Array(raw as ArrayBuffer)
+      if (bytes[0] === 0 && bytes[1] === syncProtocol.messageYjsSyncStep2) { ws.off('message', receive); resolve(ws) }
+    }
+    ws.on('message', receive)
     // A well-formed sync step 1 (empty state vector): the relay answers it and only then broadcasts to this socket.
     ws.once('open', () => ws.send(Uint8Array.of(0, 0, 1, 0)))
     ws.once('error', reject)

@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { Auth } from '../src/auth.js'
 import { bootstrapMode, makeAdmitted, githubPushChecker } from '../src/admit.js'
 
-it('only treats an absent bootstrap switch as legacy', () => {
-  expect(bootstrapMode(new URLSearchParams('schema=2'))).toBe('legacy')
+it('requires a single supported bootstrap switch', () => {
+  expect(bootstrapMode(new URLSearchParams('schema=2'))).toBe('unsupported')
   expect(bootstrapMode(new URLSearchParams('negotiate=1'))).toBe('negotiate')
   for (const query of ['negotiate=', 'negotiate=0', 'negotiate=2', 'negotiate=1&negotiate=1']) {
     expect(bootstrapMode(new URLSearchParams(query))).toBe('unsupported')

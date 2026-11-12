@@ -35,7 +35,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, limitStateRequests, sizeCapReason, DocSizeMeter, DocumentIdentityGuard, AwarenessBudget } from './readonly.js'
-import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } from './names.js'
+import { roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
@@ -47,13 +47,13 @@ import { RepoLocks } from './repo-lock.js'
 import { archiveDocumentNames, closeDocumentNames, safeRoomRegistry } from './registry.js'
 import { levelDbOf, levelDocumentExists, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, classifyDoc } from './inventory.js'
-import { DOC_SIZE_CAP_CODE, HUB_ORIGIN, selectContract, LEGACY_COMPAT, legacyHello, parseAdvertisement,
+import { DOC_SIZE_CAP_CODE, HUB_ORIGIN, selectContract, parseAdvertisement,
   BOOTSTRAP_MAX_PENDING, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, BOOTSTRAP_MAX_BUFFERED_BYTES, BOOTSTRAP_MAX_BYTES,
   BOOTSTRAP_HELLO_TIMEOUT_MS, LEASE_TTL_MS, LEASE_RENEW_MS,
   type CompatAdvertisement, type CompatibilityRefusal, type Principal } from '@room/hub-core'
 import { compactMinDeleted, COMPACTED_UPDATE_REASON, GENERATION_PARAM, STALE_REPLICA_CODE, STALE_REPLICA_REASON, docGeneration, generationGate } from '@room/shared'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, sendFile, staticFile, SERVER_COMPAT } from './http.js'
-import { beginNegotiation, boundNegotiationInput, recordConnectionContract } from './negotiation.js'
+import { beginNegotiation, boundNegotiationInput } from './negotiation.js'
 
 import {
   LOAD_MAX_BYTES, MAX_BODY_BYTES, BODY_TIMEOUT_MS, PR_NOTE_MAX_BYTES, AWARENESS_MAX_MESSAGE_BYTES, AWARENESS_MAX_STATE_BYTES,
@@ -717,7 +717,6 @@ const server = http.createServer((req, res) => {
     if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
     let compat: CompatAdvertisement | undefined
     const checkOffer = (readOnly: boolean): boolean => {
-      if (o.compat === undefined) return true
       try { compat = parseAdvertisement(o.compat) }
       catch { json(426, invalidBootstrap('client: invalid compatibility offer; update/restart the client')); return false }
       const selected = selectContract(compat, SERVER_COMPAT, { activeSchema: 2, readOnly })
@@ -730,7 +729,7 @@ const server = http.createServer((req, res) => {
       if (!key || key.exp <= Date.now() || key.room !== repo) return text(key && key.room !== repo && rooms.get(repo)?.mode === 'repo' ? 410 : 403,
         key && key.room !== repo && rooms.get(repo)?.mode === 'repo' ? oldLinkText : 'view key invalid or expired')
       if (!checkOffer(true)) return
-      return json(200, credentialSockets.mint(repo, { kind: 'view', value: view }, true, compat))
+      return json(200, credentialSockets.mint(repo, { kind: 'view', value: view }, true, compat!))
     }
     const c = { ...headerCreds(), ...creds(o) }
     const v = await admitted(repo, c)
@@ -738,7 +737,7 @@ const server = http.createServer((req, res) => {
     const credential: Credential | undefined = c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined
     if (!credential) return text(401, 'credential required')
     if (!checkOffer(false)) return
-    return json(200, credentialSockets.mint(repo, credential, false, compat))
+    return json(200, credentialSockets.mint(repo, credential, false, compat!))
   })
   if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
     const room = str(o.room)
@@ -994,18 +993,9 @@ const admittedDocuments = new WeakMap<http.IncomingMessage, string>()
 wss.on('connection', (conn, req) => {
   try {
   const admittedDoc = admittedDocuments.get(req)
-  if (admittedDoc !== undefined) {
-    setupWSConnection(conn, req, { gc: true, docName: admittedDoc })
-    hubs.ensure(admittedDoc, docs.get(admittedDoc)!)
-    return
-  }
-  const url = safeUrl(req.url)
-  const raw = docNameOf(req.url ?? '/')
-  if (!parseRoomName(raw, url.searchParams.get('schema') === '2')) { conn.close(1008, 'invalid room name'); return }
-  const repo = canonical(raw)
-  const docName = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : raw
-  setupWSConnection(conn, req, { gc: true, docName })
-  hubs.ensure(docName, docs.get(docName)!)
+  if (admittedDoc === undefined) { conn.close(4406, 'Room requires negotiated admission; reconnect with negotiate=1'); return }
+  setupWSConnection(conn, req, { gc: true, docName: admittedDoc })
+  hubs.ensure(admittedDoc, docs.get(admittedDoc)!)
   } catch (e) { console.log(`websocket connection failed: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
 })
 /** Refused connections are audited at most once per 10 s per remote address: a client retrying in a
@@ -1057,14 +1047,14 @@ server.on('upgrade', (req, socket, head) => {
   try {
   const url = safeUrl(req.url)
   const mode = bootstrapMode(url.searchParams)
-  if (mode === 'unsupported') return refuseCompatibility(socket, invalidBootstrap('client: unsupported negotiate value; update/restart the client for bootstrap 1'))
-  const negotiating = mode === 'negotiate', startedAt = Date.now()
+  if (mode === 'unsupported') return refuseCompatibility(socket, invalidBootstrap('Room requires negotiated admission; reconnect with negotiate=1'))
+  const startedAt = Date.now()
   let bootstrapExpired = false
   // Admission/storage waits count toward the absolute hello deadline too.
-  const admissionTimer = negotiating ? setTimeout(() => {
+  const admissionTimer = setTimeout(() => {
     bootstrapExpired = true
     if (!socket.destroyed) refuseCompatibility(socket, invalidBootstrap('client: bootstrap hello deadline elapsed; rejoin'))
-  }, BOOTSTRAP_HELLO_TIMEOUT_MS) : undefined
+  }, BOOTSTRAP_HELLO_TIMEOUT_MS)
   admissionTimer?.unref?.()
   socket.once('close', () => clearTimeout(admissionTimer))
   const retry = upgradeLimit.check(clientIp(req))
@@ -1073,25 +1063,22 @@ server.on('upgrade', (req, socket, head) => {
   const work = pendingAdmissions.run(address, socket, async cancelled => {
   const abandoned = () => bootstrapExpired || cancelled()
   const roomName = roomNameOf(url.pathname)
-  if (!parseRoomName(roomName, negotiating || url.searchParams.get('schema') === '2')) return refuse(socket, 400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name', roomName)
-  const repo = canonical(roomName, negotiating)
-  const schema2 = negotiating || url.searchParams.get('schema') === '2'
-  const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
-  if (schema2 && ['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
-  if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 403, 'update Room to 0.17 or later: Room 0.16 URL credentials are refused; use v0.17.47, the last release that can migrate, before upgrading', roomName)
+  if (!parseRoomName(roomName, true)) return refuse(socket, 400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name', roomName)
+  const repo = canonical(roomName, true)
+  const docKey = repo
+  if (['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
   const accept = async (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential; offer?: CompatAdvertisement } = {}) => {
     const principal = opts.id ?? (opts.login ? `login:${opts.login}` : opts.credential ? `${opts.credential.kind}:${crypto.createHash('sha256').update(opts.credential.value).digest('hex')}` : `ip:${address}`)
     const release = connectionCounts.reserve(repo, principal)
     if (!release) return refuse(socket, 503, 'connection limit reached', roomName)
-    const negotiation = negotiating ? negotiations.reserve(principal, 2 * BOOTSTRAP_MAX_BYTES) : undefined
-    if (negotiating && !negotiation) { release(); return refuse(socket, 429, 'too many pending negotiations; retry', roomName) }
+    const negotiation = negotiations.reserve(principal, 2 * BOOTSTRAP_MAX_BYTES)
+    if (!negotiation) { release(); return refuse(socket, 429, 'too many pending negotiations; retry', roomName) }
     const generation = opts.credential ? credentialSockets.generation(opts.credential) : undefined
     let upgraded = false
     await locks.run(repo, async () => {
       if (abandoned()) return
       const current = rooms.get(repo)
       if (!current) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
-      if (!schema2) return refuse(socket, 403, upgradeText(repo), roomName)
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
       if (opts.readOnly) {
         const token = viewTokens.get(opts.credential?.value ?? '')
@@ -1120,14 +1107,9 @@ server.on('upgrade', (req, socket, head) => {
       const verdict = generationGate(url.searchParams.get(GENERATION_PARAM), docGeneration(docs.get(docKey)!))
       const loadedDoc = docs.get(docKey)!
       const activeSchema = Number(loadedDoc.getMap('meta').get('schemaVersion') ?? 2)
-      // Legacy admission is an explicit frozen-profile exception to the new ACK gate.
-      const legacy = !negotiating ? selectContract(LEGACY_COMPAT, SERVER_COMPAT, { activeSchema, readOnly: opts.readOnly }) : undefined
-      if (legacy && !legacy.ok) return refuseCompatibility(socket, legacy.error)
-      if (negotiating) {
-        const implemented = selectContract(SERVER_COMPAT, SERVER_COMPAT, { activeSchema, readOnly: opts.readOnly })
-        if (!implemented.ok) return refuseCompatibility(socket, implemented.error)
-      }
-      if (negotiating) hubs.ensure(docKey, loadedDoc)
+      const implemented = selectContract(SERVER_COMPAT, SERVER_COMPAT, { activeSchema, readOnly: opts.readOnly })
+      if (!implemented.ok) return refuseCompatibility(socket, implemented.error)
+      hubs.ensure(docKey, loadedDoc)
       wss.handleUpgrade(req, socket, head, ws => {
         clearTimeout(admissionTimer)
         catchSocketErrors(ws, message => console.log(message))
@@ -1145,7 +1127,7 @@ server.on('upgrade', (req, socket, head) => {
         const entry = rooms.get(repo)!
         const principal: Principal = opts.readOnly ? { readOnly: true } : { login: opts.login, id: opts.id ?? (opts.provider === 'github' && opts.login ? `github:${opts.login.toLowerCase()}` : undefined), readOnly: false }
         const attach = () => {
-          if (negotiating) admittedDocuments.set(req, docKey)
+          admittedDocuments.set(req, docKey)
           entry.lastSeen = Date.now(); void saveRooms().catch(() => {})
           // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
           bindHub(ws, () => hubs.current(docKey), principal, () => hubs.storageFailure(docKey) ?? hubs.startFailure(docKey))
@@ -1193,11 +1175,6 @@ server.on('upgrade', (req, socket, head) => {
           }
           wss.emit('connection', ws, req)
         }
-        if (!negotiating) {
-          if (legacy?.ok) recordConnectionContract(ws, legacy.selection)
-          attach()
-          return
-        }
         const stillAdmitted = (): boolean => {
           if (ws.readyState !== 1) return false
           if (rooms.get(repo) !== entry || docs.get(docKey) !== loadedDoc || !entry.migratedAt) { ws.close(4406, 'room: authority changed; rejoin'); return false }
@@ -1244,7 +1221,7 @@ server.on('upgrade', (req, socket, head) => {
                 ws.close(4406, 'room: selected authority changed; rejoin'); return
               }
               if (!opts.readOnly) {
-                const greeted = hub.handle(ws, legacyHello('bootstrap', hello.offer.release ?? 'negotiating', hello.sessionId), principal)
+                const greeted = hub.handle(ws, { v: 1, id: 'bootstrap', op: 'hello', proto: selected.selection.hub, schema: selected.selection.schema, client: hello.offer.release ?? 'Room', sessionId: hello.sessionId }, principal)
                 if (!greeted.ok) { ws.close(4406, 'room: hub authority changed; rejoin'); return }
                 hub.noticeContract(ws, selected.selection)
               }
@@ -1262,7 +1239,6 @@ server.on('upgrade', (req, socket, head) => {
   if (ticket) {
     const issued = credentialSockets.take(ticket, docKey)
     if (!issued) return refuse(socket, 403, 'websocket ticket invalid or expired', roomName)
-    if (!!issued.compat !== negotiating) return refuseCompatibility(socket, invalidBootstrap('client: ticket and bootstrap route differ; request a new ticket'))
     const c = issued.credential
     if (issued.readOnly) {
       const view = viewTokens.get(c.value)
@@ -1274,19 +1250,7 @@ server.on('upgrade', (req, socket, head) => {
     if (abandoned()) return
     return v.ok ? accept({ login: v.login, id: v.id, provider: v.provider, credential: c, offer: issued.compat }) : refuse(socket, v.status, v.why, roomName)
   }
-  const view = url.searchParams.get('view')
-  if (view) {
-    const v = viewTokens.get(view)
-    const entry = rooms.get(repo)
-    if (url.searchParams.get('schema') === '2' && !entry?.migratedAt) return refuse(socket, 410, oldLinkText, roomName)
-    if (v && v.exp > Date.now() && v.room === docKey) return accept({ readOnly: true, credential: { kind: 'view', value: view } })
-    if (entry?.mode === 'repo' && (roomName !== repo || entry.plan?.moved))
-      return refuse(socket, 410, oldLinkText, roomName)
-    return refuse(socket, 403, 'Forbidden: view token invalid for this room')
-  }
-  const c: Creds = { token: str(req.headers['x-room-token']), session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1],
-    ...(!schema2 ? { gh: url.searchParams.get('gh') ?? undefined, token: str(req.headers['x-room-token']) ?? url.searchParams.get('token') ?? undefined,
-      session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? url.searchParams.get('session') ?? undefined } : {}) }
+  const c: Creds = { token: str(req.headers['x-room-token']), session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] }
   const v = await admitted(roomName, c)
   if (abandoned()) return
   if (!v.ok) {

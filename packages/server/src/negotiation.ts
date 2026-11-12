@@ -29,7 +29,7 @@ export function boundNegotiationInput(socket: object): { remaining(bytes: number
 }
 /** Transport state only; never write negotiated contracts into the shared document. */
 export const connectionContract = (socket: object): ContractSelection | undefined => contracts.get(socket)
-export function recordConnectionContract(socket: object, selection: ContractSelection): void {
+function recordConnectionContract(socket: object, selection: ContractSelection): void {
   if (contracts.has(socket)) throw new Error('connection contract is immutable')
   contracts.set(socket, Object.freeze({ ...selection, capabilities: Object.freeze({ ...selection.capabilities }) }))
 }

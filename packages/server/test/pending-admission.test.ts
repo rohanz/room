@@ -4,7 +4,8 @@ import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import WebSocket from 'ws'
+import type WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -52,7 +53,7 @@ globalThis.setTimeout = function(callback, ms, ...args) {
 afterAll(async () => { await servers.stopAll(); fs.rmSync(gateDir, { recursive: true, force: true }) })
 
 const join = (room: string) => new Promise<number>((resolve, reject) => {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${session}` } })
+  const ws = connectSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${session}` } })
   ws.once('open', () => { ws.close(); resolve(101) })
   ws.once('unexpected-response', (_request, response) => { resolve(response.statusCode ?? 0); ws.terminate() })
   ws.once('error', reject)
@@ -61,7 +62,7 @@ it('disconnect during suspended admission work retains capacity across distinct 
   // Raw upgrade lets us disconnect before handleUpgrade; HTTP requests expose the refusal status.
   const raw = net.connect(port, '127.0.0.1')
   await new Promise<void>((resolve, reject) => { raw.once('connect', resolve); raw.once('error', reject) })
-  raw.write(`GET /${encodeURIComponent(rooms[0])}?schema=2 HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer ${session}\r\n\r\n`)
+  raw.write(`GET /${encodeURIComponent(rooms[0])}?schema=2&negotiate=1 HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer ${session}\r\n\r\n`)
   // Wait for the admission slot to be occupied, then abandon it while loading is suspended.
   await vi.waitFor(() => expect(fs.existsSync(held), 'first admission held in test gate').toBe(true))
   expect(await join(rooms[1])).toBe(429)

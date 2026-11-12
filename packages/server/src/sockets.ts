@@ -15,7 +15,7 @@ export class CredentialSockets {
   private readonly live = new Map<string, Set<ClosableSocket>>()
   private readonly generations = new Map<string, number>()
   private readonly rooms = new WeakMap<ClosableSocket, string>()
-  private readonly tickets = new Map<string, { credential: Credential; room: string; readOnly: boolean; expires: number; compat?: CompatAdvertisement }>()
+  private readonly tickets = new Map<string, { credential: Credential; room: string; readOnly: boolean; expires: number; compat: CompatAdvertisement }>()
   constructor(private readonly now: () => number = Date.now, private readonly maxTickets = 10000, private readonly ttlMs = 60_000) {}
   private key(c: Credential): string { return `${c.kind}:${c.value}` }
   private bump(c: Credential): void {
@@ -44,20 +44,20 @@ export class CredentialSockets {
     for (const socket of this.live.get(this.key(c)) ?? []) if (this.rooms.get(socket) === room) socket.close(code, reason)
     for (const [ticket, value] of this.tickets) if (this.key(value.credential) === this.key(c) && value.room === room) this.tickets.delete(ticket)
   }
-  mint(room: string, credential: Credential, readOnly: boolean, compat?: CompatAdvertisement): { ticket: string; expiresIn: number } {
-    const offer = compat ? parseAdvertisement(compat) : undefined
+  mint(room: string, credential: Credential, readOnly: boolean, compat: CompatAdvertisement): { ticket: string; expiresIn: number } {
+    const offer = parseAdvertisement(compat)
     this.sweep()
     if (this.tickets.size >= this.maxTickets) throw new Error('too many pending websocket tickets')
     const ticket = crypto.randomBytes(16).toString('hex')
-    this.tickets.set(ticket, { room, credential, readOnly, expires: this.now() + this.ttlMs, ...(offer ? { compat: offer } : {}) })
+    this.tickets.set(ticket, { room, credential, readOnly, expires: this.now() + this.ttlMs, compat: offer })
     return { ticket, expiresIn: Math.ceil(this.ttlMs / 1000) }
   }
-  take(ticket: string, room: string): { credential: Credential; readOnly: boolean; compat?: CompatAdvertisement } | undefined {
+  take(ticket: string, room: string): { credential: Credential; readOnly: boolean; compat: CompatAdvertisement } | undefined {
     const value = this.tickets.get(ticket)
     if (!value) return undefined
     this.tickets.delete(ticket)
     if (value.expires <= this.now() || value.room !== room) return undefined
-    return { credential: value.credential, readOnly: value.readOnly, ...(value.compat ? { compat: value.compat } : {}) }
+    return { credential: value.credential, readOnly: value.readOnly, compat: value.compat }
   }
   sweep(): void { for (const [ticket, value] of this.tickets) if (value.expires <= this.now()) this.tickets.delete(ticket) }
 }

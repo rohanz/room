@@ -5,7 +5,7 @@ import path from 'node:path'
 import { WriterIdleClock, ensureLocalDaemon } from '../src/daemon.js'
 import { MemoryLoadError, RoomMemory, memoryFile } from '../src/memory.js'
 import { checkWindowsAcl } from '../src/private-state.js'
-import { CURRENT_COMPAT, LEGACY_COMPAT, selectContract } from '@room/hub-core'
+import { CURRENT_COMPAT, selectContract } from '@room/hub-core'
 
 const dirs: string[] = [], memories: RoomMemory[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const m of memories.splice(0)) { m.detach(); m.doc.destroy() }; vi.useRealTimers(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -44,10 +44,10 @@ it('names a fail-closed snapshot load error rather than creating a replacement',
   expect(() => new RoomMemory(dir, 'local/test', () => {})).toThrow(MemoryLoadError)
   expect(fs.readFileSync(file)).toEqual(Buffer.from([255]))
 })
-it('requires the explicit daemon lifecycle contract, leaving the legacy baseline unchanged', () => {
+it('requires the explicit daemon lifecycle contract, refusing a client without daemon support', () => {
   const daemon = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }
   const policy = { activeSchema: 2, requiredCapabilities: { 'room.daemon': [1] } }
-  expect(selectContract(LEGACY_COMPAT, daemon, policy).ok).toBe(false)
+  expect(selectContract(CURRENT_COMPAT, daemon, policy).ok).toBe(false)
   const selected = selectContract(daemon, daemon, policy)
   expect(selected.ok && selected.selection.capabilities['room.daemon']).toBe(1)
   expect(CURRENT_COMPAT.capabilities['room.daemon']).toBeUndefined()

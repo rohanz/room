@@ -13781,11 +13781,12 @@ var CAPABILITY_REGISTRY = freeze({
   "room.worker-handover": { scope: "participant", wire: "reserved; not implemented", documentEffects: "reserved; grants no worker lifecycle guarantee", versions: {} },
   "room.notice-lifecycle": { scope: "connection", wire: "optional proto-1 notice-lifecycle requests authorized by private live leases", documentEffects: "stage 1 same-room exact-id registration with private worker dependencies and worker-retirement endings only; no evaluated endings, restart recovery or projection; unknown/untracked state retains TTL", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: { "room.ledger": [1] } } } }
 });
-function baseline() {
-  return { bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] }, capabilities: { "room.generation": [1], "room.manifest": [1], "room.ledger": [1] }, legacy: { schema: 2, hub: 1 } };
-}
-var LEGACY_COMPAT = freeze(baseline());
-var CURRENT_COMPAT = freeze({ ...baseline(), capabilities: { ...baseline().capabilities, "room.notice-lifecycle": [1] } });
+var CURRENT_COMPAT = freeze({
+  bootstrap: 1,
+  hub: { min: 1, max: 1 },
+  schemas: { read: [2], write: [2] },
+  capabilities: { "room.generation": [1], "room.manifest": [1], "room.ledger": [1], "room.notice-lifecycle": [1] }
+});
 var CompatibilityValidationError = class extends Error {
   constructor(message) {
     super(message);
@@ -13841,18 +13842,12 @@ function text(value2, label, max2 = 256) {
 function parseAdvertisement(value2) {
   bounded(value2, COMPAT_MAX_BYTES, "compat");
   const ad = object(value2, "compat");
-  keys(ad, ["bootstrap", "hub", "schemas", "capabilities", "requiredCapabilities", "legacy", "release"], "compat");
+  keys(ad, ["bootstrap", "hub", "schemas", "capabilities", "requiredCapabilities", "release", "legacy"], "compat");
   if (ad.bootstrap !== COMPAT_BOOTSTRAP) invalid("unsupported bootstrap; implement bootstrap 1");
   const schemas = object(ad.schemas, "schemas");
   keys(schemas, ["read", "write"], "schemas");
   const result = { bootstrap: 1, hub: range(ad.hub, "hub"), schemas: { read: versions(schemas.read, "schemas.read"), write: versions(schemas.write, "schemas.write", true) }, capabilities: capabilities(ad.capabilities, "capabilities") };
   if (ad.requiredCapabilities !== void 0) result.requiredCapabilities = capabilities(ad.requiredCapabilities, "requiredCapabilities");
-  if (ad.legacy !== void 0) {
-    const legacy = object(ad.legacy, "legacy");
-    keys(legacy, ["schema", "hub"], "legacy");
-    if (legacy.schema !== 2 || legacy.hub !== 1 || result.hub.min > 1 || !result.schemas.read.includes(2) || !result.schemas.write.includes(2)) invalid("legacy requires the implemented schema-2/proto-1 profile");
-    result.legacy = { schema: 2, hub: 1 };
-  }
   if (ad.release !== void 0) result.release = text(ad.release, "release", 128);
   return result;
 }
@@ -13943,9 +13938,6 @@ function selectContract(clientInput, serverInput, policy) {
     lastFailure = { ok: false, error: { code: "capability-incompatible", side: changes[0].side, text: `${guidance.join("; ")}; required schema/protocol dependencies must also be supported`, requiredChanges: changes, missingCapabilities: missing, supported: { client, server } } };
   }
   return lastFailure;
-}
-function legacyHello(id2, client, sessionId) {
-  return { v: 1, id: id2, op: "hello", proto: 1, schema: 2, client, sessionId };
 }
 function parseBootstrapFrame(value2) {
   bounded(value2, BOOTSTRAP_MAX_BYTES, "bootstrap frame");
@@ -17419,7 +17411,7 @@ function attach(docs, conn, req, opts) {
         });
         return;
       }
-      if (safeUrl(req.url).searchParams.get("negotiate") === "1" && raw.byteLength > BOOTSTRAP_MAX_BYTES + 16) {
+      if (raw.byteLength > BOOTSTRAP_MAX_BYTES + 16) {
         clearTimeout(timer);
         conn.close(4406, "compatibility frame exceeds limit");
         return;
@@ -17432,21 +17424,7 @@ function attach(docs, conn, req, opts) {
       clearTimeout(timer);
       handshakeCleanup.delete(conn);
       conn.off("message", handshake);
-      if (safeUrl(req.url).searchParams.get("negotiate") === "1") attachNegotiating(docs, conn, name, req, opts, first);
-      else {
-        if (!relayGeneration(conn, req, getDoc(docs, name, opts))) return;
-        if (opts.daemon && !opts.readOnly) {
-          conn.close(4406, "daemon lifecycle negotiation required; update Room");
-          return;
-        }
-        const legacy = selectContract(LEGACY_COMPAT, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly });
-        if (!legacy.ok) {
-          conn.close(4406, "legacy contract retired; update this client");
-          return;
-        }
-        attachReady(docs, conn, name, opts, first, req);
-        conn.emit("message", first, true);
-      }
+      attachNegotiating(docs, conn, name, req, opts, first);
     } catch {
       clearTimeout(timer);
       conn.close(1008, "invalid secure frame");
@@ -17515,6 +17493,11 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
     if (phase === "hello") {
       if (!("op" in frame) || frame.op !== "compat-hello") {
         refuse("compatibility hello required");
+        return;
+      }
+      const ticketOffer = req.ticketOffer;
+      if (ticketOffer && JSON.stringify(parseAdvertisement(frame.offer)) !== JSON.stringify(ticketOffer)) {
+        refuse("ticket offer changed; request a new ticket");
         return;
       }
       hello = frame;
@@ -17591,7 +17574,7 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
       return;
     }
     if (!opts.readOnly && selectedDoc.hub) {
-      const registered = selectedDoc.hub.handle(conn, legacyHello(frame.id, hello.offer.release ?? "Room", hello.sessionId), { local: true });
+      const registered = selectedDoc.hub.handle(conn, { v: 1, id: frame.id, op: "hello", proto: selection.selection.hub, schema: selection.selection.schema, client: hello.offer.release ?? "Room", sessionId: hello.sessionId }, { local: true });
       if (!registered.ok) {
         cleanup();
         phase = "done";
@@ -17606,7 +17589,7 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
     bootstrapInputs.delete(conn);
     send(conn, encodeFrame({ v: 1, re: frame.id, ok: true }));
     conn.emit("room-compatible");
-    attachReady(docs, conn, name, opts, void 0, req, true);
+    attachReady(docs, conn, name, opts, req);
   };
   const receive = (raw, binary) => {
     if (phase === "done" || conn.readyState !== conn.OPEN) return;
@@ -17635,7 +17618,7 @@ function relayGeneration(conn, req, d) {
   conn.close(decision === "stale" ? STALE_REPLICA_CODE : 4403, decision === "stale" ? STALE_REPLICA_REASON : COMPACTED_UPDATE_REASON);
   return false;
 }
-function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
+function attachReady(docs, conn, name, opts, req) {
   if (opts.accepting && !opts.accepting()) {
     conn.close(1013, "local daemon draining; retry");
     return;
@@ -17738,12 +17721,12 @@ function attachReady(docs, conn, name, opts, first, req, negotiated = false) {
     if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return;
     let buf;
     try {
-      buf = raw === first ? first : sessions.get(conn).decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw);
+      buf = sessions.get(conn).decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw);
     } catch {
       conn.close(1008, "invalid secure frame");
       return;
     }
-    if (negotiated && buf[0] === MSG_HUB) {
+    if (buf[0] === MSG_HUB) {
       try {
         const frame = decodeFrame(buf);
         if (frame.op === "compat-hello" || frame.op === "compat-ack") {
@@ -17804,11 +17787,11 @@ function relayConnectionHandler(docs, opts) {
     });
     try {
       const target = safeUrl(req.url);
-      if (target.searchParams.has("negotiate") && target.searchParams.get("negotiate") !== "1") {
-        conn.close(4406, "unsupported bootstrap; update this client");
+      if (target.searchParams.getAll("negotiate").length !== 1 || target.searchParams.get("negotiate") !== "1") {
+        conn.close(4406, "Room requires negotiated admission; reconnect with negotiate=1");
         return;
       }
-      if (target.searchParams.get("negotiate") === "1") {
+      {
         try {
           const bound = boundRelayBootstrapInput(conn);
           bound.remaining(BOOTSTRAP_MAX_BYTES + 16);
@@ -18002,8 +17985,22 @@ function startRelay(port, opts = {}) {
               res.end("too many pending tickets");
               return;
             }
+            let compat;
+            try {
+              compat = parseAdvertisement(value2.compat);
+            } catch {
+              res.writeHead(426);
+              res.end("invalid compatibility offer");
+              return;
+            }
+            const selected = selectContract(compat, docOptions.compat, { activeSchema: 2, readOnly: true });
+            if (!selected.ok) {
+              res.writeHead(426);
+              res.end(selected.error.text);
+              return;
+            }
             const ticket = crypto4.randomBytes(16).toString("hex");
-            tickets.set(ticket, { room, expires: now + ticketTtl });
+            tickets.set(ticket, { room, expires: now + ticketTtl, compat });
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
           });
@@ -18117,7 +18114,7 @@ Connection: close\r
         if (draining) return refuse(503, "local daemon draining; retry");
         if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
         if (obsolete(req, url)) return refuse(400, "use Authorization: Room-Proof or a browser ticket");
-        if (url.searchParams.has("negotiate") && url.searchParams.get("negotiate") !== "1") return refuse(426, "unsupported bootstrap; update this client");
+        if (url.searchParams.getAll("negotiate").length !== 1 || url.searchParams.get("negotiate") !== "1") return refuse(426, "Room requires negotiated admission; reconnect with negotiate=1");
         if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: Room 0.16 peers are refused; use v0.17.47, the last release that can migrate, before upgrading");
         try {
           decodeURIComponent((req.url ?? "/").split("?")[0]);
@@ -18132,7 +18129,9 @@ Connection: close\r
           const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room;
           if (issued && !ticketOk) return refuse(403, "websocket ticket invalid or expired");
           if (!ticketOk && !proofOk(req)) return refuse(403, "Forbidden: local room proof missing or wrong");
-          if (ticketOk) req.ticketView = true;
+          if (ticketOk) {
+            Object.assign(req, { ticketView: true, ticketOffer: ticket.compat });
+          }
         }
         const capacityReason = admission.refusal(relayRoomName(req.url));
         if (capacityReason) return refuse(503, capacityReason);

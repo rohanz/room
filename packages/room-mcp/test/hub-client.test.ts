@@ -81,7 +81,7 @@ describe('HubClient', () => {
       return { ...reply, msg: { ...msg, at: 1 } }
     }) as Post
     const session = { room, me: { name: 'A', kind: 'agent' }, post, hub: client,
-      lease: { fence: () => '42', sessionId: 's1' }, contract: { legacy: false, capabilities: { 'room.notice-lifecycle': 1 } } } as unknown as Session
+      lease: { fence: () => '42', sessionId: 's1' }, contract: { capabilities: { 'room.notice-lifecycle': 1 } } } as unknown as Session
     try {
       const published = noticeLifecycle(session)!.register({ name: 'room', kind: 'agent' }, {
         type: 'merge-conflict', path: 'x', to: 'A', priority: 'notify', text: 'conflict with B',

@@ -1,3 +1,4 @@
+import { teamHealth } from './fixtures/team-server.js'
 import { exitedPid } from '../../relay/test/exited-pid.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { recordTestDaemon, stopTestDaemon } from './daemon-fixture.js'
@@ -366,7 +367,7 @@ describe('explicit local destination selection', () => {
     { failed: false, team: true }, { failed: true, team: true },
   ])('room_join retains rollback ownership only until adoption; failed=$failed team=$team', async ({ failed, team }) => {
     if (team) {
-      vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config'
         ? Response.json({}) : Response.json({ view: 'v', hub: 1 })))
       cleanups.push(() => vi.unstubAllGlobals())
     }

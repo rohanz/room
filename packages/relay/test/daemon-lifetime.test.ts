@@ -70,7 +70,7 @@ it('the last writer leaves while a read-only viewer remains; viewers never reset
   const { child, info, command } = await start(common())
   const writer = connect(info); await synced(writer)
   const target = '/ws-ticket'
-  const response = await fetch(`http://127.0.0.1:${info.port}${target}`, { method: 'POST', headers: { Authorization: localProofHeader(info.key, 'POST', target, info.port), 'content-type': 'application/json' }, body: JSON.stringify({ schema: 2, room }) })
+  const response = await fetch(`http://127.0.0.1:${info.port}${target}`, { method: 'POST', headers: { Authorization: localProofHeader(info.key, 'POST', target, info.port), 'content-type': 'application/json' }, body: JSON.stringify({ schema: 2, room, compat: CURRENT_COMPAT }) })
   const { ticket } = await response.json() as { ticket: string }
   const viewer = connect(info, new Y.Doc(), true, ticket); await synced(viewer)
   await command('clock', { now: 600000 })

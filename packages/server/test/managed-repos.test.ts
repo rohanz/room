@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
-import WebSocket from 'ws'
+import type WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -42,7 +43,7 @@ it('only operators register rooms; GitHub collaborators join approved repos acro
   expect((await request('/rooms', { room: 'github.com/collaborator/unapproved', schema: 2 }, collaborator)).status).toBe(403)
   expect((await request('/rooms', opened, collaborator, 'DELETE')).status).toBe(403)
   const status = await new Promise<number>((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${collaborator}` } })
+    const ws = connectSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${collaborator}` } })
     const timer = setTimeout(() => { ws.terminate(); reject(new Error('websocket admission timed out')) }, 5000)
     ws.on('unexpected-response', (_req, res) => { clearTimeout(timer); res.resume(); resolve(res.statusCode!); ws.terminate() })
     ws.on('open', () => { clearTimeout(timer); ws.close(); resolve(101) })

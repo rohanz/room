@@ -28,12 +28,8 @@
       "room.notice-lifecycle": [
         1
       ]
-    },
-    "legacy": {
-      "schema": 2,
-      "hub": 1
     }
   },
   "workerRecordSchema": 1,
-  "bundleSha256": "a38c8309e880643eb446b6278f5cd932ef771cb77c43a7b4a8482154835beb8d"
+  "bundleSha256": "a02d364d330107727a937f23e9f931053d2cfe51a281d8da17328cc532562592"
 }

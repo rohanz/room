@@ -1,3 +1,4 @@
+import { teamHealth } from './fixtures/team-server.js'
 import { spawn, execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -25,7 +26,7 @@ async function callDoctor(roomUrl?: string, failRuntime = false, threadId?: stri
   writeFileSync(preload, `import net from 'node:net'
 import { boundSession } from ${JSON.stringify(sessionEntry)}
 net.createServer = () => { process.stderr.write('PROBE_BOUND ' + JSON.stringify(boundSession({ commonDir: ${JSON.stringify(path.join(repo, '.git'))}, host: 'codex', appServer: true, env: {} })) + '\\n'); process.stderr.write('PROBE_LISTEN\\n'); throw new Error('listener started') }
-globalThis.fetch = async url => { process.stderr.write('PROBE_FETCH ' + url + '\\n'); return new Response('{\"ok\":true,\"schema\":2,\"hub\":1}', { status: 200 }) }
+globalThis.fetch = async url => { process.stderr.write('PROBE_FETCH ' + url + '\\n'); return Response.json(${JSON.stringify(await teamHealth().json())}) }
 `)
   // The wrapper names the parent like Codex's shared app-server, so startup stays deferred.
   const wrapper = path.join(root, 'fixture-app-server.mjs')
@@ -81,7 +82,7 @@ child.on('exit', code => process.exit(code ?? 0))
 describe('MCP entry doctor route', () => {
   it('answers the first call without starting arbitration or fetching admission config', async () => {
     const { reply, stderr } = await callDoctor()
-    expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; legacy adapter; storage healthy')
+    expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; negotiating contract; storage healthy')
     expect(stderr).not.toContain('PROBE_LISTEN')
     expect(stderr.match(/PROBE_FETCH [^\n]+/g)).toEqual(['PROBE_FETCH https://fixture.invalid/health'])
   })
@@ -101,7 +102,7 @@ describe('MCP entry doctor route', () => {
   it('still answers after runtime initialization fails at the arbitration listener', async () => {
     const { reply, stderr } = await callDoctor(undefined, true)
     expect(stderr).toContain('PROBE_LISTEN')
-    expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; legacy adapter; storage healthy')
+    expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; negotiating contract; storage healthy')
     expect(stderr.match(/PROBE_FETCH [^\n]+/g)).toEqual(['PROBE_FETCH https://fixture.invalid/health'])
   })
 })

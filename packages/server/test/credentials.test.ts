@@ -1,6 +1,8 @@
+import { CURRENT_COMPAT } from '@room/hub-core'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import net from 'node:net'
-import WebSocket from 'ws'
+import type WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -14,7 +16,7 @@ async function login(): Promise<string> {
 }
 function socket(query: string, headers: Record<string, string> = {}): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2${query}`, { headers })
+    const ws = connectSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2${query}`, { headers })
     ws.once('open', () => resolve(ws))
     ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP ${res.statusCode}`)))
     ws.once('error', reject)
@@ -40,7 +42,7 @@ describe('credential boundaries', () => {
   it('answers only ticket preflight with scoped CORS and reuses an issued view capability', async () => {
     const session = await login()
     await post('/rooms', { room, schema: 2, session })
-    const preflight = await fetch(base + '/ws-ticket', { method: 'OPTIONS', headers: { origin: 'https://view.example',
+    const preflight = await fetch(base + '/ws-ticket', { compat: CURRENT_COMPAT, method: 'OPTIONS', headers: { origin: 'https://view.example',
       'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,authorization' } })
     expect(preflight.status).toBe(204)
     expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
@@ -50,7 +52,7 @@ describe('credential boundaries', () => {
     const first = await (await post('/view-token', { room, schema: 2, session })).json() as { view: string }
     const second = await (await post('/view-token', { room, schema: 2, session })).json() as { view: string }
     expect(second.view).toBe(first.view)
-    const exchanged = await post('/ws-ticket', { room, schema: 2, view: first.view })
+    const exchanged = await post('/ws-ticket', { compat: CURRENT_COMPAT, room, schema: 2, view: first.view })
     expect(exchanged.status).toBe(200)
     expect((await exchanged.json() as { ticket: string }).ticket).toBeTruthy()
   })
@@ -61,7 +63,7 @@ describe('credential boundaries', () => {
     expect(me.status).toBe(200)
     expect(me.headers.get('referrer-policy')).toBe('no-referrer')
     expect((await fetch(base + '/rooms', { headers: bearer(session) })).status).toBe(200)
-    const ticket = await post('/ws-ticket', { room, schema: 2 }, bearer(session))
+    const ticket = await post('/ws-ticket', { compat: CURRENT_COMPAT, room, schema: 2 }, bearer(session))
     expect(ticket.status).toBe(200)
     for (const route of ['/health', '/auth/config', '/audit', '/missing']) {
       const response = await fetch(base + route, { headers: bearer(session) })
@@ -76,7 +78,7 @@ describe('credential boundaries', () => {
     await post('/rooms', { room, schema: 2, session })
     await expect(socket(`&session=${session}`)).rejects.toThrow('HTTP 400')
     const ws = await socket('', bearer(session))
-    const { ticket } = await (await post('/ws-ticket', { room, schema: 2 }, bearer(session))).json() as { ticket: string }
+    const { ticket } = await (await post('/ws-ticket', { compat: CURRENT_COMPAT, room, schema: 2 }, bearer(session))).json() as { ticket: string }
     const closed = new Promise<number>(resolve => ws.once('close', code => resolve(code)))
     await post('/auth/logout', { session })
     expect(await closed).toBe(4401)
@@ -95,7 +97,7 @@ describe('credential boundaries', () => {
     const session = await login()
     await post('/rooms', { room, schema: 2, session })
     const { view } = await (await post('/view-token', { room, schema: 2, session })).json() as { view: string }
-    const mint = () => post('/ws-ticket', { room, schema: 2, view })
+    const mint = () => post('/ws-ticket', { compat: CURRENT_COMPAT, room, schema: 2, view })
     const { ticket } = await (await mint()).json() as { ticket: string }
     const ws = await socket(`&ticket=${ticket}`)
     await expect(socket(`&ticket=${ticket}`)).rejects.toThrow('HTTP 403')

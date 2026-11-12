@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CURRENT_COMPAT, selectContract } from '@room/hub-core'
-import { compatibilityFromHealth, compatibilityFloor, validateSelection } from '../src/client-compat.js'
+import { compatibilityFromHealth } from '../src/server-compat.js'
+import { validateSelection } from '@room/hub-core'
 import { checkTeamAdmission } from '../src/session.js'
 import { codexRoomCompatibilityMismatch } from '../src/hosts/codex-worker-warning.js'
 
@@ -37,44 +38,36 @@ describe('client compatibility', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
-  it.each([undefined, null, {}, { ok: true }, { ok: true, schema: 1, hub: 1 }, { ok: true, schema: 2, hub: 1 }])('uses only the fixed legacy adapter without an advertisement (%j), unless a floor was learned', health => {
-    expect(compatibilityFromHealth(health)).toMatchObject({ legacy: true, offer: { hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] } } })
-    expect(() => compatibilityFromHealth(health, true)).toThrow('Room server negotiation advertisement disappeared; refusing a protocol downgrade. Restore negotiation on the server and reconnect Room (/mcp) or restart the session')
+  it.each([undefined, null, {}, { ok: true }, { ok: true, schema: 2, hub: 1 }])('requires a negotiation advertisement (%j)', health => {
+    expect(() => compatibilityFromHealth(health)).toThrow(/invalid compatibility contract/)
   })
-  it.each(['ws://legacy-plain.example', 'wss://legacy-secure.example'])('preserves admission refusal wording at %s when discovery is unavailable or absent', async server => {
-    const dir = mkdtempSync(join(tmpdir(), 'room-compat-legacy-'))
-    execFileSync('git', ['init', '-q', dir])
-    let healthResponse = () => Response.json({ ok: true })
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      const path = new URL(url).pathname
-      if (path === '/auth/config') return Response.json({})
-      if (path === '/health') return healthResponse()
-      expect(path).toBe('/view-token')
-      expect(JSON.parse(String(init?.body))).not.toHaveProperty('compat')
-      return new Response('not a collaborator', { status: 403 })
-    }))
+  it.each([
+    ['unreachable', async () => { throw new TypeError('fetch failed') }, 'Cannot reach Room server ws://diagnostic.example: fetch failed'],
+    ['interrupted', async () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('connection reset')) } })), 'Cannot reach Room server ws://diagnostic.example: /health response interrupted (connection reset)'],
+    ['incompatible', async () => Response.json({ compat: { ...CURRENT_COMPAT, hub: { min: 9, max: 9 } } }), 'Room server ws://diagnostic.example is incompatible:'],
+    ['missing health route', async () => new Response('not found', { status: 404 }), 'Room server ws://diagnostic.example is incompatible: /health returned HTTP 404'],
+    ['unavailable', async () => new Response('try later', { status: 503 }), 'Room server ws://diagnostic.example is unavailable: /health returned HTTP 503'],
+    ['malformed health', async () => new Response('<html>wrong origin</html>'), 'Room server ws://diagnostic.example is incompatible: /health returned malformed JSON'],
+  ] as const)('identifies an %s server in one line before admission', async (_case, health, expected) => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.endsWith('/auth/config')) return Response.json({})
+      if (url.endsWith('/health')) return health()
+      throw new Error('admission must not run')
+    })
+    vi.stubGlobal('fetch', fetcher)
     try {
-      for (const response of [
-        () => Response.json({ ok: true }),
-        () => new Response('not found', { status: 404 }),
-        () => { throw new TypeError('fetch failed') },
-        () => new Response('not JSON'),
-      ]) {
-        healthResponse = response
-        await expect(checkTeamAdmission(server, 'example/repo', { dir, credentialsPath: join(dir, 'credentials.json') })).rejects.toMatchObject({ message: `${server} refused example/repo: not a collaborator` })
-      }
-      compatibilityFloor(join(dir, '.git'), new URL(server).origin).remember()
-      await expect(checkTeamAdmission(server, 'example/repo', { dir, credentialsPath: join(dir, 'credentials.json') })).rejects.toThrow(/advertisement disappeared; refusing a protocol downgrade/)
-    } finally {
-      vi.unstubAllGlobals()
-      rmSync(dir, { recursive: true, force: true })
-    }
+      const error = await checkTeamAdmission('ws://diagnostic.example', 'example/repo', { dir: '.', credentialsPath: '/nonexistent/credentials.json' }).catch(error => error as Error)
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toContain(expected)
+      expect((error as Error).message).not.toMatch(/[\r\n]/)
+      expect(fetcher.mock.calls.some(([url]) => url.endsWith('/view-token'))).toBe(false)
+    } finally { vi.unstubAllGlobals() }
   })
   it('rejects malformed explicit advertisements instead of treating them as legacy', () => {
     expect(() => compatibilityFromHealth({ ok: true, schema: 2, hub: 1, compat: null })).toThrow(/Room server.*invalid compatibility contract/)
   })
   it('accepts ranges independently of release and rejects explicit no overlap without fallback', () => {
-    expect(compatibilityFromHealth({ ok: true, compat: { ...CURRENT_COMPAT, release: '99.0.0' } }).legacy).toBe(false)
+    expect(compatibilityFromHealth({ ok: true, compat: { ...CURRENT_COMPAT, release: '99.0.0' } }).release).toBe('99.0.0')
     expect(() => compatibilityFromHealth({ ok: true, schema: 2, hub: 1, compat: { ...CURRENT_COMPAT, hub: { min: 9, max: 9 } } })).toThrow()
   })
   it('rejects a server selection outside the offer or required capabilities', () => {
@@ -91,14 +84,4 @@ it('worker preflight compares executable wire and record contracts, not releases
   expect(codexRoomCompatibilityMismatch(lead, { ...lead, release: '0.18.0', workerRecordSchema: 2 })).toMatch(/reconnect Room.*\/mcp.*restart/i)
   expect(codexRoomCompatibilityMismatch(lead, { ...lead, release: '0.16.40', compat: { ...CURRENT_COMPAT, hub: { min: 9, max: 9 } } })).toMatch(/Codex|update/i)
   expect(codexRoomCompatibilityMismatch(lead, undefined)).toMatch(/unverified/i)
-})
-
-it('persists a learned floor across connections and refuses a changed local key identity', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'room-compat-floor-'))
-  try {
-    const first = compatibilityFloor(dir, 'local:canonical-git-common-dir', 'key-fingerprint')
-    expect(first.learned()).toBe(false); first.remember()
-    expect(compatibilityFloor(dir, 'local:canonical-git-common-dir', 'key-fingerprint').learned()).toBe(true)
-    expect(() => compatibilityFloor(dir, 'local:canonical-git-common-dir', 'changed-key').learned()).toThrow()
-  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

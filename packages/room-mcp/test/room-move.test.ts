@@ -1,3 +1,4 @@
+import { teamHealth } from './fixtures/team-server.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
 // A room move preflights the target, leaves, joins, and goes back to the old room if the join still fails.
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -58,6 +59,7 @@ function teamServer(host: string, view: () => Response = () => Response.json({ v
   const server = `ws://${host}`
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const p = new URL(url).pathname
+    if (p === '/health') return teamHealth()
     if (p === '/auth/config') return Response.json({})
     if (p === '/view-token') return view()
     return new Response('not found', { status: 404 })
@@ -83,7 +85,7 @@ it('keeps the local room and says why when a team room needs an origin this clon
 it('does not leave when the team preflight finds no login', async () => {
   const server = 'ws://nologin.example'
   vi.stubEnv('ROOM_CREDENTIALS', join(dir, 'credentials.json'))
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config' ? Response.json({ github: 'device' }) : new Response('', { status: 404 })))
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config' ? Response.json({ github: 'device' }) : new Response('', { status: 404 })))
   const t = setup(async () => { throw new Error('unexpected join') })
   const reply = await t.tools.call('room_join', { where: server, room: 'github.com/example/repo' })
   expect(reply).toBe(`error: not logged in to ${server}. Call room_login server="${server}", show its code/URL, then call room_login with the same server again to wait; retry room_join where="${server}" afterward.${STILL()}`)
@@ -176,6 +178,7 @@ it('refuses to leave when a worker started while the preflight ran', async () =>
   const t = setup(async () => { throw new Error('unexpected join') })
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const p = new URL(url).pathname
+    if (p === '/health') return teamHealth()
     if (p === '/view-token') await recordWorker('w')
     return p === '/auth/config' ? Response.json({}) : Response.json({ view: 'v', hub: 1 })
   }))
@@ -259,7 +262,7 @@ it('a rollback restores the exact identity: unpinned stays unpinned, and an unta
 it('a request cancelled before leaving leaves nothing; one cancelled while joining goes back', async () => {
   const server = teamServer('cancel.example')
   const controller = new AbortController()
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => { if (new URL(url).pathname === '/view-token') controller.abort(); return new URL(url).pathname === '/auth/config' ? Response.json({}) : Response.json({ view: 'v', hub: 1 }) }))
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => { if (new URL(url).pathname === '/health') return teamHealth(); if (new URL(url).pathname === '/view-token') controller.abort(); return new URL(url).pathname === '/auth/config' ? Response.json({}) : Response.json({ view: 'v', hub: 1 }) }))
   const t = setup(async () => { throw new Error('unexpected join') })
   expect(await t.tools.call('room_join', { where: server, room: 'example/repo' }, controller.signal)).toBe('error: tool call cancelled')
   expect(t.events).toEqual([])
@@ -269,7 +272,7 @@ it('a request cancelled before leaving leaves nothing; one cancelled while joini
   const back = fakeSession(LOCAL_ROOM(), true)
   const target = fakeSession('example/repo', false)
   const u = setup(async o => { if (o.server === 'local') return back; again.abort(); return target })
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config' ? Response.json({}) : Response.json({ view: 'v', hub: 1 })))
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config' ? Response.json({}) : Response.json({ view: 'v', hub: 1 })))
   expect(await u.tools.call('room_join', { where: server, room: 'example/repo' }, again.signal)).toBe('error: tool call cancelled')
   expect(u.events).toEqual([`leave ${LOCAL_ROOM()}`, `join ${server} example/repo`, 'leave example/repo', `join local ${LOCAL_ROOM()}`])
   expect(u.session()).toBe(back)

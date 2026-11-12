@@ -76,7 +76,7 @@ export interface HubClientOptions {
   local?: boolean
   mono?: () => number
   wall?: () => number
-  /** From authenticated bootstrap selection; absent/legacy connections never send the optional op. */
+  /** From authenticated bootstrap selection; connections without the capability never send the optional op. */
   noticeCapability?: () => boolean
 }
 

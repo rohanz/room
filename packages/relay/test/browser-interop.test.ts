@@ -8,6 +8,8 @@ import { WebsocketProvider } from 'y-websocket'
 import { localViewKey, startRelay } from '../src/index.js'
 import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 import { mintTicket, parseRoomUrl } from '../../web/src/conn.js'
+import { CURRENT_COMPAT } from '@room/hub-core'
+import { negotiatedWebSocket } from '../../web/src/negotiated-websocket.js'
 import { secureWebSocket } from '../../web/src/secure-websocket.js'
 
 const key = 'interop-key', room = 'local/interop'
@@ -17,7 +19,7 @@ describe('browser view against a real relay', () => {
     const relay = await startRelay(0, { key })
     const server = `ws://127.0.0.1:${relay.port}`
     const writerDoc = new Y.Doc(), viewerDoc = new Y.Doc()
-    const writer = new WebsocketProvider(server, encodeURIComponent(room), writerDoc, { WebSocketPolyfill: authorizedWebSocket({ key }) as never, params: { schema: '2' }, disableBc: true })
+    const writer = new WebsocketProvider(server, encodeURIComponent(room), writerDoc, { WebSocketPolyfill: authorizedWebSocket({ key, negotiation: { offer: CURRENT_COMPAT, sessionId: 'writer' } }) as never, params: { schema: '2' }, disableBc: true })
     let viewer: WebsocketProvider | undefined
     const synced = (p: WebsocketProvider) => new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('provider did not sync')), 5000)
@@ -30,7 +32,7 @@ describe('browser view against a real relay', () => {
       const view = localViewKey(key, room)
       const loc = parseRoomUrl(`${server}/${encodeURIComponent(room)}`)
       const ticket = await mintTicket(loc, { view, key: '', token: '', relay: true })
-      viewer = new WebsocketProvider(loc.serverUrl, loc.encodedRoomName, viewerDoc, { WebSocketPolyfill: secureWebSocket(view), params: { schema: '2', ticket }, disableBc: true })
+      viewer = new WebsocketProvider(loc.serverUrl, loc.encodedRoomName, viewerDoc, { WebSocketPolyfill: negotiatedWebSocket(secureWebSocket(view), text => { throw new Error(text) }), params: { schema: '2', ticket }, disableBc: true })
       await synced(viewer)
       expect(viewerDoc.getText('shared').toString()).toBe('text the viewer should see')
       // Live updates keep arriving, in order, through the asynchronous decrypt chain.

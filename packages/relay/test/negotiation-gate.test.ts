@@ -6,10 +6,10 @@ import { RoomMemory } from '../src/memory.js'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { WebSocket } from 'ws'
-import { CURRENT_COMPAT, LEGACY_COMPAT, noticeEvidence, workerNoticeId, serializedStore, SETTLE_MS, decodeFrame, encodeFrame } from '@room/hub-core'
+import { CURRENT_COMPAT, noticeEvidence, workerNoticeId, serializedStore, SETTLE_MS, decodeFrame, encodeFrame } from '@room/hub-core'
 import { relayConnectionHandler, SecureSession } from '../src/index.js'
 
-const offer = { bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] }, capabilities: {}, legacy: { schema: 2, hub: 1 } }
+const offer = { bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] }, capabilities: {} }
 class Socket extends EventEmitter {
   OPEN = 1; CLOSED = 3; readyState = 1; bufferedAmount = 0; binaryType = 'nodebuffer'
   _receiver = { _maxPayload: 100 * 1024 * 1024 }
@@ -66,7 +66,7 @@ describe('encrypted relay bootstrap gate', () => {
       mono: () => mono, wall: Date.now, holderDead: () => false,
     } })
     cleanups.push(() => fs.rmSync(commonDir, { recursive: true, force: true }))
-    c.hello(capable ? CURRENT_COMPAT : LEGACY_COMPAT)
+    c.hello(capable ? CURRENT_COMPAT : { ...CURRENT_COMPAT, capabilities: { 'room.generation': [1], 'room.manifest': [1], 'room.ledger': [1] } })
     await vi.waitFor(() => expect(c.conn.frames).toHaveLength(1))
     const selected = decodeFrame(c.next()) as any
     expect(selected.selection.capabilities['room.notice-lifecycle']).toBe(capable ? 1 : undefined)
@@ -147,7 +147,7 @@ describe('encrypted relay bootstrap gate', () => {
 
   it('keeps shared state unchanged when no required contract overlaps', () => {
     const c = connect()
-    c.send(encodeFrame({ v: 1, id: 'h', op: 'compat-hello', sessionId: 'session', offer: { ...offer, legacy: undefined, schemas: { read: [3], write: [3] } } } as never))
+    c.send(encodeFrame({ v: 1, id: 'h', op: 'compat-hello', sessionId: 'session', offer: { ...offer, schemas: { read: [3], write: [3] } } } as never))
     expect(c.conn.code).toBe(4406)
     expect(c.docs.size).toBe(0)
     expect(decodeFrame(c.next())).toMatchObject({ v: 1, re: 'h', ok: false })
@@ -173,15 +173,16 @@ describe('encrypted relay bootstrap gate', () => {
     expect(c.conn.frames).toHaveLength(0)
   })
 
-  it('retains exact legacy sync-before-hub-hello ordering without a new ACK', () => {
-    const c = connect('')
-    c.send(Uint8Array.of(0, 0, 0))
-    expect(c.docs.size).toBe(1)
-    expect(c.next()[0]).toBe(0)
-    expect(c.conn.code).toBeUndefined()
+  it('refuses a non-negotiating client before secure hello or document allocation', () => {
+    const conn = new Socket(), docs = new Map()
+    relayConnectionHandler(docs, { key: 'key' })(conn as unknown as WebSocket, { url: '/local%2Ftest?schema=2' } as http.IncomingMessage)
+    expect(conn.code).toBe(4406)
+    expect(conn.reason).toBe('Room requires negotiated admission; reconnect with negotiate=1')
+    expect(conn.frames).toHaveLength(0)
+    expect(docs.size).toBe(0)
   })
 
-  it('rejects unknown negotiate values instead of selecting legacy sync', () => {
+  it('rejects unknown negotiate values before allocating a document', () => {
     const conn = new Socket(), docs = new Map()
     relayConnectionHandler(docs, { key: 'key' })(conn as unknown as WebSocket, { url: '/local%2Ftest?schema=2&negotiate=9' } as http.IncomingMessage)
     expect(conn.code).toBe(4406)
@@ -200,7 +201,7 @@ describe('encrypted relay bootstrap gate', () => {
 
 it('fences a secure handshake that was already upgraded when draining begins', () => {
   let accepting = true
-  const c = connect('', { accepting: () => accepting })
+  const c = connect('&negotiate=1', { accepting: () => accepting })
   accepting = false
   c.send(Uint8Array.of(0, 0, 0))
   expect(c.conn.code).toBe(1013)
@@ -233,7 +234,7 @@ it.each(['fresh', 'current', 'stale', 'absent'])('gates a loaded value copy befo
   const memory = new RoomMemory(dir, 'local/test')
   const previous = memory.doc.getMap('meta').get('generation')
   expect(memory.save('current')).toBeUndefined(); memory.detach(); memory.doc.destroy()
-  const c = connect(kind === 'absent' ? '' : `&gen=${kind === 'current' ? 'current' : kind}`, {
+  const c = connect('&negotiate=1' + (kind === 'absent' ? '' : `&gen=${kind === 'current' ? 'current' : kind}`), {
     commonDir: dir,
     loaded: (_room, doc) => {
       expect(doc.getMap('meta').get('generation')).toBeTypeOf('string')
@@ -242,8 +243,13 @@ it.each(['fresh', 'current', 'stale', 'absent'])('gates a loaded value copy befo
     },
   })
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
-  // Encrypted legacy sync step 1: generation refusal must precede attachment or sync output.
-  c.send(Uint8Array.of(0, 0, 1, 0))
+  // Generation is checked during selection, before any document frame or attachment.
+  c.hello()
+  await vi.waitFor(() => expect(c.conn.frames.length > 0 || c.conn.code !== undefined).toBe(true))
+  if (kind === 'fresh' || kind === 'current') {
+    const selected = decodeFrame(c.next()) as { selectionId: string }
+    c.send(encodeFrame({ v: 1, id: 'ack', op: 'compat-ack', selectionId: selected.selectionId }))
+  }
   if (kind === 'fresh' || kind === 'current') {
     expect(c.conn.code).toBeUndefined()
     expect(c.docs.values().next().value!.conns.size).toBe(1)

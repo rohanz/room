@@ -5,7 +5,8 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import WebSocket from 'ws'
+import type WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
@@ -21,7 +22,7 @@ const post = (route: string, body: unknown) => fetch(`${base}${route}`, {
 const url = (room: string, schema?: number) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}${schema ? `?schema=${schema}` : ''}`
 
 async function connect(room: string, schema?: number): Promise<WebSocket> {
-  const ws = new WebSocket(url(room, schema), { headers: { 'x-room-token': 'shared' } })
+  const ws = connectSocket(url(room, schema), { headers: { 'x-room-token': 'shared' } })
   await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
   return ws
 }

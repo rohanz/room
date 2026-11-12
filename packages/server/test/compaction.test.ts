@@ -1,3 +1,4 @@
+import { CURRENT_COMPAT } from '@room/hub-core'
 /** Compaction at server start (docs/superpowers/specs/2026-10-02-doc-history.md §5): a room's first load in a
  *  process rebuilds it from its values under a new generation, and the gate refuses replicas of an earlier one.
  *  The child-server tests listen on loopback. */
@@ -9,13 +10,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import * as Y from 'yjs'
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
 import { LeveldbPersistence } from 'y-leveldb'
 import { COMPACTED_UPDATE_REASON, GENERATION_PARAM, RoomDoc, STALE_REPLICA_CODE, docGeneration, historyOf, replicaGeneration } from '@room/shared'
-import { SETTLE_MS, encodeFrame, decodeFrame, serializedStore, MSG_HUB, type Reply } from '@room/hub-core'
+import { SETTLE_MS, encodeFrame, decodeFrame, serializedStore, MSG_HUB, type Reply, type BootstrapSelection } from '@room/hub-core'
 import { ServerHubs, type PersistenceProvider } from '../src/hub.js'
 import { devServers } from './dev-server.js'
 
@@ -220,13 +222,19 @@ async function login(http: string, who: string): Promise<string> {
 }
 
 interface SyncClient { ws: WebSocket; synced: Promise<void>; closed: Promise<{ code: number; reason: string }>; hub(body: Record<string, unknown>): Promise<Reply & Record<string, unknown>> }
-/** A y-websocket client stating `gen` (undefined: an rc client), syncing `doc` and carrying hub frames. */
+/** Fail with the server's refusal if a non-reconnecting test client closes before sync. */
+function syncWithin(client: SyncClient, label: string): Promise<void> {
+  return within(Promise.race([client.synced, client.closed.then(({ code, reason }) => {
+    throw new Error(`${label}: closed before sync (${code}: ${reason})`)
+  })]), 10_000, label)
+}
+/** A y-websocket client stating a generation (null: no generation), syncing doc and carrying hub frames. */
 function syncClient(url: string, doc: Y.Doc, opts: { gen?: string | null; session?: string; ticket?: string } = {}): SyncClient {
   const query = new URLSearchParams({ schema: '2' })
   const gen = opts.gen === undefined ? replicaGeneration(doc) : opts.gen
   if (gen !== null) query.set(GENERATION_PARAM, gen)
   if (opts.ticket) query.set('ticket', opts.ticket)
-  const ws = new WebSocket(`${url}/${encodeURIComponent(ROOM)}?${query}`, { headers: opts.session ? { authorization: `Bearer ${opts.session}` } : {} })
+  const ws = connectSocket(`${url}/${encodeURIComponent(ROOM)}?${query}`, { headers: opts.session ? { authorization: `Bearer ${opts.session}` } : {} })
   ws.binaryType = 'arraybuffer'
   ws.on('error', () => {}) // a refused or killed connection still closes
   let markSynced!: () => void
@@ -261,7 +269,7 @@ async function hello(c: SyncClient, sessionId: string): Promise<Reply & Record<s
     await new Promise(r => setTimeout(r, 100))
   }
 }
-const within = <T>(p: Promise<T>, ms = 10_000) => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out')), ms))])
+const within = <T>(p: Promise<T>, ms = 10_000, phase = 'operation') => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`timed out: ${phase}`)), ms))])
 
 describe('a compacting restart on a real server', () => {
   it('refuses a stale replica (4409) and merges nothing of it; a fresh replica rejoins with no duplicates; rc and view clients are gated', async () => {
@@ -274,11 +282,15 @@ describe('a compacting restart on a real server', () => {
 
     // Before any compaction an rc client (no gen) is served, as today.
     const rc = syncClient(s.ws, new Y.Doc(), { gen: null, session })
-    await within(rc.synced); rc.ws.close()
+    await syncWithin(rc, 'rc sync')
 
     const a = new Y.Doc()
     const live = syncClient(s.ws, a, { session })
-    await within(live.synced)
+    // Keep the room loaded until live finishes negotiation. Closing its only synced connection
+    // during bootstrap legitimately invalidates the selected document (4406); this raw harness
+    // does not reconnect. That unload race is independent of compacting the next restart.
+    await syncWithin(live, 'live sync')
+    rc.ws.close()
     expect(replicaGeneration(a)).toBe('0')
     churn(a, 200)
     a.getMap('claims').set('c1', { id: 'c1', by: 'ada' })
@@ -300,16 +312,17 @@ describe('a compacting restart on a real server', () => {
 
     // The old replica states 0; the room is compacted now. It is refused before any sync, and stays out.
     const stale = syncClient(s.ws, a, { session })
-    expect(await within(stale.closed)).toEqual({ code: STALE_REPLICA_CODE, reason: expect.stringMatching(/compacted/) })
+    expect(await within(stale.closed, 10_000, 'stale close')).toEqual({ code: STALE_REPLICA_CODE, reason: expect.stringMatching(/compacted/) })
     expect(s.lines.join('\n')).toMatch(/compacted at load/)
 
     const b = new Y.Doc()
     const fresh = syncClient(s.ws, b, { session })
-    await within(fresh.synced)
+    await syncWithin(fresh, 'fresh sync')
     const generation = docGeneration(b)
     expect(generation).toMatch(/^[0-9a-f]{32}$/)
     expect(replicaGeneration(b)).toBe(generation)
-    expect(historyOf(b).deleted).toBe(0)
+    // Negotiation waits for hub startup: replacing hubIncarnation adds one new delete after compaction.
+    expect(historyOf(b).deleted).toBe(1)
     expect(b.getMap('claims').has('c1')).toBe(true)
     expect(b.getMap('claims').has('offline')).toBe(false)
     expect(b.getArray('list').toArray()).toEqual(['one', 'two']) // no duplicated values
@@ -327,15 +340,15 @@ describe('a compacting restart on a real server', () => {
 
     // rc clients state no generation: closed with 4403, which every rc client treats as final.
     const old = syncClient(s.ws, new Y.Doc(), { gen: null, session })
-    expect(await within(old.closed)).toEqual({ code: 4403, reason: COMPACTED_UPDATE_REASON })
+    expect(await within(old.closed, 10_000, 'old close')).toEqual({ code: 4403, reason: COMPACTED_UPDATE_REASON })
 
     // A read-only view passes the same gate.
     const { view } = await (await postJson(s.http, '/view-token', { room: ROOM, session, schema: 2 })).json() as { view: string }
-    const ticket = async () => ((await (await postJson(s.http, '/ws-ticket', { room: ROOM, schema: 2, view })).json()) as { ticket: string }).ticket
+    const ticket = async () => ((await (await postJson(s.http, '/ws-ticket', { compat: CURRENT_COMPAT, room: ROOM, schema: 2, view })).json()) as { ticket: string }).ticket
     const staleView = syncClient(s.ws, a, { ticket: await ticket() })
-    expect((await within(staleView.closed)).code).toBe(STALE_REPLICA_CODE)
+    expect((await within(staleView.closed, 10_000, 'staleView close')).code).toBe(STALE_REPLICA_CODE)
     const viewer = syncClient(s.ws, new Y.Doc(), { ticket: await ticket() })
-    await within(viewer.synced)
+    await syncWithin(viewer, 'viewer sync')
     viewer.ws.close(); fresh.ws.close()
 
     // The next restart has nothing worth compacting: the generation stays, and a current replica reconnects.
@@ -343,7 +356,7 @@ describe('a compacting restart on a real server', () => {
     s = teamServer(dir, port)
     await healthy(s.http)
     const back = syncClient(s.ws, b, { session })
-    await within(back.synced)
+    await syncWithin(back, 'back sync')
     expect(docGeneration(b)).toBe(generation)
     back.ws.close()
     await servers.stop(s.child)
@@ -378,10 +391,40 @@ describe('a compacting restart on a real server', () => {
     const again = await login(s.http, 'ada')
     const b = new Y.Doc()
     const fresh = syncClient(s.ws, b, { session: again })
-    await within(fresh.synced)
+    await syncWithin(fresh, 'fresh sync')
     expect(docGeneration(b)).toMatch(/^[0-9a-f]{32}$/)
     expect(new RoomDoc(b).archive.toJSON()).toEqual(new RoomDoc(seed).archive.toJSON())
     fresh.ws.close()
     await servers.stop(s.child)
   }, 90_000)
 })
+
+// Freeze the unload/ACK interleaving that the compaction scenario must avoid.
+it('fences a pending selection when the last synced connection unloads its document', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-compaction-race-')); dirs.push(dir)
+  const s = teamServer(dir, await freePort())
+  await healthy(s.http)
+  const session = await login(s.http, 'ada')
+  expect((await postJson(s.http, '/rooms', { room: ROOM, session, schema: 2 })).ok).toBe(true)
+  const rc = syncClient(s.ws, new Y.Doc(), { gen: null, session })
+  await syncWithin(rc, 'rc sync')
+  const raw = new WebSocket(`${s.ws}/${encodeURIComponent(ROOM)}?negotiate=1&gen=fresh`, { headers: { authorization: `Bearer ${session}` } })
+  raw.on('error', () => {})
+  const packets: Uint8Array[] = []
+  raw.on('message', data => packets.push(new Uint8Array(data as Buffer)))
+  const closed = new Promise<{ code: number; reason: string }>(resolve => raw.once('close', (code, reason) => resolve({ code, reason: String(reason) })))
+  await new Promise<void>((resolve, reject) => { raw.once('open', resolve); raw.once('error', reject) })
+  raw.send(encodeFrame({ v: 1, id: 'h', op: 'compat-hello', sessionId: 'race', offer: CURRENT_COMPAT }))
+  await expect.poll(() => packets.length).toBe(1)
+  const selection = decodeFrame(packets[0]) as BootstrapSelection
+  expect(selection.ok).toBe(true)
+  rc.ws.close()
+  await within(rc.closed)
+  const anchor = syncClient(s.ws, new Y.Doc(), { session })
+  await syncWithin(anchor, 'anchor sync')
+  raw.send(encodeFrame({ v: 1, id: 'a', op: 'compat-ack', selectionId: selection.selectionId }))
+  const result = await within(closed)
+  expect(result).toEqual({ code: 4406, reason: 'room: authority changed; rejoin' })
+  anchor.ws.close()
+  await servers.stop(s.child)
+}, 30_000)

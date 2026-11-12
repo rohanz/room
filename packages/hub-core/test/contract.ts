@@ -42,8 +42,8 @@ export type MakeEnv = (clock: FakeClock) => Promise<ContractEnv>
 export const holder = (sessionId: string, extra: Partial<HolderIn> = {}): HolderIn => ({ sessionId, pid: process.pid, startTime: '', executable: '', ...extra })
 
 /** A hub client over a real websocket: replies matched by id, pushes collected. */
-export async function socketClient(url: string, headers: Record<string, string> = {}): Promise<ContractClient & { ws: WebSocket }> {
-  const ws = new WebSocket(url, { headers })
+export async function socketClient(url: string, headers: Record<string, string> = {}, socketFactory = (address: string, options: { headers: Record<string, string> }) => new WebSocket(address, options)): Promise<ContractClient & { ws: WebSocket }> {
+  const ws = socketFactory(url, { headers })
   ws.binaryType = 'arraybuffer'
   await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject) })
   const pending = new Map<string, (r: Reply) => void>()
@@ -96,7 +96,7 @@ async function greeted(env: ContractEnv): Promise<ContractClient> {
   return c
 }
 
-export function contractSuite(name: string, make: MakeEnv): void {
+export function contractSuite(name: string, make: MakeEnv, options: { bootstrapGreets?: boolean } = {}): void {
   describe(`hub contract: ${name}`, () => {
     it('1. acquire, renew, release; held; the same session supersedes; supersedes hands over', async () => {
       const env = await ready(make)
@@ -144,7 +144,9 @@ export function contractSuite(name: string, make: MakeEnv): void {
       try {
         const { a } = env
         const fresh = await env.connect()
-        refused(await fresh.send({ op: 'post', msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } }), 'hello-first')
+        // A negotiated transport already registered hello; its next guard is the required write lease.
+        const beforeHello = refused(await fresh.send({ op: 'post', msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } }), options.bootstrapGreets ? 'invalid' : 'hello-first')
+        if (options.bootstrapGreets) expect(beforeHello.text).toBe("a post carries the poster's name lease")
         expect(refused(await fresh.send({ op: 'hello', proto: 2, schema: 2, client: 't', sessionId: 's' }), 'version').text).toMatch(/hub needs updating/)
         expect(refused(await fresh.send({ op: 'hello', proto: 0, schema: 2, client: 't', sessionId: 's' }), 'version').text).toMatch(/update Room/)
         const L = { name: 'ada', epoch: ok(await a.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number }

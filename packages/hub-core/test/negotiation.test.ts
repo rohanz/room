@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { generationGate, FRESH_GENERATION } from '@room/shared'
 import {
   BOOTSTRAP_MAX_BYTES, CAPABILITY_REGISTRY, COMPAT_MAX_BYTES,
-  CURRENT_COMPAT, LEGACY_COMPAT, CompatibilityValidationError,
-  decodeFrame, encodeFrame, legacyAdvertisement, legacyHello, parseAdvertisement,
+  CURRENT_COMPAT, CompatibilityValidationError,
+  decodeFrame, encodeFrame, parseAdvertisement,
   parseBootstrapAck, parseBootstrapFrame, parseBootstrapHello, selectContract, validateSelection,
   type BootstrapSelection, type CompatAdvertisement, type ContractPolicy,
 } from '../src/index.js'
@@ -19,7 +19,6 @@ const selected = (client = ad(), server = ad(), p = policy) => {
 
 describe('baseline and advertisement', () => {
   it('keeps independently versioned axes and only implemented capability versions', () => {
-    expect(CURRENT_COMPAT).toEqual({ ...LEGACY_COMPAT, capabilities: { ...LEGACY_COMPAT.capabilities, 'room.notice-lifecycle': [1] } })
     expect(CURRENT_COMPAT.hub).toEqual({ min: 1, max: 1 })
     expect(CURRENT_COMPAT.schemas).toEqual({ read: [2], write: [2] })
     expect(CAPABILITY_REGISTRY['room.worker-handover'].versions).toEqual({})
@@ -27,23 +26,14 @@ describe('baseline and advertisement', () => {
     expect(new TextEncoder().encode(JSON.stringify(CURRENT_COMPAT)).length).toBeLessThan(COMPAT_MAX_BYTES)
     expect(parseAdvertisement(CURRENT_COMPAT)).toEqual(CURRENT_COMPAT)
   })
-  it.each([
-    ['legacy', 'current'], ['current', 'legacy'], ['current', 'current'],
-  ])('%s → %s selects exact baseline', (c, s) => {
-    const client = c === 'current' ? ad({ release: 'diagnostic-new' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
-    const server = s === 'current' ? ad({ release: 'another-build' }) : legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
-    expect(selected(client, server)).toEqual({ bootstrap: 1, hub: 1, schema: 2, capabilities: { 'room.generation': 1, 'room.ledger': 1, 'room.manifest': 1,
-      ...(c === 'current' && s === 'current' ? { 'room.notice-lifecycle': 1 } : {}) } })
-  })
-  it('produces only the strict legacy hello fields', () => {
-    expect(legacyHello('r1', 'build', 's1')).toEqual({ v: 1, op: 'hello', id: 'r1', proto: 1, schema: 2, client: 'build', sessionId: 's1' })
-  })
-  it.each([
-    null, [], {}, { ok: false, schema: 2, hub: 1 }, { ok: true, schema: 1, hub: 1 },
-    { ok: true, schema: 2, hub: 2 }, { ok: true, schema: 2, hub: 1, compat: null },
-    { ok: true, schema: 2, hub: 1, compat: undefined }, { ok: true, schema: 2, hub: 1, compat: CURRENT_COMPAT },
-  ])('does not fallback for unrecognized or advertised discovery %j', value => {
-    expect(legacyAdvertisement(value)).toBeNull()
+  it('ignores only the advisory legacy field while retaining every admission constraint', () => {
+    const retained = { ...ad(), legacy: { schema: 2, hub: 1 } }
+    expect(parseAdvertisement(retained)).toEqual(ad())
+    expect(() => parseAdvertisement({ ...retained, another: true })).toThrow(/unknown fields/)
+    expect(() => parseAdvertisement({ ...retained, legacy: 'x'.repeat(COMPAT_MAX_BYTES) })).toThrow(/UTF-8 bytes/)
+    expect(selectContract({ ...retained, requiredCapabilities: { 'other.required': [1] } }, ad(), policy).ok).toBe(false)
+    expect(() => validateSelection({ ...selected(), capabilities: { 'other.selected': 1 } }, retained, ad())).toThrow()
+    expect(selectContract({ ...retained, schemas: { read: [3], write: [3] } }, ad(), policy).ok).toBe(false)
   })
   it('returns detached canonical data without changing the advertisement', () => {
     const input = ad({ schemas: { read: [3, 2], write: [3, 2] }, capabilities: { 'other.optional': [2, 1] } })
@@ -56,9 +46,6 @@ describe('baseline and advertisement', () => {
     expect(Object.isFrozen(CURRENT_COMPAT.capabilities['room.generation'])).toBe(true)
     expect(Object.isFrozen(CAPABILITY_REGISTRY['room.generation'].versions[1].schemas)).toBe(true)
     expect(() => { CURRENT_COMPAT.schemas.read.push(3) }).toThrow()
-    const first = legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!
-    first.schemas.read.push(3)
-    expect(legacyAdvertisement({ ok: true, schema: 2, hub: 1 })!.schemas.read).toEqual([2])
   })
   const invalidAds: [string, (value: any) => void][] = [
     ['bootstrap', a => { a.bootstrap = 2 }], ['zero min', a => { a.hub.min = 0 }],
@@ -72,14 +59,14 @@ describe('baseline and advertisement', () => {
     ['nine versions', a => { a.capabilities = { 'room.generation': [1, 2, 3, 4, 5, 6, 7, 8, 9] } }],
     ['33 names', a => { a.capabilities = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`x.c${i}`, [1]])) }],
     ['oversized all required', a => { a.requiredCapabilities = Object.fromEntries(Array.from({ length: 24 }, (_, i) => [`room.${'a'.repeat(40)}${i}`, [1]])) }],
-    ['false legacy', a => { a.hub = { min: 2, max: 2 } }], ['invalid required version', a => { a.requiredCapabilities = { 'room.ledger': [0] } }],
+    ['invalid required version', a => { a.requiredCapabilities = { 'room.ledger': [0] } }],
   ]
   it.each(invalidAds)('rejects malformed advertisements: %s', (_name, mutate) => {
     const value = ad(); mutate(value)
     expect(() => parseAdvertisement(value)).toThrow(CompatibilityValidationError)
   })
   it('counts UTF-8 bytes, not characters, and never truncates a required capability', () => {
-    const value = ad({ release: 'é'.repeat(100), capabilities: Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`room.${'a'.repeat(30)}${i}`, [1]])) })
+    const value = ad({ release: 'é'.repeat(120), capabilities: Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`room.${'a'.repeat(30)}${i}`, [1]])) })
     expect(JSON.stringify(value).length).toBeLessThanOrEqual(COMPAT_MAX_BYTES)
     expect(new TextEncoder().encode(JSON.stringify(value)).length).toBeGreaterThan(COMPAT_MAX_BYTES)
     expect(() => parseAdvertisement(value)).toThrow(/UTF-8 bytes/)
@@ -94,25 +81,25 @@ describe('deterministic contract selection', () => {
     [{ min: 2, max: 3 }, { min: 1, max: 2 }, 2],
     [{ min: 1, max: 65535 }, { min: 1, max: 65535 }, 65535],
   ])('chooses highest common protocol without changing schema (%j / %j)', (c, s, expected) => {
-    expect(selected(ad({ hub: c, legacy: undefined }), ad({ hub: s, legacy: undefined })).hub).toBe(expected)
+    expect(selected(ad({ hub: c }), ad({ hub: s })).hub).toBe(expected)
   })
   it.each([
-    [ad({ hub: { min: 1, max: 1 } }), ad({ hub: { min: 2, max: 3 }, legacy: undefined }), 'hub-incompatible', 'client', { min: 2, max: 3 }],
-    [ad({ hub: { min: 2, max: 3 }, legacy: undefined }), ad(), 'hub-incompatible', 'server', { min: 2, max: 3 }],
+    [ad({ hub: { min: 1, max: 1 } }), ad({ hub: { min: 2, max: 3 } }), 'hub-incompatible', 'client', { min: 2, max: 3 }],
+    [ad({ hub: { min: 2, max: 3 } }), ad(), 'hub-incompatible', 'server', { min: 2, max: 3 }],
   ])('names the older side and the exact protocol target', (client, server, code, side, target) => {
     const result = selectContract(client, server, policy)
     expect(result).toMatchObject({ ok: false, error: { code, side, requiredChanges: [{ side, action: 'update', contract: 'hub', range: target }] } })
   })
   it.each([
-    ['0.16 client', ad({ schemas: { read: [1], write: [1] }, legacy: undefined }), ad(), 2, 'client', [2]],
-    ['0.16 server', ad(), ad({ schemas: { read: [1], write: [1] }, legacy: undefined }), 2, 'server', [2]],
-    ['retired baseline', ad(), ad({ schemas: { read: [3], write: [3] }, legacy: undefined }), 3, 'client', [3]],
+    ['0.16 client', ad({ schemas: { read: [1], write: [1] } }), ad(), 2, 'client', [2]],
+    ['0.16 server', ad(), ad({ schemas: { read: [1], write: [1] } }), 2, 'server', [2]],
+    ['retired baseline', ad(), ad({ schemas: { read: [3], write: [3] } }), 3, 'client', [3]],
     ['explicit schema gap', ad({ schemas: { read: [2, 4], write: [2, 4] } }), ad({ schemas: { read: [2, 3, 4], write: [2, 3, 4] } }), 3, 'client', [3]],
   ])('refuses %s with exact schema guidance', (_name, client, server, schema, side, target) => {
     expect(selectContract(client, server, { activeSchema: schema })).toMatchObject({ ok: false, error: { code: 'schema-incompatible', side, requiredChanges: [{ versions: target }] } })
   })
   it('allows read-only schema support without granting write support', () => {
-    const reader = ad({ schemas: { read: [2], write: [] }, legacy: undefined })
+    const reader = ad({ schemas: { read: [2], write: [] } })
     expect(selected(reader, ad(), { activeSchema: 2, readOnly: true }).schema).toBe(2)
     expect(selectContract(reader, ad(), policy)).toMatchObject({ ok: false, error: { side: 'client', code: 'schema-incompatible' } })
   })
@@ -174,9 +161,9 @@ describe('deterministic contract selection', () => {
   it('checks registry schema/protocol dependencies and searches lower common protocols', () => {
     const peer = ad({ hub: { min: 1, max: 2 }, requiredCapabilities: { 'room.generation': [1] } })
     expect(selected(peer, peer).hub).toBe(1)
-    const proto2 = ad({ hub: { min: 2, max: 2 }, legacy: undefined, requiredCapabilities: { 'room.generation': [1] } })
+    const proto2 = ad({ hub: { min: 2, max: 2 }, requiredCapabilities: { 'room.generation': [1] } })
     expect(selectContract(proto2, proto2, policy)).toMatchObject({ ok: false, error: { code: 'capability-incompatible' } })
-    const schema3 = ad({ schemas: { read: [3], write: [3] }, legacy: undefined, requiredCapabilities: { 'room.generation': [1] } })
+    const schema3 = ad({ schemas: { read: [3], write: [3] }, requiredCapabilities: { 'room.generation': [1] } })
     expect(selectContract(schema3, schema3, { activeSchema: 3 })).toMatchObject({ ok: false, error: { code: 'capability-incompatible' } })
   })
   it('validates required version sets, policy and malformed peers without throwing or fallback', () => {
@@ -223,12 +210,12 @@ describe('bootstrap shapes', () => {
     expect(() => validateSelection(empty, ad(), ad({ requiredCapabilities }))).toThrow()
     expect(() => validateSelection(empty, ad(), ad(), { requiredCapabilities })).toThrow()
     expect(() => validateSelection(reply.selection, ad(), ad(), { activeSchema: 3 })).toThrow()
-    const reader = ad({ schemas: { read: [2], write: [] }, legacy: undefined })
+    const reader = ad({ schemas: { read: [2], write: [] } })
     expect(() => validateSelection(empty, reader, ad())).toThrow()
     expect(validateSelection(empty, reader, ad(), { readOnly: true })).toEqual(empty)
   })
   it('validates refusal shape and exact required changes', () => {
-    const result = selectContract(ad(), ad({ hub: { min: 2, max: 2 }, legacy: undefined }), policy)
+    const result = selectContract(ad(), ad({ hub: { min: 2, max: 2 } }), policy)
     if (result.ok) throw new Error('expected refusal')
     const frame = { v: 1, re: 'h', ok: false, error: result.error } as const
     expect(parseBootstrapFrame(frame)).toEqual(frame)
@@ -258,6 +245,6 @@ describe('bootstrap shapes', () => {
 describe('release diagnostics do not select the contract', () => {
   it('does not infer runtime compatibility from release equality', () => {
     expect(selected(ad({ release: '0.1.0' }), ad({ release: '9.9.9' })).schema).toBe(2)
-    expect(selectContract(ad({ release: 'same' }), ad({ release: 'same', schemas: { read: [3], write: [3] }, legacy: undefined }), { activeSchema: 3 }).ok).toBe(false)
+    expect(selectContract(ad({ release: 'same' }), ad({ release: 'same', schemas: { read: [3], write: [3] } }), { activeSchema: 3 }).ok).toBe(false)
   })
 })

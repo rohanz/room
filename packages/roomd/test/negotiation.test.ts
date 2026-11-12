@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
-import { CURRENT_COMPAT, decodeFrame, encodeFrame } from '@room/hub-core'
+import { CURRENT_COMPAT, decodeFrame, encodeFrame, selectContract } from '@room/hub-core'
 const { wires } = vi.hoisted(() => ({ wires: [] as unknown[] }))
 vi.mock('ws', () => ({ default: class extends EventEmitter {
   sent: unknown[] = []; readyState = 1
@@ -126,11 +126,21 @@ describe('HTTP upgrade refusal recovery with the installed ws and y-websocket', 
       }
       wss.handleUpgrade(request, socket, head, ws => {
         ws.on('error', () => {})
-        ws.once('message', () => {
+        ws.once('message', data => {
+          const hello = decodeFrame(new Uint8Array(data as Buffer)) as { id: string; offer: typeof CURRENT_COMPAT }
+          const selected = selectContract(hello.offer, CURRENT_COMPAT, { activeSchema: 2 })
+          if (!selected.ok) throw new Error(selected.error.text)
+          ws.send(encodeFrame({ v: 1, re: hello.id, ok: true, selectionId: 'retry', selection: selected.selection, compat: CURRENT_COMPAT, generation: '0', policyRevision: 1, incarnation: 1, ttlMs: 45000, renewMs: 15000, requiredCapabilities: {} }))
+          ws.once('message', data => {
+            const ack = decodeFrame(new Uint8Array(data as Buffer)) as { id: string }
+            ws.send(encodeFrame({ v: 1, re: ack.id, ok: true }))
+            ws.once('message', () => {
           const update = Y.encodeStateAsUpdate(remote)
           expect(update.length).toBeLessThan(128)
           // y-websocket messageSync (0), sync step 2 (1), varUint8Array update.
           ws.send(new Uint8Array([0, 1, update.length, ...update]))
+            })
+          })
         })
       })
     })

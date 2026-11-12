@@ -36,7 +36,7 @@ async function fixture(managed = true) {
   }) as Post
   const s = { room, me: { name: 'A', kind: 'agent' }, roomName: 'r', post,
     lease: { fence: () => epoch === undefined ? undefined : String(epoch), sessionId: 'a' },
-    contract: managed ? { capabilities: { 'room.notice-lifecycle': 1 }, legacy: false } : { capabilities: {}, legacy: true },
+    contract: managed ? { capabilities: { 'room.notice-lifecycle': 1 } } : { capabilities: {} },
     hub: { noticeLifecycle: send, noticeIncarnation: () => hub.incarnation }, provider: { synced: true } } as unknown as Session
   // Before implementation the extra argument is ignored, so the baseline really publishes notices.
   const slots = new (ConflictSlots as any)(room, post, () => String(epoch), () => clock++, () => {}, post, () => valid, s) as ConflictSlots

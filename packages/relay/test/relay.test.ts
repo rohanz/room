@@ -54,7 +54,7 @@ describe('local relay browser view', () => {
         ws.on('error', () => {})
       })
       expect(old.code).toBe(426)
-      expect(old.text).toContain('v0.17.47, the last release that can migrate')
+      expect(old.text).toBe('Room requires negotiated admission; reconnect with negotiate=1')
       const outside = await get(`http://127.0.0.1:${relay.port}/../../etc/passwd`)
       expect(outside.body).not.toContain('root:')
       const doc = new Y.Doc()

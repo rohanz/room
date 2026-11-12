@@ -8,7 +8,7 @@ import { primePrivateDirectory, primePrivateState } from '@room/relay'
 import { createTools } from '../src/tools.js'
 import { pollLogin, checkTeamAdmission } from '../src/session.js'
 import { writeChoice } from '../src/choice.js'
-import { CURRENT_COMPAT } from '@room/hub-core'
+import { teamHealth } from './fixtures/team-server.js'
 
 vi.mock('@room/relay', async importOriginal => ({
   ...await importOriginal<typeof import('@room/relay')>(),
@@ -65,10 +65,12 @@ it('awaits priming before the guarded remembered choice write', async () => {
   expect(fs.existsSync(file)).toBe(true)
 })
 
-it('primes the Room boundary before a modern compatibility discovery can later remember selection', async () => {
+it('keeps compatibility discovery read-only after removing remembered selection', async () => {
   const dir = root()
   execFileSync('git', ['init', '-q', dir])
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(url.endsWith('/health') ? { compat: CURRENT_COMPAT } : url.endsWith('/view-token') ? { view: 'fixture', hub: 1 } : {})))
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/health') ? teamHealth() : Response.json(url.endsWith('/view-token') ? { view: 'fixture', hub: 1 } : {})))
   await checkTeamAdmission('ws://compat-prime.example', 'example/repo', { dir, credentialsPath: path.join(dir, 'credentials.json') })
-  expect(primePrivateState).toHaveBeenCalledWith(fs.realpathSync.native(path.join(dir, '.git')))
+  expect(primePrivateState).not.toHaveBeenCalled()
+  expect(primePrivateDirectory).not.toHaveBeenCalled()
+  expect(fs.readdirSync(path.join(dir, '.git')).filter(name => name.startsWith('room'))).toEqual([])
 })

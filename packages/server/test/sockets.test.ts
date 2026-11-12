@@ -18,7 +18,7 @@ describe('credential sockets and tickets', () => {
     const socket = { close: vi.fn(), once: vi.fn() }
     const credential = { kind: 'session' as const, value: 'session-id' }
     registry.track(credential, socket)
-    const { ticket } = registry.mint('github.com/o/r', credential, false)
+    const { ticket } = registry.mint('github.com/o/r', credential, false, CURRENT_COMPAT)
     registry.close(credential, 4401, 'logged out')
     expect(socket.close).toHaveBeenCalledWith(4401, 'logged out')
     expect(registry.take(ticket, 'github.com/o/r')).toBeUndefined()
@@ -28,13 +28,13 @@ describe('credential sockets and tickets', () => {
     let now = 0
     const registry = new CredentialSockets(() => now)
     const credential = { kind: 'view' as const, value: 'view-key' }
-    const first = registry.mint('local/demo', credential, true).ticket
+    const first = registry.mint('local/demo', credential, true, CURRENT_COMPAT).ticket
     expect(registry.take(first, 'local/other')).toBeUndefined()
     expect(registry.take(first, 'local/demo')).toBeUndefined()
-    const second = registry.mint('local/demo', credential, true).ticket
-    expect(registry.take(second, 'local/demo')).toEqual({ credential, readOnly: true })
+    const second = registry.mint('local/demo', credential, true, CURRENT_COMPAT).ticket
+    expect(registry.take(second, 'local/demo')).toEqual({ credential, readOnly: true, compat: CURRENT_COMPAT })
     expect(registry.take(second, 'local/demo')).toBeUndefined()
-    const third = registry.mint('local/demo', credential, true).ticket
+    const third = registry.mint('local/demo', credential, true, CURRENT_COMPAT).ticket
     now = 60_001
     expect(registry.take(third, 'local/demo')).toBeUndefined()
   })

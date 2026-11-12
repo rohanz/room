@@ -27,7 +27,7 @@ export type { RelayAdmissionLimits } from './limits.js'
 export type { RelayAwarenessLimits } from './awareness.js'
 export { SecureSession } from './secure.js'
 export { localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
-import { HttpFailure, safeUrl, CURRENT_COMPAT, LEGACY_COMPAT, legacyAdvertisement, legacyHello, parseAdvertisement, selectContract, parseBootstrapFrame, BOOTSTRAP_MAX_BYTES, BOOTSTRAP_HELLO_TIMEOUT_MS, BOOTSTRAP_ACK_TIMEOUT_MS, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, LEASE_TTL_MS, LEASE_RENEW_MS, type BootstrapHello, type BootstrapSelection, type CompatibilityRefusal } from '@room/hub-core'
+import { HttpFailure, safeUrl, CURRENT_COMPAT, parseAdvertisement, selectContract, parseBootstrapFrame, BOOTSTRAP_MAX_BYTES, BOOTSTRAP_HELLO_TIMEOUT_MS, BOOTSTRAP_ACK_TIMEOUT_MS, BOOTSTRAP_MAX_PENDING_PER_PRINCIPAL, LEASE_TTL_MS, LEASE_RENEW_MS, type CompatAdvertisement, type BootstrapHello, type BootstrapSelection, type CompatibilityRefusal } from '@room/hub-core'
 export { safeUrl } from '@room/hub-core'
 
 // ---- a minimal y-websocket relay (the wire protocol of y-websocket 3.x; private memory persistence) ----
@@ -213,22 +213,13 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
         })
         return
       }
-      if (safeUrl(req.url).searchParams.get('negotiate') === '1' && raw.byteLength > BOOTSTRAP_MAX_BYTES + 16) { clearTimeout(timer); conn.close(4406, 'compatibility frame exceeds limit'); return }
+      if (raw.byteLength > BOOTSTRAP_MAX_BYTES + 16) { clearTimeout(timer); conn.close(4406, 'compatibility frame exceeds limit'); return }
       const first = session.decrypt(raw)
       if (opts.accepting && !opts.accepting()) { conn.close(1013, 'local daemon draining; retry'); return }
       clearTimeout(timer)
       handshakeCleanup.delete(conn)
       conn.off('message', handshake)
-      if (safeUrl(req.url).searchParams.get('negotiate') === '1') attachNegotiating(docs, conn, name, req, opts, first)
-      else {
-        if (!relayGeneration(conn, req, getDoc(docs, name, opts))) return
-        if (opts.daemon && !opts.readOnly) { conn.close(4406, 'daemon lifecycle negotiation required; update Room'); return }
-        // Frozen baseline is selected before either direction of legacy automatic sync.
-        const legacy = selectContract(LEGACY_COMPAT, CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly })
-        if (!legacy.ok) { conn.close(4406, 'legacy contract retired; update this client'); return }
-        attachReady(docs, conn, name, opts, first, req)
-        conn.emit('message', first, true)
-      }
+      attachNegotiating(docs, conn, name, req, opts, first)
     } catch { clearTimeout(timer); conn.close(1008, 'invalid secure frame') }
   }
   conn.on('message', handshake)
@@ -262,6 +253,8 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
     catch { refuse('invalid compatibility frame; update this client'); return }
     if (phase === 'hello') {
       if (!('op' in frame) || frame.op !== 'compat-hello') { refuse('compatibility hello required'); return }
+      const ticketOffer = (req as http.IncomingMessage & { ticketOffer?: CompatAdvertisement }).ticketOffer
+      if (ticketOffer && JSON.stringify(parseAdvertisement(frame.offer)) !== JSON.stringify(ticketOffer)) { refuse('ticket offer changed; request a new ticket'); return }
       hello = frame
       phase = 'selecting'
       const selected = selectContract(frame.offer, opts.compat ?? CURRENT_COMPAT, { activeSchema: 2, readOnly: opts.readOnly, ...(!opts.readOnly && opts.daemon ? { requiredCapabilities: { 'room.daemon': [1] } } : {}) })
@@ -298,9 +291,9 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
         (selectedDoc!.hub?.incarnation ?? 0) !== selection!.incarnation) { refuse('relay authority changed; reconnect Room'); return }
     if (!relayGeneration(conn, req, selectedDoc!)) { cleanup(); phase = 'done'; return }
     if (!opts.readOnly && selectedDoc!.hub) {
-      // compat-hello establishes the same hub session as the frozen legacy hello.
+      // Register the authenticated bootstrap session before enabling hub operations.
       // A later publisher hello is idempotent; operations are enabled as soon as ACK succeeds.
-      const registered = selectedDoc!.hub.handle(conn, legacyHello(frame.id, hello!.offer.release ?? 'Room', hello!.sessionId), { local: true })
+      const registered = selectedDoc!.hub.handle(conn, { v: 1, id: frame.id, op: 'hello', proto: selection!.selection.hub, schema: selection!.selection.schema, client: hello!.offer.release ?? 'Room', sessionId: hello!.sessionId }, { local: true })
       if (!registered.ok) { cleanup(); phase = 'done'; conn.close(1013, 'relay hub session unavailable; reconnect Room'); return }
       selectedDoc!.hub.noticeContract(conn, selection!.selection)
     }
@@ -310,7 +303,7 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
     bootstrapInputs.delete(conn)
     send(conn, encodeFrame({ v: 1, re: frame.id, ok: true }))
     conn.emit('room-compatible')
-    attachReady(docs, conn, name, opts, undefined, req, true)
+    attachReady(docs, conn, name, opts, req)
   }
   const receive = (raw: Buffer | ArrayBuffer | Buffer[], binary: boolean) => {
     if (phase === 'done' || conn.readyState !== conn.OPEN) return
@@ -334,7 +327,7 @@ function relayGeneration(conn: WebSocket, req: http.IncomingMessage, d: RelayDoc
   conn.close(decision === 'stale' ? STALE_REPLICA_CODE : 4403, decision === 'stale' ? STALE_REPLICA_REASON : COMPACTED_UPDATE_REASON)
   return false
 }
-function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string, opts: DocOptions, first: Buffer | undefined, req: http.IncomingMessage, negotiated = false): void {
+function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string, opts: DocOptions, req: http.IncomingMessage): void {
   if (opts.accepting && !opts.accepting()) { conn.close(1013, 'local daemon draining; retry'); return }
   const d = getDoc(docs, name, opts)
   if (!relayGeneration(conn, req, d)) return
@@ -419,9 +412,9 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
   conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
     if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return
     let buf: Uint8Array
-    try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
+    try { buf = sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
     catch { conn.close(1008, 'invalid secure frame'); return }
-    if (negotiated && buf[0] === MSG_HUB) {
+    if (buf[0] === MSG_HUB) {
       try {
         const frame = decodeFrame(buf) as { op?: string }
         if (frame.op === 'compat-hello' || frame.op === 'compat-ack') { conn.close(4406, 'selection is immutable; reconnect Room'); return }
@@ -472,8 +465,8 @@ export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOpt
     })
     try {
       const target = safeUrl(req.url)
-      if (target.searchParams.has('negotiate') && target.searchParams.get('negotiate') !== '1') { conn.close(4406, 'unsupported bootstrap; update this client'); return }
-      if (target.searchParams.get('negotiate') === '1') {
+      if (target.searchParams.getAll('negotiate').length !== 1 || target.searchParams.get('negotiate') !== '1') { conn.close(4406, 'Room requires negotiated admission; reconnect with negotiate=1'); return }
+      {
         try {
           const bound = boundRelayBootstrapInput(conn)
           bound.remaining(BOOTSTRAP_MAX_BYTES + 16)
@@ -566,8 +559,7 @@ function relayContract(health: Record<string, unknown>): { compatible: boolean; 
   try {
     if (health.discovery !== undefined && health.discovery !== 1) return { compatible: false, detail: 'unsupported relay discovery format; update this client' }
     if (health.runtime !== undefined && health.runtime !== 'session-relay' && health.runtime !== 'daemon') return { compatible: false, detail: 'unsupported local runtime; update this client for the running relay' }
-    const offer = 'compat' in health ? parseAdvertisement(health.compat) : legacyAdvertisement(health)
-    if (!offer) return { compatible: false, detail: 'the relay does not implement the supported schema-2/proto-1 legacy adapter; update the relay' }
+    const offer = parseAdvertisement(health.compat)
     const selected = selectContract(CURRENT_COMPAT, offer, { activeSchema: 2 })
     return selected.ok ? { compatible: true } : { compatible: false, detail: `${compatibilityDetail(selected.error)}` }
   } catch { return { compatible: false, detail: 'invalid relay compatibility advertisement; update or restart the relay' } }
@@ -680,7 +672,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     }
     const requestedTicketTtl = opts.ticketTtlMs ?? 60_000
     const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(60_000, requestedTicketTtl)) : 60_000
-    const tickets = new Map<string, { room: string; expires: number }>()
+    const tickets = new Map<string, { room: string; expires: number; compat: CompatAdvertisement }>()
     const ticketRate = new Map<string, { count: number; until: number }>()
     const viewNonces = new Map<string, number>()
     let verifier: ProofVerifier | undefined
@@ -706,8 +698,6 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         // The exchange requires an explicit proof, never ambient credentials.
         res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'content-type' }); res.end(); return
       }
-      // Batch 1 keeps the packaged viewer on the legacy route. Offer-bound negotiating
-      // viewer tickets and pinned viewer contracts are deferred to the viewer batch.
       if (req.method === 'POST' && url.pathname === '/ws-ticket') {
         res.setHeader('Access-Control-Allow-Origin', '*')
         if (!isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end('Forbidden'); return }
@@ -728,8 +718,12 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
           if (!proofOk(req) && !viewOk(value, room, now)) { res.writeHead(403); res.end('Forbidden'); return }
           for (const [key, t] of tickets) if (t.expires <= now) tickets.delete(key)
           if (tickets.size >= 10000) { res.writeHead(503); res.end('too many pending tickets'); return }
+          let compat: CompatAdvertisement
+          try { compat = parseAdvertisement(value.compat) } catch { res.writeHead(426); res.end('invalid compatibility offer'); return }
+          const selected = selectContract(compat, docOptions.compat!, { activeSchema: 2, readOnly: true })
+          if (!selected.ok) { res.writeHead(426); res.end(selected.error.text); return }
           const ticket = crypto.randomBytes(16).toString('hex')
-          tickets.set(ticket, { room, expires: now + ticketTtl })
+          tickets.set(ticket, { room, expires: now + ticketTtl, compat })
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1000) }))
         })
         return
@@ -801,7 +795,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       if (draining) return refuse(503, 'local daemon draining; retry')
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
       if (obsolete(req, url)) return refuse(400, 'use Authorization: Room-Proof or a browser ticket')
-      if (url.searchParams.has('negotiate') && url.searchParams.get('negotiate') !== '1') return refuse(426, 'unsupported bootstrap; update this client')
+      if (url.searchParams.getAll('negotiate').length !== 1 || url.searchParams.get('negotiate') !== '1') return refuse(426, 'Room requires negotiated admission; reconnect with negotiate=1')
       if (url.searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: Room 0.16 peers are refused; use v0.17.47, the last release that can migrate, before upgrading')
       try { decodeURIComponent((req.url ?? '/').split('?')[0]) } catch { return refuse(400, 'Bad Request') }
       if (opts.key) {
@@ -812,7 +806,9 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room
         if (issued && !ticketOk) return refuse(403, 'websocket ticket invalid or expired')
         if (!ticketOk && !proofOk(req)) return refuse(403, 'Forbidden: local room proof missing or wrong')
-        if (ticketOk) (req as http.IncomingMessage & { ticketView?: boolean }).ticketView = true
+        if (ticketOk) {
+          Object.assign(req, { ticketView: true, ticketOffer: ticket!.compat })
+        }
       }
       const capacityReason = admission.refusal(relayRoomName(req.url))
       if (capacityReason) return refuse(503, capacityReason)

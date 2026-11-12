@@ -18,6 +18,8 @@ import { contractSuite, fakeClock, holder, socketClient, waitFor, type ContractC
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from '../src/hub.js'
 import { DocumentIdentityGuard, bindDocumentIdentity, capDocSize, makeReadOnly, type DocumentIdentityMode } from '../src/readonly.js'
 import { docNameOf, roomNameOf } from '../src/names.js'
+import { connectSocket } from './helpers/socket.js'
+import { CURRENT_COMPAT } from '@room/hub-core'
 import { devServers } from './dev-server.js'
 
 const ROOM = 'git/example.com/o/r/main'
@@ -289,7 +291,7 @@ describe('the server process', () => {
     return p
   }
   async function hello(port: number, query = ''): Promise<Reply> {
-    const c = await socketClient(`ws://127.0.0.1:${port}/${encodeURIComponent('local/hub/main')}?schema=2${query}`)
+    const c = await socketClient(`ws://127.0.0.1:${port}/${encodeURIComponent('local/hub/main')}?schema=2${query}`, {}, connectSocket)
     try { return await waitFor(async () => { const r = await c.hello(); return (r.ok || r.reason !== 'starting') && r }, 5000) }
     finally { await c.close() }
   }
@@ -305,7 +307,7 @@ describe('the server process', () => {
     const json = (route: string, body: unknown) => fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
     const { view } = await json('/view-token', { room: 'local/hub/main', schema: 2 }) as { view: string }
     // A browser trades its view key for a one-use ticket; the key itself is refused in a websocket URL.
-    const { ticket } = await json('/ws-ticket', { room: 'local/hub/main', schema: 2, view }) as { ticket: string }
+    const { ticket } = await json('/ws-ticket', { compat: CURRENT_COMPAT, room: 'local/hub/main', schema: 2, view }) as { ticket: string }
     expect(await hello(port, `&ticket=${ticket}`)).toMatchObject({ ok: false, reason: 'read-only' })
     await servers.stop(proc, 'SIGKILL')
     proc = await start(port, dir)

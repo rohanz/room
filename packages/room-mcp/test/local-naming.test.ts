@@ -1,3 +1,4 @@
+import { teamHealth } from './fixtures/team-server.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -91,7 +92,7 @@ it('keeps distinct Codex labels for several sessions in one checkout', async () 
   expect((await take('codex-three')).name).toBe('Ada+codex-2')
 })
 it.each(['local', 'team'])('reports the actual %s name and preserves team arguments', async where => {
-  if (where === 'team') vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+  if (where === 'team') vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/health' ? teamHealth() : new URL(url).pathname === '/auth/config'
     ? Response.json({}) : Response.json({ view: 'v', hub: 1 })))
   const doc = new Y.Doc(), room = new RoomDoc(doc), awareness = new Awareness(doc)
   dispose.push(() => { awareness.destroy(); doc.destroy() })

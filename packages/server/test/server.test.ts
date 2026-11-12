@@ -10,6 +10,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
@@ -47,7 +48,7 @@ const post = (p: string, body: unknown) => fetch(`${base}${p}`, { method: 'POST'
 function join(room: string, query: Record<string, string>): Promise<number> {
   const { session, token, ...params } = query
   const schema2 = params.schema === '2'
-  const q = new URLSearchParams(schema2 || token ? params : query).toString()
+  const q = new URLSearchParams({ ...params, negotiate: '1', ...(!schema2 && session ? { session } : {}) }).toString()
   return new Promise(resolve => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}${q ? `?${q}` : ''}`, { headers: { ...(schema2 && session ? { authorization: `Bearer ${session}` } : {}), ...(token ? { 'x-room-token': token } : {}) } })
     ws.on('open', () => { ws.close(); resolve(101) })
@@ -62,7 +63,7 @@ function sendMemberUpdate(room: string, session: string, change: (doc: Y.Doc) =>
   encoding.writeVarUint(message, 0)
   syncProtocol.writeUpdate(message, Y.encodeStateAsUpdate(doc))
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${session}` } })
+    const ws = connectSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${session}` } })
     ws.on('open', () => {
       ws.send(encoding.toUint8Array(message))
       // A pong is ordered after the update, so the server has processed its frame.
@@ -90,16 +91,16 @@ beforeAll(async () => {
 afterAll(async () => { try { await servers.stopAll() } finally { fs.rmSync(persistenceDir, { recursive: true, force: true }) } })
 
 describe('room server with the fake GitHub issuer', () => {
-  it('gives schema-less URL credentials an explicit upgrade refusal', async () => {
+  it('refuses URL credentials before admission', async () => {
     const room = 'local/old-client'
     const result = await new Promise<{ status: number; body: string }>(resolve => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?token=shared`)
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?token=shared&negotiate=1`)
       // An upgrade refusal carries its text in the status line.
       ws.on('unexpected-response', (_req, res) => { resolve({ status: res.statusCode ?? 0, body: res.statusMessage ?? '' }); ws.terminate() })
       ws.on('error', () => resolve({ status: 0, body: '' }))
     })
-    expect(result.status).toBe(403)
-    expect(result.body).toContain('update Room to 0.17 or later')
+    expect(result.status).toBe(400)
+    expect(result.body).toContain('send credentials in headers')
     const http = await fetch(`${base}/rooms?token=shared`)
     expect(http.status).toBe(403)
     expect(await http.text()).toContain('update Room to 0.17 or later')
@@ -146,26 +147,26 @@ describe('room server with the fake GitHub issuer', () => {
     }
     // Admission comes first: without a login the upgrade text is not an oracle for which repositories have rooms.
     expect((await post('/view-token', { room: `${room}/main` })).status).toBe(401)
-    expect(await join(`${room}/main`, { session })).toBe(403)
+    expect(await join(`${room}/main`, { session })).toBe(400)
     expect(await join(room, { session, schema: '2' })).toBe(101)
     const alias = await post('/rooms', { room: `${room}/main`, session, schema: 2 })
     expect(alias.status).toBe(400)
     expect(await alias.text()).toContain('invalid room name')
   })
 
-  it('refuses a 0.16 socket with the upgrade text', async () => {
+  it('refuses a branch-shaped websocket room before admission', async () => {
     const session = await login('old-socket')
     const room = 'github.com/socket/project'
     expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
-    expect(await join(`${room}/main`, { session })).toBe(403)
+    expect(await join(`${room}/main`, { session })).toBe(400)
   })
 
-  it('keeps old members in an unmigrated canonical-key room, but refuses its token to a schema-2 viewer', async () => {
+  it('refuses schema-less opening and websocket URL credentials', async () => {
     const session = await login('canonical-view')
     const room = 'github.com/canonical/view'
     expect((await post('/rooms', { room, session })).status).toBe(403)
     expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
-    expect(await join(room, { session })).toBe(403)
+    expect(await join(room, { session })).toBe(400)
     expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
   })
 
@@ -181,7 +182,7 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await page.text()).toContain('this link was for a branch room that no longer exists; ask a teammate for a new link')
     // A view key in a websocket URL is refused outright; the ticket exchange carries the explanation.
     expect(await join(branch, { schema: '2', view })).toBe(400)
-    const ticket = await post('/ws-ticket', { room: branch, schema: 2, view })
+    const ticket = await post('/ws-ticket', { compat: CURRENT_COMPAT, room: branch, schema: 2, view })
     expect(ticket.status).toBe(410)
   })
 
@@ -208,7 +209,7 @@ describe('room server with the fake GitHub issuer', () => {
     expect(open.status).toBe(201)
     expect(await open.json()).toMatchObject({ repo: 'github.com/o/r', created: true, login: 'octo' })
     expect(await join('github.com/o/r', { session, schema: '2' })).toBe(101)
-    expect(await join('github.com/o/r/feature/x', { session })).toBe(403)
+    expect(await join('github.com/o/r/feature/x', { session })).toBe(400)
     const listed = await (await fetch(`${base}/rooms`, { headers: { authorization: `Bearer ${session}` } })).json() as { repo: string }[]
     expect(listed.map(r => r.repo)).toContain('github.com/o/r')
     // the fake issuer holds no real GitHub token: the PR proxy refuses rather than calling GitHub
@@ -219,8 +220,8 @@ describe('room server with the fake GitHub issuer', () => {
     const open = await post('/rooms', { room: 'github.com/o/r/main', gh: 'gho_real' })
     expect(open.status).toBe(401)
     expect(await open.text()).toContain('room_login')
-    // A credential in a schema-less URL is a 0.16 client's: it is told to upgrade.
-    expect(await join('github.com/o/r/main', { gh: 'gho_real' })).toBe(403)
+    // Credentials in websocket URLs are refused before admission.
+    expect(await join('github.com/o/r', { schema: '2', gh: 'gho_real' })).toBe(400)
     expect((await post('/view-token', { room: 'github.com/o/r/main', gh: 'gho_real' })).status).toBe(401)
   })
 
@@ -231,14 +232,14 @@ describe('room server with the fake GitHub issuer', () => {
     const gh = await post('/rooms', { room: 'github.com/o/other/main', token: 'shared' })
     expect(gh.status).toBe(401)
     expect(await gh.text()).toMatch(/ROOM_TOKEN does not admit GitHub rooms/)
-    expect(await join('github.com/o/r/main', { token: 'shared' })).toBe(401)
+    expect(await join('github.com/o/r', { schema: '2', token: 'shared' })).toBe(401)
   })
 
   it('a login session enters non-GitHub rooms too; no credentials at all is 401', async () => {
     const session = await login('kieran')
     expect(await join('local/origin', { session, schema: '2' })).toBe(101)
     expect(await join('local/origin', { schema: '2' })).toBe(401)
-    expect(await join('github.com/o/r/main', {})).toBe(401)
+    expect(await join('github.com/o/r', { schema: '2' })).toBe(401)
   })
 
   it('logs and audits an observed identity objection while applying the member update', async () => {
@@ -295,7 +296,7 @@ describe('room server with the fake GitHub issuer', () => {
       socket.on('error', reject)
       socket.on('connect', () => socket.write(request, () => { socket.resetAndDestroy(); resolve() }))
     })
-    const upgrade = (target: string) => `GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`
+    const upgrade = (target: string) => `GET ${target}${target.includes('?') ? '&' : '?'}negotiate=1 HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`
     // Malformed target (400), invalid room name (400) and failed admission (401/403/404): each refusal writes to a reset socket.
     for (let i = 0; i < 10; i++) for (const target of ['//[', '/github.com', '/github.com%2Fnobody%2Fnothing?schema=2']) await reset(upgrade(target))
     await new Promise(r => setTimeout(r, NO_RESET_CRASH_WINDOW_MS))

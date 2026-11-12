@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import net from 'node:net'
-import WebSocket from 'ws'
+import type WebSocket from 'ws'
+import { connectSocket } from './helpers/socket.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -32,7 +33,7 @@ it('admits exactly two of three concurrent cross-repository creations', async ()
 it('reserves the global connection quota across repositories', async () => {
   const rooms = await (await fetch(base + '/rooms')).json() as { repo: string }[]
   const connect = (room: string) => new Promise<WebSocket>((resolve, reject) => {
-    const ws = new WebSocket(base.replace('http:', 'ws:') + '/' + encodeURIComponent(room) + '?schema=2')
+    const ws = connectSocket(base.replace('http:', 'ws:') + '/' + encodeURIComponent(room) + '?schema=2')
     ws.once('open', () => resolve(ws))
     ws.once('unexpected-response', (_request, response) => reject(new Error(`HTTP ${response.statusCode}`)))
     ws.once('error', reject)

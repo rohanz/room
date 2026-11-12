@@ -1,3 +1,6 @@
+import { teamHealth } from './fixtures/team-server.js'
+import { CURRENT_COMPAT } from '@room/hub-core'
+import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -29,6 +32,7 @@ function server(open: boolean, dir = repo, config?: Awaited<ReturnType<typeof re
   vi.stubGlobal('fetch', vi.fn(async (url: string, opts?: RequestInit) => {
     requests.push(url)
     const path = new URL(url).pathname
+    if (path === '/health') return teamHealth()
     if (path === '/auth/config') return Response.json({ mode: 'token', providers: [] })
     if (path === '/view-token') return open ? Response.json({ room: 'o/r', hub: 1 }) : new Response('not opened', { status: 404 })
     if (path === '/rooms' && opts?.method === 'POST') { posts.push(path); open = true; return Response.json({}) }
@@ -194,6 +198,7 @@ describe('closing without a joined session', () => {
     const roomName = (await deriveRoomName(dir)).roomName!
     const closes: Record<string, unknown>[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, opts?: RequestInit) => {
+      if (new URL(url).pathname === '/health') return teamHealth()
       if (new URL(url).pathname === '/auth/config') return Response.json({ providers: [] })
       if (new URL(url).pathname === '/rooms' && opts?.method === 'DELETE') {
         closes.push(JSON.parse(String(opts.body)) as Record<string, unknown>)
@@ -205,7 +210,7 @@ describe('closing without a joined session', () => {
     expect(await tools.call('room_close', {})).toContain('confirm=true')
     expect(closes).toEqual([])
     expect(await tools.call('room_close', { confirm: true })).toBe(`closed ${roomName} for everyone without joining (no joined session was available to export its history); room_create reopens it`)
-    expect(closes).toEqual([{ room: roomName, schema: 2, token: 'close-secret' }])
+    expect(closes).toEqual([{ room: roomName, schema: 2, compat: { ...CURRENT_COMPAT, release: manifest.version }, token: 'close-secret' }])
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -221,6 +226,7 @@ describe('closing without a joined session', () => {
     vi.stubEnv('ROOM_TOKEN', '')
     const close = vi.fn()
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (new URL(url).pathname === '/health') return teamHealth()
       if (new URL(url).pathname === '/auth/config') return Response.json({ github: 'device' })
       close()
       throw new Error(`unexpected ${url}`)

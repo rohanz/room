@@ -19,6 +19,6 @@ describe('Node websocket credentials', () => {
   it('signs each relay upgrade; in-band proof gates document frames', () => {
     const Polyfill = authorizedWebSocket({ key: 'private' })
     new Polyfill('ws://127.0.0.1:4402/local%2Fr?schema=2')
-    expect(calls.at(-1)![2]).toEqual({ headers: { authorization: 'proof:private:GET:/local%2Fr?schema=2:4402' } })
+    expect(calls.at(-1)![2]).toEqual({ headers: { authorization: 'proof:private:GET:/local%2Fr?schema=2&negotiate=1:4402' } })
   })
 })

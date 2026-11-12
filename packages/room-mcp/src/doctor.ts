@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { compatibilityFromHealth } from './client-compat.js'
+import { compatibilityFromHealth } from './server-compat.js'
 import { createSessionBinding } from './binding.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,14 +57,10 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     if (f.serverRedirect) add('WARN', 'team server', `server redirected /health (${f.serverRedirect}); check ROOM_SERVER`, 'Check ROOM_SERVER and server status')
     else if (!f.serverHealth) add('WARN', 'team server', '/health unavailable', 'Check ROOM_SERVER and server status')
     else if (f.serverStorage === 'failing') add('FAIL', 'team server', "the server's storage is failing", 'Check server storage before joining')
-    // Without an advertisement the exact 0.17 baseline is the contract; a server reporting anything else predates it.
-    else if (!('serverCompat' in f) && f.serverSchema === undefined) add('FAIL', 'team server', 'the server is older than Room 0.17; update the server to 0.17.0 or newer', 'Deploy Room 0.17 or newer on the server')
-    else if (!('serverCompat' in f) && (f.serverSchema !== 2 || f.serverHub !== 1)) add('FAIL', 'team server', `the server reports schema ${f.serverSchema}, hub ${f.serverHub ?? 'missing'}; the supported contract without negotiation is schema 2, hub 1: update the server`, 'Deploy a compatible Room server')
     else {
       try {
-        const profile = compatibilityFromHealth({ ok: true, schema: f.serverSchema, hub: f.serverHub, ...('serverCompat' in f ? { compat: f.serverCompat } : {}) })
-        const ad = profile.offer
-        add('PASS', 'team server', `hub ${ad.hub.min}${ad.hub.max === ad.hub.min ? '' : `–${ad.hub.max}`}; read schemas ${ad.schemas.read.join(',')}; write schemas ${ad.schemas.write.join(',')}; ${profile.legacy ? 'legacy adapter' : 'negotiating contract'}; storage healthy`)
+        const ad = compatibilityFromHealth({ ok: true, schema: f.serverSchema, hub: f.serverHub, ...('serverCompat' in f ? { compat: f.serverCompat } : {}) })
+        add('PASS', 'team server', `hub ${ad.hub.min}${ad.hub.max === ad.hub.min ? '' : `–${ad.hub.max}`}; read schemas ${ad.schemas.read.join(',')}; write schemas ${ad.schemas.write.join(',')}; negotiating contract; storage healthy`)
       } catch (error) {
         add('FAIL', 'team server', error instanceof Error ? error.message : String(error), 'Update the affected Room client or server, then reconnect Room (/mcp) or restart the session')
       }

@@ -13,6 +13,8 @@ vi.mock('y-websocket', () => ({ WebsocketProvider: class {
   constructor(...args: unknown[]) { this.params = (args[3] as { params: Record<string, string> }).params; mocks.provider(...args) }
 } }))
 import { connect } from './conn.js'
+import { CURRENT_COMPAT } from '@room/hub-core/protocol'
+import * as negotiation from './negotiated-websocket.js'
 
 function browser(url: string) {
   const dom = new JSDOM('<div id="app"></div>', { url })
@@ -23,16 +25,39 @@ function browser(url: string) {
   vi.stubGlobal('crypto', webcrypto)
   return dom
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); mocks.events.clear() })
+afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); vi.restoreAllMocks(); mocks.events.clear() })
 
 describe('browser ticket connection', () => {
+  it.each([
+    ['view', negotiation.VIEWER_COMPAT, undefined],
+    ['token', CURRENT_COMPAT, { 'x-room-token': 'secret' }],
+    ['session', CURRENT_COMPAT, { authorization: 'Bearer secret' }],
+  ] as const)('uses the %s credential contract for the ticket and socket without writing the document', async (credential, offer, header) => {
+    const dom = browser(`https://room.example/#room=wss%3A%2F%2Froom.example%2Frepo&${credential}=secret&participant=Pat`)
+    const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'one-use' }) })
+    vi.stubGlobal('fetch', request)
+    const socket = vi.spyOn(negotiation, 'negotiatedWebSocket')
+    const conn = connect(dom.window.location.search)
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
+    expect(dom.window.location.href).not.toContain('secret')
+    const options = request.mock.calls[0]![1]
+    expect(JSON.parse(options.body).compat).toEqual(offer)
+    if (header) expect(options.headers).toMatchObject(header)
+    expect(socket.mock.calls[0]![2]).toEqual(offer)
+    const changed = vi.fn()
+    conn.room.doc.on('update', changed)
+    mocks.events.get('sync')?.(true)
+    expect(changed).not.toHaveBeenCalled()
+    expect(conn.provider.awareness.setLocalState).toHaveBeenLastCalledWith(expect.objectContaining({ user: expect.objectContaining({ name: 'Pat' }) }))
+  })
+
   it('removes a view capability and connects with a fresh ticket', async () => {
     const dom = browser('https://room.example/?room=wss%3A%2F%2Froom.example%2Frepo&view=secret&view=code')
     const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'one-use' }) })
     vi.stubGlobal('fetch', request)
     const conn = connect(dom.window.location.search)
     expect(dom.window.location.href).not.toContain('secret')
-    expect(mocks.provider.mock.calls[0]![3]).toEqual({ connect: false, params: { schema: '2', gen: 'fresh' }, disableBc: true })
+    expect(mocks.provider.mock.calls[0]![3]).toEqual({ connect: false, params: { schema: '2', gen: 'fresh' }, disableBc: true, WebSocketPolyfill: expect.any(Function) })
     await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
     expect(conn.provider.params.ticket).toBe('one-use')
     expect(request.mock.calls[0]![0]).toBe('https://room.example/ws-ticket')
@@ -64,6 +89,18 @@ describe('browser ticket connection', () => {
     expect(reload).toHaveBeenCalledOnce()
     await new Promise(r => setTimeout(r, 1200))
     expect(mocks.connect).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the actionable negotiation refusal when the transport closes', async () => {
+    const dom = browser('https://room.example/?room=wss%3A%2F%2Froom.example%2Frepo&view=secret')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'first' }) }))
+    let refuse!: (text: string) => void
+    vi.spyOn(negotiation, 'negotiatedWebSocket').mockImplementation((_transport, onRefusal) => { refuse = onRefusal; return WebSocket })
+    connect(dom.window.location.search)
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
+    refuse('Update/restart the server to support document schema 2')
+    mocks.events.get('connection-close')?.({ code: 4406, reason: 'Room contract refused' })
+    expect(dom.window.document.getElementById('access-error')?.textContent).toBe('Cannot open repo: Update/restart the server to support document schema 2')
   })
 
   it('mints a new ticket after a disconnected websocket', async () => {
