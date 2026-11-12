@@ -63,24 +63,3 @@ it('a foreign-session hello cannot switch to legacy operations on the same conne
   expect(f.request({ op: 'select', sessionId: 'session' }).ok).toBe(false)
   expect(f.select).not.toHaveBeenCalled()
 })
-
-it('a worker MCP publishes its admitted worker and host, in place, once admission succeeds', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-endpoint-worker-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
-  let admitted: { id: string; host: { pid: number; startTime: string; executable: string } } | undefined
-  const endpoint = await startArbitration({ binding: { dir: () => dir, bound: () => ({ id: 'thread', host: 'codex' }) } as any,
-    ledger: { } as any, select: (() => ({ batch: {}, items: [], notices: [], more: 0 })) as any, worker: () => admitted, rebindMs: 10 })
-  cleanup.push(() => endpoint.close())
-  const read = () => JSON.parse(readFileSync(join(dir, 'mcp.json'), 'utf8'))
-  const before = read()
-  expect(before.worker).toBeUndefined()
-  admitted = { id: 'w_1', host: { pid: 4242, startTime: 'darwin:1:2', executable: 'codex' } }
-  await vi.waitFor(() => expect(read().worker).toEqual(admitted))
-  // Same endpoint, rewritten in place: the port, key and incarnation a hook already read stay valid.
-  const endpointFields = { port: before.port, key: before.key, incarnation: before.incarnation, runtime: 'daemon-client' }
-  expect(read()).toMatchObject(endpointFields)
-  admitted = { id: 'w_1', host: { pid: 4343, startTime: 'darwin:1:9', executable: 'codex' } }
-  await vi.waitFor(() => expect(read().worker).toEqual(admitted))
-  admitted = undefined // a refused re-admission withdraws the claim
-  await vi.waitFor(() => expect(read().worker).toBeUndefined())
-  expect(read()).toMatchObject(endpointFields)
-})

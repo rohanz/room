@@ -1,5 +1,4 @@
 import { retainedWorkerLines } from '../worker-retained.js'
-import { daemonCutoverRows, inspectDaemonCutover } from '../daemon-cutover.js'
 import path from 'node:path'
 import { createSessionBinding } from '../binding.js'
 import { gitCommonDir } from '@room/roomd'
@@ -19,7 +18,7 @@ import { localWorkerView } from '../worker-projector.js'
 import { liveWorkerActivity } from '../worker-activity.js'
 import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
-import { browserViewLine, currentDaemonClient, parseServer, refreshBrowserUrl, type Session } from '../session.js'
+import { browserViewLine, parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
 import { openMergeConflicts } from '../conflict-set.js'
@@ -134,15 +133,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           inSession: true, selected: destination, sessionWarning: active?.local?.canonicalWarning,
           sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : undefined,
         })
-        const common = active?.local || !server ? await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => undefined) : undefined
-        let identityIssue = ''
-        const current = common ? await currentDaemonClient(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch((error: unknown) => {
-          identityIssue = `FAIL  local daemon client identity: ${error instanceof Error ? error.message : String(error)}`
-          return undefined
-        }) : undefined
-        const cutover = common ? [identityIssue, ...daemonCutoverRows(await inspectDaemonCutover(common, current))].filter(Boolean).join('\n') : ''
         const retainedCommon = await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => undefined)
-        return [report, cutover, ...(retainedCommon ? retainedWorkerLines(retainedCommon) : []), active?.local ? localDaemonLine(active) : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
+        return [report, ...(retainedCommon ? retainedWorkerLines(retainedCommon) : []), active?.local ? localDaemonLine(active) : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
       }
       const s = S()
       await loadAreas(s)

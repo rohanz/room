@@ -7,7 +7,7 @@ export type SessionEntry = { kind: 'directory'; path: string } | { kind: 'issue'
  * Whether every folder from `root` (exclusive) down to `dir` (inclusive) is a real directory, read without following
  * links. A missing folder means nothing below it exists; a link or special entry is an issue, never an empty folder.
  */
-export function directoryChain(root: string, dir: string): { state: 'present' | 'absent' } | { state: 'issue'; message: string } {
+function directoryChain(root: string, dir: string): { state: 'present' | 'absent' } | { state: 'issue'; message: string } {
   const relative = path.relative(root, dir)
   if (relative.startsWith('..') || path.isAbsolute(relative)) return { state: 'issue', message: `${dir} is outside ${root}` }
   let current = root
@@ -32,13 +32,13 @@ export function sessionEntries(root: string, within = path.dirname(path.dirname(
   if (chain.state === 'absent') return []
   try {
     const names = fs.readdirSync(root).sort()
-    if (names.length > 4096) result.push({ kind: 'issue', path: root, message: `Inventory exceeds 4096 records at ${root}; drain inspection is incomplete` })
+    if (names.length > 4096) result.push({ kind: 'issue', path: root, message: `Inventory exceeds 4096 records at ${root}; session inspection is incomplete` })
     for (const name of names.slice(0, 4096)) {
       const file = path.join(root, name)
       try {
         const stat = fs.lstatSync(file)
         if (stat.isDirectory()) result.push({ kind: 'directory', path: file })
-        else if (!stat.isFile()) result.push({ kind: 'issue', path: file, message: `Session entry ${file} is a ${stat.isSymbolicLink() ? 'symlink' : 'special file'}; inspect it before cutover (Room never follows links in its state)` })
+        else if (!stat.isFile()) result.push({ kind: 'issue', path: file, message: `Session entry ${file} is a ${stat.isSymbolicLink() ? 'symlink' : 'special file'}; inspect it before using Room (Room never follows links in its state)` })
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') result.push({ kind: 'issue', path: file, message: `Cannot inspect ${file}: ${(error as NodeJS.ErrnoException).code ?? String(error)}` })
       }

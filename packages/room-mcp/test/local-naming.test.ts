@@ -1,4 +1,3 @@
-import { requireDaemonRuntime } from '../src/daemon-cutover.js'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -18,7 +17,6 @@ import { registerWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { chooseName, processToken } from '../src/names.js'
 
-vi.mock('../src/daemon-cutover.js', () => ({ requireDaemonRuntime: vi.fn(async () => {}) }))
 vi.mock('@room/relay', async importOriginal => ({ ...(await importOriginal() as object), ensureLocalDaemon: vi.fn(async () => { throw new Error('relay boundary') }) }))
 // Admission is covered by worker-registry.test.ts; here a dispatched worker is admitted as is.
 vi.mock('../src/worker-registry.js', async importOriginal => ({ ...(await importOriginal() as object), admitWorkerEnvironment: vi.fn(async () => {}) }))
@@ -77,12 +75,6 @@ it("a nested host in a Room worker's worktree may ensure the daemon without work
   execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'room/w', wt])
   await expect(joinSession({ dir: wt, server: 'local', name: 'Ada', room: `local/${basename(dir)}` })).rejects.toThrow('relay boundary')
   expect(ensureLocalDaemon).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.any(Object))
-})
-
-it('a mixed-runtime cutover refusal stops automatic retries before launch', async () => {
-  vi.mocked(requireDaemonRuntime).mockRejectedValueOnce(new Error('drain the live legacy owner before starting the daemon'))
-  await expect(joinSession({ dir, server: 'local', name: 'Ada' })).rejects.toMatchObject({ code: 2, message: expect.stringContaining('drain the live legacy owner') })
-  expect(ensureLocalDaemon).not.toHaveBeenCalled()
 })
 
 it('keeps distinct Codex labels for several sessions in one checkout', async () => {

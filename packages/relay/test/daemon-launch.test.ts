@@ -56,7 +56,7 @@ function fixture() {
 it('reports adoption without launching a child when an instance is already ready', async () => {
   const { dir, publish } = fixture(); publish(2147483000)
   const spawn = vi.mocked(childProcess.spawn).mockImplementation(() => { throw new Error('unexpected launch') })
-  const daemon = await ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {} })
+  const daemon = await ensureLocalDaemon(dir, 'local/test', {})
   expect(daemon).toMatchObject({ pid: 2147483000, launched: false })
   expect(spawn).not.toHaveBeenCalled()
 })
@@ -68,25 +68,10 @@ it.each([true, false])('reports launched=%s only when its own child wins authori
     publish(winner)
     return child as childProcess.ChildProcess
   })
-  const daemon = await ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {}, entryPath: path.resolve(import.meta.filename) })
+  const daemon = await ensureLocalDaemon(dir, 'local/test', { entryPath: path.resolve(import.meta.filename) })
   expect(daemon).toMatchObject({ pid: winner, launched: wins })
   expect(spawn).toHaveBeenCalledTimes(1)
   expect(child.unref).toHaveBeenCalledOnce()
-})
-
-it('asks for start admission only when it must spawn, and a refusal prevents the spawn', async () => {
-  const { dir, publish } = fixture()
-  const spawn = vi.mocked(childProcess.spawn).mockImplementation(() => { throw new Error('unexpected launch') })
-  // No daemon answers (the adopted owner exited): the start admission runs and refuses.
-  const beforeStart = vi.fn(async () => { throw new Error('legacy clients still live') })
-  await expect(ensureLocalDaemon(dir, 'local/test', { entryPath: path.resolve(import.meta.filename), admitStart: beforeStart })).rejects.toThrow('legacy clients still live')
-  expect(beforeStart).toHaveBeenCalledOnce()
-  expect(spawn).not.toHaveBeenCalled()
-  // A ready daemon is adopted without the start admission.
-  publish(2147483000)
-  const adopt = vi.fn(async () => {})
-  await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: adopt })).resolves.toMatchObject({ launched: false })
-  expect(adopt).not.toHaveBeenCalled()
 })
 
 function launchFixture(onSpawn: (child: EventEmitter, dir: string, publish: (pid: number) => void) => void) {
@@ -96,7 +81,7 @@ function launchFixture(onSpawn: (child: EventEmitter, dir: string, publish: (pid
     onSpawn(child, dir, publish)
     return child as childProcess.ChildProcess
   })
-  return { dir, ownPid, child, launch: (startupTimeoutMs?: number) => ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {}, entryPath: path.resolve(import.meta.filename), startupTimeoutMs }) }
+  return { dir, ownPid, child, launch: (startupTimeoutMs?: number) => ensureLocalDaemon(dir, 'local/test', { entryPath: path.resolve(import.meta.filename), startupTimeoutMs }) }
 }
 function phase(dir: string, pid: number, name: string) {
   fs.appendFileSync(path.join(dir, 'room', 'daemon.log'), `startup pid ${pid}: ${name}\n`, { mode: 0o600 })
@@ -160,7 +145,7 @@ it('reports a fatal error the child wrote before daemon.log existed, and removes
     return child as childProcess.ChildProcess
   })
   vi.useFakeTimers()
-  const failure = ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {}, entryPath: path.resolve(import.meta.filename) }).catch(error => error as Error)
+  const failure = ensureLocalDaemon(dir, 'local/test', { entryPath: path.resolve(import.meta.filename) }).catch(error => error as Error)
   await vi.advanceTimersByTimeAsync(200)
   const error = await failure as Error
   expect(error.message).toContain('child exited (code 1); no live authority contender; daemon error: Cannot verify the Windows owner/DACL for C:\\fixture (PowerShell timed out)')

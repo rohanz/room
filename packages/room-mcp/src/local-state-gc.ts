@@ -59,7 +59,7 @@ export const GC_RULES: GcRule[] = [
   { path: '*.guard (any directory)', owner: 'MCP session', lifetime: { kind: 'dead-holder' }, match: e => (e.name ?? e.top).endsWith('.guard') },
   { path: 'hub-leases/<room>.json', owner: 'daemon', lifetime: { kind: 'keep' }, match: inDir('hub-leases', n => n.endsWith('.json')) },
   { path: 'daemon.log*', owner: 'daemon', lifetime: { kind: 'owner' }, match: e => e.name === undefined && /^daemon\.log(\.\d+)?$/.test(e.top) },
-  { path: 'daemon-cutover.json, daemon-cutover-resolutions.json', owner: 'MCP session', lifetime: { kind: 'keep' },
+  { path: 'daemon-cutover.json, daemon-cutover-resolutions.json', owner: 'none', lifetime: { kind: 'age', ms: ROOM_STALE_MS },
     match: top(['daemon-cutover.json', 'daemon-cutover-resolutions.json']) },
   { path: 'names/<hash>.json', owner: 'MCP session', lifetime: { kind: 'dead-holder' }, match: inDir('names', n => n.endsWith('.json')) },
   { path: 'publishers/<hash>.json', owner: 'MCP session', lifetime: { kind: 'dead-holder' }, match: inDir('publishers', n => n.endsWith('.json')) },

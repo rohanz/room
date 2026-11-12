@@ -67,21 +67,21 @@ it('malformed discovery blocks launch without echoing private discovery contents
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-daemon-invalid-')); dirs.push(dir)
   fs.mkdirSync(path.join(dir, 'room'), { mode: 0o700 })
   fs.writeFileSync(path.join(dir, 'room/relay.json'), 'PRIVATE-CLONE-KEY malformed', { mode: 0o600 })
-  await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {} })).rejects.toThrow(/preserve and repair/)
-  await expect(ensureLocalDaemon(dir, 'local/test', { admitStart: async () => {} })).rejects.not.toThrow(/PRIVATE-CLONE-KEY/)
+  await expect(ensureLocalDaemon(dir, 'local/test', {})).rejects.toThrow(/preserve and repair/)
+  await expect(ensureLocalDaemon(dir, 'local/test', {})).rejects.not.toThrow(/PRIVATE-CLONE-KEY/)
 })
 
-it('initializes the private root idempotently before any client/preflight/daemon writer', async () => {
+it('initializes the private root idempotently before any client/daemon writer', async () => {
   const { privateStateDirectory, verifyPrivatePath } = await import('../src/private-state.js')
   const { writeAtomic } = await import('../src/leases.js')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-private-root-')); dirs.push(dir)
   const state = path.join(dir, 'room')
-  // Preflight creates the root and writes first; a later daemon validates the same root.
+  // A client creates the root and writes first; a later daemon validates the same root.
   privateStateDirectory(state)
-  writeAtomic(path.join(state, 'daemon-cutover.json'), { v: 1 })
+  writeAtomic(path.join(state, 'client-fixture.json'), { v: 1 })
   privateStateDirectory(state)
   verifyPrivatePath(state)
-  expect(fs.readFileSync(path.join(state, 'daemon-cutover.json'), 'utf8')).toContain('"v":1')
+  expect(fs.readFileSync(path.join(state, 'client-fixture.json'), 'utf8')).toContain('"v":1')
   const other = path.join(dir, 'client-first')
   privateStateDirectory(other); privateStateDirectory(other); verifyPrivatePath(other)
 })

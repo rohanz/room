@@ -8,7 +8,6 @@ import type { DoctorFacts } from '../src/hosts/diagnostics.js'
 import { collectLocalState } from '../src/local-state-gc.js'
 import { resolveConfig } from '../src/config.js'
 import { rememberTag } from '../src/choice.js'
-import { inspectDaemonCutover } from '../src/daemon-cutover.js'
 import { joinSession } from '../src/session.js'
 import { openPreferred } from '../../relay/src/daemon.js'
 import { localRoomName } from '../../roomd/src/local.js'
@@ -61,18 +60,6 @@ it.each(['', '   ', '!!!'])('refuses an explicit empty/invalid local room %j bef
   write(path.join(common, 'room-choice.json'), JSON.stringify({ where: 'local', room: 'local/remembered', schema: 2, at: 1 }))
   await expect(joinSession({ dir, server: 'local', name: 'Test', room })).rejects.toThrow(/local room name must not be empty/)
   expect(fs.existsSync(path.join(common, 'room', 'relay.json'))).toBe(false)
-})
-
-it('does not read or probe old live-owner/session claims while inspecting current cutover state', async () => {
-  const { common, linked } = repo()
-  const own = execFileSync('git', ['-C', linked, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim()
-  const files = [write(path.join(common, 'room-local.json'), '{"pid":125,"port":4404}'),
-    write(path.join(common, 'room-session.json'), '{"pid":126}'), write(path.join(own, 'room-session.json'), '{"pid":127}')]
-  const read = vi.spyOn(fs, 'readFileSync'), probe = vi.fn(() => ({ startTime: 'alive', executable: 'old-room' }))
-  const state = await inspectDaemonCutover(common, { probe, authenticate: async () => undefined })
-  expect(state.blocked).toBe(false)
-  expect(probe).not.toHaveBeenCalled()
-  expect(read.mock.calls.some(([p]) => files.includes(String(p)))).toBe(false)
 })
 
 it('preserves old journals and sources through GC and diagnoses linked leftovers using only names', () => {

@@ -19,7 +19,7 @@ try {
     await stopLocalDaemon(commonDir)
     process.stdout.write('Daemon saved and process exit verified.\n')
   } else {
-  // Starting is launcher-only: ensureLocalDaemon runs the cutover admission first and passes --startup-report.
+  // Starting is launcher-only: ensureLocalDaemon passes --startup-report for fatal startup diagnostics.
   // Operators stop a daemon with `stop`; Room starts one on the next join.
   if ((args[0] && !args[0].startsWith('--')) || !args.includes('--startup-report')) throw new Error('usage: room-daemon.mjs stop --common-dir <absolute git common directory> (Room starts the daemon itself on join)')
   await primePrivateState(commonDir)

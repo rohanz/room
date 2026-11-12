@@ -9,7 +9,7 @@ const entry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
 const sessionEntry = fileURLToPath(new URL('../src/session.ts', import.meta.url))
 const tsx = import.meta.resolve('tsx')
 
-async function callDoctor(roomUrl?: string, failRuntime = false, threadId?: string, blockedCutover = false): Promise<{ reply: any; stderr: string }> {
+async function callDoctor(roomUrl?: string, failRuntime = false, threadId?: string): Promise<{ reply: any; stderr: string }> {
   const root = mkdtempSync(path.join(os.tmpdir(), 'room-doctor-entry-'))
   const repo = path.join(root, 'checkout')
   const bin = path.join(root, 'bin')
@@ -21,10 +21,6 @@ async function callDoctor(roomUrl?: string, failRuntime = false, threadId?: stri
   execFileSync('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial'])
   execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/example/room-doctor-fixture.git'])
   for (const name of ['claude', 'codex']) writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
-  if (blockedCutover) {
-    mkdirSync(path.join(repo, '.git/room/sessions/old'), { recursive: true })
-    writeFileSync(path.join(repo, '.git/room/sessions/old/mcp.json'), JSON.stringify({ pid: process.pid }))
-  }
   const preload = path.join(root, 'probe.mjs')
   writeFileSync(preload, `import net from 'node:net'
 import { boundSession } from ${JSON.stringify(sessionEntry)}
@@ -45,7 +41,6 @@ child.on('exit', code => process.exit(code ?? 0))
     CODEX_HOME: path.join(root, 'codex'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'),
     XDG_CONFIG_HOME: path.join(root, 'config'), PATH: `${bin}:${process.env.PATH ?? ''}` }
   for (const key of Object.keys(env)) if (key.startsWith('ROOM_') && key !== 'ROOM_HOST' && key !== 'ROOM_SERVER') delete env[key]
-  if (blockedCutover) env.ROOM_SERVER = 'local'
   if (roomUrl !== undefined) env.ROOM_URL = roomUrl
   const child = spawn(process.execPath, [wrapper], { cwd: repo, env, stdio: ['pipe', 'pipe', 'pipe'] })
   let stderr = ''
@@ -84,13 +79,6 @@ child.on('exit', code => process.exit(code ?? 0))
 }
 
 describe('MCP entry doctor route', () => {
-  it('reports cutover blockers while unjoined after runtime initialization fails', async () => {
-    const { reply, stderr } = await callDoctor(undefined, true, undefined, true)
-    expect(reply.result.content[0].text).toContain('FAIL  local daemon cutover: drain required')
-    expect(reply.result.content[0].text).toContain('cutover mcp: old')
-    expect(stderr.match(/PROBE_LISTEN/g)).toHaveLength(1) // diagnostics do not retry failed initialization
-  })
-
   it('answers the first call without starting arbitration or fetching admission config', async () => {
     const { reply, stderr } = await callDoctor()
     expect(reply.result.content[0].text).toContain('team server: hub 1; read schemas 2; write schemas 2; legacy adapter; storage healthy')

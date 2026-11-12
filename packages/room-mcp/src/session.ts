@@ -2,7 +2,6 @@ import type { HostId } from './hosts/types.js'
 import { hostIds, identityAdapter, preBindingAdapter } from './hosts/index.js'
 import { bindingHost, initialJoinIdentity } from './hosts/selection.js'
 import { sessionEntries } from './session-entries.js'
-import { requireDaemonRuntime } from './daemon-cutover.js'
 import { trackConnection } from './connection.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { LOCAL_CLIENT_COMPAT, compatibilityFromHealth, compatibilityFloor, type ClientCompatibility } from './client-compat.js'
@@ -977,30 +976,16 @@ export function normalizeLocalRoomName(room: string): string {
   return `local/${name}`
 }
 
-/** Resolve this release's current identity without relying on arbitration's publication poll. */
-export async function currentDaemonClient(dir: string): Promise<{ currentSessionId?: string; currentWorkerId?: string }> {
-  const bound = createSessionBinding(dir).bound()
-  // Re-resolve binding and verify the worker on every ensure/rediscovery. Arbitration may not
-  // have published at this binding yet, and an unbound worker has no endpoint file at all.
-  const currentWorkerId = process.env.ROOM_WORKER_ID
-  if (currentWorkerId) await admitWorkerEnvironment(dir, process.env, bound)
-  return { currentSessionId: bound?.id, currentWorkerId }
-}
-
 /** Resolve only installed code; never execute repository startup scripts or use its cwd. */
 async function ensureDaemon(common: string, room: string, dir: string, log?: ServerLog): Promise<LocalRelay> {
-  const client = await currentDaemonClient(dir)
-  const gate = (forStart: boolean) => requireDaemonRuntime(common, { ...client, forStart }).catch((error: unknown) => {
-    throw new RoomdError(error instanceof Error ? error.message : String(error), 2)
-  })
-  // Joining an authenticated daemon tolerates live clients it will refuse; starting one runs the whole inventory.
-  await gate(false)
+  // Revalidate worker admission on every ensure and rediscovery.
+  if (process.env.ROOM_WORKER_ID) await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound())
   const here = dirname(fileURLToPath(import.meta.url))
   const bundled = join(here, 'room-daemon.mjs')
   const launch = existsSync(bundled) ? { entryPath: bundled } : {
     entryPath: resolve(here, '../../relay/src/daemon-bin.ts'), execArgv: ['--import', import.meta.resolve('tsx')],
   }
-  return inPhase('daemon', () => ensureLocalDaemon(common, room, { ...launch, log, admitStart: () => gate(true) }).catch((error: unknown) => {
+  return inPhase('daemon', () => ensureLocalDaemon(common, room, { ...launch, log }).catch((error: unknown) => {
     throw error instanceof LocalRelayCompatibilityError ? new RoomdError(error.message, 2) : error
   }))
 }

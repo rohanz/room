@@ -43,7 +43,7 @@ async function wedgedRelay(commonDir: string): Promise<{ port: number; upgrades:
   let upgrades = 0
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(typeof req.headers['x-room-nonce'] === 'string' ? { proof: relayProof(key, req.headers['x-room-nonce'], port) } : {}) }))
+    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, pid: process.pid, ...(typeof req.headers['x-room-nonce'] === 'string' ? { proof: relayProof(key, req.headers['x-room-nonce'], port) } : {}) }))
   })
   server.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
   const upgraded = new Set<net.Socket>()
@@ -82,8 +82,7 @@ it('an unknown target owner is refused before sync, and the session goes back to
   const t = await inRoom(a)
   const wedged = await wedgedRelay(path.join(b, '.git'))
   const reply = await t.tools.call('room_join', { where: 'local', dir: b })
-  expect(reply).toContain(`unknown owner: pid ${process.pid}, port ${wedged.port}`)
-  expect(reply).toMatch(/^couldn't join local\/shop \(FAIL  local daemon cutover: drain required;[\s\S]*\); back in local\/shop\.$/)
+  expect(reply).toMatch(/^couldn't join local\/shop \(WARN: local relay \(pid \d+\) on 127\.0\.0\.1:\d+ is incompatible: it uses an in-session runtime;[\s\S]*\); back in local\/shop\.$/)
   expect(wedged.upgrades()).toBe(0)
   expect(wedged.open()).toBe(0)
   expect(t.session()!.dir).toBe(a)

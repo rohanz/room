@@ -253,7 +253,7 @@ describe('arbitration endpoint publication without sockets', () => {
     const arbitration = await startArbitration(o)
     try {
       expect(o.log).not.toHaveBeenCalled()
-      expect(readSession('mcp.json')).toMatchObject({ port: 12345, runtime: 'daemon-client', hookCompat: { bootstrap: 1, min: 1, max: 1 } })
+      expect(readSession('mcp.json')).toMatchObject({ port: 12345, hookCompat: { bootstrap: 1, min: 1, max: 1 } })
       expect(readSession('state.json')).toEqual(state)
       expect(o.select).not.toHaveBeenCalled()
     } finally { await arbitration.close() }
@@ -267,7 +267,7 @@ describe('arbitration endpoint publication without sockets', () => {
     const arbitration = await startArbitration(o)
     try {
       expect(o.log).not.toHaveBeenCalled()
-      expect(readSession('mcp.json')).toMatchObject({ port: 12345, runtime: 'daemon-client' })
+      expect(readSession('mcp.json')).toMatchObject({ port: 12345 })
       expect(fs.statSync(sdir()).mode & 0o777).toBe(0o700)
     } finally { await arbitration.close() }
   })

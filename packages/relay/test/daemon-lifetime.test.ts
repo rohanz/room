@@ -200,7 +200,7 @@ it('refuses discovery whose pid disagrees with authenticated listener metadata',
   const dir = common(), runtime = await start(dir)
   const discovery = path.join(dir, 'room', 'relay.json')
   fs.writeFileSync(discovery, JSON.stringify({ ...runtime.info, pid: process.pid }), { mode: 0o600 })
-  await expect(ensureLocalDaemon(dir, room, { admitStart: async () => {} })).rejects.toThrow(/PID does not match the authenticated listener/)
+  await expect(ensureLocalDaemon(dir, room, {})).rejects.toThrow(/PID does not match the authenticated listener/)
   expect((await relayHealth(runtime.info.port, runtime.info.key))?.pid).toBe(runtime.child.pid)
 })
 
@@ -269,18 +269,13 @@ it('maintenance shedding-snapshot save failure reports the cause, retains the li
   await gone(runtime.child)
 })
 
-it.skipIf(process.platform !== 'win32').each(['preflight-first', 'client-first'])('native Windows initializes inherited private ACLs before %s launch', async first => {
+it.skipIf(process.platform !== 'win32')('native Windows initializes inherited private ACLs before daemon launch', async () => {
   const dir = common()
   // A fresh clone parent granting only the current user, SYSTEM and Administrators.
   // The child initially inherits these grants; the Room helper must protect its DACL.
   const script = `$ErrorActionPreference='Stop'; $p=$env:ROOM_TEST_PRIVATE_PARENT; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User; $a=New-Object Security.AccessControl.DirectorySecurity; $a.SetOwner($u); $a.SetAccessRuleProtection($true,$false); foreach($sid in @($u.Value,'S-1-5-18','S-1-5-32-544')) { $s=New-Object Security.Principal.SecurityIdentifier($sid); $r=New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $a.AddAccessRule($r) }; Set-Acl -LiteralPath $p -AclObject $a`
   execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, ROOM_TEST_PRIVATE_PARENT: dir }, timeout: 5000, stdio: 'pipe', windowsHide: true })
-  if (first === 'preflight-first') {
-    const { requireDaemonRuntime } = await import('../../room-mcp/src/daemon-cutover.js')
-    await requireDaemonRuntime(dir)
-    expect(fs.existsSync(path.join(dir, 'room/daemon-cutover.json'))).toBe(true)
-  }
-  const daemon = await ensureLocalDaemon(dir, room, { admitStart: async () => {}, entryPath: fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), execArgv: ['--import', require.resolve('tsx')], startupTimeoutMs: 15000 })
+  const daemon = await ensureLocalDaemon(dir, room, { entryPath: fileURLToPath(new URL('../src/daemon-bin.ts', import.meta.url)), execArgv: ['--import', require.resolve('tsx')], startupTimeoutMs: 15000 })
   daemonPids.push(daemon.pid)
   expect((await relayHealth(daemon.port, daemon.key))?.ready).toBe(true)
   const { verifyPrivatePath } = await import('../src/private-state.js')

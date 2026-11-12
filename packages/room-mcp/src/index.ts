@@ -2,7 +2,6 @@
 import { workspaceAdapter } from './hosts/selection.js'
 import { codexPreBinding as callMetadata, deferWorkspace } from './hosts/codex-binding.js'
 import fs from 'node:fs'
-import { parseArgs } from 'node:util'
 import path from 'node:path'
 import { RoomMcpServer } from './mcp-server.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -31,10 +30,9 @@ import { PresenceEnd, attachingParentReader, hostSessionAlive, idleLeaseTickMs, 
 import { presenceKind } from './hosts/selection.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
-import { admitWorkerEnvironment, admittedWorker } from './worker-registry.js'
+import { admitWorkerEnvironment } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 import { CpuWatchdog, setLatestCpuProfile } from './cpu-watchdog.js'
-import { resolveDaemonCutover } from './daemon-cutover.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
 export const RELEASE_VERSION = pluginManifest.version
@@ -141,7 +139,7 @@ async function main() {
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
-        onContact: () => presence?.activity(), log, worker: admittedWorker })
+        onContact: () => presence?.activity(), log })
       const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)
@@ -370,14 +368,5 @@ if (isEntry) {
     const flag = process.argv.indexOf('--dir')
     const dir = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : process.cwd()
     runDoctor(dir).then(report => { process.stdout.write(report + '\n'); process.exitCode = /^FAIL  /m.test(report) ? 1 : 0 }).catch(error => fatal('doctor failed', error))
-  } else if (process.argv[2] === 'cutover-resolve') {
-    const run = async () => {
-      const { values } = parseArgs({ args: process.argv.slice(3), options: {
-        dir: { type: 'string' }, record: { type: 'string' }, 'confirm-not-running': { type: 'boolean' }, note: { type: 'string' },
-      } })
-      await resolveDaemonCutover(await gitCommonDir(values.dir ?? process.cwd()), values.record ?? '', values['confirm-not-running'] === true, values.note)
-      process.stdout.write('Cutover record resolved by operator. Changed evidence will be judged again.\n')
-    }
-    run().catch(error => fatal('cutover-resolve failed', error))
   } else main().catch(error => fatal('startup failed', error))
 }

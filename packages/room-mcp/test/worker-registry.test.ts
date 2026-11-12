@@ -8,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import * as Y from 'yjs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { WorkerRegistry, admitWorkerEnvironment, admittedWorker, closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { WorkerRegistry, admitWorkerEnvironment, closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { witnessPreparation } from '../src/worker-preparation.js'
 import { idleClaimsDue, type WorkerRecord } from '../src/worker-status.js'
 import { RoomDoc } from '@room/shared'
@@ -30,10 +30,7 @@ it('passes a discovered Codex binding to admission without host ID environment v
     expect(admit.mock.calls[0][0].hostSessionId).toBeUndefined()
     await admitWorkerEnvironment(dir, env, { id: 'discovered-thread', host: 'codex' })
     expect(admit.mock.calls[1][0].hostSessionId).toBe('discovered-thread')
-    // A successful admission records the worker with the host identity it recorded; a refused one withdraws it.
-    if (admit.mock.calls[1][0].hostProcess?.startTime) expect(admittedWorker()).toEqual({ id: 'w_01', host: admit.mock.calls[1][0].hostProcess })
     await expect(admitWorkerEnvironment(dir, env, { id: 'wrong-host', host: 'claude' })).rejects.toThrow('session mismatch')
-    expect(admittedWorker()).toBeUndefined()
     expect(admit).toHaveBeenCalledTimes(2)
   } finally { read.mockRestore(); admit.mockRestore(); await closeRegistryForDir(dir) }
 })

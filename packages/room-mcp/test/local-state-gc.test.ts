@@ -70,9 +70,10 @@ describe('local state collector', () => {
     const c = commonDir(), old = now - ROOM_STALE_MS - 1, gone = '/nonexistent/worktree/' + Math.random()
     // keep / owner
     touch(c, 'relay.json', old, { port: 1 }); touch(c, 'hub/incarnation.json', old); touch(c, 'relay/room.ydoc', old, 'bytes'); touch(c, 'relay/migrated-abc.json', old)
-    touch(c, 'hub-leases/abc.json', old); touch(c, 'daemon.log', old, 'log'); touch(c, 'daemon.log.1', old, 'log'); touch(c, 'daemon-cutover.json', old)
+    touch(c, 'hub-leases/abc.json', old); touch(c, 'daemon.log', old, 'log'); touch(c, 'daemon.log.1', old, 'log')
     touch(c, 'sharing/legacy-baseline.json', old); touch(c, 'registry/workers/w1.json', old); touch(c, 'registry/migration.json', old)
     // ages
+    touch(c, 'daemon-cutover.json', old); touch(c, 'daemon-cutover-resolutions.json', old)
     touch(c, 'relay/room.ydoc.1-ab.tmp', now - GC_TEMP_AGE_MS - 1, 'x'); touch(c, 'relay/room.ydoc.2-cd.tmp', now - 60_000, 'x'); touch(c, 'top.roomtmp-p1-s2-n3.tmp', now - 2 * HOUR, 'x')
     touch(c, 'names/dead.json', now - 2 * HOUR, { holder: token(200), worktree: '/w' }); touch(c, 'names/dead-recent.json', now - 10 * 60_000, { holder: token(200) })
     touch(c, 'names/alive.json', now - 2 * HOUR, { holder: token(100) }); touch(c, 'names/unknown.json', now - 2 * HOUR, { holder: token(0) }); touch(c, 'names/garbage.json', now - 2 * HOUR, 'not json')
@@ -93,7 +94,7 @@ describe('local state collector', () => {
     const result = collectLocalState(c, { now: () => now, probe })
     expect(result.unknown.sort()).toEqual(['mystery-dir', 'mystery.json', 'sessions/stray.json'])
     expect(left(c)).toEqual([
-      'browser/new.html', 'compat/new.json', 'daemon-cutover.json', 'daemon.log', 'daemon.log.1',
+      'browser/new.html', 'compat/new.json', 'daemon.log', 'daemon.log.1',
       'hook-receipts/r2.json', 'hub-leases/abc.json', 'hub/incarnation.json',
       'mystery-dir/a.json', 'mystery.json',
       'names/alive.json', 'names/dead-recent.json', 'names/garbage.json', 'names/unknown.json',

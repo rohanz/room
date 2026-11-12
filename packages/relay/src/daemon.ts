@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { CURRENT_COMPAT, parseAdvertisement, selectContract } from '@room/hub-core'
 import { compactMinDeleted, historyOf } from '@room/shared'
@@ -11,7 +11,7 @@ import { AuthorityLock } from './hub.js'
 import { liveness, writeAtomic, type ProcessIdentity } from './leases.js'
 import { pidAlive, probeOwnProcess } from './process.js'
 import { localProofHeader, relayHealth, relayIdentity } from './proof.js'
-import { cloneId, deterministicPort, relayFile, startRelay, type LocalRelay, type LocalRelayInfo, type StartedRelay } from './index.js'
+import { cloneId, deterministicPort, relayFile, startRelay, LocalRelayCompatibilityError, type LocalRelay, type LocalRelayInfo, type StartedRelay } from './index.js'
 import { primePrivateState, verifyPrivatePath, privateStateDirectory } from './private-state.js'
 
 declare const __ROOM_DAEMON_RELEASE__: string
@@ -27,11 +27,6 @@ export interface LocalDaemonOptions {
   startupTimeoutMs?: number
   probeTimeoutMs?: number
 }
-/**
- * Starting a daemon needs the caller's admission (the cutover inventory). It runs after no live daemon answered and
- * immediately before the spawn; a rejection prevents it. Admission to an existing daemon is not admission to start one.
- */
-export interface EnsureDaemonOptions extends LocalDaemonOptions { admitStart: () => Promise<void> }
 export interface LocalDaemon extends LocalRelay {
   pid: number; runtime: 'daemon'; idleMs: number
   /** True only when this call's child won authority; adopted instances remain non-owning. */
@@ -77,9 +72,6 @@ export class WriterIdleClock {
 /**
  * Graceful stops end the saved generation unless the snapshot would shed content; crashes retain it.
  * Run in the child only. Losing contenders exit without ever publishing shared state.
- * Not an admission boundary: Room's shipped entry (room-daemon.mjs) reaches this only when launched by
- * ensureLocalDaemon after its required admitStart. In-repo test and compatibility harnesses call it directly
- * on throwaway common directories; @room/relay is a workspace package bundled into the plugin, not published.
  */
 export async function startLocalDaemon(opts: {
   commonDir: string; room: string; idleMs?: number; idleCheckMs?: number; now?: () => number
@@ -275,7 +267,7 @@ export function daemonChildEnvironment(source: NodeJS.ProcessEnv = process.env, 
 }
 
 /** Caller must already be repository-bound and validate worker clone ownership. No in-process fallback. */
-export function ensureLocalDaemon(commonDir: string, room: string, opts: EnsureDaemonOptions): Promise<LocalDaemon> {
+export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDaemonOptions = {}): Promise<LocalDaemon> {
   const canonical = fs.realpathSync.native(commonDir)
   const running = flights.get(canonical)
   if (running) return running.then(() => ensure(canonical, room, opts))
@@ -283,20 +275,31 @@ export function ensureLocalDaemon(commonDir: string, room: string, opts: EnsureD
   flights.set(canonical, work)
   return work
 }
-async function ensure(commonDir: string, room: string, opts: EnsureDaemonOptions): Promise<LocalDaemon> {
+async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions = {}): Promise<LocalDaemon> {
   await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
   const ready = async (): Promise<LocalDaemon | undefined> => {
-    const info = discovery(commonDir)
-    if (!info) return undefined
-    const health = await relayHealth(info.port, info.key, opts.probeTimeoutMs ?? 800)
+    const probed = discovery(commonDir)
+    if (!probed) return undefined
+    const health = await relayHealth(probed.port, probed.key, opts.probeTimeoutMs ?? 800)
     if (!health || health.clone !== cloneId(commonDir)) return undefined
-    if (typeof health.pid !== 'number' || health.pid !== info.pid) throw new Error('local daemon discovery PID does not match the authenticated listener; retry discovery without taking over')
-    if (health.runtime !== 'daemon') throw new Error(`local Room pid ${info.pid} on port ${info.port} uses an in-session runtime; drain all local clients and restart updated Room`)
+    // Terminal refusals, not retried: neither state repairs itself while the caller waits.
+    if (health.runtime !== 'daemon') throw new LocalRelayCompatibilityError(probed.port, probed.pid, 'it uses an in-session runtime')
     const offer = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }
     const contract = selectContract(offer, parseAdvertisement(health.compat), { activeSchema: 2, requiredCapabilities: { 'room.daemon': [1] } })
-    if (!contract.ok) throw new Error(`local daemon incompatible: ${contract.error.text}; drain clients and restart compatible Room`)
+    if (!contract.ok) throw new LocalRelayCompatibilityError(probed.port, probed.pid, contract.error.text)
     if (health.ready !== true || health.draining) return undefined
+    // The lock winner listens before lease recovery and discovery publication, and reports not-ready
+    // until both finish. Read its publication after authentication, never compare against its predecessor.
+    const info = discovery(commonDir)
+    if (!info || info.port !== probed.port || info.key !== probed.key) return undefined
+    if (typeof health.pid !== 'number' || health.pid !== info.pid) {
+      // A newer publication can also supersede the ready response while it is in flight.
+      if (info.pid !== probed.pid || info.nonce !== probed.nonce) return undefined
+      throw new Error('local daemon discovery PID does not match the authenticated listener; retry discovery without taking over')
+    }
+    // The nonce names one daemon start. A reply from an earlier start is not this publication's, even on a reused PID.
+    if (info.nonce !== undefined && health.nonce !== info.nonce) return undefined
     return {
       url: `ws://127.0.0.1:${info.port}`, httpUrl: `http://127.0.0.1:${info.port}`, port: info.port, key: info.key, pid: health.pid, runtime: 'daemon', idleMs: Number(health.idleMs), owned: false, launched: false,
       async stop() {},
@@ -310,8 +313,11 @@ async function ensure(commonDir: string, room: string, opts: EnsureDaemonOptions
   const existing = await ready()
   if (existing) return existing
   const info = discovery(commonDir)
-  if (info?.lead && info.lead !== true && liveness(info.lead) !== 'dead') throw new Error(`local daemon pid ${info.pid} is live or has unknown identity; retry without taking over`)
-  await opts.admitStart()
+  // Publication can finish while a not-ready health reply is in flight. Wait for the published
+  // owner under the same startup caps; a live/unknown owner never authorizes a replacement child.
+  if (info?.lead && info.lead !== true && liveness(info.lead) !== 'dead') {
+    return waitForReady().catch((error: Error) => { throw new Error(`local daemon pid ${info.pid} is live or has unknown identity and did not become ready; retry without taking over. ${error.message}`) })
+  }
   const entry = opts.entryPath ?? fileURLToPath(new URL('./room-daemon.mjs', import.meta.url))
   if (!path.isAbsolute(entry) || !fs.statSync(entry).isFile()) throw new Error('local daemon entry must be an absolute installed bundle path')
   const env = daemonChildEnvironment()
@@ -328,21 +334,24 @@ async function ensure(commonDir: string, room: string, opts: EnsureDaemonOptions
 
   async function launch(): Promise<LocalDaemon> {
     const child = spawn(process.execPath, [...(opts.execArgv ?? []), entry, '--common-dir', commonDir, '--room', room, '--startup-report', report], { cwd: commonDir, env, shell: false, detached: true, windowsHide: true, stdio: 'ignore' })
+    return waitForReady(child, report)
+  }
+  async function waitForReady(child?: ChildProcess, report?: string): Promise<LocalDaemon> {
     let launchError: Error | undefined, exited = false, exitStatus = ''
-    child.once('error', error => { launchError = error })
-    child.once('exit', (code, signal) => { exited = true; exitStatus = signal ? `signal ${signal}` : `code ${code}` })
-    child.unref()
+    child?.once('error', error => { launchError = error })
+    child?.once('exit', (code, signal) => { exited = true; exitStatus = signal ? `signal ${signal}` : `code ${code}` })
+    child?.unref()
     const hardUntil = Date.now() + (opts.startupTimeoutMs ?? STARTUP_HARD_CAP_MS)
     let progressUntil = Math.min(hardUntil, Date.now() + STARTUP_PHASE_WAIT_MS)
     let previousLog = startupLog(commonDir)
     do {
       const winner = await ready()
-      if (winner) return { ...winner, launched: winner.pid === child.pid }
-      if (launchError) throw startupFailure(commonDir, child.pid, `launch failed: ${launchError.message}`, report)
+      if (winner) return { ...winner, launched: winner.pid === child?.pid }
+      if (launchError) throw startupFailure(commonDir, child?.pid, `launch failed: ${launchError.message}`, report)
       // A losing contender can exit before the lock winner publishes. Preserve that wait while the authority
       // is live; a dead child without another authority fails immediately instead of burning the startup cap.
-      const contender = exited ? startupContender(commonDir) : child.pid
-      if (exited && !contender) throw startupFailure(commonDir, child.pid, `child exited (${exitStatus}); no live authority contender`, report)
+      const contender = child && !exited ? child.pid : startupContender(commonDir)
+      if (exited && !contender) throw startupFailure(commonDir, child?.pid, `child exited (${exitStatus}); no live authority contender`, report)
       const tail = startupLog(commonDir)
       if (tail !== previousLog) {
         const phases = tail.split('\n').filter(line => line.includes(`startup pid ${contender}: `))
@@ -352,7 +361,7 @@ async function ensure(commonDir: string, room: string, opts: EnsureDaemonOptions
       if (Date.now() >= progressUntil || Date.now() >= hardUntil) break
       await new Promise(resolve => setTimeout(resolve, 100))
     } while (Date.now() < hardUntil)
-    throw startupFailure(commonDir, child.pid, Date.now() >= hardUntil ? 'startup hard cap reached' : 'startup phase stalled', report)
+    throw startupFailure(commonDir, child?.pid, Date.now() >= hardUntil ? 'startup hard cap reached' : 'startup phase stalled', report)
   }
 }
 
