@@ -57,6 +57,10 @@ export const GC_RULES: GcRule[] = [
     match: inDir('relay', n => !isTemp(n)) },
   { path: '*.tmp (any directory)', owner: 'MCP session', lifetime: { kind: 'temp' }, match: e => isTemp(e.name ?? e.top) },
   { path: 'hub/authority.lock', owner: 'daemon', lifetime: { kind: 'dead-holder' }, match: inDir('hub', n => n === 'authority.lock') },
+  // The async lease primitive recovers these on demand. A collector's separate
+  // dead-holder check and unlink could remove a newly acquired live successor.
+  { path: 'worktree-operation.guard (+ .guard)', owner: 'MCP session', lifetime: { kind: 'owner' },
+    match: e => e.name === undefined && /^worktree-operation(?:\.guard)+$/.test(e.top) },
   { path: '*.guard (any directory)', owner: 'MCP session', lifetime: { kind: 'dead-holder' }, match: e => (e.name ?? e.top).endsWith('.guard') },
   { path: 'hub-leases/<room>.json', owner: 'daemon', lifetime: { kind: 'keep' }, match: inDir('hub-leases', n => n.endsWith('.json')) },
   { path: 'daemon.log*', owner: 'daemon', lifetime: { kind: 'owner' }, match: e => e.name === undefined && /^daemon\.log(\.\d+)?$/.test(e.top) },

@@ -3,13 +3,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { setImmediate } from 'node:timers/promises'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { git, withGitWorktreeOperation } from '../src/git.js'
 import { worktreeGitDirFromDotGit } from '../src/git-dirs.js'
 import { boundedGitSync } from '../src/baseline.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-worktree-queue-')), repo = path.join(root, 'repo')
   roots.push(root); fs.mkdirSync(repo)
@@ -75,4 +75,30 @@ it('does not let an escaped async context bypass a later operation', async () =>
   await entered.promise; late.release()
   try { await setImmediate(); expect(ran).toBe(false) } finally { finish.release() }
   await Promise.all([owner, escaped]); expect(ran).toBe(true)
+})
+
+it('flushes asynchronously once per operation, reenters once, and leaves ordinary Git unguarded', async () => {
+  const { repo } = fixture(), guard = path.join(fs.realpathSync.native(repo), '.git', 'room', 'worktree-operation.guard')
+  const synchronous = vi.spyOn(fs, 'fsyncSync'), open = fs.promises.open.bind(fs.promises)
+  let flushes = 0
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    const handle = await open(...args), sync = handle.sync.bind(handle)
+    vi.spyOn(handle, 'sync').mockImplementation(async () => { flushes++; await sync() })
+    return handle
+  })
+  await git(repo, ['rev-parse', 'HEAD'])
+  expect(flushes).toBe(0); expect(fs.existsSync(guard)).toBe(false)
+  await withGitWorktreeOperation(repo, async () => {
+    const nonce = JSON.parse(fs.readFileSync(guard, 'utf8')).nonce
+    await git(repo, ['worktree', 'list', '--porcelain'])
+    await withGitWorktreeOperation(path.join(repo, '.git'), () => {
+      expect(JSON.parse(fs.readFileSync(guard, 'utf8')).nonce).toBe(nonce)
+      boundedGitSync(repo, ['worktree', 'list'])
+    })
+  })
+  let ancestors = 0
+  for (let dir = path.dirname(guard); path.dirname(dir) !== dir; dir = path.dirname(dir)) ancestors++
+  // One flush per ancestor, token contents, link, temp removal, and release.
+  expect(flushes).toBe(ancestors + 4)
+  expect(synchronous).not.toHaveBeenCalled(); expect(fs.existsSync(guard)).toBe(false)
 })

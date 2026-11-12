@@ -26,12 +26,12 @@ function directoryWriters(relative: string, source: string): string[] {
   const allowances = new Map(Object.entries(nonState[relative] ?? {}).map(([args, count]) => [normalized(args), count]))
   if (relative === 'relay/src/private-state.ts') allowances.set('windows config ancestors', 1)
   if (relative === 'relay/src/private-core.ts' || relative === '../plugins/room/hooks/private-core.mjs') allowances.set('private initializer', 1)
-  if (relative === 'relay/src/leases.ts') { allowances.set('durable directory', 1); allowances.set('windows durable ancestor', 1) }
+  if (relative === 'relay/src/leases.ts') { allowances.set('durable directory', 1); allowances.set('windows durable ancestor', 1); allowances.set('async windows durable ancestor', 1) }
   const tree = ts.createSourceFile(relative, source, ts.ScriptTarget.Latest, true)
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && /(?:^|\.)(?:mkdirSync|mkdir)$/.test(node.expression.getText(tree))) {
       const args = normalized(node.arguments.map(arg => arg.getText(tree)).join(', '))
-      const statement = node.parent, branch = statement.parent
+      const statement = ts.isAwaitExpression(node.parent) ? node.parent.parent : node.parent, branch = statement.parent
       let owner: ts.Node | undefined = node.parent
       while (owner && !ts.isFunctionDeclaration(owner)) owner = owner.parent
       const durableExisting = relative === 'relay/src/leases.ts' && args === 'dir, { mode: 0o700 }'
@@ -40,7 +40,7 @@ function directoryWriters(relative: string, source: string): string[] {
         && normalized(branch.expression.getText(tree)) === '!fs.existsSync(dir)'
         && normalized(branch.thenStatement.getText(tree)) === 'privateStateDirectory(dir)'
       const durableAncestor = relative === 'relay/src/leases.ts' && args === 'dir'
-        && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'ensureDurableDirectory'
+        && owner && ts.isFunctionDeclaration(owner) && ['ensureDurableDirectory', 'ensureDurableDirectoryAsync'].includes(owner.name?.text ?? '')
         && ts.isExpressionStatement(statement) && ts.isIfStatement(branch) && branch.thenStatement === statement
         && normalized(branch.expression.getText(tree)) === "process.platform === 'win32' && !holdsFile"
       const configAncestors = relative === 'relay/src/private-state.ts' && args === 'path.dirname(dir), { recursive: true }'
@@ -49,7 +49,9 @@ function directoryWriters(relative: string, source: string): string[] {
       const privateInitializer = (relative === 'relay/src/private-core.ts' && args === 'dir, { mode: 0o700 }'
         || relative === '../plugins/room/hooks/private-core.mjs' && args === 'dir, { mode: 448 }')
         && owner && ts.isFunctionDeclaration(owner) && owner.name?.text === 'initializePrivateDirectory'
-      const key = privateInitializer ? 'private initializer' : durableExisting ? 'durable directory' : durableAncestor ? 'windows durable ancestor' : configAncestors ? 'windows config ancestors' : args
+      const key = privateInitializer ? 'private initializer' : durableExisting ? 'durable directory'
+        : durableAncestor ? ts.isAwaitExpression(node.parent) ? 'async windows durable ancestor' : 'windows durable ancestor'
+        : configAncestors ? 'windows config ancestors' : args
       const remaining = allowances.get(key) ?? 0
       if (remaining > 0) allowances.set(key, remaining - 1)
       else failures.push(`${relative}:${tree.getLineAndCharacterOfPosition(node.getStart()).line + 1} ${args}`)
@@ -96,4 +98,9 @@ it('limits the plain durable ancestor allowance to Windows directories that hold
   expect(source).toContain(call)
   expect(directoryWriters('relay/src/leases.ts', source.replace(call, `${call};\n${call}`))).toHaveLength(1)
   expect(directoryWriters('relay/src/leases.ts', source.replace(' && !holdsFile', ''))).toHaveLength(2)
+  const asyncCall = "if (process.platform === 'win32' && !holdsFile) await fs.promises.mkdir(dir)"
+  expect(source).toContain(asyncCall)
+  expect(directoryWriters('relay/src/leases.ts', source.replace(asyncCall, `${asyncCall};\n${asyncCall}`))).toHaveLength(1)
+  expect(directoryWriters('relay/src/leases.ts', source.replace(asyncCall, 'void 0'))).toHaveLength(1)
+  expect(directoryWriters('relay/src/leases.ts', source.replaceAll(' && !holdsFile', ''))).toHaveLength(4)
 })

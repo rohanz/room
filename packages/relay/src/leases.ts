@@ -224,10 +224,15 @@ async function ensureDurableDirectoryAsync(dir: string, holdsFile = true): Promi
   let present = true
   try { await fs.promises.access(dir) }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; present = false }
-  // Creating a directory is rare and stays with the one synchronous creation policy above;
-  // only the flush of an existing directory's parent, which every call pays, is asynchronous.
-  if (!present) ensureDurableDirectory(dir, holdsFile)
-  else await syncDirectoryAsync(parent)
+  // Keep the private-directory creation policy, but never use its synchronous
+  // durability helper: even the first acquisition must flush asynchronously.
+  if (!present) {
+    try {
+      if (process.platform === 'win32' && !holdsFile) await fs.promises.mkdir(dir)
+      else privateStateDirectory(dir)
+    } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
+  }
+  await syncDirectoryAsync(parent)
 }
 
 async function createGuardAsync(file: string, token: InstanceToken): Promise<boolean> {
@@ -270,13 +275,29 @@ async function releaseGuardAsync(file: string, token: InstanceToken): Promise<vo
   }
 }
 
-async function acquireGuardAsync(file: string, probe: ProcessProbe, depth = 0): Promise<InstanceToken> {
+/** An unreadable record is present and blocking; only ENOENT means absent. */
+async function guardStateAsync(file: string): Promise<{ holder?: InstanceToken } | undefined> {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(file, 'utf8'))
+    return { holder: value && typeof value === 'object' ? leaseToken(value) : undefined }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return undefined
+    if (error instanceof SyntaxError || code === 'EACCES' || code === 'EPERM') return {}
+    throw error
+  }
+}
+
+async function acquireGuardAsync(file: string, probe: ProcessProbe, depth = 0, readOnlyBusy = false): Promise<InstanceToken> {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`)
+  // Polling operations inspect even recovery guards before writing. Fail-fast
+  // decision callers retain their create-first scheduling against sync holders.
+  const state = readOnlyBusy ? await guardStateAsync(file) : undefined
   const token = ownToken()
-  if (await createGuardSafely(file, token, () => createGuardAsync(file, token))) return token
-  const previous = await readGuardAsync(file)
-  if (!previous || liveness(previous, probe) !== 'dead') throw new Error(`lease guard busy: ${file}`)
-  const outer = await acquireGuardAsync(`${file}.guard`, probe, depth + 1)
+  if (!state && await createGuardSafely(file, token, () => createGuardAsync(file, token))) return token
+  const previous = state?.holder ?? (await guardStateAsync(file))?.holder
+  if (!previous || liveness(previous, probe) !== 'dead') throw new GuardBusy(file)
+  const outer = await acquireGuardAsync(`${file}.guard`, probe, depth + 1, readOnlyBusy)
   try {
     const latest = await readGuardAsync(file)
     if (latest && liveness(latest, probe) === 'dead') {
@@ -285,7 +306,38 @@ async function acquireGuardAsync(file: string, probe: ProcessProbe, depth = 0): 
     }
   } finally { await releaseGuardAsync(`${file}.guard`, outer) }
   if (await createGuardSafely(file, token, () => createGuardAsync(file, token))) return token
-  throw new Error(`lease guard busy: ${file}`)
+  throw new GuardBusy(file)
+}
+
+class GuardBusy extends Error {
+  constructor(file: string) { super(`lease guard busy: ${file}`) }
+}
+
+/** A process-owned operation, including its awaited callback. Unlike withGuardAsync's
+ * synchronous decision, this may await work. Death of the holder permits recovery
+ * even if a child it launched still runs; callers must account for that limit. */
+export async function withGuardAsyncOperation<T>(file: string, fn: () => T | Promise<T>,
+  options: { timeoutMs: number; probe?: ProcessProbe }): Promise<T> {
+  const guard = `${file}.guard`, probe = options.probe ?? probeProcess
+  const deadline = performance.now() + options.timeoutMs
+  let token: InstanceToken | undefined
+  let holder: InstanceToken | undefined
+  for (;;) {
+    const state = await guardStateAsync(guard)
+    holder = state?.holder
+    if (performance.now() >= deadline) throw new Error(`timed out acquiring lease guard ${guard}; holder pid ${holder?.pid ?? 'unknown'}`)
+    // Live/unknown holders are polled read-only. Only absence or proven death
+    // allows an acquisition attempt (which uses the shared stale-recovery protocol).
+    if (!state || holder && liveness(holder, probe) === 'dead') {
+      try { token = await acquireGuardAsync(guard, probe, 0, true); break }
+      catch (error) { if (!(error instanceof GuardBusy)) throw error }
+    }
+    const remaining = deadline - performance.now()
+    if (remaining <= 0) throw new Error(`timed out acquiring lease guard ${guard}; holder pid ${holder?.pid ?? 'unknown'}`)
+    await new Promise(resolve => setTimeout(resolve, Math.min(75, remaining)))
+  }
+  try { return await fn() }
+  finally { await releaseGuardAsync(guard, token) }
 }
 
 /** Async durable acquisition/release; the decision itself must remain synchronous. */

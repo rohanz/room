@@ -11860,20 +11860,691 @@ var init_src = __esm({
   }
 });
 
-// packages/roomd/src/git-worktree-lock.ts
+// packages/relay/src/private-core.ts
 import fs3 from "node:fs";
 import path4 from "node:path";
+function privateDirectoryPath(dir) {
+  dir = path4.resolve(dir);
+  const directories = [dir];
+  let root = dir;
+  while (path4.basename(root) !== "room" && path4.dirname(root) !== root) {
+    root = path4.dirname(root);
+    directories.unshift(root);
+    if (directories.length > 64) throw new Error(`Room state directory path is too deep: ${dir}`);
+  }
+  return { directories, root, inState: path4.basename(root) === "room" };
+}
+function verifyPosixPath(file2, stat4 = fs3.lstatSync(file2)) {
+  if (stat4.isSymbolicLink() || !process.getuid || stat4.uid !== process.getuid() || (stat4.mode & 63) !== 0) {
+    throw new Error(`Room state must be owned by the current user and private: ${file2}`);
+  }
+}
+function initializePrivateDirectory(dir, repair, exclusive = false) {
+  let created = false;
+  try {
+    fs3.mkdirSync(dir, { mode: 448 });
+    created = true;
+  } catch (error2) {
+    if (exclusive || error2.code !== "EEXIST") throw error2;
+  }
+  const stat4 = fs3.lstatSync(dir);
+  if (!stat4.isDirectory() || stat4.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`);
+  if (process.platform === "win32") return;
+  if (!process.getuid || stat4.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${dir}`);
+  if (created || repair && (stat4.mode & 511) !== 448) {
+    const fd = fs3.openSync(dir, fs3.constants.O_RDONLY | fs3.constants.O_NOFOLLOW | fs3.constants.O_DIRECTORY);
+    try {
+      const opened = fs3.fstatSync(fd);
+      if (opened.dev !== stat4.dev || opened.ino !== stat4.ino || opened.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${dir}`);
+      fs3.fchmodSync(fd, 448);
+    } finally {
+      fs3.closeSync(fd);
+    }
+    if (!created) console.error(`Room repaired private state directory: ${dir}`);
+  }
+  verifyPosixPath(dir);
+}
+var init_private_core = __esm({
+  "packages/relay/src/private-core.ts"() {
+    "use strict";
+  }
+});
+
+// packages/relay/src/private-state.ts
+import fs4 from "node:fs";
+import path5 from "node:path";
+import { execFile as execFile2, execFileSync as execFileSync3 } from "node:child_process";
+function checkWindowsAcl(report, file2) {
+  const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
+  if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || report.directory !== false && !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
+    throw new Error(`Room state is not private: ${file2}; owner ${report.owner}; offending grants ${report.grants.filter((sid) => !allowed.has(sid)).join(", ") || "none"}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`);
+  }
+}
+function windowsIdentity(file2) {
+  try {
+    const stat4 = fs4.lstatSync(file2, { bigint: true });
+    return `${stat4.dev}:${stat4.ino}`;
+  } catch {
+    return void 0;
+  }
+}
+function windowsPowerShellEnv(file2) {
+  const env = {};
+  for (const [key3, value5] of Object.entries(process.env)) if (key3.toLowerCase() !== "psmodulepath") env[key3] = value5;
+  env.ROOM_PRIVATE_PATH = file2;
+  return env;
+}
+function windowsAclScript(protectNew, createDirectory, repair) {
+  return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+    $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
+    function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
+    function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
+    # Room's own writers remove files concurrently (atomic-write temporaries, retired records). A descendant that
+    # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
+    # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
+    function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };
+    function Vanished($path, $err) { if (NotFound $err.Exception) { return $true }; try { [IO.File]::GetAttributes($path) | Out-Null; $false } catch { NotFound $_.Exception } };
+    function Entries($dir) { try { @([IO.Directory]::EnumerateFileSystemEntries($dir)) } catch { if (Vanished $dir $_) { @() } else { throw } } };
+    function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
+    function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
+    function Grants($acl) { @(Rules $acl | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value}) };
+    function PrivateAcl($directory) {
+      if ($directory) { $acl=[Security.AccessControl.DirectorySecurity]::new(); $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
+      else { $acl=[Security.AccessControl.FileSecurity]::new(); $inherit=[Security.AccessControl.InheritanceFlags]::None };
+      $acl.SetOwner($u); $acl.SetAccessRuleProtection($true,$false);
+      foreach ($sid in $trusted) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl',$inherit,'None','Allow'))
+      }; return $acl
+    };
+    $created=$false; $repaired=$false;
+    ${createDirectory ? "if (!([IO.Directory]::Exists($p) -or [IO.File]::Exists($p))) { [IO.Directory]::CreateDirectory($p,(PrivateAcl $true)) | Out-Null; $created=$true };" : ""}
+    if ([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::ReparsePoint) { throw 'Room state must not be a reparse point' };
+    $isDir=IsDir $p;
+    $a=ReadAcl $p; $g=Grants $a;
+    $o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+    # An elevated administrator's new directories are owned by BUILTIN\\Administrators (Windows Server default); that
+    # user can already rewrite the ACL, so the repair may take ownership back for them.
+    $elevated=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
+    $owned=($o -eq $u.Value) -or ($o -eq 'S-1-5-32-544' -and $elevated);
+    $broad=@($g | Where-Object {$_ -notin $trusted});
+    ${repair ? `$inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';
+    $inheritable=@(Rules $a | Where-Object {
+      $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -eq $u.Value -and
+      ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
+      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
+    }).Count -gt 0;` : ""}
+    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree.
+    $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
+    $children=[System.Collections.Generic.List[string]]::new();
+    while ($pending.Count -gt 0) {
+      foreach ($child in (Entries $pending.Pop())) {
+        if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
+        try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Vanished $child $_) { continue } else { throw } };
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+        $children.Add($child);
+        if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
+      }
+    };` : ""}
+    ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
+      WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
+      ${repair ? "$inheritable=$true;" : ""}
+      $a=ReadAcl $p; $g=Grants $a
+    };` : ""}
+    ${repair ? `# Establish inheritance for the whole existing subtree before caching this root. Never follow reparse points.
+    if (!$inheritable -or !$a.AreAccessRulesProtected -or @($g | Where-Object {$_ -notin $trusted}).Count -gt 0 -or
+        $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
+    $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
+    foreach ($child in $children) {
+      try {
+        if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
+        $childAcl=ReadAcl $child; $rules=Rules $childAcl;
+        # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
+        $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
+        if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Room state is owned by $childOwner : $child" };
+        $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted});
+        if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
+          # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
+          # read with its inherited entries would persist those entries as explicit ones.
+          & $icacls $child /reset /q | Out-Null;
+          if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
+          $childAcl=ReadAcl $child; $rules=Rules $childAcl
+        };
+        if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
+            @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
+      } catch { if (Vanished $child $_) { continue } else { throw } }
+    };` : ""}
+    # SIDs and booleans only, so the report is built without ConvertTo-Json.
+    $bool={ param($v) if ($v) { 'true' } else { 'false' } };
+    '{"owner":"' + $a.GetOwner([Security.Principal.SecurityIdentifier]).Value + '","user":"' + $u.Value + '","protected":' + (& $bool $a.AreAccessRulesProtected) +
+      ',"directory":' + (& $bool $isDir) + ',"repaired":' + (& $bool $repaired) + ',"grants":[' + ((@($g) | ForEach-Object { '"' + $_ + '"' }) -join ',') + ']}'`;
+}
+function windowsAclError(file2, error2) {
+  const e = error2;
+  const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
+  return new Error(`Cannot verify the Windows owner/DACL for ${file2} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
+}
+function rememberWindowsAcl(file2, output, repair) {
+  let report;
+  try {
+    report = JSON.parse(output);
+  } catch (error2) {
+    throw windowsAclError(file2, error2);
+  }
+  if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file2}`);
+  checkWindowsAcl(report, file2);
+  if (repair && report.repaired) console.error(`Room repaired private state directory: ${file2}`);
+  const identity4 = windowsIdentity(file2);
+  if (identity4) verifiedWindows.set(windowsKey(file2), { identity: identity4, subtree: repair });
+}
+function windowsVerified(file2, subtree = false) {
+  const known = verifiedWindows.get(windowsKey(file2));
+  return !!known && (!subtree || known.subtree) && known.identity === windowsIdentity(file2);
+}
+function windowsAcl(file2, protectNew = false, createDirectory = false, repair = false) {
+  if (!protectNew && windowsVerified(file2, repair)) return;
+  let output;
+  try {
+    output = execFileSync3("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(protectNew, createDirectory, repair)], { env: windowsPowerShellEnv(file2), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error2) {
+    throw windowsAclError(file2, error2);
+  }
+  rememberWindowsAcl(file2, output, repair);
+}
+function primeWindowsDirectory(dir, repair) {
+  if (process.platform !== "win32") return Promise.resolve();
+  dir = path5.resolve(dir);
+  const key3 = windowsKey(dir);
+  const running = primingWindows.get(key3);
+  if (running) return running;
+  if (windowsVerified(dir, repair)) return Promise.resolve();
+  const work = (async () => {
+    if (!fs4.statSync(path5.dirname(dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
+    const output = await new Promise((resolve6, reject) => {
+      execFile2(
+        "powershell.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(false, true, repair)],
+        { env: windowsPowerShellEnv(dir), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8" },
+        (error2, stdout, stderr) => error2 ? reject(windowsAclError(dir, Object.assign(error2, { stderr }))) : resolve6(stdout)
+      );
+    });
+    rememberWindowsAcl(dir, output, repair);
+  })().finally(() => {
+    if (primingWindows.get(key3) === work) primingWindows.delete(key3);
+  });
+  primingWindows.set(key3, work);
+  return work;
+}
+function primePrivateDirectory(dir) {
+  if (process.platform !== "win32") return Promise.resolve();
+  dir = path5.resolve(dir);
+  const running = primingWindows.get(windowsKey(dir));
+  if (running) return running;
+  if (fs4.existsSync(dir)) return Promise.resolve();
+  try {
+    fs4.mkdirSync(path5.dirname(dir), { recursive: true });
+  } catch (error2) {
+    return Promise.reject(error2);
+  }
+  return primeWindowsDirectory(dir, false);
+}
+function primePrivateState(commonDir2) {
+  return primeWindowsDirectory(path5.join(commonDir2, "room"), true);
+}
+function verifyPrivatePath(file2, created = false) {
+  const stat4 = fs4.lstatSync(file2);
+  if (stat4.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file2}`);
+  if (process.platform === "win32") {
+    if (underVerifiedRoomRoot(file2)) return;
+    windowsAcl(file2, created);
+    return;
+  }
+  verifyPosixPath(file2, stat4);
+}
+function underVerifiedRoomRoot(file2) {
+  let dir = path5.resolve(file2);
+  while (path5.basename(dir).toLowerCase() !== "room" && path5.dirname(dir) !== dir) dir = path5.dirname(dir);
+  if (path5.basename(dir).toLowerCase() !== "room" || path5.resolve(file2) === dir) return false;
+  const known = verifiedWindows.get(windowsKey(dir));
+  return !!known?.subtree && known.identity === windowsIdentity(dir);
+}
+function privateStateDirectory(dir, options = {}) {
+  dir = path5.resolve(dir);
+  if (options.exclusive) {
+    initializePrivateDirectory(dir, false, true);
+    if (process.platform === "win32") windowsAcl(dir, true);
+    return;
+  }
+  const { directories, root, inState } = privateDirectoryPath(dir);
+  if (!fs4.statSync(path5.dirname(inState ? root : dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
+  for (const directory2 of inState ? directories : [dir]) {
+    if (process.platform === "win32" && (!inState || directory2 === root)) {
+      if (fs4.existsSync(directory2)) {
+        const stat4 = fs4.lstatSync(directory2);
+        if (!stat4.isDirectory() || stat4.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${directory2}`);
+      }
+      windowsAcl(directory2, false, true, inState);
+    } else initializePrivateDirectory(directory2, inState);
+  }
+}
+var verifiedWindows, windowsKey, primingWindows;
+var init_private_state = __esm({
+  "packages/relay/src/private-state.ts"() {
+    "use strict";
+    init_private_core();
+    verifiedWindows = /* @__PURE__ */ new Map();
+    windowsKey = (file2) => path5.resolve(file2).toLowerCase();
+    primingWindows = /* @__PURE__ */ new Map();
+  }
+});
+
+// packages/relay/src/leases.ts
+import fs5 from "node:fs";
+import path6 from "node:path";
+import { createHash as createHash2, randomUUID } from "node:crypto";
+function liveness(identity4, probe = probeProcess) {
+  const verdict = livenessBy(identity4, probe);
+  return verdict === "dead" && probe === probeProcess && pidAlive(identity4.pid) ? livenessBy(identity4, (pid) => probeProcessConfirm(pid, identity4)) : verdict;
+}
+function livenessBy(identity4, probe) {
+  if (!validPid(identity4.pid)) return "unknown";
+  const observed = probe(identity4.pid);
+  if (!observed) return "dead";
+  if (observed.startTime && identity4.startTime && !sameStartTime(observed.startTime, identity4.startTime)) return "dead";
+  if (observed.executable && identity4.executable && observed.executable !== identity4.executable) return "dead";
+  if (!observed.startTime || !observed.executable || !identity4.startTime || !identity4.executable) return "unknown";
+  return "alive";
+}
+function syncDirectory(dir) {
+  let fd;
+  try {
+    fd = fs5.openSync(dir, "r");
+    fs5.fsyncSync(fd);
+  } catch (e) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
+  } finally {
+    if (fd !== void 0) fs5.closeSync(fd);
+  }
+}
+function ensureDurableDirectory(dir, holdsFile = true) {
+  const parent = path6.dirname(dir);
+  if (parent === dir) {
+    if (!fs5.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
+    return;
+  }
+  ensureDurableDirectory(parent, false);
+  try {
+    if (process.platform === "win32" && !holdsFile) fs5.mkdirSync(dir);
+    else if (!fs5.existsSync(dir)) privateStateDirectory(dir);
+    else fs5.mkdirSync(dir, { mode: 448 });
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+  }
+  syncDirectory(parent);
+}
+function cleanupOrphanTemps(dir, probe = probeProcess) {
+  let removed = 0;
+  for (const name of fs5.readdirSync(dir)) {
+    const match = tempPattern.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!validPid(pid)) continue;
+    const observed = probe(pid);
+    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
+    if (pidAlive(pid)) continue;
+    try {
+      fs5.unlinkSync(path6.join(dir, name));
+      removed++;
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  if (removed) syncDirectory(dir);
+  return removed;
+}
+function writeTemp(file2, content) {
+  const dir = path6.dirname(file2);
+  ensureDurableDirectory(dir);
+  cleanupOrphanTemps(dir);
+  const start = probeOwnProcess()?.startTime;
+  const temp = `${file2}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
+  const fd = fs5.openSync(temp, "wx", 384);
+  try {
+    fs5.writeFileSync(fd, JSON.stringify(content) + "\n");
+    fs5.fsyncSync(fd);
+  } catch (e) {
+    fs5.closeSync(fd);
+    fs5.rmSync(temp, { force: true });
+    syncDirectory(dir);
+    throw e;
+  }
+  fs5.closeSync(fd);
+  return temp;
+}
+function createExclusive(file2, content) {
+  const temp = writeTemp(file2, content);
+  try {
+    try {
+      fs5.linkSync(temp, file2);
+    } catch (e) {
+      if (e.code === "EEXIST") return false;
+      throw e;
+    }
+    syncDirectory(path6.dirname(file2));
+    return true;
+  } finally {
+    fs5.rmSync(temp, { force: true });
+    syncDirectory(path6.dirname(file2));
+  }
+}
+function writeAtomic(file2, content) {
+  const temp = writeTemp(file2, content);
+  try {
+    renameAtomic(temp, file2);
+    syncDirectory(path6.dirname(file2));
+  } finally {
+    fs5.rmSync(temp, { force: true });
+    syncDirectory(path6.dirname(file2));
+  }
+}
+function renameAtomic(temp, file2) {
+  const until = performance.now() + 2e3;
+  let sleeper;
+  let attempts = 0;
+  for (; ; ) {
+    try {
+      fs5.renameSync(temp, file2);
+      return;
+    } catch (error2) {
+      const remaining = until - performance.now();
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error2.code ?? "") || remaining <= 0) throw error2;
+      const delay = Math.min(remaining, Math.min(100, ++attempts * 10) + Math.random() * 10);
+      Atomics.wait(sleeper ??= new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    }
+  }
+}
+function read(file2) {
+  try {
+    return JSON.parse(fs5.readFileSync(file2, "utf8"));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+function leaseToken(value5) {
+  const candidate = value5.holder ?? value5;
+  return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
+}
+function ownToken() {
+  const current3 = probeOwnProcess();
+  return { pid: process.pid, startTime: current3?.startTime ?? "", executable: current3?.executable ?? "", sessionId: `mcp:${process.pid}:${current3?.startTime ?? "unknown"}`, nonce: randomUUID() };
+}
+function createGuardSafely(file2, token, create6) {
+  try {
+    const created = create6();
+    return typeof created === "boolean" ? created : created.catch(async (error2) => {
+      await releaseGuardAsync(file2, token);
+      throw error2;
+    });
+  } catch (error2) {
+    releaseGuard(file2, token);
+    throw error2;
+  }
+}
+function acquireGuard(file2, probe, depth = 0) {
+  if (depth > 12) throw new Error(`too many stale lease guards at ${file2}`);
+  const token = ownToken();
+  if (createGuardSafely(file2, token, () => createExclusive(file2, token))) return token;
+  const previous = read(file2);
+  const previousHolder = previous && leaseToken(previous);
+  if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file2}`);
+  const outer = acquireGuard(`${file2}.guard`, probe, depth + 1);
+  try {
+    const latest = read(file2);
+    const latestHolder = latest && leaseToken(latest);
+    if (latestHolder && liveness(latestHolder, probe) === "dead") {
+      fs5.unlinkSync(file2);
+      syncDirectory(path6.dirname(file2));
+    }
+  } finally {
+    releaseGuard(`${file2}.guard`, outer);
+  }
+  if (createGuardSafely(file2, token, () => createExclusive(file2, token))) return token;
+  throw new Error(`lease guard busy: ${file2}`);
+}
+function releaseGuard(file2, token) {
+  const current3 = read(file2);
+  if (current3 && leaseToken(current3)?.nonce === token.nonce) {
+    fs5.unlinkSync(file2);
+    syncDirectory(path6.dirname(file2));
+  }
+}
+function withGuard(file2, fn, probe = probeProcess) {
+  const guard = `${file2}.guard`;
+  const token = acquireGuard(guard, probe);
+  try {
+    const result2 = fn();
+    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
+    return result2;
+  } finally {
+    releaseGuard(guard, token);
+  }
+}
+async function syncDirectoryAsync(dir) {
+  let handle;
+  try {
+    handle = await fs5.promises.open(dir, "r");
+    await handle.sync();
+  } catch (e) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
+  } finally {
+    await handle?.close();
+  }
+}
+async function ensureDurableDirectoryAsync(dir, holdsFile = true) {
+  const parent = path6.dirname(dir);
+  if (parent === dir) {
+    if (!(await fs5.promises.stat(dir)).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
+    return;
+  }
+  await ensureDurableDirectoryAsync(parent, false);
+  let present = true;
+  try {
+    await fs5.promises.access(dir);
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+    present = false;
+  }
+  if (!present) {
+    try {
+      if (process.platform === "win32" && !holdsFile) await fs5.promises.mkdir(dir);
+      else privateStateDirectory(dir);
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
+  await syncDirectoryAsync(parent);
+}
+async function createGuardAsync(file2, token) {
+  const dir = path6.dirname(file2);
+  await ensureDurableDirectoryAsync(dir);
+  for (const name of await fs5.promises.readdir(dir)) {
+    const match = tempPattern.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!validPid(pid)) continue;
+    const observed = probeProcess(pid);
+    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
+    if (pidAlive(pid)) continue;
+    try {
+      await fs5.promises.unlink(path6.join(dir, name));
+      await syncDirectoryAsync(dir);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  const start = probeOwnProcess()?.startTime;
+  const temp = `${file2}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
+  try {
+    const handle = await fs5.promises.open(temp, "wx", 384);
+    try {
+      await handle.writeFile(JSON.stringify(token) + "\n");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await fs5.promises.link(temp, file2);
+    } catch (e) {
+      if (e.code === "EEXIST") return false;
+      throw e;
+    }
+    await syncDirectoryAsync(dir);
+    return true;
+  } finally {
+    await fs5.promises.rm(temp, { force: true });
+    await syncDirectoryAsync(dir);
+  }
+}
+async function readGuardAsync(file2) {
+  try {
+    return leaseToken(JSON.parse(await fs5.promises.readFile(file2, "utf8")));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+async function releaseGuardAsync(file2, token) {
+  if ((await readGuardAsync(file2))?.nonce === token.nonce) {
+    await fs5.promises.unlink(file2);
+    await syncDirectoryAsync(path6.dirname(file2));
+  }
+}
+async function guardStateAsync(file2) {
+  try {
+    const value5 = JSON.parse(await fs5.promises.readFile(file2, "utf8"));
+    return { holder: value5 && typeof value5 === "object" ? leaseToken(value5) : void 0 };
+  } catch (error2) {
+    const code = error2.code;
+    if (code === "ENOENT") return void 0;
+    if (error2 instanceof SyntaxError || code === "EACCES" || code === "EPERM") return {};
+    throw error2;
+  }
+}
+async function acquireGuardAsync(file2, probe, depth = 0, readOnlyBusy = false) {
+  if (depth > 12) throw new Error(`too many stale lease guards at ${file2}`);
+  const state = readOnlyBusy ? await guardStateAsync(file2) : void 0;
+  const token = ownToken();
+  if (!state && await createGuardSafely(file2, token, () => createGuardAsync(file2, token))) return token;
+  const previous = state?.holder ?? (await guardStateAsync(file2))?.holder;
+  if (!previous || liveness(previous, probe) !== "dead") throw new GuardBusy(file2);
+  const outer = await acquireGuardAsync(`${file2}.guard`, probe, depth + 1, readOnlyBusy);
+  try {
+    const latest = await readGuardAsync(file2);
+    if (latest && liveness(latest, probe) === "dead") {
+      await fs5.promises.unlink(file2);
+      await syncDirectoryAsync(path6.dirname(file2));
+    }
+  } finally {
+    await releaseGuardAsync(`${file2}.guard`, outer);
+  }
+  if (await createGuardSafely(file2, token, () => createGuardAsync(file2, token))) return token;
+  throw new GuardBusy(file2);
+}
+async function withGuardAsyncOperation(file2, fn, options) {
+  const guard = `${file2}.guard`, probe = options.probe ?? probeProcess;
+  const deadline = performance.now() + options.timeoutMs;
+  let token;
+  let holder;
+  for (; ; ) {
+    const state = await guardStateAsync(guard);
+    holder = state?.holder;
+    if (performance.now() >= deadline) throw new Error(`timed out acquiring lease guard ${guard}; holder pid ${holder?.pid ?? "unknown"}`);
+    if (!state || holder && liveness(holder, probe) === "dead") {
+      try {
+        token = await acquireGuardAsync(guard, probe, 0, true);
+        break;
+      } catch (error2) {
+        if (!(error2 instanceof GuardBusy)) throw error2;
+      }
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error(`timed out acquiring lease guard ${guard}; holder pid ${holder?.pid ?? "unknown"}`);
+    await new Promise((resolve6) => setTimeout(resolve6, Math.min(75, remaining)));
+  }
+  try {
+    return await fn();
+  } finally {
+    await releaseGuardAsync(guard, token);
+  }
+}
+async function withGuardAsync(file2, fn, probe = probeProcess) {
+  const guard = `${file2}.guard`;
+  const token = await acquireGuardAsync(guard, probe);
+  try {
+    const result2 = fn();
+    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
+    return result2;
+  } finally {
+    await releaseGuardAsync(guard, token);
+  }
+}
+function replace2(file2, expect, next) {
+  return withGuard(file2, () => {
+    const current3 = read(file2);
+    if (!current3 || !expect(current3)) return false;
+    writeAtomic(file2, next);
+    return true;
+  });
+}
+function compareAndRelease(file2, token) {
+  return withGuard(file2, () => {
+    const current3 = read(file2);
+    if (!current3 || leaseToken(current3)?.nonce !== token.nonce) return false;
+    fs5.unlinkSync(file2);
+    syncDirectory(path6.dirname(file2));
+    return true;
+  });
+}
+function recover(file2, orphan, probe = probeProcess) {
+  return withGuard(file2, () => {
+    const current3 = read(file2);
+    const owner = current3 && leaseToken(current3);
+    if (!current3 || !owner || liveness(owner, probe) !== "dead" || !orphan(current3)) return false;
+    fs5.unlinkSync(file2);
+    syncDirectory(path6.dirname(file2));
+    return true;
+  });
+}
+var startMarker, tempPattern, GuardBusy;
+var init_leases = __esm({
+  "packages/relay/src/leases.ts"() {
+    "use strict";
+    init_private_state();
+    init_process();
+    startMarker = (startTime) => createHash2("sha256").update(startTime).digest("hex").slice(0, 24);
+    tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
+    GuardBusy = class extends Error {
+      constructor(file2) {
+        super(`lease guard busy: ${file2}`);
+      }
+    };
+  }
+});
+
+// packages/roomd/src/git-worktree-lock.ts
+import fs6 from "node:fs";
+import path7 from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 function key(dir) {
   const candidate = commonGitDirFromDotGit(dir);
   try {
-    return fs3.realpathSync.native(candidate);
+    return fs6.realpathSync.native(candidate);
   } catch {
-    if (fs3.existsSync(path4.join(dir, "HEAD"))) {
-      const common = path4.join(dir, "commondir");
-      return fs3.realpathSync.native(fs3.existsSync(common) ? path4.resolve(dir, fs3.readFileSync(common, "utf8").trim()) : dir);
+    if (fs6.existsSync(path7.join(dir, "HEAD"))) {
+      const common = path7.join(dir, "commondir");
+      return fs6.realpathSync.native(fs6.existsSync(common) ? path7.resolve(dir, fs6.readFileSync(common, "utf8").trim()) : dir);
     }
-    return path4.resolve(candidate);
+    return path7.resolve(candidate);
   }
 }
 function isGitWorktreeCommand(args2) {
@@ -11883,14 +12554,14 @@ function isGitWorktreeCommand(args2) {
 async function withGitWorktreeOperation(dir, work) {
   const canonical = key(dir), held2 = current.getStore();
   if (held2?.active && held2.key === canonical) return work();
-  return locks.run(canonical, async () => {
+  return locks.run(canonical, () => withGuardAsyncOperation(path7.join(canonical, "room", "worktree-operation"), async () => {
     const scope = { key: canonical, active: true };
     try {
       return await current.run(scope, work);
     } finally {
       scope.active = false;
     }
-  });
+  }, { timeoutMs: 5 * 6e4 }));
 }
 function assertGitWorktreeOperation(dir) {
   const scope = current.getStore();
@@ -11901,6 +12572,7 @@ var init_git_worktree_lock = __esm({
   "packages/roomd/src/git-worktree-lock.ts"() {
     "use strict";
     init_src();
+    init_leases();
     init_git_dirs();
     locks = new RepoLocks();
     current = new AsyncLocalStorage();
@@ -11908,11 +12580,11 @@ var init_git_worktree_lock = __esm({
 });
 
 // packages/roomd/src/git.ts
-import { execFile as execFile2, spawn } from "node:child_process";
+import { execFile as execFile3, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { performance as performance2 } from "node:perf_hooks";
 import { setImmediate as setImmediate2 } from "node:timers/promises";
-import path5 from "node:path";
+import path8 from "node:path";
 function setGitObserver(observer) {
   gitObserver = observer;
 }
@@ -11944,7 +12616,7 @@ function git(dir, args2, configuredTimeoutMs) {
   if (isGitWorktreeCommand(args2)) {
     const at = args2.indexOf("--git-dir");
     const explicit = at >= 0 ? args2[at + 1] : args2.find((arg) => arg.startsWith("--git-dir="))?.slice(10);
-    return withGitWorktreeOperation(explicit ? path5.resolve(dir, explicit) : dir, () => gitUnqueued(dir, args2, configuredTimeoutMs));
+    return withGitWorktreeOperation(explicit ? path8.resolve(dir, explicit) : dir, () => gitUnqueued(dir, args2, configuredTimeoutMs));
   }
   return gitUnqueued(dir, args2, configuredTimeoutMs);
 }
@@ -11952,7 +12624,7 @@ function gitUnqueued(dir, args2, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
   const done = observeGit(args2);
   return new Promise((resolve6, reject) => {
-    execFile2("git", args2, { cwd: dir, maxBuffer: GIT_OUTPUT_MAX_BYTES, timeout }, (err, stdout, stderr) => {
+    execFile3("git", args2, { cwd: dir, maxBuffer: GIT_OUTPUT_MAX_BYTES, timeout }, (err, stdout, stderr) => {
       done();
       if (err) {
         const stopped = err;
@@ -12214,7 +12886,7 @@ async function gitCommitMissing(dir, sha, configuredTimeoutMs) {
   const args2 = ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`];
   const done = observeGit(args2);
   return new Promise((resolve6) => {
-    execFile2("git", args2, { cwd: dir, encoding: "utf8", timeout: timeoutMs(configuredTimeoutMs) }, (err, stdout, stderr) => {
+    execFile3("git", args2, { cwd: dir, encoding: "utf8", timeout: timeoutMs(configuredTimeoutMs) }, (err, stdout, stderr) => {
       done();
       resolve6(Number(err?.code) === 1 && !stdout && !stderr);
     });
@@ -12224,7 +12896,7 @@ async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
   const done = observeGit(["check-ignore", "-q", "--", rel]);
   return new Promise((resolve6, reject) => {
-    execFile2("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err) => {
+    execFile3("git", ["check-ignore", "-q", "--", rel], { cwd: dir, timeout }, (err) => {
       done();
       const stopped = err;
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`));
@@ -12270,18 +12942,18 @@ var init_git = __esm({
 });
 
 // packages/roomd/src/baseline.ts
-import { execFile as execFile3, execFileSync as execFileSync3 } from "node:child_process";
-import fs4 from "node:fs";
+import { execFile as execFile4, execFileSync as execFileSync4 } from "node:child_process";
+import fs7 from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
 function boundedGitSync(dir, args2, options = {}) {
   if (isGitWorktreeCommand(args2)) assertGitWorktreeOperation(dir);
   const { wholeTreePaths, stdinFile, ...execOptions } = options;
   const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
-  const stdin = stdinFile === void 0 ? "pipe" : fs4.openSync(stdinFile, "r");
+  const stdin = stdinFile === void 0 ? "pipe" : fs7.openSync(stdinFile, "r");
   const done = observeGit(args2);
   try {
-    return execFileSync3("git", args2, { cwd: dir, encoding: "buffer", stdio: [stdin, "pipe", "pipe"], timeout, maxBuffer: execOptions.maxBuffer ?? 64 * 1024 * 1024, ...execOptions });
+    return execFileSync4("git", args2, { cwd: dir, encoding: "buffer", stdio: [stdin, "pipe", "pipe"], timeout, maxBuffer: execOptions.maxBuffer ?? 64 * 1024 * 1024, ...execOptions });
   } catch (error2) {
     const stopped = error2;
     const missing = missingGitCwd(dir, stopped);
@@ -12290,7 +12962,7 @@ function boundedGitSync(dir, args2, options = {}) {
     throw error2;
   } finally {
     done();
-    if (typeof stdin === "number") fs4.closeSync(stdin);
+    if (typeof stdin === "number") fs7.closeSync(stdin);
   }
 }
 function workerBaseline(worker) {
@@ -12327,7 +12999,7 @@ function boundedGit(dir, args2, wholeTreePaths, env, maxBuffer = 64 * 1024 * 102
   const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
   const done = observeGit(args2);
   return new Promise((resolve6, reject) => {
-    execFile3("git", args2, { cwd: dir, env, encoding: "buffer", maxBuffer, timeout }, (error2, stdout, stderr) => {
+    execFile4("git", args2, { cwd: dir, env, encoding: "buffer", maxBuffer, timeout }, (error2, stdout, stderr) => {
       done();
       if (error2) {
         const stopped = error2;
@@ -12364,23 +13036,23 @@ async function checkoutText(dir, object5, path80, encoding = "utf8", maxBytes) {
   }
 }
 function carriedContentHash(dir, path80, write2 = false) {
-  const source = nodePath.join(dir, path80), stat4 = fs4.lstatSync(source);
+  const source = nodePath.join(dir, path80), stat4 = fs7.lstatSync(source);
   const args2 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path80];
-  const out = stat4.isSymbolicLink() ? boundedGitSync(dir, [...args2, "--stdin"], { input: Buffer.from(fs4.readlinkSync(source)) }) : boundedGitSync(dir, [...args2, "--", path80]);
+  const out = stat4.isSymbolicLink() ? boundedGitSync(dir, [...args2, "--stdin"], { input: Buffer.from(fs7.readlinkSync(source)) }) : boundedGitSync(dir, [...args2, "--", path80]);
   return out.toString().trim();
 }
 function carriedContentHashes(dir, paths, write2 = false) {
   const hashes = [];
   const files4 = [];
   paths.forEach((path80, i) => {
-    if (fs4.lstatSync(nodePath.join(dir, path80)).isSymbolicLink()) hashes[i] = carriedContentHash(dir, path80, write2);
+    if (fs7.lstatSync(nodePath.join(dir, path80)).isSymbolicLink()) hashes[i] = carriedContentHash(dir, path80, write2);
     else files4.push(i);
   });
   if (!files4.length) return hashes;
-  const scratch = fs4.mkdtempSync(nodePath.join(os.tmpdir(), "room-hash-paths-"));
+  const scratch = fs7.mkdtempSync(nodePath.join(os.tmpdir(), "room-hash-paths-"));
   try {
     const list = nodePath.join(scratch, "paths");
-    fs4.writeFileSync(list, files4.map((i) => stdinPathLine(paths[i]) + "\n").join(""), { mode: 384 });
+    fs7.writeFileSync(list, files4.map((i) => stdinPathLine(paths[i]) + "\n").join(""), { mode: 384 });
     const out = boundedGitSync(dir, ["hash-object", ...write2 ? ["-w"] : [], "--stdin-paths"], { stdinFile: list, wholeTreePaths: files4.length }).toString().split("\n").filter(Boolean);
     if (out.length !== files4.length) throw new Error(`git hash-object --stdin-paths returned ${out.length} hashes for ${files4.length} files`);
     files4.forEach((index, n) => {
@@ -12388,16 +13060,16 @@ function carriedContentHashes(dir, paths, write2 = false) {
     });
     return hashes;
   } finally {
-    fs4.rmSync(scratch, { recursive: true, force: true });
+    fs7.rmSync(scratch, { recursive: true, force: true });
   }
 }
 function carriedUnchanged(baseline, path80) {
   const carried = baseline.untracked.get(path80);
   if (!carried || !validRepoPath(path80, CARRIED_PATH)) return false;
   try {
-    const root = fs4.realpathSync(baseline.dir);
+    const root = fs7.realpathSync(baseline.dir);
     if (!containedRepoPath(root, nodePath.join(root, path80), { leaf: "replace-link" }).ok) return false;
-    const stat4 = fs4.lstatSync(nodePath.join(root, path80));
+    const stat4 = fs7.lstatSync(nodePath.join(root, path80));
     if (!stat4.isFile() && !stat4.isSymbolicLink()) return false;
     if (stat4.isFile() && carried.mode !== void 0 && (stat4.mode & 511) !== carried.mode) return false;
     return carriedContentHash(root, path80) === carried.sha;
@@ -12411,7 +13083,7 @@ function carriedUnchangedPaths(baseline) {
   if (!baseline?.untracked.size) return unchanged;
   let root;
   try {
-    root = fs4.realpathSync(baseline.dir);
+    root = fs7.realpathSync(baseline.dir);
   } catch (e) {
     if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return unchanged;
     throw e;
@@ -12422,7 +13094,7 @@ function carriedUnchangedPaths(baseline) {
     let stat4;
     try {
       if (!containedRepoPath(root, nodePath.join(root, path80), { leaf: "replace-link" }).ok) continue;
-      stat4 = fs4.lstatSync(nodePath.join(root, path80));
+      stat4 = fs7.lstatSync(nodePath.join(root, path80));
     } catch (e) {
       if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) continue;
       throw e;
@@ -12452,7 +13124,7 @@ async function carriedCommitUnchangedPaths(baseline, paths) {
   if (!paths.length) return unchanged;
   let root;
   try {
-    root = fs4.realpathSync(baseline.dir);
+    root = fs7.realpathSync(baseline.dir);
   } catch (e) {
     if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return unchanged;
     throw e;
@@ -12472,7 +13144,7 @@ async function carriedCommitUnchangedPaths(baseline, paths) {
     let stat4;
     try {
       if (!containedRepoPath(root, nodePath.join(root, path80), { leaf: "replace-link" }).ok) continue;
-      stat4 = fs4.lstatSync(nodePath.join(root, path80));
+      stat4 = fs7.lstatSync(nodePath.join(root, path80));
     } catch (e) {
       if (!["ENOENT", "ENOTDIR"].includes(e.code ?? "")) throw e;
     }
@@ -12536,14 +13208,14 @@ var init_baseline = __esm({
 });
 
 // packages/roomd/src/git-dirs.ts
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path9 from "node:path";
 function worktreeGitDirFromDotGit(dir) {
-  let gitDir = path6.join(dir, ".git");
+  let gitDir = path9.join(dir, ".git");
   try {
-    if (fs5.statSync(gitDir).isFile()) {
-      const target = fs5.readFileSync(gitDir, "utf8").match(/gitdir:\s*(.+)/)?.[1].trim();
-      if (target) gitDir = path6.resolve(dir, target);
+    if (fs8.statSync(gitDir).isFile()) {
+      const target = fs8.readFileSync(gitDir, "utf8").match(/gitdir:\s*(.+)/)?.[1].trim();
+      if (target) gitDir = path9.resolve(dir, target);
     }
   } catch {
   }
@@ -12555,9 +13227,9 @@ function worktreeGitDirSync(dir) {
 function commonGitDirFromDotGit(dir) {
   let gitDir = worktreeGitDirFromDotGit(dir);
   try {
-    if (gitDir !== path6.join(dir, ".git")) {
-      const common = path6.join(gitDir, "commondir");
-      if (fs5.existsSync(common)) gitDir = path6.resolve(gitDir, fs5.readFileSync(common, "utf8").trim());
+    if (gitDir !== path9.join(dir, ".git")) {
+      const common = path9.join(gitDir, "commondir");
+      if (fs8.existsSync(common)) gitDir = path9.resolve(gitDir, fs8.readFileSync(common, "utf8").trim());
     }
   } catch {
   }
@@ -12566,11 +13238,11 @@ function commonGitDirFromDotGit(dir) {
 async function gitCommonDir(dir) {
   const printed = (await git(dir, ["rev-parse", "--git-common-dir"])).trim();
   if (!printed) throw new Error(`git rev-parse --git-common-dir in ${dir} printed an empty common dir`);
-  return path6.resolve(dir, printed);
+  return path9.resolve(dir, printed);
 }
 async function realGitCommonDir(dir) {
   const common = await gitCommonDir(dir);
-  return process.platform === "win32" ? fs5.realpathSync.native(common) : fs5.realpathSync(common);
+  return process.platform === "win32" ? fs8.realpathSync.native(common) : fs8.realpathSync(common);
 }
 var init_git_dirs = __esm({
   "packages/roomd/src/git-dirs.ts"() {
@@ -12581,23 +13253,23 @@ var init_git_dirs = __esm({
 });
 
 // packages/roomd/src/bounded-read.ts
-import fs6 from "node:fs";
+import fs9 from "node:fs";
 function readBoundedFileSync(file2, limit) {
-  const fd = fs6.openSync(file2, fs6.constants.O_RDONLY | (fs6.constants.O_NOFOLLOW ?? 0));
+  const fd = fs9.openSync(file2, fs9.constants.O_RDONLY | (fs9.constants.O_NOFOLLOW ?? 0));
   try {
-    const stat4 = fs6.fstatSync(fd);
+    const stat4 = fs9.fstatSync(fd);
     if (!stat4.isFile()) throw Object.assign(new Error(`not a regular file: ${file2}`), { code: "ROOM_NOT_A_FILE" });
     if (stat4.size > limit) throw new FileTooLarge(file2, limit);
     const bytes = Buffer.allocUnsafe(limit + 1);
     let used = 0;
     while (used <= limit) {
-      const count = fs6.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null);
+      const count = fs9.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null);
       if (count === 0) return bytes.subarray(0, used).toString("utf8");
       used += count;
     }
     throw new FileTooLarge(file2, limit);
   } finally {
-    fs6.closeSync(fd);
+    fs9.closeSync(fd);
   }
 }
 var FileTooLarge;
@@ -12618,9 +13290,9 @@ var init_bounded_read = __esm({
 });
 
 // packages/roomd/src/room-file.ts
-import path7 from "node:path";
+import path10 from "node:path";
 function roomFilePath(dir) {
-  return path7.join(worktreeGitDirSync(dir), "room.json");
+  return path10.join(worktreeGitDirSync(dir), "room.json");
 }
 function readRoomFile(dir) {
   const read2 = (file2) => {
@@ -12974,7 +13646,7 @@ var init_roomignore = __esm({
 });
 
 // packages/roomd/src/policy.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { setImmediate as setImmediate3 } from "node:timers/promises";
 function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher = true) {
   return Object.freeze({ level: clampShare(level, ceiling), requested: level, ceiling, textPrefixes: Object.freeze([...textPrefixes]), ending: Object.freeze([]), publisher });
@@ -12994,7 +13666,7 @@ function rulesFromText(text2, sizeCap, budget) {
     sizeCap,
     budget,
     unavailable: text2 === void 0,
-    id: createHash2("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
+    id: createHash3("sha256").update(JSON.stringify([text2 ?? null, sizeCap, budget])).digest("hex")
   });
 }
 function publishesFiles(inputs) {
@@ -13018,7 +13690,7 @@ function* planSteps(inputs, disk, salt) {
     const hide2 = (reason) => {
       excludedPaths.push(p);
       excludedReasons.set(p, reason);
-      excluded.push(createHash2("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
+      excluded.push(createHash3("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
     };
     if (fact.excluded || fact.ignored || defaultExcludedPath(p) || defaultIgnoredPath(p) || inputs.rules.roomIgnore.ignores(p)) {
       if (changed) hide2(fact.exclusionReason ?? "ignore");
@@ -13094,9 +13766,9 @@ var init_policy = __esm({
 });
 
 // packages/roomd/src/disk-scan.ts
-import fs7 from "node:fs";
-import path8 from "node:path";
-import { createHash as createHash3 } from "node:crypto";
+import fs10 from "node:fs";
+import path11 from "node:path";
+import { createHash as createHash4 } from "node:crypto";
 import { setImmediate as setImmediate4 } from "node:timers/promises";
 async function ignoredTrackedPaths(dir, paths) {
   if (!paths.length) return /* @__PURE__ */ new Set();
@@ -13116,7 +13788,7 @@ async function gitIgnoredDirs(dir) {
 }
 function checkoutIdentity(dir) {
   try {
-    const stat4 = fs7.statSync(path8.join(dir, ".git"), { bigint: true });
+    const stat4 = fs10.statSync(path11.join(dir, ".git"), { bigint: true });
     return `${stat4.dev}:${stat4.ino}:${stat4.birthtimeNs > 0n ? stat4.birthtimeNs : `c${stat4.ctimeNs}`}`;
   } catch {
     return void 0;
@@ -13173,7 +13845,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
     }
     let stat4;
     try {
-      stat4 = fs7.lstatSync(path8.join(dir, p));
+      stat4 = fs10.lstatSync(path11.join(dir, p));
     } catch (error2) {
       if (error2.code !== "ENOENT") {
         facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
@@ -13207,25 +13879,25 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
     let bytes;
     let after;
     try {
-      const fd = fs7.openSync(path8.join(dir, p), fs7.constants.O_RDONLY | fs7.constants.O_NOFOLLOW);
+      const fd = fs10.openSync(path11.join(dir, p), fs10.constants.O_RDONLY | fs10.constants.O_NOFOLLOW);
       try {
         const chunks = [];
         let length2 = 0;
         while (length2 <= inputs.rules.sizeCap) {
           const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, inputs.rules.sizeCap + 1 - length2));
-          const n = fs7.readSync(fd, chunk, 0, chunk.length, null);
+          const n = fs10.readSync(fd, chunk, 0, chunk.length, null);
           if (n === 0) break;
           chunks.push(chunk.subarray(0, n));
           length2 += n;
         }
-        after = fs7.fstatSync(fd);
+        after = fs10.fstatSync(fd);
         if (length2 > inputs.rules.sizeCap) {
           facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
           continue;
         }
         bytes = Buffer.concat(chunks, length2);
       } finally {
-        fs7.closeSync(fd);
+        fs10.closeSync(fd);
       }
       if (!after.isFile() || after.ino !== stat4.ino || after.size !== stat4.size || after.mtimeMs !== stat4.mtimeMs) {
         facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
@@ -13235,7 +13907,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
       continue;
     }
-    const hash3 = createHash3(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const hash3 = createHash4(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
     let text2;
     let binary = false;
     try {
@@ -13450,7 +14122,7 @@ var init_recent_keys = __esm({
 });
 
 // packages/roomd/src/publisher.ts
-import fs8 from "node:fs";
+import fs11 from "node:fs";
 import { setImmediate as setImmediate6 } from "node:timers/promises";
 function withdrawFormerPublisher(room, name, fence, successor) {
   const key3 = manifestKey(name, fence);
@@ -13759,7 +14431,7 @@ var init_publisher = __esm({
         for (const p of prepared.desired.textPaths) {
           const entry = prepared.desired.entries.get(p);
           try {
-            const stat4 = fs8.lstatSync(this.host.abs(p));
+            const stat4 = fs11.lstatSync(this.host.abs(p));
             if (!stat4.isFile() || stat4.size !== entry.size || stat4.mtimeMs !== entry.at || stat4.ino !== entry.ino) return false;
           } catch {
             return false;
@@ -13777,7 +14449,7 @@ var init_publisher = __esm({
           if (!this.valid(prepared)) return false;
           const entry = prepared.desired.entries.get(p);
           try {
-            const stat4 = fs8.lstatSync(host2.abs(p));
+            const stat4 = fs11.lstatSync(host2.abs(p));
             if (!stat4.isFile() || !host2.isSafeRoomPath(p) || stat4.size !== entry.size || stat4.mtimeMs !== entry.at || stat4.ino !== entry.ino) return false;
           } catch {
             return false;
@@ -17584,283 +18256,6 @@ var init_wrapper = __esm({
   }
 });
 
-// packages/relay/src/private-core.ts
-import fs9 from "node:fs";
-import path9 from "node:path";
-function privateDirectoryPath(dir) {
-  dir = path9.resolve(dir);
-  const directories = [dir];
-  let root = dir;
-  while (path9.basename(root) !== "room" && path9.dirname(root) !== root) {
-    root = path9.dirname(root);
-    directories.unshift(root);
-    if (directories.length > 64) throw new Error(`Room state directory path is too deep: ${dir}`);
-  }
-  return { directories, root, inState: path9.basename(root) === "room" };
-}
-function verifyPosixPath(file2, stat4 = fs9.lstatSync(file2)) {
-  if (stat4.isSymbolicLink() || !process.getuid || stat4.uid !== process.getuid() || (stat4.mode & 63) !== 0) {
-    throw new Error(`Room state must be owned by the current user and private: ${file2}`);
-  }
-}
-function initializePrivateDirectory(dir, repair, exclusive = false) {
-  let created = false;
-  try {
-    fs9.mkdirSync(dir, { mode: 448 });
-    created = true;
-  } catch (error2) {
-    if (exclusive || error2.code !== "EEXIST") throw error2;
-  }
-  const stat4 = fs9.lstatSync(dir);
-  if (!stat4.isDirectory() || stat4.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${dir}`);
-  if (process.platform === "win32") return;
-  if (!process.getuid || stat4.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${dir}`);
-  if (created || repair && (stat4.mode & 511) !== 448) {
-    const fd = fs9.openSync(dir, fs9.constants.O_RDONLY | fs9.constants.O_NOFOLLOW | fs9.constants.O_DIRECTORY);
-    try {
-      const opened = fs9.fstatSync(fd);
-      if (opened.dev !== stat4.dev || opened.ino !== stat4.ino || opened.uid !== process.getuid()) throw new Error(`Room state must be owned by the current user and private: ${dir}`);
-      fs9.fchmodSync(fd, 448);
-    } finally {
-      fs9.closeSync(fd);
-    }
-    if (!created) console.error(`Room repaired private state directory: ${dir}`);
-  }
-  verifyPosixPath(dir);
-}
-var init_private_core = __esm({
-  "packages/relay/src/private-core.ts"() {
-    "use strict";
-  }
-});
-
-// packages/relay/src/private-state.ts
-import fs10 from "node:fs";
-import path10 from "node:path";
-import { execFile as execFile4, execFileSync as execFileSync4 } from "node:child_process";
-function checkWindowsAcl(report, file2) {
-  const allowed = /* @__PURE__ */ new Set([report.user, "S-1-5-18", "S-1-5-32-544"]);
-  if (report.owner !== report.user && report.owner !== "S-1-5-32-544" || report.directory !== false && !report.protected || report.grants.some((sid) => !allowed.has(sid))) {
-    throw new Error(`Room state is not private: ${file2}; owner ${report.owner}; offending grants ${report.grants.filter((sid) => !allowed.has(sid)).join(", ") || "none"}; DACL must be protected and access restricted to the current user, SYSTEM and Administrators. Use a private local clone, remove broad inherited grants and protect its Room state DACL, then retry`);
-  }
-}
-function windowsIdentity(file2) {
-  try {
-    const stat4 = fs10.lstatSync(file2, { bigint: true });
-    return `${stat4.dev}:${stat4.ino}`;
-  } catch {
-    return void 0;
-  }
-}
-function windowsPowerShellEnv(file2) {
-  const env = {};
-  for (const [key3, value5] of Object.entries(process.env)) if (key3.toLowerCase() !== "psmodulepath") env[key3] = value5;
-  env.ROOM_PRIVATE_PATH = file2;
-  return env;
-}
-function windowsAclScript(protectNew, createDirectory, repair) {
-  return `$ErrorActionPreference='Stop'; $p=$env:ROOM_PRIVATE_PATH; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User;
-    $trusted=@($u.Value,'S-1-5-18','S-1-5-32-544');
-    function IsDir($path) { ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0 };
-    function ReadAcl($path) { if (IsDir $path) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) } };
-    # Room's own writers remove files concurrently (atomic-write temporaries, retired records). A descendant that
-    # vanished during the walk has no access to protect; any other failure still fails the walk. Absence must be
-    # reported as not-found by a throwing probe: Exists() also answers false when access is denied.
-    function NotFound($e) { while ($e) { if ($e -is [IO.FileNotFoundException] -or $e -is [IO.DirectoryNotFoundException]) { return $true }; $e=$e.InnerException }; $false };
-    function Vanished($path, $err) { if (NotFound $err.Exception) { return $true }; try { [IO.File]::GetAttributes($path) | Out-Null; $false } catch { NotFound $_.Exception } };
-    function Entries($dir) { try { @([IO.Directory]::EnumerateFileSystemEntries($dir)) } catch { if (Vanished $dir $_) { @() } else { throw } } };
-    function WriteAcl($path, $acl) { if (IsDir $path) { [IO.Directory]::SetAccessControl($path, $acl) } else { [IO.File]::SetAccessControl($path, $acl) } };
-    function Rules($acl) { @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) };
-    function Grants($acl) { @(Rules $acl | Where-Object {$_.AccessControlType -eq 'Allow'} | ForEach-Object {$_.IdentityReference.Value}) };
-    function PrivateAcl($directory) {
-      if ($directory) { $acl=[Security.AccessControl.DirectorySecurity]::new(); $inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' }
-      else { $acl=[Security.AccessControl.FileSecurity]::new(); $inherit=[Security.AccessControl.InheritanceFlags]::None };
-      $acl.SetOwner($u); $acl.SetAccessRuleProtection($true,$false);
-      foreach ($sid in $trusted) {
-        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),'FullControl',$inherit,'None','Allow'))
-      }; return $acl
-    };
-    $created=$false; $repaired=$false;
-    ${createDirectory ? "if (!([IO.Directory]::Exists($p) -or [IO.File]::Exists($p))) { [IO.Directory]::CreateDirectory($p,(PrivateAcl $true)) | Out-Null; $created=$true };" : ""}
-    if ([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::ReparsePoint) { throw 'Room state must not be a reparse point' };
-    $isDir=IsDir $p;
-    $a=ReadAcl $p; $g=Grants $a;
-    $o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;
-    # An elevated administrator's new directories are owned by BUILTIN\\Administrators (Windows Server default); that
-    # user can already rewrite the ACL, so the repair may take ownership back for them.
-    $elevated=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
-    $owned=($o -eq $u.Value) -or ($o -eq 'S-1-5-32-544' -and $elevated);
-    $broad=@($g | Where-Object {$_ -notin $trusted});
-    ${repair ? `$inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';
-    $inheritable=@(Rules $a | Where-Object {
-      $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -eq $u.Value -and
-      ($_.InheritanceFlags -band $inherit) -eq $inherit -and $_.PropagationFlags -eq 'None' -and
-      ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
-    }).Count -gt 0;` : ""}
-    ${repair ? `# Count and reject reparse points before the root ACL can propagate through an oversized subtree.
-    $pending=[System.Collections.Generic.Stack[string]]::new(); $pending.Push($p);
-    $children=[System.Collections.Generic.List[string]]::new();
-    while ($pending.Count -gt 0) {
-      foreach ($child in (Entries $pending.Pop())) {
-        if ($children.Count -ge 20000) { throw "Room state subtree exceeds the 20000 entry inspection limit: $p (at $child)" };
-        try { $attributes=[IO.File]::GetAttributes($child) } catch { if (Vanished $child $_) { continue } else { throw } };
-        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
-        $children.Add($child);
-        if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($child) }
-      }
-    };` : ""}
-    ${protectNew || repair ? `if ($owned -and (${protectNew ? "$true" : "!$a.AreAccessRulesProtected -or $broad.Count -gt 0 -or !$inheritable"})) {
-      WriteAcl $p (PrivateAcl $isDir); $repaired=!$created;
-      ${repair ? "$inheritable=$true;" : ""}
-      $a=ReadAcl $p; $g=Grants $a
-    };` : ""}
-    ${repair ? `# Establish inheritance for the whole existing subtree before caching this root. Never follow reparse points.
-    if (!$inheritable -or !$a.AreAccessRulesProtected -or @($g | Where-Object {$_ -notin $trusted}).Count -gt 0 -or
-        $a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin @($u.Value,'S-1-5-32-544')) { throw "Room state is not private: $p" };
-    $icacls=[IO.Path]::Combine($env:SystemRoot, 'System32', 'icacls.exe');
-    foreach ($child in $children) {
-      try {
-        if ([IO.File]::GetAttributes($child) -band [IO.FileAttributes]::ReparsePoint) { throw "Room state must not be a symlink or junction: $child" };
-        $childAcl=ReadAcl $child; $rules=Rules $childAcl;
-        # A foreign owner can rewrite its own DACL later, whatever the parent grants: refuse it outright.
-        $childOwner=$childAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value;
-        if ($childOwner -ne $u.Value -and !($childOwner -eq 'S-1-5-32-544' -and $elevated)) { throw "Room state is owned by $childOwner : $child" };
-        $explicitBroad=@($rules | Where-Object {!$_.IsInherited -and $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted});
-        if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or $explicitBroad.Count -gt 0) {
-          # icacls /reset re-enables inheritance and removes every explicit entry. Writing back an ACL that was
-          # read with its inherited entries would persist those entries as explicit ones.
-          & $icacls $child /reset /q | Out-Null;
-          if ($LASTEXITCODE -ne 0) { throw "Cannot reset Room state ACL ($LASTEXITCODE): $child" };
-          $childAcl=ReadAcl $child; $rules=Rules $childAcl
-        };
-        if ($childAcl.AreAccessRulesProtected -or @($rules | Where-Object {$_.IsInherited}).Count -eq 0 -or
-            @($rules | Where-Object {$_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $trusted}).Count -gt 0) { throw "Room state descendant is not private: $child" };
-      } catch { if (Vanished $child $_) { continue } else { throw } }
-    };` : ""}
-    # SIDs and booleans only, so the report is built without ConvertTo-Json.
-    $bool={ param($v) if ($v) { 'true' } else { 'false' } };
-    '{"owner":"' + $a.GetOwner([Security.Principal.SecurityIdentifier]).Value + '","user":"' + $u.Value + '","protected":' + (& $bool $a.AreAccessRulesProtected) +
-      ',"directory":' + (& $bool $isDir) + ',"repaired":' + (& $bool $repaired) + ',"grants":[' + ((@($g) | ForEach-Object { '"' + $_ + '"' }) -join ',') + ']}'`;
-}
-function windowsAclError(file2, error2) {
-  const e = error2;
-  const cause = e.code === "ETIMEDOUT" || e.signal ? "PowerShell timed out" : (String(e.stderr ?? "").trim().split(/\r?\n/).find(Boolean) ?? e.message).slice(0, 300);
-  return new Error(`Cannot verify the Windows owner/DACL for ${file2} (${cause}); use a private local state directory and permit bounded ACL inspection, then retry`);
-}
-function rememberWindowsAcl(file2, output, repair) {
-  let report;
-  try {
-    report = JSON.parse(output);
-  } catch (error2) {
-    throw windowsAclError(file2, error2);
-  }
-  if (!report || !Array.isArray(report.grants) || typeof report.user !== "string") throw new Error(`Invalid Windows ACL inspection for ${file2}`);
-  checkWindowsAcl(report, file2);
-  if (repair && report.repaired) console.error(`Room repaired private state directory: ${file2}`);
-  const identity4 = windowsIdentity(file2);
-  if (identity4) verifiedWindows.set(windowsKey(file2), { identity: identity4, subtree: repair });
-}
-function windowsVerified(file2, subtree = false) {
-  const known = verifiedWindows.get(windowsKey(file2));
-  return !!known && (!subtree || known.subtree) && known.identity === windowsIdentity(file2);
-}
-function windowsAcl(file2, protectNew = false, createDirectory = false, repair = false) {
-  if (!protectNew && windowsVerified(file2, repair)) return;
-  let output;
-  try {
-    output = execFileSync4("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(protectNew, createDirectory, repair)], { env: windowsPowerShellEnv(file2), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  } catch (error2) {
-    throw windowsAclError(file2, error2);
-  }
-  rememberWindowsAcl(file2, output, repair);
-}
-function primeWindowsDirectory(dir, repair) {
-  if (process.platform !== "win32") return Promise.resolve();
-  dir = path10.resolve(dir);
-  const key3 = windowsKey(dir);
-  const running = primingWindows.get(key3);
-  if (running) return running;
-  if (windowsVerified(dir, repair)) return Promise.resolve();
-  const work = (async () => {
-    if (!fs10.statSync(path10.dirname(dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
-    const output = await new Promise((resolve6, reject) => {
-      execFile4(
-        "powershell.exe",
-        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclScript(false, true, repair)],
-        { env: windowsPowerShellEnv(dir), timeout: 2e4, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8" },
-        (error2, stdout, stderr) => error2 ? reject(windowsAclError(dir, Object.assign(error2, { stderr }))) : resolve6(stdout)
-      );
-    });
-    rememberWindowsAcl(dir, output, repair);
-  })().finally(() => {
-    if (primingWindows.get(key3) === work) primingWindows.delete(key3);
-  });
-  primingWindows.set(key3, work);
-  return work;
-}
-function primePrivateDirectory(dir) {
-  if (process.platform !== "win32") return Promise.resolve();
-  dir = path10.resolve(dir);
-  const running = primingWindows.get(windowsKey(dir));
-  if (running) return running;
-  if (fs10.existsSync(dir)) return Promise.resolve();
-  try {
-    fs10.mkdirSync(path10.dirname(dir), { recursive: true });
-  } catch (error2) {
-    return Promise.reject(error2);
-  }
-  return primeWindowsDirectory(dir, false);
-}
-function primePrivateState(commonDir2) {
-  return primeWindowsDirectory(path10.join(commonDir2, "room"), true);
-}
-function verifyPrivatePath(file2, created = false) {
-  const stat4 = fs10.lstatSync(file2);
-  if (stat4.isSymbolicLink()) throw new Error(`Room state path must not be a symlink: ${file2}`);
-  if (process.platform === "win32") {
-    if (underVerifiedRoomRoot(file2)) return;
-    windowsAcl(file2, created);
-    return;
-  }
-  verifyPosixPath(file2, stat4);
-}
-function underVerifiedRoomRoot(file2) {
-  let dir = path10.resolve(file2);
-  while (path10.basename(dir).toLowerCase() !== "room" && path10.dirname(dir) !== dir) dir = path10.dirname(dir);
-  if (path10.basename(dir).toLowerCase() !== "room" || path10.resolve(file2) === dir) return false;
-  const known = verifiedWindows.get(windowsKey(dir));
-  return !!known?.subtree && known.identity === windowsIdentity(dir);
-}
-function privateStateDirectory(dir, options = {}) {
-  dir = path10.resolve(dir);
-  if (options.exclusive) {
-    initializePrivateDirectory(dir, false, true);
-    if (process.platform === "win32") windowsAcl(dir, true);
-    return;
-  }
-  const { directories, root, inState } = privateDirectoryPath(dir);
-  if (!fs10.statSync(path10.dirname(inState ? root : dir)).isDirectory()) throw new Error(`Room state parent must be a directory: ${dir}`);
-  for (const directory2 of inState ? directories : [dir]) {
-    if (process.platform === "win32" && (!inState || directory2 === root)) {
-      if (fs10.existsSync(directory2)) {
-        const stat4 = fs10.lstatSync(directory2);
-        if (!stat4.isDirectory() || stat4.isSymbolicLink()) throw new Error(`Room state path must be a directory, not a symlink or junction: ${directory2}`);
-      }
-      windowsAcl(directory2, false, true, inState);
-    } else initializePrivateDirectory(directory2, inState);
-  }
-}
-var verifiedWindows, windowsKey, primingWindows;
-var init_private_state = __esm({
-  "packages/relay/src/private-state.ts"() {
-    "use strict";
-    init_private_core();
-    verifiedWindows = /* @__PURE__ */ new Map();
-    windowsKey = (file2) => path10.resolve(file2).toLowerCase();
-    primingWindows = /* @__PURE__ */ new Map();
-  }
-});
-
 // packages/relay/src/memory.ts
 var WARN_EVERY_MS, WARN_KEYS_MAX, WarningLimiter, sharedWarnings;
 var init_memory2 = __esm({
@@ -18192,7 +18587,7 @@ var init_protocol = __esm({
 });
 
 // packages/hub-core/src/notice-lifecycle.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 function workerNoticeId(id3, workerIds) {
   return workerIds.length ? `${id3}:worker:${digest([...new Set(workerIds)].sort())}` : void 0;
 }
@@ -18236,7 +18631,7 @@ var init_notice_lifecycle = __esm({
     NOTICE_PRODUCER_BYTES = 64 * 1024;
     NOTICE_BATCH_IDS = 64;
     NOTICE_BATCH_BYTES = 64 * 1024;
-    digest = (value5) => createHash4("sha256").update(JSON.stringify(value5)).digest("hex");
+    digest = (value5) => createHash5("sha256").update(JSON.stringify(value5)).digest("hex");
   }
 });
 
@@ -18374,349 +18769,6 @@ var init_src2 = __esm({
     init_incarnation_file();
     init_notice_lifecycle();
     init_bootstrap_client();
-  }
-});
-
-// packages/relay/src/leases.ts
-import fs11 from "node:fs";
-import path11 from "node:path";
-import { createHash as createHash5, randomUUID } from "node:crypto";
-function liveness(identity4, probe = probeProcess) {
-  const verdict = livenessBy(identity4, probe);
-  return verdict === "dead" && probe === probeProcess && pidAlive(identity4.pid) ? livenessBy(identity4, (pid) => probeProcessConfirm(pid, identity4)) : verdict;
-}
-function livenessBy(identity4, probe) {
-  if (!validPid(identity4.pid)) return "unknown";
-  const observed = probe(identity4.pid);
-  if (!observed) return "dead";
-  if (observed.startTime && identity4.startTime && !sameStartTime(observed.startTime, identity4.startTime)) return "dead";
-  if (observed.executable && identity4.executable && observed.executable !== identity4.executable) return "dead";
-  if (!observed.startTime || !observed.executable || !identity4.startTime || !identity4.executable) return "unknown";
-  return "alive";
-}
-function syncDirectory(dir) {
-  let fd;
-  try {
-    fd = fs11.openSync(dir, "r");
-    fs11.fsyncSync(fd);
-  } catch (e) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
-  } finally {
-    if (fd !== void 0) fs11.closeSync(fd);
-  }
-}
-function ensureDurableDirectory(dir, holdsFile = true) {
-  const parent = path11.dirname(dir);
-  if (parent === dir) {
-    if (!fs11.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
-    return;
-  }
-  ensureDurableDirectory(parent, false);
-  try {
-    if (process.platform === "win32" && !holdsFile) fs11.mkdirSync(dir);
-    else if (!fs11.existsSync(dir)) privateStateDirectory(dir);
-    else fs11.mkdirSync(dir, { mode: 448 });
-  } catch (e) {
-    if (e.code !== "EEXIST") throw e;
-  }
-  syncDirectory(parent);
-}
-function cleanupOrphanTemps(dir, probe = probeProcess) {
-  let removed = 0;
-  for (const name of fs11.readdirSync(dir)) {
-    const match = tempPattern.exec(name);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    if (!validPid(pid)) continue;
-    const observed = probe(pid);
-    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
-    if (pidAlive(pid)) continue;
-    try {
-      fs11.unlinkSync(path11.join(dir, name));
-      removed++;
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-  }
-  if (removed) syncDirectory(dir);
-  return removed;
-}
-function writeTemp(file2, content) {
-  const dir = path11.dirname(file2);
-  ensureDurableDirectory(dir);
-  cleanupOrphanTemps(dir);
-  const start = probeOwnProcess()?.startTime;
-  const temp = `${file2}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
-  const fd = fs11.openSync(temp, "wx", 384);
-  try {
-    fs11.writeFileSync(fd, JSON.stringify(content) + "\n");
-    fs11.fsyncSync(fd);
-  } catch (e) {
-    fs11.closeSync(fd);
-    fs11.rmSync(temp, { force: true });
-    syncDirectory(dir);
-    throw e;
-  }
-  fs11.closeSync(fd);
-  return temp;
-}
-function createExclusive(file2, content) {
-  const temp = writeTemp(file2, content);
-  try {
-    try {
-      fs11.linkSync(temp, file2);
-    } catch (e) {
-      if (e.code === "EEXIST") return false;
-      throw e;
-    }
-    syncDirectory(path11.dirname(file2));
-    return true;
-  } finally {
-    fs11.rmSync(temp, { force: true });
-    syncDirectory(path11.dirname(file2));
-  }
-}
-function writeAtomic(file2, content) {
-  const temp = writeTemp(file2, content);
-  try {
-    renameAtomic(temp, file2);
-    syncDirectory(path11.dirname(file2));
-  } finally {
-    fs11.rmSync(temp, { force: true });
-    syncDirectory(path11.dirname(file2));
-  }
-}
-function renameAtomic(temp, file2) {
-  const until = performance.now() + 2e3;
-  let sleeper;
-  let attempts = 0;
-  for (; ; ) {
-    try {
-      fs11.renameSync(temp, file2);
-      return;
-    } catch (error2) {
-      const remaining = until - performance.now();
-      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error2.code ?? "") || remaining <= 0) throw error2;
-      const delay = Math.min(remaining, Math.min(100, ++attempts * 10) + Math.random() * 10);
-      Atomics.wait(sleeper ??= new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
-    }
-  }
-}
-function read(file2) {
-  try {
-    return JSON.parse(fs11.readFileSync(file2, "utf8"));
-  } catch (e) {
-    if (e.code === "ENOENT") return void 0;
-    throw e;
-  }
-}
-function leaseToken(value5) {
-  const candidate = value5.holder ?? value5;
-  return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
-}
-function ownToken() {
-  const current3 = probeOwnProcess();
-  return { pid: process.pid, startTime: current3?.startTime ?? "", executable: current3?.executable ?? "", sessionId: `mcp:${process.pid}:${current3?.startTime ?? "unknown"}`, nonce: randomUUID() };
-}
-function createGuardSafely(file2, token, create6) {
-  try {
-    const created = create6();
-    return typeof created === "boolean" ? created : created.catch(async (error2) => {
-      await releaseGuardAsync(file2, token);
-      throw error2;
-    });
-  } catch (error2) {
-    releaseGuard(file2, token);
-    throw error2;
-  }
-}
-function acquireGuard(file2, probe, depth = 0) {
-  if (depth > 12) throw new Error(`too many stale lease guards at ${file2}`);
-  const token = ownToken();
-  if (createGuardSafely(file2, token, () => createExclusive(file2, token))) return token;
-  const previous = read(file2);
-  const previousHolder = previous && leaseToken(previous);
-  if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file2}`);
-  const outer = acquireGuard(`${file2}.guard`, probe, depth + 1);
-  try {
-    const latest = read(file2);
-    const latestHolder = latest && leaseToken(latest);
-    if (latestHolder && liveness(latestHolder, probe) === "dead") {
-      fs11.unlinkSync(file2);
-      syncDirectory(path11.dirname(file2));
-    }
-  } finally {
-    releaseGuard(`${file2}.guard`, outer);
-  }
-  if (createGuardSafely(file2, token, () => createExclusive(file2, token))) return token;
-  throw new Error(`lease guard busy: ${file2}`);
-}
-function releaseGuard(file2, token) {
-  const current3 = read(file2);
-  if (current3 && leaseToken(current3)?.nonce === token.nonce) {
-    fs11.unlinkSync(file2);
-    syncDirectory(path11.dirname(file2));
-  }
-}
-function withGuard(file2, fn, probe = probeProcess) {
-  const guard = `${file2}.guard`;
-  const token = acquireGuard(guard, probe);
-  try {
-    const result2 = fn();
-    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
-    return result2;
-  } finally {
-    releaseGuard(guard, token);
-  }
-}
-async function syncDirectoryAsync(dir) {
-  let handle;
-  try {
-    handle = await fs11.promises.open(dir, "r");
-    await handle.sync();
-  } catch (e) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
-  } finally {
-    await handle?.close();
-  }
-}
-async function ensureDurableDirectoryAsync(dir, holdsFile = true) {
-  const parent = path11.dirname(dir);
-  if (parent === dir) {
-    if (!(await fs11.promises.stat(dir)).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
-    return;
-  }
-  await ensureDurableDirectoryAsync(parent, false);
-  let present = true;
-  try {
-    await fs11.promises.access(dir);
-  } catch (e) {
-    if (e.code !== "ENOENT") throw e;
-    present = false;
-  }
-  if (!present) ensureDurableDirectory(dir, holdsFile);
-  else await syncDirectoryAsync(parent);
-}
-async function createGuardAsync(file2, token) {
-  const dir = path11.dirname(file2);
-  await ensureDurableDirectoryAsync(dir);
-  for (const name of await fs11.promises.readdir(dir)) {
-    const match = tempPattern.exec(name);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    if (!validPid(pid)) continue;
-    const observed = probeProcess(pid);
-    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
-    if (pidAlive(pid)) continue;
-    try {
-      await fs11.promises.unlink(path11.join(dir, name));
-      await syncDirectoryAsync(dir);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-  }
-  const start = probeOwnProcess()?.startTime;
-  const temp = `${file2}.roomtmp-p${process.pid}-s${start ? startMarker(start) : "u"}-n${randomUUID()}.tmp`;
-  try {
-    const handle = await fs11.promises.open(temp, "wx", 384);
-    try {
-      await handle.writeFile(JSON.stringify(token) + "\n");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    try {
-      await fs11.promises.link(temp, file2);
-    } catch (e) {
-      if (e.code === "EEXIST") return false;
-      throw e;
-    }
-    await syncDirectoryAsync(dir);
-    return true;
-  } finally {
-    await fs11.promises.rm(temp, { force: true });
-    await syncDirectoryAsync(dir);
-  }
-}
-async function readGuardAsync(file2) {
-  try {
-    return leaseToken(JSON.parse(await fs11.promises.readFile(file2, "utf8")));
-  } catch (e) {
-    if (e.code === "ENOENT") return void 0;
-    throw e;
-  }
-}
-async function releaseGuardAsync(file2, token) {
-  if ((await readGuardAsync(file2))?.nonce === token.nonce) {
-    await fs11.promises.unlink(file2);
-    await syncDirectoryAsync(path11.dirname(file2));
-  }
-}
-async function acquireGuardAsync(file2, probe, depth = 0) {
-  if (depth > 12) throw new Error(`too many stale lease guards at ${file2}`);
-  const token = ownToken();
-  if (await createGuardSafely(file2, token, () => createGuardAsync(file2, token))) return token;
-  const previous = await readGuardAsync(file2);
-  if (!previous || liveness(previous, probe) !== "dead") throw new Error(`lease guard busy: ${file2}`);
-  const outer = await acquireGuardAsync(`${file2}.guard`, probe, depth + 1);
-  try {
-    const latest = await readGuardAsync(file2);
-    if (latest && liveness(latest, probe) === "dead") {
-      await fs11.promises.unlink(file2);
-      await syncDirectoryAsync(path11.dirname(file2));
-    }
-  } finally {
-    await releaseGuardAsync(`${file2}.guard`, outer);
-  }
-  if (await createGuardSafely(file2, token, () => createGuardAsync(file2, token))) return token;
-  throw new Error(`lease guard busy: ${file2}`);
-}
-async function withGuardAsync(file2, fn, probe = probeProcess) {
-  const guard = `${file2}.guard`;
-  const token = await acquireGuardAsync(guard, probe);
-  try {
-    const result2 = fn();
-    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
-    return result2;
-  } finally {
-    await releaseGuardAsync(guard, token);
-  }
-}
-function replace2(file2, expect, next) {
-  return withGuard(file2, () => {
-    const current3 = read(file2);
-    if (!current3 || !expect(current3)) return false;
-    writeAtomic(file2, next);
-    return true;
-  });
-}
-function compareAndRelease(file2, token) {
-  return withGuard(file2, () => {
-    const current3 = read(file2);
-    if (!current3 || leaseToken(current3)?.nonce !== token.nonce) return false;
-    fs11.unlinkSync(file2);
-    syncDirectory(path11.dirname(file2));
-    return true;
-  });
-}
-function recover(file2, orphan, probe = probeProcess) {
-  return withGuard(file2, () => {
-    const current3 = read(file2);
-    const owner = current3 && leaseToken(current3);
-    if (!current3 || !owner || liveness(owner, probe) !== "dead" || !orphan(current3)) return false;
-    fs11.unlinkSync(file2);
-    syncDirectory(path11.dirname(file2));
-    return true;
-  });
-}
-var startMarker, tempPattern;
-var init_leases = __esm({
-  "packages/relay/src/leases.ts"() {
-    "use strict";
-    init_private_state();
-    init_process();
-    startMarker = (startTime) => createHash5("sha256").update(startTime).digest("hex").slice(0, 24);
-    tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
   }
 });
 
@@ -41550,6 +41602,14 @@ var init_local_state_gc = __esm({
       },
       { path: "*.tmp (any directory)", owner: "MCP session", lifetime: { kind: "temp" }, match: (e) => isTemp(e.name ?? e.top) },
       { path: "hub/authority.lock", owner: "daemon", lifetime: { kind: "dead-holder" }, match: inDir("hub", (n) => n === "authority.lock") },
+      // The async lease primitive recovers these on demand. A collector's separate
+      // dead-holder check and unlink could remove a newly acquired live successor.
+      {
+        path: "worktree-operation.guard (+ .guard)",
+        owner: "MCP session",
+        lifetime: { kind: "owner" },
+        match: (e) => e.name === void 0 && /^worktree-operation(?:\.guard)+$/.test(e.top)
+      },
       { path: "*.guard (any directory)", owner: "MCP session", lifetime: { kind: "dead-holder" }, match: (e) => (e.name ?? e.top).endsWith(".guard") },
       { path: "hub-leases/<room>.json", owner: "daemon", lifetime: { kind: "keep" }, match: inDir("hub-leases", (n) => n.endsWith(".json")) },
       { path: "daemon.log*", owner: "daemon", lifetime: { kind: "owner" }, match: (e) => e.name === void 0 && /^daemon\.log(\.\d+)?$/.test(e.top) },

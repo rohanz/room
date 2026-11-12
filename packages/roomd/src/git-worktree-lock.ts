@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { RepoLocks } from '@room/shared'
+import { withGuardAsyncOperation } from '@room/relay/leases'
 import { commonGitDirFromDotGit } from './git-dirs.js'
 
 const locks = new RepoLocks()
@@ -27,15 +28,16 @@ export function isGitWorktreeCommand(args: readonly string[]): boolean {
     && ['add', 'list', 'prune', 'remove', 'move', 'repair', 'lock', 'unlock'].includes(args[at + 1])
 }
 
-/** Process-local queue only. Acquire before verification; never await after its final check. */
+/** Queue locally before taking the common-directory process lease. Acquire before
+ * verification; never await between a final ownership check and synchronous removal. */
 export async function withGitWorktreeOperation<T>(dir: string, work: () => Promise<T> | T): Promise<T> {
   const canonical = key(dir), held = current.getStore()
   if (held?.active && held.key === canonical) return work()
-  return locks.run(canonical, async () => {
+  return locks.run(canonical, () => withGuardAsyncOperation(path.join(canonical, 'room', 'worktree-operation'), async () => {
     const scope = { key: canonical, active: true }
     try { return await current.run(scope, work) }
     finally { scope.active = false }
-  })
+  }, { timeoutMs: 5 * 60_000 }))
 }
 
 export function assertGitWorktreeOperation(dir: string): void {

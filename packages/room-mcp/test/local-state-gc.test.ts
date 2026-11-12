@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ROOM_STALE_MS } from '@room/shared'
 import { collectLocalState, GC_RULES, GC_TEMP_AGE_MS } from '../src/local-state-gc.js'
-import { withGuard } from '../src/leases.js'
+import { withGuard, withGuardAsyncOperation } from '../src/leases.js'
 
 const dirs: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -39,6 +39,18 @@ const left = (common: string) => {
 }
 
 describe('local state collector', () => {
+  it('leaves worktree operation guards to async on-demand recovery', async () => {
+    const c = commonDir(), target = path.join(c, 'room', 'worktree-operation')
+    for (const suffix of ['.guard', '.guard.guard']) touch(c, `worktree-operation${suffix}`, now - 2 * HOUR, token(200))
+    const result = collectLocalState(c, { now: () => now, probe })
+    expect(result.unknown).toEqual([])
+    expect(result.removed).not.toContain(`${target}.guard`)
+    expect(left(c)).toEqual(['worktree-operation.guard', 'worktree-operation.guard.guard'])
+    const synchronous = vi.spyOn(fs, 'fsyncSync')
+    expect(await withGuardAsyncOperation(target, () => 'recovered', { timeoutMs: 1000, probe })).toBe('recovered')
+    expect(synchronous).not.toHaveBeenCalled()
+    expect(left(c)).toEqual([])
+  })
   it('preserves a live successor of a stale preview publisher guard', () => {
     const c = commonDir(), prefix = 'a'.repeat(64) + '-'
     const guard = touch(c, `preview-evidence/${prefix}publication.guard`, now - 2 * HOUR, token(200))
