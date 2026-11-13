@@ -13,7 +13,7 @@ import { collectLocalState } from './local-state-gc.js'
 import { gitCommonDir } from '@room/roomd'
 import { realStateInput, type LocalWorker, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import { decideNothingToCollect, decideRetire, processExited, roomWorkerPathMatchesBranch, workerRealState } from './worker-state.js'
-import { cleanupWorker, cleanupWorkerLogs, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, uncollectedWorkerPaths, type WorkerCleanupPreservation } from './worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, collectHeadRef, hasWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, uncollectedWorkerPaths, type WorkerCleanupPreservation } from './worker-git.js'
 import type { CwdProcessLister, ProcessProbe } from './worker-process.js'
 import { git } from '@room/roomd/git'
 import { projectWorkers } from './worker-projector.js'
@@ -457,7 +457,9 @@ async function sweepClone(session: Session, registry: Registry, rooms: Rooms): P
     }
     for (const record of requireWorkerInventory(await registry.list())) if (record.phase === 'retired') {
       syncKeptArchive(rooms, record)
-      if (record.keptWorktree || !await registry.beginOperation(record.id, 'collect')) continue
+      // Most retired records were cleaned when they retired: taking an operation on each one only to find
+      // nothing to delete held up the session for seconds in a clone with a hundred records.
+      if (record.keptWorktree || !hasWorkerLogs(dir, record) || !await registry.beginOperation(record.id, 'collect')) continue
       try {
         const fresh = await registry.read(record.id), status = await registry.status(record.id)
         if (fresh?.phase === 'retired' && !fresh.keptWorktree && (await registry.reserved(fresh.tag))?.id === fresh.id

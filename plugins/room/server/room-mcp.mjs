@@ -11676,13 +11676,14 @@ var init_memory = __esm({
 });
 
 // packages/shared/src/expiry.ts
-var ROOM_STALE_DAYS;
+var ROOM_STALE_DAYS, RECORD_EVERY_MS;
 var init_expiry = __esm({
   "packages/shared/src/expiry.ts"() {
     "use strict";
     init_doc();
     init_views();
     ROOM_STALE_DAYS = ROOM_STALE_MS / (24 * 60 * 60 * 1e3);
+    RECORD_EVERY_MS = 60 * 60 * 1e3;
   }
 });
 
@@ -42118,7 +42119,7 @@ async function sweepClone(session, registry2, rooms) {
     }
     for (const record2 of requireWorkerInventory(await registry2.list())) if (record2.phase === "retired") {
       syncKeptArchive(rooms, record2);
-      if (record2.keptWorktree || !await registry2.beginOperation(record2.id, "collect")) continue;
+      if (record2.keptWorktree || !hasWorkerLogs(dir, record2) || !await registry2.beginOperation(record2.id, "collect")) continue;
       try {
         const fresh = await registry2.read(record2.id), status = await registry2.status(record2.id);
         if (fresh?.phase === "retired" && !fresh.keptWorktree && (await registry2.reserved(fresh.tag))?.id === fresh.id && status && !await processes.alive(cleanupInput(fresh, status))) cleanupWorkerLogs(dir, fresh);
@@ -47625,6 +47626,15 @@ async function cleanupWorker(leadDir, w, options = {}) {
   }
   return true;
 }
+function workerSidecars(leadDir, { tag, dir, outside, logFile }) {
+  const logRoot = outside && logFile && path56.basename(logFile) === `${tag}.log` && path56.basename(path56.dirname(logFile)) === "workers" && path56.basename(path56.dirname(path56.dirname(logFile))) === ".room" ? path56.resolve(logFile, "../../..") : leadDir;
+  const parent = !outside && path56.basename(path56.dirname(dir)) === "workers" && path56.basename(path56.dirname(path56.dirname(dir))) === ".room" ? path56.resolve(dir, "../../..") : logRoot;
+  if (outside && (path56.resolve(parent) === path56.resolve(dir) || path56.resolve(parent).startsWith(path56.resolve(dir) + path56.sep))) return void 0;
+  return [".log", ".mcp.log", ".env.sh", ".shell-env.mjs"].map((suffix) => path56.join(parent, WORKERS_DIR, tag + suffix));
+}
+function hasWorkerLogs(leadDir, record2) {
+  return !!workerSidecars(leadDir, record2)?.some((file2) => fs55.existsSync(file2));
+}
 function cleanupWorkerLogs(leadDir, record2, ready = () => true) {
   const root = path56.join(commonGitDirFromDotGit(leadDir), "room", "registry");
   return withWorkerTag(root, record2.tag, () => {
@@ -47634,13 +47644,11 @@ function cleanupWorkerLogs(leadDir, record2, ready = () => true) {
       if (!reservation || reservation.id !== record2.id) return false;
     }
     if (!ready()) return false;
-    const { tag, dir, outside, logFile } = record2;
-    const logRoot = outside && logFile && path56.basename(logFile) === `${tag}.log` && path56.basename(path56.dirname(logFile)) === "workers" && path56.basename(path56.dirname(path56.dirname(logFile))) === ".room" ? path56.resolve(logFile, "../../..") : leadDir;
-    const parent = !outside && path56.basename(path56.dirname(dir)) === "workers" && path56.basename(path56.dirname(path56.dirname(dir))) === ".room" ? path56.resolve(dir, "../../..") : logRoot;
-    if (outside && (path56.resolve(parent) === path56.resolve(dir) || path56.resolve(parent).startsWith(path56.resolve(dir) + path56.sep))) return false;
-    for (const suffix of [".log", ".mcp.log", ".env.sh", ".shell-env.mjs"]) {
+    const sidecars = workerSidecars(leadDir, record2);
+    if (!sidecars) return false;
+    for (const file2 of sidecars) {
       try {
-        fs55.rmSync(path56.join(parent, WORKERS_DIR, tag + suffix), { force: true });
+        fs55.rmSync(file2, { force: true });
       } catch {
       }
     }

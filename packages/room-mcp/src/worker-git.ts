@@ -783,6 +783,22 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
   return true
 }
 
+/** The log and shell files Room wrote beside a worker's checkout; undefined when their folder cannot be told from the checkout. */
+function workerSidecars(leadDir: string, { tag, dir, outside, logFile }: Pick<WorkerRecord, 'dir' | 'tag' | 'outside' | 'logFile'>): string[] | undefined {
+  const logRoot = outside && logFile && path.basename(logFile) === `${tag}.log`
+    && path.basename(path.dirname(logFile)) === 'workers' && path.basename(path.dirname(path.dirname(logFile))) === '.room'
+    ? path.resolve(logFile, '../../..') : leadDir
+  const parent = !outside && path.basename(path.dirname(dir)) === 'workers' && path.basename(path.dirname(path.dirname(dir))) === '.room'
+    ? path.resolve(dir, '../../..') : logRoot
+  if (outside && (path.resolve(parent) === path.resolve(dir) || path.resolve(parent).startsWith(path.resolve(dir) + path.sep))) return undefined
+  return ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs'].map(suffix => path.join(parent, WORKERS_DIR, tag + suffix))
+}
+
+/** Whether cleanupWorkerLogs would find anything to delete. Costs a few stats and takes no lock. */
+export function hasWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'dir' | 'tag' | 'outside' | 'logFile'>): boolean {
+  return !!workerSidecars(leadDir, record)?.some(file => fs.existsSync(file))
+}
+
 /** Record identity and sidecar ownership are mandatory; LocalWorker is insufficient for outside checkouts.
  * The optional readiness check runs synchronously under the same guard as every reservation creation/reuse. */
 export function cleanupWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'id' | 'dir' | 'tag' | 'outside' | 'logFile'>,
@@ -796,15 +812,10 @@ export function cleanupWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'i
       if (!reservation || reservation.id !== record.id) return false
     }
     if (!ready()) return false
-    const { tag, dir, outside, logFile } = record
-    const logRoot = outside && logFile && path.basename(logFile) === `${tag}.log`
-      && path.basename(path.dirname(logFile)) === 'workers' && path.basename(path.dirname(path.dirname(logFile))) === '.room'
-      ? path.resolve(logFile, '../../..') : leadDir
-    const parent = !outside && path.basename(path.dirname(dir)) === 'workers' && path.basename(path.dirname(path.dirname(dir))) === '.room'
-      ? path.resolve(dir, '../../..') : logRoot
-    if (outside && (path.resolve(parent) === path.resolve(dir) || path.resolve(parent).startsWith(path.resolve(dir) + path.sep))) return false
-    for (const suffix of ['.log', '.mcp.log', '.env.sh', '.shell-env.mjs']) {
-      try { fs.rmSync(path.join(parent, WORKERS_DIR, tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
+    const sidecars = workerSidecars(leadDir, record)
+    if (!sidecars) return false
+    for (const file of sidecars) {
+      try { fs.rmSync(file, { force: true }) } catch { /* keep the log if the OS locks it */ }
     }
     // Public parent directories have no creation receipt. Leave them routinely;
     // they are not cleanup candidates or retained worker items.

@@ -14234,6 +14234,7 @@ init_near();
 init_doc();
 init_views();
 var ROOM_STALE_DAYS = ROOM_STALE_MS / (24 * 60 * 60 * 1e3);
+var RECORD_EVERY_MS = 60 * 60 * 1e3;
 var same = (a, b) => a === b || !!a && !!b && a.observedMs === b.observedMs && a.epoch === b.epoch;
 var ExpiryTenure = class {
   /** `clock` is monotonic and local; nothing another machine wrote is ever compared with it. */
@@ -14251,6 +14252,11 @@ var ExpiryTenure = class {
    * it would stay a participant until the hub's name cap. A segment adds time only while `expiry[name]` still holds what
    * this tenure last saw there, so a concurrent leader's write restarts the measurement instead of being
    * counted twice. Returns the names it expired; `post` appends their release notices.
+   *
+   * The total is measured on every tick but recorded less often: each write to `expiry` leaves a deleted entry
+   * in the document, and one per absent name per tick filled a room with them. A segment records once its
+   * unrecorded time reaches what it has recorded so far (so a tenure of any length keeps at least half of what
+   * it measured), and at least hourly. A tenure that ends loses only the unrecorded part, which delays expiry.
    */
   observe(room, view, origin, post) {
     const now = this.clock();
@@ -14278,10 +14284,16 @@ var ExpiryTenure = class {
           this.segments.set(name, { t0: now, base: current?.observedMs ?? 0, expect: current });
           continue;
         }
-        const next = { observedMs: segment.base + Math.max(0, now - segment.t0), epoch: this.epoch };
+        const observedMs = segment.base + Math.max(0, now - segment.t0);
+        if (observedMs >= ROOM_STALE_MS) {
+          expired.push(name);
+          continue;
+        }
+        const recorded = segment.expect?.observedMs ?? 0;
+        if (observedMs - recorded < Math.min(RECORD_EVERY_MS, recorded - segment.base)) continue;
+        const next = { observedMs, epoch: this.epoch };
         room.expiry.set(name, next);
         segment.expect = next;
-        if (next.observedMs >= ROOM_STALE_MS) expired.push(name);
       }
       for (const name of expired) expireParticipant(room, name, origin, post);
     }, origin);
