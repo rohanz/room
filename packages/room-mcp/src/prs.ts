@@ -7,7 +7,7 @@
  * comment on the PR (room_pr_note / room_done pr_note).
  */
 import type { Msg, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
-import { RoomDoc, acceptedGit, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
+import { RoomDoc, acceptedGit, answerMatchesQuestion, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
@@ -205,9 +205,17 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
   const msgs = room.messages().filter(m => !m.copyOf && !isPrName(m.from))
   const releases = new Map<string, ReleaseMsg>()
   const answers = new Map<string, AnswerMsg[]>()
+  const alias = (name: string) => room.doc.getMap<string>('aliases').get(name) ?? name
   for (const m of msgs) {
     if (m.type === 'release') releases.set(m.claimId, m)
-    if (m.type === 'answer') { const arr = answers.get(m.inReplyTo) ?? []; arr.push(m); answers.set(m.inReplyTo, arr) }
+    if (m.type === 'answer') {
+      const outcome = room.outcomes.get(m.inReplyTo)
+      const question = outcome ? outcome.outcome === 'answered'
+        ? { type: 'question' as const, id: m.inReplyTo, from: outcome.from, to: outcome.to } : undefined
+        : room.message(m.inReplyTo)
+      if (question?.type !== 'question' || !answerMatchesQuestion(question, m, alias)) continue
+      const arr = answers.get(m.inReplyTo) ?? []; arr.push(m); answers.set(m.inReplyTo, arr)
+    }
   }
   const open = new Map(room.openClaims().map(c => [c.id, c] as [string, Claim]))
   const who = (m: Msg) => `**${displayName({ name: m.from, kind: m.fromKind })}**`
@@ -240,7 +248,8 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
       case 'question': {
         const question = [`- ${t(m.at)} ${who(m)} asked ${m.to ? displayName({ name: m.to, kind: 'agent' }) : 'the room'}: ${m.text}`]
         for (const a of answers.get(m.id) ?? []) question.push(`  - ${t(a.at)} ${who(a)} answered: ${a.text}`)
-        if (!(answers.get(m.id) ?? []).length) question.push('  - (unanswered)')
+        if (!(answers.get(m.id) ?? []).length) question.push(room.outcomes.get(m.id)?.outcome === 'answered'
+          ? '  - (answered; answer text no longer retained)' : '  - (unanswered)')
         lines.push(question.join('\n'))
         break
       }

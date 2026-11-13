@@ -15,6 +15,8 @@ export interface MessageWaiting {
   /** The answer validated against this question's endpoints (or its recorded outcome). */
   answerId?: string
   me?: string
+  /** Resolve saved participant names using the question room's aliases. */
+  alias?: (name: string) => string
   /** Used for the initial lookup, which only searches for the requested answer. */
   answersOnly?: boolean
   /** The workers bus historically surfaces questions even while the lead is waiting on something else. */
@@ -41,6 +43,8 @@ const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | '
 const PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /
 const PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/
 const priorityRank = (p: Priority | undefined) => p === 'interrupt' ? 2 : p === 'notify' ? 1 : 0
+const forWaiter = (m: MsgBase, w: MessageWaiting): boolean => !!m.to && !!w.me
+  && (w.alias?.(m.to) ?? m.to) === (w.alias?.(w.me) ?? w.me)
 
 /**
  * Room's per-peer merge notices (`cf:<pair>:peer:…`) that a later notice for the same pair and reader replaces:
@@ -175,8 +179,8 @@ const builtins = {
     : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} — ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ''}` },
   release: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
   changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'addressed', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
-  question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-  answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && m.to === w.me, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+  question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && forWaiter(m, w) && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
+  answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && forWaiter(m, w), format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
   conflict: { priority: m => m.merges === 'clean' ? 'notify' : 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
   'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => PEER_NOTICE_TEXT.test(m.text)

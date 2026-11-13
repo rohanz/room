@@ -11,7 +11,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
-import { isAgentic, manifestPaths, defaultPriority, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
+import { answerMatchesQuestion, isAgentic, manifestPaths, defaultPriority, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
@@ -134,15 +134,16 @@ export class WakeReconciler {
       }
       const seen = s.room.seen(s.me.name)
       const wakes = this.wakes()[s.roomName] ?? {}
+      const alias = (name: string) => s.room.doc.getMap<string>('aliases').get(name) ?? name
       for (const m of retained.values()) {
-        if (m.to !== s.me.name) continue
+        if (!m.to || alias(m.to) !== alias(s.me.name)) continue
         health.retainedAddressed++
         if (seen.has(m.id)) health.handedToHost++
         if (wakes[m.id]?.uncertain) health.uncertainWakeRecorded++
         else if (wakes[m.id]) health.wakeRecorded++
         if (m.type === 'answer') {
           const question = s.room.message(m.inReplyTo)
-          if (question?.type === 'question' && question.from === s.me.name && question.to === m.from) health.answersRecorded++
+          if (question?.type === 'question' && answerMatchesQuestion(question, m, alias)) health.answersRecorded++
         }
       }
       for (const m of this.o.ledger.candidates(s)) if (m.to === s.me.name) {
