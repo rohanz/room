@@ -4,7 +4,7 @@ import { exitedPid } from '../../relay/test/exited-pid.js'
 import { rm } from 'node:fs/promises'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { publishFixture } from './fixtures/manifest.js'
-import { seedRegistryWorker, finishWorker, fixtureId, patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
+import { seedRegistryWorker, finishWorker, fixtureId, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, symlinkSync } from 'node:fs'
@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, manifestPaths } from '@room/shared'
 import { WorkerRegistry, closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
-import { prepareWorktree, saveDiscardPatch } from '../src/worker-git.js'
+import { prepareWorktree, saveDiscardRecovery } from '../src/worker-git.js'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
 import { decideRetire, workerRealState, type WorkerRealState } from '../src/worker-state.js'
 import { Rooms } from '../src/registry.js'
@@ -513,19 +513,17 @@ describe('git facts and lead evaluation', () => {
     r.close()
   })
 
-  it('saves only worker edits in a discard patch after a real carried commit', async () => {
+  it('saves the full discard tree after a real carried commit', async () => {
     const { dir } = repo()
     writeFileSync(join(dir, 'a'), 'lead WIP')
     const prepared = await prepareWorktree(dir, 'w', 'lead')
     const w = { ...worker(prepared.dir), base: prepared.base }
-    expect(await saveDiscardPatch(dir, w, patchPublisher(dir, w.tag))).toBeUndefined()
+    expect((await saveDiscardRecovery(dir, w)).unchanged).toBe(true)
     writeFileSync(join(w.dir, 'worker.txt'), 'worker output')
-    const patch = await saveDiscardPatch(dir, w, patchPublisher(dir, w.tag))
-    expect(patch).toBeDefined()
-    const text = readFileSync(patch!, 'utf8')
-    expect(text).toContain('worker output')
-    expect(text).not.toContain('lead WIP')
-    expect(text).not.toContain('diff --git a/a b/a')
+    const { recoveryRef } = await saveDiscardRecovery(dir, w)
+    const show = (file: string) => execFileSync('git', ['-C', dir, 'show', `${recoveryRef}:${file}`], { encoding: 'utf8' })
+    expect(show('worker.txt')).toBe('worker output')
+    expect(show('a')).toBe('lead WIP')
   })
 
   it('counts worker commits after the carried base and recognizes their merge', async () => {
@@ -748,6 +746,8 @@ it('preserves another lead same-tag successor sidecars after a stale retired res
     const { registry: workers, record } = await retiredSidecars(dir, r.s, { room: r.s.roomName })
     let spawned = false
     const original = WorkerRegistry.prototype.reserved, log = join(dir, '.room/workers/same.log')
+    // The pass only looks at a retired record that still has a log to delete.
+    mkdirSync(path.dirname(log), { recursive: true }); writeFileSync(log, 'retired transcript')
     vi.spyOn(WorkerRegistry.prototype, 'reserved').mockImplementation(async function (this: WorkerRegistry, tag) {
       const value = await original.call(this, tag)
       if (!spawned && this.commonDir === workers.commonDir && tag === 'same' && value?.id === record.id) {

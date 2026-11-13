@@ -462,11 +462,11 @@ describe('room_collect', () => {
     put(worker, '.gitignore', 'artifact.bin\nnode_modules/\n.room/\ndata/raw/\n.venv/\ndata/tmp/\n')
     put(worker, '.venv/bin/python', 'x'); put(worker, 'data/tmp/scratch.parquet', 'y'); put(worker, 'file.txt', 'worker edit\n')
     const discarded = await t.call({ tag: 'test', discard: true })
-    expect(discarded).toMatch(/^discarded test; recovery patch: \S+\.patch \(kept for a week\); branch recovery ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\); recovery patch base ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\); deleted without a copy: .*\.venv\/.*data\/tmp\//)
-    const patch = fs.readFileSync(discarded.match(/recovery patch: (\S+\.patch)/)![1], 'utf8')
-    expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/file.txt b/file.txt'])
-    const recoveryBase = discarded.match(/recovery patch base ref: (\S+)/)![1]
-    expect(git(lead, 'show', `${recoveryBase}:data/raw/static/stops.csv`)).toBe('id\n1')
+    expect(discarded).toMatch(/^discarded test; recovery ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\)/)
+    expect(discarded).toMatch(/deleted without a copy: .*\.venv\/.*data\/tmp\//)
+    const ref = discarded.match(/recovery ref: (\S+)/)![1]
+    expect(git(lead, 'show', `${ref}:file.txt`)).toBe('worker edit')
+    expect(git(lead, 'show', `${ref}:data/raw/static/stops.csv`)).toBe('id\n1')
     expect(fs.existsSync(worker)).toBe(false)
   })
 
@@ -503,7 +503,7 @@ describe('room_collect', () => {
   it('discards worker and clears its overlay, claims, scope and presence', async () => {
     const t = setup('failed')
     seedPresence(t)
-    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; recovery ref: refs/room/recovery/test/${base} (kept for seven days; worktree matches HEAD); restore: git worktree add <dir> refs/room/recovery/test/${base}`)
     await expectRetired(t)
   })
 
@@ -914,7 +914,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(true)
   })
 
-  it('discards a dirty running worker and restores committed, staged, unstaged and untracked output from one patch', async () => {
+  it('discards a dirty running worker and restores committed, staged, unstaged and untracked output from one recovery commit', async () => {
     const t = setup('running')
     put(worker, 'committed.txt', 'commit\n'); git(worker, 'add', '.'); git(worker, 'commit', '-qm', 'worker commit')
     put(worker, 'staged.txt', 'stage\n'); git(worker, 'add', '.')
@@ -932,19 +932,17 @@ describe('room_collect', () => {
     }
     try {
       const result = await t.call({ tag: 'test', discard: true })
-      expect(result).toMatch(/^discarded test; recovery patch: .*kept for a week/)
+      expect(result).toMatch(/^discarded test; recovery ref: .*kept for seven days/)
       expect(result).not.toContain('left in place because Room cannot confirm')
       expect(pidAlive(child.pid!)).toBe(false)
       expect(fs.existsSync(worker)).toBe(false)
       expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
       expect(fs.readdirSync(path.join(lead, '.room/workers'))).toEqual([])
       expect((await localWorkers(lead))).toEqual([]); expect(t.s.room.workerViews.size).toBe(0); expect(release).toHaveBeenCalled()
-      const patchDir = path.join(lead, '.git/room/registry/patches')
-      const patches = fs.readdirSync(patchDir)
-      expect(patches).toEqual(['w_test.patch'])
+      const ref = result.match(/recovery ref: (\S+)/)![1]
+      expect(fs.existsSync(path.join(lead, '.git/room/registry/patches'))).toBe(false)
       const fresh = path.join(root, 'fresh')
-      git(lead, 'worktree', 'add', '--detach', fresh, base)
-      git(fresh, 'apply', path.join(patchDir, patches[0]))
+      git(lead, 'worktree', 'add', '--detach', fresh, ref)
       for (const [p, text] of [['committed.txt', 'commit\n'], ['staged.txt', 'stage\n'], ['file.txt', 'dirty\n'], ['new.txt', 'untracked\n']]) expect(fs.readFileSync(path.join(fresh, p), 'utf8')).toBe(text)
       expect(fs.readFileSync(path.join(fresh, 'binary'))).toEqual(Buffer.from([0, 255, 128]))
       expect(fs.existsSync(path.join(fresh, 'node_modules'))).toBe(false)
@@ -962,14 +960,13 @@ describe('room_collect', () => {
     const result = await t.call({ tag: 'test', discard: true })
     expect(result).toContain('discarded test')
     expect(result).toContain('deleted without a copy: artifact.bin, rawScripts/')
-    expect(result).toContain(`branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
+    expect(result).toContain(`recovery ref: refs/room/recovery/test/`)
     expect(git(lead, 'rev-parse', `refs/room/recovery/test/${base}^{commit}`)).toBe(base)
     expect(result).not.toContain('node_modules')
     expect(fs.existsSync(worker)).toBe(false)
-    const patch = result.match(/recovery patch: (\S+\.patch)/)![1]
+    const ref = result.match(/recovery ref: (\S+)/)![1]
     const recovered = path.join(root, 'recovered')
-    git(lead, 'worktree', 'add', '--detach', recovered, `refs/room/recovery/test/${base}`)
-    git(recovered, 'apply', patch)
+    git(lead, 'worktree', 'add', '--detach', recovered, ref)
     expect(fs.readFileSync(path.join(recovered, 'file.txt'), 'utf8')).toBe('tracked edit\n')
     expect(fs.readFileSync(path.join(recovered, 'new.txt'), 'utf8')).toBe('untracked edit\n')
     expect(fs.existsSync(path.join(recovered, 'artifact.bin'))).toBe(false)
@@ -993,7 +990,7 @@ describe('room_collect', () => {
     const old = new Date(Date.now() - 8 * 86400_000)
     fs.utimesSync(path.join(lead, '.git/room/registry/patches/w_old.patch'), old, old)
     put(lead, '.room/workers/test.log', 'log')
-    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; recovery ref: refs/room/recovery/test/${base} (kept for seven days; worktree matches HEAD); restore: git worktree add <dir> refs/room/recovery/test/${base}`)
     await (await registryForDir(lead)).reconcile()
     expect(fs.existsSync(path.join(lead, '.git/room/registry/patches/w_old.patch'))).toBe(false)
     expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(true)
@@ -1003,7 +1000,7 @@ describe('room_collect', () => {
   it('keeps recent patches and another worker folder until the last cleanup', async () => {
     const t = setup(); second(t)
     put(lead, '.room/workers/second.log', 'log'); put(lead, '.room/workers/test.log', 'log')
-    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; recovery ref: refs/room/recovery/test/${base} (kept for seven days; worktree matches HEAD); restore: git worktree add <dir> refs/room/recovery/test/${base}`)
     expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(true)
     expect(await t.call({ tag: 'second' })).toContain('cleaned up second')
     expect(fs.existsSync(path.join(lead, '.room/workers'))).toBe(true)
@@ -1012,7 +1009,7 @@ describe('room_collect', () => {
 
   it('retains recovery patches younger than a week', async () => {
     const t = setup(); put(lead, '.room/discarded/recent.patch', 'recent')
-    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
+    expect(await t.call({ tag: 'test', discard: true })).toBe(`discarded test; recovery ref: refs/room/recovery/test/${base} (kept for seven days; worktree matches HEAD); restore: git worktree add <dir> refs/room/recovery/test/${base}`)
     expect(fs.readFileSync(path.join(lead, '.room/discarded/recent.patch'), 'utf8')).toBe('recent')
   })
 

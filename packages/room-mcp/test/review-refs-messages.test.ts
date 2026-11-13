@@ -7,7 +7,7 @@ it.each(['collect-no-commits', 'collect-commits', 'discard', 'discard-behind-bas
   const actual = await vi.importActual<typeof import('../src/worker-git.js')>('../src/worker-git.js')
   const loaded = await import('../src/worker-git.js')
   if (vi.isMockFunction(loaded.cleanupWorker)) loaded.cleanupWorker.mockImplementation(actual.cleanupWorker)
-  if (vi.isMockFunction(loaded.saveDiscardPatch)) loaded.saveDiscardPatch.mockImplementation(actual.saveDiscardPatch)
+  if (vi.isMockFunction(loaded.saveDiscardRecovery)) loaded.saveDiscardRecovery.mockImplementation(actual.saveDiscardRecovery)
   const { repo, head, git } = realRepo()
   if (action === 'discard-behind-base') git('commit', '--allow-empty', '-qm', 'valuable base commit')
   const base = git('rev-parse', 'HEAD'), t = setupLead(repo, base), registry = await registryForDir(repo)
@@ -23,14 +23,11 @@ it.each(['collect-no-commits', 'collect-commits', 'discard', 'discard-behind-bas
   const pins = git('for-each-ref', '--format=%(refname)', 'refs/room/recovery/')
   if (action !== 'keep') {
     const branchRef = `refs/room/recovery/lifetime/${tip}`
-    const patchBaseRef = action.startsWith('discard') ? (await registry.read(record.id))!.discard!.baseRef! : branchRef
-    expect(pins.split('\n').sort()).toEqual([...new Set([branchRef, patchBaseRef])].sort())
+    const snapshotRef = action.startsWith('discard') ? (await registry.read(record.id))!.discard!.recoveryRef! : branchRef
+    expect(pins.split('\n').sort()).toEqual([...new Set([branchRef, snapshotRef])].sort())
     expect(git('rev-parse', `${branchRef}^{commit}`)).toBe(tip)
-    expect(reply.split('branch recovery ref: ' + branchRef + ' (kept for seven days)')).toHaveLength(2)
-    if (patchBaseRef !== branchRef) {
-      expect(git('rev-parse', `${patchBaseRef}^{commit}`)).toBe(base)
-      expect(reply.split('recovery patch base ref: ' + patchBaseRef + ' (kept for seven days)')).toHaveLength(2)
-    }
+    const label = action.startsWith('discard') ? 'recovery ref: ' : 'branch recovery ref: '
+    expect(reply.split(label + snapshotRef + ' (kept for seven days')).toHaveLength(2)
   } else expect(pins).toBe('')
   expect(fs.existsSync(record.dir)).toBe(action === 'keep')
 })

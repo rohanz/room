@@ -155,7 +155,7 @@ it('allows a fresh spawn and reuse after full collection removes the previous ch
   const actual = await vi.importActual<typeof workerGit>('../src/worker-git.js')
   vi.mocked(workerGit.cleanupWorker).mockImplementation(actual.cleanupWorker)
   vi.mocked(workerGit.ignoredWorkerArtifacts).mockImplementation(actual.ignoredWorkerArtifacts)
-  vi.mocked(workerGit.saveDiscardPatch).mockImplementation(actual.saveDiscardPatch)
+  vi.mocked(workerGit.saveDiscardRecovery).mockImplementation(actual.saveDiscardRecovery)
   const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   expect(await t.leadTools.call('room_spawn', { tag: 'fresh', task: 'x' })).toContain('spawned fresh')
   const first = (await registry.reserved('fresh'))!

@@ -38,12 +38,11 @@ it.each(['unchanged', 'modified', 'deleted', 'executable', 'symlink', 'missing-b
     expect(reply).toContain('discarded test')
     expect(reply).toContain('deleted without a copy: artifact.bin')
     const record = (await (await registryForDir(lead)).read('w_test'))!
-    const base = record.discard!.baseRef!, patch = record.discard!.patch!.path
+    const base = record.discard!.recoveryRef!
     expect(reply).toContain(base)
     gc()
     const recovered = path.join(root, 'recovered-second')
     git(lead, 'worktree', 'add', '--detach', recovered, base)
-    git(recovered, 'apply', '--binary', patch)
     expect(fs.readFileSync(path.join(recovered, 'file.txt'), 'utf8')).toBe('tracked recovery\n')
     expect(fs.readFileSync(path.join(recovered, 'ordinary.txt'), 'utf8')).toBe('ordinary recovery\n')
     if (kind === 'deleted') expect(fs.existsSync(path.join(recovered, file))).toBe(false)
@@ -52,7 +51,7 @@ it.each(['unchanged', 'modified', 'deleted', 'executable', 'symlink', 'missing-b
     if (kind === 'executable') expect(fs.statSync(path.join(recovered, file)).mode & 0o111).not.toBe(0)
   })
 
-it.each(['children', 'stop', 'patch', 'cleanup', 'prune'] as const)(
+it.each(['children', 'stop', 'removing', 'cleanup', 'prune'] as const)(
   'second review crash after durable %s step keeps recoverable tree and ignored names', async step => {
     const t = setup('failed')
     put(worker, 'file.txt', 'tracked after crash\n')
@@ -72,11 +71,10 @@ it.each(['children', 'stop', 'patch', 'cleanup', 'prune'] as const)(
     await registry.replayDiscard('w_test')
     const record = (await registry.read('w_test'))!
     expect(record.archive!.summary).toContain('deleted without a copy: artifact.bin')
-    expect(record.archive!.summary).toContain(record.discard!.baseRef!)
+    expect(record.archive!.summary).toContain(record.discard!.recoveryRef!)
     gc()
     const recovered = path.join(root, 'recovered-crash')
-    git(lead, 'worktree', 'add', '--detach', recovered, record.discard!.baseRef!)
-    git(recovered, 'apply', record.discard!.patch!.path)
+    git(lead, 'worktree', 'add', '--detach', recovered, record.discard!.recoveryRef!)
     expect(fs.readFileSync(path.join(recovered, 'file.txt'), 'utf8')).toBe('tracked after crash\n')
     expect(fs.readFileSync(path.join(recovered, 'ordinary.txt'), 'utf8')).toBe('untracked after crash\n')
   })
@@ -88,13 +86,12 @@ it('second review keeps recovery pins seven days after delayed replay removes th
   const registry = await registryForDir(lead)
   const day = 86400_000, started = Date.now()
   await registry.beginDiscard('w_test', [])
-  const original = FileWorkerStore.prototype.markDiscardStep
-  const fault = vi.spyOn(FileWorkerStore.prototype, 'markDiscardStep').mockImplementation(async function (this: FileWorkerStore, id, step) {
-    const result = await original.call(this, id, step)
-    if (step === 'patch') throw new Error('crashed after patch')
-    return result
+  const original = FileWorkerStore.prototype.recordDiscardRecovery
+  const fault = vi.spyOn(FileWorkerStore.prototype, 'recordDiscardRecovery').mockImplementation(async function (this: FileWorkerStore, id, facts) {
+    await original.call(this, id, facts)
+    if (facts.recoveryRef) throw new Error('crashed after snapshot')
   })
-  try { await expect(registry.replayDiscard('w_test')).rejects.toThrow('crashed after patch') }
+  try { await expect(registry.replayDiscard('w_test')).rejects.toThrow('crashed after snapshot') }
   finally { fault.mockRestore() }
   expect(fs.existsSync(worker)).toBe(true)
   const realNow = Date.now.bind(Date)
@@ -105,11 +102,11 @@ it('second review keeps recovery pins seven days after delayed replay removes th
     expect(fs.existsSync(worker)).toBe(false)
     expect(record.archive!.summary).toContain('kept for seven days')
     // Only two days have elapsed since destructive cleanup completed.
-    expect(collectRecoveryRefs(registry.commonDir, started + 8 * day, true)).not.toContain(record.discard!.baseRef)
+    expect(collectRecoveryRefs(registry.commonDir, started + 8 * day, true)).not.toContain(record.discard!.recoveryRef)
   } finally { clock.mockRestore() }
 })
 
-it.each(['before-replay', 'after-replay'] as const)('second review re-establishes an expired patch-base pin when GC runs %s around delayed replay', async gcOrder => {
+it.each(['before-replay', 'after-replay'] as const)('second review re-establishes an expired snapshot pin when GC runs %s around delayed replay', async gcOrder => {
   const t = setup()
   const delivered = Array.from({ length: 30 }, (_, i) => `delivered ${i}`).join('\n') + '\n'
   put(worker, 'file.txt', delivered)
@@ -120,15 +117,14 @@ it.each(['before-replay', 'after-replay'] as const)('second review re-establishe
   put(lead, 'file.txt', 'lead moved on\n')
   const started = Date.now(), day = 86400_000
   await registry.beginDiscard('w_test', [])
-  const original = FileWorkerStore.prototype.markDiscardStep
-  const fault = vi.spyOn(FileWorkerStore.prototype, 'markDiscardStep').mockImplementation(async function (this: FileWorkerStore, id, step) {
-    const result = await original.call(this, id, step)
-    if (step === 'patch') throw new Error('crashed before removal')
-    return result
+  const original = FileWorkerStore.prototype.recordDiscardRecovery
+  const fault = vi.spyOn(FileWorkerStore.prototype, 'recordDiscardRecovery').mockImplementation(async function (this: FileWorkerStore, id, facts) {
+    await original.call(this, id, facts)
+    if (facts.recoveryRef) throw new Error('crashed before removal')
   })
   try { await expect(registry.replayDiscard('w_test')).rejects.toThrow('crashed before removal') }
   finally { fault.mockRestore() }
-  const ref = (await registry.read('w_test'))!.discard!.baseRef!
+  const ref = (await registry.read('w_test'))!.discard!.recoveryRef!
   const realNow = Date.now.bind(Date)
   const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 8 * day)
   try {
@@ -140,7 +136,7 @@ it.each(['before-replay', 'after-replay'] as const)('second review re-establishe
     expect(fs.existsSync(worker)).toBe(false)
     if (gcOrder === 'after-replay') collectRecoveryRefs(registry.commonDir, Date.now())
     gc()
-    expect.soft(() => git(lead, 'rev-parse', '--verify', `${ref}^{commit}`)).not.toThrow()
-    expect.soft(() => git(lead, 'cat-file', '-t', keptBase)).not.toThrow()
+    const recoveredRef = (await registry.read('w_test'))!.discard!.recoveryRef!
+    expect(git(lead, 'show', `${recoveredRef}:file.txt`)).toBe(delivered.replace('delivered 25', 'latest worker line').trim())
   } finally { clock.mockRestore() }
 })

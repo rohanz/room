@@ -1160,7 +1160,7 @@ describe('retirement integration', () => {
     expect(await discarding).toContain('discarded money')
     expect(t.a.messages().some(m => m.type === 'note' && m.to === lead.name && /dismissed worker money/.test(m.text))).toBe(false)
     await vi.waitFor(async () => expect((await workerByTag(dir, 'money'))).toBeUndefined(), { timeout: 15_000 })
-    expect(t.a.retiredWorkers()).toMatchObject([{ name: 'rohanz+money', summary: 'discarded', files: [], outcome: 'dismissed' }])
+    expect(t.a.retiredWorkers()).toMatchObject([{ name: 'rohanz+money', summary: expect.stringMatching(/^discarded; recovery ref: refs\/room\/recovery\//), files: [], outcome: 'dismissed' }])
     expect(manifestPaths(t.a, 'rohanz+money')).toEqual([])
     await t.leadTools.shutdown()
   })

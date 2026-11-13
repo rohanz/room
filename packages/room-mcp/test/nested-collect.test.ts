@@ -130,9 +130,10 @@ preparedEach([false, true], 'force discards same-human orphan workers with neste
   expect((requireWorkerInventory(await registry.list())).every(record => record.phase === 'retired')).toBe(true)
   expect(fs.existsSync(lead.dir)).toBe(false)
   if (withCat) expect(fs.existsSync(cat.dir)).toBe(false)
-  const patches = fs.readdirSync(path.join(root, '.git/room/registry/patches')).map(name => read(root, '.git/room/registry/patches/' + name))
-  expect(patches.some(patch => patch.includes('partial lead'))).toBe(true)
-  if (withCat) expect(patches.some(patch => patch.includes('finished cat'))).toBe(true)
+  const records = requireWorkerInventory(await registry.list())
+  const ref = (tag: string) => records.find(record => record.tag === tag)!.discard!.recoveryRef!
+  expect(git(root, 'show', `${ref('lead')}:lead.txt`)).toBe('partial lead')
+  if (withCat) expect(git(root, 'show', `${ref('cat')}:cat.txt`)).toBe('finished cat')
 })
 
 preparedEach([0, -1, 2147483648], 'refuses orphan recovery with malformed lead pid %s', () => orphanBatch(false), async ({ root, lead, registry, run }, pid) => {
@@ -195,8 +196,8 @@ preparedEach([false, true], 'force discards three worker levels with missing dir
   expect((await localWorkers(root))).toEqual([])
   expect((requireWorkerInventory(await registry.list())).every(record => record.phase === 'retired')).toBe(true)
   if (!missing) {
-    const patches = fs.readdirSync(path.join(root, '.git/room/registry/patches')).map(name => read(root, '.git/room/registry/patches/' + name))
-    expect(patches.some(patch => patch.includes('third-level output'))).toBe(true)
+    const ref = requireWorkerInventory(await registry.list()).find(record => record.tag === 'kitten')!.discard!.recoveryRef!
+    expect(git(root, 'show', `${ref}:cat.txt`)).toBe('third-level output')
   }
 })
 
@@ -350,7 +351,7 @@ preparedTest('force discard of a lead detaches a grand-worker that borrows anoth
   expect(fs.existsSync(lead.dir)).toBe(false)
 })
 
-preparedTest('force discard saves a grand-worker patch and removes both levels of Git bookkeeping', async () => {
+preparedTest('force discard saves a grand-worker recovery commit and removes both levels of Git bookkeeping', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-discard-'))); temp.push(root)
   git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
   put(root, '.gitignore', '.room/\n'); put(root, 'catalog.py', 'base\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
@@ -365,8 +366,9 @@ preparedTest('force discard saves a grand-worker patch and removes both levels o
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
   expect(result).toContain('discarded cat')
   expect(result).toContain('discarded lead')
-  const patches = fs.readdirSync(path.join(root, '.git', 'room', 'registry', 'patches')).map(name => read(root, '.git/room/registry/patches/' + name))
-  expect(patches.some(patch => patch.includes('grand-worker output'))).toBe(true)
+  const registry = await registryForDir(root)
+  const ref = requireWorkerInventory(await registry.list()).find(record => record.tag === 'cat')!.discard!.recoveryRef!
+  expect(git(root, 'show', `${ref}:catalog.py`)).toBe('grand-worker output')
   expect((await localWorkers(root))).toEqual([])
   expect(room.workerViews.size).toBe(0)
   expect(git(root, 'worktree', 'list', '--porcelain')).not.toContain('prunable')

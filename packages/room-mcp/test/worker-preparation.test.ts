@@ -97,7 +97,7 @@ it.each(['collect', 'discard'] as const)('keeps pre-change established %s author
   const actual = await vi.importActual<typeof workerGit>('../src/worker-git.js')
   vi.mocked(workerGit.cleanupWorker).mockImplementation(actual.cleanupWorker)
   vi.mocked(workerGit.ignoredWorkerArtifacts).mockImplementation(actual.ignoredWorkerArtifacts)
-  vi.mocked(workerGit.saveDiscardPatch).mockImplementation(actual.saveDiscardPatch)
+  vi.mocked(workerGit.saveDiscardRecovery).mockImplementation(actual.saveDiscardRecovery)
   const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   expect(await t.leadTools.call('room_spawn', { tag: 'established', task: 'x' })).toContain('spawned established')
   const record = (await registry.reserved('established'))!

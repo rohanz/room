@@ -259,7 +259,6 @@ it.each(['pin-only', 'receipt', 'checkout-removed', 'branch-deleted'] as const)(
     await registry.beginDiscard(record.id, [])
     await registry.markDiscardStep(record.id, 'children')
     await registry.markDiscardStep(record.id, 'stop')
-    await registry.markDiscardStep(record.id, 'patch') // no patch needed for committed, unchanged files
   }
   if (stage === 'checkout-removed' || stage === 'branch-deleted') git('worktree', 'remove', record.dir)
   if (stage === 'branch-deleted') git('update-ref', '--no-deref', '-d', `refs/heads/${record.branch}`, tip)
@@ -296,7 +295,7 @@ async function realCleanup() {
   const loaded = await import('../src/worker-git.js')
   if (vi.isMockFunction(loaded.cleanupWorker)) loaded.cleanupWorker.mockImplementation(actual.cleanupWorker)
   if (vi.isMockFunction(loaded.ignoredWorkerArtifacts)) loaded.ignoredWorkerArtifacts.mockImplementation(actual.ignoredWorkerArtifacts)
-  if (vi.isMockFunction(loaded.saveDiscardPatch)) loaded.saveDiscardPatch.mockImplementation(actual.saveDiscardPatch)
+  if (vi.isMockFunction(loaded.saveDiscardRecovery)) loaded.saveDiscardRecovery.mockImplementation(actual.saveDiscardRecovery)
 }
 
 it('review: a different tip installed before operation admission is preserved before its branch is removed', async () => {

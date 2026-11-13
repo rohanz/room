@@ -1,4 +1,4 @@
-import { deleteWorkerRef, restoreWorkerRef, preserveWorkerBranch, captureWorkerBranch, operationBranchReceipt } from './worker-refs.js'
+import { recoveryRefCovers, recoveryRefDescription, deleteWorkerRef, restoreWorkerRef, preserveWorkerBranch, captureWorkerBranch, operationBranchReceipt } from './worker-refs.js'
 import { removePreparation, verifyWorkerCheckout, retainCheckout } from './worker-preparation.js'
 import { workerTagFile, withWorkerTag } from './worker-tags.js'
 import { retainedSessionMissing } from './hosts/lifecycle.js'
@@ -19,7 +19,7 @@ import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Ru
 import type { RetiredWorker, ReleasePoster } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { discardRecoveryDetails, realStateInput } from './worker-status.js'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardRecovery } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
 import { safeId, safeTag, object, tokenShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
 import { ended, WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
@@ -1010,7 +1010,7 @@ export class FileWorkerStore {
 
   async beginDiscard(id: string, children: string[]): Promise<WorkerRecord> {
     return this.update(id, old => ({ ...old, branchCleanup: this.pinOperationBranch(old), prep: ['intent', 'preparing'].includes(old.phase) ? { ...old.prep, identityRequired: true } : old.prep, phase: 'discarding',
-      discard: { children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
+      discard: old.discard?.steps.removing ? { ...old.discard, children, steps: { ...old.discard.steps, children: false } } : { children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
   }
   async markDiscardStep(id: string, step: keyof NonNullable<WorkerRecord['discard']>['steps']): Promise<WorkerRecord> {
     return this.update(id, old => {
@@ -1018,50 +1018,36 @@ export class FileWorkerStore {
       return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 }
     })
   }
-  async recordDiscardRecovery(id: string, facts: { baseRef?: string; ignored?: string[] }): Promise<void> {
+  async recordDiscardRecovery(id: string, facts: { recoveryRef?: string; unchanged?: boolean; ignored?: string[] }): Promise<void> {
     await this.update(id, old => {
       if (!old.discard || old.phase !== 'discarding') throw new Error('discard plan missing')
-      if (old.discard.baseRef && facts.baseRef && old.discard.baseRef !== facts.baseRef) throw new Error('discard patch base changed')
-      return { ...old, discard: { ...old.discard, ...facts,
+      return { ...old, discard: { ...old.discard, ...facts, ...(facts.recoveryRef ? { baseRef: undefined, patch: undefined } : {}),
         ignored: [...new Set([...(old.discard.ignored ?? []), ...(facts.ignored ?? [])])].sort() }, seq: old.seq + 1 }
     })
+  }
+  /** Reuse the first complete snapshot; a partially removed checkout cannot replace it. */
+  async ensureDiscardRecovery(id: string, leadDir: string): Promise<void> {
+    const record = this.#read(id)
+    if (!record?.discard || record.phase !== 'discarding') throw new Error('discard plan missing')
+    if (record.discard.recoveryRef) {
+      try {
+        boundedGitSync(this.commonDir, ['--git-dir', this.commonDir, 'rev-parse', '--verify', '--quiet', `${record.discard.recoveryRef}^{commit}`])
+        return
+      } catch (error) {
+        if ((error as { status?: number }).status !== 1) throw new Error(`cannot confirm discard recovery; checkout retained: ${String(error)}`)
+      }
+    }
+    const status = this.#status(id)
+    if (!status) throw new Error('worker status missing; checkout retained')
+    await this.recordDiscardRecovery(id, await saveDiscardRecovery(leadDir, realStateInput(record, status)))
   }
   async interruptDiscard(id: string, detail: string): Promise<WorkerRecord> {
     return this.update(id, old => ({ ...old, phase: 'active',
       interrupted: { op: 'discard', at: this.now(), detail }, seq: old.seq + 1 }))
   }
 
-  /** Store the hash before linking a stable patch; replay validates the published bytes. */
-  async recordDiscardPatch(id: string, bytes: Buffer): Promise<string> {
-    const file = path.join(this.root, 'patches', `${id}.patch`)
-    const sha256 = createHash('sha256').update(bytes).digest('hex')
-    const record = this.#read(id)
-    if (!record?.discard || record.phase !== 'discarding') throw new Error('discard plan missing')
-    if (record.discard.patch && record.discard.patch.path !== file) throw new Error('discard patch path changed')
-    if (record.discard.patch && record.discard.patch.sha256 !== sha256) throw new Error('discard patch changed after identity was recorded')
-    if (!record.discard.patch) await this.update(id, old => ({ ...old,
-      discard: { ...old.discard!, patch: { path: file, sha256 } }, seq: old.seq + 1 }))
-    privateStateDirectory(path.dirname(file))
-    let existing: fs.Stats | undefined
-    try { existing = fs.lstatSync(file) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    if (existing) {
-      if (existing.isFile() && createHash('sha256').update(fs.readFileSync(file)).digest('hex') === sha256) return file
-      this.quarantine(file, 'discard patch hash mismatch')
-    }
-    const scratch = path.join(this.root, 'patches', `${id}.${randomBytes(8).toString('hex')}.tmp`)
-    try {
-      const fd = fs.openSync(scratch, 'wx', 0o600)
-      try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
-      fs.linkSync(scratch, file)
-      const dir = fs.openSync(path.dirname(file), 'r')
-      try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
-      return file
-    } finally { fs.rmSync(scratch, { force: true }) }
-  }
-
-  /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
-  async replayDiscard(id: string, publishPatch: (workerId: string, bytes: Buffer) => Promise<string> = (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)): Promise<void> {
+  /** A valid journaled snapshot survives replay, including partially removed checkouts. */
+  async replayDiscard(id: string): Promise<void> {
     requireWorkerInventory(this.#list())
     let record = this.#read(id)
     if (record?.phase !== 'discarding' || !record.discard) return
@@ -1085,6 +1071,13 @@ export class FileWorkerStore {
     if (!status) return
     const { WorkerRegistry } = await import('./worker-registry.js')
     const cleanupRegistry = WorkerRegistry.fromStore(this)
+    const removalRegistry = {
+      read: cleanupRegistry.read.bind(cleanupRegistry),
+      list: cleanupRegistry.list.bind(cleanupRegistry),
+      worktreeOwner: cleanupRegistry.worktreeOwner.bind(cleanupRegistry),
+      checkoutUsers: cleanupRegistry.checkoutUsers.bind(cleanupRegistry),
+      markDiscardStep: this.markDiscardStep.bind(this),
+    }
     const own = realStateInput(record, status)
     const workers = requireWorkerInventory(this.#list()).flatMap(value => {
       const current = this.#status(value.id)
@@ -1097,7 +1090,7 @@ export class FileWorkerStore {
       const userStatus = this.#status(user.id)
       if (!userStatus || (user.phase !== 'discarding' && !['done', 'failed', 'stopped'].includes(userStatus.status))) return
       if (user.phase !== 'discarding') await this.beginDiscard(user.id, [])
-      await this.replayDiscard(user.id, publishPatch)
+      await this.replayDiscard(user.id)
       if (!['retiring', 'retired'].includes(this.#read(user.id)?.phase ?? '')) return
     }
     if (!record.outside && !borrowed && fs.existsSync(record.dir)) {
@@ -1111,7 +1104,7 @@ export class FileWorkerStore {
         const child = this.#read(childId)
         if (!child || ['retiring', 'retired'].includes(child.phase)) continue
         if (child.phase !== 'discarding') await this.beginDiscard(childId, [])
-        await this.replayDiscard(childId, publishPatch)
+        await this.replayDiscard(childId)
         if (!['retiring', 'retired'].includes(this.#read(childId)?.phase ?? '')) return
       }
       await this.markDiscardStep(id, 'children')
@@ -1157,27 +1150,21 @@ export class FileWorkerStore {
       await this.recordDiscardRecovery(id, { ignored: await ignoredWorkerArtifacts(own, leadDir) })
       record = this.#read(id)!
     }
-    if (!record.discard!.steps.patch || owned && !record.discard!.baseRef) {
-      if (owned) {
-        await saveDiscardPatch(leadDir, { ...own, base: record.discard!.baseRef ?? own.base }, bytes => publishPatch(id, bytes), baseRef => this.recordDiscardRecovery(id, { baseRef }))
-      }
-      await this.markDiscardStep(id, 'patch')
+    if (owned) {
+      await this.ensureDiscardRecovery(id, leadDir)
       record = this.#read(id)!
-    }
-    const published = record.discard!.patch
-    if (published) {
+    } else if (record.discard!.patch) {
+      // Legacy removal already happened: retain its artifacts and finish its original plan.
+      const published = record.discard!.patch
       const expected = path.join(this.root, 'patches', `${id}.patch`)
-      if (published.path !== expected) throw new Error(`discard patch path changed for ${id}`)
-      const valid = fs.existsSync(expected) && fs.lstatSync(expected).isFile()
-        && createHash('sha256').update(fs.readFileSync(expected)).digest('hex') === published.sha256
-      if (!valid) {
-        if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`)
-        await saveDiscardPatch(leadDir, { ...own, base: record.discard!.baseRef ?? own.base }, bytes => publishPatch(id, bytes), baseRef => this.recordDiscardRecovery(id, { baseRef }))
+      if (published.path !== expected || !fs.lstatSync(expected).isFile()
+        || createHash('sha256').update(fs.readFileSync(expected)).digest('hex') !== published.sha256) {
+        throw new Error(`legacy discard patch missing or changed after worktree removal: ${expected}`)
       }
     }
     if (!record.discard!.steps.cleanup) {
       if (owned) {
-        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers, registry: cleanupRegistry })) return
+        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers, registry: removalRegistry })) return
       } else if (record.outside) {
         cleanupWorkerLogs(leadDir, record)
       } else if (!borrowed) {
@@ -1189,8 +1176,9 @@ export class FileWorkerStore {
     await this.markDiscardStep(id, 'prune')
     const completed = this.#read(id)!
     const summary = borrowed ? 'detached' : 'discarded'
-      + (completed.discard?.patch ? `; recovery patch: ${completed.discard.patch.path} (kept for a week)` : '')
       + discardRecoveryDetails(completed.discard)
+      + (completed.branchCleanup?.recoveryRef && !recoveryRefCovers(this.commonDir, completed.discard?.recoveryRef, completed.branchCleanup.recoveryRef)
+        ? '; branch recovery ref: ' + recoveryRefDescription(this.commonDir, completed.branchCleanup.recoveryRef) : '')
     await this.beginRetirement(id, this.archiveOf(completed, { summary, disposition: 'discarded' }))
     } finally { if (acquired) await this.finishOperation(id) }
   }
@@ -1442,6 +1430,7 @@ export class FileWorkerStore {
         await this.writeExit(record.id, { run: run.n, code: null, at: this.now(), witnessed: false })
       }
     }
+    // Legacy patch files only (no new writer); retain the original seven-day mtime rule.
     for (const file of files(path.join(this.root, 'patches'), '.patch')) {
       const workerId = path.basename(file, '.patch')
       const owner = this.#read(workerId)

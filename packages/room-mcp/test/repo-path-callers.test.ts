@@ -13,7 +13,7 @@ import { handlers as collectHandlers } from '../src/tools/collect.js'
 import { handlers as fileHandlers, materializeMergedFile, mergedFileMode } from '../src/tools/files.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import { type HandlerState } from '../src/tools/context.js'
-import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks } from '../src/worker-git.js'
+import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks, saveDiscardRecovery } from '../src/worker-git.js'
 import type { Session } from '../src/session.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import type { LocalWorker } from '../src/worker-status.js'
@@ -140,6 +140,8 @@ it('cleanup failure never reconstructs invalid recorded paths at a public checko
   const invalid = ['../escape', 'a//b', 'a/./b', 'a/../b', '/tmp/nope']
   const w = { id: record.id, tag: 'recover', name: 'lead+recover', lead: 'lead', dir: prepared.dir, branch: prepared.branch,
     status: 'done', exitCode: 0, carriedUntracked: invalid.map(rel => ({ path: rel, sha: '0'.repeat(40) })) } as LocalWorker
+  await registry.beginDiscard(record.id, [])
+  await registry.recordDiscardRecovery(record.id, await saveDiscardRecovery(lead, { ...w, carriedUntracked: [] }))
   const baseline = await import('@room/roomd/baseline'), run = baseline.boundedGitSync
   let failed = false
   const spy = vi.spyOn(baseline, 'boundedGitSync').mockImplementation((...args) => {

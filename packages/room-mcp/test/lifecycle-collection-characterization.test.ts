@@ -76,7 +76,7 @@ describe('lifecycle collection observable contract', () => {
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('shared output\n')
   })
 
-  it('force discard stops nested workers in their own lanes and preserves their output as recovery patches', async () => {
+  it('force discard stops nested workers in their own lanes and preserves their output as recovery commits', async () => {
     const t = setup('running')
     await t.sync()
     const child = path.join(worker, '.room', 'workers', 'child')
@@ -90,8 +90,8 @@ describe('lifecycle collection observable contract', () => {
     const registry = await registryForDir(lead)
     for (const id of ['w_test', 'w_child']) expect((await registry.read(id))).toMatchObject({ phase: 'retired', discard: { steps: { cleanup: true } } })
     expect((await registry.read('w_test'))?.discard?.children).toEqual(['w_child'])
-    const patches = fs.readdirSync(path.join(registry.root, 'patches')).filter(name => name.endsWith('.patch'))
-    expect(patches.some(name => fs.readFileSync(path.join(registry.root, 'patches', name), 'utf8').includes('nested output'))).toBe(true)
+    const ref = (await registry.read('w_child'))!.discard!.recoveryRef!
+    expect(git(lead, 'show', `${ref}:file.txt`)).toBe('nested output')
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
     expect(fs.existsSync(worker)).toBe(false)
   })

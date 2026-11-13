@@ -5,6 +5,7 @@ import path from 'node:path'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { launchWorkerProcess, WorkerLaunchError } from '../src/worker-launch.js'
+import * as workerGit from '../src/worker-git.js'
 import { WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import type { Session } from '../src/session.js'
@@ -198,7 +199,7 @@ describe('reviewed worker write failures', () => {
     } finally { signal.quiesce = undefined; store.close() }
   })
 
-  it('stops the admitted host and MCP before publishing a discard patch (N2)', async () => {
+  it('stops the admitted host and MCP before pinning a discard snapshot (N2)', async () => {
     const { root, dir, git, record } = fixture()
     git('worktree', 'add', '-qb', 'room/tests', dir)
     fs.writeFileSync(path.join(dir, 'base.txt'), 'worker edit\n')
@@ -222,16 +223,17 @@ describe('reviewed worker write failures', () => {
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: host.pid! } }], seq: old.seq + 1 }))
     await store.writeReport('w_chain', { run: 1, nonce: 'nonce', chain, joinedAt: 2 })
     await store.beginDiscard('w_chain', [])
-    const original = store.recordDiscardPatch.bind(store)
-    let aliveAtPatch = true
-    vi.spyOn(store, 'recordDiscardPatch').mockImplementation(async (id, bytes) => {
-      aliveAtPatch = alive.has(host.pid!) || alive.has(mcp.pid!)
-      return original(id, bytes)
+    const original = workerGit.saveDiscardRecovery
+    let aliveAtSnapshot = true
+    const snapshot = vi.spyOn(workerGit, 'saveDiscardRecovery').mockImplementation(async (...args) => {
+      aliveAtSnapshot = alive.has(host.pid!) || alive.has(mcp.pid!)
+      return original(...args)
     })
-    await store.replayDiscard('w_chain')
+    try { await store.replayDiscard('w_chain') }
+    finally { snapshot.mockRestore() }
     expect(signals[0]).toBe(host.pid)
     expect(signals).toContain(mcp.pid)
-    expect(aliveAtPatch).toBe(false)
+    expect(aliveAtSnapshot).toBe(false)
     expect((await store.read('w_chain'))?.discard?.steps.stop).toBe(true)
   })
 

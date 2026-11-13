@@ -197,6 +197,13 @@ export function recoveryRefDescription(common: string, ref: string): string {
   return `${ref} (creation time unrecorded; retained for manual inspection)`
 }
 
+/** A snapshot's parent history can already preserve a separately captured branch tip. */
+export function recoveryRefCovers(common: string, snapshot: string | undefined, ref: string): boolean {
+  if (!snapshot) return false
+  try { run(common, ['merge-base', '--is-ancestor', `${ref}^{commit}`, `${snapshot}^{commit}`]); return true }
+  catch { return false }
+}
+
 /** Only Room-marked annotated pins expire; compare the immutable tag's exact OID. */
 export function collectRecoveryRefs(common: string, now = Date.now(), dryRun = false): string[] {
   const removed: string[] = []

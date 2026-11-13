@@ -5,7 +5,7 @@ import { requireWorkerInventory } from '../src/worker-store.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
-import { patchPublisher, workerByTag } from './registry-fixture.js'
+import { workerByTag } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 // Acceptance test for carrying the lead's uncommitted work into a new worker worktree, end to end through
 // createTools with real git repositories and the real prepareWorktree; only the process spawner is stubbed.
@@ -22,7 +22,7 @@ import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { prepareWorktree, cleanupWorker, saveDiscardPatch } from '../src/worker-git.js'
+import { prepareWorktree, cleanupWorker, saveDiscardRecovery } from '../src/worker-git.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -290,17 +290,16 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(retainedWorkerLines(path.join(repo, '.git')).join('\n')).toContain('refs/heads/room/cleanup-fails')
     expect(read(repo, 'untracked.txt')).toBe('private WIP\n')
   })
-  it('does not put unchanged copied untracked files in a discard recovery patch', async () => {
+  it('includes unchanged copied untracked files in a discard recovery tree', async () => {
     put(repo, 'notes.txt', 'lead WIP\n')
     const prepared = await prepareWorktree(repo, 'patch', 'rohanz')
     put(prepared.dir, 'keep.txt', 'worker edit\n')
-    const w = { tag: 'patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof saveDiscardPatch>[1]
-    const patch = await saveDiscardPatch(repo, w, patchPublisher(repo, w.tag))
-    expect(patch).toBeTruthy()
-    expect(fs.readFileSync(patch!, 'utf8')).toContain('diff --git a/keep.txt b/keep.txt')
-    expect(fs.readFileSync(patch!, 'utf8')).not.toContain('notes.txt')
+    const w = { tag: 'patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked } as Parameters<typeof saveDiscardRecovery>[1]
+    const { recoveryRef } = await saveDiscardRecovery(repo, w)
+    expect(git(repo, 'show', `${recoveryRef}:keep.txt`)).toBe('worker edit')
+    expect(git(repo, 'show', `${recoveryRef}:notes.txt`)).toBe('lead WIP')
   })
-  it('saves a discard patch when carried and linked paths lie under ignored directories', async () => {
+  it('saves a discard tree when carried and linked paths lie under ignored directories', async () => {
     // The databricks layout: the lead carried data/raw/static/*, and data/raw/ is ignored in the worker.
     put(repo, 'data/raw/static/stops.csv', 'id\n1\n'); put(repo, 'data/processed/out.csv', 'p\n')
     const prepared = await prepareWorktree(repo, 'ignored-parent', 'rohanz', { linkExclusions: ['data/processed'] })
@@ -308,11 +307,12 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(prepared.dir, '.gitignore', 'secret.env\nbuild/\ndata/raw/\n.venv/\ndata/processed/\n')
     put(prepared.dir, '.venv/lib/site.py', 'x\n'); put(prepared.dir, 'keep.txt', 'worker edit\n')
     fs.symlinkSync(path.join(repo, 'data/processed'), path.join(prepared.dir, 'data/processed'))
-    const w = { tag: 'ignored-parent', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked, link: ['data/processed'] } as Parameters<typeof saveDiscardPatch>[1]
-    const patch = fs.readFileSync((await saveDiscardPatch(repo, w, patchPublisher(repo, w.tag)))!, 'utf8')
-    expect(patch).toContain('diff --git a/keep.txt b/keep.txt')
-    expect(patch).toContain('diff --git a/.gitignore b/.gitignore')
-    expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/keep.txt b/keep.txt'])
+    const w = { tag: 'ignored-parent', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked, link: ['data/processed'] } as Parameters<typeof saveDiscardRecovery>[1]
+    const { recoveryRef } = await saveDiscardRecovery(repo, w)
+    expect(git(repo, 'show', `${recoveryRef}:keep.txt`)).toBe('worker edit')
+    expect(git(repo, 'show', `${recoveryRef}:data/raw/static/stops.csv`)).toBe('id\n1')
+    expect(() => git(repo, 'show', `${recoveryRef}:data/processed`)).toThrow()
+    expect(() => git(repo, 'show', `${recoveryRef}:.venv/lib/site.py`)).toThrow()
   })
   preparedTest('runs no git in finished worktrees when spawning, however much ignored output they hold', async () => {
     // Guard for the databricks report (a spawn stalled with five finished worktrees, each with a .venv).
@@ -340,7 +340,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
   it('keeps the event loop responsive during slow discard git steps', async () => {
     const prepared = await prepareWorktree(repo, 'slow-patch', 'rohanz')
     put(prepared.dir, 'keep.txt', 'worker edit\n')
-    const w = { tag: 'slow-patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base } as Parameters<typeof saveDiscardPatch>[1]
+    const w = { tag: 'slow-patch', branch: prepared.branch, dir: prepared.dir, base: prepared.base } as Parameters<typeof saveDiscardRecovery>[1]
     const bin = path.join(root, 'bin')
     const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
     put(root, 'bin/git', `#!/bin/sh\ncase "$1" in read-tree|add|diff) sleep 0.1;; esac\nexec '${realGit}' "$@"\n`, 0o755)
@@ -349,7 +349,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     let timerFired = false
     const timer = setTimeout(() => { timerFired = true }, 20)
     try {
-      expect(await saveDiscardPatch(repo, w, patchPublisher(repo, w.tag))).toBeTruthy()
+      expect(await saveDiscardRecovery(repo, w)).toBeTruthy()
       expect(timerFired).toBe(true)
     } finally {
       clearTimeout(timer)
@@ -484,7 +484,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(t.a.retiredWorkers().find(r => r.tag === 'idle')).toMatchObject({ files: [], fileCount: 0 })
   }, 30_000)
 
-  it('(5) discard keeps a recovery patch of the worker\'s changes only', async () => {
+  it('(5) discard keeps a recovery commit of the worker\'s full tree', async () => {
     leadWip()
     const t = world()
     const { w, dir } = await t.spawn('drop')
@@ -498,15 +498,11 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     let reply: string
     try { reply = await t.call('room_collect', { tag: 'drop', discard: true }) }
     finally { vi.useRealTimers(); if (oldTz === undefined) delete process.env.TZ; else process.env.TZ = oldTz }
-    const patch = /recovery patch: (\S+)/.exec(reply)?.[1]
-    expect(patch, reply).toBeTruthy()
-    expect(path.basename(patch!)).toBe(`${w.id}.patch`)
-    const text = fs.readFileSync(patch!, 'utf8')
-    expect([...text.matchAll(/^diff --git a\/(\S+) /gm)].map(m => m[1]).sort()).toEqual(['keep.txt', 'mine.txt'])
-    // It applies on the carried commit and restores exactly the worker's output there.
+    const ref = /recovery ref: (\S+)/.exec(reply)?.[1]
+    expect(ref, reply).toBeTruthy()
+    expect(git(repo, 'rev-parse', `${ref}^`)).toBe(sha)
     const fresh = path.join(root, 'fresh')
-    git(repo, 'worktree', 'add', '-q', '--detach', fresh, sha)
-    git(fresh, 'apply', patch!)
+    git(repo, 'worktree', 'add', '-q', '--detach', fresh, ref!)
     expect(read(fresh, 'keep.txt')).toBe('k1\nk2\nK3\n'); expect(read(fresh, 'mine.txt')).toBe('worker\n')
     expect(read(fresh, 'shared.txt')).toBe(lines([2, 'W']))
   }, 30_000)

@@ -135,13 +135,12 @@ describe('nested lead: a worker that leads workers', () => {
   })
 
   it('4: force-discarding a lead-worker does not destroy a grand-worker\'s uncollected output or leave git debris', async () => {
-    const { room, cat, workers } = await nestedBatch()
-    const out = await (await humanCollect(room, workers)).call({ tag: 'lead', discard: true, force: true })
-    const catEdit = 'Raises KeyError for unknown products'
-    const archive = path.join(top, '.git', 'room', 'registry', 'patches')
-    const patches = fs.existsSync(archive) ? fs.readdirSync(archive).map(f => read(archive, f)) : []
-    const recoverable = (fs.existsSync(path.join(cat.dir, 'api/catalog.py')) && read(cat.dir, 'api/catalog.py').includes(catEdit)) || patches.some(p => p.includes(catEdit))
-    expect({ out, recoverable }).toMatchObject({ recoverable: true })
+    const { room, cat, catW, workers } = await nestedBatch()
+    const { call, registry } = await humanCollect(room, workers)
+    const out = await call({ tag: 'lead', discard: true, force: true })
+    expect(out).toContain('discarded cat')
+    const ref = (await registry.read(fixtureId(catW)))!.discard!.recoveryRef!
+    expect(git(top, 'show', `${ref}:api/catalog.py`)).toContain('Raises KeyError for unknown products')
     expect(prunable()).toEqual([])
     // A branch without its worktree is debris unless the worktree survived.
     if (!fs.existsSync(cat.dir)) expect(git(top, 'branch', '--list', 'room/cat')).toBe('')

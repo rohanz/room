@@ -26,7 +26,7 @@ it.each(['collect', 'discard'] as const)('review refs3: %s reports a pin even wh
   const actual = await vi.importActual<typeof import('../src/worker-git.js')>('../src/worker-git.js')
   const loaded = await import('../src/worker-git.js')
   if (vi.isMockFunction(loaded.cleanupWorker)) loaded.cleanupWorker.mockImplementation(actual.cleanupWorker)
-  if (vi.isMockFunction(loaded.saveDiscardPatch)) loaded.saveDiscardPatch.mockImplementation(actual.saveDiscardPatch)
+  if (vi.isMockFunction(loaded.saveDiscardRecovery)) loaded.saveDiscardRecovery.mockImplementation(actual.saveDiscardRecovery)
   const { repo, head, git } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   expect(await t.leadTools.call('room_spawn', { tag: 'refs3', task: 'review', carry: false })).toContain('spawned refs3')
   const record = (await registry.reserved('refs3'))!

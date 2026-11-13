@@ -11,7 +11,7 @@ it.each(['local-replacement', 'foreign-parent'] as const)('reports retained %s d
   const loaded = await import('../src/worker-git.js')
   if (vi.isMockFunction(loaded.cleanupWorker)) loaded.cleanupWorker.mockImplementation(actual.cleanupWorker)
   if (vi.isMockFunction(loaded.ignoredWorkerArtifacts)) loaded.ignoredWorkerArtifacts.mockImplementation(actual.ignoredWorkerArtifacts)
-  if (vi.isMockFunction(loaded.saveDiscardPatch)) loaded.saveDiscardPatch.mockImplementation(actual.saveDiscardPatch)
+  if (vi.isMockFunction(loaded.saveDiscardRecovery)) loaded.saveDiscardRecovery.mockImplementation(actual.saveDiscardRecovery)
   const { repo, head } = workspaceRepo(), tag = 'retained-deps'
   scratchRepos.push(repo)
   fs.writeFileSync(path.join(repo, 'node_modules/.bin/shim.cmd'), 'dependency shim')

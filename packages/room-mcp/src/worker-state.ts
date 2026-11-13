@@ -187,7 +187,7 @@ export function decideDiscard(s: WorkerRealState): DiscardDecision {
 /**
  * Nothing left to collect, copy, resume or recover: the host process is gone, the run is no longer running, the
  * checkout no longer exists and the recorded branch is absent from this clone. Collect, copy and resume all need the
- * checkout, and a recovery patch or branch needs the checkout or the branch. Needs the branch and process probes.
+ * checkout, and a recovery commit or branch needs the checkout or the branch. Needs the branch and process probes.
  */
 export function decideNothingToCollect(s: WorkerRealState): boolean {
   return s.worktree === 'vanished' && s.branch === 'absent' && processExited(s) && s.status !== 'running'

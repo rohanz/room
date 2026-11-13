@@ -3,7 +3,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkerRegistry } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
@@ -155,41 +154,7 @@ describe('registry write paths', () => {
     expect((await store.read(record.id))?.runs[0].posted).toBe('wk:w_write:1')
   })
 
-  it('requires a hash-matching stable patch through discard replay', async () => {
-    const { root, record } = fixture()
-    const store = await open(root)
-    await store.writeIntent(record)
-    await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
-    await store.beginDiscard(record.id, [])
-    await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
-    const patch = path.join(root, 'room/registry/patches/w_write.patch')
-    expect(fs.readFileSync(patch, 'utf8')).toBe('patch body')
-    await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
-    expect(fs.readdirSync(path.dirname(patch))).toEqual(['w_write.patch'])
-    fs.writeFileSync(patch, 'wrong')
-    await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
-    expect(fs.readFileSync(patch, 'utf8')).toBe('patch body')
-    expect(fs.readdirSync(path.join(root, 'room/registry/quarantine')).length).toBe(1)
-  })
-
-  it('publishes the recorded patch identity after interruption before or after linking', async () => {
-    const { root, record } = fixture()
-    const store = await open(root)
-    await store.writeIntent(record)
-    await store.beginDiscard(record.id, [])
-    const bytes = Buffer.from('recovery patch')
-    const file = path.join(root, 'room/registry/patches/w_write.patch')
-    const sha256 = createHash('sha256').update(bytes).digest('hex')
-    await mutateWorkerFixture(store, record.id, old => ({ ...old,
-      discard: { ...old.discard!, patch: { path: file, sha256 } }, seq: old.seq + 1 }))
-    expect(fs.existsSync(file)).toBe(false)
-    await store.recordDiscardPatch(record.id, bytes)
-    expect(fs.readFileSync(file)).toEqual(bytes)
-    await store.recordDiscardPatch(record.id, bytes)
-    expect(fs.readdirSync(path.dirname(file))).toEqual(['w_write.patch'])
-  })
-
-  it('replays an abandoned discard plan and retires after publishing its patch', async () => {
+  it('replays an abandoned discard plan and retires after pinning its worktree', async () => {
     const { root, record } = fixture()
     const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
     git(root, 'init', '-q')
@@ -210,9 +175,10 @@ describe('registry write paths', () => {
     await lead.beginDiscard(record.id, [])
     const observer = await open(root, 'observer', 'dead')
     expect((await observer.read(record.id))?.phase).toBe('retiring')
-    expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })
+    expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, removing: true, cleanup: true, prune: true })
     expect(fs.existsSync(record.dir)).toBe(false)
-    expect(fs.readFileSync(path.join(lead.root, 'patches/w_write.patch'), 'utf8')).toContain('recover me')
+    const ref = (await observer.read(record.id))!.discard!.recoveryRef!
+    expect(git(root, 'show', `${ref}:change.txt`)).toBe('recover me')
   }, 30_000)
 
   it('restores an interrupted collect to active with a partial apply warning', async () => {

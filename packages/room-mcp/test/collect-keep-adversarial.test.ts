@@ -180,7 +180,7 @@ describe('adversarial kept collection lifecycle', () => {
     await expectRetired(t, kept, 'collected')
   })
 
-  it('discard after keep preserves the lead edit and a recovery patch containing only uncollected work', async () => {
+  it('discard after keep preserves the lead edit and a recovery tree containing the worker output', async () => {
     const t = await harness()
     put(worker, 'file.txt', 'already collected\n')
     const before = (await t.record())
@@ -189,16 +189,14 @@ describe('adversarial kept collection lifecycle', () => {
     put(lead, 'file.txt', 'lead revised collected work\n')
     put(worker, 'later.txt', 'recover this\n')
     const out = await t.call({ tag: 'test', discard: true })
-    expect(out).toContain('discarded test'); expect(out).toContain('recovery patch:')
-    const patch = read(lead, `.git/room/registry/patches/${kept.id}.patch`)
-    expect(patch).toContain('recover this'); expect(patch).not.toContain('diff --git a/file.txt')
+    expect(out).toContain('discarded test'); expect(out).toContain('recovery ref:')
+    const ref = out.match(/recovery ref: (\S+)/)![1]
     expect(read(lead, 'file.txt')).toBe('lead revised collected work\n'); expect(fs.existsSync(path.join(lead, 'later.txt'))).toBe(false)
     expect(read(lead, 'stable.txt')).toBe('stable base\n')
-    // Prove the recovery artifact can restore the new bytes against the documented kept baseline.
+    // Prove the recovery artifact can restore the new bytes from the named snapshot.
     const recovery = path.join(root, 'recover')
-    git(lead, 'worktree', 'add', '-q', '--detach', recovery, kept.base!)
+    git(lead, 'worktree', 'add', '-q', '--detach', recovery, ref)
     try {
-      git(recovery, 'apply', path.join(lead, '.git/room/registry/patches', `${kept.id}.patch`))
       expect(read(recovery, 'file.txt')).toBe('already collected\n'); expect(read(recovery, 'later.txt')).toBe('recover this\n')
     } finally { git(lead, 'worktree', 'remove', '--force', recovery) }
     await expectRetired(t, kept, 'discarded')

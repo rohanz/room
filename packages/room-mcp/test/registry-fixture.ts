@@ -14,16 +14,6 @@ import type { LocalWorker, WorkerRecord } from '../src/worker-status.js'
 import { stampFixtureWorker } from './fixtures/manifest.js'
 import { finishFixtureProcess, fixtureProcess } from './fixtures/process-liveness.js'
 
-/** A local artifact sink for direct saveDiscardPatch tests. */
-export function patchPublisher(dir: string, tag: string): (bytes: Buffer) => Promise<string> {
-  return async bytes => {
-    const file = path.join(dir, '.room', 'discarded', `${tag}.patch`)
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, bytes)
-    return file
-  }
-}
-
 /** Seed a durable record for tests of operations formerly stored in room-carry JSON. */
 export async function seedRegistryWorker(dir: string, tag: string, patch: Partial<WorkerRecord> = {}): Promise<{ registry: WorkerRegistry; record: WorkerRecord }> {
   const common = await gitCommonDir(dir)

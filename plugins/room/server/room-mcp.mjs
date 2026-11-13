@@ -16827,7 +16827,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net3 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes10, createHash: createHash30 } = __require("crypto");
+    var { randomBytes: randomBytes10, createHash: createHash29 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -17495,7 +17495,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest2 = createHash30("sha1").update(key3 + GUID).digest("base64");
+        const digest2 = createHash29("sha1").update(key3 + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest2) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -17864,7 +17864,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http2 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash30 } = __require("crypto");
+    var { createHash: createHash29 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -18171,7 +18171,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest2 = createHash30("sha1").update(key3 + GUID).digest("base64");
+        const digest2 = createHash29("sha1").update(key3 + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -32169,6 +32169,15 @@ function recoveryRefDescription(common, ref) {
   }
   return `${ref} (creation time unrecorded; retained for manual inspection)`;
 }
+function recoveryRefCovers(common, snapshot2, ref) {
+  if (!snapshot2) return false;
+  try {
+    run2(common, ["merge-base", "--is-ancestor", `${ref}^{commit}`, `${snapshot2}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function collectRecoveryRefs(common, now = Date.now(), dryRun = false) {
   const removed = [];
   let refs;
@@ -33245,8 +33254,8 @@ function exitReason(exit) {
   if (exit.signal) return `killed by ${exit.signal}`;
   return exit.code != null ? `exit ${exit.code}` : HOST_ENDED;
 }
-function discardRecoveryDetails(plan2, branchRef) {
-  return (plan2?.baseRef && plan2.baseRef !== branchRef ? `; recovery patch base ref: ${plan2.baseRef} (kept for seven days)` : "") + (plan2?.ignored?.length ? `; deleted without a copy: ${plan2.ignored.join(", ")}` : "");
+function discardRecoveryDetails(plan2) {
+  return (plan2?.recoveryRef ? `; recovery ref: ${plan2.recoveryRef} (kept for seven days${plan2.unchanged ? "; worktree matches HEAD" : ""}); restore: git worktree add <dir> ${plan2.recoveryRef}` : plan2?.patch ? `; legacy recovery patch: ${plan2.patch.path}${plan2.baseRef ? " (base: " + plan2.baseRef + ")" : ""}` : plan2?.baseRef ? `; legacy recovery ref: ${plan2.baseRef}` : "") + (plan2?.ignored?.length ? `; deleted without a copy: ${plan2.ignored.join(", ")}` : "");
 }
 function idleClaimsDue(input) {
   return input.host === "shared-app-server" && (input.heldClaims > 0 || input.hasScope === true) && Number.isFinite(input.lastActivityMs) && Number.isFinite(input.nowMs) && input.nowMs - input.lastActivityMs >= IDLE_CLAIM_RELEASE_MS;
@@ -41780,7 +41789,7 @@ async function removeCollectedCheckout(s, record2, w, processes, o = {}) {
         ...preservation.uncollected.length ? [`uncollected work: ${preservation.uncollected.join(", ")}`] : [],
         ...preservation.commitsAfterCollection ? [`commits after collection: ${preservation.commitsAfterCollection.sha} ${preservation.commitsAfterCollection.paths.join(", ") || "(no changed paths)"}`] : []
       ];
-      return { removed: false, reason: details.join("; ") || "its worktree could not be removed safely; discard=true removes it with a recovery patch" };
+      return { removed: false, reason: details.join("; ") || "its worktree could not be removed safely; discard=true removes it with a recovery commit" };
     }
   } catch (error2) {
     return { removed: false, reason: "cleanup incomplete: " + (error2 instanceof Error ? error2.message : String(error2)).slice(0, 300) };
@@ -46939,7 +46948,6 @@ var init_files = __esm({
 import fs55 from "node:fs";
 import os13 from "node:os";
 import path56 from "node:path";
-import { createHash as createHash21 } from "node:crypto";
 function assertNewWorkerWorktree(repoDir, tag) {
   const rel = path56.join(WORKERS_DIR, tag);
   if (fs55.lstatSync(path56.join(repoDir, rel), { throwIfNoEntry: false }))
@@ -47220,8 +47228,8 @@ function prepareWorkerLinks(repoDir, workerDir, requested) {
   for (const target of attempted) clearRetainedWorkerItem(commonGitDirFromDotGit(repoDir), "file", target);
   return links.map((l) => l.p);
 }
-function patchArgs(base, exclusions, staged = false) {
-  return ["diff", ...staged ? ["--cached"] : [], "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", base, "--", ".", ...exclusions];
+function patchArgs(base, exclusions) {
+  return ["diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", base, "--", ".", ...exclusions];
 }
 function retainUntrackedTree(dir, tag, paths, owner) {
   if (!paths.length) return void 0;
@@ -47490,40 +47498,22 @@ async function prepareWorktreeAttempt(repoDir, tag, leadName, options, retry) {
     return { dir, branch, created: true, branchCreated: true, witness, branchOid, previousCarryRefs, base, carryFailed: true, carryError: e.message };
   }
 }
-function discardBaseCommit(tag, ref) {
-  const prefix2 = `refs/room/recovery/${tag}/`;
-  const oid = ref.startsWith(prefix2) ? ref.slice(prefix2.length) : "";
-  if (!/^[a-f0-9]{40,64}$/.test(oid)) throw new Error(`invalid discard recovery base ref: ${ref}`);
-  return oid;
-}
 function readyDiscardRecovery(common, w, plan2, refs) {
-  if (!plan2.baseRef) throw new Error("discard recovery base ref missing; checkout retained");
-  const base = discardBaseCommit(w.tag, plan2.baseRef);
+  const ref = plan2.recoveryRef, prefix2 = `refs/room/recovery/${w.tag}/`;
+  const tip = ref?.startsWith(prefix2) ? ref.slice(prefix2.length) : "";
+  if (!/^[a-f0-9]{40,64}$/.test(tip)) throw new Error("discard recovery ref missing or invalid; checkout retained");
   try {
-    boundedGitSync(common, ["--git-dir", common, "rev-parse", "--verify", `${base}^{commit}`]);
+    boundedGitSync(common, ["--git-dir", common, "cat-file", "-e", `${tip}^{commit}`]);
   } catch {
-    throw new Error(`discard recovery base commit ${base} is missing; checkout retained`);
+    throw new Error(`discard recovery commit ${tip} is missing; checkout retained`);
   }
-  let patchFd;
-  try {
-    if (plan2.patch) {
-      const expected = path56.join(common, "room", "registry", "patches", `${w.id}.patch`);
-      patchFd = fs55.openSync(expected, fs55.constants.O_RDONLY | (fs55.constants.O_NOFOLLOW ?? 0));
-      if (!fs55.fstatSync(patchFd).isFile() || createHash21("sha256").update(fs55.readFileSync(patchFd)).digest("hex") !== plan2.patch.sha256) {
-        throw new Error(`discard patch missing or changed: ${expected}`);
-      }
-    }
-    for (const ref of /* @__PURE__ */ new Set([...refs, plan2.baseRef])) {
-      const pin = preserveWorkerBranch(common, w, { tip: discardBaseCommit(w.tag, ref) }, true);
-      if (!pin.recoveryRef) throw new Error(pin.reason ?? `cannot preserve recovery ref ${ref}`);
-    }
-    if (patchFd !== void 0) {
-      const now = Date.now() / 1e3;
-      fs55.futimesSync(patchFd, now, now);
-      fs55.fsyncSync(patchFd);
-    }
-  } finally {
-    if (patchFd !== void 0) fs55.closeSync(patchFd);
+  const [checkoutHead, capturedHead] = boundedGitSync(w.dir, ["rev-parse", "HEAD", plan2.unchanged ? tip : `${tip}^`]).toString().trim().split("\n");
+  if (checkoutHead !== capturedHead) throw new Error("checkout HEAD changed after discard snapshot; checkout retained");
+  const pin = preserveWorkerBranch(common, w, { tip }, true);
+  if (pin.recoveryRef !== ref) throw new Error(pin.reason ?? "cannot confirm discard recovery ref; checkout retained");
+  for (const branchRef of refs) if (!recoveryRefCovers(common, ref, branchRef)) {
+    const renewed = preserveWorkerBranch(common, w, { tip: branchRef.split("/").at(-1) }, true);
+    if (renewed.recoveryRef !== branchRef) throw new Error(renewed.reason ?? "cannot confirm branch recovery ref; checkout retained");
   }
 }
 async function cleanupWorker(leadDir, w, options = {}) {
@@ -47594,21 +47584,16 @@ async function cleanupWorker(leadDir, w, options = {}) {
       return false;
     }
     const recoveryRefs = new Set(branchCleanup.recoveryRef ? [branchCleanup.recoveryRef] : []);
-    await withGitWorktreeOperation(common, () => {
+    await withGitWorktreeOperation(common, async () => {
       verify();
       if (discarded) {
-        let branch = "";
-        try {
-          branch = boundedGitSync(w.dir, ["symbolic-ref", "--no-recurse", "-q", "HEAD"]).toString().trim();
-        } catch {
+        if (!ownerRecord?.discard) throw new Error("discard recovery plan missing; checkout retained");
+        if (!ownerRecord.discard.steps.removing) {
+          readyDiscardRecovery(common, w, ownerRecord.discard, recoveryRefs);
+          await registry2.markDiscardStep(w.id, "removing");
+          verify();
         }
-        if (branch !== `refs/heads/${w.branch}`) {
-          const checkoutHead = boundedGitSync(w.dir, ["rev-parse", "HEAD"]).toString().trim();
-          const checkoutPin = preserveWorkerBranch(common, w, { tip: checkoutHead });
-          if (!checkoutPin.recoveryRef) throw new Error(`cannot preserve checkout HEAD ${checkoutHead}`);
-          recoveryRefs.add(checkoutPin.recoveryRef);
-        }
-        if (ownerRecord?.discard) readyDiscardRecovery(common, w, ownerRecord.discard, recoveryRefs);
+        readyDiscardRecovery(common, w, ownerRecord.discard, recoveryRefs);
       }
       boundedGitSync(common, ["--git-dir", common, "-c", "core.hooksPath=/dev/null", "worktree", "remove", ...collected ? ["--force"] : [], w.dir]);
     });
@@ -47617,7 +47602,8 @@ async function cleanupWorker(leadDir, w, options = {}) {
     if (preservation) preservation.recoveryRefs = [...recoveryRefs];
     else for (const ref of recoveryRefs) console.info(`worker ${w.tag} branch recovery ref: ${recoveryRefDescription(common, ref)}`);
   } catch (error2) {
-    const pinned = branchCleanup.recoveryRef ? `branch recovery ref: ${recoveryRefDescription(common, branchCleanup.recoveryRef)}; ` : "";
+    const snapshot2 = ownerRecord?.discard?.recoveryRef;
+    const pinned = (snapshot2 ? `recovery ref: ${recoveryRefDescription(common, snapshot2)}; ` : "") + (branchCleanup.recoveryRef && !recoveryRefCovers(common, snapshot2, branchCleanup.recoveryRef) ? `branch recovery ref: ${recoveryRefDescription(common, branchCleanup.recoveryRef)}; ` : "");
     throw new Error(pinned + retainCheckout(common, w, `cleanup incomplete: ${error2 instanceof Error ? error2.message : String(error2)}; inspect retained files and refs before retrying`));
   }
   if (w.id) {
@@ -47655,62 +47641,55 @@ function cleanupWorkerLogs(leadDir, record2, ready = () => true) {
     return true;
   });
 }
-async function saveDiscardPatch(leadDir, w, publish2, recordBase) {
+async function saveDiscardRecovery(leadDir, w) {
   const scratch = fs55.mkdtempSync(path56.join(os13.tmpdir(), "room-discard-"));
-  const common = await realGitCommonDir(leadDir);
-  let keepScratch = false;
   try {
+    const common = await realGitCommonDir(leadDir);
     const branch = operationBranchReceipt(common, w.id);
     if (branch?.reason) throw new Error(branch.reason);
-    const run3 = (args2, wholeTreePaths) => boundedGit(w.dir, args2, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path56.join(scratch, "index") });
-    const fork = w.base?.startsWith("refs/room/recovery/") ? discardBaseCommit(w.tag, w.base) : w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
-    let base = (await run3(["rev-parse", "--verify", `${fork}^{commit}`])).toString().trim();
-    await run3(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
-    const unchanged = carriedUnchangedPaths(workerBaseline(w));
-    const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map((p) => ":(exclude,literal)" + p)];
-    if (unchanged.size) {
-      const env = { ...process.env, GIT_INDEX_FILE: path56.join(scratch, "base-index") };
-      const baseRun = (args2) => boundedGit(w.dir, args2, UNKNOWN_WHOLE_TREE_PATHS, env);
-      await baseRun(["read-tree", base]);
-      const carried = (w.carriedUntracked ?? []).filter((p) => unchanged.has(p.path));
-      const hashes = carriedContentHashes(w.dir, carried.map((p) => p.path), true);
-      if (carried.some((p, i) => hashes[i] !== p.sha)) throw new Error("carried input changed during discard; checkout retained");
-      const entries = carried.map((p) => {
-        const mode2 = fs55.lstatSync(path56.join(w.dir, p.path)).isSymbolicLink() ? "120000" : p.mode && p.mode & 73 ? "100755" : "100644";
-        return `${mode2} ${p.sha}	${p.path}\0`;
-      }).join("");
-      const info = path56.join(scratch, "base-entries");
-      fs55.writeFileSync(info, entries, { mode: 384 });
-      boundedGitSync(w.dir, ["update-index", "-z", "--index-info"], { env, stdinFile: info, wholeTreePaths: unchanged.size });
-      const tree = (await baseRun(["write-tree"])).toString().trim();
-      if (tree !== (await baseRun(["rev-parse", `${base}^{tree}`])).toString().trim()) {
-        base = (await baseRun(["-c", "user.name=Room", "-c", "user.email=room@localhost", "commit-tree", tree, "-p", base, "-m", "Room discard recovery base"])).toString().trim();
+    const run3 = (args2) => boundedGit(w.dir, args2, UNKNOWN_WHOLE_TREE_PATHS, { ...process.env, GIT_INDEX_FILE: path56.join(scratch, "index") });
+    const head = (await run3(["rev-parse", "--verify", "HEAD^{commit}"])).toString().trim();
+    await run3(["read-tree", head]);
+    await run3(["add", "-A", "--", "."]);
+    const trackedIgnored = (await git(w.dir, ["ls-files", "--cached", "--ignored", "--exclude-standard", "-z"])).split("\0").filter(Boolean);
+    const candidates = /* @__PURE__ */ new Set([...trackedIgnored, ...(w.carriedUntracked ?? []).map((p) => p.path)]);
+    const explicit = [...candidates].filter((p) => {
+      if (workerOwnedPaths(w).includes(p)) return false;
+      try {
+        const stat4 = fs55.lstatSync(path56.join(w.dir, p));
+        return stat4.isFile() || stat4.isSymbolicLink();
+      } catch (error2) {
+        if (["ENOENT", "ENOTDIR"].includes(error2.code ?? "")) return false;
+        throw error2;
       }
+    });
+    if (explicit.length) {
+      const paths = path56.join(scratch, "paths");
+      fs55.writeFileSync(paths, explicit.map((p) => ":(literal)" + p + "\0").join(""), { mode: 384 });
+      await run3(["add", "-f", "--pathspec-from-file=" + paths, "--pathspec-file-nul"]);
     }
-    await run3(["add", "-A", "--", "."], UNKNOWN_WHOLE_TREE_PATHS);
-    const patch = await run3(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
-    const pin = preserveWorkerBranch(common, w, { tip: base });
-    if (!pin.recoveryRef) throw new Error(pin.reason ?? "could not preserve discard patch base");
-    await recordBase?.(pin.recoveryRef);
-    if (!patch.length) return void 0;
-    const verifyDir = path56.join(scratch, "verify");
-    const verifyPatch = path56.join(scratch, "verify.patch");
-    fs55.writeFileSync(verifyPatch, patch, { mode: 384 });
-    privateStateDirectory(verifyDir, { exclusive: true });
-    const root = rootIdentity(verifyDir);
-    keepScratch = true;
-    await internalGit(leadDir, ["worktree", "add", "-q", "--detach", verifyDir, base]);
-    const witness = witnessPreparation(verifyDir, "HEAD", preparationIdentity(), root, base);
-    try {
-      boundedGitSync(verifyDir, ["apply", "--binary", verifyPatch]);
-    } finally {
-      await removePreparation(common, verifyDir, witness, false);
-      keepScratch = false;
-    }
-    return publish2(patch);
+    if (w.link?.length) await run3(["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...w.link.map((p) => ":(literal)" + p)]);
+    const tree = (await run3(["write-tree"])).toString().trim();
+    const unchanged = tree === (await run3(["rev-parse", `${head}^{tree}`])).toString().trim();
+    const tip = unchanged ? head : (await run3([
+      "-c",
+      "user.name=Room",
+      "-c",
+      "user.email=room@localhost",
+      "-c",
+      "commit.gpgsign=false",
+      "commit-tree",
+      tree,
+      "-p",
+      head,
+      "-m",
+      "Room discard recovery"
+    ])).toString().trim();
+    const pin = preserveWorkerBranch(common, w, { tip });
+    if (!pin.recoveryRef) throw new Error(pin.reason ?? "could not preserve discard recovery commit");
+    return { recoveryRef: pin.recoveryRef, unchanged };
   } finally {
-    if (keepScratch) retainWorkerItem(common, { kind: "directory", path: scratch, id: w.id, tag: w.tag, reason: "discard verification cleanup could not prove ownership; retained in place" });
-    else fs55.rmSync(scratch, { recursive: true, force: true });
+    fs55.rmSync(scratch, { recursive: true, force: true });
   }
 }
 function saveWorkerScratch(leadRoot, workers) {
@@ -47862,7 +47841,7 @@ var init_worker_git = __esm({
 // packages/room-mcp/src/worker-file-store.ts
 import fs56 from "node:fs";
 import path57 from "node:path";
-import { createHash as createHash22, randomBytes as randomBytes5 } from "node:crypto";
+import { createHash as createHash21, randomBytes as randomBytes5 } from "node:crypto";
 import { performance as performance5 } from "node:perf_hooks";
 function cached2(file2, load2, slot = file2, validate2 = false) {
   const local = snapshotReads?.get(slot);
@@ -47966,6 +47945,7 @@ var init_worker_file_store = __esm({
     init_worker_tags();
     init_lifecycle();
     init_src3();
+    init_baseline();
     init_src();
     init_leases2();
     init_run_log_facts();
@@ -48560,7 +48540,7 @@ var init_worker_file_store = __esm({
         }
       }
       #factRevision(query2) {
-        const hash3 = createHash22("sha256").update(this.commonDir).update(JSON.stringify(query2 ?? {}));
+        const hash3 = createHash21("sha256").update(this.commonDir).update(JSON.stringify(query2 ?? {}));
         const addFile = (file2) => {
           let text2;
           try {
@@ -48701,7 +48681,7 @@ var init_worker_file_store = __esm({
       }
       async withCollectLease(worktree, work) {
         const canonical = fs56.realpathSync(worktree);
-        const key3 = createHash22("sha256").update(canonical).digest("hex");
+        const key3 = createHash21("sha256").update(canonical).digest("hex");
         const file2 = path57.join(this.root, "collect", `${key3}.json`);
         const deadline = performance5.now() + GUARD_WAIT_MS3;
         for (; ; ) {
@@ -48986,7 +48966,7 @@ var init_worker_file_store = __esm({
           branchCleanup: this.pinOperationBranch(old),
           prep: ["intent", "preparing"].includes(old.phase) ? { ...old.prep, identityRequired: true } : old.prep,
           phase: "discarding",
-          discard: { children, steps: {} },
+          discard: old.discard?.steps.removing ? { ...old.discard, children, steps: { ...old.discard.steps, children: false } } : { children, steps: {} },
           interrupted: void 0,
           seq: old.seq + 1
         }));
@@ -49000,13 +48980,29 @@ var init_worker_file_store = __esm({
       async recordDiscardRecovery(id3, facts) {
         await this.update(id3, (old) => {
           if (!old.discard || old.phase !== "discarding") throw new Error("discard plan missing");
-          if (old.discard.baseRef && facts.baseRef && old.discard.baseRef !== facts.baseRef) throw new Error("discard patch base changed");
           return { ...old, discard: {
             ...old.discard,
             ...facts,
+            ...facts.recoveryRef ? { baseRef: void 0, patch: void 0 } : {},
             ignored: [.../* @__PURE__ */ new Set([...old.discard.ignored ?? [], ...facts.ignored ?? []])].sort()
           }, seq: old.seq + 1 };
         });
+      }
+      /** Reuse the first complete snapshot; a partially removed checkout cannot replace it. */
+      async ensureDiscardRecovery(id3, leadDir) {
+        const record2 = this.#read(id3);
+        if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
+        if (record2.discard.recoveryRef) {
+          try {
+            boundedGitSync(this.commonDir, ["--git-dir", this.commonDir, "rev-parse", "--verify", "--quiet", `${record2.discard.recoveryRef}^{commit}`]);
+            return;
+          } catch (error2) {
+            if (error2.status !== 1) throw new Error(`cannot confirm discard recovery; checkout retained: ${String(error2)}`);
+          }
+        }
+        const status = this.#status(id3);
+        if (!status) throw new Error("worker status missing; checkout retained");
+        await this.recordDiscardRecovery(id3, await saveDiscardRecovery(leadDir, realStateInput(record2, status)));
       }
       async interruptDiscard(id3, detail) {
         return this.update(id3, (old) => ({
@@ -49016,53 +49012,8 @@ var init_worker_file_store = __esm({
           seq: old.seq + 1
         }));
       }
-      /** Store the hash before linking a stable patch; replay validates the published bytes. */
-      async recordDiscardPatch(id3, bytes) {
-        const file2 = path57.join(this.root, "patches", `${id3}.patch`);
-        const sha256 = createHash22("sha256").update(bytes).digest("hex");
-        const record2 = this.#read(id3);
-        if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
-        if (record2.discard.patch && record2.discard.patch.path !== file2) throw new Error("discard patch path changed");
-        if (record2.discard.patch && record2.discard.patch.sha256 !== sha256) throw new Error("discard patch changed after identity was recorded");
-        if (!record2.discard.patch) await this.update(id3, (old) => ({
-          ...old,
-          discard: { ...old.discard, patch: { path: file2, sha256 } },
-          seq: old.seq + 1
-        }));
-        privateStateDirectory(path57.dirname(file2));
-        let existing;
-        try {
-          existing = fs56.lstatSync(file2);
-        } catch (error2) {
-          if (error2.code !== "ENOENT") throw error2;
-        }
-        if (existing) {
-          if (existing.isFile() && createHash22("sha256").update(fs56.readFileSync(file2)).digest("hex") === sha256) return file2;
-          this.quarantine(file2, "discard patch hash mismatch");
-        }
-        const scratch = path57.join(this.root, "patches", `${id3}.${randomBytes5(8).toString("hex")}.tmp`);
-        try {
-          const fd = fs56.openSync(scratch, "wx", 384);
-          try {
-            fs56.writeFileSync(fd, bytes);
-            fs56.fsyncSync(fd);
-          } finally {
-            fs56.closeSync(fd);
-          }
-          fs56.linkSync(scratch, file2);
-          const dir = fs56.openSync(path57.dirname(file2), "r");
-          try {
-            fs56.fsyncSync(dir);
-          } finally {
-            fs56.closeSync(dir);
-          }
-          return file2;
-        } finally {
-          fs56.rmSync(scratch, { force: true });
-        }
-      }
-      /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
-      async replayDiscard(id3, publishPatch = (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)) {
+      /** A valid journaled snapshot survives replay, including partially removed checkouts. */
+      async replayDiscard(id3) {
         requireWorkerInventory(this.#list());
         let record2 = this.#read(id3);
         if (record2?.phase !== "discarding" || !record2.discard) return;
@@ -49088,6 +49039,13 @@ var init_worker_file_store = __esm({
           if (!status) return;
           const { WorkerRegistry: WorkerRegistry2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
           const cleanupRegistry = WorkerRegistry2.fromStore(this);
+          const removalRegistry = {
+            read: cleanupRegistry.read.bind(cleanupRegistry),
+            list: cleanupRegistry.list.bind(cleanupRegistry),
+            worktreeOwner: cleanupRegistry.worktreeOwner.bind(cleanupRegistry),
+            checkoutUsers: cleanupRegistry.checkoutUsers.bind(cleanupRegistry),
+            markDiscardStep: this.markDiscardStep.bind(this)
+          };
           const own2 = realStateInput(record2, status);
           const workers = requireWorkerInventory(this.#list()).flatMap((value5) => {
             const current3 = this.#status(value5.id);
@@ -49099,7 +49057,7 @@ var init_worker_file_store = __esm({
             const userStatus = this.#status(user.id);
             if (!userStatus || user.phase !== "discarding" && !["done", "failed", "stopped"].includes(userStatus.status)) return;
             if (user.phase !== "discarding") await this.beginDiscard(user.id, []);
-            await this.replayDiscard(user.id, publishPatch);
+            await this.replayDiscard(user.id);
             if (!["retiring", "retired"].includes(this.#read(user.id)?.phase ?? "")) return;
           }
           if (!record2.outside && !borrowed && fs56.existsSync(record2.dir)) {
@@ -49116,7 +49074,7 @@ var init_worker_file_store = __esm({
               const child = this.#read(childId);
               if (!child || ["retiring", "retired"].includes(child.phase)) continue;
               if (child.phase !== "discarding") await this.beginDiscard(childId, []);
-              await this.replayDiscard(childId, publishPatch);
+              await this.replayDiscard(childId);
               if (!["retiring", "retired"].includes(this.#read(childId)?.phase ?? "")) return;
             }
             await this.markDiscardStep(id3, "children");
@@ -49155,26 +49113,19 @@ var init_worker_file_store = __esm({
             await this.recordDiscardRecovery(id3, { ignored: await ignoredWorkerArtifacts(own2, leadDir) });
             record2 = this.#read(id3);
           }
-          if (!record2.discard.steps.patch || owned && !record2.discard.baseRef) {
-            if (owned) {
-              await saveDiscardPatch(leadDir, { ...own2, base: record2.discard.baseRef ?? own2.base }, (bytes) => publishPatch(id3, bytes), (baseRef) => this.recordDiscardRecovery(id3, { baseRef }));
-            }
-            await this.markDiscardStep(id3, "patch");
+          if (owned) {
+            await this.ensureDiscardRecovery(id3, leadDir);
             record2 = this.#read(id3);
-          }
-          const published = record2.discard.patch;
-          if (published) {
+          } else if (record2.discard.patch) {
+            const published = record2.discard.patch;
             const expected = path57.join(this.root, "patches", `${id3}.patch`);
-            if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-            const valid = fs56.existsSync(expected) && fs56.lstatSync(expected).isFile() && createHash22("sha256").update(fs56.readFileSync(expected)).digest("hex") === published.sha256;
-            if (!valid) {
-              if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
-              await saveDiscardPatch(leadDir, { ...own2, base: record2.discard.baseRef ?? own2.base }, (bytes) => publishPatch(id3, bytes), (baseRef) => this.recordDiscardRecovery(id3, { baseRef }));
+            if (published.path !== expected || !fs56.lstatSync(expected).isFile() || createHash21("sha256").update(fs56.readFileSync(expected)).digest("hex") !== published.sha256) {
+              throw new Error(`legacy discard patch missing or changed after worktree removal: ${expected}`);
             }
           }
           if (!record2.discard.steps.cleanup) {
             if (owned) {
-              if (!await cleanupWorker(leadDir, own2, { collected: true, discarded: true, leadName: record2.lead.participant, workers, registry: cleanupRegistry })) return;
+              if (!await cleanupWorker(leadDir, own2, { collected: true, discarded: true, leadName: record2.lead.participant, workers, registry: removalRegistry })) return;
             } else if (record2.outside) {
               cleanupWorkerLogs(leadDir, record2);
             } else if (!borrowed) {
@@ -49185,7 +49136,7 @@ var init_worker_file_store = __esm({
           }
           await this.markDiscardStep(id3, "prune");
           const completed = this.#read(id3);
-          const summary = borrowed ? "detached" : "discarded" + (completed.discard?.patch ? `; recovery patch: ${completed.discard.patch.path} (kept for a week)` : "") + discardRecoveryDetails(completed.discard);
+          const summary = borrowed ? "detached" : "discarded" + discardRecoveryDetails(completed.discard) + (completed.branchCleanup?.recoveryRef && !recoveryRefCovers(this.commonDir, completed.discard?.recoveryRef, completed.branchCleanup.recoveryRef) ? "; branch recovery ref: " + recoveryRefDescription(this.commonDir, completed.branchCleanup.recoveryRef) : "");
           await this.beginRetirement(id3, this.archiveOf(completed, { summary, disposition: "discarded" }));
         } finally {
           if (acquired) await this.finishOperation(id3);
@@ -49472,7 +49423,7 @@ var init_worker_file_store = __esm({
 // packages/room-mcp/src/idle-claims.ts
 import fs57 from "node:fs";
 import path58 from "node:path";
-import { createHash as createHash23, randomBytes as randomBytes6 } from "node:crypto";
+import { createHash as createHash22, randomBytes as randomBytes6 } from "node:crypto";
 import { performance as performance6 } from "node:perf_hooks";
 async function guarded4(file2, fn, deadline = performance6.now() + GUARD_WAIT_MS4) {
   for (; ; ) {
@@ -49547,7 +49498,7 @@ var init_idle_claims = __esm({
         return path58.join(this.commonDir, "room", "sessions", sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims");
       }
       idleClaimsFile(roomKey2, sessionId, idleEpoch) {
-        const key3 = createHash23("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
+        const key3 = createHash22("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
         return path58.join(this.idleClaimsDir(sessionId), `${key3}.json`);
       }
       pendingIdleClaims(roomKey2, sessionId, idleEpoch, participant) {
@@ -50035,14 +49986,14 @@ var init_worker_registry = __esm({
       interruptDiscard(...args2) {
         return this.backend().interruptDiscard(...args2);
       }
-      recordDiscardPatch(...args2) {
-        return this.backend().recordDiscardPatch(...args2);
-      }
       recordDiscardRecovery(...args2) {
         return this.backend().recordDiscardRecovery(...args2);
       }
+      ensureDiscardRecovery(id3, leadDir) {
+        return this.backend().ensureDiscardRecovery(id3, leadDir);
+      }
       replayDiscard(id3) {
-        return this.backend().replayDiscard(id3, (workerId, bytes) => this.recordDiscardPatch(workerId, bytes));
+        return this.backend().replayDiscard(id3);
       }
       writeReport(...args2) {
         return this.backend().writeReport(...args2);
@@ -59541,7 +59492,7 @@ import fs59 from "node:fs";
 import path60 from "node:path";
 import os14 from "node:os";
 import { execFileSync as execFileSync9 } from "node:child_process";
-import { createHash as createHash24 } from "node:crypto";
+import { createHash as createHash23 } from "node:crypto";
 var CODEX_ROOM_HOOK_HASHES = {
   "pre_tool_use:0:0": "sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb",
   "session_start:0:0": "sha256:96fd593f780005aedd3d3796345ed66ef79f6b3751129aed8a120818ddf11d18"
@@ -59655,7 +59606,7 @@ function installedCodexRoomContract(env = process.env, failed) {
     const evidence = contractEvidence(root);
     const raw = fs59.readFileSync(path60.join(root, "compat.json"), "utf8");
     const descriptor = JSON.parse(raw);
-    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash24("sha256").update(fs59.readFileSync(path60.join(root, "room-mcp.mjs"))).digest("hex")) return reject();
+    if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash23("sha256").update(fs59.readFileSync(path60.join(root, "room-mcp.mjs"))).digest("hex")) return reject();
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
     if (contractEvidence(root) !== evidence) return reject();
     const after = selectionEvidence(home, env);
@@ -60250,8 +60201,8 @@ init_context();
 init_disk_text();
 init_worker_registry();
 import fs61 from "node:fs";
-import { createHash as createHash25, randomUUID as randomUUID11 } from "node:crypto";
-var hash = (value5) => createHash25("sha256").update(value5).digest("hex");
+import { createHash as createHash24, randomUUID as randomUUID11 } from "node:crypto";
+var hash = (value5) => createHash24("sha256").update(value5).digest("hex");
 var slotKey = (owner, kind, other, path80, subject = "") => [owner, kind, other, path80, subject].join("\0");
 var noticeId = (key3, epoch, episode) => `cf:${hash(key3)}:${epoch}${episode ? `:${episode}` : ""}`;
 var peerMerge = (slot) => slot.kind === "merge" && slot.path !== "*";
@@ -62756,7 +62707,7 @@ import path70 from "node:path";
 // packages/room-mcp/src/browser-open.ts
 init_src3();
 import { spawn as spawn6 } from "node:child_process";
-import { createHash as createHash26, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash25, randomUUID as randomUUID13 } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
 import path64 from "node:path";
 function launchBrowserHandler(command3, args2) {
@@ -62785,11 +62736,11 @@ async function openRoomBrowser(url, directory2, options = {}) {
   const quoted = JSON.stringify(url).replace(/[<>&\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   const escaped = url.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const script = `location.replace(${quoted})`;
-  const digest2 = createHash26("sha256").update(script).digest("base64");
+  const digest2 = createHash25("sha256").update(script).digest("base64");
   const html = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-${digest2}'; base-uri 'none'"><title>Opening Room</title><p>Opening your room. <a href="${escaped}">Continue to Room</a></p><script>${script}</script>`;
   privateStateDirectory(directory2);
   const destination = new URLSearchParams(parsed.hash.slice(1)).get("room") ?? parsed.href.split("#")[0];
-  const name = createHash26("sha256").update(destination).digest("hex").slice(0, 24);
+  const name = createHash25("sha256").update(destination).digest("hex").slice(0, 24);
   const entry = path64.join(directory2, `${name}.html`), temporary = path64.join(directory2, `${randomUUID13()}.tmp`);
   try {
     await writeFile(temporary, html, { mode: 384, flag: "wx" });
@@ -65765,7 +65716,7 @@ init_disk_text();
 init_git();
 import fs71 from "node:fs";
 import path72 from "node:path";
-import { createHash as createHash27, randomUUID as randomUUID15 } from "node:crypto";
+import { createHash as createHash26, randomUUID as randomUUID15 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -65924,7 +65875,7 @@ var HooksBridge = class {
 var hookHealth = /* @__PURE__ */ new WeakMap();
 var PROCESS_STARTED_AT = Date.now();
 function hookReceiptPath(sessionDir, sessionId) {
-  return path72.join(sessionDir, "..", "..", "hook-receipts", createHash27("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
+  return path72.join(sessionDir, "..", "..", "hook-receipts", createHash26("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
 }
 function readBoundedJson(file2) {
   let fd;
@@ -66480,11 +66431,11 @@ init_leases2();
 init_worker_store();
 import fs73 from "node:fs";
 import path74 from "node:path";
-import { createHash as createHash28, randomUUID as randomUUID16 } from "node:crypto";
+import { createHash as createHash27, randomUUID as randomUUID16 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text2) {
-  return `n:${kind}:${createHash28("sha256").update(text2).digest("hex").slice(0, 16)}`;
+  return `n:${kind}:${createHash27("sha256").update(text2).digest("hex").slice(0, 16)}`;
 }
 var Batch = class {
   constructor(id3, kind, leaseMs) {
@@ -67258,8 +67209,8 @@ init_context();
 init_leases2();
 import fs74 from "node:fs";
 import path75 from "node:path";
-import { createHash as createHash29, randomBytes as randomBytes8 } from "node:crypto";
-var hash2 = (text2) => createHash29("sha256").update(text2).digest("hex");
+import { createHash as createHash28, randomBytes as randomBytes8 } from "node:crypto";
+var hash2 = (text2) => createHash28("sha256").update(text2).digest("hex");
 var CollectionReview = class {
   file;
   constructor(registryRoot, worktree) {
@@ -67376,7 +67327,7 @@ init_preview_evidence();
 var defs10 = [{
   name: "room_collect",
   annotations: { ...RW, destructiveHint: true },
-  description: 'Use to "bring in their work" unstaged, discard (ignored files too), or keep for resumption. Defer until follow-ups end. Conflicts write nothing.',
+  description: '"bring in their work" unstaged; discard (7-day recovery ref; ignored too); keep to resume. Defer until follow-ups end. Conflicts write nothing.',
   inputSchema: { ...{ additionalProperties: false }, type: "object", properties: {
     tag: str2("worker tag"),
     mode: { type: "string", enum: ["apply", "copy"] },
@@ -67565,7 +67516,7 @@ function handlers10(state) {
     const record2 = await registry2.reserved(w.tag);
     if (record2 && record2.lead.participant !== s.me.name) {
       const parent = await registry2.reservedByTagOrName(record2.lead.participant);
-      return `${w.tag} belongs to ${record2.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? "PARENT"} discard=true force=true to save recovery patches`;
+      return `${w.tag} belongs to ${record2.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? "PARENT"} discard=true force=true to save recovery commits`;
     }
     if (record2) try {
       verifyWorkerCheckout(registry2.commonDir, record2, true);
@@ -67687,10 +67638,9 @@ function handlers10(state) {
       await registry2.markDiscardStep(active.id, "stop");
       const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir);
       await registry2.recordDiscardRecovery(active.id, { ignored });
-      const patch = missing || borrowed ? void 0 : await saveDiscardPatch(s.dir, w, (bytes) => registry2.recordDiscardPatch(active.id, bytes), (baseRef) => registry2.recordDiscardRecovery(active.id, { baseRef }));
-      await registry2.markDiscardStep(active.id, "patch");
+      if (!missing && !borrowed) await registry2.ensureDiscardRecovery(active.id, s.dir);
       const recovery = await registry2.read(active.id);
-      const details = discardRecoveryDetails(recovery.discard, recovery.branchCleanup?.recoveryRef);
+      const details = discardRecoveryDetails(recovery.discard);
       const preservation = { ignored: [], uncollected: [] };
       if (!missing && !borrowed && !await cleanupWorker(s.dir, w, { collected: true, discarded: true, terminatedProcesses: terminated, processOptions: { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, leadName: s.me.name, workers: await ownershipRecords(s), preservation })) throw new Error("worker is not an owned Room worktree");
       await registry2.markDiscardStep(active.id, "cleanup");
@@ -67703,7 +67653,7 @@ function handlers10(state) {
       });
       await registry2.markDiscardStep(active.id, "prune");
       await retireWorker(rooms, s, active.id, { ...r, summary: "discarded" + details, disposition: "discarded", keptWorktree: void 0 }, { keptWorktree: void 0 });
-      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : "discarded " + r.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRefs?.map((ref) => "; branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("") ?? "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + details + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : "discarded " + r.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (preservation.recoveryRefs?.filter((ref) => !recoveryRefCovers(registry2.commonDir, recovery.discard?.recoveryRef, ref)).map((ref) => "; branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("") ?? "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + details + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
     } catch (e) {
       await registry2.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {
       });
@@ -67750,7 +67700,7 @@ function handlers10(state) {
       const unsafe = await unverifiedLive(s, w);
       if (unsafe) return unsafe;
       const children = await descendants(s, w);
-      if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`;
+      if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map((c) => c.tag).join(", ")}; collect or discard them first, or repeat with force=true to save recovery commits and discard them`;
       await registry2.beginDiscard(lock, children.map((child) => child.id).filter(Boolean));
       const childResults = [];
       for (const child of children.filter((child2) => child2.lead === w.name)) {
@@ -67808,10 +67758,9 @@ function handlers10(state) {
       const ownedWorktree = !borrowed && decideDiscard(afterStop) === "cleanup";
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : [];
       await registry2.recordDiscardRecovery(lock, { ignored });
-      const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w, (bytes) => registry2.recordDiscardPatch(lock, bytes), (baseRef) => registry2.recordDiscardRecovery(lock, { baseRef })) : void 0;
-      await registry2.markDiscardStep(lock, "patch");
+      if (ownedWorktree) await registry2.ensureDiscardRecovery(lock, s.dir);
       const recovery = await registry2.read(lock);
-      const details = discardRecoveryDetails(recovery.discard, recovery.branchCleanup?.recoveryRef);
+      const details = discardRecoveryDetails(recovery.discard);
       const preservation = { ignored: [], uncollected: [] };
       if (ownedWorktree && !await cleanupWorker(s.dir, w, { collected: true, discarded: true, terminatedProcesses: terminated, processOptions: { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, leadName: s.me.name, workers: await ownershipRecords(s), preservation })) throw new Error("worker is not an owned Room worktree");
       if (borrowed || workerRecord?.outside) cleanupWorkerLogs(s.dir, workerRecord);
@@ -67835,7 +67784,7 @@ function handlers10(state) {
         outcome: "dismissed",
         disposition: "discarded"
       });
-      return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : workerRecord?.outside || decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (preservation.recoveryRefs?.map((ref) => "; branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("") ?? "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + details + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
+      return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : workerRecord?.outside || decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (preservation.recoveryRefs?.filter((ref) => !recoveryRefCovers(registry2.commonDir, recovery.discard?.recoveryRef, ref)).map((ref) => "; branch recovery ref: " + recoveryRefDescription(registry2.commonDir, ref)).join("") ?? "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + details + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
     } catch (e) {
       await registry2.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {
       });

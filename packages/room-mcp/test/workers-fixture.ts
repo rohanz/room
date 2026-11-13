@@ -88,7 +88,7 @@ const createTools = (ctx: Parameters<typeof createRoomTools>[0]) => {
 vi.mock('../src/worker-git.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/worker-git.js')>(),
   ignoredWorkerArtifacts: vi.fn(async () => []),
-  saveDiscardPatch: vi.fn(async () => undefined),
+  saveDiscardRecovery: vi.fn(async () => ({ recoveryRef: 'refs/room/recovery/test/' + 'a'.repeat(40), unchanged: false })),
   cleanupWorker: vi.fn(async () => true),
 }))
 

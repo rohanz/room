@@ -1,4 +1,4 @@
-import { recoveryRefDescription, writeWorkerRecordRef } from '../worker-refs.js'
+import { recoveryRefCovers, recoveryRefDescription, writeWorkerRecordRef } from '../worker-refs.js'
 import { retainedWorkerLines } from '../worker-retained.js'
 import { verifyWorkerCheckout } from '../worker-preparation.js'
 import { validPid } from '@room/relay/process'
@@ -13,7 +13,7 @@ import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, saveWorkerScratch, workerOwnedPaths, CARRY_FILE_LIMIT, type WorkerCleanupPreservation } from '../worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveWorkerScratch, workerOwnedPaths, CARRY_FILE_LIMIT, type WorkerCleanupPreservation } from '../worker-git.js'
 import { signalWorker, pidPresent, workerProcessOwnership, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree, scratchCollectNote } from './combined-tree.js'
@@ -30,7 +30,7 @@ import { collectedTreeEvidence } from '../preview-evidence.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Use to "bring in their work" unstaged, discard (ignored files too), or keep for resumption. Defer until follow-ups end. Conflicts write nothing.',
+  description: '"bring in their work" unstaged; discard (7-day recovery ref; ignored too); keep to resume. Defer until follow-ups end. Conflicts write nothing.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
@@ -224,7 +224,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const record = (await registry.reserved(w.tag))
     if (record && record.lead.participant !== s.me.name) {
       const parent = (await registry.reservedByTagOrName(record.lead.participant))
-      return `${w.tag} belongs to ${record.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? 'PARENT'} discard=true force=true to save recovery patches`
+      return `${w.tag} belongs to ${record.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? 'PARENT'} discard=true force=true to save recovery commits`
     }
     if (record) try {
       verifyWorkerCheckout(registry.commonDir, record, true)
@@ -354,10 +354,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await registry.markDiscardStep(active.id, 'stop')
       const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir)
       await registry.recordDiscardRecovery(active.id, { ignored })
-      const patch = missing || borrowed ? undefined : await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(active.id, bytes), baseRef => registry.recordDiscardRecovery(active.id, { baseRef }))
-      await registry.markDiscardStep(active.id, 'patch')
+      if (!missing && !borrowed) await registry.ensureDiscardRecovery(active.id, s.dir)
       const recovery = (await registry.read(active.id))!
-      const details = discardRecoveryDetails(recovery.discard, recovery.branchCleanup?.recoveryRef)
+      const details = discardRecoveryDetails(recovery.discard)
       const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
       if (!missing && !borrowed && !await cleanupWorker(s.dir, w, { collected: true, discarded: true, terminatedProcesses: terminated, processOptions: { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, leadName: s.me.name, workers: (await ownershipRecords(s)), preservation })) throw new Error('worker is not an owned Room worktree')
       await registry.markDiscardStep(active.id, 'cleanup')
@@ -370,11 +369,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       })
       await registry.markDiscardStep(active.id, 'prune')
       await retireWorker(rooms, s, active.id, { ...r, summary: 'discarded' + details, disposition: 'discarded', keptWorktree: undefined }, { keptWorktree: undefined })
-      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRefs?.map(ref => '; branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('') ?? '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + details + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+      return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (preservation.recoveryRefs?.filter(ref => !recoveryRefCovers(registry.commonDir, recovery.discard?.recoveryRef, ref)).map(ref => '; branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('') ?? '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + details + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
     } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
     finally { await registry.finishOperation(active.id) }
   }
-  /** Discard phase for a live registered worker: borrowers and nested workers first, then stop, patch, clean up and retire. */
+  /** Discard phase for a live registered worker: borrowers and nested workers first, then stop, snapshot, clean up and retire. */
   const discardWorker = async (a: Record<string, unknown>, lead: Session, registry: Registry, discarding: Set<string>, actingLead?: Session): Promise<string> => {
     const { rooms } = state
     let s = actingLead ?? (await holdingWorker(a.tag as string, lead))
@@ -394,7 +393,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const lock = await takeWorkerOperation(s, w, 'discard')
     if (lock === 'untrusted') {
       // No worktree capability can be proven for a checkout that is gone (dir= into a removed checkout). With its
-      // branch and process gone too, nothing remains to stop, patch or clean up: retiring the record is the discard.
+      // branch and process gone too, nothing remains to stop, snapshot or clean up: retiring the record is the discard.
       if (workerRecord && await retireIfNothingToCollect(s.dir, registry, workerRecord, { probe: state.ctx?.probe, hasHandle: x => state.workerAlive(s, x) })) {
         await rooms.project()
         return `discarded ${w.tag}: nothing to collect; its worktree and branch were already gone`
@@ -417,7 +416,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const unsafe = await unverifiedLive(s, w)
       if (unsafe) return unsafe
       const children = (await descendants(s, w))
-      if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery patches and discard them`
+      if (children.length && a.force !== true) return `error: ${w.tag} has nested workers: ${children.map(c => c.tag).join(', ')}; collect or discard them first, or repeat with force=true to save recovery commits and discard them`
       await registry.beginDiscard(lock, children.map(child => child.id!).filter(Boolean))
       const childResults: string[] = []
       // Recurse through each direct lead so deeper descendants retain their own
@@ -489,10 +488,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ownedWorktree = !borrowed && decideDiscard(afterStop) === 'cleanup'
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : []
       await registry.recordDiscardRecovery(lock, { ignored })
-      const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(lock, bytes), baseRef => registry.recordDiscardRecovery(lock, { baseRef })) : undefined
-      await registry.markDiscardStep(lock, 'patch')
+      if (ownedWorktree) await registry.ensureDiscardRecovery(lock, s.dir)
       const recovery = (await registry.read(lock))!
-      const details = discardRecoveryDetails(recovery.discard, recovery.branchCleanup?.recoveryRef)
+      const details = discardRecoveryDetails(recovery.discard)
       const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
       if (ownedWorktree && !await cleanupWorker(s.dir, w, { collected: true, discarded: true, terminatedProcesses: terminated, processOptions: { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, leadName: s.me.name, workers: (await ownershipRecords(s)), preservation })) throw new Error('worker is not an owned Room worktree')
       if (borrowed || workerRecord?.outside) cleanupWorkerLogs(s.dir, workerRecord!)
@@ -507,7 +505,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       })
       return [...sharedResults, ...childResults, (borrowed
         ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}`
-        : workerRecord?.outside || decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRefs?.map(ref => '; branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('') ?? '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + details + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
+        : workerRecord?.outside || decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (preservation.recoveryRefs?.filter(ref => !recoveryRefCovers(registry.commonDir, recovery.discard?.recoveryRef, ref)).map(ref => '; branch recovery ref: ' + recoveryRefDescription(registry.commonDir, ref)).join('') ?? '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + details + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
     } catch (e) {
       await registry.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {})
       return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir

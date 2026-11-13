@@ -1,13 +1,12 @@
 import { retainedWorkerLines } from '../src/worker-retained.js'
 import { disposePreviewFixture } from './fixtures/preview-disposal.js'
 import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
-import { patchPublisher } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { prepareWorktree, saveDiscardPatch, cleanupWorker } from '../src/worker-git.js'
+import { prepareWorktree, saveDiscardRecovery, cleanupWorker } from '../src/worker-git.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { defaultSpawner } from '../src/worker-process.js'
 import { workerRealState } from '../src/worker-state.js'
@@ -71,7 +70,7 @@ describe('carry and discard safety', () => {
     expect(prepared.carried?.paths).toContain('data.txt')
   })
 
-  it('makes a recovery patch that applies under hostile diff config', async () => {
+  it('makes a recovery tree under hostile diff config', async () => {
     const prepared = await prepareWorktree(root, 'hostile', 'lead')
     fs.writeFileSync(path.join(prepared.dir, 'base.txt'), 'worker edit\n')
     run(prepared.dir, 'config', 'color.ui', 'always')
@@ -80,35 +79,33 @@ describe('carry and discard safety', () => {
     run(prepared.dir, 'config', 'diff.srcPrefix', 'before/')
     run(prepared.dir, 'config', 'diff.dstPrefix', 'after/')
     run(prepared.dir, 'config', 'diff.external', '/bin/false')
-    const patch = await saveDiscardPatch(root, { tag: 'hostile', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as LocalWorker, patchPublisher(root, 'hostile'))
-    expect(patch).toBeTruthy()
-    const body = fs.readFileSync(patch!, 'utf8')
-    expect(body).toContain('diff --git a/base.txt b/base.txt')
-    expect(body).not.toContain('\u001b[')
+    const { recoveryRef } = await saveDiscardRecovery(root, { tag: 'hostile', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as LocalWorker)
     const scratch = path.join(root, 'scratch')
-    run(root, 'worktree', 'add', '-q', '-b', 'scratch', scratch, prepared.base!)
-    run(scratch, 'apply', '--check', patch!)
+    run(root, 'worktree', 'add', '-q', '-b', 'scratch', scratch, recoveryRef)
+    expect(fs.readFileSync(path.join(scratch, 'base.txt'), 'utf8')).toBe('worker edit\n')
   })
 
-  it('keeps the worktree when recovery verification cannot apply the patch', async () => {
+  it('keeps the worktree when the recovery commit cannot be created', async () => {
     const prepared = await prepareWorktree(root, 'unverified', 'lead')
     fs.writeFileSync(path.join(prepared.dir, 'base.txt'), 'worker edit\n')
-    const fakeDir = path.join(root, 'reject-apply'); fs.mkdirSync(fakeDir)
-    fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\nif [ "$1" = "apply" ]; then exit 1; fi\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+    const fakeDir = path.join(root, 'reject-commit'); fs.mkdirSync(fakeDir)
+    fs.writeFileSync(path.join(fakeDir, 'git'), '#!/bin/sh\ncase " $* " in *" commit-tree "*) exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = fakeDir + path.delimiter + originalPath
-    await expect(saveDiscardPatch(root, { tag: 'unverified', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as LocalWorker, patchPublisher(root, 'unverified'))).rejects.toThrow()
+    await expect(saveDiscardRecovery(root, { tag: 'unverified', dir: prepared.dir, base: prepared.base, branch: prepared.branch } as LocalWorker)).rejects.toThrow()
     expect(fs.readFileSync(path.join(prepared.dir, 'base.txt'), 'utf8')).toBe('worker edit\n')
     expect(fs.existsSync(path.join(prepared.dir, '.git'))).toBe(true)
   })
 
-  it('retains a branch and recovery patch after late cleanup failure without reconstructing a checkout', async () => {
+  it('retains a branch and recovery commit after late cleanup failure without reconstructing a checkout', async () => {
     const { registry, record } = await seedRegistryWorker(root, 'rollback')
     const prepared = await prepareWorktree(root, 'rollback', 'lead', { identity: { id: record.id, nonce: record.runs[0].nonce } })
     await registry.command(record.id, { type: 'prepare-step', step: 'prepared', facts: { witness: prepared.witness, root: prepared.witness?.root, identityRequired: true, branchOid: prepared.branchOid } })
     fs.writeFileSync(path.join(prepared.dir, 'base.txt'), 'worker edit\n')
     const worker = { id: record.id, tag: 'rollback', dir: prepared.dir, base: prepared.base, branch: prepared.branch,
       status: 'done', exitCode: 0, carriedUntracked: prepared.carriedUntracked } as LocalWorker
-    const patch = await saveDiscardPatch(root, worker, patchPublisher(root, worker.tag))
+    await registry.beginDiscard(record.id, [])
+    const recovery = await saveDiscardRecovery(root, worker)
+    await registry.recordDiscardRecovery(record.id, recovery)
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
     fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" update-ref --no-deref --stdin "*) echo "late cleanup failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
     process.env.PATH = bin + path.delimiter + originalPath
@@ -117,7 +114,7 @@ describe('carry and discard safety', () => {
     finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
     expect(fs.existsSync(prepared.dir)).toBe(false)
     expect(retainedWorkerLines(path.join(root, '.git')).join('\n')).toContain('refs/heads/room/rollback')
-    expect(fs.readFileSync(patch!, 'utf8')).toContain('worker edit')
+    expect(run(root, 'show', `${recovery.recoveryRef}:base.txt`)).toBe('worker edit')
   })
 
   it('scopes a persisted stop to its run after resume', async () => {

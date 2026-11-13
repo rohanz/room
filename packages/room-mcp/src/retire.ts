@@ -112,7 +112,7 @@ export async function removeCollectedCheckout(s: Session, record: WorkerRecord |
         ...(preservation.uncollected.length ? [`uncollected work: ${preservation.uncollected.join(', ')}`] : []),
         ...(preservation.commitsAfterCollection ? [`commits after collection: ${preservation.commitsAfterCollection.sha} ${preservation.commitsAfterCollection.paths.join(', ') || '(no changed paths)'}`] : []),
       ]
-      return { removed: false, reason: details.join('; ') || 'its worktree could not be removed safely; discard=true removes it with a recovery patch' }
+      return { removed: false, reason: details.join('; ') || 'its worktree could not be removed safely; discard=true removes it with a recovery commit' }
     }
   } catch (error) { return { removed: false, reason: 'cleanup incomplete: ' + (error instanceof Error ? error.message : String(error)).slice(0, 300) } }
   return { removed: true, terminated, recoveryRefs: preservation.recoveryRefs }
@@ -309,7 +309,7 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process }
     const outcome = decideRetire(facts)
     if (!outcome || !await current()) continue
-    // An ignored artifact has no recovery patch. Keep both its worktree and the live record so
+    // An ignored artifact has no recovery commit. Keep both its worktree and the live record so
     // the lead can copy it or explicitly discard it, exactly as manual collection does.
     try { if ((await ignoredWorkerArtifacts(w, s.dir)).length) continue }
     catch { continue }

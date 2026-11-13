@@ -41,14 +41,19 @@ export interface PrepJournal {
   identityRequired?: boolean; root?: RootReceipt; witness?: PreparationWitness; branchOid?: string
 }
 interface DiscardPlan {
-  children: string[]; steps: Partial<Record<'children' | 'stop' | 'patch' | 'cleanup' | 'prune', boolean>>
+  children: string[]; steps: Partial<Record<'children' | 'stop' | 'removing' | 'cleanup' | 'prune', boolean>>
+  recoveryRef?: string
+  unchanged?: boolean
+  /** Legacy discard journals only; remove after old in-flight operations have finished. */
   patch?: { path: string; sha256: string }
   baseRef?: string
   ignored?: string[]
 }
 /** Journaled before checkout removal, so replay and ordinary completion agree. */
-export function discardRecoveryDetails(plan: WorkerRecord['discard'], branchRef?: string): string {
-  return (plan?.baseRef && plan.baseRef !== branchRef ? `; recovery patch base ref: ${plan.baseRef} (kept for seven days)` : '')
+export function discardRecoveryDetails(plan: WorkerRecord['discard']): string {
+  return (plan?.recoveryRef ? `; recovery ref: ${plan.recoveryRef} (kept for seven days${plan.unchanged ? '; worktree matches HEAD' : ''}); restore: git worktree add <dir> ${plan.recoveryRef}` :
+    plan?.patch ? `; legacy recovery patch: ${plan.patch.path}${plan.baseRef ? ' (base: ' + plan.baseRef + ')' : ''}`
+      : plan?.baseRef ? `; legacy recovery ref: ${plan.baseRef}` : '')
     + (plan?.ignored?.length ? `; deleted without a copy: ${plan.ignored.join(', ')}` : '')
 }
 export interface WorkerRecord {

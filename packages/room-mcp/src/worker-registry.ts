@@ -300,9 +300,9 @@ export class WorkerRegistry {
   beginDiscard(...args: Parameters<FileWorkerStore['beginDiscard']>): ReturnType<FileWorkerStore['beginDiscard']> { return this.backend().beginDiscard(...args) }
   markDiscardStep(...args: Parameters<FileWorkerStore['markDiscardStep']>): ReturnType<FileWorkerStore['markDiscardStep']> { return this.backend().markDiscardStep(...args) }
   interruptDiscard(...args: Parameters<FileWorkerStore['interruptDiscard']>): ReturnType<FileWorkerStore['interruptDiscard']> { return this.backend().interruptDiscard(...args) }
-  recordDiscardPatch(...args: Parameters<FileWorkerStore['recordDiscardPatch']>): ReturnType<FileWorkerStore['recordDiscardPatch']> { return this.backend().recordDiscardPatch(...args) }
   recordDiscardRecovery(...args: Parameters<FileWorkerStore['recordDiscardRecovery']>): ReturnType<FileWorkerStore['recordDiscardRecovery']> { return this.backend().recordDiscardRecovery(...args) }
-  replayDiscard(id: string): Promise<void> { return this.backend().replayDiscard(id, (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)) }
+  ensureDiscardRecovery(id: string, leadDir: string): Promise<void> { return this.backend().ensureDiscardRecovery(id, leadDir) }
+  replayDiscard(id: string): Promise<void> { return this.backend().replayDiscard(id) }
   writeReport(...args: Parameters<FileWorkerStore['writeReport']>): ReturnType<FileWorkerStore['writeReport']> { return this.backend().writeReport(...args) }
   writeExit(...args: Parameters<FileWorkerStore['writeExit']>): ReturnType<FileWorkerStore['writeExit']> { return this.backend().writeExit(...args) }
   abandonPreparation(...args: Parameters<FileWorkerStore['abandonPreparation']>): ReturnType<FileWorkerStore['abandonPreparation']> { return this.backend().abandonPreparation(...args) }

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
-import { cleanupWorker, pruneMissingWorkerWorktree } from '../src/worker-git.js'
+import { cleanupWorker, pruneMissingWorkerWorktree, saveDiscardRecovery } from '../src/worker-git.js'
 import { previewCachePath, runInMergedTree, waitForPreviewSweepForTests } from '../src/tools/files.js'
 import { tryPreviewLock } from '../src/preview-cache.js'
 import type { LocalWorker } from '../src/worker-status.js'
@@ -36,16 +36,19 @@ async function fixture() {
   expect(preview.passed, preview.text).toBe(true)
   await waitForPreviewSweepForTests()
   const cache = await previewCachePath(workerDir)
-  const { record } = await seedRegistryWorker(root, 'w1')
+  const { registry, record } = await seedRegistryWorker(root, 'w1')
   const worker = { id: record.id, tag: 'w1', name: 'lead+w1', lead: 'lead', host: 'codex', task: 'task',
     dir: workerDir, branch: 'room/w1', pid: 0, startedAt: 1, status: 'done', exitCode: 0,
     budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' } as LocalWorker
   const listed = () => git('worktree', 'list', '--porcelain')
-  return { root, git, head, workerDir, cache, worker, listed }
+  /** What room_collect(discard=true) journals before it removes a checkout. */
+  const planDiscard = async () => { await registry.beginDiscard(record.id, []); await registry.recordDiscardRecovery(record.id, await saveDiscardRecovery(root, worker)) }
+  return { root, git, head, workerDir, cache, worker, listed, planDiscard }
 }
 
 it.runIf(cacheHost).each([false, true])('removes the worker clone\'s idle preview cache on cleanup (discarded: %s)', async discarded => {
-  const { root, cache, worker, listed } = await fixture()
+  const { root, cache, worker, listed, planDiscard } = await fixture()
+  if (discarded) await planDiscard()
   expect(fs.existsSync(cache)).toBe(true)
   expect(listed()).toMatch(new RegExp(`${cache.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n[^]*?locked`))
   expect(await cleanupWorker(root, worker, { collected: true, discarded, processOptions: { list: () => [] } })).toBe(true)
@@ -82,7 +85,8 @@ it.runIf(cacheHost)('reclaims a locked cache left by a clone that is gone on the
 }, 30_000)
 
 it.runIf(cacheHost)('leaves an entry whose preview still holds the lock, and reclaims it once the holder exits', async () => {
-  const { root, head, cache, worker, listed } = await fixture()
+  const { root, head, cache, worker, listed, planDiscard } = await fixture()
+  await planDiscard()
   const holder = await tryPreviewLock(cache)
   expect(holder).toBeDefined()
   try {

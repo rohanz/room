@@ -11,7 +11,7 @@ async function realCleanup() {
   const actual = await vi.importActual<typeof workerGit>('../src/worker-git.js')
   vi.mocked(workerGit.cleanupWorker).mockImplementation(actual.cleanupWorker)
   vi.mocked(workerGit.ignoredWorkerArtifacts).mockImplementation(actual.ignoredWorkerArtifacts)
-  vi.mocked(workerGit.saveDiscardPatch).mockImplementation(actual.saveDiscardPatch)
+  vi.mocked(workerGit.saveDiscardRecovery).mockImplementation(actual.saveDiscardRecovery)
 }
 
 // Existing v0.17.47 limitation: preparation completion grants authority by record/path

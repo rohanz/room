@@ -26,7 +26,12 @@ it.each(['detached', 'other-branch'])('discards a witnessed worker on %s while p
   const discarded = await t.call({ tag: 'test', discard: true })
   expect(discarded).toContain('discarded test')
   expect(fs.existsSync(worker)).toBe(false)
-  for (const tip of [head, branchTip]) expect(git(lead, 'rev-parse', `refs/room/recovery/test/${tip}^{}`)).toBe(tip)
+  const ref = discarded.match(/; recovery ref: (\S+)/)![1]
+  expect(git(lead, 'rev-parse', `${ref}^`)).toBe(head)
+  expect(git(lead, 'show', `${ref}:draft.txt`)).toBe('uncommitted')
+  expect(git(lead, 'show', `${ref}:file.txt`)).toBe('checkout tip')
+  expect(discarded).toContain(`branch recovery ref: refs/room/recovery/test/${branchTip}`)
+  expect(git(lead, 'rev-parse', `refs/room/recovery/test/${branchTip}^{}`)).toBe(branchTip)
   if (state === 'other-branch') expect(git(lead, 'rev-parse', 'user-review')).toBe(head)
   expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
 })

@@ -11,7 +11,7 @@ beforeEach(async () => {
   const actual = await vi.importActual<typeof workerGit>('../src/worker-git.js')
   vi.mocked(workerGit.cleanupWorker).mockImplementation(actual.cleanupWorker)
   vi.mocked(workerGit.ignoredWorkerArtifacts).mockImplementation(actual.ignoredWorkerArtifacts)
-  vi.mocked(workerGit.saveDiscardPatch).mockImplementation(actual.saveDiscardPatch)
+  vi.mocked(workerGit.saveDiscardRecovery).mockImplementation(actual.saveDiscardRecovery)
 })
 
 async function failedCarry() {
@@ -87,7 +87,7 @@ describe('dir= retry of a failed carried worker', () => {
       const result = await t.call('room_collect', { tag: 'original', discard: true })
       expect(result).toContain('detached retry')
       expect(result).toContain('discarded original')
-      expect(result).toContain('recovery patch:')
+      expect(result).toContain('recovery ref:')
       expect(fs.existsSync(t.owner.dir)).toBe(false)
       expect((await workerByTag(t.repo, 'original'))).toBeUndefined()
       expect((await workerByTag(t.repo, 'retry'))).toBeUndefined()

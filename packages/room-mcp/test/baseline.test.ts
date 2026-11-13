@@ -1,6 +1,6 @@
 import { publishFixture } from './fixtures/manifest.js'
 import { hubSeam } from './fixtures/hub.js'
-import { patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
+import { registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -10,7 +10,7 @@ import { RoomDoc, type Identity } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { carriedUnchanged, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { addCarriedUntrackedModes, mergedFileMode } from '../src/tools/files.js'
-import { saveDiscardPatch } from '../src/worker-git.js'
+import { saveDiscardRecovery } from '../src/worker-git.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import { stampLocalPublisher } from './fixtures/local-publisher.js'
 import type { HandlerState } from '../src/tools/context.js'
@@ -137,9 +137,9 @@ describe('a carried worker\'s own changes', () => {
     expect([...unchanged]).toEqual(['notes.txt'])
     const participant = { dir: wdir, baseModes: addCarriedUntrackedModes(new Map(), w), unchangedCarried: unchanged, carriedPaths: new Set(['run.sh', 'notes.txt']) }
     expect(mergedFileMode('run.sh', 0o644, [participant])).toBe(0o755)
-    const patch = fs.readFileSync((await saveDiscardPatch(lead, w, patchPublisher(lead, w.tag)))!, 'utf8')
-    expect(patch).toContain('diff --git a/run.sh b/run.sh\nnew file mode 100755')
-    expect(patch).not.toContain('notes.txt')
+    const { recoveryRef } = await saveDiscardRecovery(lead, w)
+    expect(git(lead, 'ls-tree', recoveryRef, 'run.sh')).toMatch(/^100755 blob/)
+    expect(git(lead, 'show', `${recoveryRef}:notes.txt`)).toBe('draft')
   })
 
   it('refuses a carried untracked file whose private base blob is gone', async () => {
