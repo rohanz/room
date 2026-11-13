@@ -74,6 +74,7 @@ it.each([['collect', 'carry-untracked'], ['discard', 'carry-untracked'], ['colle
   const actual = await vi.importActual<typeof import('../src/worker-git.js')>('../src/worker-git.js')
   const loaded = await import('../src/worker-git.js')
   if (vi.isMockFunction(loaded.cleanupWorker)) loaded.cleanupWorker.mockImplementation(actual.cleanupWorker)
+  if (vi.isMockFunction(loaded.saveDiscardPatch)) loaded.saveDiscardPatch.mockImplementation(actual.saveDiscardPatch)
   const { repo, git, head } = realRepo(), t = setupLead(repo, head), registry = await registryForDir(repo)
   expect(await t.leadTools.call('room_spawn', { tag: 'old-refs2', task: 'review' })).toContain('spawned old-refs2')
   const record = (await registry.reserved('old-refs2'))!

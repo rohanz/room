@@ -256,7 +256,7 @@ it.each(['pin-only', 'receipt', 'checkout-removed', 'branch-deleted'] as const)(
   // This checkpoint explicitly represents the subsequent successful pin write.
   if (stage === 'pin-only') preserveWorkerBranch(path.join(repo, '.git'), record, { tip })
   if (stage !== 'pin-only') {
-    await registry.beginDiscard(record.id, true, [])
+    await registry.beginDiscard(record.id, [])
     await registry.markDiscardStep(record.id, 'children')
     await registry.markDiscardStep(record.id, 'stop')
     await registry.markDiscardStep(record.id, 'patch') // no patch needed for committed, unchanged files

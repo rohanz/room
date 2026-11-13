@@ -41,8 +41,15 @@ export interface PrepJournal {
   identityRequired?: boolean; root?: RootReceipt; witness?: PreparationWitness; branchOid?: string
 }
 interface DiscardPlan {
-  force: boolean; children: string[]; steps: Partial<Record<'children' | 'stop' | 'patch' | 'cleanup' | 'prune', boolean>>
+  children: string[]; steps: Partial<Record<'children' | 'stop' | 'patch' | 'cleanup' | 'prune', boolean>>
   patch?: { path: string; sha256: string }
+  baseRef?: string
+  ignored?: string[]
+}
+/** Journaled before checkout removal, so replay and ordinary completion agree. */
+export function discardRecoveryDetails(plan: WorkerRecord['discard'], branchRef?: string): string {
+  return (plan?.baseRef && plan.baseRef !== branchRef ? `; recovery patch base ref: ${plan.baseRef} (kept for seven days)` : '')
+    + (plan?.ignored?.length ? `; deleted without a copy: ${plan.ignored.join(', ')}` : '')
 }
 export interface WorkerRecord {
   v: 1; id: string; tag: string; name: string; mode: 'here' | 'local'; room: string
@@ -62,13 +69,8 @@ export interface WorkerRecord {
   collectPending?: { at: number; reason: string }
   /** This operation's direct branch tip, preserved before deletion; no record-version migration. */
   branchCleanup?: BranchCleanupReceipt
-  /** A post-operation full scan verifies shared kept/carried inputs. Excluded
-   * paths retain their coverage gaps when a preview needs them. Paths are bounded
-   * verification inputs, never a history of guessed stale hashes. */
-  keptPublication?: {
-    paths: string[]; pending: boolean; overflow?: boolean; base?: string
-    ack?: { publisher: string; sessionId: string; fence: string; rev: number; roomSalt?: string }
-  }
+  /** Ignored legacy publication metadata; old records remain readable. */
+  keptPublication?: unknown
   skippedCarry?: { path: string; reason: string }[]; port?: number; hostSessionId?: string
   capabilities: { resume: boolean; signal: boolean; collect: 'delta' | 'copy' | 'none' }
   phase: 'intent' | 'preparing' | 'prepared' | 'active' | 'collecting' | 'discarding' | 'retiring' | 'retired' | 'abandoned'

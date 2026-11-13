@@ -18,10 +18,10 @@ import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, probeOwnPr
 import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker, ReleasePoster } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
-import { realStateInput } from './worker-status.js'
+import { discardRecoveryDetails, realStateInput } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
-import { safeId, safeTag, object, tokenShape, keptPublicationShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
+import { safeId, safeTag, object, tokenShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
 import { ended, WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
 import { sameStartTime } from '@room/relay/process'
 import { withCollectLeaseAssertion } from './collect-lease.js'
@@ -288,13 +288,7 @@ export class FileWorkerStore {
   onChange(listener: (id?: string) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
   #read(id: string): WorkerRecord | undefined {
-    const record = this.#readFact(this.workerFile(id), (record): record is WorkerRecord => {
-      // Optional diagnostic corruption cannot hide an otherwise valid worker or
-      // certify freshness. Unknown required paths stay pending until refresh.
-      if (object(record) && record.keptPublication !== undefined && !keptPublicationShape(record.keptPublication))
-        record.keptPublication = { paths: [], pending: true, overflow: true }
-      return recordShape(record, id)
-    }, 'invalid worker record')
+    const record = this.#readFact(this.workerFile(id), (record): record is WorkerRecord => recordShape(record, id), 'invalid worker record')
     if (!record && this.hasQuarantinedRecord(id)) this.invalid(this.workerFile(id), 'quarantined worker record')
     return record
   }
@@ -496,7 +490,7 @@ export class FileWorkerStore {
       // Capture it in the same lane as collect/refresh, before exposing the borrower.
       record = { ...record, base: owner.base, carriedBase: owner.carriedBase,
         carriedUntracked: owner.carriedUntracked, collectedKeep: owner.collectedKeep,
-        keptPublication: owner.keptPublication, capabilities: { ...record.capabilities, collect: owner.capabilities.collect } }
+        capabilities: { ...record.capabilities, collect: owner.capabilities.collect } }
     }
     const deadline = performance.now() + GUARD_WAIT_MS
     for (;;) {
@@ -547,57 +541,67 @@ export class FileWorkerStore {
     })
   }
 
-  /** Read twice around decoding. Any cross-process file replacement invalidates the whole fact set. */
+  /** Validate each captured fact set; yield to a burst of writers without waiting indefinitely. */
   async snapshot(query?: WorkerQuery): Promise<WorkerSnapshot> {
     if (query && !query.workerId && !query.tag && !query.recordOnly) query = undefined
+    const deadline = performance.now() + 1_000
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const snapshot = this.#snapshotAttempt(query)
+      if (snapshot) return snapshot
+      const remaining = deadline - performance.now()
+      if (remaining <= 0) break
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(10, remaining)))
+    }
+    return { available: false, reason: 'unavailable', detail: 'worker facts kept changing during snapshot for 1000 ms' }
+  }
+  /** Never yield with the process-wide read memo installed, including between retries. */
+  #snapshotAttempt(query?: WorkerQuery): WorkerSnapshot | undefined {
     const previousReads = snapshotReads
     const previousBlockers = this.decodeBlockers
     try {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        snapshotReads = new Map()
-        this.decodeBlockers = new Set()
-        const before = this.#factRevision(query)
-        const reservation = query?.tag ? this.#readFact(this.tagFile(query.tag), (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id), 'invalid reservation') : undefined
-        const reservationId = object(reservation) && typeof reservation.id === 'string' && safeId(reservation.id) ? reservation.id : undefined
-        if (reservation !== undefined && !reservationId) this.decodeBlockers.add(`tags/${query!.tag}.json: invalid reservation`)
-        const selectedId = query?.workerId ?? reservationId
-        const selected = query?.workerId || query?.tag
-        const records = selected ? selectedId && safeId(selectedId) ? [this.#read(selectedId)].filter((record): record is WorkerRecord => !!record) : [] : this.#list(!!query?.recordOnly).records
-        if (query?.tag && records.some(record => record.tag !== query.tag)) this.decodeBlockers.add(`tags/${query.tag}.json: record tag mismatch`)
-        const workers = records.map(record => ({ record, reports: query?.recordOnly ? [] : this.#reports(record.id).records, exits: query?.recordOnly ? [] : this.#exits(record.id).records, busy: query?.recordOnly ? true : this.#operationInProgress(record.id),
-          ...(query?.captureLiveness ? { liveness: this.#statusLiveness(record, query.recordOnly) } : {}) }))
-        const reservations: Record<string, string> = Object.create(null)
-        const selectedTag = query?.tag
-        const tagFiles = query ? selectedTag ? [this.tagFile(selectedTag)] : [] : files(path.join(this.root, 'tags'), '.json')
-        for (const file of tagFiles) {
-          const tag = path.basename(file, '.json')
-          if (!safeTag(tag)) { this.invalid(file, 'invalid reservation filename', true); continue }
-          const reservation = this.#readFact(file, (value): value is { id: string } => object(value)
-            && typeof value.id === 'string' && safeId(value.id), 'invalid reservation')
-          if (!reservation) continue
-          reservations[tag] = reservation.id
-          if (!records.some(record => record.id === reservation.id && record.tag === tag)) this.invalid(file, 'unavailable reserved record')
-        }
-        const operations = query?.recordOnly ? [] : query ? selectedId && safeId(selectedId) && this.#operationInProgress(selectedId) ? [selectedId] : []
-          : files(path.join(this.root, 'workers'), '.op').map(file => path.basename(file, '.op')).filter(safeId)
-        const orphanRuns: Record<string, { reports: RunReport[]; exits: ExitObservation[] }> = Object.create(null)
-        let runOwners: string[] = []
-        if (query?.recordOnly) { /* No run facts requested. */ }
-        else if (query) { if (selectedId && safeId(selectedId)) runOwners = [selectedId] }
-        else try { runOwners = fs.readdirSync(path.join(this.root, 'runs')) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-        const known = new Set(workers.map(fact => fact.record.id))
-        for (const id of runOwners) if (safeId(id) && !known.has(id)) orphanRuns[id] = { reports: this.#reports(id).records, exits: this.#exits(id).records }
-        if (reservationId && !records.length) this.decodeBlockers.add(`workers/${reservationId}.json: unavailable reserved record`)
-        // Record projections omit run evidence, but cannot turn a quarantined worker into an
-        // empty inventory. A genuinely absent unreserved ID is still distinct from blocked state.
-        const quarantine = !query?.recordOnly || !selected || !records.length
-          ? files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file)) : []
-        const blockers = [...new Set([...this.decodeBlockers, ...quarantine.filter(name => !query?.recordOnly || !selected
-          || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))])]
-        const after = this.#factRevision(query)
-        if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns }
+      snapshotReads = new Map()
+      this.decodeBlockers = new Set()
+      const before = this.#factRevision(query)
+      const reservation = query?.tag ? this.#readFact(this.tagFile(query.tag), (value): value is { id: string } => object(value) && typeof value.id === 'string' && safeId(value.id), 'invalid reservation') : undefined
+      const reservationId = object(reservation) && typeof reservation.id === 'string' && safeId(reservation.id) ? reservation.id : undefined
+      if (reservation !== undefined && !reservationId) this.decodeBlockers.add(`tags/${query!.tag}.json: invalid reservation`)
+      const selectedId = query?.workerId ?? reservationId
+      const selected = query?.workerId || query?.tag
+      const records = selected ? selectedId && safeId(selectedId) ? [this.#read(selectedId)].filter((record): record is WorkerRecord => !!record) : [] : this.#list(!!query?.recordOnly).records
+      if (query?.tag && records.some(record => record.tag !== query.tag)) this.decodeBlockers.add(`tags/${query.tag}.json: record tag mismatch`)
+      const workers = records.map(record => ({ record, reports: query?.recordOnly ? [] : this.#reports(record.id).records, exits: query?.recordOnly ? [] : this.#exits(record.id).records, busy: query?.recordOnly ? true : this.#operationInProgress(record.id),
+        ...(query?.captureLiveness ? { liveness: this.#statusLiveness(record, query.recordOnly) } : {}) }))
+      const reservations: Record<string, string> = Object.create(null)
+      const selectedTag = query?.tag
+      const tagFiles = query ? selectedTag ? [this.tagFile(selectedTag)] : [] : files(path.join(this.root, 'tags'), '.json')
+      for (const file of tagFiles) {
+        const tag = path.basename(file, '.json')
+        if (!safeTag(tag)) { this.invalid(file, 'invalid reservation filename', true); continue }
+        const reservation = this.#readFact(file, (value): value is { id: string } => object(value)
+          && typeof value.id === 'string' && safeId(value.id), 'invalid reservation')
+        if (!reservation) continue
+        reservations[tag] = reservation.id
+        if (!records.some(record => record.id === reservation.id && record.tag === tag)) this.invalid(file, 'unavailable reserved record')
       }
-      return { available: false, reason: 'unavailable', detail: 'worker facts changed during snapshot' }
+      const operations = query?.recordOnly ? [] : query ? selectedId && safeId(selectedId) && this.#operationInProgress(selectedId) ? [selectedId] : []
+        : files(path.join(this.root, 'workers'), '.op').map(file => path.basename(file, '.op')).filter(safeId)
+      const orphanRuns: Record<string, { reports: RunReport[]; exits: ExitObservation[] }> = Object.create(null)
+      let runOwners: string[] = []
+      if (query?.recordOnly) { /* No run facts requested. */ }
+      else if (query) { if (selectedId && safeId(selectedId)) runOwners = [selectedId] }
+      else try { runOwners = fs.readdirSync(path.join(this.root, 'runs')) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      const known = new Set(workers.map(fact => fact.record.id))
+      for (const id of runOwners) if (safeId(id) && !known.has(id)) orphanRuns[id] = { reports: this.#reports(id).records, exits: this.#exits(id).records }
+      if (reservationId && !records.length) this.decodeBlockers.add(`workers/${reservationId}.json: unavailable reserved record`)
+      // Record projections omit run evidence, but cannot turn a quarantined worker into an
+      // empty inventory. A genuinely absent unreserved ID is still distinct from blocked state.
+      const quarantine = !query?.recordOnly || !selected || !records.length
+        ? files(path.join(this.root, 'quarantine'), '').map(file => path.basename(file)) : []
+      const blockers = [...new Set([...this.decodeBlockers, ...quarantine.filter(name => !query?.recordOnly || !selected
+        || !!selectedId && name.startsWith(`${selectedId}.json.bad-`))])]
+      const after = this.#factRevision(query)
+      if (before === after) return { available: true, revision: after, workers, reservations, blockers, operations, orphanRuns }
+      return undefined
     } catch (error) { return { available: false, reason: 'unavailable', detail: String(error) } }
     finally { snapshotReads = previousReads; this.decodeBlockers = previousBlockers }
   }
@@ -616,7 +620,7 @@ export class FileWorkerStore {
       for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
         const file = path.join(dir, entry.name)
         if (entry.isDirectory()) { visit(file); continue }
-        if (!entry.isFile() || !(entry.name.endsWith('.json') || entry.name.endsWith('.op') || entry.name.endsWith('.writer') || dir === path.join(this.root, 'quarantine'))) continue
+        if (!entry.isFile() || !(entry.name.endsWith('.json') || entry.name.endsWith('.op') || dir === path.join(this.root, 'quarantine'))) continue
         // Hash exact content as well as incarnation so rapid equal-timestamp writes cannot be missed.
         // Quarantine evidence is immutable and may contain large recovery bytes. Its incarnation is
         // sufficient for invalidation; normal lifecycle facts also compare their exact small payloads.
@@ -635,7 +639,7 @@ export class FileWorkerStore {
       }
       if (workerId && safeId(workerId)) {
         addFile(this.workerFile(workerId))
-        if (!query.recordOnly) { addFile(this.opFile(workerId)); addFile(this.adoptionFile(workerId)); visit(path.join(this.root, 'runs', workerId)) }
+        if (!query.recordOnly) { addFile(this.opFile(workerId)); visit(path.join(this.root, 'runs', workerId)) }
       }
       if (!query.workerId && !query.tag) {
         const dir = path.join(this.root, 'workers'), slot = `${dir}\0*.json`
@@ -644,7 +648,7 @@ export class FileWorkerStore {
         for (const file of [...entries].sort()) addFile(file)
       }
       if (!query.recordOnly) visit(path.join(this.root, 'quarantine'))
-    } else for (const family of ['workers', 'tags', 'adoptions', 'runs', 'quarantine']) visit(path.join(this.root, family))
+    } else for (const family of ['workers', 'tags', 'runs', 'quarantine']) visit(path.join(this.root, family))
     return hash.digest('hex')
   }
 
@@ -1004,14 +1008,22 @@ export class FileWorkerStore {
     })
   }
 
-  async beginDiscard(id: string, force: boolean, children: string[]): Promise<WorkerRecord> {
+  async beginDiscard(id: string, children: string[]): Promise<WorkerRecord> {
     return this.update(id, old => ({ ...old, branchCleanup: this.pinOperationBranch(old), prep: ['intent', 'preparing'].includes(old.phase) ? { ...old.prep, identityRequired: true } : old.prep, phase: 'discarding',
-      discard: { force, children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
+      discard: { children, steps: {} }, interrupted: undefined, seq: old.seq + 1 }))
   }
   async markDiscardStep(id: string, step: keyof NonNullable<WorkerRecord['discard']>['steps']): Promise<WorkerRecord> {
     return this.update(id, old => {
       if (!old.discard) throw new Error('discard plan missing')
       return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 }
+    })
+  }
+  async recordDiscardRecovery(id: string, facts: { baseRef?: string; ignored?: string[] }): Promise<void> {
+    await this.update(id, old => {
+      if (!old.discard || old.phase !== 'discarding') throw new Error('discard plan missing')
+      if (old.discard.baseRef && facts.baseRef && old.discard.baseRef !== facts.baseRef) throw new Error('discard patch base changed')
+      return { ...old, discard: { ...old.discard, ...facts,
+        ignored: [...new Set([...(old.discard.ignored ?? []), ...(facts.ignored ?? [])])].sort() }, seq: old.seq + 1 }
     })
   }
   async interruptDiscard(id: string, detail: string): Promise<WorkerRecord> {
@@ -1084,7 +1096,7 @@ export class FileWorkerStore {
     for (const user of shared) {
       const userStatus = this.#status(user.id)
       if (!userStatus || (user.phase !== 'discarding' && !['done', 'failed', 'stopped'].includes(userStatus.status))) return
-      if (user.phase !== 'discarding') await this.beginDiscard(user.id, true, [])
+      if (user.phase !== 'discarding') await this.beginDiscard(user.id, [])
       await this.replayDiscard(user.id, publishPatch)
       if (!['retiring', 'retired'].includes(this.#read(user.id)?.phase ?? '')) return
     }
@@ -1098,7 +1110,7 @@ export class FileWorkerStore {
       for (const childId of record.discard.children) {
         const child = this.#read(childId)
         if (!child || ['retiring', 'retired'].includes(child.phase)) continue
-        if (child.phase !== 'discarding') await this.beginDiscard(childId, true, [])
+        if (child.phase !== 'discarding') await this.beginDiscard(childId, [])
         await this.replayDiscard(childId, publishPatch)
         if (!['retiring', 'retired'].includes(this.#read(childId)?.phase ?? '')) return
       }
@@ -1141,14 +1153,13 @@ export class FileWorkerStore {
       await this.markDiscardStep(id, 'stop')
       record = this.#read(id)!
     }
-    if (!record.discard!.steps.patch) {
+    if (owned) {
+      await this.recordDiscardRecovery(id, { ignored: await ignoredWorkerArtifacts(own, leadDir) })
+      record = this.#read(id)!
+    }
+    if (!record.discard!.steps.patch || owned && !record.discard!.baseRef) {
       if (owned) {
-        const ignored = await ignoredWorkerArtifacts(own, leadDir)
-        if (ignored.length && !record.discard!.force) {
-          await this.interruptDiscard(id, `ignored artifacts appeared: ${ignored.join(', ')}`)
-          return
-        }
-        await saveDiscardPatch(leadDir, own, bytes => publishPatch(id, bytes))
+        await saveDiscardPatch(leadDir, { ...own, base: record.discard!.baseRef ?? own.base }, bytes => publishPatch(id, bytes), baseRef => this.recordDiscardRecovery(id, { baseRef }))
       }
       await this.markDiscardStep(id, 'patch')
       record = this.#read(id)!
@@ -1161,7 +1172,7 @@ export class FileWorkerStore {
         && createHash('sha256').update(fs.readFileSync(expected)).digest('hex') === published.sha256
       if (!valid) {
         if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`)
-        await saveDiscardPatch(leadDir, own, bytes => publishPatch(id, bytes))
+        await saveDiscardPatch(leadDir, { ...own, base: record.discard!.baseRef ?? own.base }, bytes => publishPatch(id, bytes), baseRef => this.recordDiscardRecovery(id, { baseRef }))
       }
     }
     if (!record.discard!.steps.cleanup) {
@@ -1176,7 +1187,11 @@ export class FileWorkerStore {
       await this.markDiscardStep(id, 'cleanup')
     }
     await this.markDiscardStep(id, 'prune')
-    await this.beginRetirement(id, this.archiveOf(this.#read(id)!, { summary: borrowed ? 'detached' : 'discarded', disposition: 'discarded' }))
+    const completed = this.#read(id)!
+    const summary = borrowed ? 'detached' : 'discarded'
+      + (completed.discard?.patch ? `; recovery patch: ${completed.discard.patch.path} (kept for a week)` : '')
+      + discardRecoveryDetails(completed.discard)
+    await this.beginRetirement(id, this.archiveOf(completed, { summary, disposition: 'discarded' }))
     } finally { if (acquired) await this.finishOperation(id) }
   }
 

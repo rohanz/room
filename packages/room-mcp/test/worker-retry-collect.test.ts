@@ -111,7 +111,8 @@ describe('dir= retry of a failed carried worker', () => {
       const keptOwner = (await registry.read(owner.id))!
       expect(await call('room_spawn', { tag: 'retry', task: 'continue', dir: owner.dir })).toContain('spawned retry')
       const retry = (await registry.reserved('retry'))!
-      expect(retry).toMatchObject({ base: keptOwner.base, collectedKeep: true, keptPublication: keptOwner.keptPublication })
+      expect(retry).toMatchObject({ base: keptOwner.base, collectedKeep: true })
+      expect(retry.keptPublication).toBeUndefined()
       for (const ref of [workerGit.collectHeadRef, workerGit.collectBaseRef]) expect(git('rev-parse', ref(retry.tag, retry.id))).toBe(git('rev-parse', ref(owner.tag, owner.id)))
       fs.writeFileSync(path.join(owner.dir, 'modified.txt'), 'retry round two\n')
       t.exits[1](0)

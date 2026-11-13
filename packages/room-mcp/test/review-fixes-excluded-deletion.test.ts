@@ -4,9 +4,7 @@ import { expect, it } from 'vitest'
 import { digestPath } from '@room/shared'
 import { base, git, lead, put, setup, worker } from './collect-fixture.js'
 import { publishFixture } from './fixtures/manifest.js'
-import { mutateWorkerFixture } from './fixtures/worker-record.js'
-import { registryForDir } from '../src/worker-registry.js'
-import { acknowledgeKeptPublication } from '../src/kept-publication.js'
+import { stampLocalPublisher } from './fixtures/local-publisher.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
@@ -25,10 +23,8 @@ it.each(['delete', 'rename'])('does not certify a preview that omits a carried-u
     t.s.room.participants.set('lead\0git', { ...t.s.room.participants.get('lead\0git')!, head: base })
   }
   t.s.daemon.settle = async () => {}
-  const proof = await acknowledgeKeptPublication(t.s, undefined, [file])
-  expect(proof.pending).toBe(false)
-  const registry = await registryForDir(lead), record = (await registry.reserved('test'))!
-  await mutateWorkerFixture(registry, record.id, old => ({ ...old, keptPublication: { ...proof, base }, seq: old.seq + 1 }))
+  await t.s.daemon.reconcileGitChanges()
+  stampLocalPublisher(t.s)
   if (change === 'rename') fs.renameSync(path.join(worker, file), path.join(worker, 'renamed.mjs'))
   else fs.unlinkSync(path.join(worker, file))
   // Keep a rename's destination within the publication limit; the omitted source

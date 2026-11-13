@@ -1,3 +1,4 @@
+import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { base, git, httpxWorkers, lead, put, setup, worker } from './collect-fixture.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -105,8 +106,7 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(true)
     expect((await (await registryForDir(lead)).read('w_port-fix'))?.keptWorktree).toBe(worker)
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
-    expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discard refused; ignored artifacts')
-    expect(await t.call({ tag: 'port-fix', discard: true, force: true })).toContain('discarded port-fix')
+    expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discarded port-fix')
     expect(fs.existsSync(worker)).toBe(false)
   })
 
@@ -128,15 +128,13 @@ describe('room_collect', () => {
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     const result = await t.call({ tag: 'port-bools' })
     expect(result).toContain(`kept port-fix's worktree at ${worker}: ignored files not copied: artifact.bin`)
-    expect(result).toContain('Copy what you need from there, then room_collect(tag="port-fix", discard=true) (add force=true to delete ignored files too)')
+    expect(result).toContain('Copy what you need from there, then room_collect(tag="port-fix", discard=true) deletes the rest, including ignored files')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
     const owner = (await (await registryForDir(lead)).read('w_port-fix'))
     expect(owner?.keptWorktree).toBe(worker)
     expect(owner?.archive?.keptReason).toContain('artifact.bin')
     expect(t.s.room.retiredWorkers().find(r => r.tag === 'port-fix')?.keptReason).toContain('artifact.bin')
-    expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discard refused; ignored artifacts')
-    expect(fs.existsSync(worker)).toBe(true)
-    expect(await t.call({ tag: 'port-fix', discard: true, force: true })).toContain('discarded port-fix')
+    expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discarded port-fix')
     expect(fs.existsSync(worker)).toBe(false)
   })
 
@@ -280,11 +278,14 @@ describe('room_collect', () => {
     await registry.finishOperation('w_late')
   })
 
-  it('replays an owner discard by retiring its finished borrower first', async () => {
+  it('replays an owner discard with ignored files and an old force=false plan, retiring its borrower first', async () => {
     const t = httpxWorkers()
     await t.sync()
     const registry = await registryForDir(lead)
-    await registry.beginDiscard('w_port-fix', false, [])
+    await registry.beginDiscard('w_port-fix', [])
+    // Existing 0.17.48 discard plans remain valid; force=false no longer protects ignored output.
+    await mutateWorkerFixture(registry, 'w_port-fix', old => ({ ...old, discard: { ...old.discard!, force: false }, seq: old.seq + 1 }))
+    put(worker, 'artifact.bin', 'late ignored output')
     await registry.replayDiscard('w_port-fix')
     expect((await registry.read('w_port-bools'))?.phase).toBe('retiring')
     expect((await registry.read('w_port-fix'))?.phase).toBe('retiring')

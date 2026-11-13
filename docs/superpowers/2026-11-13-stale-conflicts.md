@@ -61,6 +61,96 @@ earlier revision also excluded absent standalone participants; a full run showed
 dropped real claim conflicts, and it was reverted.) Pairwise byte equality still means a clean merge;
 equality with a third participant does not establish provenance or adoption.
 
+## Provenance follow-up before 0.17.49
+
+The benchmark used main `94b243a3`. Evidence root:
+`/tmp/room-coupled-benchmark-2026-11-13-t3/control/evidence/room/`.
+The audit searched every worker transcript and `mirror/room-mcp/room-mcp.log`
+for `[notify] CONFLICT on`. There are eight distinct directed notices (four
+reciprocal episodes) and ten observed deliveries. The log contains three of
+those deliveries; hook-delivered notices supply the others. Hook success,
+hook context and later API-request copies of the same delivery are counted
+once. Repeated hook deliveries are listed explicitly below. All times are UTC
+on 2026-11-12; participants below have prefix `benchmark+`.
+
+| Delivery time | Recipient / peer | File | Verdict and evidence at that moment |
+| --- | --- | --- | --- |
+| 22:40:40.714 | flows / lua-core | `src/commands/includes/cancelFlowHelpers.lua` | True text conflict, add/add at line 2. lua-core wrote its explicit stub at 22:40:37.619; flows wrote its real implementation at 22:40:38.602. The stub returned any parent key; the implementation handled parent flags and reactions. Log line 212; flows transcript line 118. |
+| 22:40:44.599 | lua-core / flows | same | Same true add/add conflict, delivered by hook (lua-core transcript line 167). lua-core's next command removed its stub; both sides subsequently received clear notices (22:40:48.572 and 22:40:52.782). |
+| 22:42:16.144 | lua-core / finish | `src/classes/redis-queue-backend.ts` | True claim conflict, not a text-merge verdict. finish's 1129–2468 claim enclosed lua-core's 1480–1507 `cancelJob` region. lua-core had added that method at 22:42:10.192 and immediately asked finish to leave it alone. Log line 372; lua-core transcript line 310. |
+| 22:42:16.347 | finish / lua-core | same | Reciprocal claim notice. finish narrowed its claims at 22:42:16–19 and released the broad claim at 22:42:25.547; it received the clear at 22:42:56.944. Log line 373; finish transcript line 299. |
+| 22:43:01.106 | finish / deadline | `src/classes/redis-queue-backend.ts` | True claim conflict: finish held 2130–2172 for `moveJobFromActiveToWait`; deadline held 2090–2128 and added its new cancellation helpers after the stalled methods at 22:42:50.286, shifting the mapped ranges. These were independent backend edits requiring coordination, not evidence of two incompatible versions of the same hunk. finish transcript line 359. |
+| 22:43:05.685 | deadline / finish | same | Reciprocal claim notice, delivered alongside an overlap-clear notice. finish's later claim-clear delivery is at 22:50:34.816. deadline transcript line 301. |
+| 22:43:28.812; repeated 22:43:51.715 | api / finish | `src/classes/job.ts` | True claim conflict between the published/moved claims for API additions and finish handling. API's edits included imports, properties, serialization and new methods; finish claimed imports and finish/delay bodies at 22:43:03–05. The advertised notice says “concurrent overlapping claims”, not “versions conflict”. api transcript lines 495 and 541. |
+| 22:43:31.160; repeated 22:43:37.297 | finish / api | same | Reciprocal claim notice; finish received its clear at 22:47:25.087. finish transcript lines 386 and 404. |
+
+Transcript line references use the main worker session JSONL under
+`transcripts/*workers-<tag>/`. This confirms the observed stub/implementation
+conflict and real claim overlaps. Under the narrower definition “two different
+texts for overlapping lines”, only the Lua episode establishes a text conflict;
+the other three are claim conflicts and must not be reported as demonstrated
+text-merge conflicts. Nothing in these deliveries demonstrates a false
+provenance conflict, and later clearance does not make the original claim or
+text conflict false. Two redeliveries were observed, not additional facts.
+
+### Reproductions on current main
+
+`packages/room-mcp/test/conflict-provenance.test.ts` uses actual Git worktrees,
+`room_collect(keep=true)`, the registry lookup used by `ConflictSet`, and
+`refreshWorkerBase` with its resulting registry update. Publications are taken
+from each checkout and its recorded baseline. Every pair is checked in both
+directions.
+
+| Requested case | Before the fix | Explanation |
+| --- | --- | --- |
+| Keep A, carry its collected output into B, B edits a different region | Clean; regression retained | A's kept snapshot and B's independently created carry commit prove the same inherited file through recorded baseline blobs. |
+| Keep A, resume B without refresh while lead holds A's output | Clean; regression retained | B's original baseline merges the independent hunks. The tests also compare B directly with the lead holding A's collected text. |
+| Both workers merge the same commit, then edit different regions | **False CONFLICT in both directions** | Publications remain pinned to spawn baseline H. Both branches adopt C; A refines C's line 2, B edits line 6. Comparing to H falsely treats B's inherited line 2 as a competing edit against A's refinement. |
+| Refresh B onto a lead commit containing A's collected output | Clean; regression retained | The refreshed baseline and A's kept baseline already establish the shared inherited file. |
+
+The fix uses the common ancestor of the two accepted, fenced Git HEAD facts
+when it descends from both recorded worker baselines. This is explicit adoption
+through commit history, not equality with the lead or another publisher. The
+per-pass input guard already includes both Git facts and registry revisions;
+changing either invalidates the result before publication. Missing history
+supplies no new proof. Private kept snapshots that are not ancestors of the
+branch tips keep their existing baseline rules, as do carried-untracked blobs.
+No stored identity index, equality heuristic, registry field or ref was added.
+
+Controls retain true conflicts when both workers change the same inherited
+line and when the lead happens to hold equal bytes without an adoption fact.
+The shared-merge regression uses distinct worker commits and merge commits,
+so it checks a real common ancestor rather than only identical HEADs.
+
+The four requested workflows are covered. Arbitrary copying between publishers
+without a recorded carry, collection, refresh or shared Git ancestor remains
+unattributable: equal third-party bytes cannot establish who adopted whom.
+That uncertainty is intentional; this change does not hide conflicting edits
+based on an inferred identity.
+
+Provenance validation is separate from the historical validation below. On
+unchanged source, the six carry/keep/refresh directions passed and the two
+shared-merge directions failed with `conflict` instead of `clean`. An initial
+fixture attempt produced eight missing-slot failures because it omitted the
+room salt and retained projected-publication metadata; fixing the fixture to
+publish joined-worker facts exposed the actual comparator result. Those setup
+failures were not product reproductions. The sandbox refused `nice` priority
+adjustment, but still executed the test command. No existing test expectation
+was changed and no product behavior was removed.
+
+The focused local run passed 164 tests across `conflict-set.test.ts`,
+`conflict-provenance.test.ts` and `review-stale-carried.test.ts`; root typecheck,
+knip and diff whitespace checks passed. The combined snapshot with `rohanz`,
+`rohanz+kept`, `rohanz+small` and `rohanz+discard` also passed all 14 new
+provenance tests, including a published third participant in the equality
+control (fingerprint `d801b7f744dc53a16f21722a63799bf80f004fc3047683084383610586bece90`).
+That pass is interim: kept's combined-tree source and discard's collection
+source moved during the 126.66-second check. The first preview attempt had
+already stopped before tests because kept's design note moved during capture.
+Neither interrupted capture nor the interim pass certifies the latest combined
+tree; final current focused preview evidence is reported in the worker's
+completion. Full release, scale and bundle checks remain the lead's work.
+
 ## Review tests and changed expectations
 
 The reviewer's upgrade setup and assertions are preserved, including real

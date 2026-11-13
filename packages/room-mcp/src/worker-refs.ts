@@ -93,7 +93,7 @@ function symbolicName(common: string, ref: string): boolean {
   catch (error) { if ((error as { status?: number }).status === 1) return false; throw error }
 }
 /** Pin only after preflight succeeds, using the lease's original read without observing a new tip. */
-export function preserveWorkerBranch(common: string, worker: { id: string; tag: string; branch: string }, captured = captureWorkerBranch(common, worker)): BranchCleanupReceipt {
+export function preserveWorkerBranch(common: string, worker: { id: string; tag: string; branch: string }, captured = captureWorkerBranch(common, worker), renew = false): BranchCleanupReceipt {
   if (!captured.tip || captured.reason || captured.absent) return captured
   const tip = captured.tip, recoveryRef = `refs/room/recovery/${worker.tag}/${tip}`
   try {
@@ -104,10 +104,15 @@ export function preserveWorkerBranch(common: string, worker: { id: string; tag: 
     if (existing?.[2] || symbolicName(common, recoveryRef)) throw new Error('recovery name is already occupied by a symbolic ref; retained without following it')
     if (existing) {
       if (run(common, ['rev-parse', `${existing[1]}^{}`]) !== tip) throw new Error('recovery name is already occupied by another ref')
-    } else {
+    }
+    // A new discard must not inherit an almost-expired pin from a prior operation.
+    // Foreign/legacy pins have no automatic expiry and remain untouched.
+    let renewPin = false
+    if (existing && renew) try { renewPin = !!recoveryPin(common, existing[1]) } catch { /* unmarked pin */ }
+    if (!existing || renewPin) {
       const tag = `object ${tip}\ntype ${run(common, ['cat-file', '-t', tip])}\ntag room-recovery-${randomUUID()}\ntagger Room <room@localhost> ${Math.floor(Date.now() / 1000)} +0000\n\nRoom recovery pin\n`
       const oid = boundedGitSync(common, ['--git-dir', common, 'mktag'], { input: Buffer.from(tag) }).toString().trim()
-      run(common, ['update-ref', '--no-deref', recoveryRef, oid, '0'.repeat(oid.length)])
+      run(common, ['update-ref', '--no-deref', recoveryRef, oid, existing?.[1] ?? '0'.repeat(oid.length)])
     }
     return { tip, recoveryRef }
   } catch (error) {

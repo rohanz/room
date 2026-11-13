@@ -269,16 +269,16 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await tools.shutdown()
   })
 
-  it('reports carried file counts and records pending publication for each spawn', async () => {
+  it('reports carried file counts without creating a publication handshake for each spawn', async () => {
     const t = setup(prepareWorktree)
     writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
     try {
       const first = await t.leadTools.call('room_spawn', { tag: 'wip1', task: 'a' })
       expect(first).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
       expect(first).not.toContain('starts from HEAD')
-      expect(first).toContain('carried preview freshness pending')
+      expect(first).not.toContain('freshness pending')
       const record = (await (await registryForDir(dir)).reservedByTagOrName('wip1'))!
-      expect(record.keptPublication).toMatchObject({ paths: ['wip.txt'], pending: true, base: record.base })
+      expect(record.keptPublication).toBeUndefined()
       expect(await t.leadTools.call('room_send', { type: 'note', to: 'wip1', text: 'continue with your carried copy' })).toContain('sent [')
       expect((await workerByTag(dir, 'wip1'))?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
       expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')

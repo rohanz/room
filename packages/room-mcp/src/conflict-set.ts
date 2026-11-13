@@ -832,7 +832,19 @@ export class ConflictSet {
         const sharedBaselines = !leadPair && ours && theirsCarried &&
           (await Promise.all([descends(ours.baseline.sha), descends(theirsCarried.baseline.sha)])).every(Boolean)
           ? [ours.baseline, theirsCarried.baseline] : undefined
-        const mergeBase = baseline?.sha ?? pair.mergeBase
+        // Worker publications stay pinned to their recorded bases even after Git
+        // merges. A common HEAD ancestor proves adoption on both branches; it may
+        // advance the ancestor only past both recorded baselines. Private kept or
+        // carried snapshots not in that history retain their existing rules.
+        let sharedHead: string | undefined
+        if (sharedBaselines && (ownGit.head !== ownGit.base || theirGit.head !== theirGit.base)) {
+          try {
+            const common = (await git(this.team.dir, ['merge-base', ownGit.head, theirGit.head])).trim()
+            if (common !== pair.mergeBase && (await Promise.all(sharedBaselines.map(base =>
+              git(this.team.dir, ['merge-base', '--is-ancestor', base.sha, common]).then(() => true, () => false)))).every(Boolean)) sharedHead = common
+          } catch { /* missing HEAD history cannot prove adoption */ }
+        }
+        const mergeBase = baseline?.sha ?? sharedHead ?? pair.mergeBase
         const changed = async (snap: ParticipantSnapshot, base: string) => {
           try {
             const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${mergeBase}..${base}`])
@@ -884,6 +896,9 @@ export class ConflictSet {
             const [aBase, bBase] = sharedBaselines
             const [aInfo, bInfo] = await Promise.all([gitBlobInfoMany(this.team.dir, aBase.sha, candidates), gitBlobInfoMany(this.team.dir, bBase.sha, candidates)])
             for (const path of candidates) {
+              // The newer common commit owns tracked history. Untracked carry
+              // still needs its full recorded ancestor outside that history.
+              if (sharedHead && !aBase.untracked.has(path) && !bBase.untracked.has(path)) continue
               const aHash = aBase.untracked.get(path)?.sha ?? aInfo.get(path)?.hash
               const bHash = bBase.untracked.get(path)?.sha ?? bInfo.get(path)?.hash
               if (aHash && aHash === bHash) sharedPaths.add(path)

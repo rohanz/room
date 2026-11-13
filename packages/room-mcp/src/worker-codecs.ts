@@ -26,14 +26,6 @@ const runShape = (value: unknown): boolean => {
     default: return false
   }
 }
-export const keptPublicationShape = (value: unknown): boolean => object(value) && typeof value.pending === 'boolean'
-  && Array.isArray(value.paths) && value.paths.length <= 2000 && value.paths.every(p => typeof p === 'string')
-  && value.paths.reduce((bytes, p) => bytes + Buffer.byteLength(p as string), 0) <= 128 * 1024
-  && (value.overflow === undefined || typeof value.overflow === 'boolean')
-  && (value.base === undefined || typeof value.base === 'string' && /^[0-9a-f]{40,64}$/.test(value.base))
-  && (value.ack === undefined || object(value.ack) && typeof value.ack.publisher === 'string' && typeof value.ack.sessionId === 'string'
-    && typeof value.ack.fence === 'string' && Number.isSafeInteger(value.ack.rev) && Number(value.ack.rev) >= 0
-    && (value.ack.roomSalt === undefined || typeof value.ack.roomSalt === 'string' && /^[a-f0-9]{64}$/i.test(value.ack.roomSalt)))
 export const recordShape = (value: unknown, id: string): value is WorkerRecord => object(value) && value.v === 1 && value.id === id
   && typeof value.tag === 'string' && safeTag(value.tag) && typeof value.name === 'string'
   && ['local', 'here'].includes(value.mode as string) && typeof value.room === 'string'
@@ -41,7 +33,6 @@ export const recordShape = (value: unknown, id: string): value is WorkerRecord =
   && isHostId(value.host) && object(value.budget)
   && typeof value.task === 'string' && typeof value.dir === 'string' && typeof value.branch === 'string'
   && typeof value.outside === 'boolean' && (value.logFile === undefined || typeof value.logFile === 'string') && object(value.prep) && typeof value.prep.step === 'string'
-  && (value.keptPublication === undefined || keptPublicationShape(value.keptPublication))
   && object(value.capabilities) && typeof value.capabilities.resume === 'boolean' && typeof value.capabilities.signal === 'boolean'
   && ['delta', 'copy', 'none'].includes(value.capabilities.collect as string)
   && ['intent', 'preparing', 'prepared', 'active', 'collecting', 'discarding', 'retiring', 'retired', 'abandoned'].includes(value.phase as string)

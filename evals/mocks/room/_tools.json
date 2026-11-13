@@ -728,7 +728,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to \"bring in their work\" unstaged, discard it, or keep the worker for resumption. Defer until follow-ups end. Conflicts write nothing.",
+      "description": "Use to \"bring in their work\" unstaged, discard (ignored files too), or keep for resumption. Defer until follow-ups end. Conflicts write nothing.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object",
@@ -759,7 +759,7 @@
           },
           "force": {
             "type": "boolean",
-            "description": "overwrite copies; discard ignored files"
+            "description": "overwrite copies; nested/orphan discard"
           }
         }
       }

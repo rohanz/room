@@ -17,6 +17,7 @@ import { createHandlerState } from '../src/tools/state.js'
 import type { WorkerView } from '@room/shared'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { collectedTreeEvidence } from '../src/preview-evidence.js'
 
 let root: string | undefined
 let startsPreviewMaintenance = false
@@ -183,11 +184,39 @@ it('distinguishes an unknown overlap from a confirmed lack of overlap', async ()
   expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false })
 })
 
-it('an explicit empty selection does not suggest that connected peers are absent or run tests', async () => {
+it('an explicit empty selection without run keeps the selection reply', async () => {
+  const { state, session } = workerFixture(false)
+  expect(await previewFor(state)({ people: [] })).toBe('no other participants selected; you are always included')
+  expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false })
+})
+
+it('runs an explicit empty selection on the caller tree in a preview checkout without certifying combined work', async () => {
+  const { room, state, session } = workerFixture(false)
+  const result = await previewFor(state)({ people: [], run: `test "$PWD" = "$ROOM_MERGED_TREE" && test "$PWD" != '${root}' && test "$(cat app.py)" = "caller change\nmiddle\nend" && echo "1 passed"` })
+  expect(result).toContain('tests: PASSED')
+  expect(result).toContain('ran the check on your own tree only; combined work not verified')
+  expect(result).not.toContain('no other participants are present')
+  expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false })
+  expect(room.messages().some(m => m.type === 'note' && m.text.startsWith('merge preview with'))).toBe(false)
+  const evidence = await collectedTreeEvidence(root!)
+  expect(evidence).not.toContain('tree that passed')
+  expect(evidence).toContain('preview was incomplete')
+  expect(evidence).toContain('validate it')
+})
+
+it('reports a failing own-tree check without complete combined evidence', async () => {
+  const { state, session } = workerFixture(false)
+  const result = await previewFor(state)({ people: [], run: 'echo "1 failed"; exit 1' })
+  expect(result).toContain('tests: FAILED')
+  expect(result).toContain('ran the check on your own tree only; combined work not verified')
+  expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false })
+})
+
+it('keeps an omitted selection with run from checking a non-overlapping caller tree', async () => {
   const { state, session } = workerFixture(false)
   const marker = path.join(root!, 'check-ran')
-  const result = await previewFor(state)({ people: [], run: `touch '${marker}'` })
-  expect(result).toBe('no other participants selected; you are always included')
+  const result = await previewFor(state)({ run: `touch '${marker}'` })
+  expect(result).toContain('no overlapping present participants to merge')
   expect(fs.existsSync(marker)).toBe(false)
   expect(session.lastPreview).toEqual({ clean: false, complete: false, testsPassed: false })
 })

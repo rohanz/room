@@ -116,7 +116,14 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
      do. Scratch (`*.log`, `*.tmp`) is saved to `.room/scratch/<tag>/`, not collected. Bring
      named artifacts and files over 5 MB with `room_collect(tag, mode="copy", paths=[...])`.
    - "Throw away the worker" means `room_collect(tag, discard=true)`: it stops the worker
-     and removes its worktree, branch and logs, keeping a recovery patch for a week. `discard`
+     and removes its worktree, branch and logs, keeping recovery refs and a recovery patch for
+     ordinary work for a week from checkout removal, including delayed recovery replay. Before removal,
+     Room verifies the base and patch and refreshes their retention; a missing base keeps
+     the checkout. Check out the reported patch base ref (the branch recovery ref when
+     they coincide), then apply the patch; this also works after kept collection and without
+     the lead's copy. Ignored files are deleted without `force` and uncopied artifacts are
+     named in the reply; copy any you need first. `force` still covers nested workers and
+     orphan recovery. `discard`
      abandons work; `reason` belongs to `room_review(action="hold")`. Collect, discard and
      stop also stop processes running inside an owned worktree.
    - A `dir=` retry in a failed worker's checkout previews and collects normally and detaches

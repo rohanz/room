@@ -54,14 +54,13 @@ export interface WorkerFreshness {
 export type WorkerCommand =
   | { type: 'prepare-start' }
   | { type: 'prepare-step'; step: PrepStep; facts: Partial<PrepJournal> }
-  | { type: 'prepare-finish'; facts: Partial<Pick<WorkerRecord, 'base' | 'carriedBase' | 'carriedUntracked' | 'skippedCarry' | 'keptPublication'>>; created: boolean; branchCreated?: boolean; witness?: PreparationWitness; branchOid?: string }
+  | { type: 'prepare-finish'; facts: Partial<Pick<WorkerRecord, 'base' | 'carriedBase' | 'carriedUntracked' | 'skippedCarry'>>; created: boolean; branchCreated?: boolean; witness?: PreparationWitness; branchOid?: string }
   | { type: 'launch'; run: number; nonce?: string; launch: Run['launch']; phase?: WorkerRecord['phase']; port?: number; nice?: number; link?: string[]; hostSessionId?: string }
   | { type: 'activate' }
   | { type: 'run-prompts'; run: number; promptMsgIds: string[] }
   | { type: 'run-posted'; run: number; messageId: string }
-  | { type: 'collect-keep'; base: string; keptPublication?: WorkerRecord['keptPublication'] }
-  | { type: 'kept-publication'; expectedBase?: string; publication: WorkerRecord['keptPublication'] }
-  | { type: 'rebase'; expectedBase?: string; base?: string; collectedKeep?: boolean; carriedBase?: string; carriedUntracked?: WorkerRecord['carriedUntracked']; keptPublication?: WorkerRecord['keptPublication'] }
+  | { type: 'collect-keep'; base: string }
+  | { type: 'rebase'; expectedBase?: string; base?: string; collectedKeep?: boolean; carriedBase?: string; carriedUntracked?: WorkerRecord['carriedUntracked'] }
   | { type: 'retired-checkout-kept'; dir: string; reason: string }
   | { type: 'retired-checkout-removed' }
 
@@ -93,16 +92,12 @@ export function applyWorkerCommand(old: WorkerRecord, command: WorkerCommand): W
     case 'collect-keep': {
       const { branchCleanup: _operationReceipt, ...kept } = next
       return { ...kept, base: command.base, collectedKeep: true, carriedBase: undefined,
-      carriedUntracked: undefined, collectPending: undefined, phase: 'active',
-      keptPublication: command.keptPublication && { ...command.keptPublication, base: command.base } }
+      carriedUntracked: undefined, collectPending: undefined, phase: 'active' }
     }
-    case 'kept-publication':
-      if (old.base !== command.expectedBase) throw new Error('worker base changed')
-      return { ...next, keptPublication: command.publication }
     case 'rebase':
       if (old.base !== command.expectedBase) throw new Error('worker base changed')
       return { ...next, base: command.base, collectedKeep: old.collectedKeep || command.collectedKeep || undefined,
-        carriedBase: command.carriedBase, carriedUntracked: command.carriedUntracked, keptPublication: command.keptPublication }
+        carriedBase: command.carriedBase, carriedUntracked: command.carriedUntracked }
     case 'retired-checkout-kept': return { ...next, keptWorktree: command.dir,
       archive: { ...old.archive!, keptWorktree: command.dir, keptReason: command.reason } }
     case 'retired-checkout-removed': {

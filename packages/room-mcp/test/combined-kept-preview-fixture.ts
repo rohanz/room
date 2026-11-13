@@ -14,6 +14,7 @@ import { deleteFixture, publishFixture } from './fixtures/manifest.js'
 import { clearFixtureProcesses, fixtureLiveness } from './fixtures/process-liveness.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { registerWorkers } from './registry-fixture.js'
+import { stampLocalPublisher } from './fixtures/local-publisher.js'
 
 vi.mock('../src/leases.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/leases.js')>()
@@ -44,7 +45,7 @@ afterEach(async () => {
   clearFixtureProcesses()
 })
 
-async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; leadEdit?: 'revision' | 'removal' | 'conflict'; keeps?: number; removeTest?: boolean } = false) {
+async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; leadEdit?: 'revision' | 'removal' | 'conflict'; keeps?: number; removeTest?: boolean; publicationUnavailable?: boolean } = false) {
   const opts = typeof options === 'boolean' ? {} : options
   const genuineConflict = options === true
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-kept-preview-')))
@@ -92,7 +93,10 @@ async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; le
   } as unknown as HandlerState)
   // Exercise the real keep operation: each private snapshot contains its own
   // round-1 source/new test and the unchanged original files of its siblings.
-  expect(await collectHandlers(stateFor(lead)).room_collect({ keep: true })).toContain('kept api')
+  const reconcile = lead.daemon.reconcileGitChanges
+  if (opts.publicationUnavailable) lead.daemon.reconcileGitChanges = undefined!
+  try { expect(await collectHandlers(stateFor(lead)).room_collect({ keep: true })).toContain('kept api') }
+  finally { lead.daemon.reconcileGitChanges = reconcile }
   for (let round = 2; round <= (opts.keeps ?? 1); round++) {
     for (const tag of tags) {
       const dir = sessions.get(`lead+${tag}`)!.dir
@@ -149,6 +153,9 @@ async function fixture(options: boolean | { shared?: 'disjoint' | 'repeated'; le
   }]))
   return { root, room, sessions, stateFor, expected, snapshot, registry: await import('../src/worker-registry.js').then(module => module.registryForDir(root)), preview: (caller: string, people: string[]) => {
     const s = sessions.get(caller)!
+    // The real publisher acquires this clone-local name lease on join. Model
+    // its actual checkout, independently of where a worker happens to live.
+    for (const session of sessions.values()) stampLocalPublisher(session)
     // As in live Room, sibling/lead text is shared in the caller's session;
     // only the lead can read its own workers directly from their worktrees.
     return buildCombinedTree(stateFor(s), s, people.map(person => ({ person, session: s })))

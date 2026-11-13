@@ -16,8 +16,6 @@ import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, t
 import { registryForDir } from '../worker-registry.js'
 import { refreshRefusal, refreshWorkerBase, refreshedCommits, type RefreshOutcome } from '../worker-refresh.js'
 import { collectHeadRef } from '../worker-git.js'
-import { git } from '@room/roomd/git'
-import { acknowledgeKeptPublication, keptPublicationMatches } from '../kept-publication.js'
 
 /** Preserve synchronous selection for supplied facts; only actual storage reads introduce an await. */
 const mapReady = <T, R>(value: T | Promise<T>, map: (value: T) => R): R | Promise<R> =>
@@ -233,24 +231,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return { ...fields, [field]: `${fields[field]}\n\n${baseNote}` } as unknown as PostBody
       }
       const post = async () => { posted = await s.post(s.me, sent()); return posted.ok ? undefined : posted.text }
-      const retryPublication = async (acceptedRefresh = false) => {
-        if ((refresh && !acceptedRefresh) || !addressedWorker || addressedWorker.lead !== s.me.name) return
-        try {
-          const registry = await registryForDir(s.dir), record = (await registry.read(addressedWorker.id))
-          if (!record?.base || keptPublicationMatches(s, record.keptPublication, undefined, record.base)) return
-          const kept = record.collectedKeep && (await git(s.dir, ['rev-parse', '--verify', collectHeadRef(record.tag, record.id)]).catch(() => '')).trim() === record.base
-            && (await git(s.dir, ['log', '-1', '--format=%s', record.base])).trim() === 'room: kept collection baseline'
-          const carried = record.carriedBase === record.base || !!record.carriedUntracked?.length
-          if (!kept && !carried) return
-          const parent = (kept || record.carriedBase === record.base) ? (await git(s.dir, ['rev-parse', `${record.base}^`])).trim() : record.base
-          const common = (await git(s.dir, ['merge-base', parent, 'HEAD'])).trim()
-          const paths = [...(await git(s.dir, ['diff', '--name-only', '--no-renames', '-z', common, record.base])).split('\0').filter(Boolean),
-            ...(record.carriedUntracked?.map(file => file.path) ?? [])]
-          const publication = await acknowledgeKeptPublication(s, record.keptPublication, paths, [], 5000, acceptedRefresh)
-          await registry.command(record.id, { type: 'kept-publication', expectedBase: record.base, publication: { ...publication, base: record.base } })
-          if (publication.pending) notes.push('worker preview freshness pending: publication could not be verified; previews including the lead report a gap')
-        } catch { notes.push('worker preview freshness pending: publication retry failed; message delivery continues') }
-      }
       let resumed = false
       if (resume) {
         const result = await rooms.resumeWorker(s, addressedWorker!, text, { spawner: state.ctx?.spawner, maxWorkers: state.ctx?.maxWorkers, log: state.log, beforeLaunch: async incarnation => {
@@ -275,7 +255,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             else {
               const moved = outcome
               try { await registry.command(record.id, { type: 'rebase', expectedBase: record.base, base: moved.base, collectedKeep: moved.kept || undefined,
-                carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked, keptPublication: undefined }) }
+                carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked }) }
               catch (error) { return `error: rebased ${tag} onto your HEAD but could not record its new base (${error instanceof Error ? error.message : String(error)}); nothing sent. A preview or collect may count your commits as its changes.` }
               // The registry base is durable before changing the legacy keep anchor.
               if (moved.kept) {
@@ -287,7 +267,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               baseNote = `[Room] your base moved: your lead rebased your branch onto their HEAD ${moved.to.slice(0, 10)} before this message; ${came}. Your uncommitted edits are still uncommitted on top.`
             }
           }
-          await retryPublication(refresh)
           const refused = await post()
           if (refused) return refused
           const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set(), addressedFrom: state.ledger.spawnFrontier(s, incarnation, to!) }, {})
@@ -310,7 +289,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         resumed = true
         notes.push(typeof result === 'string' ? result : result.reply)
       } else {
-        await retryPublication()
         const refused = await post()
         if (refused) return refused
       }

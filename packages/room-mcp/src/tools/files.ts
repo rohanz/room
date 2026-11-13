@@ -316,7 +316,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             : `; command "${command}" ran on your own tree only; no peer changes applied` : '; tests not run'}; combined work not verified`,
         })
       }
-      if (!people.length) {
+      const run = typeof a.run === 'string' && a.run.trim() ? a.run : ''
+      const ownTreeOnly = explicit && !people.length && !!run
+      if (!people.length && !ownTreeOnly) {
         if (unavailable.length || offlineNote) {
           recordPreview({ clean: false, complete: false, testsPassed: false })
           await recordPartial([], [...unavailable, ...(offlineNote ? [offlineNote] : [])])
@@ -339,7 +341,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const live = liveShared ? ' + live changes' : ''
         return [`${person} at ${base.slice(0, 10)}${location}${live}`]
       }))).flat()
-      const run = typeof a.run === 'string' && a.run.trim() ? a.run : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       const movedReply = (moved: string[], details: string[] = []) => {
         recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
@@ -364,10 +365,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (skippedNote) out.push(skippedNote)
         if (!complete) out.push(`PARTIAL preview: ${gapLines.join('; ')}; the combined code was NOT fully checked`)
         for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
-        out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
+        out.push(`final ${ownTreeOnly ? 'caller' : 'combined'} tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
         if (anchors.length) out.push(`included ${anchors.join(', ')}`)
         if (noTestsNote) out.push(noTestsNote)
-        if (run) out.push(`snapshot inputs: ${result.snapshotInputs.join(', ')}`, `preview coverage: ${complete && !hardCount ? 'complete for selected participants' : 'PARTIAL; combined work not verified'}`)
+        if (run) out.push(`snapshot inputs: ${result.snapshotInputs.join(', ')}`, `preview coverage: ${ownTreeOnly ? 'caller tree only; combined work not verified' : complete && !hardCount ? 'complete for selected participants' : 'PARTIAL; combined work not verified'}`)
         const appliedFromOthers = [...result.owners.values()].some(owners => owners.some(owner => owner !== caller.me.name))
         let ranOk = !run
         let verdictIndex: number | undefined
@@ -396,13 +397,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               if (await settler.settle(await result.settledWorkers())) continue
               return movedReply(await result.moved(), await result.movementDetails())
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, coverageComplete: complete, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
+            const verdict = await runInMergedTree(caller, ancestor, merged, run, { modes, coverageComplete: complete && !ownTreeOnly, allowSlow: a.allowSlow === true, signal: currentToolSignal() })
             ranOk = verdict.passed
             const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join('; ')})`
               : !appliedFromOthers ? '; passed on your own tree only' : ''
             verdictIndex = out.length
             out.push(verdict.passed && qualifier ? verdict.text.replace(/tests: PASSED( \(exit 0\))?/, match => match + qualifier) : verdict.text)
-            if (!appliedFromOthers) out.push(`no changes from ${people.join(', ')} to apply; ran the check on your own tree only`)
+            if (!appliedFromOthers) out.push(ownTreeOnly ? 'no other participants selected; ran the check on your own tree only; combined work not verified'
+              : `no changes from ${people.join(', ')} to apply; ran the check on your own tree only`)
             if (!complete) out.push('Tests ran on a partial tree; this does not verify the combined work')
           }
         }
@@ -418,7 +420,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (await settler.settle(await result.settledWorkers())) continue
           return movedReply(await result.moved(), await result.movementDetails())
         }
-        recordPreview({ clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
+        recordPreview({ clean: hardCount === 0, complete: complete && !ownTreeOnly, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
           ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) })
         if (!complete) await recordPartial(people, gapLines, run, ranOk, anchorNote, appliedFromOthers)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.

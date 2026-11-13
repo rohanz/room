@@ -5,6 +5,7 @@ import { digestPath } from '@room/shared'
 import * as baselineModule from '@room/roomd/baseline'
 import { base, carry, lead, put, setup, worker } from './collect-fixture.js'
 import { publishFixture } from './fixtures/manifest.js'
+import { stampLocalPublisher } from './fixtures/local-publisher.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
@@ -23,6 +24,9 @@ it.each(['unchanged', 'edit', 'delete', 'rename', 'unreadable'])('requires an ov
   put(lead, 'source.txt', 'source\n')
   t.s.daemon.fence = '1'; t.s.daemon.reconcileGitChanges = publish; t.s.daemon.settle = async () => {}
   expect(await t.call({ tag: 'test', keep: true })).toContain('kept test')
+  // Keep no longer drives a publication handshake; model the live lead explicitly.
+  await publish()
+  stampLocalPublisher(t.s)
   put(worker, 'new.txt', 'next edit\n')
   if (change === 'edit') put(worker, 'file.txt', bundle + 'worker edit\n')
   if (change === 'delete') fs.unlinkSync(path.join(worker, 'file.txt'))

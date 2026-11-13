@@ -88,7 +88,7 @@ async function expectKept(t: Harness, before: WorkerRecord, sourceHead = base): 
   const snapshot = git(lead, 'rev-parse', collectHeadRef(before.tag, before.id))
   expect(current).toEqual({ ...durable({ ...before, base: snapshot, collectedKeep: true, carriedBase: undefined,
     carriedUntracked: undefined, interrupted: undefined, phase: 'active', seq: before.seq + 2 }),
-    keptPublication: { paths: expect.any(Array), pending: true, base: snapshot } })
+    keptPublication: undefined })
   expect(current.v).toBe(1)
   expect(current.keptWorktree).toBeUndefined()
   expect(current.archive).toBeUndefined()

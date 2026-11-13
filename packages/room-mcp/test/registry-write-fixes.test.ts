@@ -117,7 +117,7 @@ describe('reviewed worker write failures', () => {
     const borrower = { ...record('w_borrower'), tag: 'borrower', name: 'lead+borrower', sharedWith: 'w_owner' }
     await store.writeIntent(borrower)
     await store.finishOperation(borrower.id)
-    await store.beginDiscard('w_owner', true, [])
+    await store.beginDiscard('w_owner', [])
     const ownerFile = path.join(store.root, 'workers/w_owner.json')
     const pending = fs.readFileSync(ownerFile, 'utf8')
     fs.writeFileSync(path.join(store.root, 'workers/w_borrower.json'), '{malformed')
@@ -157,7 +157,7 @@ describe('reviewed worker write failures', () => {
     await mutateWorkerFixture(store, 'w_05', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: child.pid!, process: {
         pid: child.pid!, startTime: 'child-born', executable: process.execPath } } }], seq: old.seq + 1 }))
-    await store.beginDiscard('w_05', true, [])
+    await store.beginDiscard('w_05', [])
     await store.replayDiscard('w_05')
     expect(live).toBe(false)
     expect((await store.read('w_05'))?.discard?.steps.stop).toBe(true)
@@ -188,7 +188,7 @@ describe('reviewed worker write failures', () => {
       ] })
       fs.mkdirSync(path.join(root, '.room/workers'), { recursive: true })
       fs.writeFileSync(path.join(root, '.room/workers/tests.log'), 'Room log')
-      await store.beginDiscard('w_outside', false, [])
+      await store.beginDiscard('w_outside', [])
       await store.replayDiscard('w_outside')
       expect(signalled).toEqual([child.pid])
       expect(signal.quiesce).not.toHaveBeenCalled()
@@ -221,7 +221,7 @@ describe('reviewed worker write failures', () => {
     await mutateWorkerFixture(store, 'w_chain', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: host.pid! } }], seq: old.seq + 1 }))
     await store.writeReport('w_chain', { run: 1, nonce: 'nonce', chain, joinedAt: 2 })
-    await store.beginDiscard('w_chain', true, [])
+    await store.beginDiscard('w_chain', [])
     const original = store.recordDiscardPatch.bind(store)
     let aliveAtPatch = true
     vi.spyOn(store, 'recordDiscardPatch').mockImplementation(async (id, bytes) => {
@@ -247,7 +247,7 @@ describe('reviewed worker write failures', () => {
       { pid: 4242, startTime: 'mcp', executable: process.execPath },
       { pid: 4243, startTime: 'host', executable: process.execPath },
     ], joinedAt: 2 })
-    await store.beginDiscard('w_uncertain', true, [])
+    await store.beginDiscard('w_uncertain', [])
     await store.replayDiscard('w_uncertain')
     expect((await store.read('w_uncertain'))?.discard?.steps.stop).not.toBe(true)
     expect(fs.existsSync(dir)).toBe(true)
@@ -260,7 +260,7 @@ describe('reviewed worker write failures', () => {
     await store.writeIntent(record('w_06'))
     await mutateWorkerFixture(store, 'w_06', old => ({ ...old, phase: 'active', prep: { step: 'prepared', created: true },
       runs: [{ ...old.runs[0], launch: { outcome: 'never', error: 'host missing' } }], seq: old.seq + 1 }))
-    await store.beginDiscard('w_06', true, [])
+    await store.beginDiscard('w_06', [])
     const scratch = path.join(root, '.git/room/registry/patches/w_06.0123456789abcdef.tmp')
     fs.mkdirSync(path.dirname(scratch), { recursive: true })
     fs.writeFileSync(scratch, 'abandoned scratch')

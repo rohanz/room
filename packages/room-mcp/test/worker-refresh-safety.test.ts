@@ -4,7 +4,6 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { keptPublicationMatches } from '../src/kept-publication.js'
 import { registryForDir, WorkerRegistry } from '../src/worker-registry.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { workerByTag } from './registry-fixture.js'
@@ -412,7 +411,7 @@ describe('every room_done reaches the lead once', () => {
   })
 })
 
-describe('refresh publication recovery', () => {
+describe('refresh without publication exchange', () => {
   function publishLead(t: ReturnType<typeof world>) {
     const s = t.leadSession()
     s.daemon.reconcileGitChanges = async () => {
@@ -422,27 +421,31 @@ describe('refresh publication recovery', () => {
     }
     s.daemon.settle = async () => {}
   }
-  it('retries a pending kept proof during current refresh without moving kept refs or checkout bytes', async () => {
+  it('resumes current kept work without a publication exchange or moving kept refs or checkout bytes', async () => {
     const t = world(), w = await t.spawn('kept')
     put(w.dir, 'keep.txt', 'delivery\n'); await t.finish('kept')
     expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
     publishLead(t)
+    const scan = vi.spyOn(t.leadSession().daemon, 'reconcileGitChanges')
     const before = (await snapshot(w.dir, 'kept')), refs = await collectionRefs('kept')
     expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('already has your HEAD')
     const registry = await registryForDir(repo), record = (await registry.reservedByTagOrName('kept'))!
-    expect(keptPublicationMatches(t.leadSession(), record.keptPublication, undefined, record.base)).toBe(true)
+    expect(record.keptPublication).toBeUndefined()
+    expect(scan).not.toHaveBeenCalled()
     expect((await snapshot(w.dir, 'kept'))).toEqual(before); expect(await collectionRefs('kept')).toEqual(refs)
   })
-  it('retries publication for the new carried base after accepted refresh', async () => {
+  it('refreshes the carried base without requesting a publication acknowledgement', async () => {
     put(repo, 'shared.txt', 'a\ncarried\nc\n')
     const t = world(), w = await t.spawn('carry')
     await t.finish('carry'); put(repo, 'docs/new.md', 'docs only\n')
     git(repo, 'add', '--', 'docs/new.md'); git(repo, 'commit', '-qm', 'docs only')
     publishLead(t)
+    const scan = vi.spyOn(t.leadSession().daemon, 'reconcileGitChanges')
     expect(await t.call('room_send', { type: 'note', to: 'carry', text: 'continue', refresh: true })).toContain('rebased carry onto your HEAD')
     const record = (await (await registryForDir(repo)).reservedByTagOrName('carry'))!
     expect(record.carriedBase).toBe(record.base)
-    expect(keptPublicationMatches(t.leadSession(), record.keptPublication, undefined, record.base)).toBe(true)
+    expect(record.keptPublication).toBeUndefined()
+    expect(scan).not.toHaveBeenCalled()
     expect(read(w.dir, 'shared.txt')).toBe('a\ncarried\nc\n')
   })
 })

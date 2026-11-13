@@ -1,4 +1,3 @@
-import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { publishFixture } from './fixtures/manifest.js'
 import { hubSeam } from './fixtures/hub.js'
 import { patchPublisher, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
@@ -13,7 +12,7 @@ import { carriedUnchanged, carriedUnchangedPaths, workerBaseline } from '@room/r
 import { addCarriedUntrackedModes, mergedFileMode } from '../src/tools/files.js'
 import { saveDiscardPatch } from '../src/worker-git.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
-import { acknowledgeKeptPublication } from '../src/kept-publication.js'
+import { stampLocalPublisher } from './fixtures/local-publisher.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 
@@ -60,15 +59,11 @@ async function spawn(files: Record<string, string>, wip: Record<string, string>,
   const session = (name: string) => ({ me: { name, kind: 'agent' }, dir: dirOf(name), room, roomName: 'local/test/main', local: true, awareness: { getStates: () => new Map() }, daemon: {}, ...hubSeam(room) }) as unknown as Session
   const sessions = { [LEAD]: session(LEAD), [WORKER]: session(WORKER) }
   // The carried baseline is a local fact of the lead's registry, which the worker's worktree shares.
-  const registry = await registerWorkers(sessions[LEAD], [record])
+  await registerWorkers(sessions[LEAD], [record])
   const carried = Object.keys({ ...wip, ...untracked })
   if (carried.length) {
-    // Spawn persists a verified post-carry publication, including for untracked-only carry.
-    Object.assign(sessions[LEAD].daemon, { fence: '1', settle: async () => {}, reconcileGitChanges: async () => publish(LEAD, carried) })
-    const proof = await acknowledgeKeptPublication(sessions[LEAD], undefined, carried)
-    expect(proof.pending).toBe(false)
-    const saved = (await registry.reservedByTagOrName(WORKER))!
-    await mutateWorkerFixture(registry, saved.id, old => ({ ...old, keptPublication: { ...proof, base }, seq: old.seq + 1 }))
+    publish(LEAD, carried)
+    stampLocalPublisher(sessions[LEAD])
   }
   const state = {
     rooms: { holding: (name: string) => sessions[name as keyof typeof sessions] },

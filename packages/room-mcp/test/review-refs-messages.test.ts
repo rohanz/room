@@ -7,6 +7,7 @@ it.each(['collect-no-commits', 'collect-commits', 'discard', 'discard-behind-bas
   const actual = await vi.importActual<typeof import('../src/worker-git.js')>('../src/worker-git.js')
   const loaded = await import('../src/worker-git.js')
   if (vi.isMockFunction(loaded.cleanupWorker)) loaded.cleanupWorker.mockImplementation(actual.cleanupWorker)
+  if (vi.isMockFunction(loaded.saveDiscardPatch)) loaded.saveDiscardPatch.mockImplementation(actual.saveDiscardPatch)
   const { repo, head, git } = realRepo()
   if (action === 'discard-behind-base') git('commit', '--allow-empty', '-qm', 'valuable base commit')
   const base = git('rev-parse', 'HEAD'), t = setupLead(repo, base), registry = await registryForDir(repo)
@@ -21,9 +22,15 @@ it.each(['collect-no-commits', 'collect-commits', 'discard', 'discard-behind-bas
   expect(reply).not.toContain('error:')
   const pins = git('for-each-ref', '--format=%(refname)', 'refs/room/recovery/')
   if (action !== 'keep') {
-    expect(pins).toBe(`refs/room/recovery/lifetime/${tip}`)
-    expect(git('rev-parse', `${pins}^{commit}`)).toBe(tip)
-    expect(reply.split('branch recovery ref: ' + pins + ' (kept for seven days)')).toHaveLength(2)
+    const branchRef = `refs/room/recovery/lifetime/${tip}`
+    const patchBaseRef = action.startsWith('discard') ? (await registry.read(record.id))!.discard!.baseRef! : branchRef
+    expect(pins.split('\n').sort()).toEqual([...new Set([branchRef, patchBaseRef])].sort())
+    expect(git('rev-parse', `${branchRef}^{commit}`)).toBe(tip)
+    expect(reply.split('branch recovery ref: ' + branchRef + ' (kept for seven days)')).toHaveLength(2)
+    if (patchBaseRef !== branchRef) {
+      expect(git('rev-parse', `${patchBaseRef}^{commit}`)).toBe(base)
+      expect(reply.split('recovery patch base ref: ' + patchBaseRef + ' (kept for seven days)')).toHaveLength(2)
+    }
   } else expect(pins).toBe('')
   expect(fs.existsSync(record.dir)).toBe(action === 'keep')
 })

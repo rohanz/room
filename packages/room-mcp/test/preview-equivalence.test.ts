@@ -322,7 +322,7 @@ describe('review3 latest attempt snapshot', () => {
     const tested = await fingerprintTree(worker, ['.gitignore', 'file.txt', 'output.txt'])
     expect((await runInMergedTree(t.s, base, new Map([['output.txt', 'worker output\n']]), command)).text).toContain('exit 0')
     if (mode === 'second-keep') expect(await t.call({ tag: 'test', keep: true })).toContain('tree that passed')
-    // Gate on resolver entry, so kept-publication acknowledgement cannot trigger the injection early.
+    // Gate on resolver entry so unrelated setup reads cannot trigger the injection early.
     const resolve = previewEvidence.collectedTreeEvidence
     let resolverEntered = false, interleaved = false
     vi.spyOn(previewEvidence, 'collectedTreeEvidence').mockImplementation((...args) => {

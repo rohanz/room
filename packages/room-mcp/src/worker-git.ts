@@ -7,6 +7,7 @@ import { requireWorkerEvidence } from './worker-store.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { isRegenerableBuildPath } from '@room/shared'
 import type { LocalWorker, WorkerRecord } from './worker-status.js'
 import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, commonGitDirFromDotGit, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
@@ -635,6 +636,40 @@ export interface CleanupWorkerOptions {
   registry?: Pick<WorkerRegistry, 'read' | 'list' | 'worktreeOwner' | 'checkoutUsers'>
 }
 
+function discardBaseCommit(tag: string, ref: string): string {
+  const prefix = `refs/room/recovery/${tag}/`
+  const oid = ref.startsWith(prefix) ? ref.slice(prefix.length) : ''
+  if (!/^[a-f0-9]{40,64}$/.test(oid)) throw new Error(`invalid discard recovery base ref: ${ref}`)
+  return oid
+}
+
+/** The recovery clock starts at destruction, including a replay days after capture. */
+function readyDiscardRecovery(common: string, w: LocalWorker, plan: NonNullable<WorkerRecord['discard']>, refs: ReadonlySet<string>): void {
+  if (!plan.baseRef) throw new Error('discard recovery base ref missing; checkout retained')
+  const base = discardBaseCommit(w.tag, plan.baseRef)
+  try { boundedGitSync(common, ['--git-dir', common, 'rev-parse', '--verify', `${base}^{commit}`]) }
+  catch { throw new Error(`discard recovery base commit ${base} is missing; checkout retained`) }
+  let patchFd: number | undefined
+  try {
+    if (plan.patch) {
+      const expected = path.join(common, 'room', 'registry', 'patches', `${w.id}.patch`)
+      patchFd = fs.openSync(expected, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+      if (!fs.fstatSync(patchFd).isFile() || createHash('sha256').update(fs.readFileSync(patchFd)).digest('hex') !== plan.patch.sha256) {
+        throw new Error(`discard patch missing or changed: ${expected}`)
+      }
+    }
+    for (const ref of new Set([...refs, plan.baseRef])) {
+      const pin = preserveWorkerBranch(common, w, { tip: discardBaseCommit(w.tag, ref) }, true)
+      if (!pin.recoveryRef) throw new Error(pin.reason ?? `cannot preserve recovery ref ${ref}`)
+    }
+    if (patchFd !== undefined) {
+      const now = Date.now() / 1000
+      fs.futimesSync(patchFd, now, now)
+      fs.fsyncSync(patchFd)
+    }
+  } finally { if (patchFd !== undefined) fs.closeSync(patchFd) }
+}
+
 /** Remove only owned Room worktrees; failures require explicit discard. */
 export async function cleanupWorker(leadDir: string, w: LocalWorker, options: CleanupWorkerOptions = {}): Promise<boolean> {
   const { collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = [], preservation } = options
@@ -726,6 +761,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
           if (!checkoutPin.recoveryRef) throw new Error(`cannot preserve checkout HEAD ${checkoutHead}`)
           recoveryRefs.add(checkoutPin.recoveryRef)
         }
+        if (ownerRecord?.discard) readyDiscardRecovery(common, w, ownerRecord.discard, recoveryRefs)
       }
       boundedGitSync(common, ['--git-dir', common, '-c', 'core.hooksPath=/dev/null', 'worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     })
@@ -778,20 +814,54 @@ export function cleanupWorkerLogs(leadDir: string, record: Pick<WorkerRecord, 'i
 
 /** One binary-capable snapshot against the fork, without modifying the worker's index. */
 export async function saveDiscardPatch(leadDir: string, w: LocalWorker,
-  publish: (bytes: Buffer) => Promise<string>): Promise<string | undefined> {
+  publish: (bytes: Buffer) => Promise<string>, recordBase?: (ref: string) => Promise<void>): Promise<string | undefined> {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
   const common = await realGitCommonDir(leadDir)
   let keepScratch = false
   try {
+    // A symbolic/unreadable operation branch grants no authority to follow HEAD
+    // or create a recovery pin for its target. Keep the checkout for inspection.
+    const branch = operationBranchReceipt(common, w.id)
+    if (branch?.reason) throw new Error(branch.reason)
     const run = (args: string[], wholeTreePaths?: number) => boundedGit(w.dir, args, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') })
-    const base = w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
+    const fork = w.base?.startsWith('refs/room/recovery/') ? discardBaseCommit(w.tag, w.base)
+      : w.base ?? (await git(leadDir, ['merge-base', 'HEAD', w.branch])).trim()
+    let base = (await run(['rev-parse', '--verify', `${fork}^{commit}`])).toString().trim()
     await run(['read-tree', 'HEAD'], UNKNOWN_WHOLE_TREE_PATHS)
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map(p => ':(exclude,literal)' + p)]
+    // Unchanged carried files are absent from the delta, and may also be absent
+    // from the tracked fork. Include their original blobs in the recovery base
+    // so the base plus patch needs no files from the lead's checkout. This keeps
+    // existing in-flight patches valid as well as newly generated ones.
+    if (unchanged.size) {
+      const env = { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'base-index') }
+      const baseRun = (args: string[]) => boundedGit(w.dir, args, UNKNOWN_WHOLE_TREE_PATHS, env)
+      await baseRun(['read-tree', base])
+      const carried = (w.carriedUntracked ?? []).filter(p => unchanged.has(p.path))
+      const hashes = carriedContentHashes(w.dir, carried.map(p => p.path), true)
+      if (carried.some((p, i) => hashes[i] !== p.sha)) throw new Error('carried input changed during discard; checkout retained')
+      const entries = carried.map(p => {
+        const mode = fs.lstatSync(path.join(w.dir, p.path)).isSymbolicLink() ? '120000' : p.mode && p.mode & 0o111 ? '100755' : '100644'
+        return `${mode} ${p.sha}\t${p.path}\0`
+      }).join('')
+      const info = path.join(scratch, 'base-entries')
+      fs.writeFileSync(info, entries, { mode: 0o600 })
+      boundedGitSync(w.dir, ['update-index', '-z', '--index-info'], { env, stdinFile: info, wholeTreePaths: unchanged.size })
+      const tree = (await baseRun(['write-tree'])).toString().trim()
+      if (tree !== (await baseRun(['rev-parse', `${base}^{tree}`])).toString().trim()) {
+        base = (await baseRun(['-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit-tree', tree, '-p', base, '-m', 'Room discard recovery base'])).toString().trim()
+      }
+    }
     // Exclusions apply to the diff only: `git add` refuses any pathspec naming an ignored path, even an
     // exclude, and a carried or linked path may lie under a directory the worker's .gitignore ignores.
     await run(['add', '-A', '--', '.'], UNKNOWN_WHOLE_TREE_PATHS)
     const patch = await run(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS)
+    // Kept/carry bases can be outside branch HEAD's ancestry. Pin this exact
+    // base before cleanup deletes private refs, even when its delta is empty.
+    const pin = preserveWorkerBranch(common, w, { tip: base })
+    if (!pin.recoveryRef) throw new Error(pin.reason ?? 'could not preserve discard patch base')
+    await recordBase?.(pin.recoveryRef)
     if (!patch.length) return undefined
     // The recovery artifact is useful only if it applies to a fresh checkout of this base.
     const verifyDir = path.join(scratch, 'verify')

@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { expect, it, vi } from 'vitest'
 import * as gitModule from '@room/roomd/git'
-import { acknowledgeKeptPublication } from '../src/kept-publication.js'
+import { stampLocalPublisher } from './fixtures/local-publisher.js'
 import type { Session } from '../src/session.js'
 import { handlers as collectHandlers } from '../src/tools/collect.js'
 import { handlers as previewHandlers } from '../src/tools/files.js'
@@ -53,29 +53,24 @@ it('refuses a held or partially shared lead anchor without reading its disk or s
   const t = await fixture(), before = t.snapshot()
   const head = t.room.manifestHead.get('lead')!
   t.room.manifestHead.set('lead', { ...head, level: 'declared', rev: head.rev + 1 })
-  const result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
-  expect(result.complete).toBe(false)
-  expect(result.gaps.some(gap => gap.person === 'lead' && gap.why.includes('anchor unavailable'))).toBe(true)
-  expect(result.merged.has('src/api.ts')).toBe(false)
-  expect(t.snapshot()).toEqual(before)
+  const reads = vi.spyOn(fs.promises, 'open')
+  try {
+    const result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
+    expect(result.complete).toBe(false)
+    expect(result.gaps.some(gap => gap.person === 'lead' && gap.why.includes('anchor unavailable'))).toBe(true)
+    expect(result.merged.has('src/api.ts')).toBe(false)
+    expect(reads.mock.calls.some(([file]) => String(file).startsWith(path.join(t.root, 'src') + path.sep))).toBe(false)
+    expect(t.snapshot()).toEqual(before)
+  } finally { reads.mockRestore() }
 })
 
-it('requires a new post-application acknowledgement after publisher replacement', async () => {
+it('verifies a replacement publisher without a per-worker acknowledgement', async () => {
   const t = await fixture(), lead = t.sessions.get('lead')!, head = t.room.manifestHead.get('lead')!
   const holder = t.room.participants.get('lead\0holder')! as { sessionId: string; epoch: number }
   t.room.participants.set('lead\0holder', { ...holder, sessionId: 'replacement', epoch: holder.epoch + 1 })
   lead.daemon.fence = String(holder.epoch + 1)
   await lead.daemon.reconcileGitChanges()
-  let result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
-  expect(result.complete).toBe(false)
-  expect(result.gaps.some(gap => gap.why.includes('acknowledged post-baseline'))).toBe(true)
-  const records = (requireWorkerInventory(await t.registry.list()))
-  for (const record of records) {
-    const proof = await acknowledgeKeptPublication(lead, record.keptPublication, [])
-    expect(proof.pending).toBe(false)
-    await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { ...proof, base: record.base }, seq: old.seq + 1 }))
-  }
-  result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
+  const result = await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])
   expect(result.complete, result.out.join('\n')).toBe(true)
   expect(result.conflictingPaths.size, result.out.join('\n')).toBe(0)
   expect(result.merged).toEqual(t.expected)
@@ -87,7 +82,7 @@ it('ignores registry bookkeeping but tracks own-caller baseline, collection ref 
   expect((await result.isCurrent())).toBe(true)
   const record = (await t.registry.reservedByTagOrName('lead+api'))!
   await mutateWorkerFixture(t.registry, record.id, old => ({ ...old,
-    keptPublication: { ...old.keptPublication!, ack: { ...old.keptPublication!.ack!, rev: old.keptPublication!.ack!.rev + 1 } }, seq: old.seq + 1 }))
+    keptPublication: { paths: [], pending: true, base: old.base }, seq: old.seq + 1 }))
   expect((await result.isCurrent())).toBe(true)
   // Repacking refs also preserves their applied values.
   git(t.root, 'pack-refs', '--all')
@@ -193,26 +188,33 @@ async function carriedFixture(carry = true) {
 }
 
 it('rejects a complete stale pre-carry lead frame including unchanged carried untracked input', async () => {
-  const t = await carriedFixture(), result = await t.preview()
+  const t = await carriedFixture()
+  stampLocalPublisher(t.lead)
+  const result = await t.preview()
   expect(result.complete).toBe(false)
-  expect(result.gaps.some(g => g.why.includes('acknowledged'))).toBe(true)
+  expect(result.gaps.some(g => g.why.includes('published lead version differs'))).toBe(true)
 })
 
-it('accepts a verified carried publication and requires reacknowledgement after replacement', async () => {
-  const t = await carriedFixture(), record = (await t.registry.reservedByTagOrName('lead+carry'))!
-  const proof = await acknowledgeKeptPublication(t.lead, undefined, t.prepared.carried!.paths)
-  expect(proof.pending).toBe(false)
-  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { ...proof, base: record.base }, seq: old.seq + 1 }))
+it('accepts a current carried publication without any acknowledgement and checks publisher replacement', async () => {
+  const t = await carriedFixture()
+  const record = (await t.registry.reservedByTagOrName('lead+carry'))!
+  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { pending: true }, seq: old.seq + 1 }))
+  await t.lead.daemon.reconcileGitChanges()
+  stampLocalPublisher(t.lead)
   const result = await t.preview()
   expect(result.complete, result.out.join('\n')).toBe(true)
   expect(result.merged.get('shared.txt')).toBe(sharedText([2, 'carried input']))
   expect(result.merged.get('new.txt')).toBe('carried untracked input\n')
   expect(result.merged.get('own.txt')).toBe('worker own comment\n')
-  t.room.participants.set('lead\0holder', { ...t.room.participants.get('lead\0holder')!, sessionId: 'replacement' })
+  const holder = t.room.participants.get('lead\0holder')! as { epoch: number }
+  t.room.participants.set('lead\0holder', { ...holder, sessionId: 'replacement', epoch: holder.epoch + 1 })
+  await t.lead.daemon.reconcileGitChanges()
   expect((await t.preview()).complete).toBe(false)
+  stampLocalPublisher(t.lead)
+  expect((await t.preview()).complete).toBe(true)
 })
 
-it('does not require carried-publication acknowledgement for carry=false', async () => {
+it('does not require a carry witness for carry=false', async () => {
   const t = await carriedFixture(false), result = await t.preview()
   expect(t.prepared.carried).toBeUndefined()
   expect(result.complete, result.out.join('\n')).toBe(true)
@@ -257,9 +259,9 @@ it.each(['missing', 'mismatched'])('does not certify a plain checkpoint from a %
 })
 
 it.each([false, true])('checks the immediate worker-lead publication in a three-generation preview (stale=%s)', async stale => {
-  const t = await carriedFixture(), parentRecord = (await t.registry.reservedByTagOrName('lead+carry'))!
-  const parentProof = await acknowledgeKeptPublication(t.lead, undefined, t.prepared.carried!.paths)
-  await mutateWorkerFixture(t.registry, parentRecord.id, old => ({ ...old, keptPublication: { ...parentProof, base: old.base }, seq: old.seq + 1 }))
+  const t = await carriedFixture()
+  await t.lead.daemon.reconcileGitChanges()
+  stampLocalPublisher(t.lead)
   const child = await prepareWorktree(t.worker.dir, 'grand', t.worker.me.name, { linkExclusions: [] })
   await registerWorkers(t.worker, [{ tag: 'grand', name: 'lead+carry+grand', lead: t.worker.me.name, dir: child.dir, branch: child.branch,
     status: 'done', base: child.base, carriedBase: child.carriedBase, carriedUntracked: child.carriedUntracked, host: 'codex', task: 'grand', pid: 0, startedAt: 2 }])
@@ -268,9 +270,8 @@ it.each([false, true])('checks the immediate worker-lead publication in a three-
     t.room.participants.set(`${t.worker.me.name}\0git`, { ...t.room.participants.get(`${t.worker.me.name}\0git`)!, head: git(t.worker.dir, 'rev-parse', 'HEAD') })
   }
   const record = (await t.registry.reservedByTagOrName('lead+carry+grand'))!
-  const proof = await acknowledgeKeptPublication(t.worker, undefined, child.carried!.paths)
-  expect(proof.pending).toBe(false)
-  await mutateWorkerFixture(t.registry, record.id, old => ({ ...old, keptPublication: { ...proof, base: old.base }, seq: old.seq + 1 }))
+  await t.worker.daemon.reconcileGitChanges()
+  stampLocalPublisher(t.worker)
   if (stale) t.room.participants.set(`${t.worker.me.name}\0holder`, { ...t.room.participants.get(`${t.worker.me.name}\0holder`)!, sessionId: 'replacement' })
   put(child.dir, 'grand.txt', 'grand own note\n')
   publishFixture(t.room, record.name, 'grand.txt', 'grand own note\n', { base: child.base })
@@ -287,12 +288,12 @@ it.each([false, true])('checks the immediate worker-lead publication in a three-
   }
 })
 
-it('retains the worker and marks unknown freshness when optional ACK metadata is malformed', async () => {
+it('retains the worker and verifies local content when obsolete ACK metadata is malformed', async () => {
   const t = await fixture(), record = (await t.registry.reservedByTagOrName('lead+api'))!
   fs.writeFileSync(path.join(t.registry.root, 'workers', `${record.id}.json`), JSON.stringify({ ...record, keptPublication: { pending: false, paths: [7], ack: {} } }))
-  expect((await t.registry.read(record.id))).toMatchObject({ id: record.id, keptPublication: { paths: [], pending: true, overflow: true } })
+  expect((await t.registry.read(record.id))).toMatchObject({ id: record.id, keptPublication: { pending: false, paths: [7], ack: {} } })
   expect((await localWorkers(t.root)).some(worker => worker.id === record.id)).toBe(true)
-  expect((await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])).complete).toBe(false)
+  expect((await t.preview('lead+api', ['lead+backend', 'lead+consumer', 'lead'])).complete).toBe(true)
 })
 
 it('gaps a lead-absent later baseline that reverts an earlier delivery back to the common ancestor', async () => {

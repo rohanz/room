@@ -109,7 +109,7 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       'completion from their own registered workers mid-turn as tool output', 'not proof that content was read or acted on',
       'A headless lead (`claude -p`, `codex exec`) must stay alive until supervision is complete',
       '.room/briefs/<batch>.md', 'with or without `carry=false`', 'its absolute path plus only its own slice',
-      'Never commit or push unless the human asked', 'removes its worktree, branch and logs, keeping a recovery patch for a week',
+      'Never commit or push unless the human asked', 'removes its worktree, branch and logs, keeping recovery refs and a recovery patch for ordinary work for a week from checkout removal',
     ] },
     { sources: ['workers', 'etiquette'], phrases: ['output-limited runs do not validate the whole tree'] },
     { sources: ['etiquette', 'agent', 'worker'], phrases: [

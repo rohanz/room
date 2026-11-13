@@ -10,11 +10,11 @@ import { gitMergeFile } from '../merge.js'
 import { carryRef, collectHeadRef, workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedCommitUnchangedPaths, carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, workerBaseline, type Baseline } from '@room/roomd/baseline'
-import { REGENERABLE_BUILD_DIRS, acceptedGit, digestPath, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
+import { REGENERABLE_BUILD_DIRS, acceptedGit, digestPath, formatCount, isRegenerableBuildPath, participantRecord, participantsView, roomKey, snapshot, versionOf, type ParticipantGit, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type Version } from '@room/shared'
 import type { HandlerState } from './context.js'
 import { openWorkerReader, registryForDir, type WorkerReader } from '../worker-registry.js'
 import { requireWorkerEvidence, snapshotRead, snapshotReserved, workerEvidence, type AvailableWorkerSnapshot } from '../worker-store.js'
-import { keptPublicationMatches } from '../kept-publication.js'
+import { localLeadRoot, witnessPublishedPath } from '../local-publication.js'
 import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
 
@@ -214,7 +214,8 @@ class AssemblyInputs {
   private readonly refs = new Map<string, string | undefined>()
   private readonly heads = new Map<string, { person: string; gitDir: string; captured: { head: string | undefined; value: string | undefined } }>()
   private readonly settledRuns = new Map<string, { id: string; run: string }>()
-  readonly publicationProofs: { person: string; id: string; publisher: string; session: Session; base: string; valid: boolean }[] = []
+  readonly localPublicationProofs: { person: string; path: string; current: () => Promise<boolean> }[] = []
+  readonly localPublisherProofs: { person: string; current: () => boolean }[] = []
 
   private constructor(private readonly registry: WorkerReader, facts: AvailableWorkerSnapshot, statuses: ReadonlyMap<string, LocalWorker>,
     state: HandlerState, caller: Session, participants: readonly Participant[], diskOnly: boolean) {
@@ -315,6 +316,7 @@ class AssemblyInputs {
     if (base === undefined) throw new Error('uncaptured preview base: ' + person)
     return base
   }
+  get commonDir() { return this.registry.commonDir }
   worker(session: Session, person: string) { return this.workers.get(session)?.get(person) }
   refValue(ref: string) {
     if (!this.refs.has(ref)) throw new Error('uncaptured preview ref: ' + ref)
@@ -385,10 +387,8 @@ class AssemblyInputs {
       const current = this.readHead(gitDir, refValue)
       if (current.head !== captured.head || current.value !== captured.value) changes.push({ person, detail: `${person}: Git HEAD` })
     }
-    const currentRecords = new Map<string, WorkerRecord | undefined>()
     for (const [person, record] of this.records) {
       const current = snapshotRead(facts, record.id)
-      currentRecords.set(record.id, current)
       const status = current && workers.get(current.id)
       if (!current || workerInputs(current) !== workerInputs(record)) changes.push({ person, detail: `${person}: worker baseline, paths or lifecycle` })
       if ([status?.finishedAt ?? 0, current?.tag].join(':') !== [this.workerStates.get(person)?.finishedAt ?? 0, record.tag].join(':'))
@@ -396,11 +396,10 @@ class AssemblyInputs {
       for (const ref of [collectHeadRef(record.tag, record.id), carryRef(record.tag)])
         if (refValue(ref) !== this.refs.get(ref)) changes.push({ person, detail: `${person}: baseline ref ${ref}` })
     }
-    for (const proof of this.publicationProofs) {
-      const meta = snapshotMetadata(proof.session.room, proof.publisher, viewOf(state, proof.session))
-      const valid = keptPublicationMatches(proof.session, currentRecords.get(proof.id)?.keptPublication, meta, proof.base)
-      if (valid !== proof.valid) changes.push({ person: proof.person, detail: `${proof.person}: post-baseline publication availability` })
-    }
+    for (const proof of this.localPublicationProofs) if (!await proof.current())
+      changes.push({ person: proof.person, detail: `${proof.person}: local publication witness ${proof.path}` })
+    for (const proof of this.localPublisherProofs) if (!proof.current())
+      changes.push({ person: proof.person, detail: `${proof.person}: local publisher checkout binding` })
     changes.push(...publicationMovement(state, this.publicationLinks.filter(({ person }) => !this.settledRuns.has(person))))
     return changes
   }
@@ -414,7 +413,7 @@ const workerInputs = (record: WorkerRecord) => JSON.stringify([
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
 async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; limit?: number } = {}) {
   const inputs = await AssemblyInputs.capture(state, caller, participants, !!options.diskOnly)
-  const { snapshots, stale, acceptedRecords, records, workerStates, publicationProofs } = inputs
+  const { snapshots, stale, acceptedRecords, records, workerStates } = inputs
   const baseFor = (session: Session, person: string) => inputs.baseFor(session, person)
   const previewWorker = (session: Session, person: string) => inputs.worker(session, person)
   const settledWorkers = () => inputs.settledWorkers()
@@ -501,6 +500,23 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       version = typeof text === 'string' ? { kind: 'base', text }
         : text instanceof HistoricalTextTooLarge ? { kind: 'unknown', why: 'too-large', detail: 'historical text exceeds Room read limit' }
           : { kind: 'unknown', why: 'fetch', detail: proven ? `${person}'s carried base blob is unavailable` : `${person}'s published base does not follow its carried base` }
+    }
+    const localRoot = localLeadRoots.get(person)
+    if (localRoot && (version.kind === 'text' || version.kind === 'base' || version.kind === 'deleted')) {
+      if (snap?.head.level !== 'full' || snap.head.coverage.kind !== 'all' || snap.entries.get(p)?.state === 'held') {
+        version = { kind: 'unknown', why: 'updating', detail: 'lead path is not fully shared' }
+        versions.set(p, version)
+        return version
+      }
+      const text = version.kind === 'deleted' ? null : version.text ?? null
+      const proof = await witnessPublishedPath(localRoot, p, text,
+        version.kind === 'base' && !snap?.entries.has(p) ? snap?.head.base : undefined, limit)
+      if (proof.matches) inputs.localPublicationProofs.push({ person, path: p, current: proof.current })
+      else {
+        const why = 'published lead version differs from its local checkout; wait for its next scan'
+        gaps.push({ kind: 'provenance', person, path: p, why })
+        version = { kind: 'unknown', why: 'updating', detail: why }
+      }
     }
     versions.set(p, version)
     return version
@@ -589,6 +605,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         : (records.get(a.person)?.tag ?? a.person) > (records.get(b.person)?.tag ?? b.person) ? 1 : 0)) : participants
   const localHead = inputs.headFor(caller.dir)
   const proven = new Map<string, Baseline>()
+  const localPublicationRecords: WorkerRecord[] = []
   if (anchor) for (const { person, session } of contributors) {
     const relation = relationFor(session.dir, person), record = records.get(person)
     if (!relation || !record || rootFor(person) !== anchorName) continue
@@ -607,12 +624,24 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         && parentSnapshot.head.base === parentSnapshot.record.git.base ? parentSnapshot.record.git.head : undefined
     if (delivered || inherited || (!!parentHead && await descends(baseline.sha, parentHead))) {
       proven.set(person, baseline)
-      if (relation.lead !== caller.me.name && !parentWorker && (delivered || inherited || !!record.carriedUntracked?.length)) {
-        const valid = keptPublicationMatches(session, record.keptPublication, parentSnapshot, baseline.sha)
-        publicationProofs.push({ person, id: record.id, publisher: parentSnapshot?.name ?? relation.lead, session, base: baseline.sha, valid })
-        if (!valid) gaps.push({ kind: 'provenance', person: relation.lead, why: `${relation.lead}'s published snapshot has no acknowledged post-baseline scan for ${person}${record.keptPublication?.base && record.keptPublication.base !== baseline.sha ? ` (delivered-version mismatch: acknowledged ${record.keptPublication.base.slice(0, 10)}, baseline ${baseline.sha.slice(0, 10)})` : ''}; message its lead without refresh to retry publication` })
-      }
+      if (relation.lead !== caller.me.name && !parentWorker && (delivered || inherited || record.collectedKeep || !!record.carriedUntracked?.length))
+        localPublicationRecords.push(record)
     } else gaps.push({ kind: 'provenance', person, why: `worker baseline provenance could not be verified (baseline ${baseline.sha.slice(0, 10)}; collection ref ${collectionHead?.slice(0, 10) ?? 'missing'}; ${relation.lead} HEAD ${parentHead?.slice(0, 10) ?? 'unavailable'})` })
+  }
+  // The private baseline/ref establishes carried or delivered ancestry. Verify each remote parent
+  // (including nested worker-leads) at the point its published bytes are read.
+  const localLeadRoots = new Map<string, string>()
+  for (const record of localPublicationRecords) {
+    const parent = record.lead.participant, source = snapshots.get(parent)
+    let key: string | undefined
+    try { if (source) key = roomKey(source.session.local ? 'local' : new URL(source.session.roomUrl).origin, source.session.roomName) } catch { /* location remains unprovable */ }
+    const binding = await localLeadRoot(inputs.commonDir, source?.snap, key)
+    if (!binding || localLeadRoots.has(parent) && localLeadRoots.get(parent) !== binding.root)
+      gaps.push({ kind: 'provenance', person: parent, why: 'current publisher checkout is not verified on this machine; run the preview from the publishing lead checkout' })
+    else {
+      localLeadRoots.set(parent, binding.root)
+      inputs.localPublisherProofs.push({ person: parent, current: binding.current })
+    }
   }
   const pairs = new Map<string, Baseline | undefined>()
   const sharedBaselines = new Map<string, [Baseline, Baseline]>()

@@ -160,7 +160,7 @@ describe('registry write paths', () => {
     const store = await open(root)
     await store.writeIntent(record)
     await mutateWorkerFixture(store, record.id, old => ({ ...old, phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
-    await store.beginDiscard(record.id, false, [])
+    await store.beginDiscard(record.id, [])
     await store.recordDiscardPatch(record.id, Buffer.from('patch body'))
     const patch = path.join(root, 'room/registry/patches/w_write.patch')
     expect(fs.readFileSync(patch, 'utf8')).toBe('patch body')
@@ -176,7 +176,7 @@ describe('registry write paths', () => {
     const { root, record } = fixture()
     const store = await open(root)
     await store.writeIntent(record)
-    await store.beginDiscard(record.id, true, [])
+    await store.beginDiscard(record.id, [])
     const bytes = Buffer.from('recovery patch')
     const file = path.join(root, 'room/registry/patches/w_write.patch')
     const sha256 = createHash('sha256').update(bytes).digest('hex')
@@ -207,7 +207,7 @@ describe('registry write paths', () => {
     // A PID-only launch must be retained if that PID happens to exist on CI.
     await mutateWorkerFixture(lead, record.id, old => ({ ...old, base, prep: { step: 'prepared' }, phase: 'active',
       runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: process.pid, process: { pid: process.pid, startTime: 'fixture-host', executable: 'codex' } } }], seq: old.seq + 1 }))
-    await lead.beginDiscard(record.id, true, [])
+    await lead.beginDiscard(record.id, [])
     const observer = await open(root, 'observer', 'dead')
     expect((await observer.read(record.id))?.phase).toBe('retiring')
     expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })

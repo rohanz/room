@@ -39,7 +39,6 @@ import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-s
 import { postWorkerMessage } from '../post.js'
 import { watcherExclusionWarning } from '../watcher-exclusions.js'
 import { currentToolTiming } from '../timing.js'
-import { acknowledgeKeptPublication } from '../kept-publication.js'
 import { settleWorkerPublication } from '../worker-publication.js'
 
 /** Repo paths a brief names that exist in the lead clone but not in the worker's worktree. */
@@ -171,7 +170,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_spawn(a) {
       const lead = S()
       const timing = currentToolTiming()
-      const timed = <T>(phase: 'lease' | 'prepare' | 'launch' | 'carry-publication', work: () => Promise<T>): Promise<T> => timing ? timing.phase(phase, work) : work()
+      const timed = <T>(phase: 'lease' | 'prepare' | 'launch', work: () => Promise<T>): Promise<T> => timing ? timing.phase(phase, work) : work()
       if (a.effort !== undefined && !(WORKER_EFFORTS as readonly unknown[]).includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
       const requestedEffort = a.effort as string | undefined
       if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
@@ -292,10 +291,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           catch (e) { throw new Error(`could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`) }
         }
-        const publication = base && carried?.paths?.length
-          ? await timed('carry-publication', () => acknowledgeKeptPublication(s, undefined, carried!.paths!)) : undefined
         await registry.command(id, { type: 'prepare-finish', created, branchCreated: prepared?.branchCreated, witness: prepared?.witness, branchOid: prepared?.branchOid,
-          facts: !suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined } : {} })
+          facts: !suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry } : {} })
         if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
@@ -362,7 +359,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`log: ${logFile}`)
         const stale = staleWorkersNote((await Promise.all((await myWorkers(s)).filter(w => w.id !== id).map(async w => (await localWorkerView(s, w.id)) ?? []))).flat(), now())
         if (stale) out.push('note: ' + stale)
-        if (publication?.pending) out.push('carried preview freshness pending: publication could not be verified; previews including the lead report a gap. Plain room_send retries.')
         if (!spawnExplained.has(lead)) out.push(await browserViewLine(s))
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; answer its questions promptly.`)
         spawnExplained.add(lead)

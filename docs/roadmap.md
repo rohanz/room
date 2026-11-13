@@ -342,7 +342,7 @@ saved with a local room's memory.
 
 ### Uncommitted work and worker worktrees
 
-- **Project-generated ignored output keeps a collected worktree (2026-10-18 benchmark t5, open, small).** BullMQ's `yarn pretest` writes gitignored `rawScripts/`, `src/scripts/` and `src/postgres/sql-scripts.ts` into a worker's worktree; they are not in Room's regenerable list, so full collection kept two worktrees for them and `discard` was refused until `force=true`. Consider treating ignored paths that a committed script generates, or that the lead's own checkout also ignores and contains, as disposable; the protection for unknown ignored files stays.
+- **Ordinary collection can retain project-generated ignored output (2026-10-18 benchmark t5; explicit discard fixed before 0.17.49).** BullMQ's `yarn pretest` writes gitignored `rawScripts/`, `src/scripts/` and `src/postgres/sql-scripts.ts`; ordinary collection retains informative files that are not recognized build output and differ from the lead's copy. Explicit `discard=true` now deletes ignored files without `force` and reports uncopied artifacts, including during recovery replay. Ordinary collection still protects uncopied ignored artifacts; deciding whether project-specific generated output should bypass that retention remains open. Ignore rules or script text alone do not prove that files are reproducible.
 
 **Fixed in 0.11.0–0.11.1:** Workers start with the lead's eligible uncommitted work,
 and the worker prompt attributes carried paths to the lead. Lead-side previews and

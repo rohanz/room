@@ -438,22 +438,22 @@ describe('room_collect', () => {
     } finally { child.kill('SIGKILL') }
   })
 
-  it('discards ignored output from a collected worker kept live with force', async () => {
+  it('discards ignored output from a collected worker kept live without force', async () => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
     expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
     expect((await workerByTag(lead, 'test'))).toBeDefined()
-    expect(await t.call({ tag: 'test', discard: true })).toContain('discard refused; ignored artifacts')
-    expect(fs.existsSync(worker)).toBe(true)
-    expect(await t.call({ tag: 'test', discard: true, force: true })).toContain('discarded test')
+    const discarded = await t.call({ tag: 'test', discard: true })
+    expect(discarded).toContain('discarded test')
+    expect(discarded).toContain('deleted without a copy: artifact.bin')
     expect(fs.existsSync(worker)).toBe(false)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
     await expectRetired(t)
   }, 30_000)
 
-  it('refuses, then force-discards, a worker whose carried path lies under an ignored directory', async () => {
+  it('discards a worker whose carried path lies under an ignored directory without force', async () => {
     // Live (databricks, 2026-09-28): force=true failed in `git add -A` because a carried path sat under data/raw/.
     const t = setup('failed')
     put(worker, 'data/raw/static/stops.csv', 'id\n1\n')
@@ -461,14 +461,12 @@ describe('room_collect', () => {
     t.set('test', { ...t.w, status: 'failed', carriedUntracked: [{ path: 'data/raw/static/stops.csv', sha, mode: 0o644 }] })
     put(worker, '.gitignore', 'artifact.bin\nnode_modules/\n.room/\ndata/raw/\n.venv/\ndata/tmp/\n')
     put(worker, '.venv/bin/python', 'x'); put(worker, 'data/tmp/scratch.parquet', 'y'); put(worker, 'file.txt', 'worker edit\n')
-    const refused = await t.call({ tag: 'test', discard: true })
-    expect(refused).toMatch(/^error: discard refused; ignored artifacts not covered by a recovery patch: .*\.venv\/.*data\/tmp\//)
-    expect(fs.existsSync(path.join(lead, '.room', 'discarded'))).toBe(false)
-    expect(fs.existsSync(worker)).toBe(true)
-    const forced = await t.call({ tag: 'test', discard: true, force: true })
-    expect(forced).toMatch(/^discarded test; recovery patch: \S+\.patch \(kept for a week\); branch recovery ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\); deleted without a copy: .*\.venv\/.*data\/tmp\//)
-    const patch = fs.readFileSync(forced.match(/recovery patch: (\S+\.patch)/)![1], 'utf8')
+    const discarded = await t.call({ tag: 'test', discard: true })
+    expect(discarded).toMatch(/^discarded test; recovery patch: \S+\.patch \(kept for a week\); branch recovery ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\); recovery patch base ref: refs\/room\/recovery\/test\/[a-f0-9]{40} \(kept for seven days\); deleted without a copy: .*\.venv\/.*data\/tmp\//)
+    const patch = fs.readFileSync(discarded.match(/recovery patch: (\S+\.patch)/)![1], 'utf8')
     expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/file.txt b/file.txt'])
+    const recoveryBase = discarded.match(/recovery patch base ref: (\S+)/)![1]
+    expect(git(lead, 'show', `${recoveryBase}:data/raw/static/stops.csv`)).toBe('id\n1')
     expect(fs.existsSync(worker)).toBe(false)
   })
 
@@ -485,17 +483,20 @@ describe('room_collect', () => {
     expect(t.s.room.retiredWorkers()).toEqual([])
   })
 
-  it('preflights ignored output before stopping worktree processes', async () => {
+  it('stops worktree processes and discards ignored output written during shutdown', async () => {
     const t = setup('failed')
-    put(worker, 'artifact.bin', 'ignored output')
     const child = await startWorktreeProcess()
+    let live = true
+    t.state.workerAlive = () => live
+    t.state.dismissWorker = async () => { put(worker, 'artifact.bin', 'late ignored output'); child.kill('SIGTERM'); live = false; return 'worker signalled' }
     t.state.ctx.listCwdProcesses = () => [{ pid: child.pid!, cwd: worker, command: 'node' }]
     try {
       const reply = await t.call({ tag: 'test', discard: true })
-      expect(reply).toContain('discard refused; ignored artifacts')
-      expect(reply).not.toContain(`pid ${child.pid}`)
-      expect(pidAlive(child.pid!)).toBe(true)
-      expect(fs.existsSync(worker)).toBe(true)
+      expect(reply).toContain('discarded test')
+      expect(reply).toContain('deleted without a copy: artifact.bin')
+      expect(reply).toContain(`pid ${child.pid}`)
+      expect(pidAlive(child.pid!)).toBe(false)
+      expect(fs.existsSync(worker)).toBe(false)
     } finally { child.kill('SIGKILL') }
   })
 
@@ -950,18 +951,30 @@ describe('room_collect', () => {
     } finally { if (pidAlive(child.pid!)) child.kill('SIGKILL') }
   })
 
-  it('refuses discard when ignored artifacts are outside the recovery patch and names what was kept', async () => {
+  it('discards an ignored directory and file without force, names them and preserves ordinary work for recovery', async () => {
     const t = setup('failed')
     put(worker, 'artifact.bin', 'generated model')
+    put(worker, '.gitignore', 'artifact.bin\nrawScripts/\nnode_modules/\n.room/\n')
+    put(worker, 'rawScripts/generated.lua', 'generated script')
+    put(worker, 'file.txt', 'tracked edit\n')
+    put(worker, 'new.txt', 'untracked edit\n')
     put(worker, 'node_modules/pkg/cache.bin', 'dependency cache')
     const result = await t.call({ tag: 'test', discard: true })
-    expect(result).toContain('ignored artifacts not covered by a recovery patch: artifact.bin')
-    expect(result).toContain(`retained worktree: ${worker}`)
-    // Live (t2, 2026-11-10): the reply must name both ways forward with the exact call.
-    expect(result).toContain(`to keep any of them, copy them out of ${worker} first; then room_collect(tag="test", discard=true, force=true) deletes them with the worktree`)
+    expect(result).toContain('discarded test')
+    expect(result).toContain('deleted without a copy: artifact.bin, rawScripts/')
+    expect(result).toContain(`branch recovery ref: refs/room/recovery/test/${base} (kept for seven days)`)
+    expect(git(lead, 'rev-parse', `refs/room/recovery/test/${base}^{commit}`)).toBe(base)
     expect(result).not.toContain('node_modules')
-    expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('generated model')
-    expect((await workerByTag(lead, 'test'))).toBeDefined()
+    expect(fs.existsSync(worker)).toBe(false)
+    const patch = result.match(/recovery patch: (\S+\.patch)/)![1]
+    const recovered = path.join(root, 'recovered')
+    git(lead, 'worktree', 'add', '--detach', recovered, `refs/room/recovery/test/${base}`)
+    git(recovered, 'apply', patch)
+    expect(fs.readFileSync(path.join(recovered, 'file.txt'), 'utf8')).toBe('tracked edit\n')
+    expect(fs.readFileSync(path.join(recovered, 'new.txt'), 'utf8')).toBe('untracked edit\n')
+    expect(fs.existsSync(path.join(recovered, 'artifact.bin'))).toBe(false)
+    expect(fs.existsSync(path.join(recovered, 'rawScripts'))).toBe(false)
+    await expectRetired(t)
   })
 
   it('discards regenerable ignored directories without force or an alarming deleted list', async () => {

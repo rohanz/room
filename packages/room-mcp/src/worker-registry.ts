@@ -233,16 +233,11 @@ export class WorkerRegistry {
     if (!record) return undefined
     const immediate = recordStatus(record)
     if (immediate) return immediate
-    let snapshot = await this.facts({ workerId: id })
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const fact = snapshot.workers.find(fact => fact.record.id === id)
-      if (!fact) return undefined
-      const status = await this.enrich(fact)
-      const fresh = await this.facts({ workerId: id })
-      if (fresh.revision === snapshot.revision) return status
-      snapshot = fresh
-    }
-    throw new Error('worker snapshot unavailable: facts changed during status enrichment')
+    const snapshot = await this.facts({ workerId: id })
+    // Like statusFromSnapshot, enrichment describes these immutable lifecycle facts.
+    // A later report is a subsequent observation, not evidence that this set was torn.
+    const fact = snapshot.workers.find(fact => fact.record.id === id)
+    return fact && this.enrich(fact)
   }
   async operationInProgress(id: string): Promise<boolean> {
     if (!safeId(id)) return true
@@ -306,6 +301,7 @@ export class WorkerRegistry {
   markDiscardStep(...args: Parameters<FileWorkerStore['markDiscardStep']>): ReturnType<FileWorkerStore['markDiscardStep']> { return this.backend().markDiscardStep(...args) }
   interruptDiscard(...args: Parameters<FileWorkerStore['interruptDiscard']>): ReturnType<FileWorkerStore['interruptDiscard']> { return this.backend().interruptDiscard(...args) }
   recordDiscardPatch(...args: Parameters<FileWorkerStore['recordDiscardPatch']>): ReturnType<FileWorkerStore['recordDiscardPatch']> { return this.backend().recordDiscardPatch(...args) }
+  recordDiscardRecovery(...args: Parameters<FileWorkerStore['recordDiscardRecovery']>): ReturnType<FileWorkerStore['recordDiscardRecovery']> { return this.backend().recordDiscardRecovery(...args) }
   replayDiscard(id: string): Promise<void> { return this.backend().replayDiscard(id, (workerId, bytes) => this.recordDiscardPatch(workerId, bytes)) }
   writeReport(...args: Parameters<FileWorkerStore['writeReport']>): ReturnType<FileWorkerStore['writeReport']> { return this.backend().writeReport(...args) }
   writeExit(...args: Parameters<FileWorkerStore['writeExit']>): ReturnType<FileWorkerStore['writeExit']> { return this.backend().writeExit(...args) }
