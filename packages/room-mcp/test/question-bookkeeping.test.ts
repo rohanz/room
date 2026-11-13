@@ -142,14 +142,13 @@ it('does not forget an answer when the question is still owed as the answer is t
   expect(await f.tools.call('room_wait', { timeoutMs: 5 })).not.toContain('question for you')
 })
 
-it('records an answer to an aliased asker and ignores a reply addressed to someone else', async () => {
+it('records an answer to the exact asker and ignores a reply addressed to someone else', async () => {
   const f = fixture(false)
-  f.s.room.doc.getMap<string>('aliases').set('old-peer', f.name)
-  const q = hubAppend(f.s.room, { name: 'old-peer', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const q = hubAppend(f.s.room, { name: f.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const wrong = await f.s.post(f.s.me, { type: 'answer', to: 'someone-else', inReplyTo: q.id, text: 'unrelated' })
   expect(wrong.ok).toBe(true)
   expect(f.s.room.outcomes.has(q.id)).toBe(false)
-  const valid = hubAppend(f.s.room, { name: 'old-peer', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
+  const valid = hubAppend(f.s.room, { name: f.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
   expect(await f.tools.call('room_send', { type: 'answer', to: f.name, inReplyTo: valid.id, text: 'price_cents' })).toContain('answers: price_cents')
   expect(f.s.room.outcomes.get(valid.id)?.outcome).toBe('answered')
 })

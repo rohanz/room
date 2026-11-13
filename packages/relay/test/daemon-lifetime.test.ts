@@ -223,15 +223,14 @@ it('simultaneous independent first starts publish exactly one key under one daem
   expect((await relayHealth(info.port, info.key))?.ready).toBe(true)
 })
 
-it('maintenance stop authenticates PID plus nonce and verifies save and actual child exit', async () => {
+it('maintenance stop authenticates PID plus nonce, saves with writers attached and verifies actual child exit', async () => {
   const dir = common(), runtime = await start(dir)
   const writer = connect(runtime.info); await synced(writer)
-  await expect(stopLocalDaemon(dir)).rejects.toThrow(/active writers/)
+  const generation = docGeneration(writer.doc)
   writer.doc.getMap('meta').set('maintenance', 'retained')
   const observer = connect(runtime.info); await synced(observer)
   await vi.waitFor(() => expect(observer.doc.getMap('meta').get('maintenance')).toBe('retained'))
-  writer.disconnect(); observer.disconnect()
-  await vi.waitFor(async () => expect((await relayHealth(runtime.info.port, runtime.info.key))?.writers).toBe(0))
+  expect((await relayHealth(runtime.info.port, runtime.info.key))?.writers).toBe(2)
   const file = path.join(dir, 'room/relay.json')
   fs.writeFileSync(file, JSON.stringify({ ...runtime.info, nonce: '00000000-0000-0000-0000-000000000000' }), { mode: 0o600 })
   await expect(stopLocalDaemon(dir)).rejects.toThrow(/identity could not be authenticated/)
@@ -244,7 +243,10 @@ it('maintenance stop authenticates PID plus nonce and verifies save and actual c
   expect(error).toBe(''); expect(cli.exitCode).toBe(0); expect(output).toContain('saved and process exit verified')
   await gone(runtime.child)
   const saved = new Y.Doc(); Y.applyUpdate(saved, fs.readFileSync(memoryFile(dir, room)))
-  expect(saved.getMap('meta').get('maintenance')).toBe('retained'); saved.destroy()
+  expect(saved.getMap('meta').get('maintenance')).toBe('retained')
+  expect(docGeneration(saved)).toBeTruthy()
+  expect(docGeneration(saved)).not.toBe(generation)
+  saved.destroy()
 })
 
 it.each([{ args: ['start'] }, { args: [] }])('refuses a direct start ($args) that bypasses the launcher admission, writing no discovery', ({ args }) => {

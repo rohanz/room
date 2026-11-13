@@ -55,8 +55,7 @@ const replyEnded = (o: Outcome | undefined): boolean => !!o && ['recipient-retir
 export function recordAnswer(doc: RoomDoc, answer: Msg): void {
   if (!validMessageShape(answer) || answer.type !== 'answer') return
   const question = doc.message(answer.inReplyTo)
-  const alias = (name: string) => doc.doc.getMap<string>('aliases').get(name) ?? name
-  if (!validMessageShape(question) || question.type !== 'question' || !question.to || !answerMatchesQuestion(question, answer, alias) || doc.outcomes.has(question.id)) return
+  if (!validMessageShape(question) || question.type !== 'question' || !question.to || !answerMatchesQuestion(question, answer) || doc.outcomes.has(question.id)) return
   doc.outcomes.set(question.id, { to: question.to, from: question.from, outcome: 'answered', at: answer.at })
   doc.mail.delete(question.id)
 }

@@ -739,7 +739,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       }
       if (req.method === 'POST' && url.pathname === '/daemon/stop' && opts.daemon?.stop) {
         if (!proofOk(req) || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
-        if (writers.size || draining) { res.writeHead(409); res.end(draining ? 'local daemon is already draining; inspect status and retry' : 'local daemon has active writers; quiesce clients before stopping'); return }
+        if (draining) { res.writeHead(409); res.end('local daemon is already draining; inspect status and retry'); return }
         try {
           await opts.daemon.stop(Number(url.searchParams.get('pid')), url.searchParams.get('nonce') ?? '', () => {
             res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ saved: true }))

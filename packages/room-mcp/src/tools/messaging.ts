@@ -56,7 +56,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, ledger } = state
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const unavailableQuestions = new Map<string, string>()
-  const alias = (s: Session, name: string): string => s.room.doc.getMap<string>('aliases').get(name) ?? name
   const names = { all: () => rooms.all(), presences, myWorkers }
   const known = (s: Session) => knownNames(s, presences)
   type RecipientNotice = { text: string; terminal: boolean } | undefined
@@ -117,7 +116,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (cached) return cached
     const question = s.room.message(questionId)
     if (question?.type !== 'question' || !question.to) return undefined
-    return mapReady(recipientNotice(s, alias(s, question.to)), notice => {
+    return mapReady(recipientNotice(s, question.to), notice => {
       if (!notice?.terminal) return undefined
       unavailableQuestions.set(questionId, notice.text)
       if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value!)
@@ -149,7 +148,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: worker tag ${requestedToRaw} is ambiguous; use a full name: ${names.join(', ')}`
       }
       const resolvedWorker = matches[0]
-      let to = resolvedWorker?.worker.name ?? (requestedTo ? alias(byQuestion ?? lead, requestedTo) : undefined)
+      let to = resolvedWorker?.worker.name ?? requestedTo
       let inferredQuestionId: string | undefined
       const unansweredQuestions = () => {
         const histories = rooms.all().map(room => ({ room, messages: [...room.room.messages(), ...room.room.mail.values()] }))
@@ -158,7 +157,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           for (const m of answers) recordAnswer(room.room, m)
         })
         return histories.flatMap(({ room, messages }) => messages
-          .filter((m): m is QuestionMsg => m.type === 'question' && !!m.to && alias(room, m.to) === alias(room, room.me.name)
+          .filter((m): m is QuestionMsg => m.type === 'question' && !!m.to && m.to === room.me.name
             && !room.room.outcomes.has(m.id))
           .map(question => ({ room, question })))
       }
@@ -167,7 +166,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         : `error: answer requires inReplyTo; no unanswered question${from ? ` from ${from}` : ''} addressed to you`
       if (sendType === 'answer') {
         const open = unansweredQuestions()
-        const candidates = to ? open.filter(({ room, question }) => alias(room, question.from) === alias(room, to)) : open
+        const candidates = to ? open.filter(({ question }) => question.from === to) : open
         if (a.inReplyTo) {
           // Validate explicit and inferred targets against the same open-question set, once,
           // before a worker can receive the prompt. A later answer does not undo delivery.
@@ -182,7 +181,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (candidates.length !== 1) return ambiguousAnswer(candidates, to)
           byQuestion = candidates[0].room
           question = candidates[0].question
-          to = alias(byQuestion!, question.from)
+          to = question.from
           inferredQuestionId = question.id
         }
       }
@@ -190,13 +189,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
       const text = typeof a.text === 'string' && a.text ? a.text : typeof a.message === 'string' ? a.message : ''
       if (!text) return 'error: text is required'
-      if (to && alias(s, to) === alias(s, s.me.name)) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
+      if (to && to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
       if (to && !rooms.all().some(room => known(room).has(to))) {
         const valid = [...new Set(rooms.all().flatMap(room => [...known(room)]))].sort()
         return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
-      if (repliedNote && a.to && to !== alias(s, repliedNote.from)) return `error: note reply must go to ${repliedNote.from}`
+      if (repliedNote && a.to && to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`
       if (to && !s.room.workerViewOf(to) && !(await myWorkers(s)).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed; use room_collect with keep: true to collect and stay resumable`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
@@ -223,7 +222,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Retired symbols are ignored; Room detects changed definitions automatically.
       const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
         : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
-        : sendType === 'answer' ? withPr({ type: 'answer', to: alias(s, (question?.from ?? to)!), inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
+        : sendType === 'answer' ? withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
         : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
       // A follow-up to a finished worker is posted only once the worker can resume, and it resumes only once posted.
       let posted: PostResult | undefined
@@ -343,8 +342,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // waiter destination as for a broadcast, only when both body and outcome are absent.
         const target = answered ?? (question?.type === 'question' && !question.to ? question
           : !question && !outcome && questionId ? { type: 'question' as const, id: questionId, from: x.me.name } : undefined)
-        return { claimId, questionId, me: x.me.name, alias: (name: string) => alias(qRoom, name), workersRoom: x !== s, answersOnly,
-          answerId: answerMatchesQuestion(target, m, name => alias(qRoom, name)) ? m.id : undefined }
+        return { claimId, questionId, me: x.me.name, workersRoom: x !== s, answersOnly,
+          answerId: answerMatchesQuestion(target, m) ? m.id : undefined }
       }
       const answerReply = () => {
         if (questionId) for (const x of [qRoom, ...rooms.all().filter(x => x !== qRoom)]) {
@@ -398,8 +397,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const callbacks = pendingWaits.get(x) ?? new Set()
         pendingWaits.set(x, callbacks)
         // Wake reservation predicts an incoming valid reply; actual completion requires its recorded relation.
-        const fn = (m: Msg) => ends(x)(m) || (question?.type === 'question' && !!m.to && alias(qRoom, m.to) === alias(qRoom, x.me.name)
-          && answerMatchesQuestion(question, m, name => alias(qRoom, name)))
+        const fn = (m: Msg) => ends(x)(m) || (question?.type === 'question' && !!m.to && m.to === x.me.name
+          && answerMatchesQuestion(question, m))
         callbacks.add(fn)
         waiters.set(x, fn)
       }

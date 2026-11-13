@@ -8754,8 +8754,7 @@ var init_ledger = __esm({
 function recordAnswer(doc, answer) {
   if (!validMessageShape(answer) || answer.type !== "answer") return;
   const question = doc.message(answer.inReplyTo);
-  const alias = (name) => doc.doc.getMap("aliases").get(name) ?? name;
-  if (!validMessageShape(question) || question.type !== "question" || !question.to || !answerMatchesQuestion(question, answer, alias) || doc.outcomes.has(question.id)) return;
+  if (!validMessageShape(question) || question.type !== "question" || !question.to || !answerMatchesQuestion(question, answer) || doc.outcomes.has(question.id)) return;
   doc.outcomes.set(question.id, { to: question.to, from: question.from, outcome: "answered", at: answer.at });
   doc.mail.delete(question.id);
 }
@@ -10580,37 +10579,6 @@ function workerLines(inputs, options = {}) {
 function importedHistory(room, m) {
   return typeof m.seq !== "number" && room.metaMap.get("hubIncarnation") !== void 0;
 }
-function unresolvedLines(roomName, entries, messagesTo, maxNames = 5) {
-  const all2 = /* @__PURE__ */ new Map();
-  for (const [key3, entry] of entries) {
-    const split2 = key3.indexOf("\0");
-    const source = key3.slice(0, split2), person = key3.slice(split2 + 1);
-    if (person === "room") continue;
-    let where = source.startsWith("archive:") ? "the old room" : source.startsWith(`${roomName}/`) ? source.slice(roomName.length + 1) : source;
-    try {
-      where = decodeURIComponent(where);
-    } catch {
-    }
-    let group = all2.get(person);
-    if (!group) {
-      group = { candidates: [], messages: 0, claims: 0, scopes: 0 };
-      all2.set(person, group);
-    }
-    group.candidates.push(`${person} on ${where}`);
-    group.messages += messagesTo.get(entry.placeholder) ?? 0;
-    group.claims += Array.isArray(entry.claims) ? entry.claims.length : 0;
-    if (entry.scope) group.scopes++;
-  }
-  const groups = new Map([...all2].filter(([, group]) => group.messages || group.claims || group.scopes));
-  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  const out = [...groups.values()].slice(0, maxNames).map((group) => {
-    const owed2 = [group.messages ? plural(group.messages, "message") : "", group.claims ? plural(group.claims, "claim") : ""].filter(Boolean).join(" and ") || "a declared scope";
-    const names = group.candidates.slice(0, 3).join(" or ") + (group.candidates.length > 3 ? `, +${group.candidates.length - 3} more` : "");
-    return `${owed2} for an unresolved name (${names}): retained migration history`;
-  });
-  if (groups.size > maxNames) out.push(`+${groups.size - maxNames} more unresolved names`);
-  return out;
-}
 var ROOM_STALE_MS, AWARENESS_FRESH_MS, STOPPED_WITH_SESSION, STOP_REQUESTED_WITH_SESSION, STOP_UNCONFIRMED_WITH_SESSION, STOPPED_UNWITNESSED, stoppedWithSession, stoppedAfterMessage, IDLE_SHOWN_MIN, scopeLine, WORKER_ACTIVITY_MAX, ago, uncollected, STALE_WORKER_MS;
 var init_views = __esm({
   "packages/shared/src/views.ts"() {
@@ -10920,8 +10888,8 @@ function parseClaimRelease(text2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2)) return void 0;
   return { path: match[1], from: from2, to: to2, sha: match[4] };
 }
-function answerMatchesQuestion(question, answer, alias = (name) => name) {
-  return !!question && question.type === "question" && answer.type === "answer" && answer.inReplyTo === question.id && !!answer.to && alias(answer.to) === alias(question.from) && (!question.to || alias(answer.from) === alias(question.to));
+function answerMatchesQuestion(question, answer) {
+  return !!question && question.type === "question" && answer.type === "answer" && answer.inReplyTo === question.id && !!answer.to && answer.to === question.from && (!question.to || answer.from === question.to);
 }
 function isLegacyBranchNotice(m) {
   return m.type === "note" && m.fromKind === "bot" && (m.from === "room" || /^\?[0-9a-f]{16}$/.test(m.from)) && typeof m.text === "string" && /^you switched to \S+; the room is for \S+;/.test(m.text);
@@ -10974,7 +10942,7 @@ var init_messages = __esm({
     PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /;
     PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/;
     priorityRank = (p) => p === "interrupt" ? 2 : p === "notify" ? 1 : 0;
-    forWaiter = (m, w) => !!m.to && !!w.me && (w.alias?.(m.to) ?? m.to) === (w.alias?.(w.me) ?? w.me);
+    forWaiter = (m, w) => !!m.to && !!w.me && m.to === w.me;
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
     builtins = {
@@ -19009,7 +18977,19 @@ function ensureLocalDaemon(commonDir2, room, opts = {}) {
   flights.set(canonical, work);
   return work;
 }
-async function ensure(commonDir2, room, opts = {}) {
+function newerRelease(mine, theirs) {
+  const a = numbered(mine), b = numbered(theirs);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+async function ensure(commonDir2, room, opts) {
+  return ensureOnce(commonDir2, room, opts, true).catch((error2) => {
+    if (error2 !== HANDOVER) throw error2;
+    return ensureOnce(commonDir2, room, opts, false);
+  });
+}
+async function ensureOnce(commonDir2, room, opts, handover) {
   await primePrivateState(commonDir2);
   privateStateDirectory(path12.join(commonDir2, "room"));
   const ready = async () => {
@@ -19018,9 +18998,6 @@ async function ensure(commonDir2, room, opts = {}) {
     const health = await relayHealth(probed.port, probed.key, opts.probeTimeoutMs ?? 800);
     if (!health || health.clone !== cloneId(commonDir2)) return void 0;
     if (health.runtime !== "daemon") throw new LocalRelayCompatibilityError(probed.port, probed.pid, "it uses an in-session runtime");
-    const offer = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, "room.daemon": [1] } };
-    const contract = selectContract(offer, parseAdvertisement(health.compat), { activeSchema: 2, requiredCapabilities: { "room.daemon": [1] } });
-    if (!contract.ok) throw new LocalRelayCompatibilityError(probed.port, probed.pid, contract.error.text);
     if (health.ready !== true || health.draining) return void 0;
     const info2 = discovery(commonDir2);
     if (!info2 || info2.port !== probed.port || info2.key !== probed.key) return void 0;
@@ -19029,6 +19006,17 @@ async function ensure(commonDir2, room, opts = {}) {
       throw new Error("local daemon discovery PID does not match the authenticated listener; retry discovery without taking over");
     }
     if (info2.nonce !== void 0 && health.nonce !== info2.nonce) return void 0;
+    if (handover && info2.nonce && newerRelease(release, health.release)) {
+      try {
+        await stopLocalDaemon(commonDir2, void 0, info2.nonce);
+      } catch (error2) {
+        opts.log?.(`local daemon upgrade ${String(health.release)} -> ${release}: stop not confirmed: ${String(error2).replace(/[\r\n]/g, " ").slice(0, 512)}`);
+      }
+      throw HANDOVER;
+    }
+    const offer = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, "room.daemon": [1] } };
+    const contract = selectContract(offer, parseAdvertisement(health.compat), { activeSchema: 2, requiredCapabilities: { "room.daemon": [1] } });
+    if (!contract.ok) throw new LocalRelayCompatibilityError(probed.port, probed.pid, contract.error.text);
     return {
       url: `ws://127.0.0.1:${info2.port}`,
       httpUrl: `http://127.0.0.1:${info2.port}`,
@@ -19053,6 +19041,7 @@ async function ensure(commonDir2, room, opts = {}) {
   const info = discovery(commonDir2);
   if (info?.lead && info.lead !== true && liveness(info.lead) !== "dead") {
     return waitForReady().catch((error2) => {
+      if (error2 === HANDOVER) throw error2;
       throw new Error(`local daemon pid ${info.pid} is live or has unknown identity and did not become ready; retry without taking over. ${error2.message}`);
     });
   }
@@ -19086,7 +19075,7 @@ async function ensure(commonDir2, room, opts = {}) {
     let previousLog = startupLog(commonDir2);
     do {
       const winner = await ready();
-      if (winner) return { ...winner, launched: winner.pid === child?.pid };
+      if (winner) return { ...winner, launched: winner.launched || winner.pid === child?.pid };
       if (launchError) throw startupFailure(commonDir2, child?.pid, `launch failed: ${launchError.message}`, report2);
       const contender = child && !exited ? child.pid : startupContender(commonDir2);
       if (exited && !contender) throw startupFailure(commonDir2, child?.pid, `child exited (${exitStatus}); no live authority contender`, report2);
@@ -19102,7 +19091,33 @@ async function ensure(commonDir2, room, opts = {}) {
     throw startupFailure(commonDir2, child?.pid, Date.now() >= hardUntil ? "startup hard cap reached" : "startup phase stalled", report2);
   }
 }
-var LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights;
+async function stopLocalDaemon(commonDir2, timeoutMs2 = 15e3, expectedNonce) {
+  const canonical = fs12.realpathSync.native(commonDir2);
+  const info = discovery(canonical);
+  if (expectedNonce !== void 0 && info?.nonce !== expectedNonce) return "different daemon instance";
+  if (!info || info.runtime !== "daemon" || !info.nonce || !info.lead || info.lead === true || info.lead.pid !== info.pid) throw new Error("no verifiable daemon identity in discovery; preserve state and inspect before stopping");
+  const health = await relayHealth(info.port, info.key);
+  if (!health || health.clone !== cloneId(canonical) || health.runtime !== "daemon" || health.pid !== info.pid || health.nonce !== info.nonce) throw new Error("local daemon identity could not be authenticated; refusing stop");
+  const verifyUntil = Date.now() + Math.min(5e3, timeoutMs2);
+  let alive = liveness(info.lead);
+  while (alive === "unknown" && Date.now() < verifyUntil) {
+    await new Promise((resolve6) => setTimeout(resolve6, 100));
+    alive = liveness(info.lead);
+  }
+  if (alive !== "alive") throw new Error("local daemon birth identity is not verified alive; refusing stop");
+  const target = `/daemon/stop?pid=${info.pid}&nonce=${encodeURIComponent(info.nonce)}`;
+  const response = await fetch(`http://127.0.0.1:${info.port}${target}`, { method: "POST", headers: { Authorization: localProofHeader(info.key, "POST", target, info.port) }, signal: AbortSignal.timeout(timeoutMs2) });
+  if (!response.ok) throw new Error(`local daemon stop refused: ${(await response.text()).slice(0, 2048)}`);
+  const result2 = await response.json();
+  if (result2.saved !== true) throw new Error("local daemon did not confirm final save");
+  const until = Date.now() + timeoutMs2;
+  while (Date.now() < until) {
+    if (liveness(info.lead) === "dead") return;
+    await new Promise((resolve6) => setTimeout(resolve6, 100));
+  }
+  throw new Error("daemon saved but process exit could not be verified; keep old clients stopped and inspect its identity");
+}
+var release, LOCAL_DAEMON_IDLE_MS, STARTUP_PHASE_WAIT_MS, STARTUP_HARD_CAP_MS, STARTUP_LOG_BYTES, flights, numbered, HANDOVER;
 var init_daemon = __esm({
   "packages/relay/src/daemon.ts"() {
     "use strict";
@@ -19114,11 +19129,14 @@ var init_daemon = __esm({
     init_proof();
     init_src3();
     init_private_state();
+    release = true ? "0.17.49" : "development";
     LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
     STARTUP_PHASE_WAIT_MS = 25e3;
     STARTUP_HARD_CAP_MS = 6e4;
     STARTUP_LOG_BYTES = 1024;
     flights = /* @__PURE__ */ new Map();
+    numbered = (value5) => typeof value5 === "string" && /^\d+\.\d+\.\d+$/.test(value5) ? value5.split(".").map(Number) : void 0;
+    HANDOVER = /* @__PURE__ */ Symbol("daemon hand-over attempted");
   }
 });
 
@@ -23389,12 +23407,12 @@ var init_src4 = __esm({
               authorizesText(this.inputs.policy, current3.path) ? claims.hashById.get(move.id) : void 0
             );
           }
-          for (const release of claims.releases) {
-            const current3 = this.roomDoc.claims.get(release.id);
+          for (const release2 of claims.releases) {
+            const current3 = this.roomDoc.claims.get(release2.id);
             if (current3?.by !== this.name || current3.mirrorOf) continue;
-            this.roomDoc.removeClaim(release.id, this);
-            const text2 = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
-            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary: text2 } });
+            this.roomDoc.removeClaim(release2.id, this);
+            const text2 = claimReleaseText(release2.path, release2.from, release2.to, head.slice(0, 10));
+            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release2.id, path: release2.path, summary: text2 } });
             notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text: text2 } });
             this.log(text2);
           }
@@ -23526,11 +23544,11 @@ var init_src4 = __esm({
         for (const c of relevant) if (changes.uncertain.includes(c.id) && unreadable2.has(c.path) && !dirty.has(c.path)) {
           changes.releases.push({ id: c.id, path: c.path, from: c.from, to: c.to });
         }
-        const uncertain = changes.uncertain.filter((id3) => !changes.releases.some((release) => release.id === id3));
-        const releases = changes.releases.filter((release) => {
-          if (!dirty.has(release.path)) return true;
-          this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`);
-          uncertain.push(release.id);
+        const uncertain = changes.uncertain.filter((id3) => !changes.releases.some((release2) => release2.id === id3));
+        const releases = changes.releases.filter((release2) => {
+          if (!dirty.has(release2.path)) return true;
+          this.log(`kept claim on ${release2.path}:${release2.from}-${release2.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`);
+          uncertain.push(release2.id);
           return false;
         });
         if (uncertain.length) {
@@ -23597,12 +23615,12 @@ var init_src4 = __esm({
               authorizesText(this.inputs.policy, current3.path) ? changes.hashById.get(move.id) : void 0
             );
           }
-          for (const release of changes.releases) {
-            const current3 = this.roomDoc.claims.get(release.id);
+          for (const release2 of changes.releases) {
+            const current3 = this.roomDoc.claims.get(release2.id);
             if (current3?.by !== this.name || current3.mirrorOf) continue;
-            this.roomDoc.removeClaim(release.id, this);
-            const text2 = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
-            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary: text2 } });
+            this.roomDoc.removeClaim(release2.id, this);
+            const text2 = claimReleaseText(release2.path, release2.from, release2.to, head.slice(0, 10));
+            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release2.id, path: release2.path, summary: text2 } });
             notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text: text2 } });
             this.log(text2);
           }
@@ -23633,11 +23651,11 @@ var init_src4 = __esm({
               authorizesText(this.inputs.policy, this.roomDoc.claims.get(move.id)?.path ?? "") ? changes.hashById.get(move.id) : void 0
             );
           }
-          for (const release of changes.releases) {
-            if (!stillMine(release.id)) continue;
-            this.roomDoc.removeClaim(release.id, this);
-            const summary = `released your migrated claim on ${release.path}:${release.from}-${release.to}: its claimed lines are no longer in this checkout`;
-            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release.id, path: release.path, summary } });
+          for (const release2 of changes.releases) {
+            if (!stillMine(release2.id)) continue;
+            this.roomDoc.removeClaim(release2.id, this);
+            const summary = `released your migrated claim on ${release2.path}:${release2.from}-${release2.to}: its claimed lines are no longer in this checkout`;
+            notices.push({ from: { name: this.name, kind: this.kind }, body: { type: "release", claimId: release2.id, path: release2.path, summary } });
             notices.push({ from: { name: "room", kind: "bot" }, body: { type: "note", to: this.name, priority: "notify", text: summary } });
             this.log(summary);
           }
@@ -37064,8 +37082,8 @@ function acquireOwnedFile(file2, record2) {
       }
     };
   };
-  const release = create6();
-  if (release) return release;
+  const release2 = create6();
+  if (release2) return release2;
   const owner = ownerPid(file2);
   if (owner === void 0 || pidAlive(owner)) return void 0;
   const releaseGuard2 = acquireOwnedFile(`${file2}.recover`, { pid: process.pid });
@@ -37146,10 +37164,10 @@ async function rememberTag(dir, tag) {
   const file2 = await choiceFile(dir);
   const lock = `${file2}.lock`;
   const deadline = Date.now() + 5e3;
-  let release;
-  while (!release) {
-    release = acquireOwnedFile(lock, { pid: process.pid });
-    if (release) break;
+  let release2;
+  while (!release2) {
+    release2 = acquireOwnedFile(lock, { pid: process.pid });
+    if (release2) break;
     if (Date.now() >= deadline) throw new Error("timed out waiting to remember Room name");
     await new Promise((resolve6) => setTimeout(resolve6, 10));
   }
@@ -37168,7 +37186,7 @@ async function rememberTag(dir, tag) {
     }
     return c;
   } finally {
-    release();
+    release2();
   }
 }
 async function clearChoice(dir) {
@@ -41053,22 +41071,22 @@ function reserveWorkerPort(workerId, used = [], configHome = process.env.XDG_CON
   while (true) {
     const port = preferred !== void 0 && !occupied.has(preferred) ? preferred : allocateWorkerPort(occupied);
     occupied.add(port);
-    const release = acquireOwnedFile(path41.join(directory2, String(port)), { pid: process.pid, workerId, startedAt: Date.now() });
-    if (release) return { port, release };
+    const release2 = acquireOwnedFile(path41.join(directory2, String(port)), { pid: process.pid, workerId, startedAt: Date.now() });
+    if (release2) return { port, release: release2 };
   }
 }
 function bindWorkerPortReservation(proc, reservation) {
   let released = false;
-  const release = () => {
+  const release2 = () => {
     if (released) return;
     released = true;
     processReservations.delete(proc);
     reservation.release();
   };
-  processReservations.set(proc, release);
+  processReservations.set(proc, release2);
   const onExit = proc.onExit.bind(proc);
   proc.onExit = (cb) => onExit((code, signal) => {
-    release();
+    release2();
     return cb(code, signal);
   });
 }
@@ -44779,13 +44797,12 @@ function renderPrNote(room, opts) {
   const msgs = room.messages().filter((m) => !m.copyOf && !isPrName(m.from));
   const releases = /* @__PURE__ */ new Map();
   const answers = /* @__PURE__ */ new Map();
-  const alias = (name) => room.doc.getMap("aliases").get(name) ?? name;
   for (const m of msgs) {
     if (m.type === "release") releases.set(m.claimId, m);
     if (m.type === "answer") {
       const outcome = room.outcomes.get(m.inReplyTo);
       const question = outcome ? outcome.outcome === "answered" ? { type: "question", id: m.inReplyTo, from: outcome.from, to: outcome.to } : void 0 : room.message(m.inReplyTo);
-      if (question?.type !== "question" || !answerMatchesQuestion(question, m, alias)) continue;
+      if (question?.type !== "question" || !answerMatchesQuestion(question, m)) continue;
       const arr = answers.get(m.inReplyTo) ?? [];
       arr.push(m);
       answers.set(m.inReplyTo, arr);
@@ -44901,9 +44918,7 @@ function knownNames(session, presences) {
     ...Array.from(session.room.workerViews.values(), (w) => w.name),
     ...session.room.retiredWorkers().map((w) => w.name),
     ...session.room.messages().map((m) => m.from),
-    ...Array.from(session.room.mail.values(), (m) => m.from),
-    ...Array.from(session.room.doc.getMap("unresolved").values(), (value5) => value5.placeholder),
-    ...session.room.doc.getMap("aliases").values()
+    ...Array.from(session.room.mail.values(), (m) => m.from)
   ].filter((n) => !isPrName(n)));
 }
 async function resolveDisplayedName(requested, context2, caller, options = {}) {
@@ -45009,12 +45024,12 @@ async function tryPreviewLock(entry) {
       if (lost || released || child.exitCode !== null || child.signalCode != null || !child.stdin.writable) throw new Error("preview cache lock ownership lost; tree is NOT certified");
     };
     let timer;
-    const finish = (release) => {
+    const finish = (release2) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (!release) child.stdin.end();
-      resolve6(release);
+      if (!release2) child.stdin.end();
+      resolve6(release2);
     };
     child.stdout.on("data", (data) => {
       if (String(data).includes("READY")) finish(Object.assign(async () => {
@@ -46268,13 +46283,13 @@ async function migrateLegacySlots(cloneDir, repoDir = cloneDir) {
       if (!(await fs54.promises.lstat(slot).catch(() => void 0))?.isDirectory()) continue;
       if (!slotOwner(name) || !await isDeadSlot(name)) continue;
       if (!await legacyClaimDead(slot)) continue;
-      const release = await tryPreviewLock(slot).catch(() => void 0);
-      if (!release) continue;
+      const release2 = await tryPreviewLock(slot).catch(() => void 0);
+      if (!release2) continue;
       try {
         if (!await isDeadSlot(name) || !await legacyClaimDead(slot)) continue;
         if (await removePreviewEntry(repoDir, slot)) await fs54.promises.rm(`${slot}.claim`, { force: true });
       } finally {
-        await release();
+        await release2();
       }
     }
   }
@@ -46445,7 +46460,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let survivors = false;
   let quarantined = false;
   let skippedQuarantine = false;
-  let release;
+  let release2;
   let cached3 = false;
   let reused = false;
   let cacheReady = false;
@@ -46464,7 +46479,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, options) {
   let commandPassed = false;
   const assertAuthority = (authoritySignal = signal) => {
     authoritySignal?.throwIfAborted();
-    release?.assertOwned();
+    release2?.assertOwned();
   };
   const changed = (phase, error2) => {
     if (error2 instanceof EquivalenceTooLarge) equivalenceTooLarge = true;
@@ -46498,11 +46513,11 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
           await unlock();
           skippedQuarantine = true;
         } else if (unlock) {
-          release = unlock;
+          release2 = unlock;
           previewProcesses.getStore().lock = unlock;
         }
       }
-      cached3 = !!release;
+      cached3 = !!release2;
       if (cached3) {
         dir = cache2;
         try {
@@ -46511,7 +46526,7 @@ environment: ${process.platform}/${process.arch}, Node ${process.version}; inher
           cacheReady = true;
         } catch (error2) {
           if (error2 instanceof ForeignPreviewLock) throw error2;
-          release?.assertOwned();
+          release2?.assertOwned();
           await removePreviewEntry(s.dir, dir, true);
           console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
           cached3 = false;
@@ -46658,7 +46673,7 @@ ${verdictText}${largeNote}${result2.stopped ? "\nstopped leftover processes from
       }
       let lockOwned = true;
       try {
-        release?.assertOwned();
+        release2?.assertOwned();
       } catch {
         lockOwned = false;
       }
@@ -46705,7 +46720,7 @@ command completion: ${stage === "setup" ? "not run" : "incomplete"}` };
         evidenceFailure = error2 instanceof Error ? error2.message : String(error2);
         if (completed && (signal?.aborted || (() => {
           try {
-            release?.assertOwned();
+            release2?.assertOwned();
             return false;
           } catch {
             return true;
@@ -46725,12 +46740,12 @@ preview evidence is NOT passed: ${evidenceFailure}`;
     previewProcesses.getStore().signal = void 0;
     try {
       if (dir && !survivors) {
-        release?.assertOwned();
+        release2?.assertOwned();
         if (cached3 && cacheReady) {
           try {
             await resetPreviewTree(s.dir, dir, ancestor);
           } catch (error2) {
-            release?.assertOwned();
+            release2?.assertOwned();
             await removePreviewEntry(s.dir, dir, true);
             cacheReady = false;
             console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
@@ -46738,7 +46753,7 @@ preview evidence is NOT passed: ${evidenceFailure}`;
           }
         } else if (!cached3) await fs54.promises.rm(dir, { recursive: true, force: true });
         if (cached3 && cacheReady) {
-          release?.assertOwned();
+          release2?.assertOwned();
           await touchPreview(dir, previewCapBytes());
         }
       }
@@ -46747,9 +46762,9 @@ preview evidence is NOT passed: ${evidenceFailure}`;
       if (completed) completed.text += "\nwarning: preview cache abandoned after the check; next preview uses a new cache";
     } finally {
       if (survivors) {
-        if (!cached3 || quarantined) void release?.().catch(() => void 0);
-      } else await release?.();
-      if (release) previewProcesses.getStore().lock = void 0;
+        if (!cached3 || quarantined) void release2?.().catch(() => void 0);
+      } else await release2?.();
+      if (release2) previewProcesses.getStore().lock = void 0;
       const evict = cached3 || previewCapBytes() === 0;
       const key3 = await previewKeyPath(s.dir).catch(() => void 0);
       if (key3) previewMaintenance((async () => {
@@ -62202,7 +62217,7 @@ function handlers4(state) {
       const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
       let released = 0;
       let notTold;
-      const release = () => {
+      const release2 = () => {
         released = releaseClaimsOnDone(s, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
       };
       if (myId) {
@@ -62216,7 +62231,7 @@ function handlers4(state) {
           const changed = manifestPaths(s.room, s.me.name);
           const done = (await registry2.reportDone(myId, ownRun.n, summary, changed)).done;
           saved = true;
-          release();
+          release2();
           await registry2.postCompletion(myId, ownRun.n, async (id4, record2, report2) => {
             const message2 = completionMessage(record2, ownRun, { status: "done" }, report2);
             if (!message2 || message2.id !== id4 || message2.body.type !== "done") throw new Error("worker completion message unavailable");
@@ -62235,7 +62250,7 @@ function handlers4(state) {
           return saved ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again; when you exit, your lead's session posts it.` : `error: could not record worker report: ${detail}`;
         }
       } else {
-        release();
+        release2();
         await s.post(s.me, { type: "note", text: `done${sc ? ` (${sc.area})` : ""}: ${summary}` });
       }
       await s.policyStore.declare([]);
@@ -62727,6 +62742,7 @@ import { dirname as dirname5 } from "node:path";
 init_worker_retained();
 init_binding();
 init_src4();
+init_src3();
 import path70 from "node:path";
 
 // packages/room-mcp/src/browser-open.ts
@@ -63873,7 +63889,8 @@ ${url}`;
           sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : void 0
         });
         const retainedCommon = await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => void 0);
-        return [report, ...retainedCommon ? retainedWorkerLines(retainedCommon) : [], active?.local ? localDaemonLine(active) : "", formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join("\n");
+        const health = active?.local ? await relayHealth(active.local.port, active.local.key) : void 0;
+        return [report, ...retainedCommon ? retainedWorkerLines(retainedCommon) : [], active?.local ? localDaemonLine(active, typeof health?.release === "string" ? health.release : "unknown") : "", formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join("\n");
       }
       const s = S();
       await loadAreas(s);
@@ -63915,12 +63932,6 @@ ${url}`;
       const ps = presences(s);
       const ownGit = participantRecord(s.room, s.me.name)?.git;
       out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (on ${ownGit?.branch || "detached"}, base ${(ownGit?.base ?? "?").slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ""})`);
-      const unresolved = s.room.doc.getMap("unresolved");
-      if (unresolved.size) {
-        const messagesTo = /* @__PURE__ */ new Map();
-        for (const m2 of s.room.mail.values()) if (m2.to?.startsWith("?")) messagesTo.set(m2.to, (messagesTo.get(m2.to) ?? 0) + 1);
-        out.push(...unresolvedLines(s.roomName, unresolved, messagesTo));
-      }
       const mineA = myAreas(s);
       const all2 = a.all === true || !mineA.length;
       const myClaims = s.room.openClaims().filter((c) => c.by === s.me.name);
@@ -64241,9 +64252,9 @@ function compactState(lines2, summarizedClaims) {
   if (omitted || summarizedClaims) kept.push(`omitted: ${summarizedClaims} unrelated claim details, ${omitted} state lines; room_state all=true for everything, room_state path=... for a path.`);
   return kept.join("\n");
 }
-function localDaemonLine(s) {
+function localDaemonLine(s, release2) {
   const local = s.local;
-  return `local daemon: pid ${local?.pid ?? "?"} on ${local?.url ?? "?"}; stops after ${Math.round((local?.idleMs ?? 3e5) / 6e4)} minutes without an authenticated writer (viewers do not keep it alive)`;
+  return `local daemon: pid ${local?.pid ?? "?"} on ${local?.url ?? "?"}; stops after ${Math.round((local?.idleMs ?? 3e5) / 6e4)} minutes without an authenticated writer (viewers do not keep it alive)${release2 ? `; release ${release2}` : ""}`;
 }
 
 // packages/room-mcp/src/tools/join.ts
@@ -65201,7 +65212,6 @@ function handlers8(state) {
   const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, ledger: ledger2 } = state;
   const offline = (s) => !!s.closed || !s.provider.synced || s.provider.wsconnected === false;
   const unavailableQuestions = /* @__PURE__ */ new Map();
-  const alias = (s, name) => s.room.doc.getMap("aliases").get(name) ?? name;
   const names = { all: () => rooms.all(), presences, myWorkers };
   const known = (s) => knownNames(s, presences);
   const willNotAnswer = (name, record2, verb = "finished", advice = "", claim2 = " and will not answer") => {
@@ -65256,7 +65266,7 @@ function handlers8(state) {
     if (cached3) return cached3;
     const question = s.room.message(questionId);
     if (question?.type !== "question" || !question.to) return void 0;
-    return mapReady(recipientNotice(s, alias(s, question.to)), (notice) => {
+    return mapReady(recipientNotice(s, question.to), (notice) => {
       if (!notice?.terminal) return void 0;
       unavailableQuestions.set(questionId, notice.text);
       if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value);
@@ -65284,7 +65294,7 @@ function handlers8(state) {
         return `error: worker tag ${requestedToRaw} is ambiguous; use a full name: ${names2.join(", ")}`;
       }
       const resolvedWorker = matches2[0];
-      let to2 = resolvedWorker?.worker.name ?? (requestedTo ? alias(byQuestion ?? lead, requestedTo) : void 0);
+      let to2 = resolvedWorker?.worker.name ?? requestedTo;
       let inferredQuestionId;
       const unansweredQuestions = () => {
         const histories = rooms.all().map((room) => ({ room, messages: [...room.room.messages(), ...room.room.mail.values()] }));
@@ -65292,13 +65302,13 @@ function handlers8(state) {
         for (const { room } of histories) room.room.doc.transact(() => {
           for (const m of answers) recordAnswer(room.room, m);
         });
-        return histories.flatMap(({ room, messages }) => messages.filter((m) => m.type === "question" && !!m.to && alias(room, m.to) === alias(room, room.me.name) && !room.room.outcomes.has(m.id)).map((question2) => ({ room, question: question2 })));
+        return histories.flatMap(({ room, messages }) => messages.filter((m) => m.type === "question" && !!m.to && m.to === room.me.name && !room.room.outcomes.has(m.id)).map((question2) => ({ room, question: question2 })));
       };
       const ambiguousAnswer = (candidates, from2) => candidates.length ? `error: answer requires inReplyTo; unanswered questions:
 ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${from2 ? ` from ${from2}` : ""} addressed to you`;
       if (sendType === "answer") {
         const open3 = unansweredQuestions();
-        const candidates = to2 ? open3.filter(({ room, question: question2 }) => alias(room, question2.from) === alias(room, to2)) : open3;
+        const candidates = to2 ? open3.filter(({ question: question2 }) => question2.from === to2) : open3;
         if (a.inReplyTo) {
           const target = candidates.find(({ question: question2 }) => question2.id === a.inReplyTo);
           if (!target || target.room !== byQuestion) {
@@ -65310,7 +65320,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
           if (candidates.length !== 1) return ambiguousAnswer(candidates, to2);
           byQuestion = candidates[0].room;
           question = candidates[0].question;
-          to2 = alias(byQuestion, question.from);
+          to2 = question.from;
           inferredQuestionId = question.id;
         }
       }
@@ -65318,13 +65328,13 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
       const text2 = typeof a.text === "string" && a.text ? a.text : typeof a.message === "string" ? a.message : "";
       if (!text2) return "error: text is required";
-      if (to2 && alias(s, to2) === alias(s, s.me.name)) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
+      if (to2 && to2 === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
       if (to2 && !rooms.all().some((room) => known(room).has(to2))) {
         const valid = [...new Set(rooms.all().flatMap((room) => [...known(room)]))].sort();
         return `error: nobody called ${to2} is or was in this room; participants: ${valid.join(", ")}`;
       }
       if (sendType === "note" && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`;
-      if (repliedNote && a.to && to2 !== alias(s, repliedNote.from)) return `error: note reply must go to ${repliedNote.from}`;
+      if (repliedNote && a.to && to2 !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`;
       if (to2 && !s.room.workerViewOf(to2) && !(await myWorkers(s)).some((w) => w.name === to2) && s.room.retiredWorkers().some((w) => w.name === to2)) return `error: ${to2} was collected or discarded and cannot be resumed; use room_collect with keep: true to collect and stay resumable`;
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
@@ -65347,7 +65357,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`;
       }
       const paths = sendType === "changed" && Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
-      const body = sendType === "changed" ? withPr({ type: "changed", paths, summary: text2, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text: text2, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: alias(s, question?.from ?? to2), inReplyTo: inferredQuestionId ?? a.inReplyTo, text: text2 }) : withPr({ type: "note", text: text2, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
+      const body = sendType === "changed" ? withPr({ type: "changed", paths, summary: text2, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text: text2, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: question?.from ?? to2, inReplyTo: inferredQuestionId ?? a.inReplyTo, text: text2 }) : withPr({ type: "note", text: text2, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
       let posted;
       let baseNote;
       const sent = () => {
@@ -65475,10 +65485,9 @@ ${lines2.join("\n")}` };
         claimId,
         questionId,
         me: x.me.name,
-        alias: (name) => alias(qRoom, name),
         workersRoom: x !== s,
         answersOnly,
-        answerId: answerMatchesQuestion(target, m, (name) => alias(qRoom, name)) ? m.id : void 0
+        answerId: answerMatchesQuestion(target, m) ? m.id : void 0
       };
     };
     const answerReply = () => {
@@ -65532,7 +65541,7 @@ ${lines2.join("\n")}` };
     for (const x of ws ? [s, ws] : [s]) {
       const callbacks = pendingWaits.get(x) ?? /* @__PURE__ */ new Set();
       pendingWaits.set(x, callbacks);
-      const fn = (m) => ends(x)(m) || question?.type === "question" && !!m.to && alias(qRoom, m.to) === alias(qRoom, x.me.name) && answerMatchesQuestion(question, m, (name) => alias(qRoom, name));
+      const fn = (m) => ends(x)(m) || question?.type === "question" && !!m.to && m.to === x.me.name && answerMatchesQuestion(question, m);
       callbacks.add(fn);
       waiters.set(x, fn);
     }
@@ -66048,16 +66057,15 @@ var WakeReconciler = class {
       }
       const seen = s.room.seen(s.me.name);
       const wakes = this.wakes()[s.roomName] ?? {};
-      const alias = (name) => s.room.doc.getMap("aliases").get(name) ?? name;
       for (const m of retained.values()) {
-        if (!m.to || alias(m.to) !== alias(s.me.name)) continue;
+        if (!m.to || m.to !== s.me.name) continue;
         health.retainedAddressed++;
         if (seen.has(m.id)) health.handedToHost++;
         if (wakes[m.id]?.uncertain) health.uncertainWakeRecorded++;
         else if (wakes[m.id]) health.wakeRecorded++;
         if (m.type === "answer") {
           const question = s.room.message(m.inReplyTo);
-          if (question?.type === "question" && answerMatchesQuestion(question, m, alias)) health.answersRecorded++;
+          if (question?.type === "question" && answerMatchesQuestion(question, m)) health.answersRecorded++;
         }
       }
       for (const m of this.o.ledger.candidates(s)) if (m.to === s.me.name) {
@@ -68548,12 +68556,12 @@ not done: ${name} writes under your name, and coordination is paused; retry once
         const notices = sameSession ? ledger2.notices(batch).map((n) => n.text + "\n\n").join("") : "";
         return finishReply(batch, notices + body, signal, handoff2);
       }
-      let release;
+      let release2;
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++;
         const previous = moves;
         const mine = new Promise((resolve6) => {
-          release = () => {
+          release2 = () => {
             pendingMoves--;
             resolve6();
           };
@@ -68565,7 +68573,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
         }).then(() => false), wait.aborted]);
         wait.done();
         if (cancelled) {
-          release();
+          release2();
           return "error: tool call cancelled";
         }
       } else if (WORKER_OPS.has(name)) {
@@ -68578,7 +68586,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
         }
         wait.done();
         const done = new Promise((resolve6) => {
-          release = resolve6;
+          release2 = resolve6;
         });
         workerOps.add(done);
         void done.then(() => workerOps.delete(done));
@@ -68601,7 +68609,7 @@ ${result2}` : result2;
           throw e;
         }
       } finally {
-        release?.();
+        release2?.();
       }
     }
   };

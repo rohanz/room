@@ -15,8 +15,6 @@ export interface MessageWaiting {
   /** The answer validated against this question's endpoints (or its recorded outcome). */
   answerId?: string
   me?: string
-  /** Resolve saved participant names using the question room's aliases. */
-  alias?: (name: string) => string
   /** Used for the initial lookup, which only searches for the requested answer. */
   answersOnly?: boolean
   /** The workers bus historically surfaces questions even while the lead is waiting on something else. */
@@ -43,8 +41,7 @@ const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | '
 const PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /
 const PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/
 const priorityRank = (p: Priority | undefined) => p === 'interrupt' ? 2 : p === 'notify' ? 1 : 0
-const forWaiter = (m: MsgBase, w: MessageWaiting): boolean => !!m.to && !!w.me
-  && (w.alias?.(m.to) ?? m.to) === (w.alias?.(w.me) ?? w.me)
+const forWaiter = (m: MsgBase, w: MessageWaiting): boolean => !!m.to && !!w.me && m.to === w.me
 
 /**
  * Room's per-peer merge notices (`cf:<pair>:peer:…`) that a later notice for the same pair and reader replaces:
@@ -155,9 +152,9 @@ export function isRoomNotice(m: Pick<Msg, 'from' | 'fromKind'>): boolean {
 
 /** The one reply relation: exact question ID, an eligible respondent, and the original asker. */
 export function answerMatchesQuestion(question: Pick<Extract<Msg, { type: 'question' }>, 'type' | 'id' | 'from' | 'to'> | undefined,
-  answer: Msg, alias: (name: string) => string = name => name): boolean {
+  answer: Msg): boolean {
   return !!question && question.type === 'question' && answer.type === 'answer' && answer.inReplyTo === question.id && !!answer.to
-    && alias(answer.to) === alias(question.from) && (!question.to || alias(answer.from) === alias(question.to))
+    && answer.to === question.from && (!question.to || answer.from === question.to)
 }
 
 /**

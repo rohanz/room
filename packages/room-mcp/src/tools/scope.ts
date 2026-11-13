@@ -2,6 +2,7 @@ import { retainedWorkerLines } from '../worker-retained.js'
 import path from 'node:path'
 import { createSessionBinding } from '../binding.js'
 import { gitCommonDir } from '@room/roomd'
+import { relayHealth } from '@room/relay'
 import { openRoomBrowser } from '../browser-open.js'
 import { sharingDescription, sharingHumanChoices } from '../config.js'
 import { runDoctor, hookCompatibilityWarning, formatDeliveryHealth, formatDeliveryDegradation } from '../doctor.js'
@@ -23,7 +24,7 @@ import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
 import { openMergeConflicts } from '../conflict-set.js'
 import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
-import { importedHistory, unresolvedLines, type UnresolvedEntry } from '@room/shared'
+import { importedHistory } from '@room/shared'
 
 
 export const defs: ToolDef[] = [
@@ -134,7 +135,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : undefined,
         })
         const retainedCommon = await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => undefined)
-        return [report, ...(retainedCommon ? retainedWorkerLines(retainedCommon) : []), active?.local ? localDaemonLine(active) : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
+        const health = active?.local ? await relayHealth(active.local.port, active.local.key) : undefined
+        return [report, ...(retainedCommon ? retainedWorkerLines(retainedCommon) : []), active?.local ? localDaemonLine(active, typeof health?.release === 'string' ? health.release : 'unknown') : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
       }
       const s = S()
       await loadAreas(s)
@@ -176,12 +178,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ps = presences(s)
       const ownGit = participantRecord(s.room, s.me.name)?.git
       out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''})`)
-      const unresolved = s.room.doc.getMap<UnresolvedEntry>('unresolved')
-      if (unresolved.size) {
-        const messagesTo = new Map<string, number>()
-        for (const m of s.room.mail.values()) if (m.to?.startsWith('?')) messagesTo.set(m.to, (messagesTo.get(m.to) ?? 0) + 1)
-        out.push(...unresolvedLines(s.roomName, unresolved, messagesTo))
-      }
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)
       const all = a.all === true || !mineA.length
@@ -487,7 +483,7 @@ function compactState(lines: string[], summarizedClaims: number): string {
 }
 
 /** Transport belongs to a distinct process, never to one of the listed participants. */
-function localDaemonLine(s: Session): string {
+function localDaemonLine(s: Session, release?: string): string {
   const local = s.local as Session['local'] & { pid?: number; idleMs?: number }
-  return `local daemon: pid ${local?.pid ?? '?'} on ${local?.url ?? '?'}; stops after ${Math.round((local?.idleMs ?? 300_000) / 60_000)} minutes without an authenticated writer (viewers do not keep it alive)`
+  return `local daemon: pid ${local?.pid ?? '?'} on ${local?.url ?? '?'}; stops after ${Math.round((local?.idleMs ?? 300_000) / 60_000)} minutes without an authenticated writer (viewers do not keep it alive)${release ? `; release ${release}` : ''}`
 }

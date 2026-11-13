@@ -205,7 +205,6 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
   const msgs = room.messages().filter(m => !m.copyOf && !isPrName(m.from))
   const releases = new Map<string, ReleaseMsg>()
   const answers = new Map<string, AnswerMsg[]>()
-  const alias = (name: string) => room.doc.getMap<string>('aliases').get(name) ?? name
   for (const m of msgs) {
     if (m.type === 'release') releases.set(m.claimId, m)
     if (m.type === 'answer') {
@@ -213,7 +212,7 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
       const question = outcome ? outcome.outcome === 'answered'
         ? { type: 'question' as const, id: m.inReplyTo, from: outcome.from, to: outcome.to } : undefined
         : room.message(m.inReplyTo)
-      if (question?.type !== 'question' || !answerMatchesQuestion(question, m, alias)) continue
+      if (question?.type !== 'question' || !answerMatchesQuestion(question, m)) continue
       const arr = answers.get(m.inReplyTo) ?? []; arr.push(m); answers.set(m.inReplyTo, arr)
     }
   }

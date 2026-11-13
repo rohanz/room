@@ -45,24 +45,6 @@ it('returns a retained pre-outcome answer after the old trimmer removed the rece
   expect(result).toContain('legacy retained body')
 })
 
-it('allows the canonical recipient to answer a question addressed to its saved alias', async () => {
-  const { tools, ask, room } = fixture('lead')
-  room.doc.getMap<string>('aliases').set('old-lead', 'lead')
-  const q = ask('asker', 'old-lead')
-  const sent = await tools.call('room_send', { type: 'answer', inReplyTo: q.id, text: 'alias recipient body' })
-  expect(sent).toContain('sent [')
-  expect(room.outcomes.get(q.id)?.outcome).toBe('answered')
-})
-
-it('returns the valid saved answer text when its destination is an alias of the current asker', async () => {
-  const { tools, ask, room } = fixture('asker')
-  room.doc.getMap<string>('aliases').set('old-asker', 'asker')
-  const q = ask('old-asker')
-  hubAppend(room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: 'old-asker', inReplyTo: q.id, text: 'alias asker body' })
-  expect(room.outcomes.get(q.id)?.outcome).toBe('answered')
-  expect(await tools.call('room_wait', { questionId: q.id, timeoutMs: 10 })).toContain('alias asker body')
-})
-
 it.each(['sender', 'destination', 'reference'] as const)('does not close a blocked wait for an invalid %s; a later valid answer returns text', async mismatch => {
   const { s, tools, ask, room } = fixture(), q = ask()
   let finished = false
@@ -123,12 +105,11 @@ it('two disconnected healing readers converge and repeated reads add no Yjs stru
   expect([...first.room.outcomes]).toEqual([...second.room.outcomes])
 })
 
-it('accepts alias respondent identity at the shared relation and keeps note replies from closing questions', () => {
+it('keeps note replies from closing questions and accepts a valid answer', () => {
   const { ask, room } = fixture()
-  room.doc.getMap<string>('aliases').set('old-lead', 'lead')
-  const q = ask('asker', 'old-lead')
+  const q = ask('asker', 'lead')
   const note = hubAppend(room, { name: 'lead', kind: 'agent' }, { type: 'note', to: 'asker', inReplyTo: q.id, text: 'not an answer' })
-  room.markSeen('old-lead', [q.id], { s: 's', via: 'reply' })
+  room.markSeen('lead', [q.id], { s: 's', via: 'reply' })
   trim(room, Date.now(), { busKeep: 0 })
   expect(room.message(q.id)).toBeDefined()
   expect(room.outcomes.has(q.id)).toBe(false)

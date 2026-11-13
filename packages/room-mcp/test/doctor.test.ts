@@ -20,6 +20,7 @@ import type { HandlerState } from '../src/tools/context.js'
 import { RoomDoc } from '@room/shared'
 import { CURRENT_COMPAT } from '@room/hub-core'
 import { Awareness } from 'y-protocols/awareness'
+import * as relay from '@room/relay'
 
 const { version } = JSON.parse(readFileSync(new URL('../../../plugins/room/.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { version: string }
 const trust = `[hooks.state."room@room:hooks.json:pre_tool_use:0:0"]
@@ -271,6 +272,22 @@ it('room_state check works before a session joins', async () => {
   const { createTools } = await import('../src/tools.js')
   const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: '/not/a/repository' })
   expect(await tools.call('room_state', { check: true })).toContain('PASS  doctor: report from tool')
+})
+
+it.each(['0.17.38', undefined])('room_state check shows authenticated daemon release %s on its existing line', async release => {
+  const { createTools } = await import('../src/tools.js')
+  const health = vi.spyOn(relay, 'relayHealth').mockResolvedValue(release ? { release } : undefined)
+  const session = { dir: '/not/a/repository', local: { pid: 4321, port: 4405, key: 'fixture-only', url: 'ws://127.0.0.1:4405' } } as Session
+  let active: Session | null = null
+  const tools = createTools({ getSession: () => active, setSession() {}, cwd: session.dir })
+  active = session
+  try {
+    const report = await tools.call('room_state', { check: true })
+    expect(health).toHaveBeenCalledWith(4405, 'fixture-only')
+    expect(report.split('\n').filter(line => line.startsWith('local daemon:'))).toEqual([
+      `local daemon: pid 4321 on ws://127.0.0.1:4405; stops after 5 minutes without an authenticated writer (viewers do not keep it alive); release ${release ?? 'unknown'}`,
+    ])
+  } finally { health.mockRestore() }
 })
 
 it('a first diagnostic reply hands off already-prepared recovery notices without waiting for join', async () => {

@@ -8315,8 +8315,7 @@ var init_ledger = __esm({
 function recordAnswer(doc, answer) {
   if (!validMessageShape(answer) || answer.type !== "answer") return;
   const question = doc.message(answer.inReplyTo);
-  const alias = (name) => doc.doc.getMap("aliases").get(name) ?? name;
-  if (!validMessageShape(question) || question.type !== "question" || !question.to || !answerMatchesQuestion(question, answer, alias) || doc.outcomes.has(question.id)) return;
+  if (!validMessageShape(question) || question.type !== "question" || !question.to || !answerMatchesQuestion(question, answer) || doc.outcomes.has(question.id)) return;
   doc.outcomes.set(question.id, { to: question.to, from: question.from, outcome: "answered", at: answer.at });
   doc.mail.delete(question.id);
 }
@@ -10020,8 +10019,8 @@ function validMessageShape(value2) {
 function isRoomNotice(m) {
   return m.from === "room" && m.fromKind === "bot";
 }
-function answerMatchesQuestion(question, answer, alias = (name) => name) {
-  return !!question && question.type === "question" && answer.type === "answer" && answer.inReplyTo === question.id && !!answer.to && alias(answer.to) === alias(question.from) && (!question.to || alias(answer.from) === alias(question.to));
+function answerMatchesQuestion(question, answer) {
+  return !!question && question.type === "question" && answer.type === "answer" && answer.inReplyTo === question.id && !!answer.to && answer.to === question.from && (!question.to || answer.from === question.to);
 }
 function messageKind(m) {
   const kind = MessageKinds[m.type];
@@ -10063,7 +10062,7 @@ var init_messages = __esm({
     priority = (m) => `[${m.priority}] `;
     conflictLabel = (m) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? m.merges === "clean" ? "overlap cleared" : "CONFLICT cleared" : m.merges === "clean" ? "overlap" : m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
     PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /;
-    forWaiter = (m, w) => !!m.to && !!w.me && (w.alias?.(m.to) ?? m.to) === (w.alias?.(w.me) ?? w.me);
+    forWaiter = (m, w) => !!m.to && !!w.me && m.to === w.me;
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
     builtins = {
@@ -18072,9 +18071,9 @@ function startRelay(port, opts = {}) {
             res.end();
             return;
           }
-          if (writers.size || draining) {
+          if (draining) {
             res.writeHead(409);
-            res.end(draining ? "local daemon is already draining; inspect status and retry" : "local daemon has active writers; quiesce clients before stopping");
+            res.end("local daemon is already draining; inspect status and retry");
             return;
           }
           try {

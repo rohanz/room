@@ -9,7 +9,7 @@ export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
  * server image ships without @room/shared. */
 export const ROOM_DOC_MAX_BYTES = 64 * 1024 * 1024
 
-/** Memory keeps coordination (including migrated claims awaiting an old owner's return).
+/** Memory keeps coordination, including inert saved `aliases` and `unresolved` roots.
  * Live file text and graphs are rebuilt by whoever is present. Completed workers'
  * publications are copied separately, within the snapshot budget. */
 export const MEMORY_TYPES = {

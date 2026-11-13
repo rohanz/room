@@ -134,16 +134,15 @@ export class WakeReconciler {
       }
       const seen = s.room.seen(s.me.name)
       const wakes = this.wakes()[s.roomName] ?? {}
-      const alias = (name: string) => s.room.doc.getMap<string>('aliases').get(name) ?? name
       for (const m of retained.values()) {
-        if (!m.to || alias(m.to) !== alias(s.me.name)) continue
+        if (!m.to || m.to !== s.me.name) continue
         health.retainedAddressed++
         if (seen.has(m.id)) health.handedToHost++
         if (wakes[m.id]?.uncertain) health.uncertainWakeRecorded++
         else if (wakes[m.id]) health.wakeRecorded++
         if (m.type === 'answer') {
           const question = s.room.message(m.inReplyTo)
-          if (question?.type === 'question' && answerMatchesQuestion(question, m, alias)) health.answersRecorded++
+          if (question?.type === 'question' && answerMatchesQuestion(question, m)) health.answersRecorded++
         }
       }
       for (const m of this.o.ledger.candidates(s)) if (m.to === s.me.name) {

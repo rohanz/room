@@ -275,7 +275,21 @@ export function ensureLocalDaemon(commonDir: string, room: string, opts: LocalDa
   flights.set(canonical, work)
   return work
 }
-async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions = {}): Promise<LocalDaemon> {
+const numbered = (value: unknown): number[] | undefined => typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value) ? value.split('.').map(Number) : undefined
+function newerRelease(mine: unknown, theirs: unknown): boolean {
+  const a = numbered(mine), b = numbered(theirs)
+  if (!a || !b) return false
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!
+  return false
+}
+const HANDOVER = Symbol('daemon hand-over attempted')
+async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions): Promise<LocalDaemon> {
+  return ensureOnce(commonDir, room, opts, true).catch(error => {
+    if (error !== HANDOVER) throw error
+    return ensureOnce(commonDir, room, opts, false)
+  })
+}
+async function ensureOnce(commonDir: string, room: string, opts: LocalDaemonOptions, handover: boolean): Promise<LocalDaemon> {
   await primePrivateState(commonDir)
   privateStateDirectory(path.join(commonDir, 'room'))
   const ready = async (): Promise<LocalDaemon | undefined> => {
@@ -285,9 +299,6 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions 
     if (!health || health.clone !== cloneId(commonDir)) return undefined
     // Terminal refusals, not retried: neither state repairs itself while the caller waits.
     if (health.runtime !== 'daemon') throw new LocalRelayCompatibilityError(probed.port, probed.pid, 'it uses an in-session runtime')
-    const offer = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }
-    const contract = selectContract(offer, parseAdvertisement(health.compat), { activeSchema: 2, requiredCapabilities: { 'room.daemon': [1] } })
-    if (!contract.ok) throw new LocalRelayCompatibilityError(probed.port, probed.pid, contract.error.text)
     if (health.ready !== true || health.draining) return undefined
     // The lock winner listens before lease recovery and discovery publication, and reports not-ready
     // until both finish. Read its publication after authentication, never compare against its predecessor.
@@ -300,6 +311,21 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions 
     }
     // The nonce names one daemon start. A reply from an earlier start is not this publication's, even on a reused PID.
     if (info.nonce !== undefined && health.nonce !== info.nonce) return undefined
+    // One hand-over per call. Only a strictly newer numbered release replaces an authenticated instance, so mixed
+    // installed versions never downgrade or flap; a development or malformed release has no order and is reused.
+    if (handover && info.nonce && newerRelease(release, health.release)) {
+      try {
+        await stopLocalDaemon(commonDir, undefined, info.nonce)
+      } catch (error) {
+        opts.log?.(`local daemon upgrade ${String(health.release)} -> ${release}: stop not confirmed: ${String(error).replace(/[\r\n]/g, ' ').slice(0, 512)}`)
+      }
+      // The stop may have succeeded, failed or been lost: never reuse the earlier reply. Start over once without a
+      // hand-over, so an older client that wins the restart is accepted until the next join.
+      throw HANDOVER
+    }
+    const offer = { ...CURRENT_COMPAT, capabilities: { ...CURRENT_COMPAT.capabilities, 'room.daemon': [1] } }
+    const contract = selectContract(offer, parseAdvertisement(health.compat), { activeSchema: 2, requiredCapabilities: { 'room.daemon': [1] } })
+    if (!contract.ok) throw new LocalRelayCompatibilityError(probed.port, probed.pid, contract.error.text)
     return {
       url: `ws://127.0.0.1:${info.port}`, httpUrl: `http://127.0.0.1:${info.port}`, port: info.port, key: info.key, pid: health.pid, runtime: 'daemon', idleMs: Number(health.idleMs), owned: false, launched: false,
       async stop() {},
@@ -316,7 +342,7 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions 
   // Publication can finish while a not-ready health reply is in flight. Wait for the published
   // owner under the same startup caps; a live/unknown owner never authorizes a replacement child.
   if (info?.lead && info.lead !== true && liveness(info.lead) !== 'dead') {
-    return waitForReady().catch((error: Error) => { throw new Error(`local daemon pid ${info.pid} is live or has unknown identity and did not become ready; retry without taking over. ${error.message}`) })
+    return waitForReady().catch((error: Error | typeof HANDOVER) => { if (error === HANDOVER) throw error; throw new Error(`local daemon pid ${info.pid} is live or has unknown identity and did not become ready; retry without taking over. ${error.message}`) })
   }
   const entry = opts.entryPath ?? fileURLToPath(new URL('./room-daemon.mjs', import.meta.url))
   if (!path.isAbsolute(entry) || !fs.statSync(entry).isFile()) throw new Error('local daemon entry must be an absolute installed bundle path')
@@ -346,7 +372,7 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions 
     let previousLog = startupLog(commonDir)
     do {
       const winner = await ready()
-      if (winner) return { ...winner, launched: winner.pid === child?.pid }
+      if (winner) return { ...winner, launched: winner.launched || winner.pid === child?.pid }
       if (launchError) throw startupFailure(commonDir, child?.pid, `launch failed: ${launchError.message}`, report)
       // A losing contender can exit before the lock winner publishes. Preserve that wait while the authority
       // is live; a dead child without another authority fails immediately instead of burning the startup cap.
@@ -365,7 +391,7 @@ async function ensure(commonDir: string, room: string, opts: LocalDaemonOptions 
   }
 }
 
-/** Drained maintenance only: authenticate the exact discovery instance, save, then verify its exit. */
+/** Authenticate the exact discovery instance, save, then verify its exit. Attached writers reconnect. */
 export async function stopLocalDaemon(commonDir: string, timeoutMs = 15_000, expectedNonce?: string): Promise<void | 'different daemon instance'> {
   const canonical = fs.realpathSync.native(commonDir)
   const info = discovery(canonical)

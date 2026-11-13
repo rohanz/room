@@ -14,8 +14,6 @@ export function knownNames(session: Session, presences: NameContext['presences']
     ...session.room.openClaims().map(c => c.by), ...Array.from(session.room.workerViews.values(), w => w.name),
     ...session.room.retiredWorkers().map(w => w.name), ...session.room.messages().map(m => m.from),
     ...Array.from(session.room.mail.values(), m => m.from),
-    ...Array.from(session.room.doc.getMap<{ placeholder: string }>('unresolved').values(), value => value.placeholder),
-    ...session.room.doc.getMap<string>('aliases').values(),
   ].filter(n => !isPrName(n)))
 }
 

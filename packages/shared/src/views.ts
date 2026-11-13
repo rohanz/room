@@ -570,37 +570,3 @@ export function lineAnnotation(input: LineDetailInput): string {
 export function importedHistory(room: RoomDoc, m: { seq?: number }): boolean {
   return typeof m.seq !== 'number' && room.metaMap.get('hubIncarnation') !== undefined
 }
-
-/** A migration `unresolved` entry, keyed `<old room>\0<old name>`. */
-export interface UnresolvedEntry { placeholder: string; claims?: readonly unknown[]; scope?: unknown }
-
-/** One plain line per ambiguous migrated name: what is owed to it and who it could be. `messagesTo`
- *  counts mail addressed to each placeholder. At most `maxNames` lines and three candidates per line.
- *  A name with nothing retained has no line, and Room's own bot `room` never
- *  has one. Rejoining no longer reclaims these historical placeholders. */
-export function unresolvedLines(roomName: string, entries: Iterable<[string, UnresolvedEntry]>, messagesTo: ReadonlyMap<string, number>, maxNames = 5): string[] {
-  const all = new Map<string, { candidates: string[]; messages: number; claims: number; scopes: number }>()
-  for (const [key, entry] of entries) {
-    const split = key.indexOf('\0')
-    const source = key.slice(0, split), person = key.slice(split + 1)
-    if (person === 'room') continue
-    let where = source.startsWith('archive:') ? 'the old room' : source.startsWith(`${roomName}/`) ? source.slice(roomName.length + 1) : source
-    try { where = decodeURIComponent(where) } catch { /* keep the stored spelling */ }
-    let group = all.get(person)
-    if (!group) { group = { candidates: [], messages: 0, claims: 0, scopes: 0 }; all.set(person, group) }
-    group.candidates.push(`${person} on ${where}`)
-    group.messages += messagesTo.get(entry.placeholder) ?? 0
-    group.claims += Array.isArray(entry.claims) ? entry.claims.length : 0
-    if (entry.scope) group.scopes++
-  }
-  const groups = new Map([...all].filter(([, group]) => group.messages || group.claims || group.scopes))
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
-  const out = [...groups.values()].slice(0, maxNames).map(group => {
-    const owed = [group.messages ? plural(group.messages, 'message') : '', group.claims ? plural(group.claims, 'claim') : ''].filter(Boolean).join(' and ')
-      || 'a declared scope'
-    const names = group.candidates.slice(0, 3).join(' or ') + (group.candidates.length > 3 ? `, +${group.candidates.length - 3} more` : '')
-    return `${owed} for an unresolved name (${names}): retained migration history`
-  })
-  if (groups.size > maxNames) out.push(`+${groups.size - maxNames} more unresolved names`)
-  return out
-}

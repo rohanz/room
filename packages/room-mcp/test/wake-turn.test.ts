@@ -264,15 +264,13 @@ it('reports transport attempt separately from handoff and explicit answers witho
   } finally { r.close() }
 })
 
-it('counts retained answers through saved aliases and rejects unrelated senders in diagnostics', () => {
+it('counts retained exact-name answers and rejects unrelated senders in diagnostics', () => {
   const r = rig(true)
   try {
-    const aliases = r.room.doc.getMap<string>('aliases')
-    aliases.set('old-Pat', 'Pat'); aliases.set('old-Ana', 'Ana')
-    const q = hubAppend(r.room, { name: 'old-Pat', kind: 'agent' }, { type: 'question', to: 'old-Ana', text: '?' })
-    hubAppend(r.room, { name: 'third', kind: 'agent' }, { type: 'answer', to: 'old-Pat', inReplyTo: q.id, text: 'invalid' })
+    const q = hubAppend(r.room, { name: 'Pat', kind: 'agent' }, { type: 'question', to: 'Ana', text: '?' })
+    hubAppend(r.room, { name: 'third', kind: 'agent' }, { type: 'answer', to: 'Pat', inReplyTo: q.id, text: 'invalid' })
     expect(r.wakes.health().answersRecorded).toBe(0)
-    hubAppend(r.room, { name: 'Ana', kind: 'agent' }, { type: 'answer', to: 'old-Pat', inReplyTo: q.id, text: 'valid' })
+    hubAppend(r.room, { name: 'Ana', kind: 'agent' }, { type: 'answer', to: 'Pat', inReplyTo: q.id, text: 'valid' })
     expect(r.wakes.health().answersRecorded).toBe(1)
   } finally { r.close() }
 })

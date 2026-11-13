@@ -30,8 +30,7 @@ function fixture() {
 it.each([undefined, 'expired', 'over-cap', 'recipient-retired', 'asker-retired', 'answered'] as const)(
   'uses the missing-question fallback only without an outcome (%s)', async outcome => {
     const { room, tools } = fixture()
-    room.doc.getMap<string>('aliases').set('old-asker', 'asker')
-    hubAppend(room, { name: 'third', kind: 'agent' }, { type: 'answer', to: 'old-asker', inReplyTo: 'gone', text: 'unknown sender body' })
+    hubAppend(room, { name: 'third', kind: 'agent' }, { type: 'answer', to: 'asker', inReplyTo: 'gone', text: 'unknown sender body' })
     if (outcome) room.outcomes.set('gone', { to: 'lead', from: 'asker', outcome, at: Date.now() })
     const result = await tools.call('room_wait', { questionId: 'gone', timeoutMs: 10 })
     if (outcome) expect(result).not.toContain('answered:')
@@ -45,13 +44,12 @@ it('does not use the missing-question fallback for a reply to someone else', asy
   expect(await tools.call('room_wait', { questionId: 'gone', timeoutMs: 10 })).toContain('timeout after')
 })
 
-it('recognizes saved aliases for question and validated-answer wait recipients', () => {
-  const alias = (name: string) => name === 'old-asker' ? 'asker' : name
-  const question = { id: 'q', type: 'question', from: 'lead', fromKind: 'agent', to: 'old-asker', at: 1, text: '?' } as const
-  expect(messageEndsWait(question, { me: 'asker', alias })).toBe(true)
+it('requires exact recipients for questions and validated answers to end waits', () => {
+  const question = { id: 'q', type: 'question', from: 'lead', fromKind: 'agent', to: 'asker', at: 1, text: '?' } as const
+  expect(messageEndsWait(question, { me: 'asker' })).toBe(true)
   const answer = { ...question, id: 'a', type: 'answer', inReplyTo: 'q' } as const
-  expect(messageEndsWait(answer, { me: 'asker', alias, questionId: 'q', answerId: 'a' })).toBe(true)
-  expect(messageEndsWait(answer, { me: 'third', alias, questionId: 'q', answerId: 'a' })).toBe(false)
+  expect(messageEndsWait(answer, { me: 'asker', questionId: 'q', answerId: 'a' })).toBe(true)
+  expect(messageEndsWait(answer, { me: 'third', questionId: 'q', answerId: 'a' })).toBe(false)
 })
 
 it.each(['answered', 'recipient-retired', 'asker-retired'] as const)('PR ledger respects a recorded %s outcome after reply removal', outcome => {
@@ -65,12 +63,10 @@ it.each(['answered', 'recipient-retired', 'asker-retired'] as const)('PR ledger 
   } finally { room.doc.destroy() }
 })
 
-it.each([undefined, 'answered', 'asker-retired'] as const)('PR ledger validates both endpoints and aliases with outcome %s', outcome => {
+it.each([undefined, 'answered', 'asker-retired'] as const)('PR ledger validates both exact endpoints with outcome %s', outcome => {
   const room = new RoomDoc()
   try {
-    const aliases = room.doc.getMap<string>('aliases')
-    aliases.set('old-asker', 'asker'); aliases.set('old-lead', 'lead')
-    const q = hubAppend(room, { name: 'old-asker', kind: 'agent' }, { type: 'question', to: 'old-lead', text: '?' })
+    const q = hubAppend(room, { name: 'asker', kind: 'agent' }, { type: 'question', to: 'lead', text: '?' })
     const a = hubAppend(room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: 'asker', inReplyTo: q.id, text: 'valid body' })
     hubAppend(room, { name: 'third', kind: 'agent' }, { type: 'answer', to: 'asker', inReplyTo: q.id, text: 'wrong sender' })
     hubAppend(room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: 'third', inReplyTo: q.id, text: 'wrong destination' })
