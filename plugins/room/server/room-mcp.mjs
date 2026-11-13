@@ -19129,7 +19129,7 @@ var init_daemon = __esm({
     init_proof();
     init_src3();
     init_private_state();
-    release = true ? "0.17.49" : "development";
+    release = true ? "0.17.50" : "development";
     LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
     STARTUP_PHASE_WAIT_MS = 25e3;
     STARTUP_HARD_CAP_MS = 6e4;
@@ -34030,7 +34030,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.49",
+      version: "0.17.50",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
