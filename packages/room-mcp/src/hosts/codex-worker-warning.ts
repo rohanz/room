@@ -9,9 +9,9 @@ export function codexRoomCompatibilityMismatch(
   failure?: ContractFailure,
 ): string | undefined {
   if (arguments.length < 2) installed = installedCodexRoomContract(process.env, reason => { failure = reason })
-  if (!installed && failure === 'listing-timeout') return "Codex plugin listing timed out after 2500 ms; run `codex plugin list --json` in a terminal and let it finish, then retry room_spawn. The installed Room copy has not been checked"
-  if (!installed && failure === 'listing-unavailable') return "Codex plugin listing could not run successfully; check that codex is on Room's PATH and run `codex plugin list --json` in a terminal to diagnose the CLI failure, then retry room_spawn"
-  if (!installed && failure === 'listing-invalid') return "Codex plugin listing returned invalid JSON; run `codex plugin list --json` in a terminal and resolve the CLI output failure, then retry room_spawn"
+  if (!installed && failure === 'listing-timeout') return "Codex plugin listing timed out after 2500 ms; run `codex plugin list --json --marketplace room` in a terminal and let it finish, then retry room_spawn. The installed Room copy has not been checked"
+  if (!installed && failure === 'listing-unavailable') return "Codex plugin listing could not run successfully; check that codex is on Room's PATH and run `codex plugin list --json --marketplace room` in a terminal to diagnose the CLI failure, then retry room_spawn"
+  if (!installed && failure === 'listing-invalid') return "Codex plugin listing returned invalid JSON; run `codex plugin list --json --marketplace room` in a terminal and resolve the CLI output failure, then retry room_spawn"
   if (!installed && failure === 'verification') return "Codex's installed copy failed verification (enabled selection, descriptor, executable digest or changing evidence); update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker"
   if (!installed) return "Codex's installed Room executable contract is unverified; update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker"
   const selected = selectContract(installed.compat, lead.compat, { activeSchema: 2 })

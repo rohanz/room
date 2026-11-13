@@ -102,6 +102,9 @@ export type ContractFailure = 'listing-timeout' | 'listing-unavailable' | 'listi
 // Bound synchronous work on the MCP tool path. A cold CLI can exceed this; run its listing
 // outside Room to finish initialization, then retry. Never treat a timeout as a bad install.
 const LISTING_TIMEOUT_MS = 2500
+// Only the Room marketplace: an unfiltered listing also queries Codex's remote plugin directory, which took
+// 45 s per call while that service answered 503 (Codex 0.166.0, 2026-11-13). The filtered one stays local.
+const CODEX_ROOM_LISTING = ['plugin', 'list', '--json', '--marketplace', 'room']
 export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env, failed?: (reason: ContractFailure) => void): WorkerContract | undefined {
   const home = path.resolve(env.CODEX_HOME || path.join(os.homedir(), '.codex'))
   const key = JSON.stringify([home, env.PATH, process.cwd()])
@@ -113,7 +116,7 @@ export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env,
   verifiedContract = undefined
   let json: string
   try {
-    json = execFileSync('codex', ['plugin', 'list', '--json'], { env, encoding: 'utf8', timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+    json = execFileSync('codex', CODEX_ROOM_LISTING, { env, encoding: 'utf8', timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
   } catch (error) {
     failed?.((error as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? 'listing-timeout' : 'listing-unavailable')
     return undefined
@@ -148,7 +151,7 @@ function decodeCodexDoctorListing(listing: unknown): { listed: boolean; row?: { 
 export function createCodexInstall(env: NodeJS.ProcessEnv = process.env, io: InstallIO = defaultInstallIO) {
   const inspectInstall = async (): Promise<InstallEvidence & { record?: InstalledPlugin; hooks?: string; trust?: string }> => {
     const [json, marketsJson] = await Promise.all([
-      io.command('codex', ['plugin', 'list', '--json']),
+      io.command('codex', CODEX_ROOM_LISTING),
       io.command('codex', ['plugin', 'marketplace', 'list', '--json']),
     ])
     const { listed, row } = decodeCodexDoctorListing(parseInstallListing(json))

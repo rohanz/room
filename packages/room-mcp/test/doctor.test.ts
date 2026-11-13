@@ -362,12 +362,12 @@ describe('host installation evidence', () => {
   it.each([
     [undefined, 'absent'], ['', 'present'], ['not JSON', 'present'], ['{}', 'present'],
   ] as const)('keeps an unanswered/malformed listing unknown (%s)', async (raw, cli) => {
-    const io = fakeIO({ 'claude plugin list --json': raw, 'codex plugin list --json': raw })
+    const io = fakeIO({ 'claude plugin list --json': raw, 'codex plugin list --json --marketplace room': raw })
     expect(await createClaudeInstall(io).inspectInstall()).toMatchObject({ cli, listing: 'unknown', plugin: 'unknown' })
     expect(await createCodexInstall({ CODEX_HOME: '/codex' }, io).inspectInstall()).toMatchObject({ cli, listing: 'unknown', plugin: 'unknown' })
   })
   it('distinguishes successfully listed absence and keeps Claude version failure as empty evidence', async () => {
-    const io = fakeIO({ 'claude plugin list --json': '[]', 'codex plugin list --json': '{"installed":[]}', 'claude --version': '' })
+    const io = fakeIO({ 'claude plugin list --json': '[]', 'codex plugin list --json --marketplace room': '{"installed":[]}', 'claude --version': '' })
     expect(await createClaudeInstall(io).inspectInstall()).toMatchObject({ cli: 'present', listing: 'ok', plugin: 'absent', version: '', hookTrust: 'not-applicable' })
     expect(await createCodexInstall({ CODEX_HOME: '/codex' }, io).inspectInstall()).toMatchObject({ cli: 'present', listing: 'ok', plugin: 'absent' })
   })
@@ -395,7 +395,7 @@ describe('host installation evidence', () => {
     const hooksRoot = path.join(market, 'custom-room')
     const hooks = `export const HOOKS_VERSION = '${version}'`
     const io = fakeIO({
-      'codex plugin list --json': JSON.stringify({ installed: [
+      'codex plugin list --json --marketplace room': JSON.stringify({ installed: [
         { pluginId: 'other@room', version: '99.0.0' },
         { pluginId: 'room@room', version: '0.8.0', marketplaceName: 'room', enabled: false },
         { pluginId: 'room@room', version: '99.0.0', marketplaceName: 'room' },

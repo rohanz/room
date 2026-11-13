@@ -59593,6 +59593,7 @@ function selectionEvidence(home, env) {
   }
 }
 var LISTING_TIMEOUT_MS = 2500;
+var CODEX_ROOM_LISTING = ["plugin", "list", "--json", "--marketplace", "room"];
 function installedCodexRoomContract(env = process.env, failed) {
   const home = path60.resolve(env.CODEX_HOME || path60.join(os14.homedir(), ".codex"));
   const key3 = JSON.stringify([home, env.PATH, process.cwd()]);
@@ -59605,7 +59606,7 @@ function installedCodexRoomContract(env = process.env, failed) {
   verifiedContract = void 0;
   let json;
   try {
-    json = execFileSync9("codex", ["plugin", "list", "--json"], { env, encoding: "utf8", timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    json = execFileSync9("codex", CODEX_ROOM_LISTING, { env, encoding: "utf8", timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   } catch (error2) {
     failed?.(error2.code === "ETIMEDOUT" ? "listing-timeout" : "listing-unavailable");
     return void 0;
@@ -59642,7 +59643,7 @@ function decodeCodexDoctorListing(listing) {
 function createCodexInstall(env = process.env, io = defaultInstallIO) {
   const inspectInstall = async () => {
     const [json, marketsJson] = await Promise.all([
-      io.command("codex", ["plugin", "list", "--json"]),
+      io.command("codex", CODEX_ROOM_LISTING),
       io.command("codex", ["plugin", "marketplace", "list", "--json"])
     ]);
     const { listed, row } = decodeCodexDoctorListing(parseInstallListing(json));
@@ -59673,9 +59674,9 @@ function codexRoomCompatibilityMismatch(lead = { release: plugin_default.version
   if (arguments.length < 2) installed = installedCodexRoomContract(process.env, (reason2) => {
     failure = reason2;
   });
-  if (!installed && failure === "listing-timeout") return "Codex plugin listing timed out after 2500 ms; run `codex plugin list --json` in a terminal and let it finish, then retry room_spawn. The installed Room copy has not been checked";
-  if (!installed && failure === "listing-unavailable") return "Codex plugin listing could not run successfully; check that codex is on Room's PATH and run `codex plugin list --json` in a terminal to diagnose the CLI failure, then retry room_spawn";
-  if (!installed && failure === "listing-invalid") return "Codex plugin listing returned invalid JSON; run `codex plugin list --json` in a terminal and resolve the CLI output failure, then retry room_spawn";
+  if (!installed && failure === "listing-timeout") return "Codex plugin listing timed out after 2500 ms; run `codex plugin list --json --marketplace room` in a terminal and let it finish, then retry room_spawn. The installed Room copy has not been checked";
+  if (!installed && failure === "listing-unavailable") return "Codex plugin listing could not run successfully; check that codex is on Room's PATH and run `codex plugin list --json --marketplace room` in a terminal to diagnose the CLI failure, then retry room_spawn";
+  if (!installed && failure === "listing-invalid") return "Codex plugin listing returned invalid JSON; run `codex plugin list --json --marketplace room` in a terminal and resolve the CLI output failure, then retry room_spawn";
   if (!installed && failure === "verification") return "Codex's installed copy failed verification (enabled selection, descriptor, executable digest or changing evidence); update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker";
   if (!installed) return "Codex's installed Room executable contract is unverified; update Room for Codex, then reconnect Room with /mcp or restart the session before spawning a worker";
   const selected = selectContract(installed.compat, lead.compat, { activeSchema: 2 });

@@ -10,7 +10,7 @@ vi.mock('node:child_process', async original => ({ ...await original<typeof impo
 import { installedCodexRoomContract } from '../src/hosts/codex-install.js'
 const dirs: string[] = []
 it.each([
-  ['ETIMEDOUT', /listing timed out.*run.*codex plugin list --json.*retry/i],
+  ['ETIMEDOUT', /listing timed out.*run.*codex plugin list --json --marketplace room.*retry/i],
   ['ENOENT', /listing could not run.*codex.*PATH/i],
 ])('explains listing failure %s without prescribing an update', async (code, expected) => {
   const { workerContractWarning } = await import('../src/hosts/codex-worker-warning.js')
@@ -52,7 +52,7 @@ it('reads only the selected install and verifies its executable digest', () => {
   expect(installedCodexRoomContract(selectionEnv(dir))).toMatchObject({ release: '0.17.32', workerRecordSchema: 1 })
   writeFileSync(join(server, 'room-mcp.mjs'), 'updated while lead alive')
   expect(installedCodexRoomContract(selectionEnv(dir))).toBeUndefined()
-  expect(listing.mock.calls[0][1]).toEqual(['plugin', 'list', '--json'])
+  expect(listing.mock.calls[0][1]).toEqual(['plugin', 'list', '--json', '--marketplace', 'room'])
 })
 it('keeps unknown, disabled, ambiguous and missing descriptors unverified', () => {
   listing.mockImplementation(() => { throw new Error('timeout') })
