@@ -10960,7 +10960,7 @@ function formatMsg(m, context2) {
 function formatPlans(plans) {
   return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
 }
-var who, to, priority, conflictLabel, PEER_NOTICE_TEXT, PEER_NOTICE_ID, priorityRank, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
+var who, to, priority, conflictLabel, PEER_NOTICE_TEXT, PEER_NOTICE_ID, priorityRank, forWaiter, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
 var init_messages = __esm({
   "packages/shared/src/messages.ts"() {
     "use strict";
@@ -10974,14 +10974,15 @@ var init_messages = __esm({
     PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /;
     PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/;
     priorityRank = (p) => p === "interrupt" ? 2 : p === "notify" ? 1 : 0;
+    forWaiter = (m, w) => !!m.to && !!w.me && (w.alias?.(m.to) ?? m.to) === (w.alias?.(w.me) ?? w.me);
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
     builtins = {
       claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m, context2) => context2?.claims && !context2.claims.some((c) => c.id === m.claimId) ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) \u2014 ${m.intent}` : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
       release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
       changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
-      question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-      answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+      question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && forWaiter(m, w) && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
+      answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && forWaiter(m, w), format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
       // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
       conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
@@ -34011,7 +34012,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.48",
+      version: "0.17.49",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -44778,9 +44779,13 @@ function renderPrNote(room, opts) {
   const msgs = room.messages().filter((m) => !m.copyOf && !isPrName(m.from));
   const releases = /* @__PURE__ */ new Map();
   const answers = /* @__PURE__ */ new Map();
+  const alias = (name) => room.doc.getMap("aliases").get(name) ?? name;
   for (const m of msgs) {
     if (m.type === "release") releases.set(m.claimId, m);
     if (m.type === "answer") {
+      const outcome = room.outcomes.get(m.inReplyTo);
+      const question = outcome ? outcome.outcome === "answered" ? { type: "question", id: m.inReplyTo, from: outcome.from, to: outcome.to } : void 0 : room.message(m.inReplyTo);
+      if (question?.type !== "question" || !answerMatchesQuestion(question, m, alias)) continue;
       const arr = answers.get(m.inReplyTo) ?? [];
       arr.push(m);
       answers.set(m.inReplyTo, arr);
@@ -44815,7 +44820,7 @@ function renderPrNote(room, opts) {
       case "question": {
         const question = [`- ${t(m.at)} ${who2(m)} asked ${m.to ? displayName({ name: m.to, kind: "agent" }) : "the room"}: ${m.text}`];
         for (const a of answers.get(m.id) ?? []) question.push(`  - ${t(a.at)} ${who2(a)} answered: ${a.text}`);
-        if (!(answers.get(m.id) ?? []).length) question.push("  - (unanswered)");
+        if (!(answers.get(m.id) ?? []).length) question.push(room.outcomes.get(m.id)?.outcome === "answered" ? "  - (answered; answer text no longer retained)" : "  - (unanswered)");
         lines2.push(question.join("\n"));
         break;
       }
@@ -65251,7 +65256,7 @@ function handlers8(state) {
     if (cached3) return cached3;
     const question = s.room.message(questionId);
     if (question?.type !== "question" || !question.to) return void 0;
-    return mapReady(recipientNotice(s, question.to), (notice) => {
+    return mapReady(recipientNotice(s, alias(s, question.to)), (notice) => {
       if (!notice?.terminal) return void 0;
       unavailableQuestions.set(questionId, notice.text);
       if (unavailableQuestions.size > 256) unavailableQuestions.delete(unavailableQuestions.keys().next().value);
@@ -65287,13 +65292,13 @@ function handlers8(state) {
         for (const { room } of histories) room.room.doc.transact(() => {
           for (const m of answers) recordAnswer(room.room, m);
         });
-        return histories.flatMap(({ room, messages }) => messages.filter((m) => m.type === "question" && m.to === room.me.name && !room.room.outcomes.has(m.id)).map((question2) => ({ room, question: question2 })));
+        return histories.flatMap(({ room, messages }) => messages.filter((m) => m.type === "question" && !!m.to && alias(room, m.to) === alias(room, room.me.name) && !room.room.outcomes.has(m.id)).map((question2) => ({ room, question: question2 })));
       };
       const ambiguousAnswer = (candidates, from2) => candidates.length ? `error: answer requires inReplyTo; unanswered questions:
 ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${from2 ? ` from ${from2}` : ""} addressed to you`;
       if (sendType === "answer") {
         const open3 = unansweredQuestions();
-        const candidates = to2 ? open3.filter(({ room, question: question2 }) => alias(room, question2.from) === to2) : open3;
+        const candidates = to2 ? open3.filter(({ room, question: question2 }) => alias(room, question2.from) === alias(room, to2)) : open3;
         if (a.inReplyTo) {
           const target = candidates.find(({ question: question2 }) => question2.id === a.inReplyTo);
           if (!target || target.room !== byQuestion) {
@@ -65313,7 +65318,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead;
       const text2 = typeof a.text === "string" && a.text ? a.text : typeof a.message === "string" ? a.message : "";
       if (!text2) return "error: text is required";
-      if (to2 === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
+      if (to2 && alias(s, to2) === alias(s, s.me.name)) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`;
       if (to2 && !rooms.all().some((room) => known(room).has(to2))) {
         const valid = [...new Set(rooms.all().flatMap((room) => [...known(room)]))].sort();
         return `error: nobody called ${to2} is or was in this room; participants: ${valid.join(", ")}`;
@@ -65465,11 +65470,12 @@ ${lines2.join("\n")}` };
     const waiting = (x, m, answersOnly = false) => {
       const outcome = questionId ? qRoom.room.outcomes.get(questionId) : void 0;
       const answered2 = questionId && outcome?.outcome === "answered" ? { type: "question", id: questionId, from: outcome.from, to: outcome.to } : void 0;
-      const target = answered2 ?? (question?.type === "question" && !question.to ? question : void 0);
+      const target = answered2 ?? (question?.type === "question" && !question.to ? question : !question && !outcome && questionId ? { type: "question", id: questionId, from: x.me.name } : void 0);
       return {
         claimId,
         questionId,
         me: x.me.name,
+        alias: (name) => alias(qRoom, name),
         workersRoom: x !== s,
         answersOnly,
         answerId: answerMatchesQuestion(target, m, (name) => alias(qRoom, name)) ? m.id : void 0
@@ -65526,7 +65532,7 @@ ${lines2.join("\n")}` };
     for (const x of ws ? [s, ws] : [s]) {
       const callbacks = pendingWaits.get(x) ?? /* @__PURE__ */ new Set();
       pendingWaits.set(x, callbacks);
-      const fn = (m) => ends(x)(m) || question?.type === "question" && m.to === x.me.name && answerMatchesQuestion(question, m, (name) => alias(qRoom, name));
+      const fn = (m) => ends(x)(m) || question?.type === "question" && !!m.to && alias(qRoom, m.to) === alias(qRoom, x.me.name) && answerMatchesQuestion(question, m, (name) => alias(qRoom, name));
       callbacks.add(fn);
       waiters.set(x, fn);
     }
@@ -66042,15 +66048,16 @@ var WakeReconciler = class {
       }
       const seen = s.room.seen(s.me.name);
       const wakes = this.wakes()[s.roomName] ?? {};
+      const alias = (name) => s.room.doc.getMap("aliases").get(name) ?? name;
       for (const m of retained.values()) {
-        if (m.to !== s.me.name) continue;
+        if (!m.to || alias(m.to) !== alias(s.me.name)) continue;
         health.retainedAddressed++;
         if (seen.has(m.id)) health.handedToHost++;
         if (wakes[m.id]?.uncertain) health.uncertainWakeRecorded++;
         else if (wakes[m.id]) health.wakeRecorded++;
         if (m.type === "answer") {
           const question = s.room.message(m.inReplyTo);
-          if (question?.type === "question" && question.from === s.me.name && question.to === m.from) health.answersRecorded++;
+          if (question?.type === "question" && answerMatchesQuestion(question, m, alias)) health.answersRecorded++;
         }
       }
       for (const m of this.o.ledger.candidates(s)) if (m.to === s.me.name) {
