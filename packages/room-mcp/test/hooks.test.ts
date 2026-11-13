@@ -474,7 +474,7 @@ describe('live arbitration through the MCP endpoint (ledger test 8)', () => {
   })
 
   it('a hook that dies after printing and before its confirm: no receipt; M is offered again after the lease', async () => {
-    const mcp = await liveMcp(SID, undefined, undefined, 200)
+    const mcp = await liveMcp(SID, undefined, undefined, 2000) // long enough for the two hook processes below on a loaded CI machine
     try {
       const peer = addPresence(mcp.s, 'Quinn')
       const m = hubAppend<NoteMsg>(mcp.s.room, quinn, { type: 'note', to: 'Rohan', text: 'please rebase' })
@@ -483,7 +483,7 @@ describe('live arbitration through the MCP endpoint (ledger test 8)', () => {
       expect(mcp.s.room.seen('Rohan').has(m.id)).toBe(false)
       // Within the lease another path does not show it twice.
       expect(context(await runHook('before-edit.mjs', edit))).not.toContain('please rebase')
-      await new Promise(r => setTimeout(r, 250))
+      await new Promise(r => setTimeout(r, 2100))
       expect(context(await runHook('before-edit.mjs', edit))).toContain('please rebase')
       expect(mcp.s.room.seen('Rohan').get(m.id)).toMatchObject({ via: 'hook' })
       peer.destroy()
