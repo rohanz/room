@@ -736,6 +736,12 @@ export class ConflictSet {
 
   private async run(reason: string): Promise<void> {
     const carriedOf = await this.carriedPass()
+    const baselineFor = (owner: string, other: string, ancestor: string) => {
+      const ours = carriedOf(owner), theirs = carriedOf(other)
+      return pairBaseline(ours?.lead === other ? ours.baseline : undefined,
+        theirs?.lead === owner ? theirs.baseline : undefined, ancestor,
+        (base, sha) => git(this.team.dir, ['merge-base', '--is-ancestor', base, sha]).then(() => true, () => false))
+    }
     this.freshStorage = carriedOf.refresh
     this.fileWork = 0
     const room = this.team.room
@@ -781,7 +787,8 @@ export class ConflictSet {
           if (pair && !('cannotCompare' in pair)) {
             const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${pair.mergeBase}..${ownGit.base}`])
             await this.claims(ownPublisher!, theirs!, other, pair.mergeBase,
-              new Set([...ownPublisher!.entries.keys(), ...committed.split('\0').filter(Boolean)]))
+              new Set([...ownPublisher!.entries.keys(), ...committed.split('\0').filter(Boolean)]),
+              await baselineFor(ownPublisher!.name, theirs!.name, pair.mergeBase))
           } else replayable = false // no completed evaluation; the periodic pass retries
           continue // only the checkout publisher owns the merge pair
         }
@@ -794,7 +801,8 @@ export class ConflictSet {
             const pair = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit)
             if (!('cannotCompare' in pair)) {
               const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${pair.mergeBase}..${ownGit.base}`])
-              await this.claims(mine, published, other, pair.mergeBase, new Set([...mine.entries.keys(), ...committed.split('\0').filter(Boolean)]))
+              await this.claims(mine, published, other, pair.mergeBase, new Set([...mine.entries.keys(), ...committed.split('\0').filter(Boolean)]),
+                await baselineFor(mine.name, published.name, pair.mergeBase))
             } else replayable = false
           } else replayable = false
           continue // a non-publisher contributes claims, never a merge pair
@@ -824,11 +832,7 @@ export class ConflictSet {
         const ours = carriedOf(this.owner), theirsCarried = carriedOf(other)
         const leadPair = ours?.lead === other || theirsCarried?.lead === this.owner
         const descends = (sha: string) => sha === pair.mergeBase || git(this.team.dir, ['merge-base', '--is-ancestor', pair.mergeBase, sha]).then(() => true, () => false)
-        const baseline = leadPair
-          ? await pairBaseline(ours?.lead === other ? ours.baseline : undefined,
-            theirsCarried?.lead === this.owner ? theirsCarried.baseline : undefined,
-            pair.mergeBase, (ancestor, sha) => git(this.team.dir, ['merge-base', '--is-ancestor', ancestor, sha]).then(() => true, () => false))
-          : undefined
+        const baseline = await baselineFor(this.owner, other, pair.mergeBase)
         const sharedBaselines = !leadPair && ours && theirsCarried &&
           (await Promise.all([descends(ours.baseline.sha), descends(theirsCarried.baseline.sha)])).every(Boolean)
           ? [ours.baseline, theirsCarried.baseline] : undefined
@@ -869,19 +873,23 @@ export class ConflictSet {
             await this.fileTurn()
             if (slot.kind === 'merge') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
           }
-          await this.claims(mine, theirs, other, pair.mergeBase, aPaths)
+          await this.claims(mine, theirs, other, mergeBase, aPaths, baseline)
           continue
         }
         const ownMergePaths = new Set(aPaths)
         const unchangedCarried = new Set<string>()
+        // Reuse carried blob results within this pair's pass, including failed
+        // reads. Tracked ancestors already use the historical-text cache.
+        const ancestors = new Map<string, BaselineRead>()
         const carried = ours
         if (carried?.lead === other && carriesWork(carried.baseline)) {
           for (const path of aPaths) {
             await this.fileTurn()
-            const baseline = await boundedBaseline(this.team.dir, carried.baseline, path)
-            if (baseline.kind === 'unavailable') continue
+            const ancestor = await boundedBaseline(this.team.dir, carried.baseline, path)
+            if (baseline === carried.baseline && baseline.untracked.has(path)) ancestors.set(path, ancestor)
+            if (ancestor.kind === 'unavailable') continue
             const ownText = asText(await this.read(mine, path))
-            if (ownText !== undefined && ownText === (baseline.kind === 'absent' ? '' : baseline.text)) {
+            if (ownText !== undefined && ownText === (ancestor.kind === 'absent' ? '' : ancestor.text)) {
               ownMergePaths.delete(path)
               unchangedCarried.add(path)
             }
@@ -952,7 +960,8 @@ export class ConflictSet {
           let ancestor: string | undefined
           try {
             if (sharedBase || baseline) {
-              const read = await boundedBaseline(this.team.dir, (sharedBase ?? baseline)!, path)
+              const read = (!sharedBase ? ancestors.get(path) : undefined) ?? await boundedBaseline(this.team.dir, (sharedBase ?? baseline)!, path)
+              if (!sharedBase && baseline?.untracked.has(path)) ancestors.set(path, read)
               if (read.kind === 'unavailable') throw read.error
               ancestor = read.kind === 'available' ? read.text : undefined
             } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path)
@@ -974,7 +983,7 @@ export class ConflictSet {
           await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: lines.length ? 'conflict' : 'clean', inputs,
             factId: lines.length ? hash(JSON.stringify([mergeBase, ...merged.conflicts.map(c => c.o)])) : '', lines })
         }
-        await this.claims(mine, theirs, other, mergeBase, ownMergePaths)
+        await this.claims(mine, theirs, other, mergeBase, ownMergePaths, baseline, ancestors)
       } catch (error) {
         replayable = false
         throw error
@@ -1168,7 +1177,7 @@ export class ConflictSet {
     }
   }
 
-  private async claims(mine: ParticipantSnapshot, theirs: ParticipantSnapshot, other: string, mergeBase: string, changed: Set<string>): Promise<void> {
+  private async claims(mine: ParticipantSnapshot, theirs: ParticipantSnapshot, other: string, mergeBase: string, changed: Set<string>, baseline?: Baseline, ancestors?: ReadonlyMap<string, BaselineRead>): Promise<void> {
     const all = this.team.room.openClaims()
     const ownClaims = all.filter(c => c.by === this.owner)
     const ownFinishedWorker = this.owner === this.team.me.name && (await this.localWorker(other))?.status === 'done'
@@ -1196,6 +1205,7 @@ export class ConflictSet {
       const claims = theirClaims.filter(c => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER }))
         .sort((a, b) => a.id.localeCompare(b.id))
       const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase,
+        baseline ? [baseline.sha, baseline.untracked.get(path)?.sha] : undefined,
         claims.map(c => [c.id, c.from, c.to, c.claimedHash, c.at]), sideInput(mine, path), sideInput(theirs, path)]))
       const base = { owner: this.owner, other, kind: 'edit-in-claim' as const, path, inputs }
       if (!claims.length) {
@@ -1205,7 +1215,15 @@ export class ConflictSet {
       const [ownV, theirV] = await Promise.all([read(mine, path), read(theirs, path)])
       const ownText = asText(ownV), theirText = asText(theirV)
       let ancestor: string | undefined
-      try { ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? '' } catch { /* unavailable */ }
+      try {
+        // A carried untracked file is inherited text, absent from the Git tree.
+        // Map claims against the same full ancestor used for the text comparison.
+        if (baseline) {
+          const read = ancestors?.get(path) ?? await boundedBaseline(this.team.dir, baseline, path)
+          if (read.kind === 'unavailable') throw read.error
+          ancestor = read.kind === 'available' ? read.text : ''
+        } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? ''
+      } catch { /* unavailable */ }
       if (ownText === undefined || ancestor === undefined) {
         await this.settle(key, { ...base, subject: claims[0]!.id, status: 'unknown', factId: '', why: 'cannot map claim' })
         continue

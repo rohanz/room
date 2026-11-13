@@ -8751,17 +8751,29 @@ var init_ledger = __esm({
 });
 
 // packages/shared/src/delivery.ts
+function recordAnswer(doc, answer) {
+  if (!validMessageShape(answer) || answer.type !== "answer") return;
+  const question = doc.message(answer.inReplyTo);
+  const alias = (name) => doc.doc.getMap("aliases").get(name) ?? name;
+  if (!validMessageShape(question) || question.type !== "question" || !question.to || !answerMatchesQuestion(question, answer, alias) || doc.outcomes.has(question.id)) return;
+  doc.outcomes.set(question.id, { to: question.to, from: question.from, outcome: "answered", at: answer.at });
+  doc.mail.delete(question.id);
+}
 function retireRecipient(doc, recipient, at) {
   const names = typeof recipient === "string" ? /* @__PURE__ */ new Set([recipient]) : recipient;
   const end = (m) => {
-    if (!validMessageShape(m) || !m.to || !names.has(m.to) || selfSent(m)) return false;
-    if (doc.outcomes.get(m.id)?.outcome !== "recipient-retired")
-      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome: "recipient-retired", at });
+    if (!validMessageShape(m) || !m.to || selfSent(m)) return false;
+    const outcome = names.has(m.to) ? "recipient-retired" : m.type === "question" && names.has(m.from) ? "asker-retired" : void 0;
+    if (!outcome) return false;
+    if (!replyEnded(doc.outcomes.get(m.id)))
+      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome, at });
     return true;
   };
   doc.doc.transact(() => {
-    for (const [id3, m] of doc.mail) if (end(m)) doc.mail.delete(id3);
-    for (const m of doc.messages()) end(m);
+    const bus = doc.messages(), mail = [...doc.mail];
+    for (const m of [...bus, ...mail.map(([, m2]) => m2)]) recordAnswer(doc, m);
+    for (const [id3, m] of mail) if (end(m)) doc.mail.delete(id3);
+    for (const m of bus) end(m);
   });
 }
 function isOwed(doc, m) {
@@ -8811,7 +8823,7 @@ function archiveSummary(doc, area) {
   out.unfulfilled.sort(byAge);
   return out;
 }
-var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_BYTES, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, addressedTo, receipted, DeliveryIndex, indexes;
+var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_BYTES, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, addressedTo, receipted, replyEnded, DeliveryIndex, indexes;
 var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
@@ -8845,12 +8857,13 @@ var init_delivery = __esm({
         return 2 ** 32;
       }
     };
-    validOutcome = (o) => !!o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired"].includes(o.outcome);
+    validOutcome = (o) => !!o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired", "asker-retired", "answered"].includes(o.outcome);
     compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
     byAge = (a, b) => a.at - b.at || compare(a.id, b.id);
     selfSent = (m) => m.from === m.to && m.fromKind !== "human";
     addressedTo = (m, name) => m.to === name && !selfSent(m);
     receipted = (doc, name, id3) => doc.seen(name).has(id3);
+    replyEnded = (o) => !!o && ["recipient-retired", "asker-retired", "answered"].includes(o.outcome);
     DeliveryIndex = class {
       constructor(doc) {
         this.doc = doc;
@@ -8996,7 +9009,7 @@ var init_delivery = __esm({
         const bus = this.bus.ids.get(id3);
         const candidates = ordered ?? [...mail?.values() ?? [], ...bus?.values() ?? []];
         const outcome = this.doc.outcomes.get(id3);
-        if (bus?.size && validOutcome(outcome) && outcome.outcome === "recipient-retired") {
+        if (bus?.size && validOutcome(outcome) && replyEnded(outcome)) {
           const size2 = this.outcomeSizes.get(id3) ?? 0;
           this.pinnedOutcomes.set(id3, size2);
           this.pinnedOutcomeBytes += size2;
@@ -9070,7 +9083,7 @@ var init_delivery = __esm({
           const size2 = id3.length + sizeOf(o);
           outcomeSizes.set(id3, size2);
           outcomeBytes += size2;
-          if (o.outcome === "recipient-retired" && busCounts.has(id3)) pinnedOutcomes.set(id3, size2);
+          if (replyEnded(o) && busCounts.has(id3)) pinnedOutcomes.set(id3, size2);
           else oldestOutcome = Math.min(oldestOutcome, o.at);
         }
         const sameMap = (a, b) => a.size === b.size && [...a].every(([id3, value5]) => b.get(id3) === value5);
@@ -9968,7 +9981,7 @@ var init_doc = __esm({
         const record2 = participantRecord(this, name);
         return record2?.holder ? record2.holder.workerId === id3 : record2?.proj ? record2.proj.projectedFrom === id3 : !record2?.id && ![...this.workerViews.values()].some((view) => view.name === name && view.id !== id3);
       }
-      /** End a retired worker's mail only while it still owns the name, in one pass for all eligible names. */
+      /** End incoming mail and outgoing questions only while the retired worker still owns the name. */
       retireWorkerMail(workers, at) {
         const names = /* @__PURE__ */ new Set();
         for (const worker of workers) if (worker.id && this.workerOwnsName(worker.id, worker.name)) names.add(worker.name);
@@ -10907,6 +10920,9 @@ function parseClaimRelease(text2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2)) return void 0;
   return { path: match[1], from: from2, to: to2, sha: match[4] };
 }
+function answerMatchesQuestion(question, answer, alias = (name) => name) {
+  return !!question && question.type === "question" && answer.type === "answer" && answer.inReplyTo === question.id && !!answer.to && alias(answer.to) === alias(question.from) && (!question.to || alias(answer.from) === alias(question.to));
+}
 function isLegacyBranchNotice(m) {
   return m.type === "note" && m.fromKind === "bot" && (m.from === "room" || /^\?[0-9a-f]{16}$/.test(m.from)) && typeof m.text === "string" && /^you switched to \S+; the room is for \S+;/.test(m.text);
 }
@@ -10965,7 +10981,7 @@ var init_messages = __esm({
       release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
       changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
       question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-      answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+      answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
       // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
       conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
@@ -60947,6 +60963,15 @@ var ConflictSet = class _ConflictSet {
   }
   async run(reason) {
     const carriedOf = await this.carriedPass();
+    const baselineFor = (owner, other, ancestor) => {
+      const ours = carriedOf(owner), theirs = carriedOf(other);
+      return pairBaseline(
+        ours?.lead === other ? ours.baseline : void 0,
+        theirs?.lead === owner ? theirs.baseline : void 0,
+        ancestor,
+        (base, sha) => git(this.team.dir, ["merge-base", "--is-ancestor", base, sha]).then(() => true, () => false)
+      );
+    };
     this.freshStorage = carriedOf.refresh;
     this.fileWork = 0;
     const room = this.team.room;
@@ -60997,7 +61022,8 @@ var ConflictSet = class _ConflictSet {
               theirs,
               other,
               pair2.mergeBase,
-              /* @__PURE__ */ new Set([...ownPublisher.entries.keys(), ...committed.split("\0").filter(Boolean)])
+              /* @__PURE__ */ new Set([...ownPublisher.entries.keys(), ...committed.split("\0").filter(Boolean)]),
+              await baselineFor(ownPublisher.name, theirs.name, pair2.mergeBase)
             );
           } else replayable = false;
           continue;
@@ -61011,7 +61037,14 @@ var ConflictSet = class _ConflictSet {
             const pair2 = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit);
             if (!("cannotCompare" in pair2)) {
               const committed = await git(this.team.dir, ["diff", "--no-renames", "--name-only", "-z", `${pair2.mergeBase}..${ownGit.base}`]);
-              await this.claims(mine, published, other, pair2.mergeBase, /* @__PURE__ */ new Set([...mine.entries.keys(), ...committed.split("\0").filter(Boolean)]));
+              await this.claims(
+                mine,
+                published,
+                other,
+                pair2.mergeBase,
+                /* @__PURE__ */ new Set([...mine.entries.keys(), ...committed.split("\0").filter(Boolean)]),
+                await baselineFor(mine.name, published.name, pair2.mergeBase)
+              );
             } else replayable = false;
           } else replayable = false;
           continue;
@@ -61039,12 +61072,7 @@ var ConflictSet = class _ConflictSet {
         const ours = carriedOf(this.owner), theirsCarried = carriedOf(other);
         const leadPair = ours?.lead === other || theirsCarried?.lead === this.owner;
         const descends = (sha) => sha === pair.mergeBase || git(this.team.dir, ["merge-base", "--is-ancestor", pair.mergeBase, sha]).then(() => true, () => false);
-        const baseline = leadPair ? await pairBaseline(
-          ours?.lead === other ? ours.baseline : void 0,
-          theirsCarried?.lead === this.owner ? theirsCarried.baseline : void 0,
-          pair.mergeBase,
-          (ancestor, sha) => git(this.team.dir, ["merge-base", "--is-ancestor", ancestor, sha]).then(() => true, () => false)
-        ) : void 0;
+        const baseline = await baselineFor(this.owner, other, pair.mergeBase);
         const sharedBaselines = !leadPair && ours && theirsCarried && (await Promise.all([descends(ours.baseline.sha), descends(theirsCarried.baseline.sha)])).every(Boolean) ? [ours.baseline, theirsCarried.baseline] : void 0;
         let sharedHead;
         if (sharedBaselines && (ownGit.head !== ownGit.base || theirGit.head !== theirGit.base)) {
@@ -61081,19 +61109,21 @@ var ConflictSet = class _ConflictSet {
             await this.fileTurn();
             if (slot.kind === "merge") await this.settle(key3, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
           }
-          await this.claims(mine, theirs, other, pair.mergeBase, aPaths);
+          await this.claims(mine, theirs, other, mergeBase2, aPaths, baseline);
           continue;
         }
         const ownMergePaths = new Set(aPaths);
         const unchangedCarried = /* @__PURE__ */ new Set();
+        const ancestors = /* @__PURE__ */ new Map();
         const carried = ours;
         if (carried?.lead === other && carriesWork(carried.baseline)) {
           for (const path80 of aPaths) {
             await this.fileTurn();
-            const baseline2 = await boundedBaseline(this.team.dir, carried.baseline, path80);
-            if (baseline2.kind === "unavailable") continue;
+            const ancestor = await boundedBaseline(this.team.dir, carried.baseline, path80);
+            if (baseline === carried.baseline && baseline.untracked.has(path80)) ancestors.set(path80, ancestor);
+            if (ancestor.kind === "unavailable") continue;
             const ownText = asText(await this.read(mine, path80));
-            if (ownText !== void 0 && ownText === (baseline2.kind === "absent" ? "" : baseline2.text)) {
+            if (ownText !== void 0 && ownText === (ancestor.kind === "absent" ? "" : ancestor.text)) {
               ownMergePaths.delete(path80);
               unchangedCarried.add(path80);
             }
@@ -61184,7 +61214,8 @@ var ConflictSet = class _ConflictSet {
           let ancestor;
           try {
             if (sharedBase || baseline) {
-              const read3 = await boundedBaseline(this.team.dir, sharedBase ?? baseline, path80);
+              const read3 = (!sharedBase ? ancestors.get(path80) : void 0) ?? await boundedBaseline(this.team.dir, sharedBase ?? baseline, path80);
+              if (!sharedBase && baseline?.untracked.has(path80)) ancestors.set(path80, read3);
               if (read3.kind === "unavailable") throw read3.error;
               ancestor = read3.kind === "available" ? read3.text : void 0;
             } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path80);
@@ -61222,7 +61253,7 @@ var ConflictSet = class _ConflictSet {
             lines: lines2
           });
         }
-        await this.claims(mine, theirs, other, mergeBase2, ownMergePaths);
+        await this.claims(mine, theirs, other, mergeBase2, ownMergePaths, baseline, ancestors);
       } catch (error2) {
         replayable = false;
         throw error2;
@@ -61445,7 +61476,7 @@ var ConflictSet = class _ConflictSet {
       });
     }
   }
-  async claims(mine, theirs, other, mergeBase2, changed) {
+  async claims(mine, theirs, other, mergeBase2, changed, baseline, ancestors) {
     const all2 = this.team.room.openClaims();
     const ownClaims = all2.filter((c) => c.by === this.owner);
     const ownFinishedWorker = this.owner === this.team.me.name && (await this.localWorker(other))?.status === "done";
@@ -61471,6 +61502,7 @@ var ConflictSet = class _ConflictSet {
         mine.head.semRev,
         theirs.head.semRev,
         mergeBase2,
+        baseline ? [baseline.sha, baseline.untracked.get(path80)?.sha] : void 0,
         claims.map((c) => [c.id, c.from, c.to, c.claimedHash, c.at]),
         sideInput(mine, path80),
         sideInput(theirs, path80)
@@ -61484,7 +61516,11 @@ var ConflictSet = class _ConflictSet {
       const ownText = asText(ownV), theirText = asText(theirV);
       let ancestor;
       try {
-        ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path80) ?? "";
+        if (baseline) {
+          const read3 = ancestors?.get(path80) ?? await boundedBaseline(this.team.dir, baseline, path80);
+          if (read3.kind === "unavailable") throw read3.error;
+          ancestor = read3.kind === "available" ? read3.text : "";
+        } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path80) ?? "";
       } catch {
       }
       if (ownText === void 0 || ancestor === void 0) {
@@ -65205,6 +65241,8 @@ function handlers8(state) {
   };
   const unavailableQuestion = (s, questionId) => {
     const outcome = s.room.outcomes.get(questionId);
+    if (outcome?.outcome === "answered") return `${questionId} was answered`;
+    if (outcome?.outcome === "asker-retired") return `${outcome.from} was collected or discarded; this question no longer accepts an answer`;
     if (outcome?.outcome === "recipient-retired") {
       const retired = s.room.retiredWorkers().filter((w) => w.name === outcome.to).sort((a, b) => b.retiredAt - a.retiredAt)[0];
       return s.room.message(questionId) ? willNotAnswer(outcome.to, retired) : willNotAnswer(outcome.to, retired, "finished", "", "; no answer to this question is retained");
@@ -65244,9 +65282,12 @@ function handlers8(state) {
       let to2 = resolvedWorker?.worker.name ?? (requestedTo ? alias(byQuestion ?? lead, requestedTo) : void 0);
       let inferredQuestionId;
       const unansweredQuestions = () => {
-        const history = (room) => [...room.room.messages(), ...room.room.mail.values()];
-        const answered = new Set(rooms.all().flatMap((room) => history(room).filter((m) => m.type === "answer").map((m) => m.inReplyTo)));
-        return rooms.all().flatMap((room) => history(room).filter((m) => m.type === "question" && m.to === room.me.name && !answered.has(m.id)).map((question2) => ({ room, question: question2 })));
+        const histories = rooms.all().map((room) => ({ room, messages: [...room.room.messages(), ...room.room.mail.values()] }));
+        const answers = histories.flatMap(({ messages }) => messages.filter((m) => m.type === "answer"));
+        for (const { room } of histories) room.room.doc.transact(() => {
+          for (const m of answers) recordAnswer(room.room, m);
+        });
+        return histories.flatMap(({ room, messages }) => messages.filter((m) => m.type === "question" && m.to === room.me.name && !room.room.outcomes.has(m.id)).map((question2) => ({ room, question: question2 })));
       };
       const ambiguousAnswer = (candidates, from2) => candidates.length ? `error: answer requires inReplyTo; unanswered questions:
 ${candidates.map(({ question: question2 }) => `${question2.id}: ${questionPreview(question2.text)}`).join("\n")}` : `error: answer requires inReplyTo; no unanswered question${from2 ? ` from ${from2}` : ""} addressed to you`;
@@ -65414,22 +65455,48 @@ ${lines2.join("\n")}` };
     if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`;
     const qRoom = questionId && rooms.holdingQuestion(questionId, s) || s;
     const all2 = () => [s, ...rooms.all().filter((x) => x !== s)];
-    if (questionId) for (const x of [qRoom, ...rooms.all().filter((x2) => x2 !== qRoom)]) {
-      const an = [...x.room.messages(), ...x.room.mail.values()].find((m) => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }));
-      if (an) {
-        ledger2.select(x, batch, (m) => m.id === an.id, "wait");
-        return `answered: ${formatMsg(an)}`;
+    const question = questionId ? qRoom.room.message(questionId) : void 0;
+    const history = (x) => [...x.room.messages(), ...x.room.mail.values()];
+    const healAnswers = () => {
+      if (questionId) qRoom.room.doc.transact(() => {
+        for (const x of all2()) for (const m of history(x)) if (m.type === "answer" && m.inReplyTo === questionId) recordAnswer(qRoom.room, m);
+      });
+    };
+    const waiting = (x, m, answersOnly = false) => {
+      const outcome = questionId ? qRoom.room.outcomes.get(questionId) : void 0;
+      const answered2 = questionId && outcome?.outcome === "answered" ? { type: "question", id: questionId, from: outcome.from, to: outcome.to } : void 0;
+      const target = answered2 ?? (question?.type === "question" && !question.to ? question : void 0);
+      return {
+        claimId,
+        questionId,
+        me: x.me.name,
+        workersRoom: x !== s,
+        answersOnly,
+        answerId: answerMatchesQuestion(target, m, (name) => alias(qRoom, name)) ? m.id : void 0
+      };
+    };
+    const answerReply = () => {
+      if (questionId) for (const x of [qRoom, ...rooms.all().filter((x2) => x2 !== qRoom)]) {
+        const an = history(x).find((m) => messageEndsWait(m, waiting(x, m, true)));
+        if (an) {
+          ledger2.select(x, batch, (m) => m.id === an.id, "wait");
+          return `answered: ${formatMsg(an)}`;
+        }
       }
-    }
+      return void 0;
+    };
+    healAnswers();
+    const answered = answerReply();
+    if (answered) return answered;
     if (questionId) {
       const pending2 = unavailableQuestion(qRoom, questionId);
       const notice = pending2 instanceof Promise ? await pending2 : pending2;
       if (notice) return notice;
     }
-    const ends = (x) => (m) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom: x !== s }) || m.priority === "interrupt" && forMe(x, m);
+    const ends = (x) => (m) => messageEndsWait(m, waiting(x, m)) || m.priority === "interrupt" && forMe(x, m);
     const render = (x, m) => {
       const workersRoom = x !== s;
-      if (!messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) return `${workersRoom ? "workers room: " : ""}${formatMsg(m)}`;
+      if (!messageEndsWait(m, waiting(x, m))) return `${workersRoom ? "workers room: " : ""}${formatMsg(m)}`;
       if (m.type === "answer") return `answered: ${formatMsg(m)}`;
       if (m.type === "done") return mapReady(myWorkers(x), (workers) => {
         const worker = workers.find((w) => w.tag === m.tag);
@@ -65455,13 +65522,13 @@ ${lines2.join("\n")}` };
     if (now0) return now0;
     if (offline(s)) return "offline: room_wait cannot observe new messages until reconnected";
     const ws = rooms.all().find((x) => x !== s) ?? null;
-    const waiting = /* @__PURE__ */ new Map();
+    const waiters = /* @__PURE__ */ new Map();
     for (const x of ws ? [s, ws] : [s]) {
       const callbacks = pendingWaits.get(x) ?? /* @__PURE__ */ new Set();
       pendingWaits.set(x, callbacks);
-      const fn = ends(x);
+      const fn = (m) => ends(x)(m) || question?.type === "question" && m.to === x.me.name && answerMatchesQuestion(question, m, (name) => alias(qRoom, name));
       callbacks.add(fn);
-      waiting.set(x, fn);
+      waiters.set(x, fn);
     }
     setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : "waiting" });
     return await new Promise((resolve6) => {
@@ -65476,13 +65543,18 @@ ${lines2.join("\n")}` };
         ws?.room.bus.unobserve(onBus);
         if (questionId) qRoom.room.doc.off("update", onRecipient);
         signal?.removeEventListener("abort", onAbort);
-        for (const [x, fn] of waiting) pendingWaits.get(x)?.delete(fn);
+        for (const [x, fn] of waiters) pendingWaits.get(x)?.delete(fn);
         setPresence(s, { status: "idle" });
         resolve6(r);
       };
       const onAbort = () => finish("error: tool call cancelled");
       const onRecipient = () => {
         if (!questionId || finished) return;
+        const answer = answerReply();
+        if (answer) {
+          finish(answer);
+          return;
+        }
         const pending2 = unavailableQuestion(qRoom, questionId);
         if (pending2 instanceof Promise) void pending2.then((notice) => {
           if (notice) finish(notice);
@@ -65506,6 +65578,8 @@ ${lines2.join("\n")}` };
         if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`);
       };
       const onBus = () => {
+        if (finished) return;
+        healAnswers();
         if (finished) return;
         const pending2 = take();
         if (pending2 instanceof Promise) void pending2.then((ended2) => {

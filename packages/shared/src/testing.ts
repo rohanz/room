@@ -1,3 +1,4 @@
+import { recordAnswer } from './delivery.js'
 import { newId } from './identity.js'
 import { outgoing, participantRecord, type PostBody, type RoomDoc } from './doc.js'
 import type { Identity, Msg } from './types.js'
@@ -29,6 +30,6 @@ export function hubAppend<T extends Msg>(room: RoomDoc, from: Identity, body: Po
   const seq = Math.max(0, ...room.messages().map(m => m.seq ?? 0), ...[...room.mail.values()].map(m => m.seq ?? 0)) + 1
   const msg = { ...outgoing<T>(from, body, id), seq, at: opts.at ?? Date.now() } as T
   if (room.archive.has(id) || room.outcomes.has(id)) return msg
-  room.doc.transact(() => { room.bus.push([msg]) })
+  room.doc.transact(() => { room.bus.push([msg]); recordAnswer(room, msg) })
   return msg
 }

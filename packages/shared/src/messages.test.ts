@@ -194,8 +194,9 @@ it('keeps a lead asleep for its own worker progress notes, but wakes for actiona
 it('does not treat an answer to someone else as the answer to my wait', () => {
   const answer = { id: 'm_answer', at: 1, type: 'answer', priority: 'notify', from: 'worker', fromKind: 'agent',
     to: 'Ada', inReplyTo: 'm_question', text: 'yes' } as const
-  expect(messageEndsWait(answer, { questionId: 'm_question', me: 'Rohan' })).toBe(false)
-  expect(messageEndsWait(answer, { questionId: 'm_question', me: 'Ada' })).toBe(true)
+  expect(messageEndsWait(answer, { questionId: 'm_question', answerId: answer.id, me: 'Rohan' })).toBe(false)
+  expect(messageEndsWait(answer, { questionId: 'm_question', me: 'Ada' })).toBe(false)
+  expect(messageEndsWait(answer, { questionId: 'm_question', answerId: answer.id, me: 'Ada' })).toBe(true)
 })
 
  it('filters own agentic messages but keeps an explicitly addressed same-named human message', () => {

@@ -45,13 +45,14 @@ function isOwed(doc: RoomDoc, m: Msg): boolean {
 
 function answeredIds(messages: Iterable<Msg>): Set<string> {
   const out = new Set<string>()
-  for (const m of messages) if ((m.type === 'answer' || m.type === 'note') && m.inReplyTo) out.add(m.inReplyTo)
+  for (const m of messages) if (m.type === 'note' && m.inReplyTo) out.add(m.inReplyTo)
   return out
 }
 
 /** An addressed question or note that can still be answered, receipted or not (SF2). */
 function replyEligible(m: Msg, answered: ReadonlySet<string>, now: number): boolean {
-  return !!m.to && (m.type === 'question' || m.type === 'note') && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS
+  // Questions close only through validated outcomes; raw references only retain legacy note reply semantics.
+  return !!m.to && (m.type === 'question' || m.type === 'note' && !answered.has(m.id)) && now - m.at < REPLY_WINDOW_MS
 }
 
 

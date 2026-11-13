@@ -225,7 +225,7 @@ describe('trim', () => {
     const owedQ = question()
     const shownQ = question()
     const answeredQ = question()
-    const answer = msg({ type: 'answer', to: 'quinn', inReplyTo: answeredQ.id, text: 'yes' } as Partial<Msg> & { type: 'answer' })
+    const answer = msg({ type: 'answer', from: P.name, to: 'quinn', inReplyTo: answeredQ.id, text: 'yes' } as Partial<Msg> & { type: 'answer' })
     const changed = msg({ type: 'changed', paths: ['auth/a.ts'], summary: 'x', priority: 'fyi' } as Partial<Msg> & { type: 'changed' })
     const release = msg({ type: 'release', claimId: 'c1', path: 'auth/a.ts', unfulfilled: [{ kind: 'rename', symbol: 'token' }] } as Partial<Msg> & { type: 'release' })
     push(room, owedQ, shownQ, answeredQ, answer, changed, release, broadcast())

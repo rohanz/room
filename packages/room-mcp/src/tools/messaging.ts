@@ -3,7 +3,7 @@ import { retainedWorkerLines } from '../worker-retained.js'
 import { writeWorkerRecordRef } from '../worker-refs.js'
 import { idleWakeAdvice } from '../hosts/prompt.js'
 import { requireWorkerEvidence } from '../worker-store.js'
-import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
+import { answerMatchesQuestion, formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, recordAnswer, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import fs from 'node:fs'
 import type { Batch } from '../ledger.js'
@@ -105,6 +105,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   }
   const unavailableQuestion = (s: Session, questionId: string): string | undefined | Promise<string | undefined> => {
     const outcome = s.room.outcomes.get(questionId)
+    if (outcome?.outcome === 'answered') return `${questionId} was answered`
+    if (outcome?.outcome === 'asker-retired') return `${outcome.from} was collected or discarded; this question no longer accepts an answer`
     if (outcome?.outcome === 'recipient-retired') {
       // Retirement ends every message addressed to the worker, answered or not. With the bodies
       // trimmed nothing says which, so claim only what is known.
@@ -150,12 +152,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       let to = resolvedWorker?.worker.name ?? (requestedTo ? alias(byQuestion ?? lead, requestedTo) : undefined)
       let inferredQuestionId: string | undefined
       const unansweredQuestions = () => {
-        const history = (room: Session) => [...room.room.messages(), ...room.room.mail.values()]
-        const answered = new Set(rooms.all().flatMap(room => history(room)
-          .filter(m => m.type === 'answer').map(m => m.inReplyTo)))
-        return rooms.all().flatMap(room => history(room)
+        const histories = rooms.all().map(room => ({ room, messages: [...room.room.messages(), ...room.room.mail.values()] }))
+        const answers = histories.flatMap(({ messages }) => messages.filter(m => m.type === 'answer'))
+        for (const { room } of histories) room.room.doc.transact(() => {
+          for (const m of answers) recordAnswer(room.room, m)
+        })
+        return histories.flatMap(({ room, messages }) => messages
           .filter((m): m is QuestionMsg => m.type === 'question' && m.to === room.me.name
-            && !answered.has(m.id))
+            && !room.room.outcomes.has(m.id))
           .map(question => ({ room, question })))
       }
       const ambiguousAnswer = (candidates: ReturnType<typeof unansweredQuestions>, from?: string) => candidates.length
@@ -322,20 +326,42 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
       const all = () => [s, ...rooms.all().filter(x => x !== s)]
-      if (questionId) for (const x of [qRoom, ...rooms.all().filter(x => x !== qRoom)]) {
-        // The answer ends the wait even when an earlier reply already showed it; it is receipted if still owed.
-        const an = [...x.room.messages(), ...x.room.mail.values()].find(m => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }))
-        if (an) { ledger.select(x, batch, m => m.id === an.id, 'wait'); return `answered: ${formatMsg(an)}` }
+      const question = questionId ? qRoom.room.message(questionId) : undefined
+      const history = (x: Session) => [...x.room.messages(), ...x.room.mail.values()]
+      const healAnswers = () => {
+        if (questionId) qRoom.room.doc.transact(() => {
+          for (const x of all()) for (const m of history(x)) if (m.type === 'answer' && m.inReplyTo === questionId) recordAnswer(qRoom.room, m)
+        })
       }
+      const waiting = (x: Session, m: Msg, answersOnly = false) => {
+        const outcome = questionId ? qRoom.room.outcomes.get(questionId) : undefined
+        // The outcome preserves the original endpoints when the question body has been trimmed.
+        const answered = questionId && outcome?.outcome === 'answered'
+          ? { type: 'question' as const, id: questionId, from: outcome.from, to: outcome.to } : undefined
+        const target = answered ?? (question?.type === 'question' && !question.to ? question : undefined)
+        return { claimId, questionId, me: x.me.name, workersRoom: x !== s, answersOnly,
+          answerId: answerMatchesQuestion(target, m, name => alias(qRoom, name)) ? m.id : undefined }
+      }
+      const answerReply = () => {
+        if (questionId) for (const x of [qRoom, ...rooms.all().filter(x => x !== qRoom)]) {
+          // A validated answer ends the wait even when an earlier reply already showed it.
+          const an = history(x).find(m => messageEndsWait(m, waiting(x, m, true)))
+          if (an) { ledger.select(x, batch, m => m.id === an.id, 'wait'); return `answered: ${formatMsg(an)}` }
+        }
+        return undefined
+      }
+      healAnswers()
+      const answered = answerReply()
+      if (answered) return answered
       if (questionId) {
         const pending = unavailableQuestion(qRoom, questionId)
         const notice = pending instanceof Promise ? await pending : pending
         if (notice) return notice
       }
-      const ends = (x: Session) => (m: Msg) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom: x !== s }) || (m.priority === 'interrupt' && forMe(x, m))
+      const ends = (x: Session) => (m: Msg) => messageEndsWait(m, waiting(x, m)) || (m.priority === 'interrupt' && forMe(x, m))
       const render = (x: Session, m: Msg): string | Promise<string> => {
         const workersRoom = x !== s
-        if (!messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
+        if (!messageEndsWait(m, waiting(x, m))) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
         if (m.type === 'answer') return `answered: ${formatMsg(m)}`
         if (m.type === 'done') return mapReady(myWorkers(x), workers => {
           const worker = workers.find(w => w.tag === m.tag)
@@ -363,13 +389,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (now0) return now0
       if (offline(s)) return 'offline: room_wait cannot observe new messages until reconnected'
       const ws = rooms.all().find(x => x !== s) ?? null
-      const waiting = new Map<Session, (m: Msg) => boolean>()
+      const waiters = new Map<Session, (m: Msg) => boolean>()
       for (const x of ws ? [s, ws] : [s]) {
         const callbacks = pendingWaits.get(x) ?? new Set()
         pendingWaits.set(x, callbacks)
-        const fn = ends(x)
+        // Wake reservation predicts an incoming valid reply; actual completion requires its recorded relation.
+        const fn = (m: Msg) => ends(x)(m) || (question?.type === 'question' && m.to === x.me.name
+          && answerMatchesQuestion(question, m, name => alias(qRoom, name)))
         callbacks.add(fn)
-        waiting.set(x, fn)
+        waiters.set(x, fn)
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
       return await new Promise<string>(resolve => {
@@ -384,13 +412,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ws?.room.bus.unobserve(onBus)
           if (questionId) qRoom.room.doc.off('update', onRecipient)
           signal?.removeEventListener('abort', onAbort)
-          for (const [x, fn] of waiting) pendingWaits.get(x)?.delete(fn)
+          for (const [x, fn] of waiters) pendingWaits.get(x)?.delete(fn)
           setPresence(s, { status: 'idle' })
           resolve(r)
         }
         const onAbort = () => finish('error: tool call cancelled')
         const onRecipient = () => {
           if (!questionId || finished) return
+          const answer = answerReply()
+          if (answer) { finish(answer); return }
           const pending = unavailableQuestion(qRoom, questionId)
           if (pending instanceof Promise) void pending.then(notice => { if (notice) finish(notice) })
             .catch(error => state.log(`wait recipient status unavailable: ${String(error)}`))
@@ -419,6 +449,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         // Live observers run the same selection as the first look.
         const onBus = () => {
+          if (finished) return
+          healAnswers()
           if (finished) return
           const pending = take()
           if (pending instanceof Promise) void pending.then(ended => { if (ended) finish(ended) })

@@ -215,7 +215,7 @@ export class RoomDoc {
       : !record?.id && ![...this.workerViews.values()].some(view => view.name === name && view.id !== id)
   }
 
-  /** End a retired worker's mail only while it still owns the name, in one pass for all eligible names. */
+  /** End incoming mail and outgoing questions only while the retired worker still owns the name. */
   retireWorkerMail(workers: Iterable<Pick<RetiredWorker, 'id' | 'name'>>, at: number): ReadonlySet<string> {
     const names = new Set<string>()
     for (const worker of workers) if (worker.id && this.workerOwnsName(worker.id, worker.name)) names.add(worker.name)

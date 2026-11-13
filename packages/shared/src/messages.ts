@@ -12,6 +12,8 @@ export interface MessageFormatContext { scopes: readonly Scope[]; messages: read
 export interface MessageWaiting {
   claimId?: string
   questionId?: string
+  /** The answer validated against this question's endpoints (or its recorded outcome). */
+  answerId?: string
   me?: string
   /** Used for the initial lookup, which only searches for the requested answer. */
   answersOnly?: boolean
@@ -147,6 +149,13 @@ export function isRoomNotice(m: Pick<Msg, 'from' | 'fromKind'>): boolean {
   return m.from === 'room' && m.fromKind === 'bot'
 }
 
+/** The one reply relation: exact question ID, an eligible respondent, and the original asker. */
+export function answerMatchesQuestion(question: Pick<Extract<Msg, { type: 'question' }>, 'type' | 'id' | 'from' | 'to'> | undefined,
+  answer: Msg, alias: (name: string) => string = name => name): boolean {
+  return !!question && question.type === 'question' && answer.type === 'answer' && answer.inReplyTo === question.id && !!answer.to
+    && alias(answer.to) === alias(question.from) && (!question.to || alias(answer.from) === alias(question.to))
+}
+
 /**
  * Room 0.16's branch-following notice (roomd warnBranchSwitch, from 0.16.1 until 0.17 made rooms
  * per repository): "you switched to B; the room is for R; commits here are not the room's base until
@@ -167,7 +176,7 @@ const builtins = {
   release: { priority: 'fyi', audience: 'everyone', inbox: false, wakes: 'never', format: m => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` — ${m.summary}` : ''}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ''}` },
   changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'addressed', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
   question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-  answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+  answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && m.to === w.me, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
   // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
   conflict: { priority: m => m.merges === 'clean' ? 'notify' : 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
   'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => PEER_NOTICE_TEXT.test(m.text)

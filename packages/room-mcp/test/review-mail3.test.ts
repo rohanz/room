@@ -24,13 +24,13 @@ it('does not label an already answered question unanswered after retirement and 
     expect(await tools.call('room_wait', { questionId: question.id, timeoutMs: 10 })).toContain('answered:')
     const archive: RetiredWorker & { id: string } = { id: 'w_old', name: 'lead+w', tag: 'w', lead: 'lead', host: 'codex', task: '', summary: 'Done', files: [], fileCount: 0, startedAt: now, finishedAt: now, retiredAt: now, outcome: 'clean' }
     s.room.retireWorker(archive.id, archive, () => {})
-    // The answer wins while its body exists, even though retirement marks every addressed message.
+    // The answer wins while its body exists, and retirement preserves the question's answered outcome.
     expect(await tools.call('room_wait', { questionId: question.id, timeoutMs: 10 })).toContain('answered:')
     trim(s.room, now, { busKeep: 0 })
     expect(s.room.message(question.id)).toBeUndefined()
     expect(s.room.message(answer.id)).toBeUndefined()
-    expect(s.room.outcomes.get(question.id)?.outcome).toBe('recipient-retired')
-    expect(await tools.call('room_wait', { questionId: question.id, timeoutMs: 10 })).not.toContain('will not answer')
+    expect(s.room.outcomes.get(question.id)?.outcome).toBe('answered')
+    expect(await tools.call('room_wait', { questionId: question.id, timeoutMs: 10 })).toContain('question was answered')
   } finally {
     await tools.shutdown(); await closeRegistryForDir(dir)
     s.awareness.destroy(); s.room.doc.destroy()

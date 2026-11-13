@@ -4,7 +4,7 @@
  * and a durable incarnation record, and call `tick` every second.
  */
 import {
-  BUS_BYTES, BUS_KEEP, deliveryIndex, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, isRoomNotice, newId, trim, validMessageShape, validParticipantName,
+  BUS_BYTES, BUS_KEEP, deliveryIndex, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, isRoomNotice, recordAnswer, newId, trim, validMessageShape, validParticipantName,
   type Msg, type MsgType, type ParticipantView, type ReleasePoster, type RoomDoc,
 } from '@room/shared'
 import {
@@ -538,6 +538,7 @@ class RoomHub implements Hub {
     this.lastSeq = seq
     this.doc.doc.transact(() => {
       this.doc.bus.push([record])
+      recordAnswer(this.doc, record)
       this.doc.metaMap.set('hubSeq', seq)
     }, HUB_ORIGIN)
     const keep = this.host.busKeep ?? BUS_KEEP

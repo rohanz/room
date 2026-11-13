@@ -8312,29 +8312,41 @@ var init_ledger = __esm({
 });
 
 // packages/shared/src/delivery.ts
+function recordAnswer(doc, answer) {
+  if (!validMessageShape(answer) || answer.type !== "answer") return;
+  const question = doc.message(answer.inReplyTo);
+  const alias = (name) => doc.doc.getMap("aliases").get(name) ?? name;
+  if (!validMessageShape(question) || question.type !== "question" || !question.to || !answerMatchesQuestion(question, answer, alias) || doc.outcomes.has(question.id)) return;
+  doc.outcomes.set(question.id, { to: question.to, from: question.from, outcome: "answered", at: answer.at });
+  doc.mail.delete(question.id);
+}
 function retireRecipient(doc, recipient, at) {
   const names = typeof recipient === "string" ? /* @__PURE__ */ new Set([recipient]) : recipient;
   const end = (m) => {
-    if (!validMessageShape(m) || !m.to || !names.has(m.to) || selfSent(m)) return false;
-    if (doc.outcomes.get(m.id)?.outcome !== "recipient-retired")
-      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome: "recipient-retired", at });
+    if (!validMessageShape(m) || !m.to || selfSent(m)) return false;
+    const outcome = names.has(m.to) ? "recipient-retired" : m.type === "question" && names.has(m.from) ? "asker-retired" : void 0;
+    if (!outcome) return false;
+    if (!replyEnded(doc.outcomes.get(m.id)))
+      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome, at });
     return true;
   };
   doc.doc.transact(() => {
-    for (const [id2, m] of doc.mail) if (end(m)) doc.mail.delete(id2);
-    for (const m of doc.messages()) end(m);
+    const bus = doc.messages(), mail = [...doc.mail];
+    for (const m of [...bus, ...mail.map(([, m2]) => m2)]) recordAnswer(doc, m);
+    for (const [id2, m] of mail) if (end(m)) doc.mail.delete(id2);
+    for (const m of bus) end(m);
   });
 }
 function isOwed(doc, m) {
   return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
 }
-function answeredIds(messages) {
+function repliedNoteIds(messages) {
   const out = /* @__PURE__ */ new Set();
-  for (const m of messages) if ((m.type === "answer" || m.type === "note") && m.inReplyTo) out.add(m.inReplyTo);
+  for (const m of messages) if (m.type === "note" && m.inReplyTo) out.add(m.inReplyTo);
   return out;
 }
-function replyEligible(m, answered, now) {
-  return !!m.to && (m.type === "question" || m.type === "note") && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS;
+function replyEligible(m, repliedNotes, now) {
+  return !!m.to && (m.type === "question" || m.type === "note" && !repliedNotes.has(m.id)) && now - m.at < REPLY_WINDOW_MS;
 }
 function compact(m, scopes) {
   const entry = [m.type, m.from, m.at, messageAreas(m, scopes)];
@@ -8370,8 +8382,11 @@ function trim(doc, now, opts = {}) {
   }, opts.origin);
   const bus = doc.messages();
   const mail = new Map([...doc.mail.entries()].filter(([id2, m]) => typeof id2 === "string" && validMessageShape(m)));
-  const answered = answeredIds([...bus, ...mail.values()]);
-  const eligible = (m) => doc.outcomes.get(m.id)?.outcome !== "recipient-retired" && replyEligible(m, answered, now);
+  doc.doc.transact(() => {
+    for (const m of [...bus, ...mail.values()]) recordAnswer(doc, m);
+  }, opts.origin);
+  const repliedNotes = repliedNoteIds([...bus, ...mail.values()]);
+  const eligible = (m) => !replyEnded(doc.outcomes.get(m.id)) && replyEligible(m, repliedNotes, now);
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP));
   for (let i = bus.length - 1, bytes2 = 0; i >= cutoff; i--) {
     bytes2 += sizeOf(bus[i]);
@@ -8435,7 +8450,7 @@ function trim(doc, now, opts = {}) {
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES);
   for (const id2 of newest(archive.filter((e) => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id2);
   const retainedIds = new Set(bus.filter((m, i) => i >= cutoff && !ended.has(m.id)).map((m) => m.id));
-  const pinned = new Set([...doc.outcomes].filter(([id2, o]) => validOutcome(o) && o.outcome === "recipient-retired" && retainedIds.has(id2)).map(([id2]) => id2));
+  const pinned = new Set([...doc.outcomes].filter(([id2, o]) => validOutcome(o) && replyEnded(o) && retainedIds.has(id2)).map(([id2]) => id2));
   const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id2]) => !doc.outcomes.has(id2))].filter(([id2]) => !pinned.has(id2)).filter(([id2, o]) => typeof id2 === "string" && validOutcome(o) && now - o.at <= OUTCOMES_TTL_MS).map(([id2, o]) => ({ id: id2, at: o.at, size: id2.length + sizeOf(o) }));
   const pinnedBytes = [...pinned].reduce((n, id2) => n + id2.length + sizeOf(doc.outcomes.get(id2)), 0);
   const keepOutcomes = newest(outcomes, Math.max(0, OUTCOMES_MAX - pinned.size), Math.max(0, OUTCOMES_BYTES - pinnedBytes));
@@ -8507,7 +8522,7 @@ function admit(doc, m, now, opts = {}) {
   }
   return caps();
 }
-var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, receipted, DeliveryIndex, indexes;
+var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, validOutcome, compare, byAge, selfSent, receipted, replyEnded, DeliveryIndex, indexes;
 var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
@@ -8543,11 +8558,12 @@ var init_delivery = __esm({
         return 2 ** 32;
       }
     };
-    validOutcome = (o) => !!o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired"].includes(o.outcome);
+    validOutcome = (o) => !!o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired", "asker-retired", "answered"].includes(o.outcome);
     compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
     byAge = (a, b) => a.at - b.at || compare(a.id, b.id);
     selfSent = (m) => m.from === m.to && m.fromKind !== "human";
     receipted = (doc, name, id2) => doc.seen(name).has(id2);
+    replyEnded = (o) => !!o && ["recipient-retired", "asker-retired", "answered"].includes(o.outcome);
     DeliveryIndex = class {
       constructor(doc) {
         this.doc = doc;
@@ -8693,7 +8709,7 @@ var init_delivery = __esm({
         const bus = this.bus.ids.get(id2);
         const candidates = ordered ?? [...mail?.values() ?? [], ...bus?.values() ?? []];
         const outcome = this.doc.outcomes.get(id2);
-        if (bus?.size && validOutcome(outcome) && outcome.outcome === "recipient-retired") {
+        if (bus?.size && validOutcome(outcome) && replyEnded(outcome)) {
           const size2 = this.outcomeSizes.get(id2) ?? 0;
           this.pinnedOutcomes.set(id2, size2);
           this.pinnedOutcomeBytes += size2;
@@ -8767,7 +8783,7 @@ var init_delivery = __esm({
           const size2 = id2.length + sizeOf(o);
           outcomeSizes.set(id2, size2);
           outcomeBytes += size2;
-          if (o.outcome === "recipient-retired" && busCounts.has(id2)) pinnedOutcomes.set(id2, size2);
+          if (replyEnded(o) && busCounts.has(id2)) pinnedOutcomes.set(id2, size2);
           else oldestOutcome = Math.min(oldestOutcome, o.at);
         }
         const sameMap = (a, b) => a.size === b.size && [...a].every(([id2, value2]) => b.get(id2) === value2);
@@ -9521,7 +9537,7 @@ var init_doc = __esm({
         const record = participantRecord(this, name);
         return record?.holder ? record.holder.workerId === id2 : record?.proj ? record.proj.projectedFrom === id2 : !record?.id && ![...this.workerViews.values()].some((view) => view.name === name && view.id !== id2);
       }
-      /** End a retired worker's mail only while it still owns the name, in one pass for all eligible names. */
+      /** End incoming mail and outgoing questions only while the retired worker still owns the name. */
       retireWorkerMail(workers, at) {
         const names = /* @__PURE__ */ new Set();
         for (const worker of workers) if (worker.id && this.workerOwnsName(worker.id, worker.name)) names.add(worker.name);
@@ -10004,6 +10020,9 @@ function validMessageShape(value2) {
 function isRoomNotice(m) {
   return m.from === "room" && m.fromKind === "bot";
 }
+function answerMatchesQuestion(question, answer, alias = (name) => name) {
+  return !!question && question.type === "question" && answer.type === "answer" && answer.inReplyTo === question.id && !!answer.to && alias(answer.to) === alias(question.from) && (!question.to || alias(answer.from) === alias(question.to));
+}
 function messageKind(m) {
   const kind = MessageKinds[m.type];
   if (!kind) throw new Error(`unregistered message kind: ${m.type}`);
@@ -10051,7 +10070,7 @@ var init_messages = __esm({
       release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
       changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
       question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-      answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+      answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
       // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
       conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
@@ -15023,6 +15042,7 @@ var RoomHub = class {
     this.lastSeq = seq;
     this.doc.doc.transact(() => {
       this.doc.bus.push([record]);
+      recordAnswer(this.doc, record);
       this.doc.metaMap.set("hubSeq", seq);
     }, HUB_ORIGIN);
     const keep = this.host.busKeep ?? BUS_KEEP;

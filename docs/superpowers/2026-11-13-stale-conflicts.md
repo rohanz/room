@@ -151,6 +151,52 @@ Neither interrupted capture nor the interim pass certifies the latest combined
 tree; final current focused preview evidence is reported in the worker's
 completion. Full release, scale and bundle checks remain the lead's work.
 
+## Carried-untracked claim follow-up
+
+`conflict-carried-untracked.test.ts` creates the worker through actual
+`room_spawn(carry=true)`, verifies its recorded untracked blob and copied bytes,
+then publishes checkout-derived text and runs `ConflictSet` through its real
+registry lookup. The carried file has 252 distinct lines. Both a 30-line append
+and an interior replacement reproduce false lead-edit/worker-claim notices on
+unchanged source, with and without a trailing newline. All four clean cases
+failed solely on the claim slot and its reciprocal notices; all four competing
+post-spawn lead-edit controls already passed. The text merge slots were clean
+in both directions in the unchanged-lead cases.
+
+The claim comparator read only `<mergeBase>:<path>`, where an untracked carried
+file does not exist. It therefore treated the lead's entire inherited copy as
+an earlier addition and mapped the worker's claim onto that supposed edit. This
+is not an end-of-file special case. Claim mapping and its clean-merge annotation
+now read the same bounded full baseline as text comparison, including the
+existing carried-untracked record. The baseline blob is also a claim input.
+Publisher-only and shared-checkout claim callers select that same lead/worker
+baseline; the bounded path-enumeration fallback passes it too. Unavailable
+baseline text stays unknown. No content-equality heuristic or stored state was
+added, and no existing test expectation changed or product behavior was removed.
+
+The final regression matrix also covers an unchanged sibling spawned with the
+same carry, a claim spanning the old end-of-file line, and both non-publisher
+claim callers with unchanged/competing lead text (14 tests). Real conflicts
+remain reported for same-region lead edits after spawn.
+
+The unchanged `rev3-carried-review.test.ts` adds five correctness controls and
+a Git-read count regression. It reproduced two filtered reads of the same
+carried blob in one warmed pass: text comparison and claim mapping each read
+the ancestor. The pair now passes its already-read carried results to claim
+mapping, including unavailable results, and reuses the unchanged-input check's
+result too. This local map exists only within one pair's pass; tracked text
+keeps its existing historical cache. All six review cases and the original
+14 cases pass, with one filtered carried-ancestor read in the reviewed case.
+
+The observed text notice is independently present in `.git/room-mcp.log` at
+`2026-11-13T06:02:19.351Z` (line 2712 at investigation time): the worker's
+carried documentation conflicts with the lead at line 254. The preceding
+lead-side claim notice at `06:00:58.879Z` says the overlap merges cleanly; the
+worker receives a plain claim conflict at `06:02:19.355Z`. These log lines do not
+retain the comparator's baseline/publication inputs. The reported line-254 text
+conflict was **not reproduced on current main** (`005246a8`); the clean text
+cases remain regressions, and the text mechanism was not changed on a guess.
+
 ## Review tests and changed expectations
 
 The reviewer's upgrade setup and assertions are preserved, including real

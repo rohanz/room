@@ -3,7 +3,7 @@ import { retiredNoticeMatcher } from './notice-subjects.js'
 import { BusIndex } from './bus-index.js'
 import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
-import { messageForMe, validMessageShape, type MessageRouteContext } from './messages.js'
+import { answerMatchesQuestion, messageForMe, validMessageShape, type MessageRouteContext } from './messages.js'
 import type { ArchivedMsg, ArchivedRelease, DeliveryCursor, Identity, Msg, MsgType, Outcome, Scope } from './types.js'
 
 // The one delivery ledger: docs/superpowers/specs/2026-09-28-ledger.md ("The trim", "Message lookup").
@@ -37,7 +37,7 @@ const sizeOf = (value: unknown): number => {
   catch { return 2 ** 32 }
 }
 const validOutcome = (o: Outcome | undefined): o is Outcome => !!o && Number.isFinite(o.at)
-  && typeof o.to === 'string' && typeof o.from === 'string' && ['expired', 'over-cap', 'recipient-retired'].includes(o.outcome)
+  && typeof o.to === 'string' && typeof o.from === 'string' && ['expired', 'over-cap', 'recipient-retired', 'asker-retired', 'answered'].includes(o.outcome)
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
 /** The deterministic order `(at, id)`, oldest first. */
 const byAge = (a: { at: number; id: string }, b: { at: number; id: string }): number => a.at - b.at || compare(a.id, b.id)
@@ -48,18 +48,36 @@ const selfSent = (m: Msg): boolean => m.from === m.to && m.fromKind !== 'human'
 const addressedTo = (m: Msg, name: string): boolean => m.to === name && !selfSent(m)
 const receipted = (doc: RoomDoc, name: string, id: string): boolean => doc.seen(name).has(id)
 
+/** Outcomes that close a conversation must outlive its retained body. */
+const replyEnded = (o: Outcome | undefined): boolean => !!o && ['recipient-retired', 'asker-retired', 'answered'].includes(o.outcome)
+
+/** Record the answer independently of its body, which may be read or retired before the question. */
+export function recordAnswer(doc: RoomDoc, answer: Msg): void {
+  if (!validMessageShape(answer) || answer.type !== 'answer') return
+  const question = doc.message(answer.inReplyTo)
+  const alias = (name: string) => doc.doc.getMap<string>('aliases').get(name) ?? name
+  if (!validMessageShape(question) || question.type !== 'question' || !question.to || !answerMatchesQuestion(question, answer, alias) || doc.outcomes.has(question.id)) return
+  doc.outcomes.set(question.id, { to: question.to, from: question.from, outcome: 'answered', at: answer.at })
+  doc.mail.delete(question.id)
+}
+
 /** End read messages too: retirement removes their receipts in the same transaction. */
 export function retireRecipient(doc: RoomDoc, recipient: string | ReadonlySet<string>, at: number): void {
   const names = typeof recipient === 'string' ? new Set([recipient]) : recipient
   const end = (m: Msg): boolean => {
-    if (!validMessageShape(m) || !m.to || !names.has(m.to) || selfSent(m)) return false
-    if (doc.outcomes.get(m.id)?.outcome !== 'recipient-retired')
-      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome: 'recipient-retired', at })
+    if (!validMessageShape(m) || !m.to || selfSent(m)) return false
+    const outcome = names.has(m.to) ? 'recipient-retired' : m.type === 'question' && names.has(m.from) ? 'asker-retired' : undefined
+    if (!outcome) return false
+    if (!replyEnded(doc.outcomes.get(m.id)))
+      doc.outcomes.set(m.id, { to: m.to, from: m.from, outcome, at })
     return true
   }
   doc.doc.transact(() => {
-    for (const [id, m] of doc.mail) if (end(m)) doc.mail.delete(id)
-    for (const m of doc.messages()) end(m)
+    const bus = doc.messages(), mail = [...doc.mail]
+    // Older saved rooms have reply bodies but no terminal answer marker yet.
+    for (const m of [...bus, ...mail.map(([, m]) => m)]) recordAnswer(doc, m)
+    for (const [id, m] of mail) if (end(m)) doc.mail.delete(id)
+    for (const m of bus) end(m)
   })
 }
 
@@ -68,15 +86,15 @@ function isOwed(doc: RoomDoc, m: Msg): boolean {
   return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id)
 }
 
-function answeredIds(messages: Iterable<Msg>): Set<string> {
+function repliedNoteIds(messages: Iterable<Msg>): Set<string> {
   const out = new Set<string>()
-  for (const m of messages) if ((m.type === 'answer' || m.type === 'note') && m.inReplyTo) out.add(m.inReplyTo)
+  for (const m of messages) if (m.type === 'note' && m.inReplyTo) out.add(m.inReplyTo)
   return out
 }
 
 /** An addressed question or note that can still be answered, receipted or not (SF2). */
-function replyEligible(m: Msg, answered: ReadonlySet<string>, now: number): boolean {
-  return !!m.to && (m.type === 'question' || m.type === 'note') && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS
+function replyEligible(m: Msg, repliedNotes: ReadonlySet<string>, now: number): boolean {
+  return !!m.to && (m.type === 'question' || m.type === 'note' && !repliedNotes.has(m.id)) && now - m.at < REPLY_WINDOW_MS
 }
 
 /**
@@ -155,8 +173,10 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
   if (badBus.length) doc.doc.transact(() => { for (const i of badBus.reverse()) doc.bus.delete(i, 1) }, opts.origin)
   const bus = doc.messages()
   const mail = new Map([...doc.mail.entries()].filter(([id, m]) => typeof id === 'string' && validMessageShape(m)))
-  const answered = answeredIds([...bus, ...mail.values()])
-  const eligible = (m: Msg) => doc.outcomes.get(m.id)?.outcome !== 'recipient-retired' && replyEligible(m, answered, now)
+  // Heal saved rooms whose answers predate terminal answer bookkeeping, before either body can go.
+  doc.doc.transact(() => { for (const m of [...bus, ...mail.values()]) recordAnswer(doc, m) }, opts.origin)
+  const repliedNotes = repliedNoteIds([...bus, ...mail.values()])
+  const eligible = (m: Msg) => !replyEnded(doc.outcomes.get(m.id)) && replyEligible(m, repliedNotes, now)
 
   // 1. Beyond the newest `busKeep`, or beyond BUS_BYTES counted from the newest, messages leave the bus.
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP))
@@ -216,9 +236,9 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
     .map(([id, entry]) => ({ id, at: entry[2], size: id.length + sizeOf(entry), unfulfilled: !!entry[4] }))
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES)
   for (const id of newest(archive.filter(e => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id)
-  // Prune outcomes without retained bodies first. Retirement mail is gone; only bus history needs a marker.
+  // Closed conversations have no mail copies; only their bus history needs a pinned marker.
   const retainedIds = new Set(bus.filter((m, i) => i >= cutoff && !ended.has(m.id)).map(m => m.id))
-  const pinned = new Set([...doc.outcomes].filter(([id, o]) => validOutcome(o) && o.outcome === 'recipient-retired' && retainedIds.has(id)).map(([id]) => id))
+  const pinned = new Set([...doc.outcomes].filter(([id, o]) => validOutcome(o) && replyEnded(o) && retainedIds.has(id)).map(([id]) => id))
   const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id]) => !doc.outcomes.has(id))]
     .filter(([id]) => !pinned.has(id))
     .filter(([id, o]) => typeof id === 'string' && validOutcome(o) && now - o.at <= OUTCOMES_TTL_MS)
@@ -387,7 +407,7 @@ export class DeliveryIndex {
     const bus = this.bus.ids.get(id)
     const candidates = ordered ?? [...(mail?.values() ?? []), ...(bus?.values() ?? [])]
     const outcome = this.doc.outcomes.get(id)
-    if (bus?.size && validOutcome(outcome) && outcome.outcome === 'recipient-retired') {
+    if (bus?.size && validOutcome(outcome) && replyEnded(outcome)) {
       const size = this.outcomeSizes.get(id) ?? 0
       this.pinnedOutcomes.set(id, size); this.pinnedOutcomeBytes += size
     }
@@ -447,7 +467,7 @@ export class DeliveryIndex {
     for (const [id, o] of this.doc.outcomes) {
       if (!validOutcome(o)) { badOutcomes.add(id); continue }
       const size = id.length + sizeOf(o); outcomeSizes.set(id, size); outcomeBytes += size
-      if (o.outcome === 'recipient-retired' && busCounts.has(id)) pinnedOutcomes.set(id, size)
+      if (replyEnded(o) && busCounts.has(id)) pinnedOutcomes.set(id, size)
       else oldestOutcome = Math.min(oldestOutcome, o.at)
     }
     const sameMap = <T>(a: ReadonlyMap<string, T>, b: ReadonlyMap<string, T>) => a.size === b.size && [...a].every(([id, value]) => b.get(id) === value)
