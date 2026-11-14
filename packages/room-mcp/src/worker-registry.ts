@@ -301,7 +301,7 @@ export class WorkerRegistry {
   markDiscardStep(...args: Parameters<FileWorkerStore['markDiscardStep']>): ReturnType<FileWorkerStore['markDiscardStep']> { return this.backend().markDiscardStep(...args) }
   interruptDiscard(...args: Parameters<FileWorkerStore['interruptDiscard']>): ReturnType<FileWorkerStore['interruptDiscard']> { return this.backend().interruptDiscard(...args) }
   recordDiscardRecovery(...args: Parameters<FileWorkerStore['recordDiscardRecovery']>): ReturnType<FileWorkerStore['recordDiscardRecovery']> { return this.backend().recordDiscardRecovery(...args) }
-  ensureDiscardRecovery(id: string, leadDir: string): Promise<void> { return this.backend().ensureDiscardRecovery(id, leadDir) }
+  ensureDiscardRecovery(id: string, leadDir: string, checkout: boolean): Promise<void> { return this.backend().ensureDiscardRecovery(id, leadDir, checkout) }
   replayDiscard(id: string): Promise<void> { return this.backend().replayDiscard(id) }
   writeReport(...args: Parameters<FileWorkerStore['writeReport']>): ReturnType<FileWorkerStore['writeReport']> { return this.backend().writeReport(...args) }
   writeExit(...args: Parameters<FileWorkerStore['writeExit']>): ReturnType<FileWorkerStore['writeExit']> { return this.backend().writeExit(...args) }

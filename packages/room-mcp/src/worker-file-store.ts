@@ -186,6 +186,10 @@ async function leaseRetry<T>(fn: () => T, deadline = performance.now() + GUARD_W
   }
 }
 
+/** Recording a launch makes a prepared worker active; it never takes a record out of an operation another pass holds. */
+const launchedPhase = (phase: WorkerRecord['phase']): WorkerRecord['phase'] =>
+  ['collecting', 'discarding', 'retiring', 'retired', 'abandoned'].includes(phase) ? phase : 'active'
+
 export class FileWorkerStore {
   readonly root: string
   private readonly alive: LivenessProbe
@@ -1018,31 +1022,55 @@ export class FileWorkerStore {
       return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 }
     })
   }
-  async recordDiscardRecovery(id: string, facts: { recoveryRef?: string; unchanged?: boolean; ignored?: string[] }): Promise<void> {
+  async recordDiscardRecovery(id: string, facts: { recoveryRef?: string; unchanged?: boolean; lost?: string; ignored?: string[] }): Promise<void> {
     await this.update(id, old => {
       if (!old.discard || old.phase !== 'discarding') throw new Error('discard plan missing')
       return { ...old, discard: { ...old.discard, ...facts, ...(facts.recoveryRef ? { baseRef: undefined, patch: undefined } : {}),
         ignored: [...new Set([...(old.discard.ignored ?? []), ...(facts.ignored ?? [])])].sort() }, seq: old.seq + 1 }
     })
   }
-  /** Reuse the first complete snapshot; a partially removed checkout cannot replace it. */
-  async ensureDiscardRecovery(id: string, leadDir: string): Promise<void> {
+  /**
+   * The one place a discard's snapshot is taken or confirmed; every discard path calls it before it removes or
+   * reports anything. `checkout` says the worker's own worktree is still there. A discard captures once: after
+   * removal began the worktree is partial and never replaces the snapshot. The journaled ref's name is the
+   * commit, so a ref that is missing is pinned again while that commit exists.
+   */
+  async ensureDiscardRecovery(id: string, leadDir: string, checkout: boolean): Promise<void> {
     const record = this.#read(id)
     if (!record?.discard || record.phase !== 'discarding') throw new Error('discard plan missing')
-    if (record.discard.recoveryRef) {
-      try {
-        boundedGitSync(this.commonDir, ['--git-dir', this.commonDir, 'rev-parse', '--verify', '--quiet', `${record.discard.recoveryRef}^{commit}`])
-        return
-      } catch (error) {
-        if ((error as { status?: number }).status !== 1) throw new Error(`cannot confirm discard recovery; checkout retained: ${String(error)}`)
+    const ref = record.discard.recoveryRef, whole = checkout && !record.discard.steps.removing
+    if (ref) {
+      const tip = ref.slice(ref.lastIndexOf('/') + 1)
+      const commit = (name: string): string | undefined => {
+        try { return boundedGitSync(this.commonDir, ['--git-dir', this.commonDir, 'rev-parse', '--verify', '--quiet', `${name}^{commit}`]).toString().trim() }
+        catch (error) {
+          if ((error as { status?: number }).status === 1) return undefined
+          throw new Error(`cannot confirm discard recovery; checkout retained: ${String(error)}`)
+        }
       }
+      const pinned = commit(ref)
+      if (pinned === tip) return
+      if (pinned) throw new Error(`discard recovery ref ${ref} names another commit; checkout retained`)
+      if (!whole && commit(tip)) {
+        const pin = preserveWorkerBranch(this.commonDir, record, { tip })
+        if (pin.recoveryRef !== ref) throw new Error(pin.reason ?? `cannot pin discard recovery commit ${tip}; checkout retained`)
+        return
+      }
+      if (!whole && checkout) throw new Error(`discard recovery commit is gone and removal had begun; remaining files kept in ${record.dir}`)
+      if (!checkout) { await this.recordDiscardRecovery(id, { recoveryRef: undefined, lost: ref }); return }
     }
+    if (!checkout) return
     const status = this.#status(id)
     if (!status) throw new Error('worker status missing; checkout retained')
     await this.recordDiscardRecovery(id, await saveDiscardRecovery(leadDir, realStateInput(record, status)))
   }
+  /**
+   * A discard that failed before it removed anything leaves an ordinary worker again. Once removal began there is
+   * no worker to go back to: the record stays a discard, so nothing but a discard (the automatic replay, or
+   * asking again) can finish it, and its reason shows in room_state.
+   */
   async interruptDiscard(id: string, detail: string): Promise<WorkerRecord> {
-    return this.update(id, old => ({ ...old, phase: 'active',
+    return this.update(id, old => ({ ...old, phase: old.discard?.steps.removing ? 'discarding' : 'active',
       interrupted: { op: 'discard', at: this.now(), detail }, seq: old.seq + 1 }))
   }
 
@@ -1150,10 +1178,9 @@ export class FileWorkerStore {
       await this.recordDiscardRecovery(id, { ignored: await ignoredWorkerArtifacts(own, leadDir) })
       record = this.#read(id)!
     }
-    if (owned) {
-      await this.ensureDiscardRecovery(id, leadDir)
-      record = this.#read(id)!
-    } else if (record.discard!.patch) {
+    await this.ensureDiscardRecovery(id, leadDir, owned)
+    record = this.#read(id)!
+    if (!owned && record.discard!.patch) {
       // Legacy removal already happened: retain its artifacts and finish its original plan.
       const published = record.discard!.patch
       const expected = path.join(this.root, 'patches', `${id}.patch`)
@@ -1383,7 +1410,11 @@ export class FileWorkerStore {
       if (record.phase === 'discarding' && (!op || this.alive(op.holder) === 'dead')) {
         yielded = true
         try { await this.beginOperation(record.id, 'discard'); await this.replayDiscard(record.id) }
-        catch (error) { process.stderr.write(`[room] discard replay ${record.id}: ${error}\n`) }
+        catch (error) {
+          process.stderr.write(`[room] discard replay ${record.id}: ${error}\n`)
+          // The reason is what room_state shows for a discard that cannot finish.
+          await this.update(record.id, old => ({ ...old, interrupted: { op: 'discard', at: this.now(), detail: error instanceof Error ? error.message : String(error) }, seq: old.seq + 1 })).catch(() => {})
+        }
         finally { await this.finishOperation(record.id).catch(() => {}) }
         continue
       }
@@ -1402,7 +1433,7 @@ export class FileWorkerStore {
             const latest = old.runs.at(-1)!
             if (latest.launch) return { ...old, seq: old.seq + 1 }
             const process = admittedHost(report)
-            return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...latest,
+            return { ...old, phase: launchedPhase(old.phase), runs: [...old.runs.slice(0, -1), { ...latest,
               launch: process ? { outcome: 'launched', pid: process.pid, process } : { outcome: 'ambiguous', at: this.now() } }], seq: old.seq + 1 }
           })
         } else if (this.alive(run.launcher) === 'dead') {
@@ -1420,7 +1451,7 @@ export class FileWorkerStore {
           await this.update(record.id, old => {
             const process = admittedHost(report)
             if (!process) return old
-            return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: process.pid, process } }], seq: old.seq + 1 }
+            return { ...old, phase: launchedPhase(old.phase), runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: process.pid, process } }], seq: old.seq + 1 }
           })
         }
       }

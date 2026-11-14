@@ -354,7 +354,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await registry.markDiscardStep(active.id, 'stop')
       const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir)
       await registry.recordDiscardRecovery(active.id, { ignored })
-      if (!missing && !borrowed) await registry.ensureDiscardRecovery(active.id, s.dir)
+      await registry.ensureDiscardRecovery(active.id, s.dir, !missing && !borrowed)
       const recovery = (await registry.read(active.id))!
       const details = discardRecoveryDetails(recovery.discard)
       const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
@@ -488,7 +488,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ownedWorktree = !borrowed && decideDiscard(afterStop) === 'cleanup'
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : []
       await registry.recordDiscardRecovery(lock, { ignored })
-      if (ownedWorktree) await registry.ensureDiscardRecovery(lock, s.dir)
+      await registry.ensureDiscardRecovery(lock, s.dir, ownedWorktree)
       const recovery = (await registry.read(lock))!
       const details = discardRecoveryDetails(recovery.discard)
       const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }

@@ -10553,7 +10553,7 @@ function workerLine({ worker: w, dir, processGone = false, lastActive, changedCo
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
   if (last2 && w.summary && last2.includes(`: ${w.summary.slice(0, 60)}`)) last2 = void 0;
   const status = w.status === "done" && w.exitCode ? `done (exited ${w.exitCode} after reporting)` : w.status;
-  const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : uncollected(w) ? `${status}, uncollected for ${ago(now - w.finishedAt)}` : status);
+  const state = (stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : w.noReport ? "ended without a report" : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : uncollected(w) ? `${status}, uncollected for ${ago(now - w.finishedAt)}` : status)) + (w.status === "collecting" && w.note ? `: ${w.note.slice(0, 200)}` : "");
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m)${task ? `: ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}` : ""}`,
     `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${w.followUp ? ` \xB7 follow-up: ${w.followUp.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`,
@@ -33255,7 +33255,7 @@ function exitReason(exit) {
   return exit.code != null ? `exit ${exit.code}` : HOST_ENDED;
 }
 function discardRecoveryDetails(plan2) {
-  return (plan2?.recoveryRef ? `; recovery ref: ${plan2.recoveryRef} (kept for seven days${plan2.unchanged ? "; worktree matches HEAD" : ""}); restore: git worktree add <dir> ${plan2.recoveryRef}` : plan2?.patch ? `; legacy recovery patch: ${plan2.patch.path}${plan2.baseRef ? " (base: " + plan2.baseRef + ")" : ""}` : plan2?.baseRef ? `; legacy recovery ref: ${plan2.baseRef}` : "") + (plan2?.ignored?.length ? `; deleted without a copy: ${plan2.ignored.join(", ")}` : "");
+  return (plan2?.recoveryRef ? `; recovery ref: ${plan2.recoveryRef} (kept for seven days${plan2.unchanged ? "; worktree matches HEAD" : ""}); restore: git worktree add <dir> ${plan2.recoveryRef}` : plan2?.patch ? `; legacy recovery patch: ${plan2.patch.path}${plan2.baseRef ? " (base: " + plan2.baseRef + ")" : ""}` : plan2?.baseRef ? `; legacy recovery ref: ${plan2.baseRef}` : "") + (plan2?.lost ? `; NOT recoverable: recovery commit ${plan2.lost} is no longer in the repository` : "") + (plan2?.ignored?.length ? `; deleted without a copy: ${plan2.ignored.join(", ")}` : "");
 }
 function idleClaimsDue(input) {
   return input.host === "shared-app-server" && (input.heldClaims > 0 || input.hasScope === true) && Number.isFinite(input.lastActivityMs) && Number.isFinite(input.nowMs) && input.nowMs - input.lastActivityMs >= IDLE_CLAIM_RELEASE_MS;
@@ -47936,7 +47936,7 @@ async function leaseRetry(fn, deadline = performance5.now() + GUARD_WAIT_MS3) {
     }
   }
 }
-var readJson, files, READ_CACHE_MAX, RACY_NS, snapshotReads, readCache, statKey, readCachedJson, cachedFiles, crockford, id2, synthetic, workerMcpLogFile, resumable, GUARD_WAIT_MS3, GUARD_POLL_MS, guardBusy, pauseForGuard, FileWorkerStore;
+var readJson, files, READ_CACHE_MAX, RACY_NS, snapshotReads, readCache, statKey, readCachedJson, cachedFiles, crockford, id2, synthetic, workerMcpLogFile, resumable, GUARD_WAIT_MS3, GUARD_POLL_MS, guardBusy, pauseForGuard, launchedPhase, FileWorkerStore;
 var init_worker_file_store = __esm({
   "packages/room-mcp/src/worker-file-store.ts"() {
     "use strict";
@@ -48013,6 +48013,7 @@ var init_worker_file_store = __esm({
       if (remaining <= 0) throw new Error(`registry guard wait exceeded ${GUARD_WAIT_MS3} ms: ${error2.message}`);
       await new Promise((resolve6) => setTimeout(resolve6, Math.min(GUARD_POLL_MS, remaining)));
     };
+    launchedPhase = (phase) => ["collecting", "discarding", "retiring", "retired", "abandoned"].includes(phase) ? phase : "active";
     FileWorkerStore = class _FileWorkerStore {
       constructor(commonDir2, options, readOnly = false) {
         this.commonDir = commonDir2;
@@ -48988,26 +48989,54 @@ var init_worker_file_store = __esm({
           }, seq: old.seq + 1 };
         });
       }
-      /** Reuse the first complete snapshot; a partially removed checkout cannot replace it. */
-      async ensureDiscardRecovery(id3, leadDir) {
+      /**
+       * The one place a discard's snapshot is taken or confirmed; every discard path calls it before it removes or
+       * reports anything. `checkout` says the worker's own worktree is still there. A discard captures once: after
+       * removal began the worktree is partial and never replaces the snapshot. The journaled ref's name is the
+       * commit, so a ref that is missing is pinned again while that commit exists.
+       */
+      async ensureDiscardRecovery(id3, leadDir, checkout) {
         const record2 = this.#read(id3);
         if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
-        if (record2.discard.recoveryRef) {
-          try {
-            boundedGitSync(this.commonDir, ["--git-dir", this.commonDir, "rev-parse", "--verify", "--quiet", `${record2.discard.recoveryRef}^{commit}`]);
+        const ref = record2.discard.recoveryRef, whole = checkout && !record2.discard.steps.removing;
+        if (ref) {
+          const tip = ref.slice(ref.lastIndexOf("/") + 1);
+          const commit = (name) => {
+            try {
+              return boundedGitSync(this.commonDir, ["--git-dir", this.commonDir, "rev-parse", "--verify", "--quiet", `${name}^{commit}`]).toString().trim();
+            } catch (error2) {
+              if (error2.status === 1) return void 0;
+              throw new Error(`cannot confirm discard recovery; checkout retained: ${String(error2)}`);
+            }
+          };
+          const pinned = commit(ref);
+          if (pinned === tip) return;
+          if (pinned) throw new Error(`discard recovery ref ${ref} names another commit; checkout retained`);
+          if (!whole && commit(tip)) {
+            const pin = preserveWorkerBranch(this.commonDir, record2, { tip });
+            if (pin.recoveryRef !== ref) throw new Error(pin.reason ?? `cannot pin discard recovery commit ${tip}; checkout retained`);
             return;
-          } catch (error2) {
-            if (error2.status !== 1) throw new Error(`cannot confirm discard recovery; checkout retained: ${String(error2)}`);
+          }
+          if (!whole && checkout) throw new Error(`discard recovery commit is gone and removal had begun; remaining files kept in ${record2.dir}`);
+          if (!checkout) {
+            await this.recordDiscardRecovery(id3, { recoveryRef: void 0, lost: ref });
+            return;
           }
         }
+        if (!checkout) return;
         const status = this.#status(id3);
         if (!status) throw new Error("worker status missing; checkout retained");
         await this.recordDiscardRecovery(id3, await saveDiscardRecovery(leadDir, realStateInput(record2, status)));
       }
+      /**
+       * A discard that failed before it removed anything leaves an ordinary worker again. Once removal began there is
+       * no worker to go back to: the record stays a discard, so nothing but a discard (the automatic replay, or
+       * asking again) can finish it, and its reason shows in room_state.
+       */
       async interruptDiscard(id3, detail) {
         return this.update(id3, (old) => ({
           ...old,
-          phase: "active",
+          phase: old.discard?.steps.removing ? "discarding" : "active",
           interrupted: { op: "discard", at: this.now(), detail },
           seq: old.seq + 1
         }));
@@ -49113,10 +49142,9 @@ var init_worker_file_store = __esm({
             await this.recordDiscardRecovery(id3, { ignored: await ignoredWorkerArtifacts(own2, leadDir) });
             record2 = this.#read(id3);
           }
-          if (owned) {
-            await this.ensureDiscardRecovery(id3, leadDir);
-            record2 = this.#read(id3);
-          } else if (record2.discard.patch) {
+          await this.ensureDiscardRecovery(id3, leadDir, owned);
+          record2 = this.#read(id3);
+          if (!owned && record2.discard.patch) {
             const published = record2.discard.patch;
             const expected = path57.join(this.root, "patches", `${id3}.patch`);
             if (published.path !== expected || !fs56.lstatSync(expected).isFile() || createHash21("sha256").update(fs56.readFileSync(expected)).digest("hex") !== published.sha256) {
@@ -49350,6 +49378,8 @@ var init_worker_file_store = __esm({
             } catch (error2) {
               process.stderr.write(`[room] discard replay ${record2.id}: ${error2}
 `);
+              await this.update(record2.id, (old) => ({ ...old, interrupted: { op: "discard", at: this.now(), detail: error2 instanceof Error ? error2.message : String(error2) }, seq: old.seq + 1 })).catch(() => {
+              });
             } finally {
               await this.finishOperation(record2.id).catch(() => {
               });
@@ -49371,7 +49401,7 @@ var init_worker_file_store = __esm({
                 const latest = old.runs.at(-1);
                 if (latest.launch) return { ...old, seq: old.seq + 1 };
                 const process5 = admittedHost(report2);
-                return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), {
+                return { ...old, phase: launchedPhase(old.phase), runs: [...old.runs.slice(0, -1), {
                   ...latest,
                   launch: process5 ? { outcome: "launched", pid: process5.pid, process: process5 } : { outcome: "ambiguous", at: this.now() }
                 }], seq: old.seq + 1 };
@@ -49394,7 +49424,7 @@ var init_worker_file_store = __esm({
               await this.update(record2.id, (old) => {
                 const process5 = admittedHost(report2);
                 if (!process5) return old;
-                return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "launched", pid: process5.pid, process: process5 } }], seq: old.seq + 1 };
+                return { ...old, phase: launchedPhase(old.phase), runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "launched", pid: process5.pid, process: process5 } }], seq: old.seq + 1 };
               });
             }
           }
@@ -49989,8 +50019,8 @@ var init_worker_registry = __esm({
       recordDiscardRecovery(...args2) {
         return this.backend().recordDiscardRecovery(...args2);
       }
-      ensureDiscardRecovery(id3, leadDir) {
-        return this.backend().ensureDiscardRecovery(id3, leadDir);
+      ensureDiscardRecovery(id3, leadDir, checkout) {
+        return this.backend().ensureDiscardRecovery(id3, leadDir, checkout);
       }
       replayDiscard(id3) {
         return this.backend().replayDiscard(id3);
@@ -67638,7 +67668,7 @@ function handlers10(state) {
       await registry2.markDiscardStep(active.id, "stop");
       const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w, s.dir);
       await registry2.recordDiscardRecovery(active.id, { ignored });
-      if (!missing && !borrowed) await registry2.ensureDiscardRecovery(active.id, s.dir);
+      await registry2.ensureDiscardRecovery(active.id, s.dir, !missing && !borrowed);
       const recovery = await registry2.read(active.id);
       const details = discardRecoveryDetails(recovery.discard);
       const preservation = { ignored: [], uncollected: [] };
@@ -67758,7 +67788,7 @@ function handlers10(state) {
       const ownedWorktree = !borrowed && decideDiscard(afterStop) === "cleanup";
       const ignored = ownedWorktree ? await ignoredWorkerArtifacts(w, s.dir) : [];
       await registry2.recordDiscardRecovery(lock, { ignored });
-      if (ownedWorktree) await registry2.ensureDiscardRecovery(lock, s.dir);
+      await registry2.ensureDiscardRecovery(lock, s.dir, ownedWorktree);
       const recovery = await registry2.read(lock);
       const details = discardRecoveryDetails(recovery.discard);
       const preservation = { ignored: [], uncollected: [] };

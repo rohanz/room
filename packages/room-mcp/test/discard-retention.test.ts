@@ -117,7 +117,7 @@ it('keeps the first snapshot when an explicit discard retry follows partial remo
   expect(reply).toContain('interrupted partial removal')
   const registry = await registryForDir(lead), interrupted = (await registry.read('w_test'))!
   const originalRef = interrupted.discard!.recoveryRef!
-  expect(interrupted.phase).toBe('active')
+  expect(interrupted.phase).toBe('discarding')
   expect(interrupted.discard!.steps.removing).toBe(true)
   expect(fs.existsSync(path.join(worker, 'file.txt'))).toBe(false)
   expect(await t.call({ tag: 'test', discard: true })).toContain('discarded test')

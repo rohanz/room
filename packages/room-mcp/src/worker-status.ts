@@ -44,6 +44,8 @@ interface DiscardPlan {
   children: string[]; steps: Partial<Record<'children' | 'stop' | 'removing' | 'cleanup' | 'prune', boolean>>
   recoveryRef?: string
   unchanged?: boolean
+  /** The snapshot a replay found missing after the checkout was already removed. */
+  lost?: string
   /** Legacy discard journals only; remove after old in-flight operations have finished. */
   patch?: { path: string; sha256: string }
   baseRef?: string
@@ -54,6 +56,7 @@ export function discardRecoveryDetails(plan: WorkerRecord['discard']): string {
   return (plan?.recoveryRef ? `; recovery ref: ${plan.recoveryRef} (kept for seven days${plan.unchanged ? '; worktree matches HEAD' : ''}); restore: git worktree add <dir> ${plan.recoveryRef}` :
     plan?.patch ? `; legacy recovery patch: ${plan.patch.path}${plan.baseRef ? ' (base: ' + plan.baseRef + ')' : ''}`
       : plan?.baseRef ? `; legacy recovery ref: ${plan.baseRef}` : '')
+    + (plan?.lost ? `; NOT recoverable: recovery commit ${plan.lost} is no longer in the repository` : '')
     + (plan?.ignored?.length ? `; deleted without a copy: ${plan.ignored.join(', ')}` : '')
 }
 export interface WorkerRecord {
