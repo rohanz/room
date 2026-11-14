@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.51
 
 - **A session no longer freezes for seconds a minute after it starts.** The hourly clean-up pass, which first runs one minute into a session, took a durable operation on every retired worker record to delete log files that had already been deleted. In a clone with 105 such records that blocked the session for 11 to 14 seconds, each hour, in every open session. The pass now looks for the files first; on the same clone it takes 0.7 seconds.
 - **An idle room no longer fills with deleted entries.** The hub recorded each absent participant's time away on every one-minute pass. With about 125 retired worker names in the room, an idle room reached the daemon's clean-up threshold every 81 minutes and restarted to compact. The time away is still measured on every pass but recorded only once the unrecorded part matches what has been recorded since the hub started, and at least hourly. A hub that stops loses the unrecorded part, so a participant can take longer than seven days to expire, never less.
