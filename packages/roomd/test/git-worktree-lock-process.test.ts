@@ -108,7 +108,9 @@ it.skipIf(process.platform === 'win32')('documents recovery while a killed holde
   const holder = launch('orphan', repo, signal, path.join(root, 'child'))
   try {
     await until(hookPidFile, holder)
-    const hookPid = Number(fs.readFileSync(hookPidFile, 'utf8'))
+    // The file exists a moment before its content does: read until the hook's pid is there.
+    let hookPid = 0
+    while (!(hookPid = Number(fs.readFileSync(hookPidFile, 'utf8')))) await delay(10)
     await kill(holder.child)
     const readerSignal = path.join(root, 'reader'), reader = launch('list', repo, readerSignal)
     await reader.exited
