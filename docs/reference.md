@@ -186,6 +186,8 @@ Room never writes a teammate's live edits into your working tree. It writes sess
 
 ### Local state
 
+Registry reconciliation is single-flight within each writable store. Watch and timer requests during a pass coalesce into a follow-up; a request during that follow-up schedules another. Each caller settles after its first post-request pass, independently of later reruns. A failed pass rejects only its own callers and does not drop the follow-up. Retirement, projection and foreground collection keep their independent scheduling and filesystem leases.
+
 Every file Room keeps under the clone's common Git directory, in `room/`, has one owner and one lifetime. The owner removes its file at the natural end (leave, release, retire); once an hour each Room process runs the collector (`packages/room-mcp/src/local-state-gc.ts`), which removes what the table ages out and nothing else. An entry the table does not name is reported by `room doctor` and left alone. Ages: `1 h` for anything a running process would have refreshed, `7 d` (the hub's fixed expiry policy) for anything that ends with a participant, `30 d` for records kept for a later operator look.
 
 | Path under `room/` | Owner | Collector |

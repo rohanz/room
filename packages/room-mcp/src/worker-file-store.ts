@@ -189,6 +189,8 @@ async function leaseRetry<T>(fn: () => T, deadline = performance.now() + GUARD_W
 const launchedPhase = (phase: WorkerRecord['phase']): WorkerRecord['phase'] =>
   ['collecting', 'discarding', 'retiring', 'retired', 'abandoned'].includes(phase) ? phase : 'active'
 
+type ReconcileCompletion = { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void }
+
 export class FileWorkerStore {
   readonly root: string
   private readonly alive: LivenessProbe
@@ -200,6 +202,9 @@ export class FileWorkerStore {
   private readonly heldOperations = new Map<string, string>()
   private timer?: ReturnType<typeof setInterval>
   private watchQueued = false
+  private reconciling = false
+  private reconcileAgain = false
+  private reconcileNext?: ReconcileCompletion
   private constructor(readonly commonDir: string, options: RegistryOptions, private readonly readOnly = false) {
     this.root = path.join(commonDir, 'room', 'registry')
     this.alive = options.liveness ?? liveness
@@ -1242,7 +1247,37 @@ export class FileWorkerStore {
     return recovered
   }
 
-  async reconcile(): Promise<void> {
+  /** Each caller waits for its first post-request pass, independently of later requests.
+   * During a pass, callers share one follow-up completion; no foreground effects enter this loop. */
+  reconcile(): Promise<void> {
+    if (!this.reconcileNext) {
+      let resolve!: () => void, reject!: (error: unknown) => void
+      const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+      this.reconcileNext = { promise, resolve, reject }
+    }
+    const next = this.reconcileNext
+    this.reconcileAgain = true
+    if (!this.reconciling) {
+      this.reconciling = true
+      void this.drainReconcile()
+    }
+    return next.promise
+  }
+
+  private async drainReconcile(): Promise<void> {
+    do {
+      this.reconcileAgain = false
+      const current = this.reconcileNext!
+      this.reconcileNext = undefined
+      // Only the pass body is awaited, never a caller's completion. That body and
+      // its bound discard helpers do not request reconciliation on this store.
+      try { await this.reconcilePass(); current.resolve() }
+      catch (error) { current.reject(error) }
+    } while (this.reconcileAgain)
+    this.reconciling = false
+  }
+
+  private async reconcilePass(): Promise<void> {
     // Only this writer-owned pass may rename invalid facts, after its read-only inventory.
     const candidates = new Map<string, { key?: string; text?: string; why: unknown }>()
     this.quarantineCandidates = candidates

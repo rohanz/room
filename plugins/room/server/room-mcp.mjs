@@ -48205,6 +48205,9 @@ var init_worker_file_store = __esm({
       heldOperations = /* @__PURE__ */ new Map();
       timer;
       watchQueued = false;
+      reconciling = false;
+      reconcileAgain = false;
+      reconcileNext;
       static async open(commonDir2, options = {}) {
         const registry2 = new _FileWorkerStore(commonDir2, options);
         privateStateDirectory(registry2.root);
@@ -49393,7 +49396,40 @@ var init_worker_file_store = __esm({
         }
         return recovered;
       }
-      async reconcile() {
+      /** Each caller waits for its first post-request pass, independently of later requests.
+       * During a pass, callers share one follow-up completion; no foreground effects enter this loop. */
+      reconcile() {
+        if (!this.reconcileNext) {
+          let resolve6, reject;
+          const promise = new Promise((yes, no) => {
+            resolve6 = yes;
+            reject = no;
+          });
+          this.reconcileNext = { promise, resolve: resolve6, reject };
+        }
+        const next = this.reconcileNext;
+        this.reconcileAgain = true;
+        if (!this.reconciling) {
+          this.reconciling = true;
+          void this.drainReconcile();
+        }
+        return next.promise;
+      }
+      async drainReconcile() {
+        do {
+          this.reconcileAgain = false;
+          const current3 = this.reconcileNext;
+          this.reconcileNext = void 0;
+          try {
+            await this.reconcilePass();
+            current3.resolve();
+          } catch (error2) {
+            current3.reject(error2);
+          }
+        } while (this.reconcileAgain);
+        this.reconciling = false;
+      }
+      async reconcilePass() {
         const candidates = /* @__PURE__ */ new Map();
         this.quarantineCandidates = candidates;
         const orphanTags = /* @__PURE__ */ new Set();

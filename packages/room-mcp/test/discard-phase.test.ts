@@ -34,13 +34,14 @@ it.each(['done', 'session-stopped'] as const)('shows automatic replay failure af
   expect(view).toContain('names another commit')
 })
 
-it('does not reactivate an interrupted discard when another reconcile observes its held lease', async () => {
+it('does not reactivate an interrupted discard when another store observes its held lease', async () => {
   const t = setup('done')
   t.set('test', { ...t.w, pid: 4_190_001 })
   put(worker, 'file.txt', 'complete work before removal\n')
   put(worker, 'survivor.txt', 'surviving output\n')
   await t.sync()
   const registry = await registryForDir(lead)
+  const observer = await FileWorkerStore.open(registry.commonDir, { watch: false })
   const before = (await registry.read('w_test'))!, run = before.runs[0]
   if (run.launch?.outcome !== 'launched') throw new Error('fixture must have a launched host')
   const report = (await registry.reports('w_test'))[0]
@@ -60,11 +61,15 @@ it('does not reactivate an interrupted discard when another reconcile observes i
   const original = FileWorkerStore.prototype.ensureDiscardRecovery
   let interleaved = false
   const secondPass = vi.spyOn(FileWorkerStore.prototype, 'ensureDiscardRecovery').mockImplementation(async function (this: FileWorkerStore, ...args) {
-    // The timer/watch callbacks can start a second pass while the first awaits filesystem work.
-    if (!interleaved) { interleaved = true; await registry.reconcile() }
+    // An independent store stands in for another process; it can observe the held discard.
+    if (!interleaved) {
+      interleaved = true
+      await expect(observer.reconcile()).rejects.toThrow('worker operation lease held by another instance')
+      expect((await registry.read('w_test'))?.phase).toBe('discarding')
+    }
     return original.apply(this, args)
   })
-  try { await registry.reconcile() } finally { secondPass.mockRestore() }
+  try { await registry.reconcile() } finally { secondPass.mockRestore(); observer.close() }
   expect(interleaved).toBe(true)
   // The second pass left the held discard alone, so the first finished it with the original snapshot pinned again.
   const finished = (await registry.read('w_test'))!
