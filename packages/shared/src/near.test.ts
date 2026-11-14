@@ -4,22 +4,35 @@ import { manifestKey } from './manifest.js'
 import * as Y from 'yjs'
 import { containsPath, coordinationPaths, coversPath, nearPath, neighbours } from './near.js'
 
-it('selects visible people, excluding self and PR mirrors', () => {
-  const nb = neighbours([{ name: 'Me', fresh: true, visible: true }, { name: 'Ada', fresh: false, visible: true }, { name: 'Gone', fresh: false, visible: false }, { name: 'pr#7', fresh: false, visible: true }], 'Me')
+it('selects visible people, excluding self', () => {
+  const nb = neighbours([{ name: 'Me', fresh: true, visible: true }, { name: 'Ada', fresh: false, visible: true }, { name: 'Gone', fresh: false, visible: false }], 'Me')
   expect(nb.everyone).toBe(true)
   expect(nb.names()).toEqual(['Ada'])
-  expect(nb.has('pr#7')).toBe(false)
 })
 
-it('keeps PR scope as evidence even when the neighbourhood excludes its identity', () => {
+it('ignores stored PR bot scopes while preserving genuine participant scopes', () => {
   const room = new RoomDoc()
-  room.setScope({ by: 'pr#7', byKind: 'agent', area: 'src', summary: 'PR', paths: ['src/api.ts'] })
+  room.setScope({ by: 'pr#7', byKind: 'bot', area: 'src', summary: 'PR', paths: ['src/api.ts'] })
+  room.setScope({ by: 'pr#8', byKind: 'agent', area: 'src', summary: 'real work', paths: ['src/real.ts'] })
+  expect(room.scope('pr#7')).toBeUndefined()
+  expect(room.scope('pr#8')?.summary).toBe('real work')
   room.setScope({ by: 'Ada', byKind: 'agent', area: 'src', summary: 'edit', paths: ['src/'] })
   const nb = { everyone: false, has: (name: string) => name === 'Ada', names: () => ['Ada'] }
   expect(nearPath('src/api.ts', coordinationPaths(room, nb, 'Me'))).toEqual([
-    { by: 'pr#7', path: 'src/api.ts', reason: 'scope' },
     { by: 'Ada', path: 'src/', reason: 'scope' },
   ])
+  room.doc.destroy()
+})
+
+it.each(['id', 'holder', 'both'] as const)('preserves a numbered bot scope with a participant %s record', field => {
+  const room = new RoomDoc()
+  const name = 'pr#7'
+  room.setScope({ by: name, byKind: 'bot', area: 'src', summary: 'real work', paths: ['src/api.ts'] })
+  if (field !== 'holder') room.participants.set(`${name}\0id`, { name, kind: 'bot' })
+  if (field !== 'id') room.participants.set(`${name}\0holder`, { sessionId: 'real-bot', epoch: 1 })
+  expect(room.scope(name)?.summary).toBe('real work')
+  expect(room.allScopes().map(scope => scope.by)).toEqual([name])
+  expect(room.scopes.size).toBe(1)
   room.doc.destroy()
 })
 

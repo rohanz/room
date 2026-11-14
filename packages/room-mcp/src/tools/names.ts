@@ -1,6 +1,5 @@
 import { displayName, workerLive, type Identity } from '@room/shared'
 import type { Session } from '../session.js'
-import { isPrName } from '../prs.js'
 
 export interface NameContext {
   all: () => Session[]
@@ -10,11 +9,11 @@ export interface NameContext {
 
 export function knownNames(session: Session, presences: NameContext['presences']): Set<string> {
   return new Set([
-    session.me.name, ...presences(session).map(p => p.user.name), ...session.room.colors.keys(), ...session.room.scopes.keys(), ...session.room.manifestHead.keys(),
+    session.me.name, ...presences(session).map(p => p.user.name), ...session.room.colors.keys(), ...session.room.allScopes().map(sc => sc.by), ...session.room.manifestHead.keys(),
     ...session.room.openClaims().map(c => c.by), ...Array.from(session.room.workerViews.values(), w => w.name),
     ...session.room.retiredWorkers().map(w => w.name), ...session.room.messages().map(m => m.from),
     ...Array.from(session.room.mail.values(), m => m.from),
-  ].filter(n => !isPrName(n)))
+  ])
 }
 
 const addressKey = (name: string) => name.replace(/\u2019/g, "'").toLocaleLowerCase()

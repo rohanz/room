@@ -1,8 +1,7 @@
 /**
  * GitHub REST proxy for pull requests, called with the GitHub token the server holds for a
  * logged-in session (clients never see the token). Two operations:
- *  - open PRs of a repo targeting a branch, with the paths each one touches (cached 60s per
- *    repo+branch so four agents polling every two minutes cost one GitHub call);
+ *  - exact upstream/caller head lookups (cached 60s per token, repo and qualified head);
  *  - one "room ledger" comment per PR: found by a marker and edited in place, else created.
  */
 
@@ -12,13 +11,13 @@ export interface PullRequest {
   author: string
   /** Head branch name. */
   head: string
-  files: string[]
-  /** Absent when `files` is the PR's whole file list. `partial`: a later page failed or the page ceiling was
-   *  hit, so `files` is what was read; `unavailable`: the file list could not be read at all (`files` is empty). */
-  coverage?: 'partial' | 'unavailable'
+  /** Owner of the head branch; optional in responses from older servers. */
+  headOwner?: string
   updatedAt: string
   url: string
 }
+
+export interface PrLookup { heads: string[]; prs: PullRequest[] }
 
 export interface GitHubProxyOptions {
   fetch?: typeof fetch
@@ -33,17 +32,14 @@ export const LEDGER_MARKER = '<!-- room-ledger -->'
 const API = 'https://api.github.com'
 /** GitHub's largest page. Page ceilings keep one request from turning into hundreds of GitHub calls. */
 const PAGE = 100
-const MAX_PR_PAGES = 10
-const MAX_FILE_PAGES = 30
 const MAX_COMMENT_PAGES = 30
 
 export class GitHubProxy {
   private readonly fetch: typeof fetch
   private readonly now: () => number
   private readonly cacheMs: number
-  private readonly cache = new Map<string, { exp: number; prs: PullRequest[] }>()
+  private readonly cache = new Map<string, { exp: number; value: PullRequest[] | string }>()
   private readonly inFlight = new Map<string, { promise: Promise<PullRequest[]>; controller: AbortController; users: number }>()
-  private readonly logins = new Map<string, string>()
 
   constructor(private readonly o: GitHubProxyOptions = {}) {
     this.fetch = o.fetch ?? globalThis.fetch
@@ -82,21 +78,32 @@ export class GitHubProxy {
     return { items, complete: false }
   }
 
-  /** Open PRs of owner/repo, newest update first, with their files. By default those whose base is `branch`;
-   *  `{ head: true }` lists those whose HEAD is `branch` instead (any base). Cached per query. */
-  async openPrs(token: string, ownerRepo: string, branch: string, opts: { head?: boolean; signal?: AbortSignal } = {}): Promise<PullRequest[]> {
+  /** Query only the upstream owner's branch and the token user's fork; never enumerate the repo. */
+  async openPrs(token: string, ownerRepo: string, branch: string, opts: { signal?: AbortSignal } = {}): Promise<PrLookup> {
+    const upstream = ownerRepo.split('/')[0]
+    const login = await this.loginOf(token, opts.signal)
+    const owners = upstream.toLowerCase() === login.toLowerCase() ? [upstream] : [upstream, login]
+    const heads = owners.map(owner => `${owner}:${branch}`)
+    // Await both requests even on failure, retaining the operation's resource slot until they settle.
+    const results = await Promise.allSettled(heads.map(head => this.prsForHead(token, ownerRepo, head, opts)))
+    const prs = new Map<number, PullRequest>()
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason
+      for (const pr of result.value) prs.set(pr.number, pr)
+    }
+    return { heads, prs: [...prs.values()] }
+  }
+
+  private async prsForHead(token: string, ownerRepo: string, head: string, opts: { signal?: AbortSignal }): Promise<PullRequest[]> {
     if (opts.signal?.aborted) throw opts.signal.reason ?? new Error('request cancelled')
-    const key = `${token}\0${ownerRepo}#${opts.head ? 'head:' : ''}${branch}`
+    const key = `${token}\0${ownerRepo}#head:${head}`
     const hit = this.cache.get(key)
-    if (hit && hit.exp > this.now()) return hit.prs
+    if (hit && hit.exp > this.now() && Array.isArray(hit.value)) return hit.value
     let flight = this.inFlight.get(key)
     if (!flight) {
       const controller = new AbortController()
-      const promise = this.fetchPrs(token, ownerRepo, branch, opts.head, controller.signal).then(({ prs, failed }) => {
-        // A file list that failed upstream is retried on the next poll, not pinned for the cache lifetime.
-        if (!failed) this.cache.set(key, { exp: this.now() + this.cacheMs, prs })
-        for (const [k, v] of this.cache) if (v.exp <= this.now()) this.cache.delete(k)
-        if (this.cache.size > 500) this.cache.delete(this.cache.keys().next().value!)
+      const promise = this.fetchHeadPrs(token, ownerRepo, head, controller.signal).then(prs => {
+        this.remember(key, prs)
         return prs
       }).finally(() => { this.inFlight.delete(key) })
       flight = { promise, controller, users: 0 }
@@ -123,37 +130,32 @@ export class GitHubProxy {
     } finally { opts.signal.removeEventListener('abort', onAbort!); if (!left) abandoned() }
   }
 
-  private async fetchPrs(token: string, ownerRepo: string, branch: string, head: boolean | undefined, signal: AbortSignal): Promise<{ prs: PullRequest[]; failed: boolean }> {
-    const owner = ownerRepo.split('/')[0]
-    const filter = head ? `head=${encodeURIComponent(`${owner}:${branch}`)}` : `base=${encodeURIComponent(branch)}`
-    // GitHub pages the list at 100; a busy repo has more open PRs than that.
-    const raws = await this.pages<RawPr>(token, `/repos/${ownerRepo}/pulls?state=open&${filter}&sort=updated&direction=desc`, MAX_PR_PAGES, undefined, signal)
-    if ('error' in raws) throw new GitHubError(raws.error, `could not list pull requests of ${ownerRepo} (HTTP ${raws.error})`)
-    // A short list would read as "these PRs closed" to the client that mirrors it: fail and let it retry.
-    if (raws.failed !== undefined) throw new GitHubError(503, `the pull request list of ${ownerRepo} is incomplete (a later page answered HTTP ${raws.failed}); retry`)
-    if (!raws.complete) this.o.log?.(`github/prs: listing the newest ${MAX_PR_PAGES * PAGE} open pull requests of ${ownerRepo}; more exist (GitHub gives no total)`)
-    const prs: PullRequest[] = []
-    let failed = false
-    for (const raw of raws.items) {
-      // Same for the file list; a mirrored scope must not silently drop the files past the first page.
-      const files = await this.pages<{ filename?: string }>(token, `/repos/${ownerRepo}/pulls/${raw.number}/files?`, MAX_FILE_PAGES, undefined, signal)
-      const paths = ('error' in files ? [] : files.items).map(f => f.filename).filter((f): f is string => !!f)
-      const coverage = 'error' in files ? 'unavailable' : files.complete ? undefined : 'partial'
-      if ('error' in files || files.failed !== undefined) failed = true
-      prs.push({ number: raw.number, title: raw.title ?? '', author: raw.user?.login ?? '', head: raw.head?.ref ?? '', files: paths, ...(coverage ? { coverage } : {}), updatedAt: raw.updated_at ?? '', url: raw.html_url ?? '' })
-    }
-    return { prs, failed }
+  private async fetchHeadPrs(token: string, ownerRepo: string, head: string, signal: AbortSignal): Promise<PullRequest[]> {
+    const result = await this.api(token, `/repos/${ownerRepo}/pulls?state=open&head=${encodeURIComponent(head)}&per_page=100`, { signal })
+    if (result.status !== 200 || !Array.isArray(result.body)) throw new GitHubError(result.status, `pull request lookup failed for ${head} (HTTP ${result.status}); retry or use room_pr_note number=<n>`)
+    return (result.body as RawPr[]).map(raw => ({
+      number: raw.number, title: raw.title ?? '', author: raw.user?.login ?? '', head: raw.head?.ref ?? '',
+      headOwner: raw.head?.user?.login ?? raw.head?.label?.split(':')[0] ?? head.slice(0, head.indexOf(':')),
+      updatedAt: raw.updated_at ?? '', url: raw.html_url ?? '',
+    }))
   }
 
-  /** The login behind a token (cached), used to find the caller's own ledger comment. */
+  /** Login and head results share the same TTL and bounded cache. Hits never extend their lifetime. */
+  private remember(key: string, value: PullRequest[] | string): void {
+    this.cache.set(key, { exp: this.now() + this.cacheMs, value })
+    for (const [k, v] of this.cache) if (v.exp <= this.now()) this.cache.delete(k)
+    if (this.cache.size > 500) this.cache.delete(this.cache.keys().next().value!)
+  }
+
+  /** The token's current login, cached for the same 60s as its head results. */
   async loginOf(token: string, signal?: AbortSignal): Promise<string> {
-    const hit = this.logins.get(token)
-    if (hit) return hit
+    const key = `${token}\0login`
+    const hit = this.cache.get(key)
+    if (hit && hit.exp > this.now() && typeof hit.value === 'string') return hit.value
     const r = await this.api(token, '/user', { signal })
     const login = (r.body as { login?: string } | undefined)?.login
     if (r.status !== 200 || !login) throw new GitHubError(r.status, `could not read the GitHub user (HTTP ${r.status})`)
-    this.logins.set(token, login)
-    if (this.logins.size > 1000) this.logins.delete(this.logins.keys().next().value!)
+    this.remember(key, login)
     return login
   }
 
@@ -187,5 +189,5 @@ class GitHubError extends Error {
 }
 
 type Paged<T> = { items: T[]; complete: boolean; failed?: number }
-interface RawPr { number: number; title?: string; user?: { login?: string }; head?: { ref?: string }; updated_at?: string; html_url?: string }
+interface RawPr { number: number; title?: string; user?: { login?: string }; head?: { ref?: string; label?: string; user?: { login?: string } }; updated_at?: string; html_url?: string }
 interface RawComment { id: number; body?: string; html_url?: string; user?: { login?: string } }

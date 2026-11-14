@@ -106,7 +106,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
 
   const render = () => {
     hideTooltip()
-    const names = [...new Set([...conn.room.graphs.keys(), ...manifestPeople(conn.room), ...conn.room.scopes.keys(), ...presences(conn.provider, conn.room).map(p => p.user.name)])].sort()
+    const names = [...new Set([...conn.room.graphs.keys(), ...manifestPeople(conn.room), ...conn.room.allScopes().map(sc => sc.by), ...presences(conn.provider, conn.room).map(p => p.user.name)])].sort()
     if (!names.includes(selectedPerson)) selectedPerson = names[0] ?? ''
     person.replaceChildren(...names.map(name => h('option', { value: name, selected: name === selectedPerson }, name)))
     const claims = rememberPlanClaims(planHistory, conn.room.openClaims())

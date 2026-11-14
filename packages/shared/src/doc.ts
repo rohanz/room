@@ -34,6 +34,12 @@ type NewScope = Omit<Scope, 'at'> & { at?: number }
 export type PostBody<T extends Msg = Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'priority' | 'seq'> & { priority?: Priority }
 /** Posts the release notices of a cleared participant: a session's post seam (`auto`), or the hub's sequenced append. */
 export type ReleasePoster = (from: Identity, body: PostBody<ReleaseMsg>) => unknown
+// Stored-state compatibility only: mirrors had no identity or holder. Never delete based on this filter.
+const storedPrScope = (room: RoomDoc, scope: Scope): boolean => {
+  if (scope.byKind !== 'bot' || !/^pr#[1-9]\d*$/.test(scope.by)) return false
+  const participant = participantRecord(room, scope.by)
+  return !participant?.id && !participant?.holder
+}
 const validColorIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) < PALETTE.length
 
 /** The hub's lease record for a name (hub §4.1); the hub alone writes it, at grant and at end. */
@@ -379,8 +385,8 @@ export class RoomDoc {
     this.doc.transact(() => { map.delete(relpath) }, origin)
   }
 
-  scope(person: string): Scope | undefined { return this.scopes.get(person) }
-  allScopes(): Scope[] { return Array.from(this.scopes.values()).sort((a, b) => a.at - b.at) }
+  scope(person: string): Scope | undefined { const scope = this.scopes.get(person); return scope && !storedPrScope(this, scope) ? scope : undefined }
+  allScopes(): Scope[] { return Array.from(this.scopes.values()).filter(scope => scope && !storedPrScope(this, scope)).sort((a, b) => a.at - b.at) }
   ledger(q: LedgerQuery = {}): Msg[] { return ledgerView(this.messages(), this.allScopes(), q) }
   areaSummary(windowMs?: number): string[] { return areaSummaryView(this.messages(), this.allScopes(), windowMs) }
 

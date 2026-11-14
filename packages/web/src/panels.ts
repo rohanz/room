@@ -147,13 +147,13 @@ function changesByPerson(room: RoomDoc): Map<string, string[]> {
 }
 
 export function participantInput(conn: Conn): ParticipantInput {
-  const names = new Set([...manifestPeople(conn.room), ...conn.room.scopes.keys()])
+  const names = new Set([...manifestPeople(conn.room), ...conn.room.allScopes().map(sc => sc.by)])
   const changes = new Map<string, string[]>()
   for (const name of names) changes.set(name, webChangedPaths(conn.room, name))
   return {
     presences: presences(conn.provider, conn.room),
     workers: conn.room.acceptedWorkerViews(),
-    scopes: Array.from(conn.room.scopes.entries()),
+    scopes: conn.room.allScopes().map(sc => [sc.by, sc] as const),
     overlayPeople: manifestPeople(conn.room),
     changesByPerson: changes,
     claims: conn.room.openClaims(),
@@ -950,7 +950,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
     const allEpisodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
     const areaPersonMatching = entries.filter(e => focus.person
       ? e.message.from === focus.person || e.conflict?.people.includes(focus.person) || ('to' in e.message && e.message.to === focus.person)
-      : !areaFilter || ('area' in e.message && e.message.area === areaFilter) || conn.room.scopes.get(e.message.from)?.area === areaFilter || allEpisodes.some(ep => ep.area === areaFilter && ep.items.some(it => it.message.id === e.message.id)))
+      : !areaFilter || ('area' in e.message && e.message.area === areaFilter) || conn.room.scope(e.message.from)?.area === areaFilter || allEpisodes.some(ep => ep.area === areaFilter && ep.items.some(it => it.message.id === e.message.id)))
     const filtered = filterPriorityTimeline(areaPersonMatching, selectedPriorities, windowSize)
     const window = filtered.window
     const conflicts = window.flatMap(e => e.conflict ? [e.conflict] : [])
@@ -991,7 +991,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
       return button
     }))
     const visible = episodes
-    const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scopes.get(p)?.area === areaFilter)))
+    const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scope(p)?.area === areaFilter)))
     list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen, conn.room) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
     if (filtered.matching.length > window.length) list.prepend(h('button', { class: 'timeline-more', onclick: () => { windowSize += TIMELINE_WINDOW; render() } }, 'Show older events'))
     focus.setTimelinePeople([...prominentPeople].sort())

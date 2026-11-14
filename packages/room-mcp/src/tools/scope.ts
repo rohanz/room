@@ -21,7 +21,6 @@ import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
 import { browserViewLine, parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
-import { isPrName } from '../prs.js'
 import { openMergeConflicts } from '../conflict-set.js'
 import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { importedHistory } from '@room/shared'
@@ -53,7 +52,7 @@ async function workerChangedCount(s: Session, worker: LocalWorker, processGone: 
 const formatRoomMessage = (s: Session, m: Msg): string => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages(), claims: s.room.openClaims() })
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, ledger, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, readText, lines, shareOf } = state
+  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, ledger, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, myWorkers, workerPaths, readText, lines, shareOf } = state
   const pathState: Handler = async a => {
       const s = S()
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
@@ -81,7 +80,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const moved = mapped.approximate ? ` (your lines ${mapped.from}-${mapped.to}, approximate)` : mapped.from !== c.from || mapped.to !== c.to ? ` (your lines ${mapped.from}-${mapped.to})` : ''
           out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}${moved}`))
         }
-        for (const sc of x.room.allScopes()) if ((nb.has(sc.by) || isPrName(sc.by)) && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
+        for (const sc of x.room.allScopes()) if (nb.has(sc.by) && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
         for (const n of manifestChangers(x.room, p)) if (nb.has(n) && !sameCheckoutSession(s, n)) {
           const entry = snapshotMetadata(x.room, n, [])?.entries.get(p)
           who.set(n, entry?.state === 'shared' ? 'shared' : 'not shared')
@@ -120,7 +119,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`, ...posted.ok ? [] : [`scope notice ${posted.text}`]]
       out.push(...areaLines(s, areas))
       const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
-      const overlapping = s.room.allScopes().filter(sc => (nb.has(sc.by) || isPrName(sc.by)) && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
+      const overlapping = s.room.allScopes().filter(sc => nb.has(sc.by) && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
       for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} — coordinate before touching shared files`)
       out.push(...ledgerLines(s, { area, limit: 20 }, area, posted.msg.id))
       return out.join('\n')
@@ -142,7 +141,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const m = s.room.meta
       const publisher = publisherLine(s)
-      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !isPrName(p.user.name)).map(p => p.user.name)).size
+      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name).map(p => p.user.name)).size
       const participants = `${people} other participant${people === 1 ? '' : 's'}`
       const noUnseen = !ledger.candidates(s).length
       const sharingLevel = shareOf(s, s.me.name)
@@ -195,7 +194,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const groups = splitParticipants({
         presences: ps, workers: s.room.acceptedWorkerViews(), retiredWorkers: s.room.retiredWorkers(),
-        scopes: [...s.room.scopes.entries()], overlayPeople: manifestNames(s.room),
+        scopes: s.room.allScopes().map(sc => [sc.by, sc] as const), overlayPeople: manifestNames(s.room),
         changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
       })
       const retiredNames = new Set(s.room.retiredWorkers().map(worker => worker.name))
@@ -319,7 +318,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (cut) out.push('  (long messages cut to one line; room_state all=true shows them in full)')
       if (history) out.push(`  (migrated Room 0.16 history: ${history} message${history === 1 ? '' : 's'}, room_state all=true shows them)`)
-      out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
       out.push(...formatWorkerLines(await Promise.all((await Promise.all((await myWorkers(s)).map(async worker => { const view = (await localWorkerView(s, worker.id)); return view ? [{ worker, view }] : [] }))).flat().map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker: view, dir: worker.dir, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), activity: liveWorkerActivity(s.dir, worker, processGone, now()), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {

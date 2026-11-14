@@ -1,8 +1,7 @@
-import { neighbours, participantsView, type NoteMsg } from '@room/shared'
-import { acceptedPrBranch, fetchPrs, postPrNote, prLeader, renderPrNote, syncPrs } from '../prs.js'
-import { openPrs, type PrInfo } from '../prs.js'
+import type { NoteMsg } from '@room/shared'
+import { acceptedPrBranch, fetchPrs, postPrNote, renderPrNote, type PrInfo } from '../prs.js'
 import type { Session } from '../session.js'
-import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { RW, int, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_pr_note', annotations: { ...RW, openWorldHint: true }, description: 'Use when asked to post Room activity on a GitHub PR. Updates the room ledger on this branch’s PR by default.',
@@ -10,26 +9,24 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, refreshPrs, myPr, postLedger } = state
+  const { S, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_pr_note(a) {
       const s = S()
       if (!s.roomName.startsWith('github.com/')) return 'error: this room is not a GitHub repo; there are no pull requests to annotate'
       if (a.number === undefined && acceptedPrBranch(s) === 'updating') return 'error: your branch is updating; retry when its git record is current, or pass number=<n>'
-      await refreshPrs(s)
       let pr: PrInfo | undefined
       if (a.number !== undefined) {
         const n = Number(a.number)
         if (!Number.isInteger(n) || n <= 0) return 'error: number must be a positive PR number'
-        pr = openPrs(s.room).find(p => p.number === n) ?? { number: n, title: `#${n}`, author: '', head: '', files: [], updatedAt: '', url: '' }
+        pr = { number: n, title: `#${n}`, author: '', head: '', updatedAt: '', url: '' }
       } else {
         pr = await myPr(s)
         if (!pr) {
           const branch = acceptedPrBranch(s)
           if (branch === 'updating') return 'error: your branch is updating; retry when its git record is current, or pass number=<n>'
           if (!branch) return "check out the PR's branch, or pass number"
-          const open = openPrs(s.room)
-          return `no open PR has ${branch} as its head${open.length ? `; open PRs targeting branches here: ${open.map(p => `#${p.number} (${p.head})`).join(', ')}` : ''}. Pass number=<n>`
+          return `no open PR has ${branch} as its head. Pass number=<n>`
         }
       }
       if (a.number === undefined && acceptedPrBranch(s) !== pr.head) return 'error: your branch changed while selecting its PR; retry room_pr_note or pass number=<n>'
@@ -40,92 +37,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' | 'now'>): Pick<HandlerState, 'refreshPrs' | 'startPrSync' | 'stopPrSync' | 'prLines' | 'myPr' | 'postLedger'> {
-  const { ctx, presences, log, now } = deps
-  let prTimer: ReturnType<typeof setInterval> | null = null
-  let prSyncedSession: Session | null = null
-  // Stopping or replacing the sync advances the generation: a pass started before it never publishes.
-  let generation = 0
-  type Flight = { done: Promise<string>; dirty: boolean; controller: AbortController; generation: number }
-  const flights = new Map<Session, Flight>()
+export function createPrs(deps: Pick<HandlerState, 'ctx' | 'now'>): Pick<HandlerState, 'myPr' | 'postLedger'> {
+  const { ctx, now } = deps
   const fetchPrList = ctx.prs?.fetch ?? fetchPrs
   const postNote = ctx.prs?.post ?? postPrNote
-  const owns = (s: Session, flight: Flight) => flight.generation === generation && !flight.controller.signal.aborted && !s.closed
-  /** One pass at a time per session; a request made during a pass marks it dirty and gets one follow-up pass. */
-  const refreshPrs = (s: Session): Promise<string> => {
-    const current = flights.get(s)
-    if (current) { current.dirty = true; return current.done }
-    const flight = { dirty: false, controller: new AbortController(), generation } as Flight
-    flight.done = (async () => {
-      try {
-        let result = ''
-        do { flight.dirty = false; result = await refreshOnce(s, flight) } while (flight.dirty && owns(s, flight))
-        return result
-      } finally { if (flights.get(s) === flight) flights.delete(s) }
-    })()
-    flights.set(s, flight)
-    return flight.done
-  }
-  const refreshOnce = async (s: Session, flight: Flight): Promise<string> => {
-      if (!s.roomName.startsWith('github.com/')) return ''
-      const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
-      const present = presences(s).map(p => p.user.name).filter(name => name === s.me.name || nb.has(name))
-      const leader = prLeader(present.length ? present : [s.me.name], s.room.acceptedWorkerViews().map(w => w.name))
-      if (leader !== s.me.name) return ''
-      const view = participantsView(s.room, s.awareness, now())
-      const names = [s.me.name, ...neighbours(view, s.me.name).names()]
-      const active = new Map(presences(s).map(p => [p.user.name, p.lastActive ?? 0]))
-      const chooseBranches = () => [...new Set(names.sort((a, b) => (active.get(b) ?? 0) - (active.get(a) ?? 0))
-        .map(name => acceptedPrBranch(s, name, now())).filter((branch): branch is string => !!branch && branch !== 'updating' && !branch.startsWith('room/')))].slice(0, 10)
-      const branches = chooseBranches()
-      if (!branches.length) return ''
-      let prs: PrInfo[]
-      const signal = flight.controller.signal
-      try {
-        const fetched = await Promise.all(branches.flatMap(branch => [fetchPrList(s, { branch, signal }), fetchPrList(s, { branch, head: true, signal })]))
-        prs = [...new Map(fetched.flat().map(pr => [pr.number, pr])).values()].slice(0, 20)
-      } catch (e) {
-        if (owns(s, flight)) log(`pull requests: ${e instanceof Error ? e.message : String(e)}`)
-        return ''
-      }
-      if (!owns(s, flight)
-        || prLeader(presences(s).map(p => p.user.name), s.room.acceptedWorkerViews().map(w => w.name)) !== s.me.name
-        || JSON.stringify(chooseBranches()) !== JSON.stringify(branches)) return ''
-      const r = syncPrs(s.room, prs, s.me)
-      const parts = [r.added.length ? `mirrored ${r.added.map(n => `#${n}`).join(', ')}` : '', r.removed.length ? `removed ${r.removed.map(n => `#${n}`).join(', ')}` : ''].filter(Boolean)
-      if (parts.length) log(`pull requests: ${parts.join('; ')}`)
-      return parts.join('; ')
-    }
-  const startPrSync = (s: Session) => {
-      if (prSyncedSession === s) return
-      stopPrSync()
-      prSyncedSession = s
-      const every = ctx.prs?.intervalMs ?? 2 * 60_000
-      const refresh = () => { void refreshPrs(s).catch(e => log(`pull requests: ${e instanceof Error ? e.message : String(e)}`)) }
-      refresh()
-      if (every > 0) { prTimer = setInterval(refresh, every); prTimer.unref?.() }
-    }
-  const stopPrSync = () => {
-    if (prTimer) clearInterval(prTimer)
-    prTimer = null; prSyncedSession = null
-    generation++
-    for (const flight of flights.values()) flight.controller.abort()
-    flights.clear()
-  }
-  const prLines = (s: Session): string[] => {
-      const prs = openPrs(s.room)
-      if (!prs.length) return []
-      const out = [`open pull requests (${prs.length}):`]
-      for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head}): ${pr.coverage ? `[files ${pr.coverage}] ` : ''}${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
-      return out
-    }
   const myPr = async (s: Session): Promise<PrInfo | undefined> => {
-      const head = acceptedPrBranch(s)
-      if (!head || head === 'updating') return undefined
-      try { const byHead = (await fetchPrList(s, { branch: head, head: true })).find(p => p.head === head); if (acceptedPrBranch(s) !== head) return undefined; if (byHead) return byHead } catch (e) { log(`pull requests by head: ${e instanceof Error ? e.message : String(e)}`) }
-      if (acceptedPrBranch(s) !== head) return undefined
-      return openPrs(s.room).find(p => p.head === head)
-    }
+    const head = acceptedPrBranch(s)
+    if (!head || head === 'updating') return undefined
+    const result = await fetchPrList(s, { branch: head })
+    const prs = result.prs.filter(p => p.head === head)
+    if (acceptedPrBranch(s) !== head) return undefined
+    if (prs.length > 1) throw new Error(`several open PRs have ${head} as their head: ${prs.map(pr => `#${pr.number} (${pr.headOwner ?? 'unknown owner'}:${pr.head})`).join(', ')}. Use room_pr_note number=<n> to pick one`)
+    if (!prs.length) throw new Error(result.heads
+      ? `no open pull request was found for ${result.heads.join(' or ')}. A pull request from another account's fork needs room_pr_note number=<n>`
+      : `no open pull request was found for branch ${head}. A fork's pull request needs room_pr_note number=<n> until the server is updated`)
+    return prs[0]
+  }
+
   const postLedger = async (s: Session, pr: PrInfo): Promise<string> => {
       const branch = acceptedPrBranch(s)
       if (branch === 'updating') return 'error: your branch is updating; retry when its git record is current'
@@ -134,5 +62,5 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       await s.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
       return `${r.updated ? 'updated' : 'posted'} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ''} (${body.split('\n').length} lines)`
     }
-  return { refreshPrs, startPrSync, stopPrSync, prLines, myPr, postLedger }
+  return { myPr, postLedger }
 }

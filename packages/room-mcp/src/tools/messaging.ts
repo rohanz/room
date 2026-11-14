@@ -10,7 +10,6 @@ import type { Batch } from '../ledger.js'
 import type { LocalWorker } from '../worker-status.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
 import type { PostResult } from '../post.js'
-import { isPrName } from '../prs.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { registryForDir } from '../worker-registry.js'
@@ -187,7 +186,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const exactWorkerRoom = to && wsr && wsr !== lead && ((await myWorkers(wsr)).some(w => w.name === to) || wsr.room.retiredWorkers().some(w => w.name === to)) ? wsr : undefined
       const s = byQuestion ?? resolvedWorker?.room ?? exactWorkerRoom ?? lead
-      const text = typeof a.text === 'string' && a.text ? a.text : typeof a.message === 'string' ? a.message : ''
+      const text = typeof a.text === 'string' ? a.text : ''
       if (!text) return 'error: text is required'
       if (to && to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
       if (to && !rooms.all().some(room => known(room).has(to))) {
@@ -219,7 +218,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
       }
       const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
-      // Retired symbols are ignored; Room detects changed definitions automatically.
       const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
         : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
         : sendType === 'answer' ? withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
@@ -301,7 +299,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? (await unavailableQuestion(s, msg.id)) ?? notice.text : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()
-      if (a.message !== undefined) notes.push('message moved to text; accepted this release')
       return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
     },
     async room_wait(a) {
@@ -526,15 +523,13 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
     }
   const owners = (s: Session, f: string): string[] => {
       const out = new Set<string>()
-      for (const sc of s.room.allScopes()) if (!isPrName(sc.by) && scopeCovers(sc, f)) out.add(sc.by)
+      for (const sc of s.room.allScopes()) if (scopeCovers(sc, f)) out.add(sc.by)
       for (const c of s.room.claimsFor(f)) out.add(c.by)
       for (const p of manifestChangers(s.room, f)) out.add(p)
       return Array.from(out).sort()
     }
   const describeUsers = (s: Session, files: string[]): string => files.map(f => {
       const o = owners(s, f).filter(x => x !== s.me.name)
-      const prs = s.room.allScopes().filter(sc => isPrName(sc.by) && scopeCovers(sc, f)).map(sc => `PR #${sc.by.slice(3)}`)
-      if (prs.length) return `${f} (${o.length ? `${o.join(', ')}, ` : 'base, '}also touched by ${prs.join(', ')})`
       return o.length ? `${f} (${o.join(', ')})` : f
     }).join(', ')
   const waitingOn = async (s: Session): Promise<string[]> => {

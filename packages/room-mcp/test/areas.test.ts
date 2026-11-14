@@ -151,11 +151,11 @@ describe('areas from CODEOWNERS', () => {
     // An unaddressed routine change is feed-only, even when it touches my area.
     hubAppend(t.b, { name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['web/b.py'], summary: 'routine edit', symbols: ['b'] } as never)
     expect(t.inboxOf(await t.rohan.tools.call('room_state', {}))).toBe('')
-    // The routine broadcast stays feed-only, but symbol users get an addressed copy.
-    await t.kieran.tools.call('room_send', { type: 'changed', text: 'renamed b', paths: ['web/b.py'], symbols: ['b'] })
+    // The routine broadcast stays feed-only, but owners of the changed path get an addressed copy.
+    await t.kieran.tools.call('room_send', { type: 'changed', text: 'renamed b', paths: ['web/b.py'] })
     expect(t.inboxOf(await t.rohan.tools.call('room_state', {}))).toContain('renamed b')
-    // A changed-with-symbols in api/: not for Rohan.
-    await t.kieran.tools.call('room_send', { type: 'changed', text: 'renamed a', paths: ['api/a.py'], symbols: ['a'] })
+    // A changed path in api/: not for Rohan.
+    await t.kieran.tools.call('room_send', { type: 'changed', text: 'renamed a', paths: ['api/a.py'] })
     expect(t.inboxOf(await t.rohan.tools.call('room_state', {}))).toBe('')
     // Addressed and interrupt still arrive whatever the area.
     await t.kieran.tools.call('room_send', { type: 'question', text: 'seen a?', to: 'Rohan' })

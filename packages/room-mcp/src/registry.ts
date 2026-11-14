@@ -5,7 +5,7 @@ import { requireWorkerInventory } from './worker-store.js'
  * A process used to hold exactly one session; a lead in a team room that dispatches workers into a
  * local room holds two. Every tool that names a participant, a question, a claim or a worker asks
  * this registry which session holds it instead of guessing. The registry also owns the per-session
- * attachments (hooks bridge, conflict watcher, PR mirror, wake delivery, the lead-in-two-rooms
+ * attachments (hooks bridge, conflict watcher, wake delivery, the lead-in-two-rooms
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */

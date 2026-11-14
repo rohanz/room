@@ -2,7 +2,7 @@ import { renderScheduler } from './scheduler.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RoomDoc, colorFor, manifestKey, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
 import { parseRoomUrl, type Conn } from './conn.ts'
-import { deriveParticipants, deriveStatePill, shortPill, header, centrePanel, createFocusState } from './panels.ts'
+import { deriveParticipants, deriveStatePill, shortPill, header, centrePanel, createFocusState, participantInput } from './panels.ts'
 import { publish } from './test-manifest.ts'
 
 describe('shortPill', () => {
@@ -34,6 +34,17 @@ describe('room URL parsing', () => {
 })
 
 describe('participant cards', () => {
+  it('ignores saved PR bot scopes while retaining a genuine similarly named participant', () => {
+    const room = new RoomDoc()
+    room.scopes.set('pr#7', { by: 'pr#7', byKind: 'bot', area: 'api', summary: 'PR', paths: ['a.ts'], at: 1 })
+    room.participants.set('pr#8\0id', { name: 'pr#8', kind: 'bot' })
+    room.scopes.set('pr#8', { by: 'pr#8', byKind: 'bot', area: 'api', summary: 'work', paths: ['b.ts'], at: 2 })
+    const conn = { room, provider: { awareness: { getStates: () => new Map() } } } as unknown as Conn
+    expect(deriveParticipants(participantInput(conn)).map(person => person.name)).toEqual(['pr#8'])
+    expect(room.scopes.size).toBe(2)
+    room.doc.destroy()
+  })
+
   it('unions awareness, scopes and overlay keys', () => {
     const now = 2_000_000
     const presences: Presence[] = [

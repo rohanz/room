@@ -226,7 +226,7 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
   }
 
   // 4. Retention of the archive and outcomes, over existing entries plus this trim's.
-  const scopes = [...doc.scopes.values()].filter(s => s && typeof s.area === 'string' && Array.isArray(s.paths))
+  const scopes = doc.allScopes().filter(s => s && typeof s.area === 'string' && Array.isArray(s.paths))
   const leaving = bus.filter((m, i) => i < cutoff || ended.has(m.id))
   const archived = new Map<string, ArchivedMsg>()
   for (const m of leaving) if (!doc.archive.has(m.id) && !archived.has(m.id)) archived.set(m.id, compact(m, scopes))

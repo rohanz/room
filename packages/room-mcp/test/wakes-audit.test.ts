@@ -60,13 +60,6 @@ function fixture() {
   return { main, rooms, makeSession, addWorker, state, tools: handlers(state) }
 }
 
-it('accepts message as an alias for room_send text', async () => {
-  const { main, tools } = fixture()
-  const sent = await tools.room_send({ type: 'note', message: 'working on it' })
-  expect(sent).toContain('working on it')
-  expect(main.room.messages().at(-1)).toMatchObject({ type: 'note', text: 'working on it' })
-})
-
 it('infers the asker for an explicit inReplyTo when to is omitted', async () => {
   const { main, tools } = fixture()
   const question = hubAppend(main.room, { name: 'worker', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })

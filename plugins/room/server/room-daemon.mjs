@@ -8441,7 +8441,7 @@ function trim(doc, now, opts = {}) {
       report.evicted++;
     }
   }
-  const scopes = [...doc.scopes.values()].filter((s) => s && typeof s.area === "string" && Array.isArray(s.paths));
+  const scopes = doc.allScopes().filter((s) => s && typeof s.area === "string" && Array.isArray(s.paths));
   const leaving = bus.filter((m, i) => i < cutoff || ended.has(m.id));
   const archived = /* @__PURE__ */ new Map();
   for (const m of leaving) if (!doc.archive.has(m.id) && !archived.has(m.id)) archived.set(m.id, compact(m, scopes));
@@ -9380,7 +9380,7 @@ function makeAnchor(text3, from2, to2) {
     to: relativePositionToJSON(createRelativePositionFromTypeIndex(text3, lineStart(text3.toString(), to2)))
   };
 }
-var validColorIndex, RoomDoc;
+var storedPrScope, validColorIndex, RoomDoc;
 var init_doc = __esm({
   "packages/shared/src/doc.ts"() {
     "use strict";
@@ -9394,6 +9394,11 @@ var init_doc = __esm({
     init_manifest();
     init_identity();
     init_ledger();
+    storedPrScope = (room, scope) => {
+      if (scope.byKind !== "bot" || !/^pr#[1-9]\d*$/.test(scope.by)) return false;
+      const participant = participantRecord(room, scope.by);
+      return !participant?.id && !participant?.holder;
+    };
     validColorIndex = (value2) => Number.isInteger(value2) && value2 >= 0 && value2 < PALETTE.length;
     RoomDoc = class {
       doc;
@@ -9703,10 +9708,11 @@ var init_doc = __esm({
         }, origin);
       }
       scope(person) {
-        return this.scopes.get(person);
+        const scope = this.scopes.get(person);
+        return scope && !storedPrScope(this, scope) ? scope : void 0;
       }
       allScopes() {
-        return Array.from(this.scopes.values()).sort((a, b) => a.at - b.at);
+        return Array.from(this.scopes.values()).filter((scope) => scope && !storedPrScope(this, scope)).sort((a, b) => a.at - b.at);
       }
       ledger(q = {}) {
         return ledger(this.messages(), this.allScopes(), q);

@@ -4,7 +4,8 @@ import { WorkSlots } from '../src/http.js'
 
 type Call = { method: string; url: string; body?: any; auth?: string }
 /** A scripted GitHub: two open PRs on `main`, one on `dev`; PR 7 has a ledger comment by octo. */
-function fakeGitHub(opts: { login?: string; comments?: any[]; extraPrs?: any[] } = {}) {
+function fakeGitHub(opts: { login?: string | null; comments?: any[]; extraPrs?: any[] } = {}) {
+  const login = opts.login === undefined ? 'o' : opts.login
   const calls: Call[] = []
   const comments: any[] = opts.comments ?? []
   const json = (o: any, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
@@ -23,15 +24,9 @@ function fakeGitHub(opts: { login?: string; comments?: any[]; extraPrs?: any[] }
         { number: 11, title: 'Dev only', user: { login: 'sam' }, head: { ref: 'x' }, base: { ref: 'dev' }, updated_at: '2026-09-15T08:00:00Z', html_url: 'https://github.com/o/r/pull/11' },
         ...(opts.extraPrs ?? []),
       ]
-      return json(paged(all.filter(p => (!base || p.base.ref === base) && (!head || `o:${p.head.ref}` === head)), u))
+      return json(paged(all.filter(p => (!base || p.base.ref === base) && (!head || `${p.head.user?.login ?? 'o'}:${p.head.ref}` === head)), u))
     }
-    const files = url.match(/\/repos\/o\/r\/pulls\/(\d+)\/files/)
-    if (files) {
-      const page = Number(u.searchParams.get('page') ?? '1')
-      if (files[1] === '13') return json(page === 1 ? Array.from({ length: 100 }, (_, i) => ({ filename: `big/f${i}.py` })) : [{ filename: 'big/last.py' }])
-      return json(page > 1 ? [] : files[1] === '7' ? [{ filename: 'src/auth.py' }, { filename: 'src/session.py' }] : [{ filename: 'src/orders.py' }])
-    }
-    if (u.pathname === '/user') return opts.login ? json({ login: opts.login }) : json({ message: 'bad credentials' }, 401)
+    if (u.pathname === '/user') return login ? json({ login }) : json({ message: 'bad credentials' }, 401)
     if (u.pathname === '/repos/o/r/issues/7/comments' && method === 'GET') return json(paged(comments, u))
     if (u.pathname === '/repos/o/r/issues/7/comments' && method === 'POST') { const c = { id: 500, body: (init!.body && JSON.parse(String(init!.body)).body), html_url: 'https://github.com/o/r/pull/7#issuecomment-500', user: { login: opts.login } }; comments.push(c); return json(c, 201) }
     const patch = url.match(/\/repos\/o\/r\/issues\/comments\/(\d+)$/)
@@ -42,16 +37,21 @@ function fakeGitHub(opts: { login?: string; comments?: any[]; extraPrs?: any[] }
 }
 
 describe('GitHub proxy: open pull requests', () => {
-  it('coalesces identical in-flight lists for one token', async () => {
+  it('coalesces identical in-flight exact heads for one token', async () => {
     let calls = 0, finish!: (value: Response) => void
     const upstream = new Promise<Response>(resolve => { finish = resolve })
-    const proxy = new GitHubProxy({ fetch: (async () => { calls++; return upstream }) as typeof fetch })
+    const proxy = new GitHubProxy({ fetch: (async url => {
+      if (String(url).endsWith('/user')) return new Response('{"login":"o"}')
+      calls++; return upstream
+    }) as typeof fetch })
+    await proxy.loginOf('token')
     const a = proxy.openPrs('token', 'o/r', 'main')
     const b = proxy.openPrs('token', 'o/r', 'main')
+    await new Promise(resolve => setImmediate(resolve))
     expect(calls).toBe(1)
     finish(new Response('[]', { status: 200 }))
-    expect(await a).toEqual([])
-    expect(await b).toEqual([])
+    expect(await a).toEqual({ heads: ['o:main'], prs: [] })
+    expect(await b).toEqual({ heads: ['o:main'], prs: [] })
   })
   it('caps complete note operations and aborts an in-flight GitHub fetch', async () => {
     const slots = new WorkSlots(8, 2, { reserve: () => () => {} })
@@ -87,34 +87,34 @@ describe('GitHub proxy: open pull requests', () => {
     await Promise.all(pending.slice(0, 2))
     expect(slots.count).toBe(0)
   })
-  it('lists open PRs targeting the branch with their files, using the given token', async () => {
+  it('returns exact-head metadata without reading files', async () => {
     const gh = fakeGitHub()
     const p = new GitHubProxy({ fetch: gh.fetch })
-    const prs = await p.openPrs('gho_x', 'o/r', 'main')
-    expect(prs).toEqual([
-      { number: 7, title: 'Add login', author: 'kieran', head: 'feat/login', files: ['src/auth.py', 'src/session.py'], updatedAt: '2026-09-15T10:00:00Z', url: 'https://github.com/o/r/pull/7' },
-      { number: 9, title: 'Fix orders', author: 'sam', head: 'fix/orders', files: ['src/orders.py'], updatedAt: '2026-09-15T09:00:00Z', url: 'https://github.com/o/r/pull/9' },
-    ])
-    expect(gh.calls[0].url).toContain('/repos/o/r/pulls?state=open&base=main')
+    const result = await p.openPrs('gho_x', 'o/r', 'feat/login')
+    expect(result).toEqual({ heads: ['o:feat/login'], prs: [
+      { number: 7, title: 'Add login', author: 'kieran', head: 'feat/login', headOwner: 'o', updatedAt: '2026-09-15T10:00:00Z', url: 'https://github.com/o/r/pull/7' },
+    ] })
+    expect(gh.calls[1].url).toContain('head=o%3Afeat%2Flogin')
     expect(gh.calls.every(c => c.auth === 'Bearer gho_x')).toBe(true)
-    // a branch with a slash is encoded
-    await p.openPrs('gho_x', 'o/r', 'feature/x')
-    expect(gh.calls.at(-1)!.url).toContain('base=feature%2Fx')
+    expect(gh.calls).toHaveLength(2) // user plus exact head
+    expect(result.prs.every(pr => !('files' in pr) && !('coverage' in pr))).toBe(true)
   })
 
-  it('caches the list for 60s per repo+branch', async () => {
+  it('caches successful empty or nonempty heads for 60s per token, repo and head', async () => {
     const gh = fakeGitHub()
     let t = 0
     const p = new GitHubProxy({ fetch: gh.fetch, now: () => t })
-    await p.openPrs('gho_x', 'o/r', 'main')
-    const n = gh.calls.length
-    await p.openPrs('gho_x', 'o/r', 'main')
-    expect(gh.calls.length).toBe(n) // served from cache
-    await p.openPrs('gho_x', 'o/r', 'dev')
-    expect(gh.calls.length).toBeGreaterThan(n) // another branch is another key
+    await p.openPrs('a', 'o/r', 'feat/login')
+    await p.openPrs('a', 'o/r', 'feat/login')
+    expect(gh.calls.filter(c => c.url.includes('/pulls?'))).toHaveLength(1)
+    await p.openPrs('a', 'o/r', 'none')
+    await p.openPrs('a', 'o/r', 'none')
+    expect(gh.calls.filter(c => c.url.includes('/pulls?'))).toHaveLength(2)
+    await p.openPrs('b', 'o/r', 'feat/login')
+    expect(gh.calls.filter(c => c.url.includes('/pulls?'))).toHaveLength(3)
     t = 61_000
-    await p.openPrs('gho_x', 'o/r', 'main')
-    expect(gh.calls.filter(c => c.url.includes('base=main')).length).toBe(2)
+    await p.openPrs('a', 'o/r', 'feat/login')
+    expect(gh.calls.filter(c => c.url.includes('/pulls?'))).toHaveLength(4)
   })
 
   it('reports GitHub failures with the status', async () => {
@@ -148,34 +148,13 @@ describe('GitHub proxy: one ledger comment per PR', () => {
   })
 
   it('fails when the token cannot read its user', async () => {
-    const gh = fakeGitHub()
+    const gh = fakeGitHub({ login: null })
     await expect(new GitHubProxy({ fetch: gh.fetch }).upsertNote('gho_x', 'o/r', 7, 'x')).rejects.toMatchObject({ status: 401 })
   })
 })
 
 
 describe('GitHub proxy: paging and head lookups', () => {
-  it('follows the file list past 100 entries', async () => {
-    const gh = fakeGitHub()
-    const proxy = new GitHubProxy({ fetch: gh.fetch })
-    const prs = await proxy.openPrs('tok', 'o/r', 'big')
-    expect(prs[0].files.length).toBe(101)
-    expect(prs[0].files.at(-1)).toBe('big/last.py')
-    expect(gh.calls.filter(c => c.url.includes('/pulls/13/files')).map(c => new URL(c.url).searchParams.get('page'))).toEqual(['1', '2'])
-  })
-  it('follows the open-PR list past 100 entries (per_page 100)', async () => {
-    // 2 PRs on main already + 120 more: three pages of 100, 20 and the request stops on the short page.
-    const extra = Array.from({ length: 120 }, (_, i) => ({ number: 1000 + i, title: `bulk ${i}`, user: { login: 'bot' }, head: { ref: `bulk/${i}` }, base: { ref: 'main' }, updated_at: '2026-09-14T00:00:00Z', html_url: `https://github.com/o/r/pull/${1000 + i}` }))
-    const gh = fakeGitHub({ extraPrs: extra })
-    const proxy = new GitHubProxy({ fetch: gh.fetch })
-    const prs = await proxy.openPrs('tok', 'o/r', 'main')
-    expect(prs.length).toBe(122)
-    expect(prs.map(p => p.number).slice(0, 2)).toEqual([7, 9])
-    expect(prs.at(-1)!.number).toBe(1119)
-    const listCalls = gh.calls.filter(c => new URL(c.url).pathname === '/repos/o/r/pulls').map(c => new URL(c.url))
-    expect(listCalls.map(u => u.searchParams.get('page'))).toEqual(['1', '2'])
-    expect(listCalls.every(u => u.searchParams.get('per_page') === '100')).toBe(true)
-  })
   it('finds the ledger comment on the second page of comments', async () => {
     const filler = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, body: `chatter ${i}`, user: { login: 'kieran' } }))
     const gh = fakeGitHub({ login: 'octo', comments: [...filler, { id: 777, body: `${LEDGER_MARKER}\nold`, user: { login: 'octo' } }] })
@@ -189,50 +168,6 @@ describe('GitHub proxy: paging and head lookups', () => {
     const r2 = await new GitHubProxy({ fetch: gh2.fetch }).upsertNote('gho_x', 'o/r', 7, 'new')
     expect(r2.updated).toBe(false)
     expect(gh2.calls.filter(c => new URL(c.url).pathname === '/repos/o/r/issues/7/comments' && c.method === 'GET').length).toBe(2)
-  })
-  it('marks file coverage unavailable or partial instead of reporting a failed file list as empty, and does not cache it', async () => {
-    let failFiles: 'first' | 'second' | 'none' = 'first'
-    const gh = fakeGitHub()
-    const failing = (async (url: string, init?: RequestInit) => {
-      const u = new URL(url), page = u.searchParams.get('page')
-      if (u.pathname.endsWith('/files') && (failFiles === 'first' || (failFiles === 'second' && page === '2'))) return new Response('{"message":"boom"}', { status: 502 })
-      return gh.fetch(url, init)
-    }) as typeof fetch
-    let t = 0
-    const proxy = new GitHubProxy({ fetch: failing, now: () => t })
-    const unavailable = await proxy.openPrs('tok', 'o/r', 'big')
-    expect(unavailable[0]).toMatchObject({ number: 13, files: [], coverage: 'unavailable' })
-    failFiles = 'second'
-    const partial = await proxy.openPrs('tok', 'o/r', 'big') // not served from the cache
-    expect(partial[0].files.length).toBe(100)
-    expect(partial[0].coverage).toBe('partial')
-    failFiles = 'none'
-    const full = await proxy.openPrs('tok', 'o/r', 'big')
-    expect(full[0].files.length).toBe(101)
-    expect('coverage' in full[0]).toBe(false)
-  })
-  it('marks file coverage partial when the file-page ceiling is hit', async () => {
-    const full = (async (url: string) => {
-      const u = new URL(url)
-      if (u.pathname === '/repos/o/r/pulls') return new Response(JSON.stringify(u.searchParams.get('page') === '1' ? [{ number: 5, title: 't', user: { login: 'a' }, head: { ref: 'h' } }] : []))
-      return new Response(JSON.stringify(Array.from({ length: 100 }, (_, i) => ({ filename: `p${u.searchParams.get('page')}/${i}` }))))
-    }) as typeof fetch
-    const prs = await new GitHubProxy({ fetch: full }).openPrs('tok', 'o/r', 'main')
-    expect(prs[0].files.length).toBe(3000)
-    expect(prs[0].coverage).toBe('partial')
-  })
-  it('fails (retryably, uncached) rather than returning a short PR list when a later list page fails', async () => {
-    const extra = Array.from({ length: 120 }, (_, i) => ({ number: 1000 + i, title: `bulk ${i}`, user: { login: 'bot' }, head: { ref: `bulk/${i}` }, base: { ref: 'main' }, updated_at: '2026-09-14T00:00:00Z', html_url: '' }))
-    const gh = fakeGitHub({ extraPrs: extra })
-    let fail = true
-    const proxy = new GitHubProxy({ fetch: (async (url: string, init?: RequestInit) => {
-      const u = new URL(url)
-      if (fail && u.pathname === '/repos/o/r/pulls' && u.searchParams.get('page') === '2') return new Response('{}', { status: 500 })
-      return gh.fetch(url, init)
-    }) as typeof fetch })
-    await expect(proxy.openPrs('tok', 'o/r', 'main')).rejects.toMatchObject({ status: 503, message: expect.stringContaining('incomplete') })
-    fail = false
-    expect((await proxy.openPrs('tok', 'o/r', 'main')).length).toBe(122)
   })
   it('refuses to post a second ledger comment when the comment search did not complete, and retries cleanly', async () => {
     const filler = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, body: `chatter ${i}`, user: { login: 'kieran' } }))
@@ -259,11 +194,76 @@ describe('GitHub proxy: paging and head lookups', () => {
     expect(calls.filter(m => m === 'GET').length).toBe(31) // /user + 30 comment pages
     expect(calls).not.toContain('POST')
   })
-  it('lists the PR whose head is the branch, with any base', async () => {
-    const gh = fakeGitHub()
-    const proxy = new GitHubProxy({ fetch: gh.fetch })
-    const prs = await proxy.openPrs('tok', 'o/r', 'feat/login', { head: true })
-    expect(prs.map(p => p.number)).toEqual([7])
-    expect(gh.calls[0].url).toContain('head=o%3Afeat%2Flogin')
+  it.each([
+    ['same repository', ['o'], 'alice'], ['caller fork', ['alice'], 'alice'],
+    ['both', ['o', 'alice'], 'alice'], ['unrelated fork', ['bob'], 'alice'],
+    ['none', [], 'alice'], ['login equals upstream', ['o'], 'o'],
+  ] as const)('queries only upstream and caller heads: %s', async (_label, owners, login) => {
+    const extraPrs = owners.map((owner, i) => ({ number: 40 + i, head: { ref: 'topic', user: { login: owner } }, base: { ref: 'main' } }))
+    const gh = fakeGitHub({ login, extraPrs })
+    const result = await new GitHubProxy({ fetch: gh.fetch }).openPrs('tok', 'o/r', 'topic')
+    const expected = owners.filter(owner => owner === 'o' || owner === login)
+    expect(result.prs.map(pr => pr.headOwner)).toEqual(expected)
+    expect(result.heads).toEqual(login.toLowerCase() === 'o' ? ['o:topic'] : ['o:topic', 'alice:topic'])
+    const calls = gh.calls.filter(c => c.url.includes('/pulls?')).map(c => new URL(c.url))
+    expect(calls.map(u => u.searchParams.get('head'))).toEqual(result.heads)
+    expect(calls.every(u => !u.searchParams.has('page') && !u.searchParams.has('base'))).toBe(true)
   })
+
+  it('does not treat a failed head request as a successful unique match or cache the failure', async () => {
+    const gh = fakeGitHub({ login: 'alice' })
+    let fail = true
+    const calls: string[] = []
+    const proxy = new GitHubProxy({ fetch: (async (url, init) => {
+      const head = new URL(String(url)).searchParams.get('head')
+      if (head) calls.push(head)
+      if (head === 'alice:feat/login' && fail) return new Response('{}', { status: 500 })
+      return gh.fetch(url, init)
+    }) as typeof fetch })
+    await expect(proxy.openPrs('t', 'o/r', 'feat/login')).rejects.toThrow(/lookup failed.*alice:feat\/login.*number=<n>/)
+    fail = false
+    expect((await proxy.openPrs('t', 'o/r', 'feat/login')).prs.map(pr => pr.number)).toEqual([7])
+    expect(calls).toEqual(['o:feat/login', 'alice:feat/login', 'alice:feat/login'])
+  })
+
+  it('awaits the other exact head before reporting a failed request', async () => {
+    let finish!: (response: Response) => void, settled = false
+    const held = new Promise<Response>(resolve => { finish = resolve })
+    const proxy = new GitHubProxy({ fetch: (async url => {
+      if (String(url).endsWith('/user')) return new Response('{"login":"alice"}')
+      return new URL(String(url)).searchParams.get('head') === 'o:topic' ? new Response('{}', { status: 500 }) : held
+    }) as typeof fetch })
+    const pending = proxy.openPrs('t', 'o/r', 'topic').finally(() => { settled = true })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(settled).toBe(false)
+    finish(new Response('[]'))
+    await expect(pending).rejects.toThrow('lookup failed')
+  })
+
+  it('unions results by PR number', async () => {
+    const proxy = new GitHubProxy({ fetch: (async url => new Response(JSON.stringify(String(url).endsWith('/user')
+      ? { login: 'alice' } : [{ number: 7, head: { ref: 'topic', user: { login: 'o' } } }]))) as typeof fetch })
+    expect((await proxy.openPrs('t', 'o/r', 'topic')).prs.map(pr => pr.number)).toEqual([7])
+  })
+
+  it.each(['o', 'O', 'alice'])('bounds requests per note at 1,500 unrelated PRs (login %s)', async login => {
+    const extraPrs = Array.from({ length: 1500 }, (_, i) => ({ number: 1000 + i, head: { ref: 'other', user: { login: 'bob' } }, base: { ref: 'main' } }))
+    const gh = fakeGitHub({ login, extraPrs })
+    let now = 0
+    const proxy = new GitHubProxy({ fetch: gh.fetch, now: () => now })
+    const lookup = await proxy.openPrs('t', 'o/r', 'feat/login')
+    expect(lookup.prs.map(pr => pr.number)).toEqual([7])
+    await proxy.upsertNote('t', 'o/r', 7, 'ledger')
+    expect(gh.calls.filter(call => call.url.includes('/pulls?'))).toHaveLength(login.toLowerCase() === 'o' ? 1 : 2)
+    expect(gh.calls).toHaveLength(login.toLowerCase() === 'o' ? 4 : 5) // user, head(s), comments, write
+    await proxy.openPrs('t', 'o/r', 'feat/login')
+    await proxy.upsertNote('t', 'o/r', 7, 'updated')
+    expect(gh.calls).toHaveLength(login.toLowerCase() === 'o' ? 6 : 7) // cached user/heads; comments and write only
+    now = 61_000
+    await proxy.openPrs('t', 'o/r', 'feat/login')
+    await proxy.upsertNote('t', 'o/r', 7, 'after expiry')
+    expect(gh.calls).toHaveLength(login.toLowerCase() === 'o' ? 10 : 12)
+    expect(gh.calls.filter(call => call.url.endsWith('/user'))).toHaveLength(2)
+  })
+
 })

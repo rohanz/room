@@ -40,7 +40,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }, s.serverLog) })
   /**
    * Everything a joined session needs running. Both rooms get wakes. The primary gets the hooks bridge
-   * (state file), the conflict watcher and the PR mirror. The workers room gets the bridge to the lead's
+   * (state file), the conflict watcher. The workers room gets the bridge to the lead's
    * team room (the state file is the team room's).
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
@@ -64,7 +64,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       // Not gated on leading the checkout: a non-publisher session's ConflictSet limits itself to its own claims
       // (conflict-set.ts ownNonPublisher), which the publisher's checker does not cover.
       watcher = claims.startConflictSet(s)
-      prs.startPrSync(s)
     } else if (lead) {
       bridge = workers.startWorkersBridge(lead, s)
       roomBridge = bridge
@@ -73,7 +72,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
       stop() {
         wakes.detach(s); unwatch(); hooks?.stop(); watcher?.stop()
         if (hooks && primaryHooks === hooks) primaryHooks = null
-        if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }
       },
       flush: () => watcher?.flush() ?? Promise.resolve(),
@@ -175,7 +173,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const solo = new SoloGate({ company: s => company(s), ownWorkers, onChange: () => { scheduleInboxWrite(); wakes.reconcile() } })
   const inboxServices = createInbox({ ledger, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion })
-  const prs = createPrs({ ctx, presences, log, now })
+  const prs = createPrs({ ctx, now })
   const share = createShare()
   const join = createJoin({ ctx, log, doJoin, doLeave, rooms, now, presences,
     runningWorkers: async s => (await registryRunningWorkers(s, rooms)) })

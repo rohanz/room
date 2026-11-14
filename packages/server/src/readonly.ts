@@ -200,12 +200,10 @@ export function bindIdentity(conn: EmitterLike, login: string, onDrop: (login: s
 
 const PARTICIPANT_MAPS = ['overlays', 'deleted', 'overlayAt', 'scopes', 'graphs', 'colors', 'bases'] as const
 /**
- * Narrow exceptions for records the current Room clients synthesize: Room-authored notices and
- * `pr#<n>` scope/metadata records. They are client-authored and are not authorship proof: any
+ * Narrow exceptions for Room-authored notices. They are client-authored and are not authorship proof: any
  * authenticated member can forge them, so ordinary participant speech never belongs here.
  */
 const TRUSTED_ROOM_MESSAGE_TYPES = new Set(['conflict', 'merge-conflict', 'contract', 'note'])
-const TRUSTED_PR_NAME = /^pr#[1-9]\d*$/
 
 function syncUpdate(buf: Uint8Array): Uint8Array | undefined {
   try {
@@ -306,11 +304,10 @@ export class DocumentIdentityGuard {
       }
       for (const [participant, change] of event.changes.keys) {
         if (change.action === 'delete') continue
-        const trustedPr = name === 'scopes' && TRUSTED_PR_NAME.test(participant)
-        if (!ownsName(participant, login) && !trustedPr) { this.reject(`${name} mutation for ${participant}`); continue }
+        if (!ownsName(participant, login)) { this.reject(`${name} mutation for ${participant}`); continue }
         if (name === 'scopes') {
           const value = root.get(participant) as { by?: unknown } | undefined
-          if (!value || typeof value.by !== 'string' || !(ownsName(value.by, login) || trustedPr && value.by === participant)) this.reject(`scope author ${String(value?.by)}`)
+          if (!value || typeof value.by !== 'string' || !ownsName(value.by, login)) this.reject(`scope author ${String(value?.by)}`)
         }
       }
     }

@@ -860,6 +860,8 @@ const server = http.createServer((req, res) => {
   const githubTokenFor = (c: Creds): string | undefined => { const t = c.session ? auth.resolve(c.session)?.ghToken : undefined; return t && !t.startsWith('fake:') ? t : undefined }
   const githubFail = (what: string, e: unknown) => { const st = (e as { status?: number }).status; console.log(`${what}: ${e instanceof Error ? e.message : e}`); text(st === 401 || st === 403 || st === 404 ? st : 502, `${what}: ${e instanceof Error ? e.message : String(e)}`) }
   if (url.pathname === '/github/prs' && req.method === 'GET') {
+    // 0.17.52 polls cannot read the new object. Remove once no 0.17.52 session remains.
+    if (url.searchParams.get('head') !== '1') return text(410, 'update or reconnect Room before looking up pull requests')
     const room = str(url.searchParams.get('room') ?? undefined)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo')
@@ -884,8 +886,10 @@ const server = http.createServer((req, res) => {
       if (!rooms.has(canonical(name))) return text(404, NOT_OPEN(name))
       const token = githubTokenFor(c)
       if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to see pull requests')
+      const branch = str(url.searchParams.get('branch') ?? undefined)
+      if (!branch) return text(400, 'branch required')
       try {
-        const result = await github.openPrs(token, repo, url.searchParams.get('branch') ?? name.slice(`github.com/${repo}/`.length), { head: url.searchParams.get('head') === '1', signal: cancellation.signal })
+        const result = await github.openPrs(token, repo, branch, { signal: cancellation.signal })
         if (!cancellation.cancelled()) json(200, result)
       } catch (e) { if (!cancellation.cancelled()) githubFail('github/prs', e) }
       } finally { slot.release() }

@@ -1140,15 +1140,6 @@ describe('scope, claims, plans, ledger', () => {
     } finally { vi.useRealTimers(); await t.tools.shutdown(); s.graph.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   })
 
-  it('accepts message for one release and silently ignores retired symbols', async () => {
-    const t = setup()
-    const reply = await t.tools.call('room_send', { type: 'changed', message: 'legacy text', paths: ['app.py'], symbols: ['validate'] })
-    expect(reply).toContain('message moved to text; accepted this release')
-    const changed = t.room.messages().find(m => m.type === 'changed')!
-    expect(changed).toMatchObject({ summary: 'legacy text', paths: ['app.py'] })
-    expect(changed).not.toHaveProperty('symbols')
-  })
-
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
     const t = setup()
     await t.session!.graph!.ready
@@ -1214,7 +1205,7 @@ describe('scope, claims, plans, ledger', () => {
     const within = <T>(p: Promise<T>) => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('waited for the graph')), 3000))])
     try {
       expect(await within(t.tools.call('room_state', {}))).toContain('symbol index still building')
-      expect(await within(t.tools.call('room_send', { type: 'changed', text: 'renamed validate', paths: ['lib.py'], symbols: ['validate'] }))).not.toMatch(/^error/)
+      expect(await within(t.tools.call('room_send', { type: 'changed', text: 'renamed validate', paths: ['lib.py'] }))).not.toMatch(/^error/)
     } finally { await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   })
 
@@ -1371,7 +1362,7 @@ describe('claim by symbol and read receipts', () => {
     await t.tools.call('room_state', {})
     expect(t.room.seenBy(q.id)).toEqual(['Rohan'])
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
-    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['session.py'], symbols: ['validate'] })
+    const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed', paths: ['session.py'] })
     expect(out).toContain("notified Kieran's agent")
     expect(t.room.messages().filter(m => m.type === 'changed')).toHaveLength(2)
     const [orig, copy] = t.room.messages().filter(m => m.type === 'changed')

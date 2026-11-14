@@ -114,7 +114,7 @@ describe('room server with the fake GitHub issuer', () => {
       expect((await post('/view-token', { room: parent, session, schema: 2 })).status).toBe(400)
       expect((await fetch(`${base}/archive?repo=${encodeURIComponent(parent)}`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(400)
       expect((await post('/archive/export', { room: parent, session, schema: 2 })).status).toBe(400)
-      expect((await fetch(`${base}/github/prs?room=${encodeURIComponent(parent)}`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(400)
+      expect((await fetch(`${base}/github/prs?room=${encodeURIComponent(parent)}&head=1`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(400)
       expect((await post('/github/pr-note', { room: parent, session, number: 1, body: 'note' })).status).toBe(400)
       expect((await fetch(`${base}/?view=x&room=${encodeURIComponent(`${base}/${encodeURIComponent(parent)}`)}`)).status).toBe(400)
       expect((await fetch(`${base}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: parent, session, schema: 2 }) })).status).toBe(400)
@@ -212,8 +212,11 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await join('github.com/o/r/feature/x', { session })).toBe(400)
     const listed = await (await fetch(`${base}/rooms`, { headers: { authorization: `Bearer ${session}` } })).json() as { repo: string }[]
     expect(listed.map(r => r.repo)).toContain('github.com/o/r')
-    // the fake issuer holds no real GitHub token: the PR proxy refuses rather than calling GitHub
-    expect((await fetch(`${base}/github/prs?room=${encodeURIComponent('github.com/o/r/main')}`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(403)
+    const oldPoll = await fetch(`${base}/github/prs?room=${encodeURIComponent('github.com/o/r')}&branch=main`, { headers: { authorization: `Bearer ${session}` } })
+    expect(oldPoll.status).toBe(410)
+    expect(await oldPoll.text()).toMatch(/update or reconnect Room/)
+    // the fake issuer holds no real GitHub token: the explicit PR proxy refuses rather than calling GitHub
+    expect((await fetch(`${base}/github/prs?room=${encodeURIComponent('github.com/o/r/main')}&head=1`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(403)
   })
 
   it('a forwarded GitHub token is refused with 401 at every entry point', async () => {

@@ -88,7 +88,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
    * writer lease), and a report made while another is still posting would reuse that report's id.
    */
   let reporting: Promise<unknown> = Promise.resolve()
-  const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
+  const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
       const s = S()
@@ -160,10 +160,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`The combined preview passed \`${command}\`.`)
       }
       if (a.pr_note === true) {
-        await refreshPrs(s)
-        const pr = await myPr(s)
-        if (!pr) out.push(`pr_note: ${participantRecord(s.room, s.me.name)?.git?.branch ? `no open PR has ${participantRecord(s.room, s.me.name)!.git!.branch} as its head` : "check out the PR's branch"}; nothing posted (room_pr_note number=<n> to pick one)`)
-        else { try { out.push(await postLedger(s, pr)) } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) } }
+        try {
+          const pr = await myPr(s)
+          if (!pr) out.push(`pr_note: ${participantRecord(s.room, s.me.name)?.git?.branch ? `no open PR has ${participantRecord(s.room, s.me.name)!.git!.branch} as its head` : "check out the PR's branch"}; nothing posted (room_pr_note number=<n> to pick one)`)
+          else out.push(await postLedger(s, pr))
+        } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) }
       }
       return out.join('\n')
     },

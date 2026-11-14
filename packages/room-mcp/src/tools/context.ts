@@ -7,7 +7,7 @@ import type { LocalWorker, WorkerStopCause } from '../worker-status.js'
 import type { ShareLevel, SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
 import type { ConflictSet } from '../conflict-set.js'
-import type { PrInfo } from '../prs.js'
+import type { PrInfo, PrLookup } from '../prs.js'
 import type { Rooms } from '../registry.js'
 import type { JoinOptions, Session } from '../session.js'
 import type { CwdProcessLister, ProcessInfo, Spawner } from '../worker-process.js'
@@ -59,7 +59,7 @@ export interface ToolCtx {
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
   /** Pull-request integration; injectable for tests. */
-  prs?: { fetch?: (s: Session, opts?: { head?: boolean; branch?: string; signal?: AbortSignal }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
+  prs?: { fetch?: (s: Session, opts?: { branch?: string }) => Promise<PrLookup>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }> }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests. */
   spawner?: Spawner
   worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean; base?: string }>
@@ -143,10 +143,6 @@ export interface HandlerState {
   serverOf: (args: Record<string, unknown>, resolvedServer: string) => string
   LOCAL_LOGIN: string
   codeLine: (pending: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => string
-  refreshPrs: (s: Session) => Promise<string>
-  startPrSync: (s: Session) => void
-  stopPrSync: () => void
-  prLines: (s: Session) => string[]
   myPr: (s: Session) => Promise<PrInfo | undefined>
   postLedger: (s: Session, pr: PrInfo) => Promise<string>
   startConflictSet: (s: Session) => ConflictSet

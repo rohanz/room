@@ -12,7 +12,7 @@ use broke and proposes the order of work.
 
 ## Fixed in 0.17.0
 
-- **Repository rooms:** Every participant carries a branch and base inside one room per repository; branch switches keep scope and claims. The PR mirror considers participants’ branches, and local relay state migrates to a separate schema-2 generation.
+- **Repository rooms:** Every participant carries a branch and base inside one room per repository; branch switches keep scope and claims. Local relay state migrates to a separate schema-2 generation.
 - **Workers you can trust (rc6–rc8, found by leading Room's own batches):** a worker's `node_modules` links to the lead's packages with workspace packages pointing at the worker's own sources, its shell no longer sees Room's `ROOM_*` variables, `room_state` shows each live worker's latest action, and a worker that exits with background jobs still running is reported as such. Details are in the [reference](reference.md#workers-and-previews) and the [CHANGELOG](../CHANGELOG.md).
 - **Smaller 0.17 fixes:** the local relay enforces the same live document cap as the server, a 0.16 name used on several branches migrates as itself when the audit log proves one owner, exporting an archive with no stored document says so instead of writing an empty file, and Room on Linux recognises a natively installed Claude Code.
 
@@ -61,7 +61,7 @@ use broke and proposes the order of work.
 - **Restart a worker that died before its first turn under its own tag.** It has no host session to resume, so the lead respawns into its worktree with `dir=` and two participants and registry entries share one worktree (2026-10-02 all-Codex rehearsal R5, low).
 - **Preview worktree cleanup after a crash (partly open).** Normal eviction unlocks and removes cached Git worktrees. A crash can still leave registered worktrees under `.git/room-preview/*/shared-*` until a later eviction or manual cleanup; automatic cleanup at shutdown/crash remains open (2026-10-02 all-Codex rehearsal R6).
 - **Codex workers join twice** when the host session id arrives about 30 s after start and the MCP rebinds its leases (2026-10-02 all-Codex rehearsal R7, low).
-- **An idle lead with no company logs every minute** (`conflicts …: reconciled change`, and `pull requests: … no GitHub token` every two minutes) (2026-10-02 all-Codex rehearsal R8, low).
+- **An idle lead with no company logs every minute** (`conflicts …: reconciled change`; periodic PR discovery has since been removed) (2026-10-02 all-Codex rehearsal R8, low).
 - **Codex wake through MCP Events.** OpenAI announced support for the proposed MCP Events extension (the Triggers and Events working group) at DevDay on 2026-09-30, for ChatGPT plugin automations. Codex CLI 0.159.2 does not consume them yet. When a Codex release lists the feature (`codex features list`), have the MCP server push room events over its open connection (the push mode, `events/stream`), with the same wake rules as Claude, and retire the Codex wake workarounds and the daemon caveat above. Room's side is about a day; the webhook mode needs a public HTTPS endpoint and does not fit local rooms.
 
 ## Found 2026-09-29, left to the redesign
@@ -482,8 +482,8 @@ did not recur only because every preview was run with tests.
   `rohanz+graph`; Room took it without complaint and it may have reached nobody. Resolve a bare
   tag to the sender's own worker, or refuse it.
 - **Fixed in 0.10.2: "Hooks are not running… In Codex, approve them" was shown to a Claude lead.**
-- Still open from the review itself: finding 6 (notices posted as `room` and `pr#<n>` records are
-  still forgeable by a member; the identity guard keeps a second copy of each room document in
+- Still open from the review itself: finding 6 (notices posted as `room` are
+  still forgeable by a member; the PR mirror and its write exception have been removed; the identity guard keeps a second copy of each room document in
   server memory), finding 29 (fixed in 0.16.12: finished output published at `declared` is lost on a restart after
   `room_done`, and collection does not withdraw it), finding 30 (the demo script was not run end
   to end).

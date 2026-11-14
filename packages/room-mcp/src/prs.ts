@@ -1,11 +1,4 @@
-/**
- * Pull requests as intent. Open PRs on a participant's branch are mirrored into the repository doc as
- * synthetic bot participants (`pr#<n>`, owned by the PR author) with a scope built from the
- * files the PR touches, so room_impact, area ledgers and claim notes see them like any other
- * declared work. Exactly one client maintains them (the lexicographically lowest present
- * participant). The reverse direction renders the branch's room story as markdown for a
- * comment on the PR (room_pr_note / room_done pr_note).
- */
+/** Explicit GitHub PR lookup, note posting, and local ledger export. */
 import type { Msg, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
 import { RoomDoc, acceptedGit, answerMatchesQuestion, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
 import fs from 'node:fs'
@@ -18,74 +11,16 @@ export interface PrInfo {
   title: string
   author: string
   head: string
-  files: string[]
-  /** The server could not read the whole file list: 'partial' (cut short) or 'unavailable' (not read). Absent when complete. */
-  coverage?: 'partial' | 'unavailable'
+  /** Owner of the head branch; optional in responses from older servers. */
+  headOwner?: string
   updatedAt: string
   url: string
 }
 
-const PR_PREFIX = 'pr#'
+export interface PrLookup { heads?: string[]; prs: PrInfo[] }
+
 // Leave room under the server's 4 MiB body cap for the JSON envelope and credentials.
 const PR_NOTE_MAX_JSON_BYTES = 3 * 1024 * 1024
-export const isPrName = (name: string): boolean => name.startsWith(PR_PREFIX)
-const prName = (number: number): string => `${PR_PREFIX}${number}`
-/** The area a PR belongs to: the most common top-level directory of its files ("root" for bare files). */
-export function prArea(files: string[]): string {
-  const counts = new Map<string, number>()
-  for (const f of files) {
-    const seg = f.includes('/') ? f.slice(0, f.indexOf('/')) : 'root'
-    counts.set(seg, (counts.get(seg) ?? 0) + 1)
-  }
-  let best = 'root', n = 0
-  for (const [seg, c] of counts) if (c > n || (c === n && seg < best)) { best = seg; n = c }
-  return best.toLowerCase()
-}
-
-const prMap = (room: RoomDoc) => room.doc.getMap<PrInfo>('prs')
-
-/** Open PRs currently mirrored in the doc, by number. */
-export function openPrs(room: RoomDoc): PrInfo[] {
-  return Array.from(prMap(room).values()).sort((a, b) => a.number - b.number)
-}
-
-/** Mirror `prs` into the doc: one scope + one metadata entry per PR; entries for closed PRs go. */
-export function syncPrs(room: RoomDoc, prs: PrInfo[], origin?: unknown): { added: number[]; updated: number[]; removed: number[] } {
-  const map = prMap(room)
-  const keep = new Set(prs.map(p => prName(p.number)))
-  const added: number[] = [], updated: number[] = [], removed: number[] = []
-  room.doc.transact(() => {
-    for (const raw of prs) {
-      const name = prName(raw.number)
-      const prev = map.get(name)
-      // An incomplete read keeps the paths already known for the PR: a failed file page is not a removal.
-      const files = raw.coverage && prev ? prev.files : raw.files
-      const pr: PrInfo = { ...raw, files }
-      if (prev && prev.updatedAt === pr.updatedAt && prev.title === pr.title && sameList(prev.files, pr.files) && prev.coverage === pr.coverage) continue
-      map.set(name, pr)
-      const summary = `PR #${pr.number}: ${pr.title}${pr.coverage ? ` (files ${pr.coverage})` : ''}`
-      room.scopes.set(name, { by: name, byKind: 'bot', area: prArea(pr.files), summary, paths: pr.files, at: Date.parse(pr.updatedAt) || Date.now() })
-      ;(prev ? updated : added).push(pr.number)
-    }
-    for (const name of Array.from(map.keys())) {
-      if (keep.has(name)) continue
-      map.delete(name)
-      room.scopes.delete(name)
-      removed.push(Number(name.slice(PR_PREFIX.length)))
-    }
-    for (const name of Array.from(room.scopes.keys())) if (isPrName(name) && !keep.has(name)) room.scopes.delete(name)
-  }, origin)
-  return { added, updated, removed }
-}
-const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
-
-/** Who maintains the PR mirror: the lowest present participant name (so four clients do not fight). */
-export function prLeader(present: string[], workerNames: Iterable<string> = []): string | undefined {
-  const workers = new Set(workerNames)
-  const leads = present.filter(n => !isPrName(n) && !workers.has(n)).sort()
-  return leads[0] ?? present.filter(n => !isPrName(n)).sort()[0]
-}
-
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 const query = (o: Record<string, string | undefined>) => Object.entries(o).filter((e): e is [string, string] => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
 
@@ -95,16 +30,19 @@ export function acceptedPrBranch(s: Session, name = s.me.name, now = Date.now())
 }
 
 /** GET /github/prs on the session's server for an explicit participant branch. */
-export async function fetchPrs(s: Session, opts: { head?: boolean; branch?: string; signal?: AbortSignal } = {}): Promise<PrInfo[]> {
+export async function fetchPrs(s: Session, opts: { branch?: string } = {}): Promise<PrLookup> {
   const branch = opts.branch ?? acceptedPrBranch(s)
-  if (!branch || branch === 'updating') return []
+  if (!branch || branch === 'updating') return { prs: [] }
   const a = await authFor(s)
-  const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, branch, head: opts.head ? '1' : undefined })}`, {
+  const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, branch, head: '1' })}`, {
     headers: { ...(a.session ? { authorization: `Bearer ${a.session}` } : {}), ...(a.token ? { 'x-room-token': a.token } : {}) },
-    signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(20000), opts.signal]) : AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(20000),
   })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
-  return await res.json() as PrInfo[]
+  const result = await res.json() as PrLookup | PrInfo[]
+  // Remove the array-response adapter once the owner's v0.17.51 server is updated.
+  // Keep head=1 until the server's 0.17.52-session guard is also removed.
+  return Array.isArray(result) ? { prs: result } : result
 }
 
 /** POST /github/pr-note: the server posts or updates the one room comment on the PR as the logged-in user. */
@@ -174,16 +112,9 @@ export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: 
     const reason = (await res.text()).trim() || `HTTP ${res.status}`
     throw new Error(res.status === 404 ? `nothing to export from ${legacyRoom}: ${reason}` : `archive ${legacyRoom} unavailable: ${reason}`)
   }
-  // Servers before 0.17.0-rc6 answered an absent document with 200 and no updates.
-  const absent = () => new Error(`nothing to export from ${legacyRoom}: no stored document for ${legacyRoom}`)
   const doc = new Y.Doc()
   try {
-    if (res.headers.get('content-type')?.split(';')[0] === 'application/vnd.room.updates') { if (!await applyArchiveFrames(doc, res.body)) throw absent() }
-    else {
-      const update = new Uint8Array(await res.arrayBuffer())
-      if (!update.byteLength) throw absent()
-      Y.applyUpdate(doc, update)
-    }
+    if (!await applyArchiveFrames(doc, res.body)) throw new Error('archive frame stream empty')
     const now = opts.now ?? Date.now(), timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
     const outputPath = opts.path ? path.resolve(s.dir, opts.path)
       : path.join(s.dir, '.room', 'ledger', `${legacyRoom.replaceAll('/', '_')}-${timestamp}.md`)
@@ -197,12 +128,12 @@ export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: 
 /**
  * The branch's room story as markdown, in bus order: who declared what, claims with their
  * plans and whether they were fulfilled, questions with answers, changes, merge previews that
- * passed, done notes. Copies routed to individuals and messages from PR mirrors are skipped.
+ * passed, done notes. Copies routed to individuals are skipped.
  */
 export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: string; now?: number; history?: boolean }): string {
   const now = opts.now ?? Date.now()
   const archived = archiveSummary(room)
-  const msgs = room.messages().filter(m => !m.copyOf && !isPrName(m.from))
+  const msgs = room.messages().filter(m => !m.copyOf)
   const releases = new Map<string, ReleaseMsg>()
   const answers = new Map<string, AnswerMsg[]>()
   for (const m of msgs) {
@@ -265,7 +196,7 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
       default: break
     }
   }
-  const stillOpen = Array.from(open.values()).filter(c => !isPrName(c.by))
+  const stillOpen = Array.from(open.values())
   const header = [
     `### Room ${opts.history ? 'history' : 'ledger'} for \`${opts.branch || opts.roomName}\``,
     `_Generated by the room at ${t(now)} UTC from ${opts.roomName}.${opts.history ? '' : ' One comment per PR, updated in place.'}_`,

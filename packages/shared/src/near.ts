@@ -10,16 +10,15 @@ export interface Neighbourhood { readonly everyone: boolean; has(name: string): 
 
 /** One selection seam for evaluators and recipients. */
 export function neighbours(view: ParticipantView[], me: string): Neighbourhood {
-  const names = view.filter(p => p.visible && p.name !== me && !p.name.startsWith('pr#')).map(p => p.name).sort()
+  const names = view.filter(p => p.visible && p.name !== me).map(p => p.name).sort()
   const selected = new Set(names)
   return { everyone: true, has: name => selected.has(name), names: () => [...names] }
 }
 
 /** Owns the room's scope, claim, and changed-path evidence for proximity decisions. */
 export function coordinationPaths(room: RoomDoc, nb: Neighbourhood, me: string, options: { includeOwnNonAgentClaims?: boolean } = {}): NearPath[] {
-  const evidence = (name: string) => nb.has(name) || name.startsWith('pr#')
   return [
-    ...room.allScopes().filter(scope => evidence(scope.by))
+    ...room.allScopes().filter(scope => nb.has(scope.by))
       .flatMap(scope => scope.paths.map(path => ({ by: scope.by, path, reason: 'scope' as const }))),
     ...[...room.coordination].filter(([by]) => nb.has(by))
       .flatMap(([by, record]) => record.paths.map(path => ({ by, path, reason: 'scope' as const }))),

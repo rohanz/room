@@ -359,23 +359,19 @@ describe('document identity binding', () => {
     server.destroy()
   })
 
-  it('accepts numbered synthetic PR scopes from members, rejects lookalikes, and viewers cannot write them', () => {
+  it('loads stored PR mirrors, refuses retired synthetic writes and keeps accepting member writes', () => {
     const { server, room, conn, dropped } = fixture()
     const prScope = (name: string) => ({ by: name, byKind: 'bot', area: 'api', summary: 'PR', paths: ['a.ts'], at: 1 })
-    expect(conn.emit('message', packet(server, doc => {
-      doc.getMap('prs').set('pr#12', { number: 12, title: 'PR', author: 'alice', head: 'feature', files: ['a.ts'], updatedAt: '2026-01-01', url: 'https://example.test/pr/12' })
-      doc.getMap('scopes').set('pr#12', prScope('pr#12'))
-    }))).toBe(true)
-    for (const name of ['pr#x', 'pr#0']) expect(conn.emit('message', packet(server, doc => doc.getMap('scopes').set(name, prScope(name))))).toBe(false)
-    expect(room.scope('pr#12')?.summary).toBe('PR')
-    expect(room.scope('pr#x')).toBeUndefined(); expect(room.scope('pr#0')).toBeUndefined()
-    expect(dropped).toHaveLength(2)
-
-    const viewer = new EventEmitter()
-    viewer.on('message', message => applyPacket(server, message))
-    makeReadOnly(viewer, () => {})
-    expect(viewer.emit('message', packet(server, doc => doc.getMap('scopes').set('pr#13', prScope('pr#13'))))).toBe(false)
-    expect(room.scope('pr#13')).toBeUndefined()
+    // Existing server snapshots may still contain both old maps. Loading bypasses member write admission.
+    server.getMap('prs').set('pr#12', { number: 12, title: 'PR' })
+    server.getMap('scopes').set('pr#12', prScope('pr#12'))
+    expect(room.scope('pr#12')).toBeUndefined()
+    expect(room.scopes.has('pr#12')).toBe(true)
+    expect(room.doc.getMap('prs').size).toBe(1)
+    for (const name of ['pr#12', 'pr#x', 'pr#0']) expect(conn.emit('message', packet(server, doc => doc.getMap('scopes').set(name, { ...prScope(name), at: 2 })))).toBe(false)
+    expect(dropped).toHaveLength(3)
+    expect(conn.emit('message', packet(server, doc => doc.getMap('scopes').set('octo', { ...prScope('octo'), byKind: 'agent' })))).toBe(true)
+    expect(room.scope('octo')?.summary).toBe('PR')
     server.destroy()
   })
 

@@ -4,14 +4,15 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, holderFence, participantRecord } from '@room/shared'
 import type { Identity, ClaimMsg, QuestionMsg, AnswerMsg, ScopeMsg, NoteMsg, ReleaseMsg } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { exportRoomLedger, exportArchiveLedger, isPrName, openPrs, prArea, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
+import { exportRoomLedger, exportArchiveLedger, fetchPrs, postPrNote, renderPrNote, type PrInfo } from '../src/prs.js'
+import { setCredential } from '../src/credentials.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 import { visiblePeer } from './fixtures/visible.js'
@@ -27,8 +28,8 @@ function pair() {
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
 }
-const PR7: PrInfo = { number: 7, title: 'Add login', author: 'kieran', head: 'feat/login', files: ['src/auth.py', 'src/session.py'], updatedAt: '2026-09-15T10:00:00Z', url: 'https://github.com/o/r/pull/7' }
-const PR9: PrInfo = { number: 9, title: 'Fix orders', author: 'sam', head: 'main', files: ['orders.py'], updatedAt: '2026-09-15T09:00:00Z', url: 'https://github.com/o/r/pull/9' }
+const PR7: PrInfo = { number: 7, title: 'Add login', author: 'kieran', head: 'feat/login', updatedAt: '2026-09-15T10:00:00Z', url: 'https://github.com/o/r/pull/7' }
+const PR9: PrInfo = { number: 9, title: 'Fix orders', author: 'sam', head: 'main', updatedAt: '2026-09-15T09:00:00Z', url: 'https://github.com/o/r/pull/9' }
 
 function session(room: RoomDoc, me: Identity, roomName = ROOM, branch = 'main'): Session {
   const awareness = new Awareness(room.doc)
@@ -53,87 +54,86 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-describe('PR mirror in the doc', () => {
-  it('syncPrs adds a bot scope per PR, updates on change, removes closed ones', () => {
-    const { a, b } = pair()
-    expect(syncPrs(a, [PR7, PR9])).toEqual({ added: [7, 9], updated: [], removed: [] })
-    expect(openPrs(b).map(p => p.number)).toEqual([7, 9])
-    const sc = b.scope('pr#7')!
-    expect(sc).toMatchObject({ by: 'pr#7', byKind: 'bot', area: 'src', summary: 'PR #7: Add login', paths: ['src/auth.py', 'src/session.py'] })
-    expect(b.scope('pr#9')).toMatchObject({ area: 'root', paths: ['orders.py'] })
-    // unchanged PRs are not rewritten; a retitled one is
-    expect(syncPrs(a, [PR7, PR9])).toEqual({ added: [], updated: [], removed: [] })
-    expect(syncPrs(a, [{ ...PR7, title: 'Add login (v2)', updatedAt: '2026-09-15T11:00:00Z' }, PR9])).toEqual({ added: [], updated: [7], removed: [] })
-    expect(b.scope('pr#7')!.summary).toBe('PR #7: Add login (v2)')
-    // PR 9 closed
-    expect(syncPrs(a, [PR7])).toMatchObject({ removed: [9] })
-    expect(b.scope('pr#9')).toBeUndefined()
-    expect(openPrs(b).map(p => p.number)).toEqual([7])
-  })
-
-  it('an incomplete file read keeps the paths already known for the PR and is labelled', () => {
-    const { a, b } = pair()
-    syncPrs(a, [PR7])
-    expect(syncPrs(a, [{ ...PR7, files: ['src/auth.py'], coverage: 'partial', updatedAt: '2026-09-15T12:00:00Z' }])).toEqual({ added: [], updated: [7], removed: [] })
-    expect(b.scope('pr#7')).toMatchObject({ paths: ['src/auth.py', 'src/session.py'], summary: 'PR #7: Add login (files partial)' })
-    expect(openPrs(b)[0]).toMatchObject({ coverage: 'partial', files: ['src/auth.py', 'src/session.py'] })
-    expect(syncPrs(a, [{ ...PR7, files: [], coverage: 'unavailable', updatedAt: '2026-09-15T12:00:00Z' }])).toEqual({ added: [], updated: [7], removed: [] })
-    expect(b.scope('pr#7')!.paths).toEqual(['src/auth.py', 'src/session.py'])
-    // A complete read again replaces the list.
-    expect(syncPrs(a, [{ ...PR7, files: ['src/auth.py'], updatedAt: '2026-09-15T13:00:00Z' }])).toEqual({ added: [], updated: [7], removed: [] })
-    expect(b.scope('pr#7')).toMatchObject({ paths: ['src/auth.py'], summary: 'PR #7: Add login' })
-  })
-
-  it('PR name, area and leader helpers', () => {
-    expect(isPrName('pr#7')).toBe(true); expect(isPrName('rohanz+prs')).toBe(false)
-    expect(prArea(['a/x.py', 'b/y.py', 'a/z.py'])).toBe('a')
-    expect(prArea([])).toBe('root')
-    expect(prLeader(['rohanz+share', 'rohanz+areas', 'pr#7', 'kieran'])).toBe('kieran')
-    expect(prLeader([])).toBeUndefined()
-  })
-
-  it('only the lowest present participant maintains the mirror; PRs show in room_state and impact, never as people', async () => {
-    const { a, b } = pair()
-    a.setMeta({ repo: 'o/r', branch: 'main', base })
-    const alice = session(a, { name: 'alice', kind: 'agent', owner: 'alice' })
-    const bob = session(b, { name: 'bob', kind: 'agent', owner: 'bob' })
-    // each sees the other's presence, as the server would relay it
-    applyAwarenessUpdate(alice.awareness, encodeAwarenessUpdate(bob.awareness, [b.doc.clientID]), 'test')
-    applyAwarenessUpdate(bob.awareness, encodeAwarenessUpdate(alice.awareness, [a.doc.clientID]), 'test')
-    const fetches: string[] = []
-    const mk = (s: Session) => createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async x => { fetches.push(x.me.name); return [PR7, PR9] } } })
-    const ta = mk(alice), tb = mk(bob)
-    ta.attachHooks(alice); tb.attachHooks(bob)
-    await new Promise(r => setTimeout(r, 20))
-    expect(fetches).toEqual(['alice', 'alice']) // target and head queries; bob is not the leader
-    const state = await tb.call('room_state', {})
-    expect(state).toContain('open pull requests (2):')
-    expect(state).toContain('  - PR #7 "Add login" by kieran (feat/login): src/auth.py, src/session.py · https://github.com/o/r/pull/7')
-    expect(state).toContain('  - PR #9 "Fix orders" by sam (main): orders.py')
-    // PR mirrors are never people: they get no routed copies (others() skips them)
-    await tb.call('room_send', { type: 'changed', paths: ['src/auth.py'], text: 'touched auth', symbols: ['login'] })
-    expect(b.messages().some(m => m.to === 'pr#7')).toBe(false)
-    // PR paths are visible to impact/ownership queries through the scope
-    expect(await tb.call('room_state', { path: 'src/auth.py' })).toContain('scope: pr#7 is on src: PR #7: Add login')
-    // a claim on a PR's file mentions the PR but does not route a copy to it
-    await tb.call('room_claim', { path: 'src/auth.py', from: 1, to: 1, intent: 'x', plans: [{ kind: 'rename', symbol: 'login' }] })
-    expect(b.messages().some(m => m.to === 'pr#7')).toBe(false)
-    await ta.shutdown(); await tb.shutdown()
-  })
-
-  it('attributes a base definition to base when a PR merely touches its file', async () => {
+describe('on-demand pull requests', () => {
+  it('joining and ordinary tools never discover PRs or publish a mirror', async () => {
     const { a } = pair()
-    a.setMeta({ repo: 'o/r', branch: 'main', base })
-    syncPrs(a, [{ ...PR7, files: ['app.py'] }])
-    const alice = session(a, { name: 'alice', kind: 'agent', owner: 'alice' })
-    const graph = new GraphIndex(a, alice.me.name, dir); graph.start(); alice.graph = graph
-    const tools = createTools({ getSession: () => alice, setSession: () => {}, cwd: dir })
-    // Attribution needs the base definition to have reached the asynchronous index.
-    await graph.whenIdle()
-    const out = await tools.call('room_impact', { symbol: 'base_symbol' })
-    expect(out).toContain('defined in app.py (base, also touched by PR #7)')
-    expect(out).not.toContain('(pr#7)')
-    await tools.shutdown()
+    const s = session(a, { name: 'alice', kind: 'agent', owner: 'alice' })
+    const fetch = vi.fn(async () => ({ heads: ['o:main', 'alice:main'], prs: [PR7, PR9] }))
+    const post = vi.fn(async () => ({ url: 'u', updated: false }))
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { fetch, post } })
+    tools.attachHooks(s)
+    try {
+      expect(await tools.call('room_state', {})).not.toContain('open pull requests')
+      await tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['app.py'] })
+      await tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'edit' })
+      await tools.call('room_state', { path: 'app.py' })
+      expect(fetch).not.toHaveBeenCalled()
+      expect(a.doc.getMap('prs').size).toBe(0)
+      expect(a.allScopes().map(sc => sc.by)).toEqual(['alice'])
+      expect(await tools.call('room_pr_note', {})).toContain('PR #9')
+      expect(fetch).toHaveBeenCalledExactlyOnceWith(s, { branch: 'main' })
+      fetch.mockClear()
+      expect(await tools.call('room_pr_note', { number: 7 })).toContain('PR #7')
+      expect(fetch).not.toHaveBeenCalled()
+      expect(post).toHaveBeenCalledTimes(2)
+      expect(a.doc.getMap('prs').size).toBe(0)
+    } finally { await tools.shutdown() }
+  })
+
+  it('loads stored mirrors without volunteering their scopes or ownership', async () => {
+    const stored = new RoomDoc()
+    const legacy = { ...PR7, files: ['app.py'], coverage: 'partial' }
+    stored.doc.getMap('prs').set('pr#7', legacy)
+    stored.scopes.set('pr#7', { by: 'pr#7', byKind: 'bot', area: 'src', summary: 'PR #7: Add login', paths: ['app.py'], at: 1 })
+    const doc = new Y.Doc()
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(stored.doc))
+    const room = new RoomDoc(doc)
+    const alice = session(room, { name: 'alice', kind: 'agent', owner: 'alice' })
+    const graph = new GraphIndex(room, alice.me.name, dir); graph.start(); alice.graph = graph
+    const fetch = vi.fn(async () => ({ heads: ['o:main', 'alice:main'], prs: [PR7] }))
+    const tools = createTools({ getSession: () => alice, setSession: () => {}, cwd: dir, prs: { fetch } })
+    try {
+      await graph.whenIdle()
+      const impact = await tools.call('room_impact', { symbol: 'base_symbol' })
+      expect(impact).toContain('defined in app.py')
+      expect(impact).not.toContain('PR #7')
+      expect(impact).not.toContain('pr#7')
+      expect(await tools.call('room_state', {})).not.toContain('pr#7')
+      expect(await tools.call('room_state', { path: 'app.py' })).not.toContain('pr#7')
+      expect(fetch).not.toHaveBeenCalled()
+      expect(room.scopes.has('pr#7')).toBe(true)
+      expect(room.doc.getMap('prs').get('pr#7')).toEqual(legacy)
+    } finally { stored.doc.destroy(); await tools.shutdown() }
+  })
+
+  it.each([false, true])('reads PR lookup HTTP response (legacy array: %s)', async legacy => {
+    const s = session(new RoomDoc(), { name: 'alice', kind: 'agent' }, ROOM, 'feat/login')
+    const server = 'ws://pr-compat.example'
+    s.roomUrl = `${server}/${encodeURIComponent(ROOM)}`
+    s.credentialsPath = join(dir, 'pr-credentials.json')
+    setCredential(s.credentialsPath, server, { login: 'alice', session: 'test-session', at: Date.now() })
+    let hasPr = true
+    const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/auth/config')
+      ? { github: 'device' } : url.endsWith('/github/pr-note') ? { url: PR7.url, updated: true } : legacy ? hasPr ? [PR7] : [] : { heads: ['o:feat/login', 'alice:feat/login'], prs: hasPr ? [PR7] : [] }), { headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetch)
+    try {
+      expect(await fetchPrs(s)).toEqual(legacy ? { prs: [PR7] } : { heads: ['o:feat/login', 'alice:feat/login'], prs: [PR7] })
+      expect(fetch).toHaveBeenCalledWith('http://pr-compat.example/github/prs?room=github.com%2Fo%2Fr&branch=feat%2Flogin&head=1', expect.objectContaining({ headers: { authorization: 'Bearer test-session' } }))
+      await expect(postPrNote(s, 7, 'ledger')).resolves.toEqual({ url: PR7.url, updated: true })
+      expect(fetch).toHaveBeenCalledWith('http://pr-compat.example/github/pr-note', expect.objectContaining({ method: 'POST', body: JSON.stringify({ room: ROOM, session: 'test-session', number: 7, body: 'ledger' }) }))
+      const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
+      try {
+        expect(await tools.call('room_pr_note', {})).toContain('PR #7')
+        hasPr = false
+        const absent = await tools.call('room_pr_note', {})
+        expect(absent).toContain(legacy ? 'no open pull request was found for branch feat/login' : 'no open pull request was found for o:feat/login or alice:feat/login')
+        expect(absent).toContain('number=<n>')
+        if (legacy) expect(absent).toContain('until the server is updated')
+      }
+      finally { await tools.shutdown() }
+      expect(s.room.allScopes()).toEqual([])
+      expect(s.room.doc.getMap('prs').size).toBe(0)
+    } finally { vi.unstubAllGlobals(); s.awareness.destroy(); s.room.doc.destroy() }
   })
 })
 
@@ -230,7 +230,7 @@ describe('ledger to PR', () => {
   it('room_pr_note picks the PR whose head is this branch, or the given number; room_done pr_note does the same', async () => {
     const a = story()
     const posted: { number: number; body: string }[] = []
-    const mkTools = (s: Session) => createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async () => [PR7, PR9], post: async (_s, number, body) => { posted.push({ number, body }); return { url: `https://github.com/o/r/pull/${number}#c`, updated: number === 9 } } } })
+    const mkTools = (s: Session) => createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { fetch: async (_s, opts) => ({ heads: [`o:${opts?.branch}`, `alice:${opts?.branch}`], prs: [PR7, PR9] }), post: async (_s, number, body) => { posted.push({ number, body }); return { url: `https://github.com/o/r/pull/${number}#c`, updated: number === 9 } } } })
     // on branch main: PR 9's head is main
     const s1 = session(a, { name: 'alice', kind: 'agent', owner: 'alice' })
     const t1 = mkTools(s1)
@@ -240,57 +240,80 @@ describe('ledger to PR', () => {
     expect(posted.at(-1)!.body).toContain('### Room ledger for `main`')
     expect(a.lastMessages(1)[0]).toMatchObject({ type: 'note', text: expect.stringContaining('updated the room ledger on PR #9') })
     // explicit number
-    expect(await t1.call('room_pr_note', { number: 7 })).toContain('posted the room ledger comment on PR #7 "Add login"')
+    expect(await t1.call('room_pr_note', { number: 7 })).toContain('posted the room ledger comment on PR #7 "#7"')
     expect(await t1.call('room_pr_note', { number: -1 })).toMatch(/^error: number/)
     // a branch nobody opened a PR for
     const s2 = session(pair().a, { name: 'alice', kind: 'agent', owner: 'alice' }, ROOM, 'wip')
     const t2 = mkTools(s2)
-    expect(await t2.call('room_pr_note', {})).toContain('no open PR has wip as its head; open PRs targeting branches here: #7 (feat/login), #9 (main)')
+    expect(await t2.call('room_pr_note', {})).toContain('no open pull request was found for o:wip or alice:wip')
     // room_done with pr_note
     const before = posted.length
     const done = await t1.call('room_done', { summary: 'all green', pr_note: true })
     expect(done).toContain('marked done')
     expect(done).toContain('updated the room ledger comment on PR #9')
     expect(posted.length).toBe(before + 1)
-    expect(await t2.call('room_done', { summary: 'x', pr_note: true })).toContain('pr_note: no open PR has wip as its head')
+    expect(await t2.call('room_done', { summary: 'x', pr_note: true })).toContain('pr_note failed: no open pull request was found for o:wip or alice:wip')
     // non-GitHub rooms have no PRs
     const s3 = session(pair().a, { name: 'alice', kind: 'agent' }, 'local/dir')
     expect(await mkTools(s3).call('room_pr_note', {})).toMatch(/^error: this room is not a GitHub repo/)
     // the post failing is reported, not thrown
-    const failing = createTools({ getSession: () => s1, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async () => [PR9], post: async () => { throw new Error('HTTP 403 no GitHub token') } } })
+    const failing = createTools({ getSession: () => s1, setSession: () => {}, cwd: dir, prs: { fetch: async () => ({ heads: ['o:main', 'alice:main'], prs: [PR9] }), post: async () => { throw new Error('HTTP 403 no GitHub token') } } })
     expect(await failing.call('room_done', { summary: 'y', pr_note: true })).toContain('pr_note failed: HTTP 403 no GitHub token')
     expect(await failing.call('room_pr_note', {})).toBe('error: HTTP 403 no GitHub token')
   })
+})
+
+it.each(['ambiguous', 'failed'] as const)('reports %s lookup without posting and preserves room_done', async why => {
+  const s = session(pair().a, { name: 'alice', kind: 'agent' })
+  const post = vi.fn(async () => ({ url: 'u', updated: false }))
+  const fetch = vi.fn(async () => {
+    if (why === 'failed') throw new Error('pull request lookup failed for alice:main; use room_pr_note number=<n>')
+    return { heads: ['o:main', 'alice:main'], prs: [{ ...PR9, headOwner: 'o' }, { ...PR9, number: 10, headOwner: 'alice' }] }
+  })
+  const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { fetch, post } })
+  try {
+    const note = await tools.call('room_pr_note', {})
+    expect(note).toContain('number=<n>')
+    expect(note).not.toContain('no open PR')
+    if (why === 'ambiguous') {
+      expect(note).toContain('#9 (o:main)')
+      expect(note).toContain('#10 (alice:main)')
+    }
+    const done = await tools.call('room_done', { summary: 'finished', pr_note: true })
+    expect(done).toContain('marked done')
+    expect(done).toContain('pr_note failed:')
+    expect(done).toContain('number=<n>')
+    expect(done).not.toContain('no open PR')
+    expect(post).not.toHaveBeenCalled()
+    expect(fetch).toHaveBeenCalledTimes(2)
+    await tools.call('room_pr_note', { number: 9 })
+    expect(post).toHaveBeenCalledExactlyOnceWith(s, 9, expect.any(String))
+    expect(fetch).toHaveBeenCalledTimes(2)
+  } finally { await tools.shutdown() }
 })
 
 describe('PR selection by head (fix 13)', () => {
   it('room_pr_note and room_done pick the open PR whose head is this branch even when it targets another branch', async () => {
     const { a } = pair(); a.setMeta({ repo: 'x', branch: 'feat/login', base })
     const posted: number[] = []
-    const asks: { head?: boolean }[] = []
-    const featPr = { number: 21, title: 'Login', author: 'rohanz', head: 'feat/login', files: ['src/auth.py'], updatedAt: '', url: 'https://github.com/o/r/pull/21' }
+    const asks: { branch?: string }[] = []
+    const featPr = { number: 21, title: 'Login', author: 'rohanz', head: 'feat/login', updatedAt: '', url: 'https://github.com/o/r/pull/21' }
     const s = session(a, { name: 'rohanz', kind: 'agent', owner: 'rohanz' }, ROOM, 'feat/login')
-    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async (_s, opts) => { asks.push(opts ?? {}); return opts?.head ? [featPr] : [] }, post: async (_s, number) => { posted.push(number); return { url: 'u', updated: false } } } })
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { fetch: async (_s, opts) => { asks.push(opts ?? {}); return { heads: ['o:feat/login', 'rohanz:feat/login'], prs: [featPr] } }, post: async (_s, number) => { posted.push(number); return { url: 'u', updated: false } } } })
     const out = await tools.call('room_pr_note', {})
     expect(out).toContain('PR #21')
     expect(posted).toEqual([21])
-    expect(asks.some(x => x.head === true)).toBe(true)
+    expect(asks.some(x => x.branch === 'feat/login')).toBe(true)
   })
 })
 
-it('the PR-mirror leader is never a worker', () => {
-  expect(prLeader(['aaron', 'a+z', 'pr#7'], ['a+z'])).toBe('aaron')
-  expect(prLeader(['a+z'], ['a+z'])).toBe('a+z') // only workers present: someone still has to do it
-})
-
-it('does not select or mirror a PR from a stale git fence', async () => {
+it('does not look up or select a PR from a stale git fence', async () => {
   const room = new RoomDoc(new Y.Doc())
   const s = session(room, { name: 'alice', kind: 'agent', owner: 'alice' }, ROOM, 'obsolete')
   room.participants.set('alice\0git', { branch: 'obsolete', head: base, base, anchored: true, rev: 1, fence: 'older-epoch' })
   const asks: string[] = [], posted: number[] = []
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: {
-    intervalMs: 0,
-    fetch: async (_s, opts) => { asks.push(opts?.branch ?? 'default'); return [PR7] },
+    fetch: async (_s, opts) => { asks.push(opts?.branch ?? 'default'); return { heads: ['o:main', 'alice:main'], prs: [PR7] } },
     post: async (_s, number) => { posted.push(number); return { url: '', updated: false } },
   } })
   const result = await tools.call('room_pr_note', {})
@@ -306,8 +329,8 @@ it('room_export loads an authenticated legacy archive instead of the current roo
   const legacyRepo = 'git/x/o/r'
   const s = session(current, { name: 'alice', kind: 'agent', owner: 'alice' }, legacyRepo)
   s.token = 'token'
-  const update = Y.encodeStateAsUpdate(archived.doc)
-  const fetch = vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ 'content-type': 'application/octet-stream' }), arrayBuffer: async () => update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength) })
+  const update = Y.encodeStateAsUpdate(archived.doc), header = Buffer.alloc(4); header.writeUInt32BE(update.length)
+  const fetch = vi.fn().mockImplementation(async () => new Response(Buffer.concat([header, update]), { headers: { 'content-type': 'application/vnd.room.updates' } }))
   vi.stubGlobal('fetch', fetch)
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
   const output = join(dir, 'legacy-export.md')
@@ -377,12 +400,12 @@ it('room_export relays the server reason for an archive with no stored document 
   } finally { s.room.doc.destroy(); vi.unstubAllGlobals(); await tools.shutdown() }
 })
 
-it.each([['application/vnd.room.updates'], ['application/octet-stream']])('treats an empty %s body from an older server as no stored document and writes nothing', async type => {
+it('rejects an empty archive frame stream without writing a ledger', async () => {
   const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
-  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new Uint8Array(0), { headers: { 'content-type': type } })))
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new Uint8Array(0), { headers: { 'content-type': 'application/vnd.room.updates' } })))
   const output = join(dir, 'empty-body.md')
   try {
-    await expect(exportArchiveLedger(s, 'git/x/o/r/main', { path: output })).rejects.toThrow('nothing to export from git/x/o/r/main: no stored document for git/x/o/r/main')
+    await expect(exportArchiveLedger(s, 'git/x/o/r/main', { path: output })).rejects.toThrow('archive frame stream empty')
     expect(existsSync(output)).toBe(false)
   } finally { s.room.doc.destroy(); vi.unstubAllGlobals() }
 })
