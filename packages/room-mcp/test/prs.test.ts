@@ -106,7 +106,7 @@ describe('on-demand pull requests', () => {
     } finally { stored.doc.destroy(); await tools.shutdown() }
   })
 
-  it.each([false, true])('reads PR lookup HTTP response (legacy array: %s)', async legacy => {
+  it('reads the PR lookup HTTP response', async () => {
     const s = session(new RoomDoc(), { name: 'alice', kind: 'agent' }, ROOM, 'feat/login')
     const server = 'ws://pr-compat.example'
     s.roomUrl = `${server}/${encodeURIComponent(ROOM)}`
@@ -114,10 +114,10 @@ describe('on-demand pull requests', () => {
     setCredential(s.credentialsPath, server, { login: 'alice', session: 'test-session', at: Date.now() })
     let hasPr = true
     const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/auth/config')
-      ? { github: 'device' } : url.endsWith('/github/pr-note') ? { url: PR7.url, updated: true } : legacy ? hasPr ? [PR7] : [] : { heads: ['o:feat/login', 'alice:feat/login'], prs: hasPr ? [PR7] : [] }), { headers: { 'content-type': 'application/json' } }))
+      ? { github: 'device' } : url.endsWith('/github/pr-note') ? { url: PR7.url, updated: true } : { heads: ['o:feat/login', 'alice:feat/login'], prs: hasPr ? [PR7] : [] }), { headers: { 'content-type': 'application/json' } }))
     vi.stubGlobal('fetch', fetch)
     try {
-      expect(await fetchPrs(s)).toEqual(legacy ? { prs: [PR7] } : { heads: ['o:feat/login', 'alice:feat/login'], prs: [PR7] })
+      expect(await fetchPrs(s)).toEqual({ heads: ['o:feat/login', 'alice:feat/login'], prs: [PR7] })
       expect(fetch).toHaveBeenCalledWith('http://pr-compat.example/github/prs?room=github.com%2Fo%2Fr&branch=feat%2Flogin&head=1', expect.objectContaining({ headers: { authorization: 'Bearer test-session' } }))
       await expect(postPrNote(s, 7, 'ledger')).resolves.toEqual({ url: PR7.url, updated: true })
       expect(fetch).toHaveBeenCalledWith('http://pr-compat.example/github/pr-note', expect.objectContaining({ method: 'POST', body: JSON.stringify({ room: ROOM, session: 'test-session', number: 7, body: 'ledger' }) }))
@@ -126,9 +126,8 @@ describe('on-demand pull requests', () => {
         expect(await tools.call('room_pr_note', {})).toContain('PR #7')
         hasPr = false
         const absent = await tools.call('room_pr_note', {})
-        expect(absent).toContain(legacy ? 'no open pull request was found for branch feat/login' : 'no open pull request was found for o:feat/login or alice:feat/login')
+        expect(absent).toContain('no open pull request was found for o:feat/login or alice:feat/login')
         expect(absent).toContain('number=<n>')
-        if (legacy) expect(absent).toContain('until the server is updated')
       }
       finally { await tools.shutdown() }
       expect(s.room.allScopes()).toEqual([])

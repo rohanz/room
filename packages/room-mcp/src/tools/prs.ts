@@ -48,9 +48,7 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'now'>): Pick<Handler
     const prs = result.prs.filter(p => p.head === head)
     if (acceptedPrBranch(s) !== head) return undefined
     if (prs.length > 1) throw new Error(`several open PRs have ${head} as their head: ${prs.map(pr => `#${pr.number} (${pr.headOwner ?? 'unknown owner'}:${pr.head})`).join(', ')}. Use room_pr_note number=<n> to pick one`)
-    if (!prs.length) throw new Error(result.heads
-      ? `no open pull request was found for ${result.heads.join(' or ')}. A pull request from another account's fork needs room_pr_note number=<n>`
-      : `no open pull request was found for branch ${head}. A fork's pull request needs room_pr_note number=<n> until the server is updated`)
+    if (!prs.length) throw new Error(`no open pull request was found for ${result.heads.join(' or ')}. A pull request from another account's fork needs room_pr_note number=<n>`)
     return prs[0]
   }
 

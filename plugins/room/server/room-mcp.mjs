@@ -32965,13 +32965,19 @@ function recoveryRefCovers(common, snapshot2, ref) {
 function collectRecoveryRefs(common, now = Date.now(), dryRun = false) {
   const removed = [];
   let refs;
+  const list = (fields) => run2(common, ["for-each-ref", `--format=%(refname)%00%(objectname)${fields}`, "refs/room/recovery/"]);
   try {
-    refs = run2(common, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/room/recovery/"]);
+    refs = list("%00%(objecttype)%00%(taggerdate:unix)");
   } catch {
-    return removed;
+    try {
+      refs = list("");
+    } catch {
+      return removed;
+    }
   }
   for (const line of refs.split("\n")) {
-    const [ref, oid] = line.split("\0");
+    const [ref, oid, type, tagged] = line.split("\0");
+    if (type !== void 0 && (type !== "tag" || tagged && now - Number(tagged) * 1e3 < RECOVERY_REF_AGE_MS)) continue;
     try {
       const pin = recoveryPin(common, oid);
       if (!pin || now - pin.createdAt < RECOVERY_REF_AGE_MS) continue;
@@ -64112,15 +64118,14 @@ function acceptedPrBranch(s, name = s.me.name, now = Date.now()) {
 }
 async function fetchPrs(s, opts = {}) {
   const branch = opts.branch ?? acceptedPrBranch(s);
-  if (!branch || branch === "updating") return { prs: [] };
+  if (!branch || branch === "updating") return { heads: [], prs: [] };
   const a = await authFor(s);
   const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, branch, head: "1" })}`, {
     headers: { ...a.session ? { authorization: `Bearer ${a.session}` } : {}, ...a.token ? { "x-room-token": a.token } : {} },
     signal: AbortSignal.timeout(2e4)
   });
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
-  const result2 = await res.json();
-  return Array.isArray(result2) ? { prs: result2 } : result2;
+  return await res.json();
 }
 async function postPrNote(s, number3, body) {
   const a = await authFor(s);
@@ -64830,7 +64835,7 @@ function createPrs(deps) {
     const prs = result2.prs.filter((p) => p.head === head);
     if (acceptedPrBranch(s) !== head) return void 0;
     if (prs.length > 1) throw new Error(`several open PRs have ${head} as their head: ${prs.map((pr) => `#${pr.number} (${pr.headOwner ?? "unknown owner"}:${pr.head})`).join(", ")}. Use room_pr_note number=<n> to pick one`);
-    if (!prs.length) throw new Error(result2.heads ? `no open pull request was found for ${result2.heads.join(" or ")}. A pull request from another account's fork needs room_pr_note number=<n>` : `no open pull request was found for branch ${head}. A fork's pull request needs room_pr_note number=<n> until the server is updated`);
+    if (!prs.length) throw new Error(`no open pull request was found for ${result2.heads.join(" or ")}. A pull request from another account's fork needs room_pr_note number=<n>`);
     return prs[0];
   };
   const postLedger = async (s, pr) => {

@@ -17,7 +17,7 @@ export interface PrInfo {
   url: string
 }
 
-export interface PrLookup { heads?: string[]; prs: PrInfo[] }
+export interface PrLookup { heads: string[]; prs: PrInfo[] }
 
 // Leave room under the server's 4 MiB body cap for the JSON envelope and credentials.
 const PR_NOTE_MAX_JSON_BYTES = 3 * 1024 * 1024
@@ -32,17 +32,15 @@ export function acceptedPrBranch(s: Session, name = s.me.name, now = Date.now())
 /** GET /github/prs on the session's server for an explicit participant branch. */
 export async function fetchPrs(s: Session, opts: { branch?: string } = {}): Promise<PrLookup> {
   const branch = opts.branch ?? acceptedPrBranch(s)
-  if (!branch || branch === 'updating') return { prs: [] }
+  if (!branch || branch === 'updating') return { heads: [], prs: [] }
   const a = await authFor(s)
   const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, branch, head: '1' })}`, {
     headers: { ...(a.session ? { authorization: `Bearer ${a.session}` } : {}), ...(a.token ? { 'x-room-token': a.token } : {}) },
     signal: AbortSignal.timeout(20000),
   })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
-  const result = await res.json() as PrLookup | PrInfo[]
-  // Remove the array-response adapter once the owner's v0.17.51 server is updated.
-  // Keep head=1 until the server's 0.17.52-session guard is also removed.
-  return Array.isArray(result) ? { prs: result } : result
+  // Keep head=1 until the server's guard for 0.17.52 sessions is removed.
+  return await res.json() as PrLookup
 }
 
 /** POST /github/pr-note: the server posts or updates the one room comment on the PR as the logged-in user. */

@@ -208,9 +208,18 @@ export function recoveryRefCovers(common: string, snapshot: string | undefined, 
 export function collectRecoveryRefs(common: string, now = Date.now(), dryRun = false): string[] {
   const removed: string[] = []
   let refs: string
-  try { refs = run(common, ['for-each-ref', '--format=%(refname)%00%(objectname)', 'refs/room/recovery/']) } catch { return removed }
+  // One listing dates every pin; the exact per-object check below then runs only for the few old enough to
+  // go, not once per pin on every hourly pass. The listing never decides a deletion.
+  const list = (fields: string) => run(common, ['for-each-ref', `--format=%(refname)%00%(objectname)${fields}`, 'refs/room/recovery/'])
+  try { refs = list('%00%(objecttype)%00%(taggerdate:unix)') }
+  catch {
+    // Reading types fails for the whole listing when one ref's object is missing. Names and OIDs need no
+    // objects: fall back to them and check every pin, so one broken ref cannot keep the others forever.
+    try { refs = list('') } catch { return removed }
+  }
   for (const line of refs.split('\n')) {
-    const [ref, oid] = line.split('\0')
+    const [ref, oid, type, tagged] = line.split('\0')
+    if (type !== undefined && (type !== 'tag' || (tagged && now - Number(tagged) * 1000 < RECOVERY_REF_AGE_MS))) continue
     try {
       const pin = recoveryPin(common, oid)
       if (!pin || now - pin.createdAt < RECOVERY_REF_AGE_MS) continue

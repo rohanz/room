@@ -80,3 +80,24 @@ it.each(['legacy', 'foreign-tag', 'future', 'moved-pin', 'symbolic', 'during-del
   expect(git('rev-parse', `${pin}^{commit}`)).toBe(['moved-pin', 'symbolic', 'during-delete'].includes(mode) ? head : tip)
   if (mode === 'legacy') expect(recoveryRefDescription(common, pin)).toContain('creation time unrecorded')
 })
+it('dates every pin with one Git call when none is old enough to go, and still expires an old one', () => {
+  const { git, common, worker, tip, pin } = fixture()
+  preserveWorkerBranch(common, worker)
+  // More pins of the same shape, plus two things that are never pins: a plain ref and a foreign annotated tag.
+  const pinOid = git('rev-parse', pin)
+  for (let i = 0; i < 20; i++) git('update-ref', `refs/room/recovery/extra${i}/${tip}`, pinOid)
+  git('update-ref', `refs/room/recovery/plain/${tip}`, tip)
+  git('tag', '-a', '-m', 'not a Room pin', 'foreign', tip)
+  git('update-ref', `refs/room/recovery/foreign/${tip}`, git('rev-parse', 'refs/tags/foreign'))
+  const calls = vi.spyOn(baseline, 'boundedGitSync')
+  try {
+    expect(collectRecoveryRefs(common)).toEqual([])
+    expect(calls).toHaveBeenCalledTimes(1)
+  } finally { calls.mockRestore() }
+  const removed = collectRecoveryRefs(common, Date.now() + RECOVERY_REF_AGE_MS)
+  expect(removed).toHaveLength(21)
+  expect(removed).toContain(pin)
+  // What is not a Room pin is never expired, however old.
+  expect(git('rev-parse', `refs/room/recovery/plain/${tip}`)).toBe(tip)
+  expect(git('rev-parse', `refs/room/recovery/foreign/${tip}^{commit}`)).toBe(tip)
+})
