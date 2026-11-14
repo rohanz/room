@@ -1,4 +1,5 @@
-import { recoveryRefCovers, recoveryRefDescription, deleteWorkerRef, restoreWorkerRef, preserveWorkerBranch, captureWorkerBranch, operationBranchReceipt } from './worker-refs.js'
+import { replayDiscard } from './worker-discard.js'
+import { deleteWorkerRef, restoreWorkerRef, preserveWorkerBranch, captureWorkerBranch, operationBranchReceipt } from './worker-refs.js'
 import { removePreparation, verifyWorkerCheckout, retainCheckout } from './worker-preparation.js'
 import { workerTagFile, withWorkerTag } from './worker-tags.js'
 import { retainedSessionMissing } from './hosts/lifecycle.js'
@@ -14,16 +15,14 @@ import * as Y from 'yjs'
 import { completionId, completionMessage, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
 import { scanRunLog, runLogIdentity } from './run-log-facts.js'
-import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, probeOwnProcess, probeProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
+import { followUpAnswer, hostFailure, hostFailureLine, mcpStopReason, probeOwnProcess, probeProcessNow, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { HOST_ENDED, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker, ReleasePoster } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
-import { discardRecoveryDetails, realStateInput } from './worker-status.js'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, inheritWorkerRefs, removeWorkerRefs, pruneMissingWorkerWorktree, saveDiscardRecovery } from './worker-git.js'
-import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
+import { realStateInput } from './worker-status.js'
+import { inheritWorkerRefs, removeWorkerRefs, saveDiscardRecovery } from './worker-git.js'
 import { safeId, safeTag, object, tokenShape, recordShape, reportShape, exitShape, admittedHost, laterDone } from './worker-codecs.js'
 import { ended, WorkerEvidenceBlocked, requireWorkerInventory, recordStatus, type WorkerInventory, applyWorkerCommand, type WorkerCommand, type WorkerSnapshot, type WorkerQuery } from './worker-store.js'
-import { sameStartTime } from '@room/relay/process'
 import { withCollectLeaseAssertion } from './collect-lease.js'
 import { readBoundedFileSync } from '@room/roomd'
 
@@ -1085,128 +1084,21 @@ export class FileWorkerStore {
       catch { return }
     }
     try {
-    record = this.#read(id)
-    if (record?.phase !== 'discarding' || !record.discard) return
-    // A writer killed between creating and linking a patch leaves its private
-    // scratch file behind. It has no committed identity and replay rebuilds it.
-    for (const scratch of files(path.join(this.root, 'patches'), '.tmp')) {
-      const suffix = path.basename(scratch).slice(id.length + 1)
-      if (!path.basename(scratch).startsWith(`${id}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue
-      if (fs.lstatSync(scratch).isFile()) fs.rmSync(scratch)
-    }
-    const leadDir = record.outside ? path.dirname(this.commonDir) : path.dirname(path.dirname(path.dirname(record.dir)))
-    const status = this.#status(id)
-    if (!status) return
-    const { WorkerRegistry } = await import('./worker-registry.js')
-    const cleanupRegistry = WorkerRegistry.fromStore(this)
-    const removalRegistry = {
-      read: cleanupRegistry.read.bind(cleanupRegistry),
-      list: cleanupRegistry.list.bind(cleanupRegistry),
-      worktreeOwner: cleanupRegistry.worktreeOwner.bind(cleanupRegistry),
-      checkoutUsers: cleanupRegistry.checkoutUsers.bind(cleanupRegistry),
-      markDiscardStep: this.markDiscardStep.bind(this),
-    }
-    const own = realStateInput(record, status)
-    const workers = requireWorkerInventory(this.#list()).flatMap(value => {
-      const current = this.#status(value.id)
-      return current ? [realStateInput(value, current)] : []
-    })
-    const borrowed = !!record.sharedWith || !!this.#worktreeOwner(record)
-    const shared = !record.outside && !borrowed && fs.existsSync(record.dir) ? requireWorkerInventory(this.#list()).filter(value => value.id !== id && !['retiring', 'retired', 'abandoned'].includes(value.phase)
-      && path.resolve(value.dir) === path.resolve(record!.dir)) : []
-    for (const user of shared) {
-      const userStatus = this.#status(user.id)
-      if (!userStatus || (user.phase !== 'discarding' && !['done', 'failed', 'stopped'].includes(userStatus.status))) return
-      if (user.phase !== 'discarding') await this.beginDiscard(user.id, [])
-      await this.replayDiscard(user.id)
-      if (!['retiring', 'retired'].includes(this.#read(user.id)?.phase ?? '')) return
-    }
-    if (!record.outside && !borrowed && fs.existsSync(record.dir)) {
-      try { verifyWorkerCheckout(this.commonDir, record, true) }
-      catch (error) { throw new Error(retainCheckout(this.commonDir, record, String(error))) }
-    }
-    const owned = !record.outside && !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers, true)
-    if (!record.outside && !borrowed && !owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
-    if (!record.discard.steps.children) {
-      for (const childId of record.discard.children) {
-        const child = this.#read(childId)
-        if (!child || ['retiring', 'retired'].includes(child.phase)) continue
-        if (child.phase !== 'discarding') await this.beginDiscard(childId, [])
-        await this.replayDiscard(childId)
-        if (!['retiring', 'retired'].includes(this.#read(childId)?.phase ?? '')) return
-      }
-      await this.markDiscardStep(id, 'children')
-      record = this.#read(id)!
-    }
-    // The launch PID names the host. Admission's process chain is MCP first, host
-    // second; selecting its first live entry can stop only the MCP and lose edits.
-    const run = record.runs.at(-1)!
-    const launch = run.launch
-    const report = requireWorkerInventory(this.#reports(id)).find(value => value.run === run.n && value.nonce === run.nonce)
-    const chain = report?.chain ?? []
-    const reportedHost = launch?.outcome === 'launched' ? chain.find(value => value.pid === launch.pid) : undefined
-    if (launch?.outcome === 'launched' && launch.process && reportedHost
-      && (!sameStartTime(launch.process.startTime, reportedHost.startTime) || launch.process.executable !== reportedHost.executable)) return
-    const host = launch?.outcome === 'launched' ? launch.process ?? reportedHost : undefined
-    const identities = [host, ...(record.outside ? [] : chain.filter(value => value.pid !== host?.pid))]
-      .filter((value): value is NonNullable<typeof value> => !!value)
-    if (!record.discard!.steps.stop) await this.beginStop(id, 'discarded')
-    // A PID-only launch without a matching admitted host has no verified signal
-    // authority. Keep the directory even if another chain member has exited.
-    if (launch?.outcome === 'launched' && !host && !requireWorkerInventory(this.#exits(id)).some(value => value.run === run.n)
-      && pidAlive(launch.pid)) return
-    for (const identity of identities) {
-      const alive = this.alive(identity)
-      if (alive === 'unknown') return
-      if (alive !== 'alive') continue
-      if (!record.capabilities.signal || record.discard!.steps.stop) return
-      const signalOwn = { ...own, pid: identity.pid, processStartTime: identity.startTime }
-      const stopped = await stopWorkerWithEscalation({
-        terminate: () => signalWorker(identity.pid, 'SIGTERM', record!.outside ? undefined : record!.dir, undefined, signalOwn, probeProcess),
-        exited: () => this.alive(identity) === 'dead',
-        force: () => signalWorker(identity.pid, 'SIGKILL', record!.outside ? undefined : record!.dir, undefined, signalOwn, probeProcess),
-      })
-      if (!stopped) return
-    }
-    if (identities.some(value => this.alive(value) !== 'dead')) return
-    if (owned && !await quiesceWorktreeProcesses(record.dir)) return
-    if (!record.discard!.steps.stop) {
-      await this.markDiscardStep(id, 'stop')
-      record = this.#read(id)!
-    }
-    if (owned) {
-      await this.recordDiscardRecovery(id, { ignored: await ignoredWorkerArtifacts(own, leadDir) })
-      record = this.#read(id)!
-    }
-    await this.ensureDiscardRecovery(id, leadDir, owned)
-    record = this.#read(id)!
-    if (!owned && record.discard!.patch) {
-      // Legacy removal already happened: retain its artifacts and finish its original plan.
-      const published = record.discard!.patch
-      const expected = path.join(this.root, 'patches', `${id}.patch`)
-      if (published.path !== expected || !fs.lstatSync(expected).isFile()
-        || createHash('sha256').update(fs.readFileSync(expected)).digest('hex') !== published.sha256) {
-        throw new Error(`legacy discard patch missing or changed after worktree removal: ${expected}`)
-      }
-    }
-    if (!record.discard!.steps.cleanup) {
-      if (owned) {
-        if (!await cleanupWorker(leadDir, own, { collected: true, discarded: true, leadName: record.lead.participant, workers, registry: removalRegistry })) return
-      } else if (record.outside) {
-        cleanupWorkerLogs(leadDir, record)
-      } else if (!borrowed) {
-        await pruneMissingWorkerWorktree(leadDir, own, true, cleanupRegistry)
-        cleanupWorkerLogs(leadDir, record)
-      } else cleanupWorkerLogs(leadDir, record)
-      await this.markDiscardStep(id, 'cleanup')
-    }
-    await this.markDiscardStep(id, 'prune')
-    const completed = this.#read(id)!
-    const summary = borrowed ? 'detached' : 'discarded'
-      + discardRecoveryDetails(completed.discard)
-      + (completed.branchCleanup?.recoveryRef && !recoveryRefCovers(this.commonDir, completed.discard?.recoveryRef, completed.branchCleanup.recoveryRef)
-        ? '; branch recovery ref: ' + recoveryRefDescription(this.commonDir, completed.branchCleanup.recoveryRef) : '')
-    await this.beginRetirement(id, this.archiveOf(completed, { summary, disposition: 'discarded' }))
+      record = this.#read(id)
+      if (record?.phase !== 'discarding' || !record.discard) return
+      const { WorkerRegistry } = await import('./worker-registry.js')
+      // Inject this open store; cleanup must not re-enter registryForDir while it is opening.
+      const reader = WorkerRegistry.fromStore(this)
+      await replayDiscard({
+        root: this.root, commonDir: this.commonDir,
+        read: async id => this.#read(id), list: async () => this.#list(), status: async id => this.#status(id),
+        worktreeOwner: async record => this.#worktreeOwner(record), checkoutUsers: reader.checkoutUsers.bind(reader),
+        reports: async id => requireWorkerInventory(this.#reports(id)), exits: async id => requireWorkerInventory(this.#exits(id)),
+        beginDiscard: this.beginDiscard.bind(this), beginStop: this.beginStop.bind(this),
+        markDiscardStep: this.markDiscardStep.bind(this), recordDiscardRecovery: this.recordDiscardRecovery.bind(this),
+        ensureDiscardRecovery: this.ensureDiscardRecovery.bind(this), replayDiscard: this.replayDiscard.bind(this),
+        archiveOf: async (record, facts) => this.archiveOf(record, facts), beginRetirement: this.beginRetirement.bind(this),
+      }, id, this.alive)
     } finally { if (acquired) await this.finishOperation(id) }
   }
 

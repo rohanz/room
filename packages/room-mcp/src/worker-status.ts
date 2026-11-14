@@ -41,7 +41,7 @@ export interface PrepJournal {
   identityRequired?: boolean; root?: RootReceipt; witness?: PreparationWitness; branchOid?: string
 }
 interface DiscardPlan {
-  children: string[]; steps: Partial<Record<'children' | 'stop' | 'removing' | 'cleanup' | 'prune', boolean>>
+  children: string[]; steps: Partial<Record<'children' | 'stop' | 'removing' | 'cleanup', boolean>>
   recoveryRef?: string
   unchanged?: boolean
   /** The snapshot a replay found missing after the checkout was already removed. */

@@ -175,7 +175,7 @@ describe('registry write paths', () => {
     await lead.beginDiscard(record.id, [])
     const observer = await open(root, 'observer', 'dead')
     expect((await observer.read(record.id))?.phase).toBe('retiring')
-    expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, removing: true, cleanup: true, prune: true })
+    expect((await observer.read(record.id))?.discard?.steps).toEqual({ children: true, stop: true, removing: true, cleanup: true })
     expect(fs.existsSync(record.dir)).toBe(false)
     const ref = (await observer.read(record.id))!.discard!.recoveryRef!
     expect(git(root, 'show', `${ref}:change.txt`)).toBe('recover me')

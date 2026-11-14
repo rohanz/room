@@ -51,7 +51,7 @@ it.each(['unchanged', 'modified', 'deleted', 'executable', 'symlink', 'missing-b
     if (kind === 'executable') expect(fs.statSync(path.join(recovered, file)).mode & 0o111).not.toBe(0)
   })
 
-it.each(['children', 'stop', 'removing', 'cleanup', 'prune'] as const)(
+it.each(['children', 'stop', 'removing', 'cleanup'] as const)(
   'second review crash after durable %s step keeps recoverable tree and ignored names', async step => {
     const t = setup('failed')
     put(worker, 'file.txt', 'tracked after crash\n')

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A burst of file changes is scanned once.** When several files changed together, the session's publisher ran its whole change scan once per file. It now decides which of the changed paths count and scans once: five files, one scan. What is published, and when a single edit becomes visible, is unchanged. One consequence: if Git starts failing part-way through a batch and keeps failing, the batch is published when Git works again, where the first file used to go out before the failure.
+- **Discarding a worker runs one sequence.** A direct discard, a discard of a kept worker and a discard finished after a crash each had their own copy of the steps, which is how this week's recovery fixes kept missing one of them. They now run one routine in one order: nested workers, stop, snapshot, removal, clean-up, retirement. A borrowed, outside or missing worktree's logs are removed once, after the snapshot is confirmed; replies and what is recoverable are unchanged. A journal step that was written and never read is gone.
+- **Discarding a kept worker checks that the record is yours before it starts.** The ownership check for kept records was never awaited, so the first candidate was always chosen. A later check refused to delete a worktree that was not yours, so nothing was lost, but the discard was journaled and a snapshot taken before the refusal.
+
 ## 0.17.52
 
 - **A participant who stays away now expires after seven days in a local room.** The hub measures how long each absent participant has been away and records it in the room, but the local daemon's saved snapshot left that record out. Every daemon start therefore counted from zero, and the daemon stops whenever no session has been attached for five minutes, so a name expired only if one daemon ran for seven days without a break. Retired worker names piled up (about 125 in one clone), which is what made an idle room restart to clean up every 81 minutes before 0.17.51. The record is now part of the snapshot. Hosted rooms were not affected: they store the whole document.
