@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-machine demo: room server + a shared "origin" + two clones (Rohan, Kieran).
-# Then prints how to join from each clone with plain Codex (plugin) or with roomagent.
+# Then prints how to join from each clone with plain Codex (plugin).
 #
 # Usage (any cwd):  bash scripts/demo.sh            # or: PORT=1244 WORK=/tmp/my-room-demo bash scripts/demo.sh
 # Prerequisites:    Node 22+ and npm (run `npm ci` in the repo first), git, curl, uv.
@@ -79,8 +79,7 @@ for _ in $(seq 1 150); do
   sleep 0.1
 done
 [ -n "$ready" ] || server_failed "the server did not answer /health on :$PORT within 15 s"
-# Give each on-duty agent its own authenticated identity. The session values are demo-only and die
-# with this in-memory server; printing them is what makes the copy/paste commands actually connect.
+# Use a demo-only authenticated identity to open the repository room.
 fake_session() {
   local login="$1" device session
   device="$(curl -sf -X POST "http://localhost:$PORT/auth/device" | sed -n 's/.*"device":"\([0-9a-f]*\)".*/\1/p')"
@@ -89,7 +88,6 @@ fake_session() {
   printf '%s' "$session"
 }
 ROHAN_SESSION="$(fake_session Rohan)"
-KIERAN_SESSION="$(fake_session Kieran)"
 curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d "{\"room\":\"local/origin\",\"schema\":2,\"session\":\"$ROHAN_SESSION\"}" >/dev/null \
   || { echo "[demo] could not open the room on :$PORT" >&2; exit 1; }
 
@@ -104,10 +102,6 @@ Room server: ws://localhost:$PORT   (one room for local/origin across all branch
 Join with plain Codex (plugin installed via: codex plugin marketplace add $ROOT && codex plugin add room@room):
   cd $A && ROOM_SERVER=ws://localhost:$PORT codex --no-daemon     # then: \$room-join
   cd $B && ROOM_SERVER=ws://localhost:$PORT codex --no-daemon     # then: \$room-join
-
-Or leave an agent on duty (reacts to interrupts and questions unattended):
-  ROOM_SERVER=ws://localhost:$PORT ROOM_SESSION=$ROHAN_SESSION npx tsx $ROOT/packages/agent/src/cli.ts --dir $A --name Rohan
-  ROOM_SERVER=ws://localhost:$PORT ROOM_SESSION=$KIERAN_SESSION npx tsx $ROOT/packages/agent/src/cli.ts --dir $B --name Kieran
 
 Browser view:  npm run web   then open the URL room_join prints.
 

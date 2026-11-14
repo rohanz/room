@@ -6,7 +6,6 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./prompt": "./src/prompt.ts",
     "./tools": "./src/tools.ts",
     "./worker-state": "./src/worker-state.ts"
   },

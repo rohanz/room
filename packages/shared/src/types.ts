@@ -250,9 +250,12 @@ export type ShareLevel = 'intent' | 'declared' | 'full'
 // ---- delivery ledger (docs/superpowers/specs/2026-09-28-ledger.md) ----------
 
 /** How a message was handed off to the host. */
-export type Via = 'reply' | 'wait' | 'hook' | 'prompt' | 'agent'
-/** `seen:<P>[msgId]`; `s` is the holder session that got it (provenance, never a filter). Legacy receipts are a number. */
-export interface Receipt { s: string; via: Via; at: number }
+export type Via = 'reply' | 'wait' | 'hook' | 'prompt'
+/** Stored `seen:<P>[msgId]` provenance may name a retired delivery path, including roomagent.
+ * The holder session `s` is provenance, never a filter. Older stored receipts can also be numeric. */
+export interface StoredReceipt { s: string; via: string; at: number }
+/** A new receipt can name only a supported delivery path. */
+export interface Receipt extends StoredReceipt { via: Via }
 /** Terminal delivery or question outcome. These survive answer-body removal and receipt cleanup. */
 export interface Outcome { to: string; from: string; outcome: 'expired' | 'over-cap' | 'recipient-retired' | 'asker-retired' | 'answered'; at: number }
 /** A release's plans left undone, kept in the archive for the PR ledger. */
@@ -266,13 +269,4 @@ export interface DeliveryCursor {
   routed: ReadonlySet<string>
   /** Addressed messages at or below this seq were for an earlier holder of the name (a spawned worker's tag reused). */
   addressedFrom?: number
-}
-
-export type ChatRole = 'human' | 'agent' | 'tool' | 'event' | 'status'
-export interface ChatItem {
-  id: string
-  at: number
-  role: ChatRole
-  text: string
-  meta?: Record<string, string>
 }

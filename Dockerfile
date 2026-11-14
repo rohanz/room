@@ -10,7 +10,6 @@ COPY packages/server/package.json packages/server/
 COPY packages/roomd/package.json packages/roomd/
 COPY packages/room-mcp/package.json packages/room-mcp/
 COPY packages/relay/package.json packages/relay/
-COPY packages/agent/package.json packages/agent/
 COPY packages/web/package.json packages/web/
 # The lockfile pins the root esbuild to 0.28.2; build tools stay in this stage.
 RUN npm ci --include=dev --no-audit --no-fund
@@ -31,7 +30,6 @@ COPY --from=build /app/packages/server/package.json packages/server/
 COPY --from=build /app/packages/roomd/package.json packages/roomd/
 COPY --from=build /app/packages/room-mcp/package.json packages/room-mcp/
 COPY --from=build /app/packages/relay/package.json packages/relay/
-COPY --from=build /app/packages/agent/package.json packages/agent/
 COPY --from=build /app/packages/web/package.json packages/web/
 RUN npm ci --omit=dev --no-audit --no-fund -w @room/server
 COPY --from=build /app/packages/server/dist packages/server/dist

@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import type { StoredReceipt } from './types.js'
 import { RECEIPTS_BYTES } from './delivery.js'
 import { workerMemory } from './worker-memory.js'
 
@@ -39,8 +40,8 @@ type BusValue = { id?: unknown; to?: unknown } | null
 
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
 const entrySize = (key: string, value: unknown): number => key.length + JSON.stringify(value).length
-/** A legacy number or a `{s, via, at}` receipt. */
-function validReceipt(value: unknown): boolean {
+/** Read boundary: preserve old numeric receipts and retired delivery provenance such as `via: agent`. */
+function validReceipt(value: unknown): value is StoredReceipt | number {
   if (typeof value === 'number') return Number.isFinite(value)
   const r = value as { s?: unknown; via?: unknown; at?: unknown } | null
   return !!r && typeof r === 'object' && typeof r.s === 'string' && typeof r.via === 'string' && typeof r.at === 'number' && Number.isFinite(r.at)

@@ -113,21 +113,21 @@ describe('RoomDoc overlays', () => {
     expect(room.overlayText('Kieran', 'app.py')?.toString()).toBe('theirs\n')
   })
 
-  it('merges chat messages created concurrently before the docs sync', () => {
+  it('merges claims created concurrently before the docs sync', () => {
     const docA = new Y.Doc()
     const docB = new Y.Doc()
     const a = new RoomDoc(docA)
     const b = new RoomDoc(docB)
 
-    a.say('Rohan', { role: 'human', text: '/stop' })
-    b.say('Rohan', { role: 'agent', text: 'working' })
+    a.addClaim({ path: 'a.ts', from: 1, to: 2, by: 'Rohan', byKind: 'agent', intent: 'first' })
+    b.addClaim({ path: 'b.ts', from: 3, to: 4, by: 'Kieran', byKind: 'agent', intent: 'second' })
     const updateA = Y.encodeStateAsUpdate(docA)
     const updateB = Y.encodeStateAsUpdate(docB)
     Y.applyUpdate(docA, updateB)
     Y.applyUpdate(docB, updateA)
 
-    expect(a.chat('Rohan').toArray().map(i => i.text).sort()).toEqual(['/stop', 'working'])
-    expect(b.chat('Rohan').toArray().map(i => i.text).sort()).toEqual(['/stop', 'working'])
+    expect(a.openClaims().map(c => c.intent).sort()).toEqual(['first', 'second'])
+    expect(b.openClaims().map(c => c.intent).sort()).toEqual(['first', 'second'])
   })
 
   it('setOverlay with identical content emits no update', () => {
@@ -154,14 +154,23 @@ describe('message priorities', () => {
   })
 })
 
-describe('chats', () => {
-  it('keeps one chat per person and syncs it', () => {
-    const a = new RoomDoc(), b = new RoomDoc()
-    a.doc.on('update', (u: Uint8Array) => Y.applyUpdate(b.doc, u))
-    b.doc.on('update', (u: Uint8Array) => Y.applyUpdate(a.doc, u))
-    a.say('Rohan', { role: 'human', text: 'refactor validation' })
-    b.say('Rohan', { role: 'agent', text: 'on it' })
-    expect(a.chat('Rohan').toArray().map(i => i.role)).toEqual(['human', 'agent'])
-    expect(b.chat('Kieran').length).toBe(0)
+describe('confirmed session receipts', () => {
+  it('keeps a live receipt without proof that delivery ended, even across partial sync', () => {
+    const room = new RoomDoc()
+    const msg = hubAppend<QuestionMsg>(room, { name: 'Kieran', kind: 'agent' },
+      { type: 'question', to: 'Rohan', text: 'ready?' })
+    room.markSeen('Rohan', [msg.id], { s: 'session-1', via: 'reply' })
+    room.mail.set(msg.id, msg)
+    room.bus.delete(0, room.bus.length)
+    room.pruneSeen('Rohan', () => true)
+    expect(room.seen('Rohan').has(msg.id)).toBe(true)
+    room.mail.delete(msg.id)
+    room.pruneSeen('Rohan', () => true)
+    expect(room.seen('Rohan').has(msg.id)).toBe(true)
+    room.archive.set(msg.id, ['question', 'Kieran', msg.at, []])
+    room.pruneSeen('Rohan', () => false)
+    expect(room.seen('Rohan').has(msg.id)).toBe(true)
+    room.pruneSeen('Rohan', () => true)
+    expect(room.seen('Rohan').has(msg.id)).toBe(false)
   })
 })

@@ -259,3 +259,17 @@ it('renders a released claim as history and an open one as current', () => {
   expect(formatMsg(claim, { scopes: [], messages: [claim], claims: [] })).toContain('earlier: Kieran\'s agent claimed api/pricing.py:3-9 (00:00:01) — add tax')
   expect(formatMsg(claim)).toContain('claims api/pricing.py:3-9')
 })
+
+describe('wake rules: priorities', () => {
+  it('fyi never wakes, notify wakes only when addressed, interrupt always', async () => {
+    const me = { name: 'Rohan', kind: 'agent' as const }
+    const claim = { id: 'm1', type: 'claim' as const, priority: 'fyi' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, claimId: 'c1', path: 'api/notify.py', from_line: 1, to_line: 1, intent: 'stub' }
+    const mine = [{ id: 'c0', path: 'api/notify.py', from: 3, to: 9, by: 'Rohan', byKind: 'agent' as const, intent: 'x', at: 1 }]
+    expect(shouldWakeOnMsg(me, claim, mine).wake).toBe(false)
+    const changed = { id: 'm2', type: 'changed' as const, priority: 'notify' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, paths: ['a.py'], summary: 'renamed', symbols: ['f'] }
+    expect(shouldWakeOnMsg(me, changed, []).wake).toBe(false)
+    expect(shouldWakeOnMsg(me, { ...changed, to: 'Rohan' }, []).wake).toBe(true)
+    const conflict = { id: 'm3', type: 'conflict' as const, priority: 'interrupt' as const, from: 'Kieran', fromKind: 'agent' as const, at: 1, claimId: 'a', otherClaimId: 'b', path: 'a.py', text: 'x' }
+    expect(shouldWakeOnMsg(me, conflict, []).wake).toBe(true)
+  })
+})

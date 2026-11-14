@@ -21,15 +21,6 @@
         "vitest*.ts"
       ]
     },
-    "packages/agent": {
-      "entry": [
-        "test/**/*.test.ts"
-      ],
-      "project": [
-        "src/**/*.ts!",
-        "test/**/*.ts"
-      ]
-    },
     "packages/hub-core": {
       "entry": [
         "test/**/*.test.ts"

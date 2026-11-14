@@ -6,7 +6,6 @@ packages/shared/   @rohanz
 packages/server/   @rohanz
 packages/roomd/    @rohanz
 packages/room-mcp/ @rohanz
-packages/agent/    @rohanz
 packages/web/      @rohanz
 plugins/           @rohanz
 docs/              @rohanz

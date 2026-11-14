@@ -9,7 +9,6 @@ import { randomBytes } from 'node:crypto'
 import { manifestKey, type CoordinationRecord, type ManifestEntry, type ManifestHead } from './manifest.js'
 import type {
   ArchivedMsg,
-  ChatItem,
   Claim,
   ClaimAnchor,
   Identity,
@@ -19,6 +18,7 @@ import type {
   Outcome,
   Priority,
   Receipt,
+  StoredReceipt,
   Scope,
   WorkerView,
   RetiredWorker,
@@ -524,7 +524,7 @@ export class RoomDoc {
 
   // ---- read receipts ------------------------------------------------------
   /** `seen:<P>`: message ids P's agent was handed, after a confirmed handoff (ledger R2). Legacy receipts are a number. */
-  seen(name: string): Y.Map<Receipt | number> { return this.doc.getMap<Receipt | number>(`seen:${encodeURIComponent(name)}`) }
+  seen(name: string): Y.Map<StoredReceipt | number> { return this.doc.getMap<StoredReceipt | number>(`seen:${encodeURIComponent(name)}`) }
   /** Receipts for a confirmed handoff to session `s` by `via`. */
   markSeen(name: string, ids: readonly string[], receipt: Omit<Receipt, 'at'>, origin?: unknown): void {
     if (!ids.length) return
@@ -551,17 +551,6 @@ export class RoomDoc {
     return out.sort()
   }
 
-  // ---- chats (human <-> own agent) --------------------------------------
-
-  chat(name: string): Y.Array<ChatItem> {
-    return this.doc.getArray<ChatItem>(`chat:${encodeURIComponent(name)}`)
-  }
-
-  say(name: string, item: Omit<ChatItem, 'id' | 'at'>, origin?: unknown): ChatItem {
-    const value: ChatItem = { ...item, id: newId('h_'), at: Date.now() }
-    this.doc.transact(() => { this.chat(name).push([value]) }, origin)
-    return value
-  }
 }
 
 function lineStart(text: string, oneBasedLine: number): number {

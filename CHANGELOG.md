@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`roomagent` is removed.** It was a separate program that kept a Codex agent in a room, reading a chat stream and acting without an interactive session, from before the hosts could wake an idle session. An open Claude Code or Codex session is now woken by Room messages, and Room workers do unattended work, both through Room's ordinary message delivery. Gone with it: the `roomagent` command, `/stop` and `/resume` by chat, the transcript it mirrored into the room, the per-person chat stream in the shared document, and `scripts/say.mts`. Chat, transcripts and receipts it wrote in the past stay in hosted rooms and in exports; the local daemon's snapshot does not keep chat, as before.
+
 ## 0.17.53
 
 - **The hourly check of recovery refs runs Git once.** Recovery refs are the saved copies of discarded and collected workers, kept for seven days. The hourly pass read each one with its own Git process to see how old it was: 0.86 seconds for 105 refs, blocking the session. One listing now dates them all, and the exact per-ref check runs only for those old enough to delete: 16 milliseconds on the same clone. What is deleted, and when, is unchanged.

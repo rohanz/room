@@ -1,7 +1,6 @@
 import { isAgentic } from './identity.js'
-import { claimsOverlap } from './claims.js'
 import { messageKind } from './messages.js'
-import type { Claim, ClaimMsg, Identity, Msg } from './types.js'
+import type { Claim, Identity, Msg } from './types.js'
 
 export interface WakeDecision {
   wake: boolean
@@ -10,7 +9,7 @@ export interface WakeDecision {
   reason: string
 }
 
-/** Shared bus wake policy for both reactive runners and host wake transports. */
+/** Bus wake policy for host wake transports. */
 export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], hasUncommitted = false, ownWorkerNames?: ReadonlySet<string>): WakeDecision {
   if (m.type === 'plan' && m.priority === 'fyi') return { wake: false, mustAnswer: false, reason: 'ended plan' }
   if (m.from === me.name && m.fromKind !== 'human') return { wake: false, mustAnswer: false, reason: 'own message' }
@@ -42,16 +41,4 @@ export function shouldWakeOnMsg(me: Identity, m: Msg, myClaims: Claim[] = [], ha
     if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path}, not near my claims` }
   }
   return { wake: true, mustAnswer: addressed, reason: addressed ? 'addressed to me' : 'broadcast' }
-}
-
-/** Shared claim-map wake policy: only another party overlapping one of our claims wakes. */
-export function shouldWakeOnClaim(me: Identity, claim: Claim, myClaims: Claim[]): WakeDecision {
-  if (claim.by === me.name && isAgentic(claim.byKind)) return { wake: false, mustAnswer: false, reason: 'own agent' }
-  const hit = myClaims.find(c => c.by === me.name && isAgentic(c.byKind) && c.id !== claim.id && claimsOverlap(c, claim))
-  if (!hit) return { wake: false, mustAnswer: false, reason: 'no overlap with my claims' }
-  return { wake: true, mustAnswer: false, reason: `overlaps my claim ${hit.id}` }
-}
-
-export function claimToMsg(c: Claim): ClaimMsg {
-  return { id: `claim:${c.id}`, type: 'claim', priority: 'fyi', from: c.by, fromKind: c.byKind, at: c.at, claimId: c.id, path: c.path, from_line: c.from, to_line: c.to, intent: c.intent }
 }

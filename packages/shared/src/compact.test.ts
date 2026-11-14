@@ -19,7 +19,10 @@ describe('compactDoc', () => {
     room.bus.push([{ id: 'x', type: 'note', from: 'ada', at: 1, seq: 7 } as never])
     room.manifest.set('ada\u0000f', new Y.Map() as never)
     room.manifest.get('ada\u0000f')!.set('a.py', { fence: 'f', held: 'claim' } as never)
-    room.chat('ada').push([{ id: 'h', at: 1, text: 'hi' } as never])
+    // Stored historical roots need no live chat API to survive compaction.
+    room.doc.getArray('chat:ada').push([{ id: 'h', at: 1, role: 'human', text: 'hi' },
+      { id: 't', at: 2, role: 'tool', text: '$ old command', meta: { kind: 'command' } }])
+    room.doc.getMap('seen:ada').set('x', { s: 'old-runtime', via: 'agent', at: 1 })
     room.doc.getText('notes').insert(0, 'bold', { bold: true })
     // A root that reached this replica by update and was never read is a plain AbstractType here.
     const remote = new Y.Doc(); remote.getMap('unread').set('k', 1); remote.getArray('unreadList').push([1, 2])

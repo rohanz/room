@@ -161,3 +161,27 @@ it('returns the smallest achievable snapshot when protected data alone is over t
   expect(restored.archive.size).toBe(0)
   expect(log).toHaveBeenLastCalledWith(expect.stringMatching(/dropped 1 archive entries, 2 broadcast receipts, 2 bus broadcasts; still over$/))
 })
+
+it('loads and raw-exports historical chat while local snapshots keep only referenced agent receipts', () => {
+  const source = new RoomDoc()
+  const q = message({ type: 'question', to: 'ada / old', text: 'old question' })
+  source.bus.push([q])
+  const name = 'ada / old', root = 'chat:' + encodeURIComponent(name)
+  const history = [
+    { id: 'h', at: NOW, role: 'human', text: '/stop' },
+    { id: 't', at: NOW, role: 'tool', text: '$ old command', meta: { kind: 'command' } },
+    { id: 'a', at: NOW, role: 'agent', text: 'old answer' },
+  ]
+  const receipt = { s: 'roomagent:old', via: 'agent', at: NOW }
+  source.doc.getArray(root).push(history)
+  source.doc.getMap('seen:' + encodeURIComponent(name)).set(q.id, receipt)
+  const { restored } = restore(source.doc)
+  expect(restored.doc.share.has(root)).toBe(false)
+  expect(restored.seen(name).get(q.id)).toEqual(receipt)
+  const exported = new RoomDoc()
+  Y.applyUpdate(exported.doc, Y.encodeStateAsUpdate(source.doc))
+  expect(exported.doc.getArray(root).toArray()).toEqual(history)
+  expect(exported.seen(name).get(q.id)).toEqual(receipt)
+  expect(exported.seenBy(q.id)).toEqual([name])
+  source.doc.destroy(); restored.doc.destroy(); exported.doc.destroy()
+})

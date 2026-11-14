@@ -88,6 +88,8 @@ Coordination messages are advisory: delivering a requested pause does not guaran
 
 The browser view shows participants, changed files, claims, the activity feed and a network of possible effects from changed function signatures. The screenshot is from an earlier two-agent run; the current UI also has a Network tab.
 
+Room runs inside your Claude Code or Codex session, or in an explicitly started Room worker. Keep the session open to receive Room wakes.
+
 ## Status and limits
 
 [![CI](https://github.com/rohanz/room/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohanz/room/actions/workflows/ci.yml)

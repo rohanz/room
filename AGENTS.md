@@ -80,13 +80,11 @@ packages/room-mcp/       src/tools/* (one module per concern: join, scope, claim
                          bridge.ts (lead in two rooms), conflict-set.ts, hooks-bridge.ts, prs.ts, graph-index.ts;
                          worker-*.ts (registry, launch, deps: node_modules links, shell-env: ROOM_* scrub, activity);
                          src/parse/ (engine.ts, spec.ts, index.ts, languages/*) is the tree-sitter indexer
-packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
 packages/web/            read-only room view: participants, overlays with claim gutters, feed, network
 plugins/room/            Codex AND Claude Code plugin (both manifests): skills, hooks, bundled MCP server + web/;
                          server/grammars/ contains the shipped tree-sitter grammars
 examples/demo-repo/      tiny Python service used in the demo (uv)
 scripts/demo.sh          server + shared origin + two clones on one machine
-scripts/say.mts          post a message into a person's agent chat and watch the room
 scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
 scripts/build-server.mjs esbuild bundle of the server for the image (`npm run build:server`)
 ```
@@ -159,8 +157,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 - Reviews alternate Fable and Codex; six rounds on 2026-09-15 found ~60 issues, none repeated.
 - Historical issue rehearsals need a separate curator: check maintainer disposition, reproduce the failure on the pinned baseline, and verify the same assertion passes on a pinned upstream reference before dispatch. A closed issue or linked commit is not sufficient. Keep reference implementations and upstream history out of worker briefs; record supplied hints and any post-freeze review feedback. Report target-code correctness separately from Room coordination, and verify requested checkpoints against raw event order rather than the lead's recollection.
 - `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join
-  from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex --no-daemon`, then `$room-join`) or
-  with `npx tsx packages/agent/src/cli.ts --dir <clone>`.
+  from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex --no-daemon`, then `$room-join`).
   Codex's shared app-server daemon does not pass your shell's `ROOM_*` variables to Room.
 - With no `ROOM_SERVER` or remembered team choice, a session is in a local room
   (`local/<main-worktree basename>`, relay on loopback, discovery in

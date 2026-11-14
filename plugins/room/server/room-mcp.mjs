@@ -10334,17 +10334,6 @@ var init_doc = __esm({
         for (const key3 of this.doc.share.keys()) if (key3.startsWith("seen:") && this.doc.getMap(key3).has(msgId)) out.push(decodeURIComponent(key3.slice(5)));
         return out.sort();
       }
-      // ---- chats (human <-> own agent) --------------------------------------
-      chat(name) {
-        return this.doc.getArray(`chat:${encodeURIComponent(name)}`);
-      }
-      say(name, item, origin) {
-        const value5 = { ...item, id: newId("h_"), at: Date.now() };
-        this.doc.transact(() => {
-          this.chat(name).push([value5]);
-        }, origin);
-        return value5;
-      }
     };
   }
 });
@@ -11189,7 +11178,6 @@ var init_wake = __esm({
   "packages/shared/src/wake.ts"() {
     "use strict";
     init_identity();
-    init_claims();
     init_messages();
   }
 });

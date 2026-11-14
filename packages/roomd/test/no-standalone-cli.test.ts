@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
 
 // A daemon started on its own holds no hub lease, so schema-2 readers reject what it publishes (its records carry
-// no authoritative holder). roomd runs only inside a session that acquired its name: the plugin's MCP or roomagent.
+// no authoritative holder). roomd runs only inside a session that acquired its name: the plugin's MCP.
 it('ships no standalone roomd entry point', () => {
   const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')) as { bin?: unknown; scripts?: Record<string, string> }
