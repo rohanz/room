@@ -16,6 +16,8 @@ export const MEMORY_TYPES = {
   bus: 'array', ledger: 'map', retiredWorkers: 'array', workers: 'map',
   scopes: 'map', claims: 'map', unresolved: 'map', aliases: 'map', colors: 'map',
   meta: 'map', mail: 'map', outcomes: 'map', archive: 'map',
+  // Measured absence (expiry.ts): without it every daemon start counted a participant's seven days from zero.
+  expiry: 'map',
 } as const
 
 /** Dynamic top-level maps: seen:<encoded participant> holds message-id -> receipt.

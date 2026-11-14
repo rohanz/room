@@ -14119,7 +14119,9 @@ var MEMORY_TYPES = {
   meta: "map",
   mail: "map",
   outcomes: "map",
-  archive: "map"
+  archive: "map",
+  // Measured absence (expiry.ts): without it every daemon start counted a participant's seven days from zero.
+  expiry: "map"
 };
 var MEMORY_PREFIXES = { "seen:": "map" };
 function* memoryTypes(doc, includePublications = false) {
