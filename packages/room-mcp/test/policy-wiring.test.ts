@@ -41,7 +41,7 @@ it('settles a departed prefix through the session onChange callback', async () =
   await store.declare(['src/'])
   fs.writeFileSync(path.join(dir, 'src', 'x'), 'changed')
   await store.declare([])
-  await (daemon as any).publisher.reconcile('all')
+  await (daemon as any).publisher.reconcile()
   expect(store.policy.ending).toEqual([])
   expect(store.retained).toEqual(['src/x'])
 })

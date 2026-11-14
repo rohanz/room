@@ -101,10 +101,10 @@ it('keeps a tracked lockfile deletion published before and after the tracked ref
   const daemon = await start(dir, () => {}, { trackedRefreshMs: 60_000, basePollMs: 0, reconcileIntervalMs: 0 })
   try {
     execFileSync('git', ['rm', '-q', '--', 'uv.lock'], { cwd: dir })
-    await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('uv.lock', false)
+    await (daemon as unknown as { onDiskChanges(paths: Map<string, boolean>): Promise<void> }).onDiskChanges(new Map([['uv.lock', false]]))
     expect(manifestDeleted(daemon.roomDoc, 'Test', 'uv.lock')).toBe(true)
     await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
-    await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('uv.lock', false)
+    await (daemon as unknown as { onDiskChanges(paths: Map<string, boolean>): Promise<void> }).onDiskChanges(new Map([['uv.lock', false]]))
     expect(manifestDeleted(daemon.roomDoc, 'Test', 'uv.lock')).toBe(true)
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })

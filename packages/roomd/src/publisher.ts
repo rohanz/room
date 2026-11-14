@@ -371,7 +371,7 @@ export class Publisher {
     return true
   }
 
-  async reconcile(_paths: Iterable<string> | 'all' = 'all', complete = true): Promise<PreparedPublication | undefined> {
+  async reconcile(complete = true): Promise<PreparedPublication | undefined> {
     try {
       const prepared = await this.prepare(this.host.inputs)
       for (const p of prepared.desired.textPaths) {

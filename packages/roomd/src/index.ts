@@ -407,10 +407,7 @@ class Daemon implements Roomd {
     this.batch = new DiskBatch((paths, overflow) => {
       const work = this.enqueue(async () => {
         await this.pollHead()
-        for (const [p, fresh] of paths) {
-          try { await this.onDiskChange(p, fresh) }
-          finally { this.onScanned?.(p) }
-        }
+        await this.onDiskChanges(paths, overflow)
       }).then(async () => {
         if (!overflow || this.stopped) return
         // Changes past the batch's path budget were not retained: relist the checkout and reconcile it whole.
@@ -568,7 +565,7 @@ class Daemon implements Roomd {
     this.setStatus(this.currentStatus())
     void this.enqueue(async () => {
       if (this.started) await this.syncCheckout()
-      await this.publisher.reconcile('all', this.publicationComplete())
+      await this.publisher.reconcile(this.publicationComplete())
     })
   }
 
@@ -773,7 +770,7 @@ class Daemon implements Roomd {
           this.reconcilePass = pass
           this.reconcileDirty = false
           await this.pollHead()
-          await this.publisher.reconcile('all', this.publicationComplete())
+          await this.publisher.reconcile(this.publicationComplete())
           if (!this.reconcileDirty || this.stopped) break
         }
       } finally {
@@ -896,7 +893,7 @@ class Daemon implements Roomd {
     this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
       this.remoteRepairTimer = undefined
       this.roomDoc.reconcileBaseTexts(this.name, this, this.inputs.head)
-      await this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
+      await this.enqueue(async () => { await this.publisher.reconcile(this.publicationComplete()) })
     })
   }
 
@@ -959,7 +956,7 @@ class Daemon implements Roomd {
     const currentRefsKey = JSON.stringify([refsKey(inputs), latestPush?.toSha])
     if (!headMoved && currentRefsKey === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) {
       // The watch may have missed edits during failed promotion setup even when HEAD stayed put.
-      if (checkoutStarted) await this.publisher.reconcile('all', this.publicationComplete())
+      if (checkoutStarted) await this.publisher.reconcile(this.publicationComplete())
       await this.retryPendingClaims(head, fence)
       return
     }
@@ -1344,7 +1341,7 @@ class Daemon implements Roomd {
 
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */
   private async seedLocalOverlay(): Promise<void> {
-    await this.publisher.reconcile('all', this.publicationComplete())
+    await this.publisher.reconcile(this.publicationComplete())
   }
 
   abs(relpath: string): string {
@@ -1470,7 +1467,7 @@ class Daemon implements Roomd {
       this.applyInputs({ ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) })
     } else if (before === undefined) {
       // The rules stand; republish so the manifest head stops certifying complete coverage.
-      void this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
+      void this.enqueue(async () => { await this.publisher.reconcile(this.publicationComplete()) })
     }
   }
 
@@ -1486,26 +1483,42 @@ class Daemon implements Roomd {
     this.batch.add(relpath, isNew)
   }
 
-  private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
-    if (this.stopped || !this.inputs.policy.publisher) return
-    const epoch = this.checkoutEpoch
-    const pruned = this.inIgnoredDir(relpath)
-    const ignored = pruned || await gitIgnored(this.dir, relpath)
-    if (this.stopped || !this.inputs.policy.publisher || epoch !== this.checkoutEpoch) return
-    if (ignored) {
-      // Only a path this daemon offered or withheld before has anything to withdraw.
-      if (this.tracked.delete(relpath) || this.publisher.pathsToReconcile().has(relpath)) await this.publisher.reconcile('all', this.publicationComplete())
-      // A file in a folder that became ignored after the last listing (fresh build output): learn the folder, so the
-      // rest of the batch, and later events, stop at it instead of asking Git file by file.
-      const parent = relpath.slice(0, relpath.lastIndexOf('/') + 1)
-      if (!pruned && parent && await gitIgnored(this.dir, parent)) await this.refreshIgnoredDirs()
-      return
+  /** Classify every retained event before one full snapshot; overflow has its own full-reconcile path. */
+  private async onDiskChanges(paths: Map<string, boolean>, overflow = false): Promise<void> {
+    const batchEpoch = this.checkoutEpoch
+    const scanned: string[] = []
+    let dirty = false
+    try {
+      for (const [relpath, isNew] of paths) {
+        scanned.push(relpath)
+        if (this.stopped || !this.inputs.policy.publisher) continue
+        const epoch = this.checkoutEpoch
+        const pruned = this.inIgnoredDir(relpath)
+        const ignored = pruned || await gitIgnored(this.dir, relpath)
+        if (this.stopped || !this.inputs.policy.publisher || epoch !== this.checkoutEpoch) continue
+        if (ignored) {
+          // Only a path this daemon offered or withheld before has anything to withdraw.
+          if (this.tracked.delete(relpath) || this.publisher.pathsToReconcile().has(relpath)) dirty = true
+          // Learn newly ignored folders so the rest of the batch stops before asking Git file by file.
+          const parent = relpath.slice(0, relpath.lastIndexOf('/') + 1)
+          if (!pruned && parent && await gitIgnored(this.dir, parent)) await this.refreshIgnoredDirs()
+          continue
+        }
+        if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
+          if (!isNew || !fs.existsSync(this.abs(relpath))) continue
+          this.tracked.add(relpath)
+        }
+        dirty = true
+      }
+    } finally {
+      try {
+        // A demotion invalidates earlier classifications, even if a new publisher tenure has begun.
+        if (dirty && !overflow && !this.stopped && this.inputs.policy.publisher && batchEpoch === this.checkoutEpoch)
+          await this.publisher.reconcile(this.publicationComplete())
+      } finally {
+        for (const relpath of scanned) this.onScanned?.(relpath)
+      }
     }
-    if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
-      if (!isNew || !fs.existsSync(this.abs(relpath))) return
-      this.tracked.add(relpath)
-    }
-    await this.publisher.reconcile('all', this.publicationComplete())
   }
 
   /** Does git track (or offer as untracked) any file under this directory? */

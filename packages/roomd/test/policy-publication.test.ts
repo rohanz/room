@@ -40,7 +40,7 @@ it('withdraws a path synchronously when policy narrows during an awaited base re
   const reached = new Promise<void>(resolve => { entered = resolve })
   const parked = new Promise<void>(resolve => { release = resolve })
   ;(daemon as any).beforeBaseRead = async () => { entered(); await parked }
-  const work = (daemon as any).publisher.reconcile('all') as Promise<unknown>
+  const work = (daemon as any).publisher.reconcile() as Promise<unknown>
   await reached
   daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('intent') })
   expect(entries().size).toBe(0)
@@ -56,7 +56,7 @@ it('turns a changed ignored path into a digest even when the rule changes during
   const reached = new Promise<void>(resolve => { entered = resolve })
   const parked = new Promise<void>(resolve => { release = resolve })
   ;(daemon as any).beforeBaseRead = async () => { entered(); await parked }
-  const work = (daemon as any).publisher.reconcile('all') as Promise<unknown>
+  const work = (daemon as any).publisher.reconcile() as Promise<unknown>
   await reached
   fs.writeFileSync(path.join(dir, '.roomignore'), 'x\n')
   ;(daemon as any).reloadRoomIgnore()
@@ -65,7 +65,7 @@ it('turns a changed ignored path into a digest even when the rule changes during
   // The watcher also sees .roomignore and replaces the inputs again; a reconcile racing that replacement stops
   // without publishing, so wait for the outcome rather than for one particular pass.
   await vi.waitFor(async () => {
-    await (daemon as any).publisher.reconcile('all')
+    await (daemon as any).publisher.reconcile()
     expect(daemon.roomDoc.manifestHead.get('Ben')?.excluded).toContain(digestPath(daemon.roomDoc.roomSalt!, 'x'))
   }, { timeout: 20000, interval: 50 })
   expect(entries().has('x')).toBe(false)

@@ -574,7 +574,7 @@ describe('roomd v2 push-only overlays', () => {
 
     await fsp.writeFile(path.join(dir, '.gitignore'), 'secret.txt\n')
     await fsp.writeFile(path.join(dir, 'secret.txt'), 'second\n')
-    await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('secret.txt', false)
+    await (daemon as unknown as { onDiskChanges(paths: Map<string, boolean>): Promise<void> }).onDiskChanges(new Map([['secret.txt', false]]))
 
     expect(manifestText(daemon.roomDoc, 'secret.txt', 'Alice')).toBeUndefined()
   })
@@ -701,7 +701,7 @@ describe('roomd v2 push-only overlays', () => {
     expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(carried)
     expect(manifestPaths(worker.roomDoc, 'Alice+w')).toContain('app.py')
     await fsp.rm(path.join(workerDir, 'notes.txt'))
-    await (worker as any).publisher.reconcile('all')
+    await (worker as any).publisher.reconcile()
     await waitFor(() => manifestPaths(worker.roomDoc, 'Alice+w').includes('notes.txt'))
     expect(worker.roomDoc.manifest.get(manifestKey('Alice+w', worker.roomDoc.manifestHead.get('Alice+w')!.fence))?.get('notes.txt')?.change).toBe('D')
   })

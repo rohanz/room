@@ -56,7 +56,6 @@ use broke and proposes the order of work.
 - **The rc2 deferred list:** [2026-09-30-rc2-deferred.md](superpowers/specs/2026-09-30-rc2-deferred.md).
 - **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew. Codex runs only the installed plugin (it has no `--plugin-dir`), so Codex workers of a lead on a development checkout run the installed version; the spawn reply warns on a mismatch. Codex's shared app-server daemon does not pass the shell's `ROOM_*` variables to Room, so `ROOM_SERVER` and similar settings need `codex --no-daemon`.
 - **Preview-cache pruning — shipped in 0.17.0.** LRU eviction removes unused cached worktrees after previews; see the [cache limits and manual cleanup](reference.md#workers-and-previews).
-- **One disk pass per batch.** roomd runs `onDiskChange` once per changed path in a watcher batch (rc9 dogfood, low).
 - **Gate roomagent's wake path.** `packages/agent` keeps its own wake path, which the solo gate does not cover (rc9 dogfood, low).
 - **Say when room_claim clamps.** `room_claim to=561` on a 560-line file becomes 560 with no word (rc9 dogfood, low).
 - **Restart a worker that died before its first turn under its own tag.** It has no host session to resume, so the lead respawns into its worktree with `dir=` and two participants and registry entries share one worktree (2026-10-02 all-Codex rehearsal R5, low).

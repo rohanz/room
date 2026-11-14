@@ -304,7 +304,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect(during).toMatchObject([{ complete: false }])
     expect((during[0] as { semRev: number }).semRev).toBeGreaterThan(before.semRev)
     // Another publication path (watcher, reshare, salt) must not certify the head while the transition is unfinished.
-    await internal.publisher.reconcile('all', false)
+    await internal.publisher.reconcile(false)
     expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false, base: w.base })
     expect(git(daemon)).toMatchObject({ head: w.base, rev: 1 })
     internal.reanchorOwnClaims = reanchor
