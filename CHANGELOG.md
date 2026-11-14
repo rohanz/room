@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.53
 
 - **The hourly check of recovery refs runs Git once.** Recovery refs are the saved copies of discarded and collected workers, kept for seven days. The hourly pass read each one with its own Git process to see how old it was: 0.86 seconds for 105 refs, blocking the session. One listing now dates them all, and the exact per-ref check runs only for those old enough to delete: 16 milliseconds on the same clone. What is deleted, and when, is unchanged.
 - **Room no longer polls GitHub for pull requests.** One session per room was elected to list open pull requests every two minutes and publish a placeholder participant for each, so that overlap with a pull request showed up beside overlap with a teammate. That election, the poll, the placeholders and the special cases other code had for them are removed. Room no longer volunteers overlap with open pull requests; look at GitHub, or ask your agent to. `room_pr_note` and `room_done(pr_note=true)` still post the coordination note, and now look the pull request up when called: the server asks GitHub for this branch under the repository's owner and under your own GitHub login (your fork). One match is used; two are listed and you pass `number`; a pull request from another account's fork needs `number`. Placeholders already stored in a room are ignored when it is read and nothing is rewritten. This needs a server that includes this change; a session still on 0.17.52 is told to update or reconnect when it polls such a server.
