@@ -20,11 +20,11 @@ curl -fsSLO https://raw.githubusercontent.com/rohanz/room/main/deploy/docker-com
 curl -fsSL  https://raw.githubusercontent.com/rohanz/room/main/deploy/.env.example -o .env
 # edit .env: PUBLIC_URL and one login provider (GitHub OAuth App or OIDC)
 docker compose up -d
-curl https://room.example.com/health           # {"ok":true,"schema":2,"hub":1}
+curl https://room.example.com/health           # {"ok":true,"schema":2,"hub":1,"compat":{…}}
 curl https://room.example.com/auth/config      # {"github":"device","providers":["github","oidc"],...}
 ```
 
-Pin a release with `ROOM_IMAGE_TAG=0.17.32` in `.env`. To build the image from source instead, clone the repository and add the build override:
+The server image and the plugin are released together under one version: `ghcr.io/rohanz/room:<version>` matches plugin `<version>`. Pin a release with `ROOM_IMAGE_TAG=0.17.54` in `.env`, using the version of the plugin your team has installed. To build the image from source instead, clone the repository and add the build override:
 
 ```sh
 git clone https://github.com/rohanz/room.git && cd room
@@ -85,6 +85,13 @@ One room per repository: the name has no branch. Any other name (a bare `github.
 4. Clients run `room_login` (or `room_login provider=github`): they show a one-time code, the
    user enters it at github.com/login/device. The server keeps the GitHub token; clients hold
    only an opaque session id.
+5. At login GitHub asks each user to grant the `repo` scope. The server uses the token only to
+   read the user's login, to check their push access to the repository, to find the open pull
+   request for a branch when `room_pr_note` is called (exact heads under the repository owner
+   and the user's login; it lists neither repositories nor changed files) and to post or update
+   that user's one coordination comment on it. Nothing polls GitHub. An organization that
+   restricts third-party OAuth apps must approve the app. OIDC and shared-token sessions have
+   no GitHub token, so pull-request notes are refused for them.
 
 For GitHub Enterprise Server rooms use the `git/<host>/...` scheme (the origin is normalised to
 that automatically for any non-github.com host) together with OIDC or `ROOM_TOKEN`.
@@ -190,7 +197,7 @@ docker compose pull room
 docker compose up -d room
 ```
 
-With the build override, `git pull` then add `-f deploy/docker-compose.build.yml --build`. Clients update the plugin on their own schedule unless a release says otherwise; the `docker compose` healthcheck hits `/health`. Current servers refuse Room 0.16 state; v0.17.47 is the last release that can migrate it. See [the upgrade notice](../docs/upgrading.md#room-016-upgrade-path-retired).
+With the build override, `git pull` then add `-f deploy/docker-compose.build.yml --build`. Upgrade the server and ask everyone to update the plugin and restart their sessions at the same time: compatibility with older releases is not maintained (see [upgrading](../docs/upgrading.md)). Sessions and servers agree a contract when they connect, and a refusal names the side that must update. With the default `latest` tag, `pull` takes the newest release, so update the plugins with it or pin `ROOM_IMAGE_TAG`. One known case: after a server upgrade to 0.17.53 or later, a session still on 0.17.52 is answered HTTP 410 `update or reconnect Room before looking up pull requests` when it polls for pull requests, and a 0.17.53 or later plugin against an older server cannot look up a branch's pull request (`room_pr_note number=<n>` still works). The `docker compose` healthcheck hits `/health`. Current servers refuse Room 0.16 state; v0.17.47 is the last release that can migrate it. See [the upgrade notice](../docs/upgrading.md#room-016-upgrade-path-retired).
 
 ## Running without Docker
 
@@ -199,7 +206,7 @@ The image runs the same server as compiled JavaScript. From a checkout, build it
 ```sh
 npm ci
 npm run build:server && npm run build -w @room/web
-ROOM_STATIC=packages/web/dist MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server
+NODE_ENV=production ROOM_STATIC=packages/web/dist MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server
 ```
 
 `npm run server:dev` runs the source. `MALLOC_ARENA_MAX=2` matters: glibc's per-thread malloc arenas fragment under native addons' threadpool I/O, LevelDB included, and keep freed memory resident. The image sets it already.

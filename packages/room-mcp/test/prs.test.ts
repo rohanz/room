@@ -106,6 +106,17 @@ describe('on-demand pull requests', () => {
     } finally { stored.doc.destroy(); await tools.shutdown() }
   })
 
+  it('names the cause when a server older than 0.17.53 answers with a bare list', async () => {
+    const s = session(new RoomDoc(), { name: 'alice', kind: 'agent' }, ROOM, 'feat/login')
+    const server = 'ws://pr-old-server.example'
+    s.roomUrl = `${server}/${encodeURIComponent(ROOM)}`
+    s.credentialsPath = join(dir, 'pr-old-credentials.json')
+    setCredential(s.credentialsPath, server, { login: 'alice', session: 'test-session', at: Date.now() })
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/auth/config') ? { github: 'device' } : [PR7]),
+      { headers: { 'content-type': 'application/json' } })))
+    await expect(fetchPrs(s)).rejects.toThrow(/older than 0\.17\.53: update the server, or pass number=<n>/)
+  })
+
   it('reads the PR lookup HTTP response', async () => {
     const s = session(new RoomDoc(), { name: 'alice', kind: 'agent' }, ROOM, 'feat/login')
     const server = 'ws://pr-compat.example'

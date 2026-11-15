@@ -23,7 +23,7 @@ Anyone with `flyctl` access to the app can do everything below. Nothing here nee
 cd <repo root>
 flyctl deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
 flyctl releases -a room-rohanz | head -3
-curl -s https://room-rohanz.fly.dev/health     # {"ok":true,"schema":2,"hub":1}
+curl -s https://room-rohanz.fly.dev/health     # {"ok":true,"schema":2,"hub":1,"compat":{…}}
 curl -s https://room-rohanz.fly.dev/auth/config  # {"github":"device","clientIdSet":true,...}
 ```
 

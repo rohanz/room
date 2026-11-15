@@ -1,7 +1,8 @@
 // Stamp a new Room release version into every file that carries it.
 // Usage: npm run bump -- 0.17.16
-// Sites: both plugin manifests, the marketplace entry and the hooks version
-// constant (hooks.json is frozen, so the hook scripts carry their own stamp).
+// Sites: both plugin manifests, the marketplace entry, the hooks version
+// constant (hooks.json is frozen, so the hook scripts carry their own stamp),
+// and the server image pin examples in the self-hosting files.
 // The server bundle copies the Claude manifest at build time: rebuild after bumping.
 // packages/room-mcp/test/release-version.test.ts checks the sites agree.
 import fs from 'node:fs'
@@ -33,4 +34,14 @@ const next = text.replace(/export const HOOKS_VERSION = '[^']+'/, `export const 
 if (next === text) throw new Error('HOOKS_VERSION not found in plugins/room/hooks/common.mjs')
 fs.writeFileSync(hooks, next)
 console.log(`plugins/room/hooks/common.mjs: ${version}`)
+
+// The server image is published under the same version: keep the pin examples current.
+for (const rel of ['deploy/self-hosting.md', 'deploy/docker-compose.yml', 'deploy/.env.example']) {
+  const file = path.join(root, rel)
+  const before = fs.readFileSync(file, 'utf8')
+  const after = before.replace(/ROOM_IMAGE_TAG=\d+\.\d+\.\d+/g, `ROOM_IMAGE_TAG=${version}`)
+  if (!/ROOM_IMAGE_TAG=\d+\.\d+\.\d+/.test(before)) throw new Error(`no ROOM_IMAGE_TAG pin found in ${rel}`)
+  fs.writeFileSync(file, after)
+  console.log(`${rel}: ROOM_IMAGE_TAG=${version}`)
+}
 console.log('now: npm run build:plugin, add the CHANGELOG heading, then tag v' + version)

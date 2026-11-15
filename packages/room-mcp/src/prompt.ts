@@ -18,7 +18,7 @@ export function sessionWakeNote(session: Session, moment: 'alone' | 'company' | 
   return forWorkers ? `${workerInstruction}\n${humanNote}` : humanNote
 }
 
-/** Agent instructions: MCP `instructions` for Claude Code and the first-turn preamble for the Codex runner. The plugin's room-etiquette skill is the long form, loaded on demand. */
+/** Agent instructions: MCP `instructions` for both hosts. The plugin's room-etiquette skill is the long form, loaded on demand. */
 export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'s` : 'one person\'s'} coding agent in a room. Room never changes your files unless you ask it to bring in a worker's output; explicit exports also write files.
 
 1. While alone, work normally without room tools; the room announces company. Change local/team room only when your human asks.

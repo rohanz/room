@@ -40,7 +40,11 @@ export async function fetchPrs(s: Session, opts: { branch?: string } = {}): Prom
   })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
   // Keep head=1 until the server's guard for 0.17.52 sessions is removed.
-  return await res.json() as PrLookup
+  const result = await res.json() as Partial<PrLookup> | null
+  // A server from before 0.17.53 answers with a bare list: say so instead of failing on its shape.
+  if (!result || !Array.isArray(result.heads) || !Array.isArray(result.prs))
+    throw new Error(`${a.server} answered in the format of a server older than 0.17.53: update the server, or pass number=<n>`)
+  return result as PrLookup
 }
 
 /** POST /github/pr-note: the server posts or updates the one room comment on the PR as the logged-in user. */

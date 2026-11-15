@@ -56,7 +56,9 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
    - Pass the spawn reply's thread budget to explicit parameters such as `n_jobs`,
      `num_threads` and `num_workers` (Room caps math-library threads); stagger heavy jobs.
    Respect `ROOM_MAX_WORKERS`. Do not join a team room just to dispatch workers;
-   `where="local"` keeps workers local (a team-room lead still mirrors their claims there).
+   `where="local"` keeps workers local (a team-room lead still shows their claims and changed paths there, without file
+   text, until each is collected or discarded). If another lead's local worker changes the same file you and your worker get a
+   possible-conflict notice; Room cannot read the other side, so ask that lead in the team room, or one of you collects and previews.
 3. Supervise. Briefly state what you dispatched. While workers run, keep handling new input
    from your human or host as you would alone; wait only on a specific dependency (an
    answer, the worker whose result you need next) and continue independent work otherwise.

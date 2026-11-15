@@ -19165,7 +19165,7 @@ var init_daemon = __esm({
     init_proof();
     init_src3();
     init_private_state();
-    release = true ? "0.17.53" : "development";
+    release = true ? "0.17.54" : "development";
     LOCAL_DAEMON_IDLE_MS = 5 * 6e4;
     STARTUP_PHASE_WAIT_MS = 25e3;
     STARTUP_HARD_CAP_MS = 6e4;
@@ -34077,7 +34077,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.53",
+      version: "0.17.54",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -64289,7 +64289,10 @@ async function fetchPrs(s, opts = {}) {
     signal: AbortSignal.timeout(2e4)
   });
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
-  return await res.json();
+  const result2 = await res.json();
+  if (!result2 || !Array.isArray(result2.heads) || !Array.isArray(result2.prs))
+    throw new Error(`${a.server} answered in the format of a server older than 0.17.53: update the server, or pass number=<n>`);
+  return result2;
 }
 async function postPrNote(s, number3, body) {
   const a = await authFor(s);

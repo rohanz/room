@@ -122,7 +122,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
 - Deliberate scale and responsiveness tests are a separate pass: `TEST_SCALE=1 npm test` runs only the test files that contain such cases, one file at a time (`vitest.shared.ts`), because they build repositories of thousands of files and measure event-loop stalls, and running them beside the rest of the suite starved both. The default run skips those cases. CI runs both passes, so they remain required coverage; before a release run both locally.
-- Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
+- Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry, the hooks stamp and the image pin examples under `deploy/`
   (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin, add the CHANGELOG heading and tag `v<version>`.
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
   (the bundle, `plugins/room/web` and tree-sitter grammars are committed; the build copies the
