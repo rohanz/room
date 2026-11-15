@@ -232,7 +232,6 @@ export class RoomDoc {
   /** The single retirement cleanup seam, replayed by retention to heal saved or late state. */
   retireWorkerState(workers: Iterable<Pick<RetiredWorker, 'id' | 'name'>>, at: number, post: ReleasePoster): void {
     const retired = [...workers]
-    const notice = retiredNoticeMatcher(retired)
     this.doc.transact(() => {
       const names = this.retireWorkerMail(retired, at)
       const ids = new Set(retired.map(worker => worker.id))
@@ -250,6 +249,16 @@ export class RoomDoc {
       const conflicts = this.doc.getMap<{ owner: string; other: string }>('conflicts')
       for (const [key, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key)
       for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id)
+      this.endWorkerNotices(retired, at)
+    })
+  }
+
+  /** End only notices bound to these exact subjects; do not retire their local names or files. */
+  endWorkerNotices(workers: Iterable<Pick<RetiredWorker, 'id' | 'name'>>, at: number): void {
+    const retired = [...workers]
+    if (!retired.length) return
+    const notice = retiredNoticeMatcher(retired)
+    this.doc.transact(() => {
       // End saved baseline notices as well as managed ones, even if their producer or hub exited.
       for (const m of [...this.messages(), ...this.mail.values()]) {
         if (!notice(m)) continue

@@ -16,7 +16,7 @@ import { authorizesText, defaultIgnoredPath, validRepoPath, DISK_READ_PATH } fro
 import { defaultExcludedPath, type SharingPolicy } from '@room/roomd/policy'
 import { ignoredTrackedPaths } from '@room/roomd/disk-scan'
 import * as Y from 'yjs'
-import { digestPath, formatMsg, liveHolder, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers } from '@room/shared'
+import { completedPublicationOf, digestPath, formatMsg, liveHolder, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers, snapshotMetadata, snapshotStillCurrent } from '@room/shared'
 import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg, RoomDoc } from '@room/shared'
 import type { Session } from './session.js'
 import { registryForDir, type WorkerRegistry } from './worker-registry.js'
@@ -127,7 +127,8 @@ export class Bridge {
   /** A worker's changed paths in the workers room: its current manifest incarnation, held entries included. */
   private changedPaths(name: string): string[] {
     const head = this.local.room.manifestHead.get(name)
-    return head ? [...this.local.room.manifest.get(manifestKey(name, head.fence))?.keys() ?? []] : []
+    return head ? [...this.local.room.manifest.get(manifestKey(name, head.fence))?.keys() ?? []]
+      : completedPublicationOf(this.local.room, name)?.entries.map(([path]) => path) ?? []
   }
 
   /** Every path a worker has declared or changed. */
@@ -142,7 +143,10 @@ export class Bridge {
 
   start(): void {
     const l = this.local.room, t = this.team.room
+    const completed = l.doc.getMap('completedPublications'), revisions = l.doc.getMap('completedPublicationRevisions')
     const onLocal = () => this.schedule()
+    const onRetiredNotices = () => this.endRetiredNotices()
+    const retired = t.doc.getArray('retiredWorkers')
     const onLocalClaims = (ev: { changes: { keys: Map<string, { action: string }> } }) => {
       for (const [id, ch] of ev.changes.keys) {
         if (ch.action === 'add') this.mirrorClaim(id)
@@ -172,6 +176,7 @@ export class Bridge {
       const me = this.team.me.name
       if (ev.keysChanged.has(me) || [...ev.keysChanged].some(k => k.startsWith(`${me}\u0000`))) this.schedule()
     }
+    retired.observe(onRetiredNotices); l.bus.observe(onRetiredNotices); l.mail.observe(onRetiredNotices)
     l.scopes.observe(onLocal); l.claims.observe(onLocalClaims)
     l.manifestHead.observe(onLocal); l.manifest.observeDeep(onLocal)
     t.bus.observe(onTeamBus); t.claims.observe(onTeamClaims)
@@ -179,7 +184,10 @@ export class Bridge {
     const onSync = (synced: boolean) => { if (synced) this.schedule() }
     this.team.provider.on?.('sync', onSync)
     this.local.provider.on?.('sync', onSync)
+    l.workerViews.observe(onLocal); completed.observe(onLocal); revisions.observe(onLocal)
     this.unobserve.push(
+      () => retired.unobserve(onRetiredNotices), () => l.bus.unobserve(onRetiredNotices), () => l.mail.unobserve(onRetiredNotices),
+      () => l.workerViews.unobserve(onLocal), () => completed.unobserve(onLocal), () => revisions.unobserve(onLocal),
       () => l.scopes.unobserve(onLocal), () => l.claims.unobserve(onLocalClaims),
       () => l.manifestHead.unobserve(onLocal), () => l.manifest.unobserveDeep(onLocal),
       () => t.bus.unobserve(onTeamBus), () => t.claims.unobserve(onTeamClaims),
@@ -277,12 +285,19 @@ export class Bridge {
     return next
   }
 
+  /** Replay exact-subject retirement without retiring the other room's participant identities. */
+  private endRetiredNotices(): void {
+    if (!this.stopped && this.team.daemon.fence && this.local.daemon.fence)
+      this.local.room.endWorkerNotices(this.team.room.retiredWorkers(), Date.now())
+  }
+
   /**
    * `project(set)` (manifest §5.5, registry §13): views and retirement through the projector in the
    * `projected` role, then each written worker's participant record and manifest; projections of this lead
    * whose worker is no longer in the set are deleted.
    */
   private async projectOnce(registry: WorkerRegistry): Promise<void> {
+    this.endRetiredNotices()
     const authority = this.team.daemon.fence
     if (!authority) return
     const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this, () => !this.stopped)
@@ -338,14 +353,32 @@ export class Bridge {
     const rules = this.team.daemon.inputs.rules
     if (!leadGit || !fence) return // no team base or live name lease: the lead will schedule another pass
     const B = leadGit.base, C = record.base
-    const sourceHead = this.local.room.manifestHead.get(record.name)
-    const sourceMap = sourceHead && this.local.room.manifest.get(manifestKey(record.name, sourceHead.fence))
+    const rawHead = this.local.room.manifestHead.get(record.name)
+    const rawMap = rawHead && this.local.room.manifest.get(manifestKey(record.name, rawHead.fence))
     const sourceRecord = participantRecord(this.local.room, record.name)
     const sourceHolder = sourceRecord?.holder
-    const sourceFenceValid = !!sourceHead && liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence
+    const run = record.runs.at(-1)
+    const report = facts.workers.find(f => f.record.id === record.id)?.reports.find(r => r.run === run?.n && r.nonce === run?.nonce && r.done)
+    const final = completedPublicationOf(this.local.room, record.name)
+    const process = report?.chain[0]
+    const completed = final && report && run && final.worker.id === record.id && final.worker.name === record.name
+      && final.worker.lead === lead && final.worker.run === run.n
+      && final.holder.workerId === record.id && final.head.scannedAt >= Math.max(run.intentAt, report.joinedAt)
+      && (!process || final.holder.pid === process.pid && final.holder.startTime === process.startTime && final.holder.executable === process.executable)
+      ? final : undefined
+    // Reported output uses the same final publication as local reads and restart memory.
+    // A new run without its own publication cannot inherit its predecessor's source.
+    const sourceHead = completed?.head ?? rawHead
+    const sourceMap = completed ? new Map(completed.entries) : rawMap
+    const sourceView = this.local.room.acceptedWorkerViewOf(record.name)
+    const sourceFenceValid = !!completed || !!sourceHead
+      && (!run || run.n === 1 || sourceHead.scannedAt >= run.intentAt)
+      && liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence
+    const sourceMeta = snapshotMetadata(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))
+    const sourceSnapshot = sourceMeta && { ...sourceMeta, texts: new Map<string, string>() }
     let sourceChanged = false
     const onSourceChange = () => { sourceChanged = true }
-    sourceMap?.observe(onSourceChange)
+    rawMap?.observe(onSourceChange)
     try {
       const valid = () => {
         const current = this.facts ? snapshotRead(this.facts, record.id) : undefined
@@ -354,10 +387,12 @@ export class Bridge {
         return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id
           && this.team.daemon.fence === fence
           && latestLead?.base === B && latestLead?.fence === leadGit.fence
-          && !sourceChanged && (!sourceHead || this.local.room.manifest.get(manifestKey(record.name, sourceHead.fence)) === sourceMap)
+          && !sourceChanged && (!rawHead || this.local.room.manifest.get(manifestKey(record.name, rawHead.fence)) === rawMap)
+          && (!completed || this.local.room.acceptedWorkerViewOf(record.name) === sourceView)
+          && (!sourceSnapshot || snapshotStillCurrent(this.local.room, sourceSnapshot, participantsView(this.local.room, this.local.awareness, Date.now())))
           && JSON.stringify(participantRecord(this.local.room, record.name)?.holder) === JSON.stringify(sourceHolder)
-          && latestSource?.semRev === sourceHead?.semRev && latestSource?.fence === sourceHead?.fence
-          && (!sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence)
+          && latestSource?.semRev === rawHead?.semRev && latestSource?.fence === rawHead?.fence
+          && (!!completed || !sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence)
           && epoch === this.storageEpoch && current?.id === record.id && current.seq === record.seq && current.phase === record.phase
           && !['retiring', 'retired', 'abandoned'].includes(current.phase)
       }
@@ -490,7 +525,7 @@ export class Bridge {
       if (!(error instanceof ProjectionMoved)) throw error
       const current = await this.registry?.read(record.id)
       if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) await this.projectWorker(current, retry + 1)
-    } finally { sourceMap?.unobserve(onSourceChange) }
+    } finally { rawMap?.unobserve(onSourceChange) }
   }
 
   /**

@@ -74,10 +74,49 @@ function contradicted(doc: Y.Doc, p: CompletedPublication): boolean {
 /** Reads need a current, accepted projection from the live lead. A cache is not
  * authority to resurrect a worker, even after the bounded retirement log expires. */
 export function retainedPublication(room: RoomDoc, name: string): CompletedPublication | undefined {
-  if (room.manifestHead.has(name)) return undefined
+  return room.manifestHead.has(name) ? undefined : completedPublicationOf(room, name)
+}
+
+/** The normal-exit publication, in the same form as its immutable restart cache. */
+function livePublication(doc: Y.Doc, worker: WorkerView): CompletedPublication | undefined {
+  const heads = doc.getMap<ManifestHead>('manifestHead')
+  const participants = doc.getMap<unknown>('participants')
+  const manifests = doc.getMap<Y.Map<ManifestEntry>>('manifest')
+  const overlays = doc.getMap<Y.Map<Y.Text>>('overlays')
+  const head = heads.get(worker.name)
+  const holder = participants.get(`${worker.name}\0holder`) as ParticipantHolder | undefined
+  const git = participants.get(`${worker.name}\0git`) as ParticipantGit | undefined
+  if (!head?.complete || head.projectedFrom || head.level === 'intent' || head.coverage.kind !== 'all'
+    || holder?.workerId !== worker.id || String(holder.epoch) !== head.fence
+    || git?.fence !== head.fence || git.base !== head.base) return undefined
+  const key = `${worker.name}\0${head.fence}`
+  const manifest = manifests.get(key)
+  if (!manifest) return undefined
+  const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence)
+  const texts: [string, string][] = entries.flatMap(([path, entry]) => {
+    const value = entry.state === 'shared' && entry.change !== 'D' && entry.hash ? overlays.get(key)?.get(path) : undefined
+    return value ? [[path, value.toString()]] : []
+  })
+  const shared = new Set(entries.filter(([, entry]) => entry.state === 'shared').map(([path]) => path))
+  for (const prefix of head.textPrefixes ?? []) if (!prefix.endsWith('/') && !manifest.has(prefix)) shared.add(prefix)
+  const baseTexts: [string, string][] = [...doc.getMap<string>('basetextFlat')].flatMap(([key, value]) => {
+    const prefix = `${worker.name}\0${head.base}:`
+    const path = key.startsWith(prefix) ? key.slice(prefix.length) : undefined
+    return path !== undefined && shared.has(path) ? [[path, value]] : []
+  })
+  const p: CompletedPublication = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? 'released' }, git, entries, texts, baseTexts }
+  return p
+}
+
+/** One completed source: current live roots take precedence over the restart cache. */
+export function completedPublicationOf(room: RoomDoc, name: string): CompletedPublication | undefined {
   const view = room.acceptedWorkerViewOf(name)
   if (!view || view.status !== 'done') return undefined
   const latest = revisions(room.doc)
+  if (room.manifestHead.has(name)) {
+    const p = livePublication(room.doc, view)
+    return p && matchesRevision(p, latest) && !contradicted(room.doc, p) ? p : undefined
+  }
   return [...room.doc.getMap<CompletedPublication>('completedPublications').values()]
     .find(p => p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name
       && matchesRevision(p, latest) && !contradicted(room.doc, p))
@@ -90,9 +129,6 @@ export function workerMemory(doc: Y.Doc): {
 } {
   const latest = revisions(doc)
   const heads = doc.getMap<ManifestHead>('manifestHead')
-  const participants = doc.getMap<unknown>('participants')
-  const manifests = doc.getMap<Y.Map<ManifestEntry>>('manifest')
-  const overlays = doc.getMap<Y.Map<Y.Text>>('overlays')
   const publications = new Map<string, CompletedPublication>()
   for (const p of doc.getMap<CompletedPublication>('completedPublications').values()) {
     if (!heads.has(p.worker.name) && matchesRevision(p, latest) && !contradicted(doc, p)) {
@@ -102,29 +138,8 @@ export function workerMemory(doc: Y.Doc): {
   }
   for (const worker of doc.getMap<WorkerView>('workerViews').values()) {
     if (worker.status !== 'done') continue
-    const head = heads.get(worker.name)
-    const holder = participants.get(`${worker.name}\0holder`) as ParticipantHolder | undefined
-    const git = participants.get(`${worker.name}\0git`) as ParticipantGit | undefined
-    if (!head?.complete || head.projectedFrom || head.level === 'intent' || head.coverage.kind !== 'all'
-      || holder?.workerId !== worker.id || String(holder.epoch) !== head.fence
-      || git?.fence !== head.fence || git.base !== head.base) continue
-    const key = `${worker.name}\0${head.fence}`
-    const manifest = manifests.get(key)
-    if (!manifest) continue
-    const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence)
-    const texts: [string, string][] = entries.flatMap(([path, entry]) => {
-      const value = entry.state === 'shared' && entry.change !== 'D' && entry.hash ? overlays.get(key)?.get(path) : undefined
-      return value ? [[path, value.toString()]] : []
-    })
-    const shared = new Set(entries.filter(([, entry]) => entry.state === 'shared').map(([path]) => path))
-    for (const prefix of head.textPrefixes ?? []) if (!prefix.endsWith('/') && !manifest.has(prefix)) shared.add(prefix)
-    const baseTexts: [string, string][] = [...doc.getMap<string>('basetextFlat')].flatMap(([key, value]) => {
-      const prefix = `${worker.name}\0${head.base}:`
-      const path = key.startsWith(prefix) ? key.slice(prefix.length) : undefined
-      return path !== undefined && shared.has(path) ? [[path, value]] : []
-    })
-    const p: CompletedPublication = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? 'released' }, git, entries, texts, baseTexts }
-    if (matchesRevision(p, latest) && !contradicted(doc, p)) publications.set(worker.id, p)
+    const p = livePublication(doc, worker)
+    if (p && matchesRevision(p, latest) && !contradicted(doc, p)) publications.set(worker.id, p)
   }
   return {
     publications: [...publications.values()].sort((a, b) => (a.worker.finishedAt ?? 0) - (b.worker.finishedAt ?? 0)).map(p => ({

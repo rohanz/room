@@ -13,7 +13,8 @@ const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks(); setPreviewLockUnavailableForTests()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
-})
+// Each fixture holds MAX_EQUIVALENCE_FILES files; removing them can outlast the default 10 s hook limit on a loaded machine.
+}, 60_000)
 function fixture(count = evidence.MAX_EQUIVALENCE_FILES) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-review-cap-')))
   roots.push(root)

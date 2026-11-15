@@ -9,13 +9,14 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import { RoomDoc, gitBlobHash, manifestKey, owed, type ManifestEntry } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
-import { hubAppend } from '@room/shared/testing'
+import { hubAppend, epochPublication } from '@room/shared/testing'
+import { reconcileProjectedConflicts } from '../src/conflict-set.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { prepareWorktree } from '../src/worker-git.js'
@@ -72,19 +73,20 @@ function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
   let ls: Session | null = fakeSession(team.a, lead, false)
   ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
   const exits: ((code: number | null) => void)[] = []
+  let workersLead: Session
   const leadTools = createTools({
     getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined, listCwdProcesses: () => [],
     // An idle host isolates worker-exit routing from host-state discovery (covered by wake-turn).
     wakeProbe: { busy: async () => false },
     ...(wake ? { wake: async (target: { id: string }, text: string) => { await wake(target.id, text); return 'queue' as const } } : {}),
-    join: async () => fakeSession(local.a, lead),
+    join: async () => (workersLead = fakeSession(local.a, lead)),
     leave: async () => {},
     spawner: () => ({ pid: 99, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => {} }),
     worktree: async (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
   })
   let ws: Session | null = fakeSession(local.b, workerId)
   const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
-  return { team, local, leadTools, workerTools, exits, lead: () => ls! }
+  return { team, local, leadTools, workerTools, exits, lead: () => ls!, workersLead: () => workersLead }
 }
 
 async function asWorker<T>(id: string | undefined, work: () => Promise<T>): Promise<T> {
@@ -155,4 +157,64 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'done', exitCode: 0 })
     await t.leadTools.call('room_leave', { force: true })
   })
+})
+
+
+it("delivers a projected worker conflict to the lead through the workers-room inbox and host wake path", async () => {
+  const woken: string[] = []
+  const t = setupBridged(async (_id, text) => { woken.push(text) })
+  await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
+  const team = t.lead(), workers = t.workersLead()
+  const record = (await (await registryForDir(dir)).reserved('money'))!
+  team.daemon.fence = '1'; workers.daemon.fence = '1'
+  team.lease = { fence: () => '1', paused: () => undefined } as Session['lease']
+  workers.lease = { fence: () => '1', paused: () => undefined } as Session['lease']
+  const publish = (s: Session, name: string, text: string | undefined, projected = false) => {
+    epochPublication(s.room, name, base, 1)
+    const entries = new Y.Map<ManifestEntry>()
+    if (text) entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(text), fence: '1', at: 1 })
+    s.room.manifest.set(manifestKey(name, '1'), entries)
+    if (text) s.room.setOverlay(manifestKey(name, '1'), 'app.py', text)
+    s.room.manifestHead.set(name, { base, fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [],
+      complete: true, rev: 1, semRev: 1, scannedAt: Date.now(),
+      ...(projected ? { projectedBy: lead.name, projectedFrom: record.id } : {}) })
+  }
+  publish(team, lead.name, undefined)
+  team.awareness.setLocalState({ user: lead, sessionId: `session-${lead.name}` })
+  const presence = new Awareness(new Y.Doc())
+  presence.setLocalState({ user: workerId, sessionId: `session-${workerId.name}` })
+  applyAwarenessUpdate(workers.awareness, encodeAwarenessUpdate(presence, [presence.clientID]), 'test')
+  publish(workers, workerId.name, 'x = 3\n')
+  workers.room.participants.set(`${workerId.name}\0holder`, { sessionId: `session-${workerId.name}`, epoch: 1, workerId: record.id })
+  publish(team, workerId.name, 'x = 3\n', true)
+  team.room.participants.set(`${workerId.name}\0proj`, { projectedBy: lead.name, projectedFrom: record.id })
+  publish(team, 'Kieran', 'x = 4\n')
+  try {
+    await reconcileProjectedConflicts({ team, workers, owner: workerId.name })
+    await vi.waitFor(() => expect(woken).toHaveLength(1))
+    const notices = workers.room.messages().filter(m => m.type === 'merge-conflict')
+    expect(notices.map(m => m.to).sort()).toEqual([lead.name, workerId.name].sort())
+    expect(notices.every(m => m.priority === 'notify')).toBe(true)
+    expect(owed(workers.room, lead, { frontier: 0, routed: new Set() }, {}).some(m => m.type === 'merge-conflict')).toBe(true)
+    expect(woken[0]).not.toContain('x = 3')
+    const inbox = await t.leadTools.call('room_state', {})
+    expect(inbox).toContain('CONFLICT')
+    expect(inbox).toContain('[workers room]')
+    expect(team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+    const entry = team.room.manifest.get(manifestKey('Kieran', '1'))!.get('app.py')!
+    const { hash: _hash, ...hidden } = entry
+    team.room.manifest.get(manifestKey('Kieran', '1'))!.set('app.py', { ...hidden, state: 'held', held: 'scope' })
+    const head = team.room.manifestHead.get('Kieran')!
+    team.room.manifestHead.set('Kieran', { ...head, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+    await reconcileProjectedConflicts({ team, workers, owner: workerId.name })
+    const possible = workers.room.messages().filter(m => m.type === 'merge-conflict' && m.priority === 'fyi')
+    expect(possible.map(m => m.to).sort()).toEqual([lead.name, workerId.name].sort())
+    const nextInbox = await t.leadTools.call('room_state', {})
+    expect(nextInbox).toContain('possible conflict')
+    expect(nextInbox).toContain('[workers room]')
+    expect(woken).toHaveLength(1) // Ordinary fyi priority waits for a tool; it does not wake.
+  } finally {
+    await t.leadTools.call('room_leave', { force: true })
+    presence.destroy(); presence.doc.destroy()
+  }
 })

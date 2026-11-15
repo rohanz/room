@@ -17,7 +17,7 @@ import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, notic
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
-import { carriedFrom, openWorkerReader } from '../src/worker-registry.js'
+import { carriedFrom, openWorkerReader, registryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import * as roomd from '@room/roomd'
 import * as gitModule from '@room/roomd/git'
@@ -133,7 +133,7 @@ describe('ConflictSlots', () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
     const slots = new ConflictSlots(room, post, '1')
     await slots.settle(slotKey('A', 'merge', 'B', 'x'), { owner: 'A', other: 'B', kind: 'merge', path: 'x', status: 'possible', inputs: 'i', factId: 'f', why: 'A' })
-    expect(post.mock.calls[0][1].text).toContain('A changed x too, outside their declared area')
+    expect(post.mock.calls[0][1].text).toContain("A's file contents are not shared")
   })
 
   it('routes a claim holder notice to the holder room with the holder perspective', async () => {
@@ -627,6 +627,17 @@ describe('derived pair slots', () => {
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
+  async function bindProjectedFixture(f: ReturnType<typeof fixture>, team: Session, workers: Session) {
+    team.roomName = 'github.com/test/projected'; workers.roomName = 'local/projected'
+    const { record } = await seedRegistryWorker(f.dir, 'w', { name: 'W', base: f.base, carriedBase: f.base,
+      room: workers.roomName, projectedInto: team.roomName, lead: { participant: 'L', room: workers.roomName,
+        instance: (await registryForDir(f.dir)).instance } })
+    const head = f.room.manifestHead.get('W')!
+    f.room.manifestHead.set('W', { ...head, projectedFrom: record.id })
+    f.room.participants.set('W\0proj', { projectedBy: 'L', projectedFrom: record.id })
+    workers.room.participants.set('W\0holder', { ...participantRecord(workers.room, 'W')!.holder!, workerId: record.id })
+  }
+
   it('rereads projected source provenance before replaying an unchanged merge', async () => {
     const f = fixture(), source = new RoomDoc()
     f.holder('L'); f.holder('W', 'L'); f.holder('B')
@@ -642,7 +653,9 @@ describe('derived pair slots', () => {
     source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
     const post = vi.fn().mockResolvedValue({ ok: true })
     const workers = { ...f.session('L', post), room: source } as Session
-    const set = new ConflictSet(f.session('L'), 'W', workers, () => {}, 0, () => undefined)
+    const team = f.session('L')
+    await bindProjectedFixture(f, team, workers)
+    const set = new ConflictSet(team, 'W', workers, () => {}, 0, () => undefined)
     const read = vi.spyOn(set as unknown as { read(...args: unknown[]): Promise<unknown> }, 'read')
     try {
       await set.reconcile('initial source')
@@ -1250,7 +1263,9 @@ describe('derived pair slots', () => {
       source.manifest.set(manifestKey('W', '2'), sourceEntries)
       source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
       const workers = { ...f.session('L', sourcePost), room: source } as Session
-      await reconcileProjectedConflicts({ team: f.session('L'), workers, owner: 'W' })
+      const team = f.session('L')
+      await bindProjectedFixture(f, team, workers)
+      await reconcileProjectedConflicts({ team, workers, owner: 'W' })
       expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'edit-in-claim', 'B', 'x'))?.status).toBe('conflict')
       expect(sourcePost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W' }), expect.anything())
       expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining("W's earlier change to x overlaps your new claim") }), expect.anything())

@@ -9177,10 +9177,43 @@ function contradicted(doc, p) {
   return !!view && (view.name !== p.worker.name || view.run !== p.worker.run || view.status !== "done") || !!holder && (holder.workerId !== p.worker.id || holder.epoch !== p.holder.epoch) || doc.getArray("retiredWorkers").toArray().some((value5) => value5.id === p.worker.id);
 }
 function retainedPublication(room, name) {
-  if (room.manifestHead.has(name)) return void 0;
+  return room.manifestHead.has(name) ? void 0 : completedPublicationOf(room, name);
+}
+function livePublication(doc, worker) {
+  const heads = doc.getMap("manifestHead");
+  const participants = doc.getMap("participants");
+  const manifests = doc.getMap("manifest");
+  const overlays = doc.getMap("overlays");
+  const head = heads.get(worker.name);
+  const holder = participants.get(`${worker.name}\0holder`);
+  const git4 = participants.get(`${worker.name}\0git`);
+  if (!head?.complete || head.projectedFrom || head.level === "intent" || head.coverage.kind !== "all" || holder?.workerId !== worker.id || String(holder.epoch) !== head.fence || git4?.fence !== head.fence || git4.base !== head.base) return void 0;
+  const key3 = `${worker.name}\0${head.fence}`;
+  const manifest = manifests.get(key3);
+  if (!manifest) return void 0;
+  const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence);
+  const texts = entries.flatMap(([path81, entry]) => {
+    const value5 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key3)?.get(path81) : void 0;
+    return value5 ? [[path81, value5.toString()]] : [];
+  });
+  const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path81]) => path81));
+  for (const prefix2 of head.textPrefixes ?? []) if (!prefix2.endsWith("/") && !manifest.has(prefix2)) shared.add(prefix2);
+  const baseTexts = [...doc.getMap("basetextFlat")].flatMap(([key4, value5]) => {
+    const prefix2 = `${worker.name}\0${head.base}:`;
+    const path81 = key4.startsWith(prefix2) ? key4.slice(prefix2.length) : void 0;
+    return path81 !== void 0 && shared.has(path81) ? [[path81, value5]] : [];
+  });
+  const p = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? "released" }, git: git4, entries, texts, baseTexts };
+  return p;
+}
+function completedPublicationOf(room, name) {
   const view = room.acceptedWorkerViewOf(name);
   if (!view || view.status !== "done") return void 0;
   const latest = revisions(room.doc);
+  if (room.manifestHead.has(name)) {
+    const p = livePublication(room.doc, view);
+    return p && matchesRevision(p, latest) && !contradicted(room.doc, p) ? p : void 0;
+  }
   return [...room.doc.getMap("completedPublications").values()].find((p) => p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name && matchesRevision(p, latest) && !contradicted(room.doc, p));
 }
 var REVISIONS, compareRevision, publicationRevision, matchesRevision;
@@ -9995,7 +10028,6 @@ var init_doc = __esm({
       /** The single retirement cleanup seam, replayed by retention to heal saved or late state. */
       retireWorkerState(workers, at, post) {
         const retired = [...workers];
-        const notice = retiredNoticeMatcher(retired);
         this.doc.transact(() => {
           const names = this.retireWorkerMail(retired, at);
           const ids = new Set(retired.map((worker) => worker.id));
@@ -10013,6 +10045,15 @@ var init_doc = __esm({
           const conflicts = this.doc.getMap("conflicts");
           for (const [key3, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key3);
           for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id);
+          this.endWorkerNotices(retired, at);
+        });
+      }
+      /** End only notices bound to these exact subjects; do not retire their local names or files. */
+      endWorkerNotices(workers, at) {
+        const retired = [...workers];
+        if (!retired.length) return;
+        const notice = retiredNoticeMatcher(retired);
+        this.doc.transact(() => {
           for (const m of [...this.messages(), ...this.mail.values()]) {
             if (!notice(m)) continue;
             if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? "", from: m.from, outcome: "expired", at });
@@ -11869,6 +11910,7 @@ var init_src = __esm({
     init_schema();
     init_retired_env();
     init_repo_lock();
+    init_worker_memory();
   }
 });
 
@@ -39217,7 +39259,7 @@ var init_bridge = __esm({
       /** A worker's changed paths in the workers room: its current manifest incarnation, held entries included. */
       changedPaths(name) {
         const head = this.local.room.manifestHead.get(name);
-        return head ? [...this.local.room.manifest.get(manifestKey(name, head.fence))?.keys() ?? []] : [];
+        return head ? [...this.local.room.manifest.get(manifestKey(name, head.fence))?.keys() ?? []] : completedPublicationOf(this.local.room, name)?.entries.map(([path81]) => path81) ?? [];
       }
       /** Every path a worker has declared or changed. */
       workerPaths() {
@@ -39230,7 +39272,10 @@ var init_bridge = __esm({
       }
       start() {
         const l = this.local.room, t = this.team.room;
+        const completed = l.doc.getMap("completedPublications"), revisions2 = l.doc.getMap("completedPublicationRevisions");
         const onLocal = () => this.schedule();
+        const onRetiredNotices = () => this.endRetiredNotices();
+        const retired = t.doc.getArray("retiredWorkers");
         const onLocalClaims = (ev) => {
           for (const [id3, ch] of ev.changes.keys) {
             if (ch.action === "add") this.mirrorClaim(id3);
@@ -39260,6 +39305,9 @@ var init_bridge = __esm({
           const me = this.team.me.name;
           if (ev.keysChanged.has(me) || [...ev.keysChanged].some((k) => k.startsWith(`${me}\0`))) this.schedule();
         };
+        retired.observe(onRetiredNotices);
+        l.bus.observe(onRetiredNotices);
+        l.mail.observe(onRetiredNotices);
         l.scopes.observe(onLocal);
         l.claims.observe(onLocalClaims);
         l.manifestHead.observe(onLocal);
@@ -39273,7 +39321,16 @@ var init_bridge = __esm({
         };
         this.team.provider.on?.("sync", onSync);
         this.local.provider.on?.("sync", onSync);
+        l.workerViews.observe(onLocal);
+        completed.observe(onLocal);
+        revisions2.observe(onLocal);
         this.unobserve.push(
+          () => retired.unobserve(onRetiredNotices),
+          () => l.bus.unobserve(onRetiredNotices),
+          () => l.mail.unobserve(onRetiredNotices),
+          () => l.workerViews.unobserve(onLocal),
+          () => completed.unobserve(onLocal),
+          () => revisions2.unobserve(onLocal),
           () => l.scopes.unobserve(onLocal),
           () => l.claims.unobserve(onLocalClaims),
           () => l.manifestHead.unobserve(onLocal),
@@ -39394,12 +39451,18 @@ var init_bridge = __esm({
         this.running = next;
         return next;
       }
+      /** Replay exact-subject retirement without retiring the other room's participant identities. */
+      endRetiredNotices() {
+        if (!this.stopped && this.team.daemon.fence && this.local.daemon.fence)
+          this.local.room.endWorkerNotices(this.team.room.retiredWorkers(), Date.now());
+      }
       /**
        * `project(set)` (manifest §5.5, registry §13): views and retirement through the projector in the
        * `projected` role, then each written worker's participant record and manifest; projections of this lead
        * whose worker is no longer in the set are deleted.
        */
       async projectOnce(registry2) {
+        this.endRetiredNotices();
         const authority = this.team.daemon.fence;
         if (!authority) return;
         const written = await projectWorkers(this.team, registry2, this.local.me.name, "projected", this, () => !this.stopped);
@@ -39455,22 +39518,32 @@ var init_bridge = __esm({
         const rules = this.team.daemon.inputs.rules;
         if (!leadGit || !fence) return;
         const B = leadGit.base, C = record2.base;
-        const sourceHead = this.local.room.manifestHead.get(record2.name);
-        const sourceMap = sourceHead && this.local.room.manifest.get(manifestKey(record2.name, sourceHead.fence));
+        const rawHead = this.local.room.manifestHead.get(record2.name);
+        const rawMap = rawHead && this.local.room.manifest.get(manifestKey(record2.name, rawHead.fence));
         const sourceRecord = participantRecord(this.local.room, record2.name);
         const sourceHolder = sourceRecord?.holder;
-        const sourceFenceValid = !!sourceHead && liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record2.name) === sourceHead.fence;
+        const run3 = record2.runs.at(-1);
+        const report = facts.workers.find((f) => f.record.id === record2.id)?.reports.find((r) => r.run === run3?.n && r.nonce === run3?.nonce && r.done);
+        const final = completedPublicationOf(this.local.room, record2.name);
+        const process5 = report?.chain[0];
+        const completed = final && report && run3 && final.worker.id === record2.id && final.worker.name === record2.name && final.worker.lead === lead && final.worker.run === run3.n && final.holder.workerId === record2.id && final.head.scannedAt >= Math.max(run3.intentAt, report.joinedAt) && (!process5 || final.holder.pid === process5.pid && final.holder.startTime === process5.startTime && final.holder.executable === process5.executable) ? final : void 0;
+        const sourceHead = completed?.head ?? rawHead;
+        const sourceMap = completed ? new Map(completed.entries) : rawMap;
+        const sourceView = this.local.room.acceptedWorkerViewOf(record2.name);
+        const sourceFenceValid = !!completed || !!sourceHead && (!run3 || run3.n === 1 || sourceHead.scannedAt >= run3.intentAt) && liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record2.name) === sourceHead.fence;
+        const sourceMeta = snapshotMetadata(this.local.room, record2.name, participantsView(this.local.room, this.local.awareness, Date.now()));
+        const sourceSnapshot = sourceMeta && { ...sourceMeta, texts: /* @__PURE__ */ new Map() };
         let sourceChanged = false;
         const onSourceChange = () => {
           sourceChanged = true;
         };
-        sourceMap?.observe(onSourceChange);
+        rawMap?.observe(onSourceChange);
         try {
           const valid = () => {
             const current3 = this.facts ? snapshotRead(this.facts, record2.id) : void 0;
             const latestSource = this.local.room.manifestHead.get(record2.name);
             const latestLead = participantRecord(team, lead)?.git;
-            return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id && this.team.daemon.fence === fence && latestLead?.base === B && latestLead?.fence === leadGit.fence && !sourceChanged && (!sourceHead || this.local.room.manifest.get(manifestKey(record2.name, sourceHead.fence)) === sourceMap) && JSON.stringify(participantRecord(this.local.room, record2.name)?.holder) === JSON.stringify(sourceHolder) && latestSource?.semRev === sourceHead?.semRev && latestSource?.fence === sourceHead?.fence && (!sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record2.name) === sourceHead.fence) && epoch === this.storageEpoch && current3?.id === record2.id && current3.seq === record2.seq && current3.phase === record2.phase && !["retiring", "retired", "abandoned"].includes(current3.phase);
+            return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id && this.team.daemon.fence === fence && latestLead?.base === B && latestLead?.fence === leadGit.fence && !sourceChanged && (!rawHead || this.local.room.manifest.get(manifestKey(record2.name, rawHead.fence)) === rawMap) && (!completed || this.local.room.acceptedWorkerViewOf(record2.name) === sourceView) && (!sourceSnapshot || snapshotStillCurrent(this.local.room, sourceSnapshot, participantsView(this.local.room, this.local.awareness, Date.now()))) && JSON.stringify(participantRecord(this.local.room, record2.name)?.holder) === JSON.stringify(sourceHolder) && latestSource?.semRev === rawHead?.semRev && latestSource?.fence === rawHead?.fence && (!!completed || !sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record2.name) === sourceHead.fence) && epoch === this.storageEpoch && current3?.id === record2.id && current3.seq === record2.seq && current3.phase === record2.phase && !["retiring", "retired", "abandoned"].includes(current3.phase);
           };
           const coverage = !policy.publisher ? { kind: "none", reason: "not-publisher" } : policy.level === "intent" ? { kind: "none", reason: "unprojectable" } : !sourceHead || sourceHead.base !== C || sourceRecord?.git?.base !== void 0 && sourceRecord.git.base !== C || !sourceFenceValid || !sourceHead.complete ? { kind: "none", reason: "starting" } : sourceHead.coverage.kind === "none" ? { kind: "none", reason: sourceHead.coverage.reason === "not-publisher" ? "not-publisher" : sourceHead.coverage.reason === "intent" ? "intent" : "starting" } : sourceHead.excluded.length ? { kind: "none", reason: "unprojectable" } : { kind: "all" };
           const entries = /* @__PURE__ */ new Map();
@@ -39599,7 +39672,7 @@ var init_bridge = __esm({
           const current3 = await this.registry?.read(record2.id);
           if (retry < 1 && current3 && !["retiring", "retired", "abandoned"].includes(current3.phase)) await this.projectWorker(current3, retry + 1);
         } finally {
-          sourceMap?.unobserve(onSourceChange);
+          rawMap?.unobserve(onSourceChange);
         }
       }
       /**
@@ -60057,6 +60130,7 @@ function workspaceDepsNotes(result2) {
 init_worker_state();
 
 // packages/room-mcp/src/conflict-set.ts
+init_src2();
 init_notice_lifecycle2();
 init_src();
 init_git();
@@ -60064,6 +60138,7 @@ init_src4();
 init_merge();
 init_libesm();
 init_baseline();
+init_worker_codecs();
 init_client();
 init_parse();
 init_graph_index();
@@ -60099,7 +60174,7 @@ var samePath = (a, b) => {
 };
 var ConflictSlots = class {
   constructor(room, post, fence, now = Date.now, log2 = () => {
-  }, holderPost = post, valid = () => true, session) {
+  }, holderPost = post, valid = () => true, session, captureEndpoints) {
     this.room = room;
     this.post = post;
     this.fence = fence;
@@ -60107,6 +60182,7 @@ var ConflictSlots = class {
     this.log = log2;
     this.holderPost = holderPost;
     this.valid = valid;
+    this.captureEndpoints = captureEndpoints;
     this.map = room.doc.getMap("conflicts");
     this.registrations = session?.room === room ? noticeLifecycle(session) : void 0;
   }
@@ -60117,11 +60193,17 @@ var ConflictSlots = class {
   log;
   holderPost;
   valid;
+  captureEndpoints;
   map;
   registrations;
   /** The lifecycle binds managed ids to exact workers; bodies/posting decisions stay baseline. It cannot end a notice. */
-  postRegistered(body, id3, names, post = this.post) {
-    return this.registrations ? this.registrations.register(ROOM, body, id3, names, this.valid, post) : post(ROOM, body, { id: id3, auto: true });
+  postRegistered(body, id3, names, post = this.post, episode, leadPriority) {
+    if (this.captureEndpoints && post === this.post) {
+      if (!episode) throw new StaleConflictInputs();
+      body = { ...body, noticeSubjects: episode.endpoints.filter((endpoint) => endpoint.workerId) };
+      id3 += `:episode:${episode.id}`;
+    }
+    return this.registrations ? this.registrations.register(ROOM, body, id3, names, this.valid, post) : post(ROOM, body, { id: id3, auto: true, ...leadPriority ? { leadPriority } : {} });
   }
   get(key3) {
     return this.map.get(key3);
@@ -60156,12 +60238,25 @@ var ConflictSlots = class {
     const prev = this.map.get(key3);
     const now = this.now();
     const fence = typeof this.fence === "function" ? this.fence() : this.fence;
-    if (result2.status === "unknown" && prev?.status === "unknown" && prev.inputs === result2.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev;
-    if (prev?.inputs === result2.inputs && prev.status === result2.status && prev.factId === result2.factId && prev.fence === fence && result2.status !== "unknown") return prev;
-    const changedFact = result2.status === "conflict" || result2.status === "possible" ? prev?.settled !== result2.status || prev.factId !== result2.factId : false;
+    const active = result2.status === "conflict" || result2.status === "possible";
+    let projectedEpisode = prev?.projectedEpisode;
+    if (this.captureEndpoints && active) {
+      const endpoints = this.captureEndpoints([result2.owner, result2.other]);
+      if (!endpoints || endpoints.length !== 2) throw new StaleConflictInputs();
+      const same = (episode) => !!episode && JSON.stringify(episode.endpoints) === JSON.stringify(endpoints);
+      if (!same(projectedEpisode) || prev?.settled === "clean" || prev?.settled === "none") {
+        const shared = this.owned(result2.owner).find(([k, slot2]) => k !== key3 && slot2.other === result2.other && (slot2.settled === "conflict" || slot2.settled === "possible") && same(slot2.projectedEpisode))?.[1].projectedEpisode;
+        projectedEpisode = shared ?? { id: randomUUID11(), endpoints };
+      }
+    }
+    const identityChanged = !!this.captureEndpoints && active && prev?.projectedEpisode?.id !== projectedEpisode?.id;
+    const legacy = !!this.captureEndpoints && !projectedEpisode;
+    if (result2.status === "unknown" && prev?.status === "unknown" && prev.inputs === result2.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now && (!legacy || prev.settled === "none")) return prev;
+    if (prev?.inputs === result2.inputs && prev.status === result2.status && prev.factId === result2.factId && prev.fence === fence && result2.status !== "unknown" && !identityChanged) return prev;
+    const changedFact = active ? prev?.settled !== result2.status || prev.factId !== result2.factId || identityChanged : false;
     const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0);
-    const settled = result2.status === "unknown" ? prev?.settled ?? "none" : result2.status;
-    const possibleEpisode = result2.kind === "edit-in-claim" ? this.joinPossibleEpisode(key3, result2, settled, prev) : {};
+    const settled = result2.status === "unknown" ? legacy ? "none" : prev?.settled ?? "none" : result2.status;
+    const possibleEpisode = result2.kind === "edit-in-claim" ? this.joinPossibleEpisode(key3, { ...result2, projectedEpisode }, settled, prev) : {};
     const unknownCount = result2.status === "unknown" ? Math.min(3, prev?.status === "unknown" ? Math.max(0, retryMinutes.findIndex((m) => (prev.retryAt ?? 0) - prev.checkedAt <= m * 6e4)) + 1 : 0) : 0;
     const slot = {
       ...result2,
@@ -60171,6 +60266,7 @@ var ConflictSlots = class {
       fence,
       checkedAt: now,
       ...possibleEpisode,
+      ...projectedEpisode ? { projectedEpisode } : {},
       ...(result2.kind === "contract" || result2.kind === "edit-in-claim") && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID11() } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       // A cleared slot re-checked clean (or unreadable) keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
@@ -60181,7 +60277,7 @@ var ConflictSlots = class {
     };
     const peerTurn = peerMerge(result2) && (changedFact && settled === "conflict" || prev?.settled === "conflict" && settled !== "conflict");
     if (peerMerge(result2)) {
-      const peerEpisode = this.joinPeerEpisode(key3, result2, settled, prev);
+      const peerEpisode = this.joinPeerEpisode(key3, { ...result2, projectedEpisode }, settled, prev);
       if (peerEpisode !== void 0) slot.peerEpisode = peerEpisode;
       const turnedAt = peerTurn ? now : prev?.turnedAt;
       if (turnedAt !== void 0) slot.turnedAt = turnedAt;
@@ -60206,9 +60302,9 @@ var ConflictSlots = class {
   /** Join the peer's open episode, or open a new one; any other state keeps the episode it was in. */
   joinPeerEpisode(key3, result2, settled, prev) {
     if (settled !== "conflict") return prev?.peerEpisode;
-    if (prev?.settled === "conflict" && prev.peerEpisode !== void 0) return prev.peerEpisode;
+    if (prev?.settled === "conflict" && prev.peerEpisode !== void 0 && (!this.captureEndpoints || prev.projectedEpisode?.id === result2.projectedEpisode?.id)) return prev.peerEpisode;
     const pair = this.peerSlots(result2.owner, result2.other).filter(([k]) => k !== key3);
-    const open3 = pair.find(([, s]) => openInEpisode(s))?.[1];
+    const open3 = pair.find(([, s]) => openInEpisode(s) && (!this.captureEndpoints || s.projectedEpisode?.id === result2.projectedEpisode?.id))?.[1];
     if (open3) return open3.peerEpisode;
     return 1 + Math.max(prev?.peerEpisode ?? 0, ...pair.map(([, s]) => s.peerEpisode ?? 0));
   }
@@ -60222,9 +60318,11 @@ var ConflictSlots = class {
     const pair = this.peerSlots(owner, other).map(([, s]) => s);
     if (!pair.length) return;
     const episode = Math.max(...pair.map((s) => s.peerEpisode));
+    const binding = pair.find((s) => s.peerEpisode === episode)?.projectedEpisode;
+    if (this.captureEndpoints && !binding) return;
     const byPath = (a, b) => a.path.localeCompare(b.path);
-    const open3 = pair.filter((s) => s.peerEpisode === episode && openInEpisode(s)).sort(byPath);
-    const cleared = pair.filter((s) => s.peerEpisode === episode && clearedInEpisode(s)).sort(byPath);
+    const open3 = pair.filter((s) => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && openInEpisode(s)).sort(byPath);
+    const cleared = pair.filter((s) => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && clearedInEpisode(s)).sort(byPath);
     if (!open3.length && !cleared.length) return;
     const id3 = peerNoticeId(owner, other, episode, open3, cleared);
     const latest = (slots) => Math.max(0, ...slots.map((s) => s.turnedAt ?? s.checkedAt));
@@ -60240,7 +60338,7 @@ var ConflictSlots = class {
       ...open3.length ? {} : { clearedFrom: "conflict" }
     };
     try {
-      const posted = await this.postRegistered(body, id3, [owner, other]);
+      const posted = await this.postRegistered(body, id3, [owner, other], this.post, binding);
       if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
     } catch (e) {
       this.log(`conflict notice ${id3}: ${String(e)}`);
@@ -60248,12 +60346,12 @@ var ConflictSlots = class {
   }
   /** The other edit-in-claim slots of this owner for the same holder and path. */
   claimGroup(key3, slot) {
-    return this.owned(slot.owner).filter(([k, s]) => k !== key3 && s.kind === "edit-in-claim" && s.other === slot.other && s.path === slot.path);
+    return this.owned(slot.owner).filter(([k, s]) => k !== key3 && s.kind === "edit-in-claim" && s.other === slot.other && s.path === slot.path && (!this.captureEndpoints || s.projectedEpisode?.id === slot.projectedEpisode?.id));
   }
   /** Approximate evidence cannot distinguish claims: keep one possible notice until the last clears. */
   joinPossibleEpisode(key3, result2, settled, prev) {
     if (settled !== "possible") return prev?.possibleEpisode !== void 0 ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {};
-    if (prev?.settled === "possible" && prev.possibleEpisode !== void 0) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined };
+    if (prev?.settled === "possible" && prev.possibleEpisode !== void 0 && (!this.captureEndpoints || prev.projectedEpisode?.id === result2.projectedEpisode?.id)) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined };
     const group = this.claimGroup(key3, result2);
     const open3 = group.find(([, s]) => s.settled === "possible" && s.possibleEpisode !== void 0)?.[1];
     if (open3) return { possibleEpisode: open3.possibleEpisode, possibleJoined: true };
@@ -60274,7 +60372,7 @@ var ConflictSlots = class {
   }
   async postNotice(key3, slot, replay = false) {
     const current3 = () => this.valid() && this.map.get(key3) === slot && (typeof this.fence === "function" ? this.fence() : this.fence) === slot.fence;
-    if (!current3()) return;
+    if (!current3() || this.captureEndpoints && !slot.projectedEpisode) return;
     const workerView2 = this.room.workerViewOf(slot.other);
     if (slot.kind === "edit-in-claim" && workerView2?.lead === slot.owner && workerView2.status !== "running") return;
     const episode = slot.kind === "edit-in-claim" && slot.possibleEpisode !== void 0 && (slot.settled === "possible" || slot.clearedFrom === "possible") ? slot.possibleEpisode : void 0;
@@ -60285,18 +60383,21 @@ var ConflictSlots = class {
     }
     const id3 = episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : noticeId(key3, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
     const status = slot.settled;
+    const otherLead = workerView2?.lead;
+    const otherSide = otherLead ? `${otherLead}'s worker ${slot.other}` : slot.other;
     const ownWorker = workerView2?.lead === slot.owner;
+    const crossTeam = !!this.captureEndpoints && status === "possible" && slot.kind === "merge" && !!otherLead && otherLead !== this.room.workerViewOf(slot.owner)?.lead && this.room.manifestHead.get(slot.other)?.projectedBy === otherLead;
     const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" && !ownWorker ? defaultPriority({ type: "conflict", merges: slot.merges }) : "notify";
     const held2 = this.room.openClaims().filter((c) => c.by === slot.other && c.path === slot.path && !c.path.endsWith("/"));
     const claimed = (claims) => `${slot.other}'s claim${claims.length > 1 ? "s" : ""}${claims.length ? ` at line${claims.length > 1 || claims[0].from !== claims[0].to ? "s" : ""} ${claims.sort((a, b) => a.from - b.from).map((c) => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(", ")}` : ""}`;
     const ownClaim = () => claimed(held2.filter((c) => c.id === slot.subject));
-    const text2 = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${claimed(held2)}; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `the ${slot.clearedFrom === "possible" ? "possible conflict" : slot.merges ? "overlap" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? slot.earlierSha !== void 0 ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}` : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
+    const text2 = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${claimed(held2)}; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `possible conflict in ${slot.path} with ${otherSide}: ${slot.why ?? slot.other}'s file contents are not shared or available; Room cannot check whether these edits merge cleanly. ${crossTeam ? `This is for the two leads to settle: ask ${otherLead} in the team room` : `Ask ${otherLead ?? slot.other}`}, or have one side collect and preview` : status === "clean" ? `the ${slot.clearedFrom === "possible" ? "possible conflict" : slot.merges ? "overlap" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? slot.earlierSha !== void 0 ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}` : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
     const clearedFrom = status === "clean" ? slot.clearedFrom : void 0;
     const merges = slot.kind === "edit-in-claim" && slot.merges === "clean" && (status === "conflict" || clearedFrom === "conflict") ? { merges: "clean" } : void 0;
     const mergeNote = merges && status === "conflict" ? "; merges cleanly" : "";
     const body = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text: text2, ...clearedFrom ? { clearedFrom } : {} } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text: text2 } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text: text2 + mergeNote, ...clearedFrom ? { clearedFrom } : {}, ...merges };
     try {
-      const posted = await this.postRegistered(body, id3, [slot.owner, slot.other]);
+      const posted = await this.postRegistered(body, id3, [slot.owner, slot.other], this.post, slot.projectedEpisode, crossTeam ? "notify" : void 0);
       if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
     } catch (e) {
       this.log(`conflict notice ${id3}: ${String(e)}`);
@@ -60345,6 +60446,14 @@ var changedRanges = (base, live) => {
   return ranges;
 };
 var asText = (v) => v.kind === "text" ? v.text : v.kind === "base" ? v.text ?? "" : v.kind === "deleted" ? "" : void 0;
+function sameFamily(a, b, views) {
+  const leadOf = (snap) => {
+    const proj = snap?.record?.proj;
+    return snap?.fenceValid && proj?.projectedFrom && snap.head.projectedFrom === proj.projectedFrom && snap.head.projectedBy === proj.projectedBy && acceptedGit(snap.record, views) !== "updating" ? proj.projectedBy : void 0;
+  };
+  const leadA = leadOf(a), leadB = leadOf(b);
+  return !!leadA && (b?.name === leadA || leadB === leadA) || !!leadB && a?.name === leadB;
+}
 async function boundedBaseline(dir, baseline, path81) {
   try {
     const carried = baseline.untracked.get(path81);
@@ -60427,15 +60536,29 @@ var ConflictSet = class _ConflictSet {
     this.workerState = workerState;
     this.claimText = claimText;
     const fence = () => team.lease?.fence() ?? "";
+    const ownerPost = (from2, body, opts) => Object.assign(this.postOwner(from2, body, opts), {
+      id: team.room !== notices.room && body.noticeSubjects?.length ? this.projectedNoticeId(opts?.id, this.owner, body.noticeSubjects) : opts?.id ?? ""
+    });
     this.slots = new ConflictSlots(
       team.room,
-      notices.post,
+      ownerPost,
       fence,
       Date.now,
       log2,
       team.post,
       () => this.guard?.() ?? false,
-      team.room === notices.room && owner === team.me.name ? team : void 0
+      team.room === notices.room && owner === team.me.name ? team : void 0,
+      team.room !== notices.room ? (names) => {
+        const views = participantsView(team.room, team.awareness, Date.now());
+        const endpoints = names.map((name) => {
+          const snap = snapshotMetadata(team.room, name, views);
+          if (!snap?.fenceValid || !snap.head.complete) return void 0;
+          const workerId = name === owner ? this.projectedWorkerId : snap.head.projectedFrom ?? snap.record?.holder?.workerId;
+          if (name === owner && (!workerId || workerId !== snap.head.projectedFrom)) return void 0;
+          return { name, ...workerId ? { workerId } : {} };
+        });
+        return endpoints.every((endpoint) => endpoint !== void 0) ? endpoints : void 0;
+      } : void 0
     );
   }
   team;
@@ -60464,6 +60587,41 @@ var ConflictSet = class _ConflictSet {
   guard;
   carriedValues = /* @__PURE__ */ new Map();
   freshStorage;
+  projectedWorkerId;
+  projectedNoticeId(baseline, to2, subjects) {
+    return workerNoticeId(`${baseline}:to:${hash(to2)}`, subjects?.flatMap((s) => s.workerId ? [s.workerId] : []) ?? []);
+  }
+  /** Projected notices stay private, with one deterministic copy for each person who can act. */
+  async postOwner(from2, body, opts) {
+    const projected = this.notices.room !== this.team.room && this.owner !== this.team.me.name;
+    if (!projected) return this.notices.post(from2, body, opts);
+    const id3 = this.projectedWorkerId;
+    if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs();
+    if (!id3 || !this.guard?.() || this.team.room.manifestHead.get(this.owner)?.projectedFrom !== id3)
+      throw new StaleConflictInputs();
+    const noticeSubjects = body.noticeSubjects;
+    if (!noticeSubjects?.some((subject) => subject.name === this.owner && subject.workerId === id3)) throw new StaleConflictInputs();
+    const { leadPriority, ...rest } = opts ?? {};
+    const worker = await this.notices.post(
+      from2,
+      { ...body, noticeSubjects },
+      { ...rest, id: this.projectedNoticeId(opts?.id, this.owner, noticeSubjects) }
+    );
+    if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs();
+    if (!this.guard?.()) throw new StaleConflictInputs();
+    const lead = await this.notices.post(
+      from2,
+      {
+        ...body,
+        to: this.notices.me.name,
+        ...leadPriority ? { priority: leadPriority } : {},
+        ..."text" in body ? { text: `${this.owner}: ${body.text}` } : {},
+        noticeSubjects
+      },
+      { ...rest, id: this.projectedNoticeId(opts?.id, this.notices.me.name, noticeSubjects) }
+    );
+    return worker.ok ? lead.ok ? worker : lead : worker;
+  }
   start() {
     this.started = true;
     this.scheduledInputs = this.inputsKey();
@@ -60547,6 +60705,18 @@ var ConflictSet = class _ConflictSet {
       tokens.set(tag, await reader.sourceToken(tag));
       if (!this.carriedFrom) records.set(tag, await reader.reserved(tag));
     }
+    this.projectedWorkerId = void 0;
+    let noticeTag;
+    if (this.notices.room !== this.team.room) {
+      const id3 = this.team.room.manifestHead.get(this.owner)?.projectedFrom;
+      const candidate = [...records.values()].find((record2) => record2 && record2.id === id3 && record2.name === this.owner) ?? (id3 && safeId(id3) ? await reader.read(id3) : void 0);
+      if (candidate) {
+        noticeTag = candidate.tag;
+        if (!tokens.has(noticeTag)) tokens.set(noticeTag, await reader.sourceToken(noticeTag));
+        const record2 = records.get(noticeTag) ?? await reader.reserved(noticeTag);
+        if (record2 && record2.id === id3 && record2.name === this.owner && record2.mode === "local" && record2.lead.participant === this.notices.me.name && record2.room === this.notices.roomName && record2.lead.room === record2.room && record2.projectedInto === this.team.roomName && !["retiring", "retired", "abandoned"].includes(record2.phase)) this.projectedWorkerId = record2.id;
+      }
+    }
     const memo2 = /* @__PURE__ */ new Map();
     this.carriedValues = memo2;
     let valid = true;
@@ -60567,6 +60737,7 @@ var ConflictSet = class _ConflictSet {
           break;
         }
       }
+      if (noticeTag && ![...memo2.keys()].some((name) => tagOf(name) === noticeTag) && await reader.sourceToken(noticeTag) !== tokens.get(noticeTag)) valid = false;
       return valid;
     } });
   }
@@ -60840,9 +61011,12 @@ var ConflictSet = class _ConflictSet {
     this.guard = () => authority() && carriedOf.current() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims().filter((c) => c.by === this.owner)) === claimInputs;
     const nb = this.peers(views);
     const names = new Set(nb.names());
-    for (const [key3, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) await this.drop(key3);
+    if (!await carriedOf.refresh()) throw new StaleConflictInputs();
+    const family = (other) => sameFamily(mine, snapshotMetadata(room, other, views), views);
+    for (const [key3, slot] of this.slots.owned(this.owner))
+      if (!nb.has(slot.other) || family(slot.other)) await this.drop(key3);
     names.delete(this.owner);
-    if (this.owner !== this.team.me.name) names.delete(this.team.me.name);
+    for (const other of names) if (family(other)) names.delete(other);
     const capturedPairs = new Map([...names].map((name) => [name, this.pairInputs(name, views, carriedOf)]));
     for (const other of [...names].sort()) {
       const pairInputs = capturedPairs.get(other);
@@ -61022,7 +61196,7 @@ var ConflictSet = class _ConflictSet {
           const read2 = (snap) => this.read(snap, path81);
           const [a, b] = await Promise.all([read2(mine), read2(theirs)]);
           if (!bothChanged) {
-            const unreadable2 = [a, b].find((v) => v.kind === "excluded" || v.kind === "unknown" || v.kind === "held");
+            const unreadable2 = [a, b].find((v) => v.kind === "excluded" || v.kind === "unknown");
             await this.settle(key3, {
               owner: this.owner,
               other,
@@ -61035,25 +61209,27 @@ var ConflictSet = class _ConflictSet {
             });
             continue;
           }
-          const held2 = [a, b].some((v) => v.kind === "held" && !v.entry.hash);
-          if (held2) {
-            const aChange = mine.entries.get(path81)?.change ?? "committed", bChange = theirs.entries.get(path81)?.change ?? "committed";
-            const heldBy = [a.kind === "held" && !a.entry.hash ? this.owner : "", b.kind === "held" && !b.entry.hash ? other : ""].filter(Boolean).join(" and ");
-            await this.settle(key3, {
-              owner: this.owner,
-              other,
-              kind: "merge",
-              path: path81,
-              status: "possible",
-              inputs,
-              factId: hash(["possible", path81, mergeBase2, aChange, bChange].join("\0")),
-              why: heldBy
-            });
-            continue;
-          }
           const at = asText(a), bt = asText(b);
           if (at === void 0 || bt === void 0) {
-            await this.settle(key3, { owner: this.owner, other, kind: "merge", path: path81, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
+            const gap = [a, b].some((v) => v.kind === "excluded" || v.kind === "unknown" && !["fetch", "no-base-text", "too-large"].includes(v.why) || v.kind === "held" && v.entry.held === "binary" && !!v.entry.hash);
+            const aEntry = mine.entries.get(path81), bEntry = theirs.entries.get(path81);
+            if (!gap && aEntry?.hash && aEntry.hash === bEntry?.hash) {
+              await this.settle(key3, { owner: this.owner, other, kind: "merge", path: path81, status: "clean", inputs, factId: "" });
+            } else if (!gap) {
+              const unreadableBy = [at === void 0 ? this.owner : "", bt === void 0 ? other : ""].filter(Boolean).join(" and ");
+              await this.settle(key3, {
+                owner: this.owner,
+                other,
+                kind: "merge",
+                path: path81,
+                status: "possible",
+                inputs,
+                factId: hash(["possible", path81, mergeBase2, aEntry?.change ?? "committed", bEntry?.change ?? "committed"].join("\0")),
+                why: unreadableBy
+              });
+            } else {
+              await this.settle(key3, { owner: this.owner, other, kind: "merge", path: path81, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
+            }
             continue;
           }
           if (at === bt) {
@@ -61328,11 +61504,11 @@ var ConflictSet = class _ConflictSet {
   async claims(mine, theirs, other, mergeBase2, changed, baseline, ancestors) {
     const all2 = this.team.room.openClaims();
     const ownClaims = all2.filter((c) => c.by === this.owner);
-    const ownFinishedWorker = this.owner === this.team.me.name && (await this.localWorker(other))?.status === "done";
-    const theirClaims = ownFinishedWorker ? [] : all2.filter((c) => c.by === other);
-    if (ownFinishedWorker) for (const [key3, slot] of this.slots.owned(this.owner)) {
-      if (slot.other === other && (slot.kind === "edit-in-claim" || slot.kind === "claims")) await this.drop(key3);
-    }
+    const peerClaims = all2.filter((c) => c.by === other);
+    const priorClaims = this.slots.owned(this.owner).filter(([, slot]) => slot.other === other && (slot.kind === "edit-in-claim" || slot.kind === "claims"));
+    const ownFinishedWorker = this.owner === this.team.me.name && (peerClaims.length > 0 || priorClaims.length > 0) && (await this.localWorker(other))?.status === "done";
+    const theirClaims = ownFinishedWorker ? [] : peerClaims;
+    if (ownFinishedWorker) for (const [key3] of priorClaims) await this.drop(key3);
     const seen = /* @__PURE__ */ new Set();
     const paths = /* @__PURE__ */ new Set([
       ...theirClaims.flatMap((c) => c.path.endsWith("/") ? [...changed].filter((path81) => claimsOverlap(c, { path: path81, from: 1, to: Number.MAX_SAFE_INTEGER })) : [c.path]),

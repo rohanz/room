@@ -8877,18 +8877,48 @@ function contradicted(doc, p) {
   return !!view && (view.name !== p.worker.name || view.run !== p.worker.run || view.status !== "done") || !!holder && (holder.workerId !== p.worker.id || holder.epoch !== p.holder.epoch) || doc.getArray("retiredWorkers").toArray().some((value2) => value2.id === p.worker.id);
 }
 function retainedPublication(room, name) {
-  if (room.manifestHead.has(name)) return void 0;
+  return room.manifestHead.has(name) ? void 0 : completedPublicationOf(room, name);
+}
+function livePublication(doc, worker) {
+  const heads = doc.getMap("manifestHead");
+  const participants = doc.getMap("participants");
+  const manifests = doc.getMap("manifest");
+  const overlays = doc.getMap("overlays");
+  const head = heads.get(worker.name);
+  const holder = participants.get(`${worker.name}\0holder`);
+  const git = participants.get(`${worker.name}\0git`);
+  if (!head?.complete || head.projectedFrom || head.level === "intent" || head.coverage.kind !== "all" || holder?.workerId !== worker.id || String(holder.epoch) !== head.fence || git?.fence !== head.fence || git.base !== head.base) return void 0;
+  const key = `${worker.name}\0${head.fence}`;
+  const manifest = manifests.get(key);
+  if (!manifest) return void 0;
+  const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence);
+  const texts = entries.flatMap(([path11, entry]) => {
+    const value2 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key)?.get(path11) : void 0;
+    return value2 ? [[path11, value2.toString()]] : [];
+  });
+  const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path11]) => path11));
+  for (const prefix2 of head.textPrefixes ?? []) if (!prefix2.endsWith("/") && !manifest.has(prefix2)) shared.add(prefix2);
+  const baseTexts = [...doc.getMap("basetextFlat")].flatMap(([key2, value2]) => {
+    const prefix2 = `${worker.name}\0${head.base}:`;
+    const path11 = key2.startsWith(prefix2) ? key2.slice(prefix2.length) : void 0;
+    return path11 !== void 0 && shared.has(path11) ? [[path11, value2]] : [];
+  });
+  const p = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? "released" }, git, entries, texts, baseTexts };
+  return p;
+}
+function completedPublicationOf(room, name) {
   const view = room.acceptedWorkerViewOf(name);
   if (!view || view.status !== "done") return void 0;
   const latest = revisions(room.doc);
+  if (room.manifestHead.has(name)) {
+    const p = livePublication(room.doc, view);
+    return p && matchesRevision(p, latest) && !contradicted(room.doc, p) ? p : void 0;
+  }
   return [...room.doc.getMap("completedPublications").values()].find((p) => p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name && matchesRevision(p, latest) && !contradicted(room.doc, p));
 }
 function workerMemory(doc) {
   const latest = revisions(doc);
   const heads = doc.getMap("manifestHead");
-  const participants = doc.getMap("participants");
-  const manifests = doc.getMap("manifest");
-  const overlays = doc.getMap("overlays");
   const publications = /* @__PURE__ */ new Map();
   for (const p of doc.getMap("completedPublications").values()) {
     if (!heads.has(p.worker.name) && matchesRevision(p, latest) && !contradicted(doc, p)) {
@@ -8898,27 +8928,8 @@ function workerMemory(doc) {
   }
   for (const worker of doc.getMap("workerViews").values()) {
     if (worker.status !== "done") continue;
-    const head = heads.get(worker.name);
-    const holder = participants.get(`${worker.name}\0holder`);
-    const git = participants.get(`${worker.name}\0git`);
-    if (!head?.complete || head.projectedFrom || head.level === "intent" || head.coverage.kind !== "all" || holder?.workerId !== worker.id || String(holder.epoch) !== head.fence || git?.fence !== head.fence || git.base !== head.base) continue;
-    const key = `${worker.name}\0${head.fence}`;
-    const manifest = manifests.get(key);
-    if (!manifest) continue;
-    const entries = [...manifest].filter(([, entry]) => entry.fence === head.fence);
-    const texts = entries.flatMap(([path11, entry]) => {
-      const value2 = entry.state === "shared" && entry.change !== "D" && entry.hash ? overlays.get(key)?.get(path11) : void 0;
-      return value2 ? [[path11, value2.toString()]] : [];
-    });
-    const shared = new Set(entries.filter(([, entry]) => entry.state === "shared").map(([path11]) => path11));
-    for (const prefix2 of head.textPrefixes ?? []) if (!prefix2.endsWith("/") && !manifest.has(prefix2)) shared.add(prefix2);
-    const baseTexts = [...doc.getMap("basetextFlat")].flatMap(([key2, value2]) => {
-      const prefix2 = `${worker.name}\0${head.base}:`;
-      const path11 = key2.startsWith(prefix2) ? key2.slice(prefix2.length) : void 0;
-      return path11 !== void 0 && shared.has(path11) ? [[path11, value2]] : [];
-    });
-    const p = { key: `${worker.id}\0${worker.run}\0${head.fence}\0${head.semRev}\0${head.rev}`, worker, head, holder: { ...holder, ended: holder.ended ?? "released" }, git, entries, texts, baseTexts };
-    if (matchesRevision(p, latest) && !contradicted(doc, p)) publications.set(worker.id, p);
+    const p = livePublication(doc, worker);
+    if (p && matchesRevision(p, latest) && !contradicted(doc, p)) publications.set(worker.id, p);
   }
   return {
     publications: [...publications.values()].sort((a, b) => (a.worker.finishedAt ?? 0) - (b.worker.finishedAt ?? 0)).map((p) => ({
@@ -9551,7 +9562,6 @@ var init_doc = __esm({
       /** The single retirement cleanup seam, replayed by retention to heal saved or late state. */
       retireWorkerState(workers, at, post) {
         const retired = [...workers];
-        const notice = retiredNoticeMatcher(retired);
         this.doc.transact(() => {
           const names = this.retireWorkerMail(retired, at);
           const ids = new Set(retired.map((worker) => worker.id));
@@ -9569,6 +9579,15 @@ var init_doc = __esm({
           const conflicts = this.doc.getMap("conflicts");
           for (const [key, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key);
           for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id);
+          this.endWorkerNotices(retired, at);
+        });
+      }
+      /** End only notices bound to these exact subjects; do not retire their local names or files. */
+      endWorkerNotices(workers, at) {
+        const retired = [...workers];
+        if (!retired.length) return;
+        const notice = retiredNoticeMatcher(retired);
+        this.doc.transact(() => {
           for (const m of [...this.messages(), ...this.mail.values()]) {
             if (!notice(m)) continue;
             if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? "", from: m.from, outcome: "expired", at });
@@ -14405,6 +14424,9 @@ var RETIRED_ENVIRONMENT = Object.freeze({
     "ROOM_STALE_DAYS"
   ]
 });
+
+// packages/shared/src/index.ts
+init_worker_memory();
 
 // packages/hub-core/src/notice-lifecycle.ts
 import { createHash } from "node:crypto";
