@@ -28,20 +28,27 @@ const run: GitRun = (dir, args) => new Promise(resolve => {
 })
 
 /** The worktree root holding dir (dir itself when it is the root), or what the human must do first. */
-export async function repositoryRoot(dir: string, git: GitRun = run): Promise<{ root: string; problem?: never } | { problem: string; root?: never }> {
+export async function repositoryRoot(dir: string, git: GitRun = run): Promise<{ root: string; problem?: never } | { problem: string; root?: never } | { inconclusive: true; root?: never; problem?: never }> {
   const where = await git(dir, ['rev-parse', '--is-bare-repository', '--is-inside-work-tree'])
-  if (where.status !== 0) return where.status === 128 && /not a git repository/i.test(where.stderr) ? { problem: notRepository(dir) } : { root: dir }
+  if (where.status !== 0) return where.status === 128 && /not a git repository/i.test(where.stderr) ? { problem: notRepository(dir) } : { inconclusive: true }
   const [bare, inside] = where.stdout.trim().split('\n')
   if (inside !== 'true') return { problem: noWorkTree(dir, bare === 'true') }
   const top = await git(dir, ['rev-parse', '--show-toplevel'])
-  if (top.status !== 0) return { root: dir }
-  let root = top.stdout.trim() || dir
+  if (top.status !== 0 || !top.stdout.trim()) return { inconclusive: true }
+  let root = top.stdout.trim()
   try { if (fs.realpathSync(dir) === fs.realpathSync(root)) root = dir } catch { /* keep git's spelling */ }
   // Unborn: HEAD is a symbolic ref to a branch that does not exist yet. An existing ref whose objects git
   // cannot read, or any failing call, is a git failure for the join to report, not a missing commit.
   const head = await git(root, ['symbolic-ref', '-q', 'HEAD'])
   const ref = head.stdout.trim()
-  if (head.status === 0 && ref && (await git(root, ['show-ref', '--verify', '--quiet', ref])).status === 1) return { problem: noCommit(root) }
+  if (head.status !== 0 && head.status !== 1) return { inconclusive: true }
+  if (head.status === 0) {
+    if (!ref) return { inconclusive: true }
+    const branch = await git(root, ['show-ref', '--verify', '--quiet', ref])
+    if (branch.status === 1) return { problem: noCommit(root) }
+    if (branch.status !== 0) return { inconclusive: true }
+  }
+  if ((await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'])).status !== 0) return { inconclusive: true }
   return { root }
 }
 
@@ -53,7 +60,8 @@ export async function repositoryProblem(dir: string): Promise<string | undefined
 export async function joinableRoot(dir: string): Promise<string> {
   const r = await repositoryRoot(dir)
   if (r.problem !== undefined) throw new NotARepository(dir, r.problem)
-  return r.root
+  // An inconclusive probe is left to the join's ordinary Git errors/retries.
+  return r.root ?? dir
 }
 
 /** Two spellings of one folder (/tmp and /private/tmp, a symlink). */

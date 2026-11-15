@@ -23,16 +23,27 @@ export interface SessionBinding {
 const RECHECK_MS = 1_000
 
 
-export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding {
+export function createSessionBinding(repository: string | (() => string | undefined), env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding {
+  const directory = typeof repository === 'string' ? () => repository : repository
+  let cwd = directory()
   let commonDir: string | null | undefined
   let commonCheckedAt = -Infinity
   let parent: ReturnType<typeof identity> | null | undefined
   let parentArgs: string | undefined
   let cached: { at: number; identityKey?: string; value: ReturnType<SessionBinding['bound']> } | undefined
-  // A repository found once never moves. A folder that is not one yet (git init after the session started) is
-  // re-checked once a second, and git runs again only once a `.git` entry exists in the folder or a parent:
-  // an idle session in a plain folder stats a few paths and spawns nothing.
+  // First adoption invalidates the cached unbound result. An unset process
+  // repository publishes no binding files, even if its fallback folder gains Git.
+  // A folder that is not a repository yet is rechecked once a second; Git runs only once a
+  // `.git` entry exists there or above it; an idle plain folder spawns nothing.
   const common = () => {
+    const current = directory()
+    if (current !== cwd) {
+      cwd = current
+      commonDir = undefined
+      commonCheckedAt = -Infinity
+      cached = undefined
+    }
+    if (!cwd) return undefined
     if (commonDir === null && (now() - commonCheckedAt < RECHECK_MS || !gitEntryAbove(cwd))) return undefined
     if (commonDir === undefined || commonDir === null) {
       commonCheckedAt = now()
@@ -43,6 +54,7 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   }
   const self = identity(probeOwnProcess(), process.pid)
   const bound = () => {
+    const dir = common() // first adoption invalidates a cached unbound result
     const identityKey = admittedIdentityKey()
     if (cached && cached.identityKey === identityKey && now() - cached.at < RECHECK_MS) return cached.value
     if (parent === undefined) {
@@ -50,7 +62,6 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
       parent = identity(probeProcessNow(process.ppid), process.ppid) ?? null
       try { parentArgs = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { parentArgs = '' }
     }
-    const dir = common()
     const value = dir ? boundSession({ commonDir: dir, cwd, env, ...(parent ? { parent } : {}), parentArgs }) : undefined
     cached = { at: now(), value, identityKey }
     return value

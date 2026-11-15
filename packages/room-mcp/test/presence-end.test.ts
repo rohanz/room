@@ -48,6 +48,50 @@ it('keeps presence when worker evidence becomes blocked during projectable acqui
 })
 
 describe('presence end and the idle lease (registry §18)', () => {
+  it('does not release claims while the repository is unset, then allocates an idle episode after adoption', async () => {
+    let adopted = false
+    const releaseHeld = vi.fn(async () => {})
+    const t = fixture('shared-app-server', { episodeId: async () => adopted ? 'first-repository' : undefined, releaseHeld })
+    try {
+      t.state.holds = true
+      await t.at(IDLE_CLAIMS_MS)
+      expect(releaseHeld).not.toHaveBeenCalled()
+      adopted = true
+      await t.at(IDLE_CLAIMS_MS + 1)
+      expect(releaseHeld).toHaveBeenCalledWith(IDLE_CLAIMS_MS + 1, 'idle-first-repository-1')
+    } finally { t.presence.stop() }
+  })
+  it('allocates a deferred idle incarnation only when held claims can be released', async () => {
+    const episodeId = vi.fn(async () => 'adopted-repository-episode')
+    const releaseHeld = vi.fn(async () => {})
+    const t = fixture('shared-app-server', { episodeId, releaseHeld })
+    try {
+      t.state.holds = true
+      await t.at(IDLE_CLAIMS_MS - 1)
+      expect(episodeId).not.toHaveBeenCalled()
+      await t.at(IDLE_CLAIMS_MS)
+      expect(episodeId).toHaveBeenCalledTimes(1)
+      expect(releaseHeld).toHaveBeenCalledWith(IDLE_CLAIMS_MS, 'idle-adopted-repository-episode-1')
+    } finally { t.presence.stop() }
+  })
+
+  it('keeps claims when host activity resumes during deferred idle incarnation allocation', async () => {
+    let finish!: (episode: string) => void
+    const episodeId = vi.fn(() => new Promise<string>(resolve => { finish = resolve }))
+    const releaseHeld = vi.fn(async () => {})
+    const t = fixture('shared-app-server', { episodeId, releaseHeld })
+    try {
+      t.state.holds = true
+      const pending = t.at(IDLE_CLAIMS_MS)
+      await vi.waitFor(() => expect(episodeId).toHaveBeenCalledTimes(1))
+      t.presence.activity()
+      finish('adopted-repository-episode')
+      await pending
+      expect(releaseHeld).not.toHaveBeenCalled()
+      expect(t.state.holds).toBe(true)
+    } finally { t.presence.stop() }
+  })
+
   it('keeps a bound session with a chain but no hostPid even when its processes are gone', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'presence-no-host-pid-'))
     try {

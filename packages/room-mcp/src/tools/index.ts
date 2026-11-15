@@ -9,10 +9,11 @@ import { greeted } from '../post.js'
 import { waitForCompletionReconnect } from '../completion-reconnect.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
-import { repositoryProblem } from '../repository.js'
+import { repositoryProblem, repositoryRoot } from '../repository.js'
 import { createStaleVersionWarning } from '../stale-version.js'
 import { currentToolTiming } from '../timing.js'
-import { LOCAL, NotLoggedIn, type Session } from '../session.js'
+import { joinReplyNote } from '../hosts/claude-join-note.js'
+import { LOCAL, NotLoggedIn, normalizeLocalRoomName, normalizeExplicitRoomName, type Session } from '../session.js'
 import { NeedFetch, NotJoined, REPLY_BATCH, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { defs as joinDefs, handlers as joinHandlers, offerTeamSharingDisclosure } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers } from './scope.js'
@@ -72,9 +73,17 @@ export interface Tools {
 }
 
 /** What the tools need of the automatic join (auto-join.ts). */
-export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(options?: { explicitLeave?: boolean }): void; retarget(s: Session): void; readonly failure?: string }
-/** Tools that choose the room themselves: the automatic join pauses while one runs, and stays stopped unless it joined a room. */
+export interface AutoJoinHandle { ensure(manual?: boolean): Promise<void>; settle(): Promise<void>; pause?(): () => void; cancel(options?: { explicitLeave?: boolean }): void; retarget(s: Session): void; readonly failure?: string; readonly recoveryTarget?: Session }
+/** Room selectors settle the current attempt; only a successful leave/close cancels recovery. */
 const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
+/** Only a bare join naming the current room may cross the unsynced gate. */
+function recoveryJoin(name: string, args: Record<string, unknown>, session: Session | undefined): boolean {
+  if (name !== 'room_join' || !session || Object.keys(args).some(key => key !== 'room')) return false
+  if (args.room === undefined) return true
+  if (typeof args.room !== 'string') return false
+  try { return (session.local ? normalizeLocalRoomName(args.room) : normalizeExplicitRoomName(args.room)) === session.roomName }
+  catch { return false }
+}
 /** A move must not interleave with spawn, a send that resumes a worker, or collect. */
 const WORKER_OPS = new Set(['room_spawn', 'room_send', 'room_collect', 'room_review'])
 /** Writes fenced by the name lease: refused while coordination is paused (hub §7). Posts are refused by the hub client. */
@@ -134,7 +143,15 @@ export function createTools(ctx: ToolCtx): Tools {
     : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
     : 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
   let waits = 0
-  const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), reviewHandlers(state), prHandlers(state), shareHandlers(state))
+  const handlers = Object.assign({}, joinHandlers(state, {
+    session: () => ctx.getSession() ?? autoJoin?.recoveryTarget ?? null,
+    async ensure() {
+      const target = ctx.getSession() ?? autoJoin?.recoveryTarget
+      if (target) autoJoin?.retarget(target)
+      await autoJoin?.ensure(true)
+    },
+    ended: () => autoJoin?.cancel({ explicitLeave: false }),
+  }), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), reviewHandlers(state), prHandlers(state), shareHandlers(state))
 
   const { ledger } = state
   const prepareNotices = createWorkerRestartNotices(ledger, state.log)
@@ -161,7 +178,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const waited = await waitForCompletionReconnect(() => { const s = ctx.getSession(); return joined || s?.closed || s?.rejected ? s : null }, signal)
         if (waited === 'cancelled') return 'error: tool call cancelled'
         if (waited === 'timeout') {
-          const saved = await deferWorkerCompletion(ctx, completionDir, String(args?.summary ?? ''))
+          const saved = completionDir ? await deferWorkerCompletion(ctx, completionDir, String(args?.summary ?? '')) : undefined
           return saved ?? 'error: completion could not reconnect within 30 seconds; retry room_done'
         }
       }
@@ -169,13 +186,23 @@ export function createTools(ctx: ToolCtx): Tools {
       // An existing session has already passed the join preflight. Recheck only when
       // choosing another checkout or before the first join.
       if (name !== 'room_login' && !(name === 'room_state' && args?.check === true) && (joinDir || !ctx.getSession())) {
-        const problem = await repositoryProblem(joinDir ?? ctx.cwd ?? process.cwd())
+        // A room selector owns the join; it must not first join the startup destination.
+        if (!joinDir && !ctx.cwd && !CHOOSES_ROOM.has(name)) await autoJoin?.ensure()
+        let candidate = joinDir ?? ctx.cwd
+        if (!candidate && (name === 'room_join' || name === 'room_create')) {
+          const probe = await repositoryRoot(ctx.guidanceDir?.() ?? process.cwd())
+          if (probe.problem) return probe.problem
+          if (!probe.root) return 'error: could not verify the repository; retry the join'
+          candidate = probe.root
+          args = { ...args, dir: candidate }
+        }
+        if (!candidate) return autoJoin?.failure ?? `Room has no identified repository${ctx.guidanceDir ? ` in ${ctx.guidanceDir()}` : ''}; room_join with a repository directory to join it.`
+        const problem = await repositoryProblem(candidate)
         if (problem) return problem
       }
       if (autoJoin && CHOOSES_ROOM.has(name)) {
         const joining = autoJoin
         await (currentToolTiming()?.phase('settle', () => joining.settle()) ?? joining.settle())
-        joining.cancel({ explicitLeave: name === 'room_leave' })
       } else if (autoJoin && name !== 'room_done') {
         const joining = autoJoin
         await (currentToolTiming()?.phase('settle', () => joining.ensure()) ?? joining.ensure())
@@ -193,7 +220,8 @@ export function createTools(ctx: ToolCtx): Tools {
       if (process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts()
       if (s) ledger.acceptPrompt(s)
       s?.refreshRuntime?.()
-      if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
+      const recovering = s ?? (name === 'room_join' ? autoJoin?.recoveryTarget : undefined)
+      if (recovering && !recovering.provider.synced && name !== 'room_leave' && !recoveryJoin(name, args, recovering) && !(offlineTool && (recovering.closed || connectedBefore(recovering)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       const paused = s?.lease?.paused()
       if (paused && FENCED.has(name)) return `${paused}\n\nnot done: ${name} writes under your name, and coordination is paused; retry once it resumes.`
@@ -232,7 +260,7 @@ export function createTools(ctx: ToolCtx): Tools {
       }
       })
 
-  return {
+  const tools: Tools = {
     list: () => DEFS,
     ledger,
     attachHooks: state.attachHooks,
@@ -280,6 +308,7 @@ export function createTools(ctx: ToolCtx): Tools {
         return finishReply(batch, notices + body, signal, handoff)
       }
       let release: (() => void) | undefined
+      let resume: (() => void) | undefined
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++
         const previous = moves
@@ -289,6 +318,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const cancelled = await Promise.race([previous.then(async () => { while (workerOps.size) await Promise.all([...workerOps]) }).then(() => false), wait.aborted])
         wait.done()
         if (cancelled) { release!(); return 'error: tool call cancelled' }
+        resume = autoJoin?.pause?.()
       } else if (WORKER_OPS.has(name)) {
         const wait = untilAborted(signal)
         while (pendingMoves) {
@@ -310,9 +340,25 @@ export function createTools(ctx: ToolCtx): Tools {
         const text = warning ? `${warning}\n${result}` : result
         return finishReply(batch, text, signal, handoff)
       } catch (e) { ledger.release(batch); throw e }
-      } finally { release?.() }
+      } finally { resume?.(); release?.() }
     },
   }
+  const invoke = tools.call
+  // Every join reply, including validation/sync refusals and rollback, finishes here.
+  // Decorate the handoff too, so the transport confirms the exact bytes it sends.
+  tools.call = async (name, args, signal, handoff) => {
+    const finish = (text: string) => {
+      const note = name === 'room_join' || name === 'room_create' ? joinReplyNote(!!ctx.binding?.bound()) : undefined
+      return note ? `${text}\n\n${note}` : text
+    }
+    let reply: string | undefined
+    const result = await invoke(name, args, signal, handoff ? settle => {
+      reply = finish(settle.text)
+      handoff({ ...settle, text: reply })
+    } : undefined)
+    return reply ?? finish(result)
+  }
+  return tools
 }
 
 export type { ToolCtx, ToolDef } from './context.js'

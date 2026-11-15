@@ -188,7 +188,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!task) return 'error: task is required'
       if (a.host !== undefined && a.host !== 'codex' && a.host !== 'claude') return 'error: host must be codex or claude'
       const host: WorkerHost = workerHost(a.host)
-      const mismatch = workerContractWarning(host, state.log)
+      const mismatch = workerContractWarning(host, state.log, s.dir)
       if (mismatch) return `error: ${mismatch}`
       const runtime = workerRuntimeForHost(host, { model: typeof a.model === 'string' ? a.model : undefined, effort: requestedEffort }, process.env)
       if (runtime.effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(runtime.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`

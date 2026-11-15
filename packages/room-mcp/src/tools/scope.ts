@@ -129,11 +129,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const active = state.ctx.getSession()
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf('/')) : undefined
         const destination = server ? { server, token: active?.token, credentialsPath: active?.credentialsPath ?? state.ctx.config?.credentialsPath } : undefined
-        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), {
+        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? state.ctx.guidanceDir?.() ?? process.cwd(), {
           inSession: true, selected: destination, sessionWarning: active?.local?.canonicalWarning,
           sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : undefined,
+          sessionDir: state.ctx.binding?.dir(),
         })
-        const retainedCommon = await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => undefined)
+        const repository = active?.dir ?? state.ctx.cwd
+        const retainedCommon = repository ? await gitCommonDir(repository).catch(() => undefined) : undefined
         const health = active?.local ? await relayHealth(active.local.port, active.local.key) : undefined
         return [report, ...(retainedCommon ? retainedWorkerLines(retainedCommon) : []), active?.local ? localDaemonLine(active, typeof health?.release === 'string' ? health.release : 'unknown') : '', formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join('\n')
       }

@@ -26,10 +26,10 @@ export function codexRoomCompatibilityMismatch(
   return `Codex has Room ${installed.release}, but this lead runs Room ${lead.release}: ${reason}; ${newer ? 'reconnect Room with /mcp or restart the session to load the installed Room contract' : 'update Room for Codex to a compatible protocol and worker record schema'}`
 }
 
-export function workerContractWarning(host: string, diagnostic?: (line: string) => void): string | undefined {
+export function workerContractWarning(host: string, diagnostic?: (line: string) => void, dir?: string): string | undefined {
   if (host === 'codex' && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
     let failure: ContractFailure | undefined
-    const installed = installedCodexRoomContract(process.env, reason => { failure = reason })
+    const installed = installedCodexRoomContract(process.env, reason => { failure = reason }, dir)
     return codexRoomCompatibilityMismatch(undefined, installed, diagnostic, failure)
   }
 }

@@ -361,7 +361,7 @@ it('room_state check diagnoses a never-synced session and its selected checkout'
   const tools = createTools({ getSession: () => active, setSession: s => { active = s }, cwd: '/original/checkout' })
   active = { dir: '/selected/checkout', roomUrl: 'wss://selected.example/repository', roomName: 'repository', token: 'test-token', provider: { synced: false }, daemon: { touch: vi.fn() } } as unknown as Session
   expect(await tools.call('room_state', { check: true })).toMatch(/^PASS  doctor: report from tool\nINFO  Room server process: pid \d+; CPU [\d.]+ s \(user [\d.]+, system [\d.]+\); RSS \d+ MB; up /)
-  expect(doctor).toHaveBeenCalledWith('/selected/checkout', { inSession: true, selected: { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, sessionWarning: undefined, sessionBound: undefined })
+  expect(doctor).toHaveBeenCalledWith('/selected/checkout', { inSession: true, selected: { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined }, sessionWarning: undefined, sessionBound: undefined, sessionDir: undefined })
   expect(active.daemon.touch).not.toHaveBeenCalled()
 })
 

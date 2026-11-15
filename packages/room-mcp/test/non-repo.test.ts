@@ -57,7 +57,7 @@ describe('a folder that is not a git repository', () => {
     fs.writeFileSync(path.join(dir, 'a.py'), 'x = 1\n')
     const mcp = await startMcp(dir)
     const started = Date.now()
-    expect(await mcp.call('room_join')).toBe(notRepo(dir))
+    expect(await mcp.call('room_join')).toContain(notRepo(dir))
     expect(await mcp.call('room_state')).toBe(notRepo(dir))
     expect(await mcp.call('room_send', { text: 'hi' })).toBe(notRepo(dir))
     expect(Date.now() - started).toBeLessThan(10_000)
@@ -65,8 +65,8 @@ describe('a folder that is not a git repository', () => {
 
     // git init without a commit: Room needs a base commit.
     initRepo(dir, false)
-    const noCommit = await mcp.call('room_join')
-    expect(noCommit).toBe(`Room needs a first commit: ${dir} is a git repository with no commits yet. Make a first commit (git add -A && git commit -m "first commit"), then say 'join the room' again.`)
+    const noCommit = `Room needs a first commit: ${dir} is a git repository with no commits yet. Make a first commit (git add -A && git commit -m "first commit"), then say 'join the room' again.`
+    expect(await mcp.call('room_join')).toContain(noCommit)
     expect(await mcp.call('room_state')).toBe(noCommit)
 
     // After the first commit, a later call joins in the same session, without room_join.
@@ -79,7 +79,7 @@ describe('a folder that is not a git repository', () => {
     const dir = tempDir('room-nonrepo-')
     const other = initRepo(tempDir('room-other-'))
     const mcp = await startMcp(dir, { PWD: other })
-    expect(await mcp.call('room_join')).toBe(notRepo(dir))
+    expect(await mcp.call('room_join')).toContain(notRepo(dir))
     expect(await mcp.call('room_state')).toBe(notRepo(dir))
     expect(mcp.lines.join('\n')).not.toContain(path.basename(other))
   }, 60_000)
@@ -124,23 +124,33 @@ describe('repositoryProblem', () => {
     expect(await repositoryRoot(path.join(repo, 'vendor', 'lib'))).toEqual({ root: path.join(repo, 'vendor', 'lib') })
   })
 
+  it.each(['where', 'top', 'head', 'branch', 'commit'])('requires positive evidence at the %s probe before confirming a repository', async failed => {
+    const probe: GitRun = async (_dir, args) => {
+      const phase = args.includes('--is-bare-repository') ? 'where' : args.includes('--show-toplevel') ? 'top'
+        : args[0] === 'symbolic-ref' ? 'head' : args[0] === 'show-ref' ? 'branch' : 'commit'
+      if (phase === failed) return { status: 'EAGAIN', stdout: '', stderr: '' }
+      return { status: 0, stdout: phase === 'where' ? 'false\ntrue\n' : phase === 'top' ? '/confirmed/repo\n' : phase === 'head' ? 'refs/heads/main\n' : 'abc\n', stderr: '' }
+    }
+    expect(await repositoryRoot('/candidate', probe)).toEqual({ inconclusive: true })
+  })
+
   it('leaves git execution failures to the join instead of calling them a missing first commit', async () => {
     const repo = initRepo(tempDir('room-problem-'))
     const answers = (head: Awaited<ReturnType<GitRun>>, ref: Awaited<ReturnType<GitRun>> = { status: 0, stdout: '', stderr: '' }): GitRun => async (_dir, args) =>
       args[0] === 'symbolic-ref' ? head : args[0] === 'show-ref' ? ref
         : { status: 0, stdout: args.includes('--show-toplevel') ? `${repo}\n` : 'false\ntrue\n', stderr: '' }
-    expect(await repositoryRoot(repo, answers({ status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ root: repo })
-    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads\n', stderr: '' }, { status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ root: repo })
-    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads\n', stderr: '' }, { status: 128, stdout: '', stderr: 'fatal: Input/output error' }))).toEqual({ root: repo })
+    expect(await repositoryRoot(repo, answers({ status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ inconclusive: true })
+    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads\n', stderr: '' }, { status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ inconclusive: true })
+    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads\n', stderr: '' }, { status: 128, stdout: '', stderr: 'fatal: Input/output error' }))).toEqual({ inconclusive: true })
     expect(await repositoryRoot(repo, answers({ status: 1, stdout: '', stderr: '' }))).toEqual({ root: repo }) // detached HEAD
     const denied: GitRun = async () => ({ status: 128, stdout: '', stderr: "fatal: cannot change to '/x': Permission denied" })
-    expect(await repositoryRoot(repo, denied)).toEqual({ root: repo })
+    expect(await repositoryRoot(repo, denied)).toEqual({ inconclusive: true })
   })
 
   it('does not call an existing branch whose objects git cannot read a missing first commit', async () => {
     const repo = initRepo(tempDir('room-problem-'))
     vi.stubEnv('GIT_OBJECT_DIRECTORY', '/dev')
-    try { expect(await repositoryRoot(repo)).toEqual({ root: repo }) } finally { vi.unstubAllEnvs() }
+    try { expect(await repositoryRoot(repo)).toEqual({ inconclusive: true }) } finally { vi.unstubAllEnvs() }
   })
 })
 

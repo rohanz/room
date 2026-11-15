@@ -66,14 +66,14 @@ function contractEvidence(root: string): string {
  * the active version from the plugin's directory entries. Track both, without implementing its selector.
  * Include ancestor project configs because the listing loads Codex's effective configuration stack.
  * Unknown/unreadable inputs disable caching; a fresh CLI verification remains available. */
-function selectionEvidence(home: string, env: NodeJS.ProcessEnv): string | undefined {
+function selectionEvidence(home: string, env: NodeJS.ProcessEnv, cwd: string): string | undefined {
   const files = new Set([path.join(home, 'config.toml')])
   if (process.platform === 'win32') {
     const programData = env.ProgramData ?? env.PROGRAMDATA
     if (!programData) return undefined
     files.add(path.join(programData, 'OpenAI', 'Codex', 'config.toml'))
   } else files.add('/etc/codex/config.toml')
-  for (let dir = process.cwd();;) {
+  for (let dir = cwd;;) {
     files.add(path.join(dir, '.codex', 'config.toml'))
     const parent = path.dirname(dir)
     if (parent === dir) break
@@ -105,10 +105,10 @@ const LISTING_TIMEOUT_MS = 2500
 // Only the Room marketplace: an unfiltered listing also queries Codex's remote plugin directory, which took
 // 45 s per call while that service answered 503 (Codex 0.166.0, 2026-11-13). The filtered one stays local.
 const CODEX_ROOM_LISTING = ['plugin', 'list', '--json', '--marketplace', 'room']
-export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env, failed?: (reason: ContractFailure) => void): WorkerContract | undefined {
+export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env, failed?: (reason: ContractFailure) => void, cwd = process.cwd()): WorkerContract | undefined {
   const home = path.resolve(env.CODEX_HOME || path.join(os.homedir(), '.codex'))
-  const key = JSON.stringify([home, env.PATH, process.cwd()])
-  const selection = selectionEvidence(home, env)
+  const key = JSON.stringify([home, env.PATH, cwd])
+  const selection = selectionEvidence(home, env, cwd)
   try {
     if (selection !== undefined && verifiedContract?.key === key && verifiedContract.selection === selection && contractEvidence(verifiedContract.root) === verifiedContract.evidence)
       return structuredClone(verifiedContract.contract)
@@ -116,7 +116,7 @@ export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env,
   verifiedContract = undefined
   let json: string
   try {
-    json = execFileSync('codex', CODEX_ROOM_LISTING, { env, encoding: 'utf8', timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+    json = execFileSync('codex', CODEX_ROOM_LISTING, { cwd, env, encoding: 'utf8', timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
   } catch (error) {
     failed?.((error as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? 'listing-timeout' : 'listing-unavailable')
     return undefined
@@ -135,7 +135,7 @@ export function installedCodexRoomContract(env: NodeJS.ProcessEnv = process.env,
     if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash('sha256').update(fs.readFileSync(path.join(root, 'room-mcp.mjs'))).digest('hex')) return reject()
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema }
     if (contractEvidence(root) !== evidence) return reject()
-    const after = selectionEvidence(home, env)
+    const after = selectionEvidence(home, env, cwd)
     if (selection !== undefined && after !== selection) return reject()
     if (selection !== undefined) verifiedContract = { key, root, evidence, selection, contract }
     return structuredClone(contract)

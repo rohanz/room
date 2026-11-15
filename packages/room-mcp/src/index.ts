@@ -10,9 +10,9 @@ import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
-import { joinableRoot, sameFolder } from './repository.js'
+import { joinableRoot, repositoryRoot, NotARepository, sameFolder } from './repository.js'
 import { createSessionAutoJoin } from './auto-join.js'
-import { gitCommonDir } from '@room/roomd'
+import { gitCommonDir, RoomdError } from '@room/roomd'
 import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
 import { createMidTurnSender } from './hosts/codex-wake.js'
@@ -99,20 +99,26 @@ async function main() {
     { name: 'room', version: RELEASE_VERSION },
     { capabilities: { tools: {} }, instructions: AGENT_INSTRUCTIONS() },
   )
-  let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => Promise<string> } | undefined
+  let initialized: { hostWorkspace: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
     deferred: deferWorkspace(process.env), fallbackDir: () => workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir,
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
     logFailure: error => log(`workspace initialization failed: ${error instanceof Error ? error.message : String(error)}`),
-    initialize: async (dir: string, signal: AbortSignal) => {
+    initialize: async (hostWorkspace: string, signal: AbortSignal) => {
       let session: Session | null = null
+      // The process repository is fixed at startup, or filled by its first successful
+      // primary join. The host workspace remains separate admission evidence.
+      let repository: string | undefined = (await repositoryRoot(hostWorkspace)).root ? hostWorkspace : undefined
+      const repositoryDir = () => repository
+      const guidanceDir = () => repositoryDir() ?? hostWorkspace
       // The startup choice only: environment is fixed for the process, and room_join/room_close/joinSession re-resolve it.
       // Resolve and prime while config reads are already awaiting Git; a deferred workspace stays unbound until a call.
-      const privacy = gitCommonDir(dir).catch(() => undefined).then(common => common ? primePrivateState(common) : undefined)
-      const [startup] = await Promise.all([resolveConfig({ dir, env: process.env }), privacy])
+      const initialRepository = repositoryDir()
+      const privacy = initialRepository ? gitCommonDir(initialRepository).catch(() => undefined).then(common => common ? primePrivateState(common) : undefined) : undefined
+      const [startup] = await Promise.all([resolveConfig({ dir: guidanceDir(), env: process.env }), privacy])
       if (signal.aborted) throw new Error('Room is shutting down')
       LOG_FILE = startup.logFile
-      const sessionBinding = createSessionBinding(dir)
+      const sessionBinding = createSessionBinding(repositoryDir)
       roomLogDir = () => sessionBinding.commonDir()
       let rebinding: Promise<void> | undefined
       let rebindHost: (sessionId: string) => Promise<void> = async () => {}
@@ -132,7 +138,7 @@ async function main() {
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
         else if (rebinding) await rebinding
-      }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log })
+      }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, get cwd() { return repositoryDir() }, guidanceDir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log })
       // A replica the server refused after a compacting restart is replaced inside the auto-join (compacted.ts).
       const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (s, why) => tools.drop(s, why),
         attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead), credentialsPath: startup.credentialsPath, log })
@@ -141,11 +147,12 @@ async function main() {
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
         onContact: () => presence?.activity(), log })
       const adopt = async (s: Session, clearStale = true) => {
+        // Fill the process repository before any room notice preparation or wake attachment.
+        session = s
+        joined(s)
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)
         await tools.prepareNotices(s)
-        session = s
-        joined(s)
         tools.attachHooks(s)
         if (clearStale) {
           const n = tools.clearStale(s)
@@ -158,12 +165,22 @@ async function main() {
       const presenceHostKind = presenceKind()
       const attachingParent = attachingParentReader()
       const idleLeaseMs = IDLE_LEASE_MS
+      let idleEpisode: Promise<string> | undefined
       presence = new PresenceEnd({
         hostKind: presenceHostKind,
         idleLeaseMs,
         tickMs: idleLeaseTickMs(idleLeaseMs),
-        ...(presenceHostKind === 'shared-app-server' ? { episodeId: await nextIdleEpisode(await gitCommonDir(dir)) } : {}),
-        hostAlive: () => hostSessionAlive(dir, attachingParent()),
+        ...(presenceHostKind === 'shared-app-server' ? { episodeId: () => {
+          const dir = repositoryDir()
+          if (!dir) return Promise.resolve(undefined)
+          // There is no allocation or cached promise until a repository is adopted.
+          if (!idleEpisode) {
+            idleEpisode = gitCommonDir(dir).then(nextIdleEpisode)
+            void idleEpisode.catch(() => { idleEpisode = undefined })
+          }
+          return idleEpisode
+        } } : {}),
+        hostAlive: () => { const dir = repositoryDir(); return dir ? hostSessionAlive(dir, attachingParent()) : true },
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
         waiting: () => tools.waiting(),
@@ -197,7 +214,8 @@ async function main() {
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
         // Completion bypasses lease rebinding, but must retain a thread discovered since admission.
         if (req.params.name === 'room_done' && process.env.ROOM_WORKER_ID) {
-          await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound())
+          const dir = repositoryDir()
+          if (dir) await admitWorkerEnvironment(dir, process.env, sessionBinding.bound())
         }
         if (req.params.name === 'room_done' || req.params.name === 'room_state' && req.params.arguments?.check === true) {
           if (req.params.name === 'room_done') presence!.activity()
@@ -216,6 +234,8 @@ async function main() {
       }
 
       const joined = (s: Session) => {
+        // Fill once: later clone moves keep the process log and host binding here.
+        repository ??= s.dir
         startupReplica = adoptLocalReplica(startupReplica, s.localReplica)
         autoJoin.remember(s)
         s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) })
@@ -231,7 +251,13 @@ async function main() {
         local: chosen === LOCAL,
         log,
         async attempt(target) {
-          const root = await joinableRoot(dir)
+          const dir = repositoryDir()
+          if (!dir && target) throw new Error('recovery has no adopted repository')
+          const probe = dir ? { root: dir } : await repositoryRoot(hostWorkspace)
+          const candidate = probe.root
+          if (probe.problem) throw new NotARepository(hostWorkspace, probe.problem)
+          if (!candidate) throw new RoomdError(`could not verify a repository in ${hostWorkspace}`, 1)
+          const root = await joinableRoot(candidate)
           if (await replacement.begin(session)) return replacement.join()
           if (session?.local) {
             await session.recoverLocal?.()
@@ -248,7 +274,7 @@ async function main() {
           // prior private room.json only fill in when the clone has no origin.
           const options = await startupJoinOptions(root, chosen, startup.room)
           if (options) return joinSession({ ...options, localReplica: startupReplica, log })
-          log(`ready; ${dir} has no git origin — call room_join with a room name`)
+          log(`ready; ${guidanceDir()} has no git origin — call room_join with a room name`)
           return undefined
         },
         async adopt(s) { if (s === session) return; if (replacement.active) await replacement.finish(s, adopt); else await adopt(s); log('ready') },
@@ -270,7 +296,7 @@ async function main() {
         progress('closing arbitration')
         await arbitration.close()
       } }
-      initialized = { dir, call }
+      initialized = { hostWorkspace, call }
       return runtime
     },
   })
@@ -283,12 +309,15 @@ async function main() {
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {
       if (req.params.name === 'room_state' && req.params.arguments?.check === true) {
-        const dir = admittedWorkspace(callMetadata.decodeCall(req.params._meta).workspaceCandidates) ?? workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir
+        const requested = admittedWorkspace(callMetadata.decodeCall(req.params._meta).workspaceCandidates)
         const active = initialized
         if (active) {
-          const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)])
+          // Validate host metadata against the host workspace; the active doctor
+          // itself reads the repository this session coordinates through ToolCtx.
+          const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(requested ?? active.hostWorkspace).catch(() => requested ?? active.hostWorkspace), joinableRoot(active.hostWorkspace).catch(() => active.hostWorkspace)])
           if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal, settle => transport.expect(extra.requestId, settle)), error: undefined }
         }
+        const dir = requested ?? workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir
         return { value: await runDoctor(dir), error: undefined }
       }
       return binding.run(req.params, runtime => runtime.call(req, extra.signal, settle => transport.expect(extra.requestId, settle)))

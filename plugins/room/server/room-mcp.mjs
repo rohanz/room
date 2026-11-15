@@ -23965,19 +23965,26 @@ import { execFile as execFile6 } from "node:child_process";
 import fs16 from "node:fs";
 async function repositoryRoot(dir, git4 = run) {
   const where = await git4(dir, ["rev-parse", "--is-bare-repository", "--is-inside-work-tree"]);
-  if (where.status !== 0) return where.status === 128 && /not a git repository/i.test(where.stderr) ? { problem: notRepository(dir) } : { root: dir };
+  if (where.status !== 0) return where.status === 128 && /not a git repository/i.test(where.stderr) ? { problem: notRepository(dir) } : { inconclusive: true };
   const [bare, inside2] = where.stdout.trim().split("\n");
   if (inside2 !== "true") return { problem: noWorkTree(dir, bare === "true") };
   const top2 = await git4(dir, ["rev-parse", "--show-toplevel"]);
-  if (top2.status !== 0) return { root: dir };
-  let root = top2.stdout.trim() || dir;
+  if (top2.status !== 0 || !top2.stdout.trim()) return { inconclusive: true };
+  let root = top2.stdout.trim();
   try {
     if (fs16.realpathSync(dir) === fs16.realpathSync(root)) root = dir;
   } catch {
   }
   const head = await git4(root, ["symbolic-ref", "-q", "HEAD"]);
   const ref = head.stdout.trim();
-  if (head.status === 0 && ref && (await git4(root, ["show-ref", "--verify", "--quiet", ref])).status === 1) return { problem: noCommit(root) };
+  if (head.status !== 0 && head.status !== 1) return { inconclusive: true };
+  if (head.status === 0) {
+    if (!ref) return { inconclusive: true };
+    const branch = await git4(root, ["show-ref", "--verify", "--quiet", ref]);
+    if (branch.status === 1) return { problem: noCommit(root) };
+    if (branch.status !== 0) return { inconclusive: true };
+  }
+  if ((await git4(root, ["rev-parse", "--verify", "HEAD^{commit}"])).status !== 0) return { inconclusive: true };
   return { root };
 }
 async function repositoryProblem(dir) {
@@ -23986,7 +23993,7 @@ async function repositoryProblem(dir) {
 async function joinableRoot(dir) {
   const r = await repositoryRoot(dir);
   if (r.problem !== void 0) throw new NotARepository(dir, r.problem);
-  return r.root;
+  return r.root ?? dir;
 }
 function sameFolder(a, b) {
   try {
@@ -37001,13 +37008,23 @@ var init_credentials = __esm({
 import { execFileSync as execFileSync7 } from "node:child_process";
 import fs32 from "node:fs";
 import path34 from "node:path";
-function createSessionBinding(cwd, env = process.env, now = Date.now) {
+function createSessionBinding(repository, env = process.env, now = Date.now) {
+  const directory2 = typeof repository === "string" ? () => repository : repository;
+  let cwd = directory2();
   let commonDir2;
   let commonCheckedAt = -Infinity;
   let parent;
   let parentArgs;
   let cached3;
   const common = () => {
+    const current3 = directory2();
+    if (current3 !== cwd) {
+      cwd = current3;
+      commonDir2 = void 0;
+      commonCheckedAt = -Infinity;
+      cached3 = void 0;
+    }
+    if (!cwd) return void 0;
     if (commonDir2 === null && (now() - commonCheckedAt < RECHECK_MS || !gitEntryAbove(cwd))) return void 0;
     if (commonDir2 === void 0 || commonDir2 === null) {
       commonCheckedAt = now();
@@ -37021,6 +37038,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
   };
   const self = identity2(probeOwnProcess(), process.pid);
   const bound = () => {
+    const dir = common();
     const identityKey = admittedIdentityKey();
     if (cached3 && cached3.identityKey === identityKey && now() - cached3.at < RECHECK_MS) return cached3.value;
     if (parent === void 0) {
@@ -37031,7 +37049,6 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
         parentArgs = "";
       }
     }
-    const dir = common();
     const value5 = dir ? boundSession({ commonDir: dir, cwd, env, ...parent ? { parent } : {}, parentArgs }) : void 0;
     cached3 = { at: now(), value: value5, identityKey };
     return value5;
@@ -59484,14 +59501,14 @@ function contractEvidence(root) {
     return `${stat4.dev}:${stat4.ino}:${stat4.size}:${stat4.mtimeNs}:${stat4.ctimeNs}`;
   }).join("|");
 }
-function selectionEvidence(home, env) {
+function selectionEvidence(home, env, cwd) {
   const files4 = /* @__PURE__ */ new Set([path60.join(home, "config.toml")]);
   if (process.platform === "win32") {
     const programData = env.ProgramData ?? env.PROGRAMDATA;
     if (!programData) return void 0;
     files4.add(path60.join(programData, "OpenAI", "Codex", "config.toml"));
   } else files4.add("/etc/codex/config.toml");
-  for (let dir = process.cwd(); ; ) {
+  for (let dir = cwd; ; ) {
     files4.add(path60.join(dir, ".codex", "config.toml"));
     const parent = path60.dirname(dir);
     if (parent === dir) break;
@@ -59518,10 +59535,10 @@ function selectionEvidence(home, env) {
 }
 var LISTING_TIMEOUT_MS = 2500;
 var CODEX_ROOM_LISTING = ["plugin", "list", "--json", "--marketplace", "room"];
-function installedCodexRoomContract(env = process.env, failed) {
+function installedCodexRoomContract(env = process.env, failed, cwd = process.cwd()) {
   const home = path60.resolve(env.CODEX_HOME || path60.join(os14.homedir(), ".codex"));
-  const key3 = JSON.stringify([home, env.PATH, process.cwd()]);
-  const selection = selectionEvidence(home, env);
+  const key3 = JSON.stringify([home, env.PATH, cwd]);
+  const selection = selectionEvidence(home, env, cwd);
   try {
     if (selection !== void 0 && verifiedContract?.key === key3 && verifiedContract.selection === selection && contractEvidence(verifiedContract.root) === verifiedContract.evidence)
       return structuredClone(verifiedContract.contract);
@@ -59530,7 +59547,7 @@ function installedCodexRoomContract(env = process.env, failed) {
   verifiedContract = void 0;
   let json;
   try {
-    json = execFileSync9("codex", CODEX_ROOM_LISTING, { env, encoding: "utf8", timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    json = execFileSync9("codex", CODEX_ROOM_LISTING, { cwd, env, encoding: "utf8", timeout: LISTING_TIMEOUT_MS, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   } catch (error2) {
     failed?.(error2.code === "ETIMEDOUT" ? "listing-timeout" : "listing-unavailable");
     return void 0;
@@ -59552,7 +59569,7 @@ function installedCodexRoomContract(env = process.env, failed) {
     if (descriptor.v !== 1 || descriptor.release !== entries[0].version || (!Number.isSafeInteger(descriptor.workerRecordSchema) || descriptor.workerRecordSchema < 1) || descriptor.bundleSha256 !== createHash24("sha256").update(fs59.readFileSync(path60.join(root, "room-mcp.mjs"))).digest("hex")) return reject();
     const contract = { release: descriptor.release, compat: parseAdvertisement(descriptor.compat), workerRecordSchema: descriptor.workerRecordSchema };
     if (contractEvidence(root) !== evidence) return reject();
-    const after = selectionEvidence(home, env);
+    const after = selectionEvidence(home, env, cwd);
     if (selection !== void 0 && after !== selection) return reject();
     if (selection !== void 0) verifiedContract = { key: key3, root, evidence, selection, contract };
     return structuredClone(contract);
@@ -59612,12 +59629,12 @@ function codexRoomCompatibilityMismatch(lead = { release: plugin_default.version
   const reason = installed.workerRecordSchema !== lead.workerRecordSchema ? `worker record schemas differ (lead ${lead.workerRecordSchema}, Codex ${installed.workerRecordSchema})` : selected.ok ? "" : selected.error.text;
   return `Codex has Room ${installed.release}, but this lead runs Room ${lead.release}: ${reason}; ${newer ? "reconnect Room with /mcp or restart the session to load the installed Room contract" : "update Room for Codex to a compatible protocol and worker record schema"}`;
 }
-function workerContractWarning(host2, diagnostic) {
+function workerContractWarning(host2, diagnostic, dir) {
   if (host2 === "codex" && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
     let failure;
     const installed = installedCodexRoomContract(process.env, (reason) => {
       failure = reason;
-    });
+    }, dir);
     return codexRoomCompatibilityMismatch(void 0, installed, diagnostic, failure);
   }
 }
@@ -62307,7 +62324,7 @@ function handlers4(state) {
       if (!task) return "error: task is required";
       if (a.host !== void 0 && a.host !== "codex" && a.host !== "claude") return "error: host must be codex or claude";
       const host2 = workerHost(a.host);
-      const mismatch = workerContractWarning(host2, state.log);
+      const mismatch = workerContractWarning(host2, state.log, s.dir);
       if (mismatch) return `error: ${mismatch}`;
       const runtime = workerRuntimeForHost(host2, { model: typeof a.model === "string" ? a.model : void 0, effort: requestedEffort }, process.env);
       if (runtime.effort !== void 0 && !WORKER_EFFORTS.includes(runtime.effort)) return `error: effort must be ${WORKER_EFFORTS.join("|")}`;
@@ -63518,7 +63535,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
   } catch (error2) {
     f.configError = error2 instanceof Error ? error2.message : String(error2);
   }
-  f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir());
+  if (!inSession) f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir());
   if (f.repo) try {
     const common = await gitCommonDir(dir);
     f.unknownLocalState = collectLocalState(common, { dryRun: true }).unknown;
@@ -63526,10 +63543,11 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
   }
   return f;
 }
-async function runDoctor(dir, { inSession = false, selected, sessionWarning, sessionBound } = {}) {
+async function runDoctor(dir, { inSession = false, selected, sessionWarning, sessionBound, sessionDir } = {}) {
   const facts = await collectDoctorFacts(dir, inSession, selected);
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning;
   if (inSession && sessionBound !== void 0) facts.sessionBound = sessionBound;
+  if (inSession) facts.hookCompatibility = hookCompatibilityWarning(sessionDir);
   const report = formatDoctor(evaluateDoctor(facts));
   return report;
 }
@@ -63883,13 +63901,15 @@ ${url}`;
         const active = state.ctx.getSession();
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf("/")) : void 0;
         const destination = server ? { server, token: active?.token, credentialsPath: active?.credentialsPath ?? state.ctx.config?.credentialsPath } : void 0;
-        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), {
+        const report = await runDoctor(active?.dir ?? state.ctx.cwd ?? state.ctx.guidanceDir?.() ?? process.cwd(), {
           inSession: true,
           selected: destination,
           sessionWarning: active?.local?.canonicalWarning,
-          sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : void 0
+          sessionBound: state.ctx.binding ? !!state.ctx.binding.bound() : void 0,
+          sessionDir: state.ctx.binding?.dir()
         });
-        const retainedCommon = await gitCommonDir(active?.dir ?? state.ctx.cwd ?? process.cwd()).catch(() => void 0);
+        const repository = active?.dir ?? state.ctx.cwd;
+        const retainedCommon = repository ? await gitCommonDir(repository).catch(() => void 0) : void 0;
         const health = active?.local ? await relayHealth(active.local.port, active.local.key) : void 0;
         return [report, ...retainedCommon ? retainedWorkerLines(retainedCommon) : [], active?.local ? localDaemonLine(active, typeof health?.release === "string" ? health.release : "unknown") : "", formatDeliveryHealth(state.deliveryHealth()), formatProcessHealth()].filter(Boolean).join("\n");
       }
@@ -64593,10 +64613,15 @@ function adoptLocalReplica(retained, adopted) {
   if (retained !== adopted) disposeLocalReplica(retained);
   return adopted;
 }
-function handlers6(state) {
+function handlers6(state, recovery) {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger: ledger2, rooms, cleanupMine, log: log2, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
+  const end = async (operation) => {
+    const result2 = await operation();
+    recovery?.ended?.();
+    return result2;
+  };
   async function configureLogin(a) {
-    const config2 = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { server: typeof a.server === "string" ? a.server : void 0, credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
+    const config2 = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? ctx.guidanceDir?.() ?? process.cwd(), args: { server: typeof a.server === "string" ? a.server : void 0, credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
     ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath, teamServer: config2.teamServer };
     return config2;
   }
@@ -64645,19 +64670,23 @@ function handlers6(state) {
     },
     async room_join(a) {
       if (a.takeover !== void 0 && typeof a.takeover !== "boolean") return "error: takeover must be true or false";
-      const cur = ctx.getSession();
+      const cur = ctx.getSession() ?? recovery?.session();
       cur?.lease?.check();
       const terminalNameLoss = cur?.lease?.state === "taken" || cur?.lease?.state === "superseded";
       const currentReply = async () => {
-        await cur?.recoverLocal?.();
+        if (cur && (!cur.provider.synced || cur.stale) && recovery) await recovery.ensure();
+        else await cur?.recoverLocal?.();
+        const active = ctx.getSession();
         const sharing = a.share !== void 0 ? await timed2("share", () => handlers3(state).room_share({ level: a.share })) : "";
-        if (cur) await timed2("disclosure", () => offerTeamSharingDisclosure(cur, ledger2));
-        return [sharing, await timed2("state", () => handlers5(state).room_state({ link: cur ? state.hasCompany(cur).company : false }))].filter(Boolean).join("\n");
+        if (active) await timed2("disclosure", () => offerTeamSharingDisclosure(active, ledger2));
+        return [sharing, await timed2("state", () => handlers5(state).room_state({ link: active ? state.hasCompany(active).company : false }))].filter(Boolean).join("\n");
       };
       if (cur && !terminalNameLoss && a.create !== true && a.where === void 0 && a.server === void 0 && a.room === void 0 && a.dir === void 0 && a.takeover !== true) {
         return currentReply();
       }
-      const dir = await timed2("resolve", () => joinableRoot(typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()));
+      const candidate = typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd;
+      if (!candidate) return "error: no repository selected; room_join with a repository directory to join it";
+      const dir = await timed2("resolve", () => joinableRoot(candidate));
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await timed2("resolve", () => resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } }));
       const createFromLocal = a.create === true && resolved.server === LOCAL;
@@ -64841,14 +64870,14 @@ function handlers6(state) {
       return out.join("\n");
     },
     async room_leave(a) {
-      const s = S();
+      const s = recovery?.session() ?? S();
       const running = (await Promise.all((await runningWorkers(s)).map(async (r) => ({ ...r, action: decideLeave(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx?.probe })) })))).filter((r) => r.action === "stop");
       if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map((r) => r.w.tag).join(", ")}. Wait for them (room_wait), room_collect(discard=true) them, or room_leave force=true to dismiss them all and leave.`;
       const stopped = await Promise.all(running.map((r) => dismissWorker(r.s, r.w, "the lead left the room")));
       await closeWorkersRoom();
       const released = cleanupMine(s, "left the room");
       rooms.remove(s);
-      const unsaved = await doLeave(s, { preserveReplica: false });
+      const unsaved = await end(() => doLeave(s, { preserveReplica: false }));
       let forgot = "";
       if (a.forget === true) {
         try {
@@ -64861,9 +64890,10 @@ function handlers6(state) {
 WARN: ${unsaved}` : ""}`;
     },
     async room_close(a) {
-      const s = ctx.getSession();
+      const s = ctx.getSession() ?? recovery?.session();
       if (!s) {
-        const dir = ctx.cwd ?? process.cwd();
+        const dir = ctx.cwd;
+        if (!dir) return "error: not in a room; room_join before closing it";
         const config2 = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath } });
         if (config2.server === LOCAL) return "error: not in a local room; nothing to close without joining";
         if (a.confirm !== true) return "error: room_close removes this repository room and all shared uncommitted work for everyone on every branch; call with confirm=true only on the user's explicit request";
@@ -64877,7 +64907,7 @@ WARN: ${unsaved}` : ""}`;
           if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_close confirm=true afterward.`;
           throw e;
         }
-        await closeRoom(server, roomName, { session: auth.session, token: auth.token }, log2);
+        await end(() => closeRoom(server, roomName, { session: auth.session, token: auth.token }, log2));
         const repo2 = roomName;
         return `closed ${repo2} for everyone without joining (no joined session was available to export its history); room_create reopens it`;
       }
@@ -64890,7 +64920,7 @@ WARN: ${unsaved}` : ""}`;
         await closeWorkersRoom();
         cleanupMine(s, "closing the local room");
         rooms.remove(s);
-        const unsaved = await doLeave(s, { preserveReplica: true });
+        const unsaved = await end(() => doLeave(s, { preserveReplica: true }));
         return `local room (no server): forgot the saved history of ${s.roomName} on this machine; exported its ledger to ${ledger4.path} (${ledger4.lines} lines) first; left the room${unsaved ? `
 WARN: ${unsaved}` : ""}`;
       }
@@ -64902,7 +64932,7 @@ WARN: ${unsaved}` : ""}`;
       await s.post(s.me, { type: "note", text: `closing ${repo} for everyone: every participant on every branch loses this room's shared work and history`, priority: "interrupt" });
       rooms.remove(s);
       const closed = await doClose(s);
-      await doLeave(s);
+      await end(() => doLeave(s));
       return `closed ${repo} for everyone: removed ${closed.length ? closed.join(", ") : "its rooms"}; exported the ledger to ${ledger3.path} (${ledger3.lines} lines); room_create reopens it`;
     },
     async room_export(a) {
@@ -67362,6 +67392,15 @@ init_connection();
 init_registry();
 init_repository();
 init_timing();
+
+// packages/room-mcp/src/hosts/claude-join-note.ts
+init_selection();
+function joinReplyNote(bound, env = process.env) {
+  if (!bound && !env.ROOM_WORKER_ID && sessionHost(env) === "claude")
+    return "This session cannot be woken because Claude has not supplied its session identity in this repository; start Claude inside the repository to enable wakes.";
+}
+
+// packages/room-mcp/src/tools/index.ts
 init_session();
 init_context();
 
@@ -68470,6 +68509,16 @@ init_files();
 init_files();
 init_src();
 var CHOOSES_ROOM = /* @__PURE__ */ new Set(["room_join", "room_create", "room_leave", "room_close"]);
+function recoveryJoin(name, args2, session) {
+  if (name !== "room_join" || !session || Object.keys(args2).some((key3) => key3 !== "room")) return false;
+  if (args2.room === void 0) return true;
+  if (typeof args2.room !== "string") return false;
+  try {
+    return (session.local ? normalizeLocalRoomName(args2.room) : normalizeExplicitRoomName(args2.room)) === session.roomName;
+  } catch {
+    return false;
+  }
+}
 var WORKER_OPS = /* @__PURE__ */ new Set(["room_spawn", "room_send", "room_collect", "room_review"]);
 var FENCED = /* @__PURE__ */ new Set(["room_scope", "room_claim", "room_release", "room_done"]);
 var TRIMMED_SELECTORS = /* @__PURE__ */ new Map([
@@ -68522,7 +68571,15 @@ function createTools(ctx) {
   };
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}` : ctx.config?.server === LOCAL ? "error: not in the local room; room_join to join it." : "error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.";
   let waits = 0;
-  const handlers11 = Object.assign({}, handlers6(state), handlers5(state), handlers(state), handlers2(state), handlers8(state), handlers4(state), handlers10(state), handlers9(state), handlers7(state), handlers3(state));
+  const handlers11 = Object.assign({}, handlers6(state, {
+    session: () => ctx.getSession() ?? autoJoin?.recoveryTarget ?? null,
+    async ensure() {
+      const target = ctx.getSession() ?? autoJoin?.recoveryTarget;
+      if (target) autoJoin?.retarget(target);
+      await autoJoin?.ensure(true);
+    },
+    ended: () => autoJoin?.cancel({ explicitLeave: false })
+  }), handlers5(state), handlers(state), handlers2(state), handlers8(state), handlers4(state), handlers10(state), handlers9(state), handlers7(state), handlers3(state));
   const { ledger: ledger2 } = state;
   const prepareNotices = createWorkerRestartNotices(ledger2, state.log);
   const finishReply = (batch, text2, signal, handoff2) => {
@@ -68556,19 +68613,28 @@ function createTools(ctx) {
       }, signal);
       if (waited === "cancelled") return "error: tool call cancelled";
       if (waited === "timeout") {
-        const saved = await deferWorkerCompletion(ctx, completionDir, String(args2?.summary ?? ""));
+        const saved = completionDir ? await deferWorkerCompletion(ctx, completionDir, String(args2?.summary ?? "")) : void 0;
         return saved ?? "error: completion could not reconnect within 30 seconds; retry room_done";
       }
     }
     const joinDir = CHOOSES_ROOM.has(name) && typeof args2?.dir === "string" && args2.dir ? args2.dir : void 0;
     if (name !== "room_login" && !(name === "room_state" && args2?.check === true) && (joinDir || !ctx.getSession())) {
-      const problem = await repositoryProblem(joinDir ?? ctx.cwd ?? process.cwd());
+      if (!joinDir && !ctx.cwd && !CHOOSES_ROOM.has(name)) await autoJoin?.ensure();
+      let candidate = joinDir ?? ctx.cwd;
+      if (!candidate && (name === "room_join" || name === "room_create")) {
+        const probe = await repositoryRoot(ctx.guidanceDir?.() ?? process.cwd());
+        if (probe.problem) return probe.problem;
+        if (!probe.root) return "error: could not verify the repository; retry the join";
+        candidate = probe.root;
+        args2 = { ...args2, dir: candidate };
+      }
+      if (!candidate) return autoJoin?.failure ?? `Room has no identified repository${ctx.guidanceDir ? ` in ${ctx.guidanceDir()}` : ""}; room_join with a repository directory to join it.`;
+      const problem = await repositoryProblem(candidate);
       if (problem) return problem;
     }
     if (autoJoin && CHOOSES_ROOM.has(name)) {
       const joining = autoJoin;
       await (currentToolTiming()?.phase("settle", () => joining.settle()) ?? joining.settle());
-      joining.cancel({ explicitLeave: name === "room_leave" });
     } else if (autoJoin && name !== "room_done") {
       const joining = autoJoin;
       await (currentToolTiming()?.phase("settle", () => joining.ensure()) ?? joining.ensure());
@@ -68586,7 +68652,8 @@ function createTools(ctx) {
     if (process.env.ROOM_WORKER_ID) await state.refreshWorkerFacts();
     if (s) ledger2.acceptPrompt(s);
     s?.refreshRuntime?.();
-    if (s && !s.provider.synced && name !== "room_leave" && !(offlineTool && (s.closed || connectedBefore(s)))) return "error: room not synced yet, retry";
+    const recovering = s ?? (name === "room_join" ? autoJoin?.recoveryTarget : void 0);
+    if (recovering && !recovering.provider.synced && name !== "room_leave" && !recoveryJoin(name, args2, recovering) && !(offlineTool && (recovering.closed || connectedBefore(recovering)))) return "error: room not synced yet, retry";
     if (s) {
       trackConnection(s, state.now);
       state.rooms.track(s);
@@ -68631,7 +68698,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
       return `error: ${e instanceof Error ? e.message : String(e)}`;
     }
   });
-  return {
+  const tools = {
     list: () => DEFS,
     ledger: ledger2,
     attachHooks: state.attachHooks,
@@ -68681,6 +68748,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
         return finishReply(batch, notices + body, signal, handoff2);
       }
       let release2;
+      let resume;
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++;
         const previous = moves;
@@ -68700,6 +68768,7 @@ not done: ${name} writes under your name, and coordination is paused; retry once
           release2();
           return "error: tool call cancelled";
         }
+        resume = autoJoin?.pause?.();
       } else if (WORKER_OPS.has(name)) {
         const wait = untilAborted(signal);
         while (pendingMoves) {
@@ -68733,10 +68802,27 @@ ${result2}` : result2;
           throw e;
         }
       } finally {
+        resume?.();
         release2?.();
       }
     }
   };
+  const invoke = tools.call;
+  tools.call = async (name, args2, signal, handoff2) => {
+    const finish = (text2) => {
+      const note = name === "room_join" || name === "room_create" ? joinReplyNote(!!ctx.binding?.bound()) : void 0;
+      return note ? `${text2}
+
+${note}` : text2;
+    };
+    let reply;
+    const result2 = await invoke(name, args2, signal, handoff2 ? (settle) => {
+      reply = finish(settle.text);
+      handoff2({ ...settle, text: reply });
+    } : void 0);
+    return reply ?? finish(result2);
+  };
+  return tools;
 }
 
 // packages/room-mcp/src/index.ts
@@ -68865,13 +68951,23 @@ var AutoJoin = class {
   recheck = false;
   bindWaited = false;
   target;
+  pauses = 0;
+  owedWhilePaused = false;
+  /** The accepted room, retained while replacement is temporarily without a session. */
+  get recoveryTarget() {
+    return this.target;
+  }
   delays;
   deadlineMs;
   retryAfterMs;
   now;
   /** Join unless joined, cancelled, or a failed run ended too recently; concurrent callers share one run. */
-  ensure() {
+  ensure(manual = false) {
     if (this.inflight) return this.inflight;
+    if (this.pauses && !manual) {
+      this.owedWhilePaused = true;
+      return Promise.resolve();
+    }
     if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve();
     if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve();
     this.inflight = this.run().finally(() => {
@@ -68883,6 +68979,19 @@ var AutoJoin = class {
   /** The run in progress, if any. */
   settle() {
     return this.inflight ?? Promise.resolve();
+  }
+  /** Serialize an explicit room decision without cancelling or forgetting recovery. */
+  pause() {
+    this.pauses++;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      if (--this.pauses === 0 && this.owedWhilePaused) {
+        this.owedWhilePaused = false;
+        void this.ensure();
+      }
+    };
   }
   /** Keep the current accepted identity and mutable policy for reconnects; never resume a cancelled join. */
   remember(s) {
@@ -68896,11 +69005,13 @@ var AutoJoin = class {
     this.failure = void 0;
     this.recheck = false;
   }
-  /** Stop joining for good: a late session is left, a pending wait ends now. */
+  /** Stop recovery and forget its target; explicitLeave controls local-replica disposal. */
   cancel(options = {}) {
     this.cancelled = true;
     this.explicitLeave = options.explicitLeave !== false;
     if (this.explicitLeave) this.o.onCancel?.(this.target);
+    this.target = void 0;
+    this.failure = void 0;
     this.wake?.();
   }
   async waitForBinding(wait) {
@@ -69642,7 +69753,10 @@ var PresenceEnd = class {
     const idle = this.idleMs();
     if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       try {
-        await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`);
+        const epoch2 = this.epoch;
+        const episode = typeof this.episodeId === "function" ? await this.episodeId() : this.episodeId;
+        if (episode === void 0 || this.stopped || epoch2 !== this.epoch) return;
+        await this.options.releaseHeld(idle, `idle-${episode}-${epoch2}`);
       } catch (error2) {
         this.options.log?.(`idle claim release pending: ${error2 instanceof Error ? error2.message : String(error2)}`);
         return;
@@ -69755,13 +69869,17 @@ async function main() {
     fallbackDir: () => workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir,
     logFallback: () => log("call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback"),
     logFailure: (error2) => log(`workspace initialization failed: ${error2 instanceof Error ? error2.message : String(error2)}`),
-    initialize: async (dir, signal) => {
+    initialize: async (hostWorkspace, signal) => {
       let session = null;
-      const privacy = gitCommonDir(dir).catch(() => void 0).then((common) => common ? primePrivateState(common) : void 0);
-      const [startup] = await Promise.all([resolveConfig({ dir, env: process.env }), privacy]);
+      let repository = (await repositoryRoot(hostWorkspace)).root ? hostWorkspace : void 0;
+      const repositoryDir = () => repository;
+      const guidanceDir = () => repositoryDir() ?? hostWorkspace;
+      const initialRepository = repositoryDir();
+      const privacy = initialRepository ? gitCommonDir(initialRepository).catch(() => void 0).then((common) => common ? primePrivateState(common) : void 0) : void 0;
+      const [startup] = await Promise.all([resolveConfig({ dir: guidanceDir(), env: process.env }), privacy]);
       if (signal.aborted) throw new Error("Room is shutting down");
       LOG_FILE = startup.logFile;
-      const sessionBinding = createSessionBinding(dir);
+      const sessionBinding = createSessionBinding(repositoryDir);
       roomLogDir = () => sessionBinding.commonDir();
       let rebinding;
       let rebindHost = async () => {
@@ -69787,7 +69905,9 @@ async function main() {
           replacement.forget();
           joined(s);
         }
-      }, cwd: dir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log });
+      }, get cwd() {
+        return repositoryDir();
+      }, guidanceDir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log });
       const replacement = new StaleReplacement({
         joinedSessions: () => tools.joinedSessions(),
         drop: (s, why) => tools.drop(s, why),
@@ -69804,10 +69924,10 @@ async function main() {
         log
       });
       const adopt = async (s, clearStale = true) => {
-        await offerTeamSharingDisclosure(s, tools.ledger);
-        await tools.prepareNotices(s);
         session = s;
         joined(s);
+        await offerTeamSharingDisclosure(s, tools.ledger);
+        await tools.prepareNotices(s);
         tools.attachHooks(s);
         if (clearStale) {
           const n = tools.clearStale(s);
@@ -69817,12 +69937,26 @@ async function main() {
       const presenceHostKind = presenceKind();
       const attachingParent = attachingParentReader();
       const idleLeaseMs = IDLE_LEASE_MS;
+      let idleEpisode;
       presence = new PresenceEnd({
         hostKind: presenceHostKind,
         idleLeaseMs,
         tickMs: idleLeaseTickMs(idleLeaseMs),
-        ...presenceHostKind === "shared-app-server" ? { episodeId: await nextIdleEpisode(await gitCommonDir(dir)) } : {},
-        hostAlive: () => hostSessionAlive(dir, attachingParent()),
+        ...presenceHostKind === "shared-app-server" ? { episodeId: () => {
+          const dir = repositoryDir();
+          if (!dir) return Promise.resolve(void 0);
+          if (!idleEpisode) {
+            idleEpisode = gitCommonDir(dir).then(nextIdleEpisode);
+            void idleEpisode.catch(() => {
+              idleEpisode = void 0;
+            });
+          }
+          return idleEpisode;
+        } } : {},
+        hostAlive: () => {
+          const dir = repositoryDir();
+          return dir ? hostSessionAlive(dir, attachingParent()) : true;
+        },
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
         leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
         waiting: () => tools.waiting(),
@@ -69872,7 +70006,8 @@ async function main() {
       };
       const call = async (req, signal2, handoff2) => {
         if (req.params.name === "room_done" && process.env.ROOM_WORKER_ID) {
-          await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound());
+          const dir = repositoryDir();
+          if (dir) await admitWorkerEnvironment(dir, process.env, sessionBinding.bound());
         }
         if (req.params.name === "room_done" || req.params.name === "room_state" && req.params.arguments?.check === true) {
           if (req.params.name === "room_done") presence.activity();
@@ -69890,6 +70025,7 @@ async function main() {
         return (rejoined ? rejoined + "\n\n" : "") + (updateNotice ? updateNotice + "\n\n" : "") + body;
       };
       const joined = (s) => {
+        repository ??= s.dir;
         startupReplica = adoptLocalReplica(startupReplica, s.localReplica);
         autoJoin.remember(s);
         s.onHookActivity?.(() => presence?.activity());
@@ -69905,7 +70041,13 @@ async function main() {
         local: chosen === LOCAL,
         log,
         async attempt(target) {
-          const root = await joinableRoot(dir);
+          const dir = repositoryDir();
+          if (!dir && target) throw new Error("recovery has no adopted repository");
+          const probe = dir ? { root: dir } : await repositoryRoot(hostWorkspace);
+          const candidate = probe.root;
+          if (probe.problem) throw new NotARepository(hostWorkspace, probe.problem);
+          if (!candidate) throw new RoomdError(`could not verify a repository in ${hostWorkspace}`, 1);
+          const root = await joinableRoot(candidate);
           if (await replacement.begin(session)) return replacement.join();
           if (session?.local) {
             await session.recoverLocal?.();
@@ -69919,7 +70061,7 @@ async function main() {
           }
           const options = await startupJoinOptions(root, chosen, startup.room);
           if (options) return joinSession({ ...options, localReplica: startupReplica, log });
-          log(`ready; ${dir} has no git origin \u2014 call room_join with a room name`);
+          log(`ready; ${guidanceDir()} has no git origin \u2014 call room_join with a room name`);
           return void 0;
         },
         async adopt(s) {
@@ -69956,7 +70098,7 @@ async function main() {
         progress("closing arbitration");
         await arbitration.close();
       } };
-      initialized = { dir, call };
+      initialized = { hostWorkspace, call };
       return runtime;
     }
   });
@@ -69967,12 +70109,13 @@ async function main() {
     extra.signal.addEventListener("abort", () => transport.forget(extra.requestId), { once: true });
     const result2 = await timing.run(req.params.name, async () => {
       if (req.params.name === "room_state" && req.params.arguments?.check === true) {
-        const dir = admittedWorkspace(codexPreBinding.decodeCall(req.params._meta).workspaceCandidates) ?? workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir;
+        const requested = admittedWorkspace(codexPreBinding.decodeCall(req.params._meta).workspaceCandidates);
         const active = initialized;
         if (active) {
-          const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)]);
+          const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(requested ?? active.hostWorkspace).catch(() => requested ?? active.hostWorkspace), joinableRoot(active.hostWorkspace).catch(() => active.hostWorkspace)]);
           if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal, (settle) => transport.expect(extra.requestId, settle)), error: void 0 };
         }
+        const dir = requested ?? workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir;
         return { value: await runDoctor(dir), error: void 0 };
       }
       return binding.run(req.params, (runtime) => runtime.call(req, extra.signal, (settle) => transport.expect(extra.requestId, settle)));

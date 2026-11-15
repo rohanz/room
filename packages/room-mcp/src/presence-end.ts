@@ -190,7 +190,7 @@ export interface PresenceEndOptions {
   publishIdle?(idleMin: number): void
   mono?: () => number
   /** Unique per presence-loop incarnation; injectable for deterministic tests. */
-  episodeId?: string
+  episodeId?: string | (() => Promise<string | undefined>)
   idleLeaseMs?: number
   idleClaimsMs?: number
   tickMs?: number
@@ -201,7 +201,7 @@ export class PresenceEnd {
   readonly mono: () => number
   private last: number
   private epoch = 1
-  private readonly episodeId: string
+  private readonly episodeId: string | (() => Promise<string | undefined>)
   private published?: number
   private left = false
   private stopped = false
@@ -265,7 +265,12 @@ export class PresenceEnd {
     const idle = this.idleMs()
     if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       // Retry a pending journal even after its first pass removed every held claim and scope.
-      try { await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`) }
+      try {
+        const epoch = this.epoch
+        const episode = typeof this.episodeId === 'function' ? await this.episodeId() : this.episodeId
+        if (episode === undefined || this.stopped || epoch !== this.epoch) return
+        await this.options.releaseHeld(idle, `idle-${episode}-${epoch}`)
+      }
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
     if (this.stopped || this.idleMs() < (this.options.idleLeaseMs ?? IDLE_LEASE_MS) || this.options.holds() || this.options.waiting()) return

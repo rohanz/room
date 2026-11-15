@@ -1,5 +1,5 @@
 /** Tests: a session's hub seam over an in-process hub-core `Hub` on the session's own doc. */
-import { SETTLE_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub } from '@room/hub-core'
+import { SETTLE_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore } from '@room/hub-core'
 import type { RoomDoc } from '@room/shared'
 import { HubClient, type HubTransport } from '../../src/hub-client.js'
 import { createPost, greet, type LeaseSource, type Post } from '../../src/post.js'
@@ -9,12 +9,12 @@ const transports = new WeakMap<HubClient, ReturnType<typeof memoryTransport>>()
 let seams = 0
 
 /** One hub per doc; `up()` / `down()` simulate the hub becoming reachable or not. */
-export function memoryTransport(room: RoomDoc): HubTransport & { up(): void; down(): void } {
+export function memoryTransport(room: RoomDoc, store?: IncarnationStore): HubTransport & { up(): void; down(): void } {
   let hub = hubs.get(room)
   if (!hub) {
     let max: number | undefined, settled = 0
     // Tests start with the settle window already over (hub §4.4), so a first acquire is granted at once.
-    hub = startHub({ doc: room, mono: () => performance.now() + settled, wall: () => Date.now(), log: () => {}, store: serializedStore({ read: async () => max, write: async v => { max = v } }) })
+    hub = startHub({ doc: room, mono: () => performance.now() + settled, wall: () => Date.now(), log: () => {}, store: store ?? serializedStore({ read: async () => max, write: async v => { max = v } }) })
       .then(h => { settled = SETTLE_MS; return h })
     hubs.set(room, hub)
   }
@@ -53,8 +53,8 @@ export function testLease(hub: HubClient, name = 'test-poster', sessionId = 'tes
 }
 
 /** The `hub` and `post` fields of a Session whose room has an in-process hub. */
-export function hubSeam(room: RoomDoc, sessionId = 'test-session'): { hub: HubClient; post: Post } {
-  const transport = memoryTransport(room)
+export function hubSeam(room: RoomDoc, sessionId = 'test-session', store?: IncarnationStore): { hub: HubClient; post: Post } {
+  const transport = memoryTransport(room, store)
   const hub = new HubClient({ transport, client: 'test', sessionId })
   transports.set(hub, transport)
   greet(hub)

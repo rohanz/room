@@ -73,6 +73,40 @@ it('binds a Claude session once its folder becomes a repository (git init after 
   expect(b.dir()).toContain(path.join('room', 'sessions'))
 })
 
+it('immediately fills an unset repository despite a cached unbound result', async () => {
+  vi.resetModules()
+  const { createSessionBinding } = await import('../src/binding.js')
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'room-adopted-binding-'))
+  dirs.push(parent)
+  const first = path.join(parent, 'first')
+  fs.mkdirSync(first); execFileSync('git', ['init', '-q', first])
+  let repository: string | undefined
+  const b = createSessionBinding(() => repository, { ROOM_HOST: 'claude', CLAUDE_CODE_SESSION_ID: 'adopted-host' }, () => 0)
+  expect(b.bound()).toBeUndefined()
+  expect(b.commonDir()).toBeUndefined()
+  repository = first
+  expect(b.bound()).toEqual({ id: 'adopted-host', host: 'claude' })
+  expect(b.commonDir()).toBe(path.join(first, '.git'))
+  expect(b.dir()).toContain(path.join(first, '.git', 'room', 'sessions'))
+})
+
+it('discovers the first adopted repository\'s matching hook record after a cached miss', async () => {
+  vi.resetModules()
+  const { createSessionBinding } = await import('../src/binding.js')
+  const { writeSessionRecord } = await import('../src/session.js')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-adopted-record-'))
+  dirs.push(root)
+  const dir = path.join(root, 'first')
+  fs.mkdirSync(dir); execFileSync('git', ['init', '-q', dir])
+  writeSessionRecord(path.join(dir, '.git'), { session_id: 'first', host: 'claude', cwd: dir, at: 1,
+    chain: [{ pid: process.ppid, startTime: 'birth', executable: 'codex' }] })
+  let repository: string | undefined
+  const b = createSessionBinding(() => repository, { ROOM_HOST: 'claude' }, () => 0)
+  expect(b.bound()).toBeUndefined()
+  repository = path.join(root, 'first')
+  expect(b.bound()).toEqual({ id: 'first', host: 'claude' })
+})
+
 it('admits pre-binding metadata without workspaces while deferring workspace initialization', async () => {
   vi.resetModules()
   const { codexIdentity } = await import('../src/hosts/codex-identity.js')

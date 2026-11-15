@@ -50,7 +50,9 @@ export function createWorkspaceBinding<T>({ deferred, fallbackDir, initialize, l
   matches?: (a: string, b: string) => Promise<boolean>
 }) {
   type Attempt = { dir: string; promise: Promise<T>; failed?: unknown }
-  // A started workspace is kept for the process (a different Codex workspace is told to restart); a failed one is retried.
+  // Where is the HOST running? This immutable admission directory validates call
+  // metadata, independently of the repository selected by a successful room_join.
+  // A different Codex workspace is told to restart; a failed startup is retried.
   let current: Attempt | undefined
   let closing = false
   const abort = new AbortController()

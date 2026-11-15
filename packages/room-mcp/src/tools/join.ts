@@ -121,10 +121,16 @@ export function adoptLocalReplica(retained: LocalReplica | undefined, adopted: L
   return adopted
 }
 
-export function handlers(state: HandlerState): Record<string, Handler> {
+export function handlers(state: HandlerState, recovery?: { session(): Session | null; ensure(): Promise<void>; ended?(): void }): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
+  // Only a completed intentional end forgets recovery. Refusals and exceptions do not.
+  const end = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = await operation()
+    recovery?.ended?.()
+    return result
+  }
   async function configureLogin(a: Record<string, unknown>) {
-    const config = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { server: typeof a.server === 'string' ? a.server : undefined, credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
+    const config = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? ctx.guidanceDir?.() ?? process.cwd(), args: { server: typeof a.server === 'string' ? a.server : undefined, credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath, teamServer: config.teamServer }
     return config
   }
@@ -166,19 +172,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       if (a.takeover !== undefined && typeof a.takeover !== 'boolean') return 'error: takeover must be true or false'
-      const cur = ctx.getSession()
+      const cur = ctx.getSession() ?? recovery?.session()
       cur?.lease?.check()
       const terminalNameLoss = cur?.lease?.state === 'taken' || cur?.lease?.state === 'superseded'
       const currentReply = async () => {
-        await cur?.recoverLocal?.()
+        if (cur && (!cur.provider.synced || cur.stale) && recovery) await recovery.ensure()
+        else await cur?.recoverLocal?.()
+        const active = ctx.getSession()
         const sharing = a.share !== undefined ? await timed('share', () => shareHandlers(state).room_share({ level: a.share })) : ''
-        if (cur) await timed('disclosure', () => offerTeamSharingDisclosure(cur, ledger))
-        return [sharing, await timed('state', () => scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false }))].filter(Boolean).join('\n')
+        if (active) await timed('disclosure', () => offerTeamSharingDisclosure(active, ledger))
+        return [sharing, await timed('state', () => scopeHandlers(state).room_state({ link: active ? state.hasCompany(active).company : false }))].filter(Boolean).join('\n')
       }
       if (cur && !terminalNameLoss && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined && a.takeover !== true) {
         return currentReply()
       }
-      const dir = await timed('resolve', () => joinableRoot(typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()))
+      const candidate = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd
+      if (!candidate) return 'error: no repository selected; room_join with a repository directory to join it'
+      const dir = await timed('resolve', () => joinableRoot(candidate))
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await timed('resolve', () => resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } }))
       // Opening always needs a team server. A remembered URL survives a later process;
@@ -345,14 +355,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     },
     async room_leave(a) {
-      const s = S()
+      const s = recovery?.session() ?? S()
       const running = (await Promise.all((await runningWorkers(s)).map(async r => ({ ...r, action: decideLeave(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx?.probe })) })))).filter(r => r.action === 'stop')
       if (running.length && a.force !== true) return `error: ${running.length} worker(s) still running: ${running.map(r => r.w.tag).join(', ')}. Wait for them (room_wait), room_collect(discard=true) them, or room_leave force=true to dismiss them all and leave.`
       const stopped = await Promise.all(running.map(r => dismissWorker(r.s, r.w, 'the lead left the room')))
       await closeWorkersRoom()
       const released = cleanupMine(s, 'left the room')
       rooms.remove(s)
-      const unsaved = await doLeave(s, { preserveReplica: false })
+      const unsaved = await end(() => doLeave(s, { preserveReplica: false }))
       let forgot = ''
       if (a.forget === true) {
         try { forgot = await clearChoice(s.dir) ? '; forgot the remembered room choice for this clone (next session starts local)' : '; nothing was remembered for this clone' }
@@ -361,9 +371,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return `left ${s.roomName}; released ${released} claim(s)${stopped.length ? '; worker process checks: ' + stopped.join('; ') : ''}${forgot}${unsaved ? `\nWARN: ${unsaved}` : ''}`
     },
     async room_close(a) {
-      const s = ctx.getSession()
+      const s = ctx.getSession() ?? recovery?.session()
       if (!s) {
-        const dir = ctx.cwd ?? process.cwd()
+        const dir = ctx.cwd
+        if (!dir) return 'error: not in a room; room_join before closing it'
         const config = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath } })
         if (config.server === LOCAL) return 'error: not in a local room; nothing to close without joining'
         if (a.confirm !== true) return 'error: room_close removes this repository room and all shared uncommitted work for everyone on every branch; call with confirm=true only on the user\'s explicit request'
@@ -376,7 +387,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_close confirm=true afterward.`
           throw e
         }
-        await closeRoom(server, roomName, { session: auth.session, token: auth.token }, log)
+        await end(() => closeRoom(server, roomName, { session: auth.session, token: auth.token }, log))
         const repo = roomName
         return `closed ${repo} for everyone without joining (no joined session was available to export its history); room_create reopens it`
       }
@@ -390,7 +401,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         cleanupMine(s, 'closing the local room')
         rooms.remove(s)
         // Forget propagates its authorized deletions; explicit leave owns replica disposal.
-        const unsaved = await doLeave(s, { preserveReplica: true })
+        const unsaved = await end(() => doLeave(s, { preserveReplica: true }))
         return `local room (no server): forgot the saved history of ${s.roomName} on this machine; exported its ledger to ${ledger.path} (${ledger.lines} lines) first; left the room${unsaved ? `\nWARN: ${unsaved}` : ''}`
       }
       if (a.confirm !== true) return 'error: room_close removes this repository room and all shared uncommitted work for everyone on every branch; call with confirm=true only on the user\'s explicit request'
@@ -401,7 +412,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await s.post<NoteMsg>(s.me, { type: 'note', text: `closing ${repo} for everyone: every participant on every branch loses this room's shared work and history`, priority: 'interrupt' })
       rooms.remove(s)
       const closed = await doClose(s)
-      await doLeave(s)
+      await end(() => doLeave(s))
       return `closed ${repo} for everyone: removed ${closed.length ? closed.join(', ') : 'its rooms'}; exported the ledger to ${ledger.path} (${ledger.lines} lines); room_create reopens it`
     },
     async room_export(a) {

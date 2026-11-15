@@ -432,6 +432,32 @@ describe('AutoJoin (the ensure step)', () => {
     return { a, reports, logs, discarded, current: () => current }
   }
 
+  it.each([false, true])('serializes an explicit room decision without forgetting recovery (manual retry=%s)', async manual => {
+    let attempts = 0
+    const target = fakeSession('accepted')
+    const t = setup(async s => { attempts++; return s })
+    t.a.retarget(target)
+    const resume = t.a.pause()
+    await t.a.ensure(manual)
+    expect(t.a.recoveryTarget).toBe(target)
+    expect(attempts).toBe(manual ? 1 : 0)
+    resume(); resume()
+    await t.a.settle()
+    expect(attempts).toBe(1)
+    expect(t.current()).toBe(target)
+  })
+
+  it.each([false, true])('every cancellation forgets recovery independently of replica disposal (explicitLeave=%s)', explicitLeave => {
+    const onCancel = vi.fn(), target = fakeSession('old')
+    const t = setup(async () => target, { onCancel })
+    t.a.retarget(target)
+    t.a.failure = 'previous recovery failed'
+    t.a.cancel({ explicitLeave })
+    expect(t.a.recoveryTarget).toBeUndefined()
+    expect(t.a.failure).toBeUndefined()
+    expect(onCancel).toHaveBeenCalledTimes(explicitLeave ? 1 : 0)
+  })
+
   it('concurrent callers share one run, and a joined session is not joined again', async () => {
     let calls = 0
     const t = setup(async () => { calls++; await new Promise(r => setTimeout(r, 30)); return fakeSession() })
@@ -644,14 +670,14 @@ describe('tools and the ensure step', () => {
     const calls: string[] = []
     return { calls, failure, ensure: async () => { calls.push('ensure') }, settle: async () => { calls.push('settle') }, cancel: () => { calls.push('cancel') }, retarget: () => { calls.push('retarget') } }
   }
-  it('every room tool ensures the join first; leaving ends the automatic join', async () => {
+  it('every room tool ensures the join first; a refused leave preserves the automatic join', async () => {
     const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     const h = handle()
     tools.setAutoJoin(h)
     expect(await tools.call('room_state', {})).toBe('error: not in the local room; room_join to join it.')
     expect(h.calls).toEqual(['ensure'])
     await tools.call('room_leave', {})
-    expect(h.calls).toEqual(['ensure', 'settle', 'cancel'])
+    expect(h.calls).toEqual(['ensure', 'settle'])
   })
   it('names why the automatic join failed instead of generic advice', async () => {
     const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })

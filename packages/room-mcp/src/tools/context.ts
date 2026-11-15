@@ -36,8 +36,10 @@ export interface ToolCtx {
   /** Current session, or null before room_join. */
   getSession(): Session | null
   setSession(s: Session | null): void
-  /** Working directory used by room_join when the caller passes none. */
-  cwd: string
+  /** Set-once process repository; undefined before positive evidence/first successful join. */
+  cwd: string | undefined
+  /** Pre-join configuration and user-facing guidance, never a repository write destination. */
+  guidanceDir?: () => string
   /** Injectable for tests. */
   join?: (o: JoinOptions) => Promise<Session>
   /** Injectable team admission preflight for simulated joins. */

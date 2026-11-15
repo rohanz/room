@@ -152,7 +152,7 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
         f.canonicalRelayWarning = canonicalRelayWarning(port, common, identity, info).warning
     }
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
-  f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir())
+  if (!inSession) f.hookCompatibility = hookCompatibilityWarning(createSessionBinding(dir).dir())
   if (f.repo) try {
     const common = await gitCommonDir(dir)
     f.unknownLocalState = collectLocalState(common, { dryRun: true }).unknown
@@ -168,11 +168,14 @@ export interface DoctorOptions {
   sessionWarning?: string
   /** Whether the session identified its host session; undefined when it has no binding. */
   sessionBound?: boolean
+  /** The running MCP's actual binding directory; never infer it from a guidance folder. */
+  sessionDir?: string
 }
-export async function runDoctor(dir: string, { inSession = false, selected, sessionWarning, sessionBound }: DoctorOptions = {}): Promise<string> {
+export async function runDoctor(dir: string, { inSession = false, selected, sessionWarning, sessionBound, sessionDir }: DoctorOptions = {}): Promise<string> {
   const facts = await collectDoctorFacts(dir, inSession, selected)
   if (sessionWarning) facts.canonicalRelayWarning = sessionWarning
   if (inSession && sessionBound !== undefined) facts.sessionBound = sessionBound
+  if (inSession) facts.hookCompatibility = hookCompatibilityWarning(sessionDir)
   const report = formatDoctor(evaluateDoctor(facts))
   return report
 }

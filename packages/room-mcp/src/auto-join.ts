@@ -88,6 +88,10 @@ export class AutoJoin {
   private recheck = false
   private bindWaited = false
   private target: Session | undefined
+  private pauses = 0
+  private owedWhilePaused = false
+  /** The accepted room, retained while replacement is temporarily without a session. */
+  get recoveryTarget(): Session | undefined { return this.target }
   private readonly delays: number[]
   private readonly deadlineMs: number
   private readonly retryAfterMs: number
@@ -101,8 +105,9 @@ export class AutoJoin {
   }
 
   /** Join unless joined, cancelled, or a failed run ended too recently; concurrent callers share one run. */
-  ensure(): Promise<void> {
+  ensure(manual = false): Promise<void> {
     if (this.inflight) return this.inflight
+    if (this.pauses && !manual) { this.owedWhilePaused = true; return Promise.resolve() }
     if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve()
     if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve()
     this.inflight = this.run().finally(() => { this.inflight = null; this.endedAt = this.now() })
@@ -111,6 +116,17 @@ export class AutoJoin {
 
   /** The run in progress, if any. */
   settle(): Promise<void> { return this.inflight ?? Promise.resolve() }
+
+  /** Serialize an explicit room decision without cancelling or forgetting recovery. */
+  pause(): () => void {
+    this.pauses++
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      if (--this.pauses === 0 && this.owedWhilePaused) { this.owedWhilePaused = false; void this.ensure() }
+    }
+  }
 
   /** Keep the current accepted identity and mutable policy for reconnects; never resume a cancelled join. */
   remember(s: Session): void { this.target = s }
@@ -124,11 +140,13 @@ export class AutoJoin {
     this.recheck = false
   }
 
-  /** Stop joining for good: a late session is left, a pending wait ends now. */
+  /** Stop recovery and forget its target; explicitLeave controls local-replica disposal. */
   cancel(options: { explicitLeave?: boolean } = {}): void {
     this.cancelled = true
     this.explicitLeave = options.explicitLeave !== false
     if (this.explicitLeave) this.o.onCancel?.(this.target)
+    this.target = undefined
+    this.failure = undefined
     this.wake?.()
   }
 

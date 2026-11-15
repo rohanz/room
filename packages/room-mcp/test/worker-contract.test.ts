@@ -39,6 +39,26 @@ function selectionEnv(dir: string): NodeJS.ProcessEnv {
 function selectionConfig(dir: string, enabled = true): void {
   writeFileSync(join(dir, 'config.toml'), `[plugins."room@room"]\nenabled = ${enabled}\n`)
 }
+it('uses the coordinated repository for project selection evidence, the cache key and the Codex subprocess', () => {
+  const { dir } = verifiedFixture(), env = selectionEnv(dir)
+  listing.mockClear()
+  const first = join(dir, 'first'), second = join(dir, 'second')
+  for (const project of [first, second]) {
+    mkdirSync(join(project, '.codex'), { recursive: true })
+    writeFileSync(join(project, '.codex/config.toml'), '# project selection\n')
+  }
+  expect(installedCodexRoomContract(env, undefined, first)).toBeDefined()
+  expect(listing.mock.lastCall?.[2].cwd).toBe(first)
+  expect(installedCodexRoomContract(env, undefined, second)).toBeDefined()
+  expect(listing).toHaveBeenCalledTimes(2)
+  expect(listing.mock.lastCall?.[2].cwd).toBe(second)
+  writeFileSync(join(first, '.codex/config.toml'), '# unrelated project changed\n')
+  expect(installedCodexRoomContract(env, undefined, second)).toBeDefined()
+  expect(listing).toHaveBeenCalledTimes(2)
+  writeFileSync(join(second, '.codex/config.toml'), '# this project changed\n')
+  expect(installedCodexRoomContract(env, undefined, second)).toBeDefined()
+  expect(listing).toHaveBeenCalledTimes(3)
+})
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); vi.clearAllMocks() })
 it('reads only the selected install and verifies its executable digest', () => {
   const dir = mkdtempSync(join(tmpdir(), 'worker-contract-')); dirs.push(dir); selectionConfig(dir)
