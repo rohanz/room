@@ -11,7 +11,7 @@ import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, createLocalReplica, disposeLocalReplica, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, repositoryRoot, NotARepository, sameFolder } from './repository.js'
-import { createSessionAutoJoin } from './auto-join.js'
+import { createSessionAutoJoin, type AutoJoin } from './auto-join.js'
 import { gitCommonDir, RoomdError } from '@room/roomd'
 import { primePrivateState } from '@room/relay'
 import { resolveConfig } from './config.js'
@@ -86,6 +86,9 @@ export function createBundleUpdateNotice(file: string): () => string {
   }
 }
 
+const choosesDestination = (name: string, args?: Record<string, unknown>): boolean => name === 'room_create' || name === 'room_join' &&
+  ['where', 'room', 'server', 'dir'].some(key => args?.[key] !== undefined)
+
 async function main() {
   warnRetiredEnvironment('client', process.env, log)
   let closing = false
@@ -99,6 +102,8 @@ async function main() {
     { name: 'room', version: RELEASE_VERSION },
     { capabilities: { tools: {} }, instructions: AGENT_INSTRUCTIONS() },
   )
+  let destinationChosen = false
+  let startupJoin: AutoJoin | undefined
   let initialized: { hostWorkspace: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
     deferred: deferWorkspace(process.env), fallbackDir: () => workspaceAdapter(process.env).startup({ env: process.env, processDir: process.cwd(), platform: process.platform }).fallbackDir,
@@ -287,6 +292,8 @@ async function main() {
         },
       }, sessionBinding)
       tools.setAutoJoin(autoJoin)
+      startupJoin = autoJoin
+      if (destinationChosen) autoJoin.cancel()
       if (!signal.aborted) void autoJoin.ensure()
 
       const runtime = { call, shutdown: async (reason?: WorkerStopCause, progress: (phase: string) => void = () => {}) => {
@@ -305,6 +312,11 @@ async function main() {
   // The reply's ledger batch commits when its bytes reach the host's pipe (FlushedStdioTransport).
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    // Workspace admission/initialization may await Git too: the arriving choice owns startup.
+    if (choosesDestination(req.params.name, req.params.arguments)) {
+      destinationChosen = true
+      if (startupJoin?.starting) startupJoin.cancel()
+    }
     admitCallSessions(req.params._meta)
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {

@@ -8,6 +8,7 @@
 import type { Session } from './session.js'
 import { initialSessionJoinWaitMs, NoRoom, NotLoggedIn } from './session.js'
 import { RoomdError } from '@room/roomd'
+import { withToolSignal } from './registry.js'
 import { NotARepository } from './repository.js'
 
 export interface AutoJoinOptions {
@@ -79,6 +80,11 @@ export function createSessionAutoJoin(options: AutoJoinOptions, binding: { bound
 export class AutoJoin {
   private inflight: Promise<void> | null = null
   private cancelled = false
+  private abort?: AbortController
+  private attempt?: Promise<void>
+  private adopted = false
+  /** An explicit destination may supersede only the unfinished first automatic join. */
+  get starting(): boolean { return !this.adopted && !this.cancelled }
   private explicitLeave = true
   private wake: (() => void) | null = null
   private endedAt = 0
@@ -110,12 +116,17 @@ export class AutoJoin {
     if (this.pauses && !manual) { this.owedWhilePaused = true; return Promise.resolve() }
     if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve()
     if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve()
-    this.inflight = this.run().finally(() => { this.inflight = null; this.endedAt = this.now() })
+    this.abort = new AbortController()
+    this.inflight = withToolSignal(this.abort.signal, () => this.run()).finally(() => { this.inflight = null; this.endedAt = this.now() })
     return this.inflight
   }
 
   /** The run in progress, if any. */
-  settle(): Promise<void> { return this.inflight ?? Promise.resolve() }
+  async settle(): Promise<void> {
+    await this.inflight
+    // A destination choice waits for partial-join cleanup, not just the scheduler wake.
+    if (this.cancelled) await this.attempt
+  }
 
   /** Serialize an explicit room decision without cancelling or forgetting recovery. */
   pause(): () => void {
@@ -133,6 +144,7 @@ export class AutoJoin {
 
   /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
   retarget(s: Session): void {
+    this.adopted = true
     this.remember(s)
     this.cancelled = false
     this.permanent = false
@@ -143,6 +155,7 @@ export class AutoJoin {
   /** Stop recovery and forget its target; explicitLeave controls local-replica disposal. */
   cancel(options: { explicitLeave?: boolean } = {}): void {
     this.cancelled = true
+    this.abort?.abort()
     this.explicitLeave = options.explicitLeave !== false
     if (this.explicitLeave) this.o.onCancel?.(this.target)
     this.target = undefined
@@ -176,8 +189,10 @@ export class AutoJoin {
       try {
         const s = await this.bounded(this.o.attempt(this.target), deadline)
         if (s === 'gave-up') return
+        if (this.cancelled) { if (s) await this.o.discard(s, this.explicitLeave ? 'leave' : 'attempt'); return }
         if (!s) { this.permanent = true; return }
         this.failure = undefined
+        this.adopted = true
         await this.o.adopt(s)
         this.remember(s)
         return
@@ -211,8 +226,13 @@ export class AutoJoin {
       const timer = setTimeout(() => finish(() => reject(new RoomdError(`did not finish within the ${Math.round(this.deadlineMs / 1000)}s join deadline`, 1))), Math.max(0, deadline - this.now()))
       const finish = (f: () => void) => { if (!open) return; open = false; clearTimeout(timer); this.wake = null; f() }
       this.wake = () => finish(() => resolve('gave-up'))
-      attempt.then(
-        s => { if (open) finish(() => resolve(this.cancelled && s ? (void this.o.discard(s, this.cancelled && this.explicitLeave ? 'leave' : 'attempt'), 'gave-up') : s)); else if (s) void this.o.discard(s, this.cancelled && this.explicitLeave ? 'leave' : 'attempt') },
+      this.attempt = attempt.then(
+        async s => {
+          if (s && (this.cancelled || !open)) {
+            await this.o.discard(s, this.cancelled && this.explicitLeave ? 'leave' : 'attempt')
+            finish(() => resolve('gave-up'))
+          } else finish(() => resolve(s))
+        },
         e => finish(() => reject(e)),
       )
     })

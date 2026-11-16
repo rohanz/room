@@ -157,6 +157,8 @@ export interface RoomdOptions {
   post?: (from: Identity, body: PostBody<Msg>, opts: { id?: string; auto: true }) => unknown
   /** Settles durable departing grants after a successful full scan. */
   onFullScan?: (policy: SharingPolicy, entries: ReadonlyMap<string, PlannedEntry>, unsettled: readonly string[]) => Promise<void>
+  /** Cancels startup only; a completed daemon is owned by its caller. */
+  signal?: AbortSignal
   /** Each publisher socket independently selects its contract before syncing or publishing. */
   negotiation?: SocketNegotiation
   /** Caller-owned local replica; involuntary replacement must reuse this exact document. */
@@ -248,6 +250,7 @@ export async function inPhase<T>(phase: string, work: () => Promise<T>): Promise
 export const DEFAULT_STARTUP_TIMEOUT_MS = 60_000
 
 export async function startRoomd(options: RoomdOptions): Promise<Roomd> {
+  options.signal?.throwIfAborted()
   const daemon = new Daemon(options)
   const limit = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS
   let timer: NodeJS.Timeout | undefined
@@ -259,12 +262,19 @@ export async function startRoomd(options: RoomdOptions): Promise<Roomd> {
     daemon.onSeedProgress = reset
     reset()
   })
+  let stopping: Promise<void> | undefined
+  let onAbort: (() => void) | undefined
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => { stopping = daemon.stop('startup cancelled'); reject(options.signal!.reason) }
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+  })
   try {
-    await Promise.race([daemon.start(), deadline])
+    await Promise.race([daemon.start(), deadline, aborted])
+    options.signal?.throwIfAborted()
   } catch (error) {
-    await daemon.stop(`startup failed: ${errMsg(error)}`).catch(() => {})
+    await (stopping ?? daemon.stop(`startup failed: ${errMsg(error)}`)).catch(() => {})
     throw error
-  } finally { clearTimeout(timer); daemon.onSeedProgress = undefined }
+  } finally { clearTimeout(timer); daemon.onSeedProgress = undefined; if (onAbort) options.signal?.removeEventListener('abort', onAbort) }
   return daemon
 }
 
@@ -805,6 +815,8 @@ class Daemon implements Roomd {
   private compatibilityError: () => string | undefined = () => undefined
 
   private waitForSync(): Promise<void> {
+    const signal = this.options.signal
+    signal?.throwIfAborted()
     const compatibilityError = this.compatibilityError()
     if (compatibilityError) return Promise.reject(new RoomdError(compatibilityError, 2))
     if (this.provider.synced) return Promise.resolve()
@@ -813,11 +825,13 @@ class Daemon implements Roomd {
         cleanup()
         reject(new RoomdError(`could not sync with ${this.roomUrl} within ${this.connectTimeoutMs}ms`, 1))
       }, this.connectTimeoutMs)
-      const cleanup = () => { clearTimeout(timer); this.provider.off('sync', onSync); this.provider.off('connection-close', onClose) }
+      const cleanup = () => { clearTimeout(timer); this.provider.off('sync', onSync); this.provider.off('connection-close', onClose); signal?.removeEventListener('abort', onAbort) }
+      const onAbort = () => { cleanup(); reject(signal!.reason) }
       const onClose = () => { const error = this.compatibilityError(); if (error) { cleanup(); reject(new RoomdError(error, 2)) } }
       const onSync = (synced: boolean) => { if (synced) { cleanup(); resolve() } }
       this.provider.on('sync', onSync)
       this.provider.on('connection-close', onClose)
+      signal?.addEventListener('abort', onAbort, { once: true })
     })
   }
 

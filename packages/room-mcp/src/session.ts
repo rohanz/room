@@ -47,6 +47,7 @@ import { chooseName, NameRefused, ParticipantLease, processToken, type ChosenNam
 import { joinableRoot } from './repository.js'
 import type { HolderIn } from '@room/hub-core'
 import { currentToolTiming } from './timing.js'
+import { currentToolSignal } from './registry.js'
 import { revokeLeadProjections } from './bridge.js'
 
 const timed = <T>(name: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(name, work) ?? Promise.resolve().then(work)
@@ -527,16 +528,20 @@ const SERVER_RETRY_PAUSE_MS = 3000
  * or error is returned. `log` receives progress lines for the caller's session.
  */
 export async function serverFetch(url: string, init: RequestInit & { timeoutMs?: number; retry?: boolean } = {}, log?: ServerLog): Promise<Response> {
+  const signal = currentToolSignal()
   const { timeoutMs = SERVER_ATTEMPT_MS, retry = true, ...rest } = init
   const deadline = Date.now() + SERVER_RETRY_MS
   let attempt = 0
   for (;;) {
+    signal?.throwIfAborted()
     attempt++
     try {
-      const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs) })
+      const timeout = AbortSignal.timeout(timeoutMs)
+      const res = await fetch(url, { ...rest, signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
       if (!retry || ![502, 503, 504].includes(res.status) || Date.now() > deadline) return res
       log?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying for up to ${Math.round(SERVER_RETRY_MS / 1000)}s`)
     } catch (e) {
+      signal?.throwIfAborted()
       const name = e instanceof Error ? e.name : ''
       const code = (e as { cause?: { code?: string } })?.cause?.code ?? (e as { code?: string })?.code ?? ''
       const coldStart = name === 'TimeoutError' || name === 'AbortError' || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'UND_ERR_HEADERS_TIMEOUT'
@@ -595,8 +600,11 @@ async function discoverCompatibility(server: string, localKey?: string, log?: Se
  * Resolve identity before roomd can publish anything under it (registry §15): a probe connection syncs the
  * room and reaches its hub; the name is the first candidate whose O_EXCL lease in this clone and whose hub
  * lease this session gets. The hub client then moves to the daemon's connection and keeps renewing.
+ * beforeReady completes caller setup inside the same cancellable lifetime as validation.
  */
-export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel; takeover?: boolean; compatibility?: DiscoveredCompatibility }, explicitTag?: string): Promise<NamedRoomd> {
+export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel; takeover?: boolean; compatibility?: DiscoveredCompatibility }, explicitTag?: string, beforeReady?: () => Promise<void>): Promise<NamedRoomd> {
+  const signal = currentToolSignal()
+  signal?.throwIfAborted()
   assertValidParticipantName(options.name)
   if (options.owner) assertValidParticipantName(options.owner)
   if (options.label) assertValidParticipantName(options.label)
@@ -619,12 +627,15 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     onRefusal: (text: string) => { compatibilityRefusal = text; if (currentProvider) currentProvider.shouldConnect = false },
   } : undefined
   const doc = options.replica ?? new Y.Doc()
-  const probe = await timed('connect', () => options.providerFactory
+  const probe = await timed('connect', () => {
+    signal?.throwIfAborted()
+    return options.providerFactory
     ? options.providerFactory(server, encodedRoom, doc)
     : new WebsocketProvider(server, encodedRoom, doc, {
         WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, negotiation }) as any,
         ...roomConnection(doc),
-      }))
+      })
+  })
   currentProvider = probe
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); if (!options.replica) doc.destroy() }
   const boundAtJoin = binding.bound()?.id
@@ -640,7 +651,8 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   try {
     if (compatibilityRefusal) throw new RoomdError(compatibilityRefusal, 2)
     if (!probe.synced) await timed('sync', () => inPhase('sync', () => new Promise<void>((resolve, reject) => {
-      const cleanup = () => { clearTimeout(timer); probe.off('sync', onSync); probe.off('connection-close', onClose) }
+      const cleanup = () => { clearTimeout(timer); probe.off('sync', onSync); probe.off('connection-close', onClose); signal?.removeEventListener('abort', onAbort) }
+      const onAbort = () => { cleanup(); reject(signal!.reason) }
       const onClose = () => { if (compatibilityRefusal) { cleanup(); reject(new RoomdError(compatibilityRefusal, 2)) } }
       const onSync = (synced: boolean) => { if (synced) { cleanup(); resolve() } }
       const timer = setTimeout(() => {
@@ -649,6 +661,8 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
       }, options.connectTimeoutMs ?? 15000)
       probe.on('sync', onSync)
       probe.on('connection-close', onClose)
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) onAbort()
     })))
     // An unreachable or older hub leaves the session paused under its local lease (hub §7, §10).
     const reachable = await hub.hello().then(() => true, error => { if (error instanceof HubError && error.reason === 'version') throw new RoomdError(error.message, 2); return false })
@@ -696,6 +710,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   let startupCapClose: () => CapClose | undefined = () => undefined
   let policyStore: PolicyStore
   try {
+    signal?.throwIfAborted()
     policyStore = await PolicyStore.open({ dir: options.dir, room, participant: name, server: new URL(options.room).origin, requested: options.requested, ceiling: options.ceiling,
       onChange: policy => { if (daemon) applySessionPolicy(daemon, policy) } })
     if (options.requestedExplicit) await policyStore.setRequested(options.requested)
@@ -708,7 +723,10 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     })
     if (lease.fence()) publishing = await attachPublication()
     else policyStore.setPublisher(false)
-    started = daemon = await timed('daemon start', async () => startRoomd({ ...daemonOptions, negotiation: negotiation ? { ...negotiation, onSelection: reply => { negotiation.onSelection(reply); selected = reply.selection } } : undefined, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: (await workerCarried(options.dir)),
+    started = daemon = await timed('daemon start', async () => {
+      const carried = await workerCarried(options.dir)
+      signal?.throwIfAborted()
+      return startRoomd({ ...daemonOptions, signal, negotiation: negotiation ? { ...negotiation, onSelection: reply => { negotiation.onSelection(reply); selected = reply.selection } } : undefined, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried,
       // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
       onProvider: provider => { currentProvider = provider; startupCapClose = captureCapClose(provider) },
       post: (from, body, opts) => {
@@ -717,20 +735,33 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
         return { ok: false }
       },
       onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
-      host: sessionHost(), ...resolveSessionRuntime(binding.dir()) }))
-  } catch (e) { await publishing?.detach(); await lease.end(); hub.close(); closeProbe(); throw e }
+      host: sessionHost(), ...resolveSessionRuntime(binding.dir()) })
+    })
+  } catch (e) { stopping = true; await publishing?.detach(); await lease.end(); hub.close(); closeProbe(); throw e }
   // The daemon's connection carries the hub from here (one client per session): the lease's clock and epoch move with it.
   hub.attach(hubTransport(started.provider))
   greet(hub)
   closeProbe()
   post = createPost(started.roomDoc, hub, () => lease.held(), () => lease.paused())
-  try { if (lease.fence()) await started.validateMigratedClaims() }
-  catch (error) { await publishing?.detach(); await lease.end(); await started.stop(); hub.close(); throw error }
-  {
-    const stop = started.stop.bind(started)
-    // Ending presence: withdraw and detach the publisher lease, release the hub lease while the connection is up, then stop.
-    started.stop = async (reason?: string) => { stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
+  const stopPublishing = started.stop.bind(started)
+  // Ordinary departure releases the leases while connected. Cancellation fences the raw daemon first.
+  started.stop = async (reason?: string) => { stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stopPublishing(reason); hub.close() }
+  let stoppingDaemon: Promise<void> | undefined
+  const abortStartup = () => {
+    const stopped = stopPublishing('join cancelled') // Sets daemon.stopped synchronously: no publication may cross this tick.
+    stoppingDaemon = Promise.all([stopped, started.stop('join cancelled')]).then(() => {})
+    void stoppingDaemon.catch(() => {}) // The caller's remaining setup may still be awaiting its response.
   }
+  signal?.addEventListener('abort', abortStartup, { once: true })
+  try {
+    if (signal?.aborted) abortStartup()
+    signal?.throwIfAborted()
+    if (lease.fence()) await started.validateMigratedClaims()
+    signal?.throwIfAborted()
+    await beforeReady?.()
+    signal?.throwIfAborted()
+  } catch (error) { await (stoppingDaemon ?? started.stop()); throw error }
+  finally { signal?.removeEventListener('abort', abortStartup) }
   daemon = started
   const publicationActivity = async () => { await publishing?.activity() }
   const records = watchSessionRecords({ daemon: started, binding, sessionId, boundAtJoin, hostCurrent, lease,
@@ -838,6 +869,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   } else {
     roomName = normalizeExplicitRoomName(roomName, opts.log)
   }
+  currentToolSignal()?.throwIfAborted()
   const auth = await resolveAuth(config.credentialsPath, server, roomName, token, opts.log)
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
   // makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex).
@@ -872,8 +904,8 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested, fetchServer))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
-  const view = await timed('view token', () => viewToken(server, roomName, creds, opts.log))
+  let view: string | undefined
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag, async () => { view = await timed('view token', () => viewToken(server, roomName, creds, opts.log)) })
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
   const session: Session = {
     room: daemon.roomDoc,
@@ -1020,6 +1052,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     throw new RoomdError('the retained local replica belongs to a different clone or room; explicitly leave it before joining that destination', 2)
   }
   replica.common = common; replica.room = roomName
+  currentToolSignal()?.throwIfAborted()
   const local = await ensureDaemon(common, roomName, dir, opts.log)
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)

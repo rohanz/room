@@ -22521,6 +22521,7 @@ async function inPhase(phase, work) {
   }
 }
 async function startRoomd(options) {
+  options.signal?.throwIfAborted();
   const daemon = new Daemon(options);
   const limit = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   let timer;
@@ -22532,15 +22533,26 @@ async function startRoomd(options) {
     daemon.onSeedProgress = reset;
     reset();
   });
+  let stopping;
+  let onAbort;
+  const aborted2 = new Promise((_, reject) => {
+    onAbort = () => {
+      stopping = daemon.stop("startup cancelled");
+      reject(options.signal.reason);
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+  });
   try {
-    await Promise.race([daemon.start(), deadline]);
+    await Promise.race([daemon.start(), deadline, aborted2]);
+    options.signal?.throwIfAborted();
   } catch (error2) {
-    await daemon.stop(`startup failed: ${errMsg(error2)}`).catch(() => {
+    await (stopping ?? daemon.stop(`startup failed: ${errMsg(error2)}`)).catch(() => {
     });
     throw error2;
   } finally {
     clearTimeout(timer);
     daemon.onSeedProgress = void 0;
+    if (onAbort) options.signal?.removeEventListener("abort", onAbort);
   }
   return daemon;
 }
@@ -23123,6 +23135,8 @@ var init_src4 = __esm({
       }
       compatibilityError = () => void 0;
       waitForSync() {
+        const signal = this.options.signal;
+        signal?.throwIfAborted();
         const compatibilityError = this.compatibilityError();
         if (compatibilityError) return Promise.reject(new RoomdError(compatibilityError, 2));
         if (this.provider.synced) return Promise.resolve();
@@ -23135,6 +23149,11 @@ var init_src4 = __esm({
             clearTimeout(timer);
             this.provider.off("sync", onSync);
             this.provider.off("connection-close", onClose);
+            signal?.removeEventListener("abort", onAbort);
+          };
+          const onAbort = () => {
+            cleanup();
+            reject(signal.reason);
           };
           const onClose = () => {
             const error2 = this.compatibilityError();
@@ -23151,6 +23170,7 @@ var init_src4 = __esm({
           };
           this.provider.on("sync", onSync);
           this.provider.on("connection-close", onClose);
+          signal?.addEventListener("abort", onAbort, { once: true });
         });
       }
       writeRoomFile() {
@@ -40176,16 +40196,20 @@ function defaultWeb(server) {
   }
 }
 async function serverFetch(url, init = {}, log2) {
+  const signal = currentToolSignal();
   const { timeoutMs: timeoutMs2 = SERVER_ATTEMPT_MS, retry = true, ...rest } = init;
   const deadline = Date.now() + SERVER_RETRY_MS;
   let attempt = 0;
   for (; ; ) {
+    signal?.throwIfAborted();
     attempt++;
     try {
-      const res = await fetch(url, { ...rest, signal: AbortSignal.timeout(timeoutMs2) });
+      const timeout = AbortSignal.timeout(timeoutMs2);
+      const res = await fetch(url, { ...rest, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       if (!retry || ![502, 503, 504].includes(res.status) || Date.now() > deadline) return res;
       log2?.(`server answered ${res.status}; it is probably starting up (attempt ${attempt}), retrying for up to ${Math.round(SERVER_RETRY_MS / 1e3)}s`);
     } catch (e) {
+      signal?.throwIfAborted();
       const name = e instanceof Error ? e.name : "";
       const code = e?.cause?.code ?? e?.code ?? "";
       const coldStart = name === "TimeoutError" || name === "AbortError" || code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "UND_ERR_HEADERS_TIMEOUT";
@@ -40256,7 +40280,9 @@ async function discoverCompatibility(server, localKey, log2) {
     throw new RoomdError(`Room server ${server} is incompatible: ${error2 instanceof Error ? error2.message : String(error2)}`, 2);
   }
 }
-async function startAutoTaggedRoomd(options, explicitTag) {
+async function startAutoTaggedRoomd(options, explicitTag, beforeReady) {
+  const signal = currentToolSignal();
+  signal?.throwIfAborted();
   assertValidParticipantName(options.name);
   if (options.owner) assertValidParticipantName(options.owner);
   if (options.label) assertValidParticipantName(options.label);
@@ -40284,10 +40310,13 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     }
   } : void 0;
   const doc = options.replica ?? new Doc();
-  const probe = await timed("connect", () => options.providerFactory ? options.providerFactory(server, encodedRoom, doc) : new WebsocketProvider(server, encodedRoom, doc, {
-    WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, negotiation }),
-    ...roomConnection(doc)
-  }));
+  const probe = await timed("connect", () => {
+    signal?.throwIfAborted();
+    return options.providerFactory ? options.providerFactory(server, encodedRoom, doc) : new WebsocketProvider(server, encodedRoom, doc, {
+      WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session, negotiation }),
+      ...roomConnection(doc)
+    });
+  });
   currentProvider = probe;
   const closeProbe = () => {
     probe.destroy();
@@ -40316,6 +40345,11 @@ async function startAutoTaggedRoomd(options, explicitTag) {
         clearTimeout(timer);
         probe.off("sync", onSync);
         probe.off("connection-close", onClose);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(signal.reason);
       };
       const onClose = () => {
         if (compatibilityRefusal) {
@@ -40335,6 +40369,8 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       }, options.connectTimeoutMs ?? 15e3);
       probe.on("sync", onSync);
       probe.on("connection-close", onClose);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     })));
     const reachable = await hub.hello().then(() => true, (error2) => {
       if (error2 instanceof HubError && error2.reason === "version") throw new RoomdError(error2.message, 2);
@@ -40403,6 +40439,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   let startupCapClose = () => void 0;
   let policyStore;
   try {
+    signal?.throwIfAborted();
     policyStore = await PolicyStore.open({
       dir: options.dir,
       room,
@@ -40427,34 +40464,40 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     });
     if (lease.fence()) publishing = await attachPublication();
     else policyStore.setPublisher(false);
-    started = daemon = await timed("daemon start", async () => startRoomd({
-      ...daemonOptions,
-      negotiation: negotiation ? { ...negotiation, onSelection: (reply) => {
-        negotiation.onSelection(reply);
-        selected = reply.selection;
-      } } : void 0,
-      name,
-      label,
-      sessionId,
-      lease: () => lease.fence(),
-      policy: policyStore.policy,
-      carried: await workerCarried(options.dir),
-      // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
-      onProvider: (provider) => {
-        currentProvider = provider;
-        startupCapClose = captureCapClose(provider);
-      },
-      post: (from2, body, opts) => {
-        if (post) return post(from2, body, opts);
-        options.log?.(`not posted before the hub connection: ${body.type}`);
-        return { ok: false };
-      },
-      onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {
-      }),
-      host: sessionHost(),
-      ...resolveSessionRuntime(binding.dir())
-    }));
+    started = daemon = await timed("daemon start", async () => {
+      const carried = await workerCarried(options.dir);
+      signal?.throwIfAborted();
+      return startRoomd({
+        ...daemonOptions,
+        signal,
+        negotiation: negotiation ? { ...negotiation, onSelection: (reply) => {
+          negotiation.onSelection(reply);
+          selected = reply.selection;
+        } } : void 0,
+        name,
+        label,
+        sessionId,
+        lease: () => lease.fence(),
+        policy: policyStore.policy,
+        carried,
+        // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
+        onProvider: (provider) => {
+          currentProvider = provider;
+          startupCapClose = captureCapClose(provider);
+        },
+        post: (from2, body, opts) => {
+          if (post) return post(from2, body, opts);
+          options.log?.(`not posted before the hub connection: ${body.type}`);
+          return { ok: false };
+        },
+        onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {
+        }),
+        host: sessionHost(),
+        ...resolveSessionRuntime(binding.dir())
+      });
+    });
   } catch (e) {
+    stopping = true;
     await publishing?.detach();
     await lease.end();
     hub.close();
@@ -40465,25 +40508,36 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   greet(hub);
   closeProbe();
   post = createPost(started.roomDoc, hub, () => lease.held(), () => lease.paused());
-  try {
-    if (lease.fence()) await started.validateMigratedClaims();
-  } catch (error2) {
+  const stopPublishing = started.stop.bind(started);
+  started.stop = async (reason) => {
+    stopping = true;
+    await publicationTransition;
     await publishing?.detach();
     await lease.end();
-    await started.stop();
+    await stopPublishing(reason);
     hub.close();
+  };
+  let stoppingDaemon;
+  const abortStartup = () => {
+    const stopped = stopPublishing("join cancelled");
+    stoppingDaemon = Promise.all([stopped, started.stop("join cancelled")]).then(() => {
+    });
+    void stoppingDaemon.catch(() => {
+    });
+  };
+  signal?.addEventListener("abort", abortStartup, { once: true });
+  try {
+    if (signal?.aborted) abortStartup();
+    signal?.throwIfAborted();
+    if (lease.fence()) await started.validateMigratedClaims();
+    signal?.throwIfAborted();
+    await beforeReady?.();
+    signal?.throwIfAborted();
+  } catch (error2) {
+    await (stoppingDaemon ?? started.stop());
     throw error2;
-  }
-  {
-    const stop2 = started.stop.bind(started);
-    started.stop = async (reason) => {
-      stopping = true;
-      await publicationTransition;
-      await publishing?.detach();
-      await lease.end();
-      await stop2(reason);
-      hub.close();
-    };
+  } finally {
+    signal?.removeEventListener("abort", abortStartup);
   }
   daemon = started;
   const publicationActivity = async () => {
@@ -40600,6 +40654,7 @@ async function joinSession(opts) {
   } else {
     roomName = normalizeExplicitRoomName(roomName, opts.log);
   }
+  currentToolSignal()?.throwIfAborted();
   const auth = await resolveAuth(config2.credentialsPath, server, roomName, token, opts.log);
   const label = config2.tag?.replace(/[^A-Za-z0-9_-]/g, "") || void 0;
   const kindEnv = config2.kind;
@@ -40631,8 +40686,10 @@ async function joinSession(opts) {
   const shareMax = await timed("preflight", () => serverShareMax(server, shareRequested, fetchServer));
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
-  const view = await timed("view token", () => viewToken(server, roomName, creds, opts.log));
+  let view;
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, publicationActivity, refreshRuntime, onHookActivity, onRebind, startupCapClose, contract, compatibilityRefusal } = await startAutoTaggedRoomd({ compatibility, room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag, async () => {
+    view = await timed("view token", () => viewToken(server, roomName, creds, opts.log));
+  });
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ""}`;
   const session = {
     room: daemon.roomDoc,
@@ -40808,6 +40865,7 @@ async function joinLocal(dir, opts) {
   }
   replica.common = common;
   replica.room = roomName;
+  currentToolSignal()?.throwIfAborted();
   const local = await ensureDaemon(common, roomName, dir, opts.log);
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
@@ -41130,6 +41188,7 @@ var init_session = __esm({
     init_names();
     init_repository();
     init_timing();
+    init_registry();
     init_bridge();
     timed = (name, work) => currentToolTiming()?.phase(name, work) ?? Promise.resolve().then(work);
     CLIENT_COMPAT = { ...CURRENT_COMPAT, release: plugin_default.version };
@@ -68907,6 +68966,7 @@ init_repository();
 // packages/room-mcp/src/auto-join.ts
 init_session();
 init_src4();
+init_registry();
 init_repository();
 var JOIN_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
 var JOIN_DEADLINE_MS = 12e4;
@@ -68942,6 +69002,13 @@ var AutoJoin = class {
   o;
   inflight = null;
   cancelled = false;
+  abort;
+  attempt;
+  adopted = false;
+  /** An explicit destination may supersede only the unfinished first automatic join. */
+  get starting() {
+    return !this.adopted && !this.cancelled;
+  }
   explicitLeave = true;
   wake = null;
   endedAt = 0;
@@ -68970,15 +69037,17 @@ var AutoJoin = class {
     }
     if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve();
     if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve();
-    this.inflight = this.run().finally(() => {
+    this.abort = new AbortController();
+    this.inflight = withToolSignal(this.abort.signal, () => this.run()).finally(() => {
       this.inflight = null;
       this.endedAt = this.now();
     });
     return this.inflight;
   }
   /** The run in progress, if any. */
-  settle() {
-    return this.inflight ?? Promise.resolve();
+  async settle() {
+    await this.inflight;
+    if (this.cancelled) await this.attempt;
   }
   /** Serialize an explicit room decision without cancelling or forgetting recovery. */
   pause() {
@@ -68999,6 +69068,7 @@ var AutoJoin = class {
   }
   /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
   retarget(s) {
+    this.adopted = true;
     this.remember(s);
     this.cancelled = false;
     this.permanent = false;
@@ -69008,6 +69078,7 @@ var AutoJoin = class {
   /** Stop recovery and forget its target; explicitLeave controls local-replica disposal. */
   cancel(options = {}) {
     this.cancelled = true;
+    this.abort?.abort();
     this.explicitLeave = options.explicitLeave !== false;
     if (this.explicitLeave) this.o.onCancel?.(this.target);
     this.target = void 0;
@@ -69042,11 +69113,16 @@ var AutoJoin = class {
       try {
         const s = await this.bounded(this.o.attempt(this.target), deadline);
         if (s === "gave-up") return;
+        if (this.cancelled) {
+          if (s) await this.o.discard(s, this.explicitLeave ? "leave" : "attempt");
+          return;
+        }
         if (!s) {
           this.permanent = true;
           return;
         }
         this.failure = void 0;
+        this.adopted = true;
         await this.o.adopt(s);
         this.remember(s);
         return;
@@ -69085,10 +69161,12 @@ var AutoJoin = class {
         f();
       };
       this.wake = () => finish(() => resolve6("gave-up"));
-      attempt.then(
-        (s) => {
-          if (open3) finish(() => resolve6(this.cancelled && s ? (void this.o.discard(s, this.cancelled && this.explicitLeave ? "leave" : "attempt"), "gave-up") : s));
-          else if (s) void this.o.discard(s, this.cancelled && this.explicitLeave ? "leave" : "attempt");
+      this.attempt = attempt.then(
+        async (s) => {
+          if (s && (this.cancelled || !open3)) {
+            await this.o.discard(s, this.cancelled && this.explicitLeave ? "leave" : "attempt");
+            finish(() => resolve6("gave-up"));
+          } else finish(() => resolve6(s));
         },
         (e) => finish(() => reject(e))
       );
@@ -69845,6 +69923,7 @@ function createBundleUpdateNotice(file2) {
     return "Room was updated on disk; restart this session to pick up fixes";
   };
 }
+var choosesDestination = (name, args2) => name === "room_create" || name === "room_join" && ["where", "room", "server", "dir"].some((key3) => args2?.[key3] !== void 0);
 async function main() {
   warnRetiredEnvironment("client", process.env, log);
   let closing = false;
@@ -69863,6 +69942,8 @@ async function main() {
     { name: "room", version: RELEASE_VERSION },
     { capabilities: { tools: {} }, instructions: AGENT_INSTRUCTIONS() }
   );
+  let destinationChosen = false;
+  let startupJoin;
   let initialized;
   const binding = createWorkspaceBinding({
     deferred: deferWorkspace(process.env),
@@ -70085,6 +70166,8 @@ async function main() {
         }
       }, sessionBinding);
       tools.setAutoJoin(autoJoin);
+      startupJoin = autoJoin;
+      if (destinationChosen) autoJoin.cancel();
       if (!signal.aborted) void autoJoin.ensure();
       const runtime = { call, shutdown: async (reason, progress = () => {
       }) => {
@@ -70105,6 +70188,10 @@ async function main() {
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }));
   const transport = new FlushedStdioTransport();
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    if (choosesDestination(req.params.name, req.params.arguments)) {
+      destinationChosen = true;
+      if (startupJoin?.starting) startupJoin.cancel();
+    }
     admitCallSessions(req.params._meta);
     extra.signal.addEventListener("abort", () => transport.forget(extra.requestId), { once: true });
     const result2 = await timing.run(req.params.name, async () => {
