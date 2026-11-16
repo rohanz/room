@@ -61340,6 +61340,10 @@ var ConflictSet = class _ConflictSet {
             });
             continue;
           }
+          if (at === ancestor || bt === ancestor) {
+            await this.settle(key3, { owner: this.owner, other, kind: "merge", path: path81, status: "clean", inputs, factId: "", lines: [] });
+            continue;
+          }
           await this.budget();
           const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: "base", theirs: other });
           const lines2 = merged.conflicts.map((c) => c.from);
@@ -61648,9 +61652,12 @@ var ConflictSet = class _ConflictSet {
       let merges;
       let conflicts;
       if (exact.length && theirText !== void 0) {
-        await this.budget();
-        const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: "base", theirs: other });
-        conflicts = merged.conflicts;
+        if (ownText === theirText || ownText === ancestor || theirText === ancestor) conflicts = [];
+        else {
+          await this.budget();
+          const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: "base", theirs: other });
+          conflicts = merged.conflicts;
+        }
         if (!conflicts.length) merges = "clean";
       }
       const entryAt = mine.entries.get(path81)?.at;

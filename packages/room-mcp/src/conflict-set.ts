@@ -1103,6 +1103,10 @@ export class ConflictSet {
               factId: hash(JSON.stringify([mergeBase, 'add/add'])), lines: [line + 1] })
             continue
           }
+          if (at === ancestor || bt === ancestor) {
+            await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'clean', inputs, factId: '', lines: [] })
+            continue
+          }
           await this.budget()
           const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: 'base', theirs: other })
           const lines = merged.conflicts.map(c => c.from)
@@ -1381,9 +1385,12 @@ export class ConflictSet {
       let merges: 'clean' | undefined
       let conflicts: Awaited<ReturnType<typeof gitMergeFile>>['conflicts'] | undefined
       if (exact.length && theirText !== undefined) {
-        await this.budget()
-        const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: 'base', theirs: other })
-        conflicts = merged.conflicts
+        if (ownText === theirText || ownText === ancestor || theirText === ancestor) conflicts = []
+        else {
+          await this.budget()
+          const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: 'base', theirs: other })
+          conflicts = merged.conflicts
+        }
         if (!conflicts.length) merges = 'clean'
       }
       const entryAt = mine.entries.get(path)?.at
