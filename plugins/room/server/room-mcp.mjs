@@ -34288,6 +34288,10 @@ import fsSync from "node:fs";
 import path30 from "node:path";
 async function checkAttributes(dir, covered, config2) {
   if (!covered.length) return;
+  for (const [key3, value5] of config2) {
+    if (key3 === "core.autocrlf" ? value5 !== "false" : key3 === "merge.default" || /^(filter|merge)\.(set|unset|unspecified)\./.test(key3))
+      throw new Error(`unmodelled history: attribute configuration ${key3} on ${JSON.stringify(covered[0])}`);
+  }
   const output = (await gitStream(
     dir,
     ["check-attr", "-z", "--stdin", ...ATTRIBUTES],
@@ -34295,33 +34299,11 @@ async function checkAttributes(dir, covered, config2) {
     { timeoutMs: 3e3, maxBytes: 4 * 1024 * 1024 }
   )).toString().split("\0");
   if (output.pop() !== "" || output.length !== covered.length * ATTRIBUTES.length * 3) throw new Error("invalid shadow attributes");
-  for (let i = 0; i < covered.length; i++) {
-    const file2 = covered[i], values = /* @__PURE__ */ new Map();
-    for (const attribute of ATTRIBUTES) {
-      const offset = (i * ATTRIBUTES.length + values.size) * 3;
-      if (output[offset] !== file2 || output[offset + 1] !== attribute) throw new Error("invalid shadow attributes");
-      values.set(attribute, output[offset + 2]);
-    }
-    const reject = (attribute, value5) => {
-      throw new Error(`unmodelled history: attribute ${attribute}=${value5} on ${JSON.stringify(file2)}`);
-    };
-    const named = (value5) => !["unspecified", "unset", "set", ""].includes(value5);
-    const filter = values.get("filter"), merge2 = values.get("merge"), ident = values.get("ident");
-    if (named(filter)) reject("filter", filter);
-    if (!["unspecified", "set", "text"].includes(merge2)) reject("merge", merge2);
-    const defaultMerge = config2.get("merge.default");
-    if (merge2 === "unspecified" && defaultMerge && defaultMerge !== "text") reject("merge.default", defaultMerge);
-    const encoding = values.get("working-tree-encoding");
-    if (named(encoding)) reject("working-tree-encoding", encoding);
-    if (ident === "set") reject("ident", ident);
-    const text2 = values.get("text"), eol = values.get("eol"), crlf = values.get("crlf");
-    const normalization = ["set", "unset", "auto", "input"].includes(text2) ? "text" : "crlf";
-    const action = values.get(normalization);
-    if (action === "unset") continue;
-    if (eol === "lf" || eol === "crlf") reject("eol", eol);
-    if (["set", "auto", "input"].includes(action)) reject(normalization, action);
-    const autocrlf = config2.get("core.autocrlf")?.toLowerCase();
-    if (autocrlf && !["false", "no", "off", "0"].includes(autocrlf)) reject("core.autocrlf", autocrlf);
+  for (let i = 0; i < output.length; i += 3) {
+    const file2 = covered[Math.floor(i / (ATTRIBUTES.length * 3))], attribute = ATTRIBUTES[i / 3 % ATTRIBUTES.length];
+    if (output[i] !== file2 || output[i + 1] !== attribute) throw new Error("invalid shadow attributes");
+    if (output[i + 2] !== "unspecified")
+      throw new Error(`unmodelled history: attribute ${attribute}=${output[i + 2]} on ${JSON.stringify(file2)}`);
   }
 }
 async function captureShadow(graph, dir, base, carried = [], initial = false) {
@@ -34336,14 +34318,14 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
   if (paths.length > LIMIT) throw new Error("over budget: file count");
   const config2 = new Map((await gitStream(
     dir,
-    ["config", "-z", "--get-regexp", "^(merge\\.default|core\\.(autocrlf|sparsecheckout|sparsecheckoutcone)|remote\\..*\\.promisor|extensions\\.partialclone)$"],
+    ["config", "-z", "--get-regexp", "^((filter|merge)\\.(set|unset|unspecified)\\..*|merge\\.default|core\\.(autocrlf|sparsecheckout|sparsecheckoutcone)|remote\\..*\\.promisor|extensions\\.partialclone)$"],
     "",
     { timeoutMs: 3e3, maxBytes: 65536, okCodes: [0, 1] }
   )).toString().split("\0").filter(Boolean).map((record2) => {
     const at = record2.indexOf("\n");
     return [record2.slice(0, at), record2.slice(at + 1)];
   }));
-  if ([...config2.keys()].some((key3) => key3 !== "core.autocrlf" && key3 !== "merge.default"))
+  if ([...config2.keys()].some((key3) => /^(core\.sparsecheckout|remote\..*\.promisor|extensions\.partialclone)/.test(key3)))
     throw new Error("unmodelled history: sparse checkout or partial clone");
   const safe = (p) => {
     if (!validRepoPath(p, MATERIALIZED_PATH) || defaultExcludedPath(p) || defaultIgnoredPath(p)) return false;

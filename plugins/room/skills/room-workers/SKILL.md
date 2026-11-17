@@ -16,6 +16,12 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
    function or area to change, ask it to claim its regions and let Room surface overlap.
    Sequence edits to the same lines or work that truly needs a result first. Workers implement against agreed interfaces concurrently and may finish at different times. For a few lines, do it yourself unless
    the human explicitly requested a Room worker.
+   - Keep briefs short. Brief a worker the way you would want to be briefed: what the outcome
+     is and why, what must not break, and how you will judge it done. Leave the method to the
+     worker. A brief that restates documents or dictates steps makes the worker slower and more
+     hesitant, so point at the source and trust its judgment. Ask for evidence that fits the
+     risk of the change and say which checks you will run yourself. Tell the worker to ask
+     only when blocked, and otherwise to decide and report what it chose.
    - Shared context once: write what every worker needs (setup, commands, repo rules, the
      spec) to one file before the first spawn, `<lead checkout>/.room/briefs/<batch>.md`, and
      give each brief its absolute path plus only its own slice. `.room/` is Git-ignored and
@@ -73,6 +79,9 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
      results, as must any lead whose wakes are unavailable. A process-exit watcher cannot substitute for questions.
    - Answer worker questions with `room_send(type="answer", inReplyTo=...)`; ask your human
      only for a blocking decision.
+   - Give a new task to a worker whose context helps with it, and queue it there if that
+     worker is busy. Start a fresh worker when none has useful context, or when the work can
+     run at the same time. Do not pile unrelated tasks onto one long-running worker.
    - Follow-ups: `room_send(to=...)`. A message from its lead to a finished worker resumes its
      retained session in its worktree; other workers send it findings but ask its lead to
      resume it. Add `refresh=true` when it needs a commit you made after spawning it: Room
