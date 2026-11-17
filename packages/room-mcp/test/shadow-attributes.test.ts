@@ -26,13 +26,14 @@ it('models an unused globally configured LFS filter and merge driver', async () 
   expect((await snapshot()).entries.has('shared.txt')).toBe(true)
 })
 it.each([
-  'outside/** filter=lfs merge=unused text eol=crlf working-tree-encoding=UTF-16 ident\n',
-  '*.txt linguist-generated linguist-language=Text\n',
-  '*.txt -filter -text -ident !merge\n',
-])('models attributes that do not affect covered bytes or merges: %s', async attributes => {
+  ['outside/** filter=lfs merge=unused text eol=crlf working-tree-encoding=UTF-16 ident\n', true],
+  ['*.txt linguist-generated linguist-language=Text diff=custom export-ignore\n', true],
+  ['*.txt -filter -text -ident !merge\n', false],
+] as const)('models only absent relevant attributes on covered paths: %s', async (attributes, modelled) => {
   globalLfs()
   put(repo, '.gitattributes', attributes)
-  expect((await snapshot()).entries.has('shared.txt')).toBe(true)
+  if (modelled) expect((await snapshot()).entries.has('shared.txt')).toBe(true)
+  else await expect(snapshot()).rejects.toThrow('unmodelled history: attribute filter=unset')
 })
 it('ignores attributes on excluded, oversized and binary paths', async () => {
   globalLfs()
@@ -87,26 +88,28 @@ it('checks deleted covered paths too', async () => {
 })
 it.each(['true', 'input'])('skips implicit core.autocrlf=%s conversion on covered paths', async value => {
   git(repo, 'config', 'core.autocrlf', value)
-  await expect(snapshot()).rejects.toThrow(`core.autocrlf=${value} on`)
+  await expect(snapshot()).rejects.toThrow('configuration core.autocrlf on')
   put(repo, '.gitattributes', '* -text\n')
-  expect((await snapshot()).entries.has('shared.txt')).toBe(true)
+  await expect(snapshot()).rejects.toThrow('configuration core.autocrlf on')
 })
-it('checks merge.default only where the covered path uses it', async () => {
+it('rejects merge.default even with explicit text merges', async () => {
   git(repo, 'config', 'merge.default', 'custom')
-  await expect(snapshot()).rejects.toThrow('merge.default=custom on')
+  await expect(snapshot()).rejects.toThrow('configuration merge.default on')
   put(repo, '.gitattributes', '* merge=text\n')
-  expect((await snapshot()).entries.has('shared.txt')).toBe(true)
+  await expect(snapshot()).rejects.toThrow('configuration merge.default on')
 })
-it('keeps private merges independent of default global attributes overridden in the checkout', async () => {
+it('skips checkout attribute overrides and keeps private merges independent of global attributes', async () => {
   const config = path.join(process.env.XDG_CONFIG_HOME!, 'git')
   fs.mkdirSync(config, { recursive: true })
   fs.writeFileSync(path.join(config, 'attributes'), '* merge=union\n')
   fs.writeFileSync(path.join(repo, '.git/info/attributes'), '* merge=text\n')
   const graph = new ShadowGraph(path.join(repo, '.git/room/shadow/global-attributes'), repo)
   await graph.init()
-  const scan = await captureShadow(graph, repo, git(repo, 'rev-parse', 'HEAD'))
-  const anchor = await graph.event('spawn', await graph.tree(scan.entries), [])
-  const a = new Map(scan.entries), b = new Map(scan.entries)
+  const head = git(repo, 'rev-parse', 'HEAD')
+  await expect(captureShadow(graph, repo, head)).rejects.toThrow('attribute merge=text')
+  const entries = await graph.entries(head)
+  const anchor = await graph.event('spawn', await graph.tree(entries), [])
+  const a = new Map(entries), b = new Map(entries)
   a.set('shared.txt', { mode: '100644', oid: await graph.blob('A\n') })
   b.set('shared.txt', { mode: '100644', oid: await graph.blob('B\n') })
   const aa = await graph.event('observation', await graph.tree(a), [anchor])

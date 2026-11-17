@@ -14,39 +14,19 @@ const LIMIT = 2000, SIZE = 512 * 1024, BUDGET = 8 * 1024 * 1024
 const ATTRIBUTES = ['filter', 'merge', 'text', 'eol', 'crlf', 'working-tree-encoding', 'ident']
 async function checkAttributes(dir: string, covered: string[], config: Map<string, string>): Promise<void> {
   if (!covered.length) return
+  for (const [key, value] of config) {
+    if (key === 'core.autocrlf' ? value !== 'false' : key === 'merge.default' || /^(filter|merge)\.(set|unset|unspecified)\./.test(key))
+      throw new Error(`unmodelled history: attribute configuration ${key} on ${JSON.stringify(covered[0])}`)
+  }
   const output = (await gitStream(dir, ['check-attr', '-z', '--stdin', ...ATTRIBUTES], covered.join('\0') + '\0',
     { timeoutMs: 3000, maxBytes: 4 * 1024 * 1024 })).toString().split('\0')
   if (output.pop() !== '' || output.length !== covered.length * ATTRIBUTES.length * 3) throw new Error('invalid shadow attributes')
-  for (let i = 0; i < covered.length; i++) {
-    const file = covered[i], values = new Map<string, string>()
-    for (const attribute of ATTRIBUTES) {
-      const offset = (i * ATTRIBUTES.length + values.size) * 3
-      if (output[offset] !== file || output[offset + 1] !== attribute) throw new Error('invalid shadow attributes')
-      values.set(attribute, output[offset + 2])
-    }
-    const reject = (attribute: string, value: string) => {
-      throw new Error(`unmodelled history: attribute ${attribute}=${value} on ${JSON.stringify(file)}`)
-    }
-    const named = (value: string) => !['unspecified', 'unset', 'set', ''].includes(value)
-    const filter = values.get('filter')!, merge = values.get('merge')!, ident = values.get('ident')!
-    if (named(filter)) reject('filter', filter)
-    // Explicit text merges equal the private repo's default. Binary, union and named drivers do not.
-    if (!['unspecified', 'set', 'text'].includes(merge)) reject('merge', merge)
-    const defaultMerge = config.get('merge.default')
-    if (merge === 'unspecified' && defaultMerge && defaultMerge !== 'text') reject('merge.default', defaultMerge)
-    const encoding = values.get('working-tree-encoding')!
-    if (named(encoding)) reject('working-tree-encoding', encoding)
-    if (ident === 'set') reject('ident', ident)
-    const text = values.get('text')!, eol = values.get('eol')!, crlf = values.get('crlf')!
-    // An undefined text action falls back to legacy crlf. An explicit unset disables
-    // normalization, including eol and autocrlf; input/auto are accepted by both spellings.
-    const normalization = ['set', 'unset', 'auto', 'input'].includes(text) ? 'text' : 'crlf'
-    const action = values.get(normalization)!
-    if (action === 'unset') continue
-    if (eol === 'lf' || eol === 'crlf') reject('eol', eol)
-    if (['set', 'auto', 'input'].includes(action)) reject(normalization, action)
-    const autocrlf = config.get('core.autocrlf')?.toLowerCase()
-    if (autocrlf && !['false', 'no', 'off', '0'].includes(autocrlf)) reject('core.autocrlf', autocrlf)
+  // State words can also be literal values. Accept only unspecified, with ambiguous driver names barred above.
+  for (let i = 0; i < output.length; i += 3) {
+    const file = covered[Math.floor(i / (ATTRIBUTES.length * 3))], attribute = ATTRIBUTES[i / 3 % ATTRIBUTES.length]
+    if (output[i] !== file || output[i + 1] !== attribute) throw new Error('invalid shadow attributes')
+    if (output[i + 2] !== 'unspecified')
+      throw new Error(`unmodelled history: attribute ${attribute}=${output[i + 2]} on ${JSON.stringify(file)}`)
   }
 }
 export interface ShadowCapture {
@@ -66,12 +46,12 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
   // changed, preserving its policy/budget decisions without a diff that could execute filters.
   const scanInventory = { paths, changed: new Set(paths), indexed: new Set(inventory.filter(entry => entry[0] !== '?').map(entry => entry.slice(2))) }
   if (paths.length > LIMIT) throw new Error('over budget: file count')
-  // Only sparse/partial state is repository-wide. Driver definitions and attribute files alone are harmless.
-  const config = new Map((await gitStream(dir, ['config', '-z', '--get-regexp', '^(merge\\.default|core\\.(autocrlf|sparsecheckout|sparsecheckoutcone)|remote\\..*\\.promisor|extensions\\.partialclone)$'], '',
+  // Ordinary unused drivers are harmless; state-word names are ambiguous in check-attr's output.
+  const config = new Map((await gitStream(dir, ['config', '-z', '--get-regexp', '^((filter|merge)\\.(set|unset|unspecified)\\..*|merge\\.default|core\\.(autocrlf|sparsecheckout|sparsecheckoutcone)|remote\\..*\\.promisor|extensions\\.partialclone)$'], '',
     { timeoutMs: 3000, maxBytes: 65536, okCodes: [0, 1] })).toString().split('\0').filter(Boolean).map(record => {
       const at = record.indexOf('\n'); return [record.slice(0, at), record.slice(at + 1)] as const
     }))
-  if ([...config.keys()].some(key => key !== 'core.autocrlf' && key !== 'merge.default'))
+  if ([...config.keys()].some(key => /^(core\.sparsecheckout|remote\..*\.promisor|extensions\.partialclone)/.test(key)))
     throw new Error('unmodelled history: sparse checkout or partial clone')
   const safe = (p: string): boolean => {
     if (!validRepoPath(p, MATERIALIZED_PATH) || defaultExcludedPath(p) || defaultIgnoredPath(p)) return false
