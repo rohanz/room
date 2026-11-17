@@ -1,0 +1,86 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (docs/archive/reports/2026-11-17-git-native/vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+  - ESM syntax in a file loaded as CommonJS (vitest.shared.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v5.0.0 <repo>/.room/workers/gitnative
+
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+u (worker u) finished: u finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+u (worker u) finished: u finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+room-mcp: inbox → rohanz: [notify] rohanz+d (worker d) finished: d finished
+ ❯ docs/archive/reports/2026-11-17-git-native/correctness.test.ts (42 tests | 2 failed) 607679ms
+   × adopt common unrelated commit, untracke… 8313ms
+   × adopted 1000 files both delete, conflic… 50591ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  docs/archive/reports/2026-11-17-git-native/correctness.test.ts > adopt common unrelated commit, untracke…
+Error: Command failed: git -C <tmp>/room-refresh-YAkwgH/lead/.room/workers/d merge --ff-only 262460eaa9afbf2143d4236ff99031c4a80176da
+error: The following untracked working tree files would be overwritten by merge:
+	draft.txt
+Please move or remove them before you merge.
+Aborting
+
+ ❯ git packages/room-mcp/test/worker-refresh-fixture.ts:40:49
+     38| const cleanups: (() => Promise<void>)[] = []
+     39| let roomEnv: Record<string, string | undefined>
+     40| const git = (dir: string, ...args: string[]) => execFileSync('git', ['…
+       |                                                 ^
+     41| const put = (dir: string, p: string, text: string) => { fs.mkdirSync(p…
+     42| const read = (dir: string, p: string) => fs.readFileSync(path.join(dir…
+ ❯ Fixture.adopt docs/archive/reports/2026-11-17-git-native/correctness.test.ts:107:7
+ ❯ Object.add.kind [as run] docs/archive/reports/2026-11-17-git-native/correctness.test.ts:198:226
+ ❯ docs/archive/reports/2026-11-17-git-native/correctness.test.ts:218:32
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  docs/archive/reports/2026-11-17-git-native/correctness.test.ts > adopted 1000 files both delete, conflic…
+Error: Test timed out in 30000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ docs/archive/reports/2026-11-17-git-native/correctness.test.ts:215:15
+    213| })
+    214| add('equal current blobs after distinct histories', 'given-adoption:eq…
+    215| add('adopted 1000 files both delete, conflict survives', 'rev33:candid…
+       |               ^
+    216|   await f.adopted(); for(let i=0;i<1000;i++) f.text('L','generated\n',…
+    217|   const common=f.userCommit('L'); for(const a of ['d','u'] as const) {…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 40 passed (42)
+   Start at  01:02:33
+   Duration  610.62s (tests 100%)

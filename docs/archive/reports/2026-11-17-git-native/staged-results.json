@@ -1,0 +1,50 @@
+[
+  {
+    "id": "supplement: carried staged addition, committed deletion",
+    "source": "own-baseline:committed deletion of carried staged addition",
+    "expected": "conflict",
+    "pair": [
+      "d",
+      "u"
+    ],
+    "native": {
+      "status": "conflict",
+      "base": "92ccae113176a2365d2bd8d69048889d43a5bc20",
+      "baseText": "one\nreceived\nthree\nfour\nfive",
+      "output": "9424d3fc686df88089de4ec9224ed7d30045bd3d\n100644 51e90593ebc9442de9a98d28235a693ead8fd98b 1\tstaged.txt\n100644 500b40fbce14654303db0e7c7456d19be956ec06 3\tstaged.txt\n\nCONFLICT (modify/delete): staged.txt deleted in 0f901de8b90ed3b46fed3d1290a23afe71071d83 and modified in 727d5809084b985cdddc196dc112583e60af69db.  Version 727d5809084b985cdddc196dc112583e60af69db of staged.txt left in tree.\n"
+    },
+    "naive": {
+      "status": "clean",
+      "base": "a88524c73568f2bc7e0d6204b68010a66b796f66",
+      "baseText": null,
+      "output": "9424d3fc686df88089de4ec9224ed7d30045bd3d\n"
+    },
+    "main": [
+      {
+        "owner": "d",
+        "other": "u",
+        "status": "clean",
+        "slots": [
+          {
+            "path": "shared.txt",
+            "status": "clean"
+          }
+        ],
+        "notices": 0
+      },
+      {
+        "owner": "u",
+        "other": "d",
+        "status": "clean",
+        "slots": [
+          {
+            "path": "shared.txt",
+            "status": "clean"
+          }
+        ],
+        "notices": 0
+      }
+    ],
+    "notes": []
+  }
+]
