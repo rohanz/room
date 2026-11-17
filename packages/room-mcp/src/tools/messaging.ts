@@ -1,4 +1,3 @@
-import { enqueueShadow, reserveShadow, releaseShadow } from '../conflict-shadow.js'
 import { commonGitDirFromDotGit } from '@room/roomd'
 import { retainedWorkerLines } from '../worker-retained.js'
 import { writeWorkerRecordRef } from '../worker-refs.js'
@@ -245,13 +244,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             // Checked again under the lease: a dir= worker may have started in this checkout since the first check.
             const refusedNow = refreshRefusal(s.dir, record, requireWorkerEvidence(await registry.checkoutUsers(record)).map(user => user.record.tag))
             if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
-            const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'refresh', undefined, record.id) : undefined
             let outcome: RefreshOutcome
             try { outcome = await refreshWorkerBase(s.dir, record) }
             catch (error) { return `error: could not refresh ${tag}: ${error instanceof Error ? error.message : String(error)}; nothing sent. Check ${record.dir} with git status before collecting.` }
-            if (outcome.kind === 'refused') { releaseShadow(s, shadowGeneration); return `error: did not refresh ${tag}: ${outcome.reason}; nothing changed and nothing sent. Send without refresh to have it resolve this, or respawn it to start from your HEAD.` }
+            if (outcome.kind === 'refused') return `error: did not refresh ${tag}: ${outcome.reason}; nothing changed and nothing sent. Send without refresh to have it resolve this, or respawn it to start from your HEAD.`
             if (outcome.kind === 'current') {
-              releaseShadow(s, shadowGeneration)
               const collected = outcome.collectedUncommitted === true ? '; collected output is still uncommitted in your checkout'
                 : outcome.collectedUncommitted === false ? '; your HEAD contains the collected output' : '; containment of collected output could not be verified'
               notes.push(`${tag} already has your HEAD ${outcome.head.slice(0, 10)}; nothing to rebase${outcome.kept ? `; its kept snapshot is unchanged${collected}` : ''}`)
@@ -266,8 +263,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
                 try { writeWorkerRecordRef(registry.commonDir, collectHeadRef(record.tag, record.id), moved.base, record) }
                 catch (error) { return `error: rebased ${tag} and recorded its new base but could not update its collection ref (${error instanceof Error ? error.message : String(error)}); nothing sent. Send again to resume it.` }
               }
-              enqueueShadow(s, () => ({ kind: 'refresh', generation: shadowGeneration?.generation, id: record.id, previous: record.base!,
-                base: moved.base, target: moved.to, carried: moved.carriedUntracked ?? [] }), state.log, shadowGeneration)
               const came = refreshedCommits(moved.commits)
               notes.push(`rebased ${tag} onto your HEAD ${moved.to.slice(0, 10)}; ${came}${moved.carryDropped ? '; the work carried at spawn is now in your history' : ''}`)
               baseNote = `[Room] your base moved: your lead rebased your branch onto their HEAD ${moved.to.slice(0, 10)} before this message; ${came}. Your uncommitted edits are still uncommitted on top.`

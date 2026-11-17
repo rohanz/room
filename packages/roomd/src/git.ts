@@ -1,5 +1,4 @@
 import { execFile, spawn } from 'node:child_process'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { setImmediate } from 'node:timers/promises'
@@ -45,20 +44,7 @@ function overrideMs(configured?: number): number | undefined {
   return testTimeoutMs
 }
 
-const readDeadline = new AsyncLocalStorage<{ deadline: number; signal?: AbortSignal }>()
-/** Bound reused publication reads inside an observational caller; ordinary Git calls retain their defaults. */
-export function withGitReadDeadline<T>(deadline: number, work: () => Promise<T>, signal?: AbortSignal): Promise<T> { return readDeadline.run({ deadline, signal }, work) }
-function boundedTimeout(ms: number): number {
-  const deadline = readDeadline.getStore()?.deadline
-  return deadline === undefined ? ms : Math.max(1, Math.floor(Math.min(ms, deadline - performance.now())))
-}
-const readEnvironment = () => readDeadline.getStore() === undefined ? undefined : { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_OPTIONAL_LOCKS: '0',
-  GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.fsmonitor', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.untrackedCache', GIT_CONFIG_VALUE_1: 'false' }
-const readOptions = () => {
-  const store = readDeadline.getStore()
-  return store ? { env: readEnvironment(), signal: store.signal, killSignal: 'SIGKILL' as const } : {}
-}
-export const timeoutMs = (configured?: number): number => boundedTimeout(overrideMs(configured) ?? DEFAULT_GIT_TIMEOUT_MS)
+export const timeoutMs = (configured?: number): number => overrideMs(configured) ?? DEFAULT_GIT_TIMEOUT_MS
 
 /** Whole-tree Git work: 30s + 15ms per path, at most five minutes. Unknown tree sizes use 10,000 paths. */
 export function wholeTreeTimeoutMs(pathCount = UNKNOWN_WHOLE_TREE_PATHS, configured?: number): number {
@@ -100,8 +86,7 @@ function gitUnqueued(dir: string, args: string[], configuredTimeoutMs?: number):
   const timeout = timeoutMs(configuredTimeoutMs)
   const done = observeGit(args)
   return new Promise((resolve, reject) => {
-    const store = readDeadline.getStore()
-    const child = execFile('git', args, { cwd: dir, maxBuffer: GIT_OUTPUT_MAX_BYTES, timeout, ...readOptions() }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd: dir, maxBuffer: GIT_OUTPUT_MAX_BYTES, timeout }, (err, stdout, stderr) => {
       done()
       if (err) {
         const stopped = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
@@ -116,13 +101,6 @@ function gitUnqueued(dir: string, args: string[], configuredTimeoutMs?: number):
       }
       else resolve(stdout)
     })
-    // Node 22 execFile does not forward killSignal to spawn's AbortSignal handler.
-    if (store?.signal) {
-      const signal = store.signal, abort = () => { try { child.kill('SIGKILL') } catch { /* already exited */ } }
-      signal.addEventListener('abort', abort, { once: true })
-      child.once('close', () => signal.removeEventListener('abort', abort))
-      if (signal.aborted) abort()
-    }
   })
 }
 
@@ -134,11 +112,10 @@ function gitUnqueued(dir: string, args: string[], configuredTimeoutMs?: number):
  */
 export function gitStream(dir: string, args: readonly string[], input: string,
   opts: { timeoutMs: number; maxBytes: number; okCodes?: readonly number[] }): Promise<Buffer> {
-  const { maxBytes, okCodes = [0] } = opts
-  const timeout = boundedTimeout(opts.timeoutMs), observational = readDeadline.getStore() !== undefined
+  const { timeoutMs: timeout, maxBytes, okCodes = [0] } = opts
   const done = observeGit(args)
   return new Promise<Buffer>((resolve, reject) => {
-    const child = spawn('git', args, { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], ...readOptions(), ...(observational ? { timeout } : {}) })
+    const child = spawn('git', args, { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
     let length = 0
     let stderr = ''
@@ -156,12 +133,9 @@ export function gitStream(dir: string, args: readonly string[], input: string,
       if (failure) return
       failure = error
       chunks.length = 0
-      if (observational) child.kill('SIGKILL')
-      else {
-        child.kill()
-        grace = setTimeout(() => child.kill('SIGKILL'), GIT_KILL_GRACE_MS)
-        grace.unref?.()
-      }
+      child.kill()
+      grace = setTimeout(() => child.kill('SIGKILL'), GIT_KILL_GRACE_MS)
+      grace.unref?.()
     }
     const timer = setTimeout(() => stop(new Error(`git ${args.join(' ')} failed: timed out after ${timeout}ms`)), timeout)
     child.stdout.on('data', (chunk: Buffer) => {
@@ -176,10 +150,7 @@ export function gitStream(dir: string, args: readonly string[], input: string,
     child.on('error', error => {
       // A child that never started has no close to wait for.
       if (child.pid === undefined) settle(missingGitCwd(dir, error) ?? error)
-      else if (observational && !failure) {
-        failure = error
-        try { child.kill('SIGKILL') } catch { /* retain the original failure */ }
-      } else failure ??= error
+      else failure ??= error
     })
     child.on('close', code => {
       if (failure) settle(failure)

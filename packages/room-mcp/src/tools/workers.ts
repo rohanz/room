@@ -1,4 +1,3 @@
-import { enqueueShadow, reserveShadow, shadowPreparation } from '../conflict-shadow.js'
 import { retainedWorkerLines } from '../worker-retained.js'
 import { verifyWorkerCheckout, retainCheckout } from '../worker-preparation.js'
 import { workerRuntimeForHost } from '../hosts/selection.js'
@@ -281,10 +280,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
         let carriedBase: string | undefined, carriedUntracked: PreparedWorktree['carriedUntracked'], skippedCarry: PreparedWorktree['skippedCarry']
         let prepared: PreparedWorktree | undefined
-        let preparing: number | undefined
         if (!suppliedDir) {
           await registry.command(id, { type: 'prepare-start' })
-          if (process.env.ROOM_CONFLICT_SHADOW === '1') preparing = shadowPreparation(s)
           try {
             prepared = await timed('prepare', () => withPreparationIdentity({ id, nonce }, () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, {
               linkExclusions: linkPaths, carry: a.carry !== false,
@@ -295,11 +292,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           catch (e) { throw new Error(`could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`) }
         }
-        const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'spawn', preparing, id) : undefined
         await registry.command(id, { type: 'prepare-finish', created, branchCreated: prepared?.branchCreated, witness: prepared?.witness, branchOid: prepared?.branchOid,
           facts: !suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry } : {} })
-        enqueueShadow(s, () => ({ kind: 'spawn', generation: shadowGeneration?.generation, supplied: !!suppliedDir, carry: a.carry !== false, carryFailed, preparedHead: prepared?.witness?.branchOid, record: { ...record, base, carriedBase, carriedUntracked, skippedCarry,
-          prep: { ...record.prep, witness: prepared?.witness, root: prepared?.witness?.root } } }), state.log, shadowGeneration)
         if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }

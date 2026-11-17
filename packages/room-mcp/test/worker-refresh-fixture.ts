@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, afterEach, beforeEach, expect, vi } from 'vitest'
+import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { GraphIndex } from '../src/graph-index.js'
@@ -35,7 +35,6 @@ vi.mock('../src/worker-publication.js', () => ({ settleWorkerPublication: async 
 
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 let root: string, repo: string, head: string
-let prepared: string | undefined, preparedHead: string
 const cleanups: (() => Promise<void>)[] = []
 let roomEnv: Record<string, string | undefined>
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim()
@@ -50,17 +49,12 @@ beforeEach(() => {
   for (const key of Object.keys(roomEnv)) delete process.env[key]
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-refresh-')))
   vi.stubEnv('XDG_CONFIG_HOME', path.join(root, 'config'))
-  if (!prepared) {
-    prepared = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-refresh-base-')))
-    git(prepared, 'init', '-q', '-b', 'main'); git(prepared, 'config', 'user.name', 'rohanz'); git(prepared, 'config', 'user.email', 'rohanz@example.test')
-    put(prepared, 'shared.txt', 'a\nb\nc\n'); put(prepared, 'keep.txt', 'k1\nk2\n'); put(prepared, '.gitignore', 'build/\n')
-    preparedHead = commit(prepared, 'base')
-    fs.appendFileSync(path.join(prepared, '.git', 'info', 'exclude'), '.room/\n')
-  }
-  // Only the prepared template is shared; each case still owns a complete, mutable repository.
-  repo = path.join(root, 'lead'); fs.cpSync(prepared, repo, { recursive: true }); head = preparedHead
+  repo = path.join(root, 'lead'); fs.mkdirSync(repo)
+  git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'rohanz'); git(repo, 'config', 'user.email', 'rohanz@example.test')
+  put(repo, 'shared.txt', 'a\nb\nc\n'); put(repo, 'keep.txt', 'k1\nk2\n'); put(repo, '.gitignore', 'build/\n')
+  head = commit(repo, 'base')
+  fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '.room/\n')
 })
-afterAll(() => { if (prepared) fs.rmSync(prepared, { recursive: true, force: true }) })
 afterEach(async () => {
   for (const c of cleanups.splice(0)) await c().catch(() => {})
   clearFixtureProcesses()
@@ -70,29 +64,27 @@ afterEach(async () => {
   Object.assign(process.env, roomEnv)
 })
 
-function fakeSession(room: RoomDoc, me: Identity, dir: string, base = head): Session {
+function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const graph = new GraphIndex(room, me.name, dir); graph.start()
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base, fence: '1' } as never,
+    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: head, fence: '1' } as never,
     shareMax: 'full', shareRequested: 'full',
     local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },
   } as Session
 }
 
-function world(context = { repo, head }) {
-  // Capture ownership: an interrupted case must never follow the next case's globals.
-  const { repo, head } = context
+function world() {
   const a = new Y.Doc(), b = new Y.Doc()
   a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   const ra = new RoomDoc(a), rb = new RoomDoc(b)
   ra.setMeta({ repo: 'x' })
   setParticipantBase(ra, 'rohanz', head)
-  let ls: Session | null = fakeSession(ra, lead, repo, head)
+  let ls: Session | null = fakeSession(ra, lead, repo)
   const exits = new Map<string, (code: number | null) => void>()
   /** Every launch's argv, by tag, in order: the first is the spawn, the rest are resumes. */
   const launches = new Map<string, string[]>()
@@ -105,13 +97,11 @@ function world(context = { repo, head }) {
     },
   })
   const leadSession = ls
-  let closing: Promise<void> | undefined
-  const close = () => closing ??= (async () => {
+  cleanups.push(async () => {
     await leadTools.shutdown()
     leadSession?.graph?.stop(); leadSession?.awareness.destroy()
     a.destroy(); b.destroy()
-  })()
-  cleanups.push(close)
+  })
   const call = (tool: string, args: Record<string, unknown>) => leadTools.call(tool, args) as Promise<string>
   async function spawn(tag: string, extra: Record<string, unknown> = {}) {
     const reply = await call('room_spawn', { tag, task: `task ${tag}`, ...extra })
@@ -125,7 +115,7 @@ function world(context = { repo, head }) {
    */
   async function finish(tag: string, summary: string | string[] = `${tag} finished`, exit = true, slowFirstPost = 0) {
     const w = (await workerByTag(repo, tag))!
-    let ws: Session | null = fakeSession(rb, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir, head)
+    let ws: Session | null = fakeSession(rb, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     if (slowFirstPost) {
       const post = ws.post
       let first = true
@@ -151,7 +141,7 @@ function world(context = { repo, head }) {
     exits.get(tag)!(0)
     await vi.waitFor(async () => expect((await workerByTag(repo, tag))).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
-  return { close, call, spawn, finish, launches, leadSession: () => ls!, messages: () => ra.messages(),
+  return { call, spawn, finish, launches, leadSession: () => ls!, messages: () => ra.messages(),
     retire: () => autoRetire(ls!, { probe: () => undefined, log: (line: string) => { process.stderr.write(`[room] ${line}\n`) }, hasHandle: () => false, tracking: () => true, project: async () => {} } as never) }
 }
 
