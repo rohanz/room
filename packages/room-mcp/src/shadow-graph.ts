@@ -21,7 +21,10 @@ export class ShadowGraph {
       for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
         if (entry.isSymbolicLink()) throw new Error('unsafe shadow state')
         const file = path.join(dir, entry.name)
-        total += entry.isDirectory() ? await size(file) : (await fs.stat(file)).size
+        // Participant cleanup and Git's lock/ref renames can remove a listed entry.
+        // Missing bytes consume no storage; other I/O failures must still stop the pass.
+        try { total += entry.isDirectory() ? await size(file) : (await fs.stat(file)).size }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       }
       return total
     }

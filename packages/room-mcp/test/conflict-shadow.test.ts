@@ -20,7 +20,16 @@ import { world, repo, put, git, commit } from './worker-refresh-fixture.js'
 class ManualShadow extends ConflictShadow { override enqueue(): void {} }
 type TestShadow = { validateHistory(a:unknown,r:import('../src/worker-status.js').WorkerRecord[],common:string):Promise<void>; newEvent(a:unknown,k:string,e:Awaited<ReturnType<typeof captureShadow>>['entries']):Promise<void>; init():Promise<void>; event(e:ShadowEvent):Promise<void>; pass():Promise<void>; actors:Map<string,{node:string;observed:number;events:string[]}> }
 async function family() {
-  const t = world(), d = await t.spawn('d'), u = await t.spawn('u')
+  const t = world()
+  // Distinct housekeeping commits expose today's false conflict after kept delivery.
+  // Git deduplicates identical carry commits made in the same second, eliminating it.
+  const spawn = async (tag: string, date: string) => {
+    const author = process.env.GIT_AUTHOR_DATE, committer = process.env.GIT_COMMITTER_DATE
+    vi.stubEnv('GIT_AUTHOR_DATE', date); vi.stubEnv('GIT_COMMITTER_DATE', date)
+    try { return await t.spawn(tag) }
+    finally { vi.stubEnv('GIT_AUTHOR_DATE', author); vi.stubEnv('GIT_COMMITTER_DATE', committer) }
+  }
+  const d = await spawn('d', '2001-01-01T00:00:00Z'), u = await spawn('u', '2001-01-02T00:00:00Z')
   let clock = Date.now() - 1000
   const logs: string[] = [], shadow = new ManualShadow(t.leadSession(), l => logs.push(l), () => clock)
   const internal = shadow as unknown as TestShadow
@@ -72,6 +81,7 @@ full('records a false settled conflict after kept delivery, with no contents or 
   put(repo,'shared.txt','received\n')
   const f=await family()
   try {
+    expect(f.d.base).not.toBe(f.u.base)
     put(f.d.dir,'shared.txt','delivered\n');await f.t.finish('d')
     expect(await f.t.call('room_collect',{tag:'d',keep:true})).toContain('kept d')
     const r=(await (await registryForDir(repo)).read(f.d.id))!
@@ -79,7 +89,7 @@ full('records a false settled conflict after kept delivery, with no contents or 
       initial:new Map([['shared.txt','received\n']]),merged:new Map([['shared.txt','delivered\n']]),modes:new Map()})
     await f.publish();await f.authoritative()
     const slots=[...f.s.room.doc.getMap<ConflictSlot>('conflicts').values()]
-    expect(slots.some(s=>s.path==='shared.txt'&&s.settled==='conflict')).toBe(true)
+    expect(slots.some(s=>s.path==='shared.txt'&&s.settled==='conflict'), JSON.stringify(slots)).toBe(true)
     const notices=f.t.messages().length
     await f.internal.pass(); expect(f.records()).toEqual([])
     f.clock(60_001); await f.internal.pass()
@@ -300,6 +310,7 @@ full('restarts the heuristic window on a new publication even when the ordinary 
   put(repo, 'shared.txt', 'received\n')
   const f = await family()
   try {
+    expect(f.d.base).not.toBe(f.u.base)
     put(f.d.dir, 'shared.txt', 'delivered\n'); await f.t.finish('d')
     expect(await f.t.call('room_collect', { tag: 'd', keep: true })).toContain('kept d')
     const r = (await (await registryForDir(repo)).read(f.d.id))!

@@ -1,0 +1,185 @@
+{
+  "dateUTC": "2026-11-17",
+  "platform": "Darwin",
+  "workingDirectory": "repository root",
+  "command": [
+    "npm",
+    "test",
+    "--",
+    "packages/room-mcp/test/conflict-shadow.test.ts",
+    "packages/room-mcp/test/shadow-participant-lifetime.test.ts",
+    "packages/room-mcp/test/shadow-stable-window.test.ts"
+  ],
+  "environment": {
+    "TEST_SCALE": "1"
+  },
+  "conditions": "Two concurrent lanes, ten sequential invocations per lane; no other worker-started workload during this accepted sequence. Shared host not otherwise isolated.",
+  "elapsedSeconds": 1712.94,
+  "testsPerRun": 37,
+  "acceptedRuns": [
+    [
+      {
+        "lane": "A",
+        "iteration": 1,
+        "exit": 0,
+        "seconds": 200.4
+      },
+      {
+        "lane": "A",
+        "iteration": 2,
+        "exit": 0,
+        "seconds": 183.65
+      },
+      {
+        "lane": "A",
+        "iteration": 3,
+        "exit": 0,
+        "seconds": 167.0
+      },
+      {
+        "lane": "A",
+        "iteration": 4,
+        "exit": 0,
+        "seconds": 161.15
+      },
+      {
+        "lane": "A",
+        "iteration": 5,
+        "exit": 0,
+        "seconds": 174.37
+      },
+      {
+        "lane": "A",
+        "iteration": 6,
+        "exit": 0,
+        "seconds": 162.39
+      },
+      {
+        "lane": "A",
+        "iteration": 7,
+        "exit": 0,
+        "seconds": 160.79
+      },
+      {
+        "lane": "A",
+        "iteration": 8,
+        "exit": 0,
+        "seconds": 167.56
+      },
+      {
+        "lane": "A",
+        "iteration": 9,
+        "exit": 0,
+        "seconds": 162.74
+      },
+      {
+        "lane": "A",
+        "iteration": 10,
+        "exit": 0,
+        "seconds": 172.49
+      }
+    ],
+    [
+      {
+        "lane": "B",
+        "iteration": 1,
+        "exit": 0,
+        "seconds": 199.98
+      },
+      {
+        "lane": "B",
+        "iteration": 2,
+        "exit": 0,
+        "seconds": 184.11
+      },
+      {
+        "lane": "B",
+        "iteration": 3,
+        "exit": 0,
+        "seconds": 166.96
+      },
+      {
+        "lane": "B",
+        "iteration": 4,
+        "exit": 0,
+        "seconds": 161.18
+      },
+      {
+        "lane": "B",
+        "iteration": 5,
+        "exit": 0,
+        "seconds": 174.34
+      },
+      {
+        "lane": "B",
+        "iteration": 6,
+        "exit": 0,
+        "seconds": 162.57
+      },
+      {
+        "lane": "B",
+        "iteration": 7,
+        "exit": 0,
+        "seconds": 160.6
+      },
+      {
+        "lane": "B",
+        "iteration": 8,
+        "exit": 0,
+        "seconds": 167.53
+      },
+      {
+        "lane": "B",
+        "iteration": 9,
+        "exit": 0,
+        "seconds": 162.57
+      },
+      {
+        "lane": "B",
+        "iteration": 10,
+        "exit": 0,
+        "seconds": 173.1
+      }
+    ]
+  ],
+  "inputSha256": {
+    "packages/room-mcp/src/shadow-graph.ts": "03fbec6f755b2fd817de0407d3037a6853fe2f464c341ee314393192cd0a1252",
+    "packages/room-mcp/test/conflict-shadow.test.ts": "ef13578419b15afae73fbcb5d27e4728fef56e96fb588aae04f1385a158f0da1",
+    "packages/room-mcp/test/shadow-participant-lifetime.test.ts": "637012f68478596f8fe47468a96b883bfa03fac4281e4255f99f8d806bce0157",
+    "packages/room-mcp/test/shadow-stable-window.test.ts": "00f4ea0508b68a11f602a29e213c877953bcba7ff37596efe19739d5c89cbe42"
+  },
+  "priorLoadedAttempt": {
+    "conditions": "The two scale copies ran beside a third default shadow suite; plugin build ran after the timeout had already occurred.",
+    "outcome": "Each copy passed 36 tests and hit the existing 30000ms test timeout in the publication-window case. Excluded from accepted evidence; no timeout setting changed.",
+    "runs": [
+      [
+        {
+          "lane": "A",
+          "iteration": 1,
+          "exit": 1,
+          "seconds": 329.71
+        }
+      ],
+      [
+        {
+          "lane": "B",
+          "iteration": 1,
+          "exit": 1,
+          "seconds": 329.7
+        }
+      ]
+    ]
+  },
+  "otherChecks": {
+    "defaultShadow": {
+      "passed": 86,
+      "skipped": 136,
+      "filesPassed": 14,
+      "filesSkipped": 6
+    },
+    "typecheck": "passed",
+    "knip": "passed",
+    "build:plugin": "passed (includes web build)",
+    "beforeFixReproductions": "Fixed identical Git dates reproduced both conflict-shadow failures; forced removal after readdir reproduced ENOENT and halted=true in the lifetime case."
+  }
+}

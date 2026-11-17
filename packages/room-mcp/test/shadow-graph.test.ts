@@ -25,6 +25,32 @@ async function fixture() {
 }
 afterAll(async () => { if (prepared) await fs.rm(prepared, { recursive: true, force: true }) })
 afterEach(async () => { for (const dir of roots.splice(0)) await fs.rm(dir, { recursive: true, force: true }) })
+it.each(['file', 'directory'])('counts remaining storage when a listed %s disappears', async kind => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'room-shadow-budget-')); roots.push(root)
+  const removed = path.join(root, 'removed'), kept = path.join(root, 'kept')
+  if (kind === 'directory') await fs.mkdir(removed)
+  else await fs.writeFile(removed, 'removed bytes')
+  await fs.writeFile(kept, 'kept')
+  const readdir = fs.readdir
+  vi.spyOn(fs, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+    const entries = await readdir(...args)
+    if (args[0] === root) await fs.rm(removed, { recursive: true, force: true })
+    return entries
+  }) as typeof readdir)
+  expect(await new ShadowGraph(root, root).storageBudget()).toBe(4)
+})
+it.each(['stat', 'readdir'] as const)('propagates non-ENOENT %s failures from the storage walk', async operation => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'room-shadow-budget-')); roots.push(root)
+  await fs.writeFile(path.join(root, 'index'), 'bytes')
+  const error = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+  vi.spyOn(fs, operation).mockRejectedValue(error)
+  await expect(new ShadowGraph(root, root).storageBudget()).rejects.toBe(error)
+})
+it('does not treat a missing shadow root as an empty storage budget', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'room-shadow-budget-'))
+  await fs.rm(root, { recursive: true })
+  await expect(new ShadowGraph(root, root).storageBudget()).rejects.toMatchObject({ code: 'ENOENT' })
+})
 it('uses an alternate read-only: snapshots, merges, refs and indexes belong only to the private bare repo', async () => {
   const { dir, graph, anchor, entries } = await fixture()
   const before = git(dir, 'count-objects', '-v'), index = await fs.readFile(path.join(dir, '.git/index'))

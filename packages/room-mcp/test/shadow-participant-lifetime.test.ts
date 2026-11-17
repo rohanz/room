@@ -5,6 +5,7 @@ const full = process.env.TEST_SCALE === '1' ? it : it.skip
 import type { ConflictSlot } from '../src/conflict-set.js'
 import { stabilityFixture, delayedConflict } from './shadow-stability-fixture.js'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
 import * as shadowAPI from '../src/conflict-shadow.js'
 import { ConflictShadow, type ShadowEvent, type ShadowReservation } from '../src/conflict-shadow.js'
@@ -136,8 +137,20 @@ full('forgets a permanently unmodelled worker, including its waiting reservation
     const actor = state.actors.get(f.d.name), ticket = f.shadow.reserve('refresh', undefined, f.d.id)!
     const payload = vi.fn(() => ({ kind: 'refresh' } as ShadowEvent))
     ConflictShadow.prototype.enqueue.call(f.shadow, payload, ticket)
-    await state.unmodelled(actor, 'worker HEAD moved')
+    // Cleanup can finish after the budget walk lists the worker's private index/ref.
+    // Force that interleaving instead of racing the enqueue timer against unlink.
+    const readdir = fsp.readdir
+    let removed = false
+    vi.spyOn(fsp, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      const entries = await readdir(...args)
+      if (!removed && args[0] === f.shadow.graph.root) {
+        removed = true
+        await state.unmodelled(actor, 'worker HEAD moved')
+      }
+      return entries
+    }) as typeof readdir)
     await f.shadow.idle(); absent(f, f.d.name, actor.id)
+    expect(removed).toBe(true)
     expect(payload).not.toHaveBeenCalled(); expect(state.halted).toBe(false)
   } finally { f.shadow.stop() }
 })

@@ -34100,7 +34100,11 @@ var init_shadow_graph = __esm({
           for (const entry of await fs27.readdir(dir, { withFileTypes: true })) {
             if (entry.isSymbolicLink()) throw new Error("unsafe shadow state");
             const file2 = path29.join(dir, entry.name);
-            total += entry.isDirectory() ? await size2(file2) : (await fs27.stat(file2)).size;
+            try {
+              total += entry.isDirectory() ? await size2(file2) : (await fs27.stat(file2)).size;
+            } catch (error2) {
+              if (error2.code !== "ENOENT") throw error2;
+            }
           }
           return total;
         };
