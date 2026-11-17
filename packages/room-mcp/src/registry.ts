@@ -1,3 +1,4 @@
+import { enqueueShadow, stopShadow } from './conflict-shadow.js'
 import { requireWorkerInventory } from './worker-store.js'
 /**
  * The rooms one MCP process is in, and everything hung off each of them.
@@ -125,6 +126,7 @@ export class Rooms {
   track(s: Session): void {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
+    enqueueShadow(s, undefined, this.log)
     void registryForDir(s.dir).then(registry => {
       if (!this.tracked.has(s) || this.projectors.has(s)) return
       const projector = new WorkerProjector(s, registry, this.o.log)
@@ -147,6 +149,7 @@ export class Rooms {
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
 
   private stopRetirement(s: Session): void {
+    stopShadow(s)
     readDiffCache.clear(s)
     clearInterval(this.autoRetireTimers.get(s))
     this.autoRetireTimers.delete(s)

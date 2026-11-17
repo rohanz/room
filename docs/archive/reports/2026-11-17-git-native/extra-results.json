@@ -1,0 +1,163 @@
+[
+  {
+    "id": "both adopt merge resolution C",
+    "source": "rev33:merge resolution",
+    "expected": "conflict",
+    "pair": [
+      "d",
+      "u"
+    ],
+    "native": {
+      "status": "conflict",
+      "base": "4cb96bdbe310f701c8f3dbffb64d32a7d0bace3b",
+      "baseText": "one\nadopted C\nthree\nfour\nfive",
+      "output": "597cd85d54098c00e05d817d4713c5988143867a\n100644 18735c4ace76f8f237c4684cec085f1ce78d815f 1\tshared.txt\n100644 51e90593ebc9442de9a98d28235a693ead8fd98b 2\tshared.txt\n100644 500b40fbce14654303db0e7c7456d19be956ec06 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n"
+    },
+    "naive": {
+      "status": "conflict",
+      "base": "dd3e64c1bd5cfd30083f75d7b8b888e248b35260",
+      "baseText": "one\nadopted C\nthree\nfour\nfive",
+      "output": "a072b736312227a221379aefb183d7a754b009c7\n100644 18735c4ace76f8f237c4684cec085f1ce78d815f 1\tshared.txt\n100644 51e90593ebc9442de9a98d28235a693ead8fd98b 2\tshared.txt\n100644 500b40fbce14654303db0e7c7456d19be956ec06 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n"
+    },
+    "main": [
+      {
+        "owner": "d",
+        "other": "u",
+        "status": "conflict",
+        "slots": [
+          {
+            "path": "shared.txt",
+            "status": "conflict"
+          }
+        ],
+        "notices": 2
+      },
+      {
+        "owner": "u",
+        "other": "d",
+        "status": "conflict",
+        "slots": [
+          {
+            "path": "shared.txt",
+            "status": "conflict"
+          }
+        ],
+        "notices": 2
+      }
+    ],
+    "notes": [
+      "[inbox 1]\n  [wk:w_01M7JNX4W5J73P67QNP06M5PSV:1] [notify] rohanz+d (worker d) finished: d finished\n\nChanges from d: shared.txt. Nothing committed or staged.\nkept d: finished and resumable; worktree, branch, logs and host session retained\nno preview ran a command on this tree; validate it; same files, same command only; Git state (HEAD, refs, index), environment and ignored files are not compared; rerun commands that read Git state on the collected tree; files written by another process during collect are outside the guarantee",
+      "sent [m_mwjj2ubq3n2shd] [notify] rohanz's agent → rohanz+d: study resume\nresumed d's retained conversation with your message"
+    ]
+  },
+  {
+    "id": "supplement: common unrelated adoption after keep",
+    "source": "given-adoption:unrelated adoption",
+    "expected": "conflict",
+    "pair": [
+      "d",
+      "u"
+    ],
+    "native": {
+      "status": "conflict",
+      "base": "33b00ec7ee272b242d8e14f0d04c68471cb06d61",
+      "baseText": "one\nD delivered\nthree\nfour\nfive",
+      "output": "921da75df733d022b359e51d6d3c08eb16a8e532\n100644 841d169b44ed9c03f0c7103d14d6afa10967b68c 1\tshared.txt\n100644 51e90593ebc9442de9a98d28235a693ead8fd98b 2\tshared.txt\n100644 500b40fbce14654303db0e7c7456d19be956ec06 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n"
+    },
+    "naive": {
+      "status": "conflict",
+      "base": "46497129900da5c668ce314520f0506742c9b298",
+      "baseText": "one\nD delivered\nthree\nfour\nfive",
+      "output": "8c301dc8a8e5cc69c626cfd706de43e8630e2d4f\n100644 841d169b44ed9c03f0c7103d14d6afa10967b68c 1\tshared.txt\n100644 51e90593ebc9442de9a98d28235a693ead8fd98b 2\tshared.txt\n100644 500b40fbce14654303db0e7c7456d19be956ec06 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n"
+    },
+    "main": [
+      {
+        "owner": "d",
+        "other": "u",
+        "status": "conflict",
+        "slots": [
+          {
+            "path": "common-only.txt",
+            "status": "clean"
+          },
+          {
+            "path": "shared.txt",
+            "status": "conflict"
+          }
+        ],
+        "notices": 1
+      },
+      {
+        "owner": "u",
+        "other": "d",
+        "status": "conflict",
+        "slots": [
+          {
+            "path": "common-only.txt",
+            "status": "clean"
+          },
+          {
+            "path": "shared.txt",
+            "status": "conflict"
+          }
+        ],
+        "notices": 2
+      }
+    ],
+    "notes": [
+      "[inbox 1]\n  [wk:w_01M7JNXER43M5FKSCWDKKD5V00:1] [notify] rohanz+d (worker d) finished: d finished\n\nChanges from d: shared.txt. Nothing committed or staged.\nkept d: finished and resumable; worktree, branch, logs and host session retained\nno preview ran a command on this tree; validate it; same files, same command only; Git state (HEAD, refs, index), environment and ignored files are not compared; rerun commands that read Git state on the collected tree; files written by another process during collect are outside the guarantee",
+      "sent [m_mwjj33jo6nfnb9] [notify] rohanz's agent → rohanz+d: study resume\nresumed d's retained conversation with your message"
+    ]
+  },
+  {
+    "id": "supplement: successful refresh after keep, then both edit",
+    "source": "stale-carried-conflict:successful refresh (extended)",
+    "expected": "conflict",
+    "pair": [
+      "L",
+      "d"
+    ],
+    "native": {
+      "status": "conflict",
+      "base": "efad91e9a566c3c77e66a8c190c68089927e3668",
+      "baseText": "one\nD delivered\nthree\nfour\nfive",
+      "output": "83aa4f7e196bae6af144b61cfd0f16365ad5ce40\n100644 841d169b44ed9c03f0c7103d14d6afa10967b68c 1\tshared.txt\n100644 18735c4ace76f8f237c4684cec085f1ce78d815f 2\tshared.txt\n100644 fb90616236b5a3ba0b56a3002f5731303ea5d347 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n"
+    },
+    "naive": {
+      "status": "conflict",
+      "base": "f6fe018b13d275650cb8808d39df05e26b63f089",
+      "baseText": "one\nD delivered\nthree\nfour\nfive",
+      "output": "a82da1d98d0ec91870b44ad325e3220bc46e15f3\n100644 841d169b44ed9c03f0c7103d14d6afa10967b68c 1\tshared.txt\n100644 18735c4ace76f8f237c4684cec085f1ce78d815f 2\tshared.txt\n100644 fb90616236b5a3ba0b56a3002f5731303ea5d347 3\tshared.txt\n\nAuto-merging shared.txt\nCONFLICT (content): Merge conflict in shared.txt\n"
+    },
+    "main": [
+      {
+        "owner": "L",
+        "other": "d",
+        "status": "conflict",
+        "slots": [
+          {
+            "path": "shared.txt",
+            "status": "conflict"
+          }
+        ],
+        "notices": 1
+      },
+      {
+        "owner": "d",
+        "other": "L",
+        "status": "conflict",
+        "slots": [
+          {
+            "path": "shared.txt",
+            "status": "conflict"
+          }
+        ],
+        "notices": 2
+      }
+    ],
+    "notes": [
+      "[inbox 1]\n  [wk:w_01M7JNXRKGTSMBP2W6R6RP0DQ8:1] [notify] rohanz+d (worker d) finished: d finished\n\nChanges from d: shared.txt. Nothing committed or staged.\nkept d: finished and resumable; worktree, branch, logs and host session retained\nno preview ran a command on this tree; validate it; same files, same command only; Git state (HEAD, refs, index), environment and ignored files are not compared; rerun commands that read Git state on the collected tree; files written by another process during collect are outside the guarantee",
+      "sent [m_mwjj3avs2wewel] [notify] rohanz's agent → rohanz+d: study resume\n\n[Room] your base moved: your lead rebased your branch onto their HEAD f6fe018b13 before this message; 1 commit came in: f6fe018 study user commit. Your uncommitted edits are still uncommitted on top.\nrebased d onto your HEAD f6fe018b13; 1 commit came in: f6fe018 study user commit\nresumed d's retained conversation with your message"
+    ]
+  }
+]

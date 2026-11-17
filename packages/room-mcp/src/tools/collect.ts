@@ -1,3 +1,4 @@
+import { enqueueShadow, reserveShadow } from '../conflict-shadow.js'
 import { advanceDiscard } from '../worker-discard.js'
 import { recoveryRefCovers, recoveryRefDescription, writeWorkerRecordRef } from '../worker-refs.js'
 import { retainedWorkerLines } from '../worker-retained.js'
@@ -654,6 +655,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (!files.length) out.push('nothing copied (empty directories)')
     out.push(await collectedTreeEvidence(leadRoot))
 
+    enqueueShadow(s, () => ({ kind: 'unsupported', id: w.id, reason: 'partial collection' }), state.log, process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'unsupported') : undefined)
     // Named artifacts are only a partial collection; keep the worker recoverable.
     return out.join('\n')
   }
@@ -755,6 +757,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     for (const { w } of selected) for (const { p, identity } of snapshots.get(w.id)?.sources ?? []) {
       if (!sameIdentity(identity, fileIdentity(safePath(workerRoots.get(w)!, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
     }
+    const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(lead, 'collection', undefined, () => selected.map(({ w }) => w.id)) : undefined
     const written: typeof changes = []
     try {
       for (const change of changes) {
@@ -767,6 +770,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       throw e
     }
+    enqueueShadow(lead, () => ({ kind: 'collection', generation: shadowGeneration?.generation, workers: selected.map(({ w }) => ({ id: w.id, name: w.name, head: heads.get(w.name)!,
+        source: snapshots.get(w.id)?.sha, paths: result.paths.filter(p => result.merged.has(p) && result.owners.get(p)?.includes(w.name) && !result.scratch.get(w.name)?.has(p)) })),
+        initial: new Map(result.initial), merged: new Map(result.merged), modes: new Map(changes.map(c => [c.p, c.mode])) }), state.log, shadowGeneration)
   }
   const roomCollect = async (a: Record<string, unknown>, discarding = new Set<string>(), actingLead?: Session): Promise<string> => {
     const { rooms } = state, lead = actingLead ?? state.S()

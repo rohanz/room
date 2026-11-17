@@ -1,0 +1,16 @@
+{
+  "workers": 6,
+  "participants": 7,
+  "baseFiles": 103,
+  "editBytes": 1008,
+  "rounds": 3,
+  "samplesMs": [
+    3700.0753749999985,
+    3694.2932920000003,
+    3640.327374999999
+  ],
+  "medianPassMs": 3694.2932920000003,
+  "pairsPerPass": 21,
+  "includes": "production scheduling/budget wrapper, read-only registry, seven snapshots, publication byte checks, 21 comparisons, disk/publication revalidation",
+  "liveHosts": false
+}
