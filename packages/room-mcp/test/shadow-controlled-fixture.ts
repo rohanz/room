@@ -1,4 +1,5 @@
 /** Logical shadow checks use controlled timing; real budgets/Git timing have separate coverage. */
+import './shadow-git-fixture.js'
 import { afterEach, beforeEach, vi } from 'vitest'
 import { ConflictShadow } from '../src/conflict-shadow.js'
 import { setGitTimeoutForTest } from '@room/roomd/git'

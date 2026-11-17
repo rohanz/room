@@ -1,3 +1,4 @@
+import './shadow-git-fixture.js'
 import { applyShadowEvent } from './shadow-event-fixture.js'
 import fs from 'node:fs'
 import { expect,it,vi } from 'vitest'

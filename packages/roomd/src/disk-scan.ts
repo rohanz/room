@@ -78,9 +78,12 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
   oversizedCache: Map<string, { size: number; mtimeMs: number; base: string; hash: string }> = new Map(),
   carried: ReadonlyMap<string, { sha: string }> = new Map(),
   valid: () => boolean = () => true,
-  onBaseBlobs?: (blobs: ReadonlyMap<string, GitBlobInfo | undefined>) => void): Promise<DiskFact[]> {
+  onBaseBlobs?: (blobs: ReadonlyMap<string, GitBlobInfo | undefined>) => void,
+  inventory?: Awaited<ReturnType<typeof changedSince>>): Promise<DiskFact[]> {
   if (!publishesFiles(inputs)) return []
-  const { paths, changed, indexed } = await changedSince(dir, inputs.head, previous)
+  // Raw-byte consumers can supply inventory without git diff running checkout clean filters.
+  // Publication/detector callers retain the normal changedSince enumeration.
+  const { paths, changed, indexed } = inventory ?? await changedSince(dir, inputs.head, previous)
   const [blobs, format, gitIgnored] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)])
   onBaseBlobs?.(blobs)
   const facts: DiskFact[] = []

@@ -1,4 +1,5 @@
-// Default-off coverage stays real: no controlled clock, budget or Git fixture here.
+// Default-off coverage uses real clocks, budgets and Git; only host configuration is isolated.
+import './shadow-git-fixture.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { expect,it,vi } from 'vitest'

@@ -35,7 +35,7 @@ export class ShadowGraph {
   /** No inherited Git location, index, config injection or object-directory variables. */
   private environment(index?: string): NodeJS.ProcessEnv {
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')))
-    return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(this.root, 'no-global-config'),
+    return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(this.root, 'no-global-config'),
       GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 'Room shadow', GIT_AUTHOR_EMAIL: 'shadow@localhost',
       GIT_COMMITTER_NAME: 'Room shadow', GIT_COMMITTER_EMAIL: 'shadow@localhost', ...(index ? { GIT_INDEX_FILE: index } : {}) }
   }
@@ -48,7 +48,7 @@ export class ShadowGraph {
     const remaining = this.deadline - performance.now()
     if (remaining <= 0) throw new Error('over budget')
     const argv = ['--git-dir', this.repo, ...(worktree ? ['--work-tree', worktree] : []), '-c', 'gc.auto=0',
-      '-c', 'maintenance.auto=false', '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args]
+      '-c', 'maintenance.auto=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.attributesFile=/dev/null', '-c', 'commit.gpgsign=false', ...args]
     const done = observeGit(argv)
     try {
       return await new Promise((resolve, reject) => {

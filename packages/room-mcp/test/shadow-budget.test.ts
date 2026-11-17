@@ -1,3 +1,4 @@
+import './shadow-git-fixture.js'
 import { afterEach,expect,it,vi } from 'vitest'
 import { ConflictShadow } from '../src/conflict-shadow.js'
 

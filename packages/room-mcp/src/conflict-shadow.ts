@@ -283,7 +283,11 @@ export class ConflictShadow {
                   return
                 }
               }
-            } catch { if (this.closed || !await this.lost(ticket, 'event failed')) return }
+            } catch (error) {
+              if (this.closed) return
+              if (error instanceof Error && error.message.startsWith('unmodelled history: attribute ')) this.once(error.message)
+              if (!await this.lost(ticket, 'event failed')) return
+            }
             this.applied = ticket.order; this.queue.delete(ticket.order); this.remember(this.applied)
           }
           await this.pass()
