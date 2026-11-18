@@ -34114,6 +34114,7 @@ var init_shadow_graph = __esm({
       }
       comparisons = /* @__PURE__ */ new Map();
       pins = /* @__PURE__ */ new Map();
+      gitlink;
       /** No inherited Git location, index, config injection or object-directory variables. */
       environment(index) {
         const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
@@ -34205,9 +34206,9 @@ var init_shadow_graph = __esm({
         const output = await this.run(["ls-tree", "-r", "-l", "-z", commit]);
         const entries = /* @__PURE__ */ new Map();
         for (const line of output.split("\0").filter(Boolean)) {
-          const match = /^(\d+) blob ([a-f0-9]+) +([0-9]+)\t([\s\S]+)$/.exec(line);
-          if (!match) throw new Error("unsupported tree entry");
-          entries.set(match[4], { mode: match[1], oid: match[2], size: Number(match[3]) });
+          const match = /^(\d+) (blob|commit) ([a-f0-9]+) +([0-9]+|-)\t([\s\S]+)$/.exec(line);
+          if (!match || !oidPattern.test(match[3]) || !(match[2] === "blob" ? ["100644", "100755", "120000"].includes(match[1]) && match[4] !== "-" : match[1] === "160000" && match[4] === "-")) throw new Error("unmodelled history: invalid tree entry kind or mode");
+          entries.set(match[5], { mode: match[1], oid: match[3], ...match[4] === "-" ? {} : { size: Number(match[4]) } });
         }
         return entries;
       }
@@ -34217,10 +34218,12 @@ var init_shadow_graph = __esm({
       }
       async tree(entries, name = "tree", worktree = this.source) {
         if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("invalid shadow identity");
+        if (!this.gitlink && [...entries.values()].some((e) => e.mode === "160000"))
+          this.gitlink = await this.event("opaque-gitlink", await this.tree(/* @__PURE__ */ new Map(), "opaque"), []);
         const index = path29.join(this.root, `${name}.index`);
         await this.clearLock(index + ".lock");
         await this.run(["read-tree", "--empty"], void 0, index, worktree);
-        if (entries.size) await this.run(["update-index", "-z", "--index-info"], [...entries].map(([p, e]) => `${e.mode} ${e.oid}	${p}\0`).join(""), index, worktree);
+        if (entries.size) await this.run(["update-index", "-z", "--index-info"], [...entries].map(([p, e]) => `${e.mode} ${e.mode === "160000" ? this.gitlink : e.oid}	${p}\0`).join(""), index, worktree);
         return this.run(["write-tree"], void 0, index, worktree);
       }
       async event(kind, tree, parents) {
@@ -34314,12 +34317,29 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
   dir = await fs28.realpath(dir);
   const root = await fs28.stat(dir), marker = await fs28.lstat(path30.join(dir, ".git"));
   const raw = await graph.entries(base);
-  for (const entry of carried) raw.set(entry.path, { mode: entry.mode && entry.mode & 73 ? "100755" : "100644", oid: entry.sha });
+  const stageArgs = ["ls-files", "--stage", "-z"];
+  const stages = await git(dir, stageArgs);
+  const gitlinks = new Map([...raw].filter(([, e]) => e.mode === "160000"));
+  const baseGitlinks = [...gitlinks.keys()];
+  const indexedGitlinks = (text2) => text2.split("\0").flatMap((line) => {
+    const m = /^160000 [a-f0-9]+ [0-3]\t([\s\S]+)$/.exec(line);
+    return m ? [m[1]] : [];
+  });
+  const linkSignature = (text2) => JSON.stringify([.../* @__PURE__ */ new Set([...baseGitlinks, ...indexedGitlinks(text2)])].sort());
+  for (const line of stages.split("\0").filter(Boolean)) {
+    const m = /^160000 ([a-f0-9]+) [0-3]\t([\s\S]+)$/.exec(line);
+    if (m && !gitlinks.has(m[2])) gitlinks.set(m[2], { mode: "160000", oid: m[1] });
+  }
+  const opaque = (p) => [...gitlinks.keys()].some((link) => p === link || p.startsWith(link + "/"));
+  const comparableCarried = carried.filter((entry) => !opaque(entry.path));
+  for (const entry of comparableCarried) raw.set(entry.path, { mode: entry.mode && entry.mode & 73 ? "100755" : "100644", oid: entry.sha });
   const inventoryArgs = ["ls-files", "-z", "-t", "--cached", "--others", "--exclude-standard"];
   const inventory = (await git(dir, inventoryArgs)).split("\0").filter(Boolean);
-  const paths = [.../* @__PURE__ */ new Set([...raw.keys(), ...inventory.map((entry) => entry.slice(2))])].sort();
+  const inventorySignature = (listed) => JSON.stringify(listed.filter((entry) => !opaque(entry.slice(2))));
+  const allPaths = /* @__PURE__ */ new Set([...raw.keys(), ...inventory.map((entry) => entry.slice(2))]);
+  if (allPaths.size > LIMIT) throw new Error("over budget: file count");
+  const paths = [...allPaths].filter((p) => !opaque(p)).sort();
   const scanInventory = { paths, changed: new Set(paths), indexed: new Set(inventory.filter((entry) => entry[0] !== "?").map((entry) => entry.slice(2))) };
-  if (paths.length > LIMIT) throw new Error("over budget: file count");
   const config2 = new Map((await gitStream(
     dir,
     ["config", "-z", "--get-regexp", "^((filter|merge)\\.(set|unset|unspecified)\\..*|merge\\.default|core\\.(autocrlf|sparsecheckout|sparsecheckoutcone)|remote\\..*\\.promisor|extensions\\.partialclone)$"],
@@ -34358,19 +34378,16 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
   const expectedHead = (await git(dir, ["rev-parse", "HEAD"])).trim();
   const admin = worktreeGitDirFromDotGit(dir);
   if (["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"].some((p) => fsSync.existsSync(path30.join(admin, p)))) throw new Error("unmodelled history: Git operation");
-  const scan = () => readDisk(dir, inputs, paths, safe, /* @__PURE__ */ new Map(), new Map(carried.map((e) => [e.path, e])), () => performance.now() < graph.deadline, void 0, scanInventory);
+  const scan = () => readDisk(dir, inputs, paths, safe, /* @__PURE__ */ new Map(), new Map(comparableCarried.map((e) => [e.path, e])), () => performance.now() < graph.deadline, void 0, scanInventory);
   const facts = await scan();
-  const metadata = new Map((await graph.run(["ls-tree", "-r", "-l", "-z", base])).split("\0").filter(Boolean).map((line) => {
-    const m = /^\d+ blob [a-f0-9]+ +([0-9]+)\t([\s\S]+)$/.exec(line);
-    return m ? [m[2], Number(m[1])] : ["", 0];
-  }));
-  if (carried.length) {
-    const sizes = await graph.run(["cat-file", "--batch-check=%(objectname) %(objectsize)"], carried.map((e) => e.sha).join("\n") + "\n");
+  const metadata = new Map([...raw].map(([p, e]) => [p, e.size]));
+  if (comparableCarried.length) {
+    const sizes = await graph.run(["cat-file", "--batch-check=%(objectname) %(objectsize)"], comparableCarried.map((e) => e.sha).join("\n") + "\n");
     const byHash = new Map(sizes.split("\n").map((line) => {
       const [hash3, size2] = line.split(" ");
       return [hash3, Number(size2)];
     }));
-    for (const e of carried) {
+    for (const e of comparableCarried) {
       const size2 = byHash.get(e.sha);
       if (!Number.isFinite(size2)) throw new Error("missing carried object");
       raw.get(e.path).size = size2;
@@ -34380,8 +34397,8 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
   const publication = plan(inputs, facts, "00".repeat(32));
   if (publication.unsettled.length) throw new Error("moving snapshot");
   const ignored = await ignoredTrackedPaths(dir, paths);
-  const gaps = /* @__PURE__ */ new Set([...publication.excludedPaths, ...paths.filter((p) => ignored.has(p) || !safe(p) || inputs.rules.roomIgnore.ignores(p))]);
-  const entries = /* @__PURE__ */ new Map();
+  const gaps = /* @__PURE__ */ new Set([...gitlinks.keys(), ...publication.excludedPaths, ...paths.filter((p) => ignored.has(p) || !safe(p) || inputs.rules.roomIgnore.ignores(p))]);
+  const entries = new Map(gitlinks);
   for (const fact of facts) {
     if (gaps.has(fact.path)) continue;
     const entry = publication.entries.get(fact.path);
@@ -34409,7 +34426,8 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
     if (root.dev !== nextRoot.dev || root.ino !== nextRoot.ino || marker.dev !== nextMarker.dev || marker.ino !== nextMarker.ino) return false;
     if (await controls() !== policyText || (await git(dir, ["rev-parse", "HEAD"])).trim() !== expectedHead) return false;
     const listed = (await git(dir, inventoryArgs)).split("\0").filter(Boolean);
-    if (JSON.stringify(listed) !== JSON.stringify(inventory)) return false;
+    if (inventorySignature(listed) !== inventorySignature(inventory)) return false;
+    if (linkSignature(await git(dir, stageArgs)) !== linkSignature(stages)) return false;
     return signature(await scan()) === signature(facts);
   };
   if (!await current3()) throw new Error("moving snapshot");
@@ -34434,16 +34452,23 @@ var init_shadow_snapshot = __esm({
 import fs29 from "node:fs/promises";
 import path31 from "node:path";
 import { createHash as createHash12, randomUUID as randomUUID7 } from "node:crypto";
-function hookFailed(s, log2 = fallbackLog) {
-  if (!hookFailures.has(s)) {
-    hookFailures.add(s);
-    queueMicrotask(() => {
-      try {
-        log2("conflict shadow: hook failed (swallowed)");
-      } catch {
+function hookFailed(s, log2 = fallbackLog, ticket) {
+  queueMicrotask(() => {
+    try {
+      const owners = typeof ticket?.owners === "function" ? ticket.owners() : ticket?.owners ? [ticket.owners] : [];
+      const names = owners.flatMap((o) => typeof o === "string" ? [] : [o.name]);
+      const seen = hookFailures.get(s) ?? /* @__PURE__ */ new Set();
+      hookFailures.set(s, seen);
+      for (const name of /* @__PURE__ */ new Set([s.me.name, ...names])) if (!seen.has(name)) {
+        seen.add(name);
+        try {
+          log2(`conflict shadow: hook failed (${JSON.stringify(name)}) (swallowed)`);
+        } catch {
+        }
       }
-    });
-  }
+    } catch {
+    }
+  });
 }
 function enqueueShadow(s, event, log2 = fallbackLog, reservation) {
   if (process.env.ROOM_CONFLICT_SHADOW !== "1" || process.env.ROOM_WORKER_ID !== void 0) return;
@@ -34456,7 +34481,7 @@ function enqueueShadow(s, event, log2 = fallbackLog, reservation) {
     }
     shadow.enqueue(event, reservation);
   } catch {
-    hookFailed(s, log2);
+    hookFailed(s, log2, reservation);
   }
 }
 function shadowPreparation(s) {
@@ -34471,7 +34496,7 @@ function reserveShadow(s, kind, preparation, owners) {
   try {
     return process.env.ROOM_CONFLICT_SHADOW === "1" && process.env.ROOM_WORKER_ID === void 0 ? families.get(s)?.reserve(kind, preparation, owners) : void 0;
   } catch {
-    hookFailed(s);
+    hookFailed(s, fallbackLog, { owners });
     return void 0;
   }
 }
@@ -34506,7 +34531,7 @@ var init_conflict_shadow = __esm({
     INTERVAL = 5e3;
     PASS_MS = 1e4;
     identity2 = (name) => createHash12("sha256").update(name).digest("hex").slice(0, 24);
-    hookFailures = /* @__PURE__ */ new WeakSet();
+    hookFailures = /* @__PURE__ */ new WeakMap();
     families = /* @__PURE__ */ new WeakMap();
     fallbackLog = (line) => {
       process.stderr.write(`[room] ${line}
@@ -34539,6 +34564,9 @@ var init_conflict_shadow = __esm({
       leadHead;
       carriedState;
       failures = /* @__PURE__ */ new Set();
+      names = /* @__PURE__ */ new Map();
+      spawned = false;
+      haltReason;
       pending = /* @__PURE__ */ new Map();
       identities = /* @__PURE__ */ new Map();
       timer;
@@ -34571,7 +34599,9 @@ var init_conflict_shadow = __esm({
           }
         } catch {
           this.pending.clear();
-          queueMicrotask(() => this.once("slot hook failed (swallowed)"));
+          queueMicrotask(() => {
+            for (const name of /* @__PURE__ */ new Set([this.s.me.name, ...this.actors.keys()])) this.once(`slot hook failed (${name}) (swallowed)`);
+          });
         }
       };
       onDoc = () => {
@@ -34580,10 +34610,13 @@ var init_conflict_shadow = __esm({
           this.enqueue();
         } catch {
           this.pending.clear();
-          queueMicrotask(() => this.once("publication hook failed (swallowed)"));
+          queueMicrotask(() => {
+            for (const name of /* @__PURE__ */ new Set([this.s.me.name, ...this.actors.keys()])) this.once(`publication hook failed (${name}) (swallowed)`);
+          });
         }
       };
       once(key3) {
+        key3 = key3.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
         if (this.failures.has(key3)) return;
         this.failures.add(key3);
         try {
@@ -34591,14 +34624,17 @@ var init_conflict_shadow = __esm({
         } catch {
         }
       }
-      halt(reason) {
+      halt(reason, rejected) {
         if (this.halted) return;
+        const names = /* @__PURE__ */ new Set([...this.actors.keys(), ...[...this.queue.values(), ...rejected ? [rejected] : []].flatMap((t) => this.ownerNames(t))]);
+        this.haltReason = reason;
         this.halted = true;
         this.queue.clear();
         this.mutating = 0;
         this.pending.clear();
         this.removal = Promise.resolve().then(async () => {
-          this.once(`family stopped for this session: ${reason} (swallowed)`);
+          this.once(`family stopped for this session: ${reason} (${this.s.me.name}) (swallowed)`);
+          for (const name of names) if (name !== this.s.me.name) this.once(`unmodelled history: family stopped: ${reason} (${name})`);
           this.graph.abort();
           await Promise.all([...this.actors.values()].map((a) => this.remove(a)));
           this.anchors.clear();
@@ -34607,8 +34643,25 @@ var init_conflict_shadow = __esm({
         });
       }
       ownerIds(ticket) {
-        const ids = typeof ticket.owners === "function" ? ticket.owners() : ticket.owners ? [ticket.owners] : [];
+        const owners = typeof ticket.owners === "function" ? ticket.owners() : ticket.owners ? [ticket.owners] : [];
+        const ids = owners.map((owner) => typeof owner === "string" ? owner : owner.id);
+        for (const owner of owners) if (typeof owner !== "string") this.names.set(ticket.kind === "remove" ? owner.id : identity2(owner.id), owner.name);
         return ticket.kind === "remove" ? ids : ids.map(identity2);
+      }
+      ownerNames(ticket) {
+        try {
+          return this.ownerIds(ticket).map((id3) => [...this.actors.values()].find((a) => a.id === id3)?.name ?? this.names.get(id3) ?? `worker ${id3}`);
+        } catch {
+          return [this.s.me.name];
+        }
+      }
+      /** Only shadow-defined reasons, never subprocess stderr, file contents or arbitrary exception text. */
+      reason(error2, fallback2) {
+        if (!(error2 instanceof Error)) return fallback2;
+        const code = error2.code;
+        if (code && /^E[A-Z0-9]+$/.test(code)) return `${fallback2}: ${code}`;
+        const message2 = error2.message.slice(0, 1e3);
+        return /^(unmodelled history:|over budget(?:$|:)|shadow Git step failed:|shadow source unavailable$|unsupported (?:object format|tree entry)$|unsafe shadow state$|invalid shadow attributes$|unreadable policy$|missing carried object$|moving snapshot$|publication moved$|family ownership moved$|worker checkout identity unavailable$|unmodelled (?:lead history|generation|delivery|delivery HEAD|history after refresh)$|final collection generation unavailable$|lead moved after final collection$|delivery coverage gap$|nested lead$|borrowed checkout$|worker HEAD moved$|malformed merge (?:result|stages|information)$|conflict without paths$)/.test(message2) ? message2 : fallback2;
       }
       cancel(ticket) {
         if (!ticket.make && ticket.kind !== "spawn" && ticket.kind !== "remove") this.mutating--;
@@ -34628,11 +34681,12 @@ var init_conflict_shadow = __esm({
         try {
           await this.graph.pin(a.id);
         } catch {
-          this.once("participant cleanup failed (swallowed)");
+          this.once(`participant cleanup failed (${a.name}) (swallowed)`);
         }
       }
       retire(records) {
         for (const a of this.actors.values()) if (a.name !== this.s.me.name && !a.ending && !records.some((r) => identity2(r.id) === a.id && !["discarding", "retiring", "retired", "abandoned"].includes(r.phase))) {
+          if (!records.some((r) => identity2(r.id) === a.id)) this.once(`unmodelled history: worker registry record unavailable (${a.name})`);
           a.ending = true;
           const name = a.name, id3 = a.id, ticket = this.reserve("remove", void 0, id3);
           if (ticket) ticket.make = () => ({ kind: "remove", name, id: id3 });
@@ -34640,10 +34694,7 @@ var init_conflict_shadow = __esm({
       }
       async lost(ticket, reason) {
         const ids = this.ownerIds(ticket);
-        for (const id3 of ids) {
-          const a = [...this.actors.values()].find((a2) => a2.id === id3);
-          if (a) this.once(`unmodelled history: ${ticket.kind} ${reason} (${a.name})`);
-        }
+        for (const name of this.ownerNames(ticket)) this.once(`unmodelled history: ${ticket.kind} ${reason} (${name})`);
         if (!ids.length || ticket.kind === "collection" || ticket.kind === "unsupported") {
           this.halt(`${ticket.kind} ${reason}; lead history lost`);
           await this.removal;
@@ -34668,9 +34719,15 @@ var init_conflict_shadow = __esm({
         return !this.closed && !this.halted && !this.mutating ? this.mutations : void 0;
       }
       reserve(kind, preparation, owners) {
-        if (this.closed || this.halted) return;
+        if (kind === "spawn") this.spawned = true;
+        if (this.closed || this.halted) {
+          if (owners && this.halted) queueMicrotask(() => {
+            for (const name of this.ownerNames({ kind, owners })) this.once(`unmodelled history: family already stopped: ${this.haltReason} (${name})`);
+          });
+          return;
+        }
         if (this.queue.size >= 32) {
-          this.halt("event queue exhausted; lead history lost");
+          this.halt("event queue exhausted; lead history lost", { kind, owners });
           return;
         }
         if (this.applied === this.issued) this.remember(this.applied);
@@ -34705,7 +34762,7 @@ var init_conflict_shadow = __esm({
         if (event) {
           const ticket = reservation ?? this.reserve("unsupported");
           if (!ticket || this.queue.get(ticket.order) !== ticket) {
-            this.halt("missing generation; lead history lost");
+            this.halt("missing generation; lead history lost", ticket);
             return;
           }
           if (!reservation) ticket.ambiguous = true;
@@ -34756,19 +34813,24 @@ var init_conflict_shadow = __esm({
         if (this.running || this.closed) return;
         this.graph.deadline = performance.now() + PASS_MS;
         this.running = withGitReadDeadline(this.graph.deadline, () => this.budget(async () => {
+          let stage = "initialization";
           try {
             if (!this.initialized) {
               if (this.halted) return;
               await this.init();
             }
+            stage = "worker inventory";
             const registry2 = this.registry, records = requireWorkerInventory(await registry2.list());
+            for (const r of records) if (r.lead.participant === this.s.me.name) this.names.set(identity2(r.id), r.name);
             this.retire(records);
             if (!this.halted) {
+              stage = "storage accounting";
               if (await this.graph.storageBudget() >= CAP - 32 * 1024 * 1024) {
                 this.halt("200 MB session ceiling; lead history unavailable");
                 return;
               }
               while (this.queue.size) {
+                stage = "lifecycle";
                 const ticket = this.queue.get(this.applied + 1);
                 const ids = this.ownerIds(ticket);
                 if (ids.length && ids.some((id3) => ![...this.actors.values()].some((a) => a.id === id3) && (ticket.kind !== "spawn" || !records.some((r) => identity2(r.id) === id3 && !["discarding", "retiring", "retired", "abandoned"].includes(r.phase))))) {
@@ -34780,6 +34842,14 @@ var init_conflict_shadow = __esm({
                   if (!await this.lost(ticket, "unfilled reservation expired")) return;
                 } else try {
                   const event = await ticket.make();
+                  if (event.kind === "spawn") {
+                    this.spawned = true;
+                    this.names.set(identity2(event.record.id), event.record.name);
+                  }
+                  if (!ticket.owners) {
+                    if (event.kind === "spawn") ticket.owners = { id: event.record.id, name: event.record.name };
+                    else if (event.kind === "collection") ticket.owners = () => event.workers.map((w) => ({ id: w.id, name: w.name }));
+                  }
                   if (event.kind === "unsupported" && event.reason === "no-op") {
                   } else if (ticket.ambiguous) {
                     if (!await this.lost(ticket, "missing generation or overlapping mutation")) return;
@@ -34793,20 +34863,20 @@ var init_conflict_shadow = __esm({
                   }
                 } catch (error2) {
                   if (this.closed) return;
-                  if (error2 instanceof Error && error2.message.startsWith("unmodelled history: attribute ")) this.once(error2.message);
-                  if (!await this.lost(ticket, "event failed")) return;
+                  if (!await this.lost(ticket, this.reason(error2, "event failed"))) return;
                 }
                 this.applied = ticket.order;
                 this.queue.delete(ticket.order);
                 this.remember(this.applied);
               }
+              stage = "observation";
               await this.pass();
             }
-          } catch {
-            if (!this.closed) this.halt("private pass failed; lead history unavailable");
+          } catch (error2) {
+            if (!this.closed) this.halt(`${this.reason(error2, `${stage} failed`)}; lead history unavailable`);
           }
-        }), this.cancellation.signal).catch(() => {
-          if (!this.closed) this.once("pass failed (swallowed)");
+        }), this.cancellation.signal).catch((error2) => {
+          if (!this.closed) this.halt(`${this.reason(error2, "private pass failed")}; lead history unavailable`);
         }).finally(() => {
           this.running = void 0;
           if (this.closed) void this.clean();
@@ -34836,6 +34906,7 @@ var init_conflict_shadow = __esm({
         for (const a of [...this.actors.values()]) void this.remove(a);
         this.heads.clear();
         this.spawns.clear();
+        this.names.clear();
         const journal = this.journal;
         this.journal = void 0;
         try {
@@ -34888,7 +34959,7 @@ var init_conflict_shadow = __esm({
         actor.node = node2;
         actor.tree = tree;
         actor.entries = entries;
-        for (const p of entries.keys()) actor.covered.add(p);
+        for (const [p, e] of entries) if (e.mode !== "160000") actor.covered.add(p);
         actor.events = [.../* @__PURE__ */ new Set([...history, `${kind}:${node2}`])];
         actor.capture = void 0;
         actor.publication = void 0;
@@ -34922,7 +34993,10 @@ var init_conflict_shadow = __esm({
         if ([...captured.gaps].some((p) => actor.covered.has(p))) throw new Error("unmodelled history: coverage changed");
         actor.gaps = /* @__PURE__ */ new Set([...actor.gaps, ...captured.gaps]);
         captured.gaps = actor.gaps;
-        for (const p of actor.gaps) captured.entries.delete(p);
+        for (const p of actor.gaps) if (captured.entries.get(p)?.mode !== "160000") captured.entries.delete(p);
+      }
+      gap(actor, p) {
+        return actor.gaps.has(p) || [...actor.entries].some(([link, entry]) => entry.mode === "160000" && p.startsWith(link + "/"));
       }
       async event(event) {
         if (this.closed) return;
@@ -34934,19 +35008,33 @@ var init_conflict_shadow = __esm({
           const actor = [...this.actors.values()].find((a2) => a2.id === identity2(event.id));
           const target2 = event.reason === "partial collection" ? this.actors.get(this.s.me.name) : actor;
           if (target2) await this.unmodelled(target2, event.reason);
-          this.once(`unmodelled history: ${event.reason}`);
+          else this.once(`unmodelled history: ${event.reason} (${this.names.get(identity2(event.id)) ?? this.s.me.name})`);
           return;
         }
         if (event.kind === "spawn") {
           const r = event.record;
-          if (event.carryFailed || event.supplied || r.sharedWith || r.outside || r.share !== "full" || !r.base || r.skippedCarry?.some((p) => p.reason !== "linked input")) {
-            this.once(`unmodelled history: borrowed checkout, incomplete carry or sharing (${r.name})`);
+          this.spawned = true;
+          this.names.set(identity2(r.id), r.name);
+          const unsupported = event.carryFailed ? "carry failed" : event.supplied || r.sharedWith || r.outside ? "supplied or borrowed checkout" : r.share !== "full" ? "sharing is not full" : r.skippedCarry?.some((p) => p.reason !== "linked input") ? "incomplete carry" : void 0;
+          if (unsupported) {
+            this.once(`unmodelled history: ${unsupported} (${r.name})`);
+            return;
+          }
+          if (!r.base) {
+            this.once(`unmodelled history: missing worker base (${r.name})`);
             return;
           }
           const current3 = await this.registry.read(r.id);
-          if (!current3 || ["retired", "abandoned"].includes(current3.phase)) return;
+          if (!current3 || ["retired", "abandoned"].includes(current3.phase)) {
+            this.once(`unmodelled history: worker missing or retired before spawn (${r.name})`);
+            return;
+          }
           if (current3.name !== r.name || current3.lead.participant !== this.s.me.name || current3.room !== this.s.roomName) throw new Error("family ownership moved");
-          verifyWorkerCheckout(commonGitDirFromDotGit(this.s.dir), current3);
+          try {
+            verifyWorkerCheckout(commonGitDirFromDotGit(this.s.dir), current3);
+          } catch {
+            throw new Error("worker checkout identity unavailable");
+          }
           const captured = await captureShadow(this.graph, r.dir, r.base, r.carriedUntracked, true);
           if (captured.head !== r.base) {
             this.once(`unmodelled history: worker HEAD moved (${r.name})`);
@@ -34987,7 +35075,7 @@ var init_conflict_shadow = __esm({
             anchor: source2.node,
             entries: new Map(source2.entries),
             gaps: new Set(source2.gaps),
-            covered: new Set(source2.entries.keys()),
+            covered: new Set([...source2.entries].filter(([, e]) => e.mode !== "160000").map(([p]) => p)),
             events: [...source2.events]
           });
           if (!lead2) {
@@ -35011,7 +35099,11 @@ var init_conflict_shadow = __esm({
           return;
         }
         const lead = this.actors.get(this.s.me.name);
-        if (!lead) return;
+        if (!lead) {
+          const names = event.kind === "collection" ? event.workers.map((w) => w.name) : [this.names.get(identity2(event.id)) ?? this.s.me.name];
+          for (const name of /* @__PURE__ */ new Set([this.s.me.name, ...names])) this.once(`unmodelled history: ${event.kind} without modelled lead (${name})`);
+          return;
+        }
         if (lead.disabled) throw new Error("unmodelled lead history");
         if (event.generation !== this.applied || !this.anchors.has(event.generation)) throw new Error("unmodelled generation");
         if (event.kind === "collection") {
@@ -35023,7 +35115,7 @@ var init_conflict_shadow = __esm({
           const observed = await captureShadow(this.graph, lead.dir, lead.base, lead.carried);
           this.cover(lead, observed);
           const before = new Map(lead.entries);
-          for (const [p, text2] of event.initial) if (!lead.gaps.has(p)) await this.patch(before, p, text2);
+          for (const [p, text2] of event.initial) if (!this.gap(lead, p)) await this.patch(before, p, text2);
           await this.newEvent(lead, "pre-collection", before);
           const parents = [lead.node], history = [...lead.events];
           for (const worker of event.workers) {
@@ -35036,11 +35128,11 @@ var init_conflict_shadow = __esm({
             const coverage = await captureShadow(this.graph, a2.dir, a2.base, a2.carried);
             if (coverage.head !== a2.expected) throw new Error("unmodelled delivery HEAD");
             this.cover(a2, coverage);
-            for (const p of worker.paths) if (a2.gaps.has(p)) lead.gaps.add(p);
+            for (const p of worker.paths) if (this.gap(a2, p)) lead.gaps.add(p);
             const source = worker.source ? await this.graph.entries(worker.source) : void 0;
             const delivered = await this.graph.entries(a2.anchor);
             for (const p of worker.paths) {
-              if (a2.gaps.has(p) || lead.gaps.has(p)) continue;
+              if (this.gap(a2, p) || this.gap(lead, p)) continue;
               const value5 = source?.get(p);
               if ((value5?.size ?? 0) > 512 * 1024) {
                 a2.gaps.add(p);
@@ -35058,7 +35150,7 @@ var init_conflict_shadow = __esm({
             history.push(...a2.events);
           }
           const merged = new Map(lead.entries);
-          for (const [p, text2] of event.merged) if (!lead.gaps.has(p)) await this.patch(merged, p, text2, event.modes.get(p));
+          for (const [p, text2] of event.merged) if (!this.gap(lead, p)) await this.patch(merged, p, text2, event.modes.get(p));
           if (ended2.size && (laterLeadMutation() || !await observed.current())) throw new Error("lead moved after final collection");
           await this.newEvent(lead, ended2.size === event.workers.length ? "observation" : "collection", ended2.size ? observed.entries : merged, parents, history);
           lead.anchor = lead.node;
@@ -35068,6 +35160,7 @@ var init_conflict_shadow = __esm({
         const previous = await this.graph.run(["log", "-1", "--format=%s", event.previous]) === "room: kept collection baseline" ? await this.graph.run(["rev-parse", `${event.previous}^`]) : event.previous;
         if (!a || a.disabled || a.expected !== previous) {
           if (a) await this.unmodelled(a, "refresh from unmodelled HEAD");
+          else this.once(`unmodelled history: refresh participant no longer modelled (${this.names.get(identity2(event.id)) ?? this.s.me.name})`);
           return;
         }
         const target = await captureShadow(this.graph, this.s.dir, event.target, [], true);
@@ -35164,7 +35257,11 @@ var init_conflict_shadow = __esm({
         if (records.some((r2) => r2.lead.participant === a.name && a !== lead && !["retired", "abandoned"].includes(r2.phase)) || records.some((r2) => r2.dir === this.s.dir && !["retired", "abandoned"].includes(r2.phase))) throw new Error("nested lead");
         if (r) {
           if (r.name !== a.name || r.lead.participant !== this.s.me.name || r.room !== this.s.roomName || r.outside) throw new Error("borrowed checkout");
-          verifyWorkerCheckout(common, r);
+          try {
+            verifyWorkerCheckout(common, r);
+          } catch {
+            throw new Error("worker checkout identity unavailable");
+          }
           if (r.sharedWith || records.some((other) => other.id !== r.id && other.dir === r.dir && !["retired", "abandoned"].includes(other.phase))) throw new Error("borrowed checkout");
           if ((await git(a.dir, ["rev-parse", "HEAD"])).trim() !== a.expected) throw new Error("worker HEAD moved");
         }
@@ -35184,7 +35281,7 @@ var init_conflict_shadow = __esm({
           if (this.now() - this.lastSummary >= 3e4) {
             this.lastSummary = this.now();
             try {
-              this.log("conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no modelled spawn anchor");
+              this.log(`conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=${this.spawned ? "workers exist but none could be followed" : "no workers spawned in this session"}`);
             } catch {
             }
           }
@@ -35205,6 +35302,7 @@ var init_conflict_shadow = __esm({
             const pub = await this.publication(a);
             if (!pub) {
               this.forget(a.id);
+              this.once(`observation unavailable: publication unavailable (${a.name})`);
               reasons.add("publication unavailable");
               a.capture = void 0;
               continue;
@@ -35224,9 +35322,9 @@ var init_conflict_shadow = __esm({
             const publishedBase = await this.graph.entries(pub.head.base);
             if (a !== lead) for (const e of a.carried) publishedBase.set(e.path, { mode: "100644", oid: e.sha });
             for (const p of /* @__PURE__ */ new Set([...captured.entries.keys(), ...publishedBase.keys()]))
-              if (!a.gaps.has(p) && !pub.entries.has(p) && captured.entries.get(p)?.oid !== publishedBase.get(p)?.oid) throw new Error("publication moved");
+              if (!this.gap(a, p) && !pub.entries.has(p) && captured.entries.get(p)?.oid !== publishedBase.get(p)?.oid) throw new Error("publication moved");
             for (const [p, entry] of pub.entries) {
-              if (a.gaps.has(p)) continue;
+              if (this.gap(a, p)) continue;
               const actual = captured.entries.get(p);
               if (entry.state !== "shared" || (entry.change === "D" ? !!actual : entry.hash !== actual?.oid)) throw new Error("publication moved");
             }
@@ -35240,14 +35338,15 @@ var init_conflict_shadow = __esm({
             if (this.closed) return;
             a.capture = void 0;
             this.forget(a.id);
-            const reason = error2 instanceof Error && error2.message.startsWith("over budget") ? "over budget" : error2 instanceof Error && /^(nested lead|borrowed checkout|worker HEAD moved|unmodelled history:)/.test(error2.message) ? error2.message : "snapshot unavailable or moving";
-            if (reason === "snapshot unavailable or moving") this.once(`observation unavailable (${a.name})`);
-            if (reason === "over budget") this.once("skipped: over budget (file count or snapshot)");
+            const reason = error2 instanceof Error && error2.message.startsWith("over budget") ? "over budget" : error2 instanceof Error && /^(nested lead|borrowed checkout|worker HEAD moved|unmodelled history:)/.test(error2.message) ? this.reason(error2, "snapshot unavailable or moving") : "snapshot unavailable or moving";
+            if (reason === "snapshot unavailable or moving" || reason === "over budget") this.once(`observation unavailable: ${this.reason(error2, reason)} (${a.name})`);
             if (reason !== "snapshot unavailable or moving" && reason !== "over budget") await this.unmodelled(a, reason);
             reasons.add(reason);
           }
         }
         let pairs = 0, agreements = 0, disagreements = 0;
+        if (![...this.actors.keys()].some((name) => name !== this.s.me.name) && records.some((r) => r.lead.participant === this.s.me.name && !["discarding", "retiring", "retired", "abandoned"].includes(r.phase)))
+          reasons.add("workers exist but none could be followed");
         const rows = [], recorded = [], proofs = [];
         let rowBytes = 0;
         const actors = [...this.actors.values()];
@@ -35264,6 +35363,7 @@ var init_conflict_shadow = __esm({
           if (!current3()) {
             this.forget(a.id, b.id);
             reasons.add("publication moved");
+            for (const actor of [a, b]) this.once(`observation unavailable: publication moved (${actor.name})`);
             continue;
           }
           const slots = [...this.s.room.doc.getMap("conflicts").values()].filter((s) => s.kind === "merge" && (s.owner === a.name && s.other === b.name || s.owner === b.name && s.other === a.name));
@@ -35273,20 +35373,22 @@ var init_conflict_shadow = __esm({
           } catch (error2) {
             if (this.closed) return;
             if (error2 instanceof Error && error2.message.startsWith("over budget")) throw error2;
-            await this.unmodelled(a, "graph unavailable");
-            if (this.actors.has(b.name)) await this.unmodelled(b, "graph unavailable");
+            const reason = this.reason(error2, "graph unavailable");
+            await this.unmodelled(a, reason);
+            if (this.actors.has(b.name)) await this.unmodelled(b, reason);
             continue;
           }
           if (!current3() || !await a.capture.current() || !await b.capture.current()) {
             this.forget(a.id, b.id);
             reasons.add("inputs moved");
+            for (const actor of [a, b]) this.once(`observation unavailable: inputs moved (${actor.name})`);
             continue;
           }
           pairs++;
           const paths = /* @__PURE__ */ new Set([...result2.paths, ...slots.map((s) => s.path)]);
           const input = identity2(JSON.stringify([a.id, b.id, a.node, b.node, a.publicationId, b.publicationId, a.capture.fingerprint, b.capture.fingerprint]));
           for (const p of paths) {
-            if (p === "*" || a.gaps.has(p) || b.gaps.has(p)) {
+            if (p === "*" || this.gap(a, p) || this.gap(b, p)) {
               reasons.add("coverage gap");
               continue;
             }
@@ -35360,7 +35462,7 @@ var init_conflict_shadow = __esm({
             try {
               await handle.close();
             } catch {
-              this.once("journal close failed (swallowed)");
+              this.halt("journal close failed");
               this.stop();
             }
             this.journal = void 0;
@@ -63902,7 +64004,7 @@ function handlers4(state) {
             throw new Error(`could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
-        const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(s, "spawn", preparing, id3) : void 0;
+        const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(s, "spawn", preparing, { id: id3, name: record2.name }) : void 0;
         await registry2.command(id3, {
           type: "prepare-finish",
           created,
@@ -66981,7 +67083,7 @@ ${baseNote}` };
             if (!record2) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`;
             const refusedNow = refreshRefusal(s.dir, record2, requireWorkerEvidence(await registry2.checkoutUsers(record2)).map((user) => user.record.tag));
             if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`;
-            const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(s, "refresh", void 0, record2.id) : void 0;
+            const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(s, "refresh", void 0, { id: record2.id, name: record2.name }) : void 0;
             let outcome;
             try {
               outcome = await refreshWorkerBase(s.dir, record2);
@@ -69612,7 +69714,7 @@ function handlers10(state) {
     releasePaths(files4);
     if (!files4.length) out.push("nothing copied (empty directories)");
     out.push(await collectedTreeEvidence(leadRoot));
-    enqueueShadow(s, () => ({ kind: "unsupported", id: w.id, reason: "partial collection" }), state.log, process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(s, "unsupported") : void 0);
+    enqueueShadow(s, () => ({ kind: "unsupported", id: w.id, reason: "partial collection" }), state.log, process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(s, "unsupported", void 0, { id: w.id, name: w.name }) : void 0);
     return out.join("\n");
   };
   const prepareMergePlan = async (run3, selected, workerRoots) => {
@@ -69701,7 +69803,7 @@ function handlers10(state) {
     for (const { w } of selected) for (const { p, identity: identity5 } of snapshots.get(w.id)?.sources ?? []) {
       if (!sameIdentity(identity5, fileIdentity(safePath(workerRoots.get(w), p)))) throw new Error(p + " changed during collection; nothing written, retry");
     }
-    const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(lead, "collection", void 0, () => selected.map(({ w }) => w.id)) : void 0;
+    const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === "1" ? reserveShadow(lead, "collection", void 0, () => selected.map(({ w }) => ({ id: w.id, name: w.name }))) : void 0;
     const written = [];
     try {
       for (const change of changes) {

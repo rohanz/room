@@ -34,6 +34,7 @@ export class ShadowGraph {
   }
   private comparisons = new Map<string, { paths: string[]; bases: string[] }>()
   private pins = new Map<string, string>()
+  private gitlink?: string
   constructor(readonly root: string, readonly source: string) { this.repo = path.join(root, 'repo.git') }
   /** No inherited Git location, index, config injection or object-directory variables. */
   private environment(index?: string): NodeJS.ProcessEnv {
@@ -94,9 +95,14 @@ export class ShadowGraph {
     const output = await this.run(['ls-tree', '-r', '-l', '-z', commit])
     const entries = new Map<string, ShadowEntry>()
     for (const line of output.split('\0').filter(Boolean)) {
-      const match = /^(\d+) blob ([a-f0-9]+) +([0-9]+)\t([\s\S]+)$/.exec(line)
-      if (!match) throw new Error('unsupported tree entry')
-      entries.set(match[4], { mode: match[1], oid: match[2], size: Number(match[3]) })
+      const match = /^(\d+) (blob|commit) ([a-f0-9]+) +([0-9]+|-)\t([\s\S]+)$/.exec(line)
+      // -r traverses trees (including empty trees, which contribute no files). Blobs are
+      // regular/executable files or symlinks; snapshots exclude links without reading them.
+      // Gitlinks name commits in another object database: never resolve those objects.
+      if (!match || !oidPattern.test(match[3]) || !(match[2] === 'blob'
+        ? ['100644', '100755', '120000'].includes(match[1]) && match[4] !== '-'
+        : match[1] === '160000' && match[4] === '-')) throw new Error('unmodelled history: invalid tree entry kind or mode')
+      entries.set(match[5], { mode: match[1], oid: match[3], ...(match[4] === '-' ? {} : { size: Number(match[4]) }) })
     }
     return entries
   }
@@ -106,10 +112,14 @@ export class ShadowGraph {
   }
   async tree(entries: ReadonlyMap<string, ShadowEntry>, name = 'tree', worktree = this.source): Promise<string> {
     if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error('invalid shadow identity')
+    // All submodule pointers are deliberately opaque. Keep their structural gitlink
+    // entry unchanged across observations/refreshes, with no dependency on its repo.
+    if (!this.gitlink && [...entries.values()].some(e => e.mode === '160000'))
+      this.gitlink = await this.event('opaque-gitlink', await this.tree(new Map(), 'opaque'), [])
     const index = path.join(this.root, `${name}.index`)
     await this.clearLock(index + '.lock')
     await this.run(['read-tree', '--empty'], undefined, index, worktree)
-    if (entries.size) await this.run(['update-index', '-z', '--index-info'], [...entries].map(([p, e]) => `${e.mode} ${e.oid}\t${p}\0`).join(''), index, worktree)
+    if (entries.size) await this.run(['update-index', '-z', '--index-info'], [...entries].map(([p, e]) => `${e.mode} ${e.mode === '160000' ? this.gitlink : e.oid}\t${p}\0`).join(''), index, worktree)
     return this.run(['write-tree'], undefined, index, worktree)
   }
   async event(kind: string, tree: string, parents: string[]): Promise<string> {

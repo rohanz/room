@@ -22,7 +22,8 @@ const CAP = 200 * 1024 * 1024, INTERVAL = 5000, PASS_MS = 10_000
 const identity = (name: string) => createHash('sha256').update(name).digest('hex').slice(0, 24)
 type Actor = { name: string; id: string; dir: string; expected: string; base: string; carried: NonNullable<WorkerRecord['carriedUntracked']>;
   node: string; tree: string; anchor: string; entries: Map<string, ShadowEntry>; gaps: Set<string>; covered: Set<string>; events: string[]; scanned?: number; capture?: ShadowCapture; publication?: ParticipantSnapshot; publicationId?: string; disabled?: string; ending?: boolean }
-type ShadowOwners = string | (() => readonly string[])
+type ShadowOwner = string | { id: string; name: string }
+type ShadowOwners = ShadowOwner | (() => readonly ShadowOwner[])
 export type ShadowReservation = { owners?: ShadowOwners; waiting?: boolean; generation: number; order: number; ambiguous: boolean; kind: ShadowEvent['kind']; expires: number; make?: () => ShadowEvent }
 type Anchor = { node: string; tree: string; entries: Map<string, ShadowEntry>; gaps: Set<string>; events: string[] }
 export type ShadowEvent = ({ kind: 'spawn'; record: WorkerRecord; supplied: boolean; carry?: boolean; carryFailed?: boolean; preparedHead?: string }
@@ -31,12 +32,21 @@ export type ShadowEvent = ({ kind: 'spawn'; record: WorkerRecord; supplied: bool
   | { kind: 'refresh'; id: string; previous: string; base: string; target: string; carried: NonNullable<WorkerRecord['carriedUntracked']> }
   | { kind: 'remove'; id: string; name: string }
   | { kind: 'unsupported'; id: string; reason: string }) & { generation?: number }
-const hookFailures = new WeakSet<Session>()
+const hookFailures = new WeakMap<Session, Set<string>>()
 const families = new WeakMap<Session, ConflictShadow>()
 const fallbackLog = (line: string) => { process.stderr.write(`[room] ${line}\n`) }
 /** Even an exception constructing a hook's payload cannot escape to the lifecycle operation. */
-function hookFailed(s: Session, log: (line: string) => void = fallbackLog): void {
-  if (!hookFailures.has(s)) { hookFailures.add(s); queueMicrotask(() => { try { log('conflict shadow: hook failed (swallowed)') } catch { /* isolated */ } }) }
+function hookFailed(s: Session, log: (line: string) => void = fallbackLog, ticket?: Pick<ShadowReservation, 'owners'>): void {
+  queueMicrotask(() => {
+    try {
+      const owners = typeof ticket?.owners === 'function' ? ticket.owners() : ticket?.owners ? [ticket.owners] : []
+      const names = owners.flatMap(o => typeof o === 'string' ? [] : [o.name])
+      const seen = hookFailures.get(s) ?? new Set<string>(); hookFailures.set(s, seen)
+      for (const name of new Set([s.me.name, ...names])) if (!seen.has(name)) {
+        seen.add(name); try { log(`conflict shadow: hook failed (${JSON.stringify(name)}) (swallowed)`) } catch { /* isolated */ }
+      }
+    } catch { /* broken hook metadata cannot escape diagnostics */ }
+  })
 }
 export function enqueueShadow(s: Session, event?: () => ShadowEvent, log: (line: string) => void = fallbackLog, reservation?: ShadowReservation): void {
   if (process.env.ROOM_CONFLICT_SHADOW !== '1' || process.env.ROOM_WORKER_ID !== undefined) return
@@ -45,14 +55,14 @@ export function enqueueShadow(s: Session, event?: () => ShadowEvent, log: (line:
     let shadow = families.get(s)
     if (!shadow) { shadow = new ConflictShadow(s, log); families.set(s, shadow) }
     shadow.enqueue(event, reservation)
-  } catch { hookFailed(s, log) }
+  } catch { hookFailed(s, log, reservation) }
 }
 /** Constant-time boundary facts only. Never initialize here: enabling mid-operation cannot recover its history. */
 export function shadowPreparation(s: Session): number | undefined {
   try { return process.env.ROOM_CONFLICT_SHADOW === '1' && process.env.ROOM_WORKER_ID === undefined ? families.get(s)?.preparation() : undefined } catch { hookFailed(s); return undefined }
 }
 export function reserveShadow(s: Session, kind: ShadowEvent['kind'], preparation?: number, owners?: ShadowOwners): ShadowReservation | undefined {
-  try { return process.env.ROOM_CONFLICT_SHADOW === '1' && process.env.ROOM_WORKER_ID === undefined ? families.get(s)?.reserve(kind, preparation, owners) : undefined } catch { hookFailed(s); return undefined }
+  try { return process.env.ROOM_CONFLICT_SHADOW === '1' && process.env.ROOM_WORKER_ID === undefined ? families.get(s)?.reserve(kind, preparation, owners) : undefined } catch { hookFailed(s, fallbackLog, { owners }); return undefined }
 }
 export function releaseShadow(s: Session, ticket?: ShadowReservation): void {
   try { if (ticket) families.get(s)?.release(ticket) } catch { /* a refused/no-op operation cannot fail through diagnostics */ }
@@ -76,6 +86,9 @@ export class ConflictShadow {
   private leadHead?: string
   private carriedState?: string
   private failures = new Set<string>()
+  private names = new Map<string, string>()
+  private spawned = false
+  private haltReason?: string
   private pending = new Map<string, { input: string; today: string; since: number; recorded?: boolean }>()
   private identities = new Map<string, string>()
   private timer?: ReturnType<typeof setTimeout>
@@ -105,11 +118,15 @@ export class ConflictShadow {
         const [one, two, p] = JSON.parse(key), a = actors.get(one), b = actors.get(two)
         if (!a || !b || this.answer(a, b, p, [...groups.get(key) ?? [], ...groups.get(this.pairPath(a, b, '*')) ?? []]) !== episode.today) this.pending.delete(key)
       }
-    } catch { this.pending.clear(); queueMicrotask(() => this.once('slot hook failed (swallowed)')) }
+    } catch { this.pending.clear(); queueMicrotask(() => {
+      for (const name of new Set([this.s.me.name, ...this.actors.keys()])) this.once(`slot hook failed (${name}) (swallowed)`)
+    }) }
   }
   private onDoc = () => {
     try { this.observePublications(); this.enqueue() }
-    catch { this.pending.clear(); queueMicrotask(() => this.once('publication hook failed (swallowed)')) }
+    catch { this.pending.clear(); queueMicrotask(() => {
+      for (const name of new Set([this.s.me.name, ...this.actors.keys()])) this.once(`publication hook failed (${name}) (swallowed)`)
+    }) }
   }
   constructor(private s: Session, private log: (line: string) => void, private now = Date.now) {
     const common = commonGitDirFromDotGit(s.dir)
@@ -118,23 +135,41 @@ export class ConflictShadow {
     s.room.doc.getMap<ConflictSlot>('conflicts').observe(this.onSlots)
   }
   private once(key: string): void {
+    key = key.replace(/\r/g, '\\r').replace(/\n/g, '\\n')
     if (this.failures.has(key)) return
     this.failures.add(key)
     try { this.log(`conflict shadow: ${key}`) } catch { /* a broken logger is isolated too */ }
   }
-  private halt(reason: string): void {
+  private halt(reason: string, rejected?: Pick<ShadowReservation, 'kind' | 'owners'>): void {
     if (this.halted) return
+    const names = new Set([...this.actors.keys(), ...[...this.queue.values(), ...(rejected ? [rejected] : [])].flatMap(t => this.ownerNames(t))])
+    this.haltReason = reason
     this.halted = true; this.queue.clear(); this.mutating = 0; this.pending.clear()
     this.removal = Promise.resolve().then(async () => {
-      this.once(`family stopped for this session: ${reason} (swallowed)`)
+      this.once(`family stopped for this session: ${reason} (${this.s.me.name}) (swallowed)`)
+      for (const name of names) if (name !== this.s.me.name) this.once(`unmodelled history: family stopped: ${reason} (${name})`)
       this.graph.abort()
       await Promise.all([...this.actors.values()].map(a => this.remove(a)))
       this.anchors.clear(); this.heads.clear(); this.spawns.clear()
     })
   }
-  private ownerIds(ticket: ShadowReservation): readonly string[] {
-    const ids = typeof ticket.owners === 'function' ? ticket.owners() : ticket.owners ? [ticket.owners] : []
+  private ownerIds(ticket: Pick<ShadowReservation, 'kind' | 'owners'>): readonly string[] {
+    const owners = typeof ticket.owners === 'function' ? ticket.owners() : ticket.owners ? [ticket.owners] : []
+    const ids = owners.map(owner => typeof owner === 'string' ? owner : owner.id)
+    for (const owner of owners) if (typeof owner !== 'string') this.names.set(ticket.kind === 'remove' ? owner.id : identity(owner.id), owner.name)
     return ticket.kind === 'remove' ? ids : ids.map(identity)
+  }
+  private ownerNames(ticket: Pick<ShadowReservation, 'kind' | 'owners'>): string[] {
+    try { return this.ownerIds(ticket).map(id => [...this.actors.values()].find(a => a.id === id)?.name ?? this.names.get(id) ?? `worker ${id}`) }
+    catch { return [this.s.me.name] }
+  }
+  /** Only shadow-defined reasons, never subprocess stderr, file contents or arbitrary exception text. */
+  private reason(error: unknown, fallback: string): string {
+    if (!(error instanceof Error)) return fallback
+    const code = (error as NodeJS.ErrnoException).code
+    if (code && /^E[A-Z0-9]+$/.test(code)) return `${fallback}: ${code}`
+    const message = error.message.slice(0, 1000)
+    return /^(unmodelled history:|over budget(?:$|:)|shadow Git step failed:|shadow source unavailable$|unsupported (?:object format|tree entry)$|unsafe shadow state$|invalid shadow attributes$|unreadable policy$|missing carried object$|moving snapshot$|publication moved$|family ownership moved$|worker checkout identity unavailable$|unmodelled (?:lead history|generation|delivery|delivery HEAD|history after refresh)$|final collection generation unavailable$|lead moved after final collection$|delivery coverage gap$|nested lead$|borrowed checkout$|worker HEAD moved$|malformed merge (?:result|stages|information)$|conflict without paths$)/.test(message) ? message : fallback
   }
   private cancel(ticket: ShadowReservation): void {
     if (!ticket.make && ticket.kind !== 'spawn' && ticket.kind !== 'remove') this.mutating--
@@ -149,10 +184,11 @@ export class ConflictShadow {
       const ids = this.ownerIds(ticket)
       if (ids.length === 1 && ids[0] === a.id && ticket.kind !== 'collection' && ticket.kind !== 'unsupported') this.cancel(ticket)
     }
-    try { await this.graph.pin(a.id) } catch { this.once('participant cleanup failed (swallowed)') }
+    try { await this.graph.pin(a.id) } catch { this.once(`participant cleanup failed (${a.name}) (swallowed)`) }
   }
   private retire(records: WorkerRecord[]): void {
     for (const a of this.actors.values()) if (a.name !== this.s.me.name && !a.ending && !records.some(r => identity(r.id) === a.id && !['discarding', 'retiring', 'retired', 'abandoned'].includes(r.phase))) {
+      if (!records.some(r => identity(r.id) === a.id)) this.once(`unmodelled history: worker registry record unavailable (${a.name})`)
       a.ending = true
       const name = a.name, id = a.id, ticket = this.reserve('remove', undefined, id)
       if (ticket) ticket.make = () => ({ kind: 'remove', name, id })
@@ -160,10 +196,7 @@ export class ConflictShadow {
   }
   private async lost(ticket: ShadowReservation, reason: string): Promise<boolean> {
     const ids = this.ownerIds(ticket)
-    for (const id of ids) {
-      const a = [...this.actors.values()].find(a => a.id === id)
-      if (a) this.once(`unmodelled history: ${ticket.kind} ${reason} (${a.name})`)
-    }
+    for (const name of this.ownerNames(ticket)) this.once(`unmodelled history: ${ticket.kind} ${reason} (${name})`)
     if (!ids.length || ticket.kind === 'collection' || ticket.kind === 'unsupported') {
       this.halt(`${ticket.kind} ${reason}; lead history lost`)
       await this.removal
@@ -186,8 +219,14 @@ export class ConflictShadow {
   }
   preparation(): number | undefined { return !this.closed && !this.halted && !this.mutating ? this.mutations : undefined }
   reserve(kind: ShadowEvent['kind'], preparation?: number, owners?: ShadowOwners): ShadowReservation | undefined {
-    if (this.closed || this.halted) return
-    if (this.queue.size >= 32) { this.halt('event queue exhausted; lead history lost'); return }
+    if (kind === 'spawn') this.spawned = true
+    if (this.closed || this.halted) {
+      if (owners && this.halted) queueMicrotask(() => {
+        for (const name of this.ownerNames({ kind, owners })) this.once(`unmodelled history: family already stopped: ${this.haltReason} (${name})`)
+      })
+      return
+    }
+    if (this.queue.size >= 32) { this.halt('event queue exhausted; lead history lost', { kind, owners }); return }
     if (this.applied === this.issued) this.remember(this.applied)
     const ticket = { owners, generation: this.issued, order: ++this.issued, ambiguous: kind !== 'remove' && (this.mutating > 0 || kind === 'spawn' && preparation !== this.mutations),
       kind, expires: performance.now() + PASS_MS }
@@ -209,7 +248,7 @@ export class ConflictShadow {
     if (event) {
       // A missing boundary stamp is never reconstructed from hook arrival time.
       const ticket = reservation ?? this.reserve('unsupported')
-      if (!ticket || this.queue.get(ticket.order) !== ticket) { this.halt('missing generation; lead history lost'); return }
+      if (!ticket || this.queue.get(ticket.order) !== ticket) { this.halt('missing generation; lead history lost', ticket); return }
       if (!reservation) ticket.ambiguous = true
       ticket.make = event
       if (ticket.kind !== 'spawn' && ticket.kind !== 'remove') this.mutating--
@@ -253,13 +292,18 @@ export class ConflictShadow {
     if (this.running || this.closed) return
     this.graph.deadline = performance.now() + PASS_MS
     this.running = withGitReadDeadline(this.graph.deadline, () => this.budget(async () => {
+      let stage = 'initialization'
       try {
         if (!this.initialized) { if (this.halted) return; await this.init() }
+        stage = 'worker inventory'
         const registry = this.registry!, records = requireWorkerInventory(await registry.list())
+        for (const r of records) if (r.lead.participant === this.s.me.name) this.names.set(identity(r.id), r.name)
         this.retire(records)
         if (!this.halted) {
+          stage = 'storage accounting'
           if (await this.graph.storageBudget() >= CAP - 32 * 1024 * 1024) { this.halt('200 MB session ceiling; lead history unavailable'); return }
           while (this.queue.size) {
+            stage = 'lifecycle'
             const ticket = this.queue.get(this.applied + 1)!
             const ids = this.ownerIds(ticket)
             if (ids.length && ids.some(id => ![...this.actors.values()].some(a => a.id === id)
@@ -272,6 +316,11 @@ export class ConflictShadow {
               if (!await this.lost(ticket, 'unfilled reservation expired')) return
             } else try {
               const event = await ticket.make()
+              if (event.kind === 'spawn') { this.spawned = true; this.names.set(identity(event.record.id), event.record.name) }
+              if (!ticket.owners) {
+                if (event.kind === 'spawn') ticket.owners = { id: event.record.id, name: event.record.name }
+                else if (event.kind === 'collection') ticket.owners = () => event.workers.map(w => ({ id: w.id, name: w.name }))
+              }
               if (event.kind === 'unsupported' && event.reason === 'no-op') { /* released or participant removed */ }
               else if (ticket.ambiguous) {
                 if (!await this.lost(ticket, 'missing generation or overlapping mutation')) return
@@ -285,15 +334,14 @@ export class ConflictShadow {
               }
             } catch (error) {
               if (this.closed) return
-              if (error instanceof Error && error.message.startsWith('unmodelled history: attribute ')) this.once(error.message)
-              if (!await this.lost(ticket, 'event failed')) return
+              if (!await this.lost(ticket, this.reason(error, 'event failed'))) return
             }
             this.applied = ticket.order; this.queue.delete(ticket.order); this.remember(this.applied)
           }
-          await this.pass()
+          stage = 'observation'; await this.pass()
         }
-      } catch { if (!this.closed) this.halt('private pass failed; lead history unavailable') }
-    }), this.cancellation.signal).catch(() => { if (!this.closed) this.once('pass failed (swallowed)') }).finally(() => {
+      } catch (error) { if (!this.closed) this.halt(`${this.reason(error, `${stage} failed`)}; lead history unavailable`) }
+    }), this.cancellation.signal).catch(error => { if (!this.closed) this.halt(`${this.reason(error, 'private pass failed')}; lead history unavailable`) }).finally(() => {
       this.running = undefined
       if (this.closed) void this.clean()
       else this.enqueue()
@@ -310,7 +358,7 @@ export class ConflictShadow {
     this.closed = true; this.queue.clear(); this.anchors.clear(); this.pending.clear(); this.mutating = 0
     this.cancellation.abort(); this.graph.abort()
     for (const a of [...this.actors.values()]) void this.remove(a)
-    this.heads.clear(); this.spawns.clear()
+    this.heads.clear(); this.spawns.clear(); this.names.clear()
     const journal = this.journal; this.journal = undefined
     try { void journal?.close().catch(() => this.once('journal close failed (swallowed)')) } catch { this.once('journal close failed (swallowed)') }
     clearTimeout(this.timer)
@@ -348,7 +396,7 @@ export class ConflictShadow {
     await this.graph.pin(actor.id, node)
     if (boundary !== undefined && this.issued !== boundary) throw new Error('publication moved')
     actor.node = node; actor.tree = tree; actor.entries = entries
-    for (const p of entries.keys()) actor.covered.add(p)
+    for (const [p, e] of entries) if (e.mode !== '160000') actor.covered.add(p)
     actor.events = [...new Set([...history, `${kind}:${node}`])]
     actor.capture = undefined; actor.publication = undefined
   }
@@ -376,7 +424,10 @@ export class ConflictShadow {
     if ([...captured.gaps].some(p => actor.covered.has(p))) throw new Error('unmodelled history: coverage changed')
     actor.gaps = new Set([...actor.gaps, ...captured.gaps])
     captured.gaps = actor.gaps
-    for (const p of actor.gaps) captured.entries.delete(p)
+    for (const p of actor.gaps) if (captured.entries.get(p)?.mode !== '160000') captured.entries.delete(p)
+  }
+  private gap(actor: Actor, p: string): boolean {
+    return actor.gaps.has(p) || [...actor.entries].some(([link, entry]) => entry.mode === '160000' && p.startsWith(link + '/'))
   }
   private async event(event: ShadowEvent): Promise<void | false> {
     if (this.closed) return
@@ -386,17 +437,21 @@ export class ConflictShadow {
       // Partial delivery changes the lead's relationship to every remaining worker.
       const target = event.reason === 'partial collection' ? this.actors.get(this.s.me.name) : actor
       if (target) await this.unmodelled(target, event.reason)
-      this.once(`unmodelled history: ${event.reason}`); return
+      else this.once(`unmodelled history: ${event.reason} (${this.names.get(identity(event.id)) ?? this.s.me.name})`)
+      return
     }
     if (event.kind === 'spawn') {
       const r = event.record
-      if (event.carryFailed || event.supplied || r.sharedWith || r.outside || r.share !== 'full' || !r.base || r.skippedCarry?.some(p => p.reason !== 'linked input')) {
-        this.once(`unmodelled history: borrowed checkout, incomplete carry or sharing (${r.name})`); return
-      }
+      this.spawned = true; this.names.set(identity(r.id), r.name)
+      const unsupported = event.carryFailed ? 'carry failed' : event.supplied || r.sharedWith || r.outside ? 'supplied or borrowed checkout'
+        : r.share !== 'full' ? 'sharing is not full'
+        : r.skippedCarry?.some(p => p.reason !== 'linked input') ? 'incomplete carry' : undefined
+      if (unsupported) { this.once(`unmodelled history: ${unsupported} (${r.name})`); return }
+      if (!r.base) { this.once(`unmodelled history: missing worker base (${r.name})`); return }
       const current = await this.registry!.read(r.id)
-      if (!current || ['retired', 'abandoned'].includes(current.phase)) return
+      if (!current || ['retired', 'abandoned'].includes(current.phase)) { this.once(`unmodelled history: worker missing or retired before spawn (${r.name})`); return }
       if (current.name !== r.name || current.lead.participant !== this.s.me.name || current.room !== this.s.roomName) throw new Error('family ownership moved')
-      verifyWorkerCheckout(commonGitDirFromDotGit(this.s.dir), current)
+      try { verifyWorkerCheckout(commonGitDirFromDotGit(this.s.dir), current) } catch { throw new Error('worker checkout identity unavailable') }
       const captured = await captureShadow(this.graph, r.dir, r.base, r.carriedUntracked, true)
       if (captured.head !== r.base) { this.once(`unmodelled history: worker HEAD moved (${r.name})`); return }
       const carry = event.carry ?? !!(r.carriedBase || r.carriedUntracked?.length)
@@ -422,7 +477,7 @@ export class ConflictShadow {
         anchor = { node, tree, entries: new Map(captured.entries), gaps: new Set(captured.gaps), events: [...parent.events, `spawn:${node}`] }
       }
       const make = (name: string, id: string, dir: string, source: Anchor, base = r.base!, carried = r.carriedUntracked ?? []): Actor => ({ name, id, dir, expected: base, base, carried,
-        node: source.node, tree: source.tree, anchor: source.node, entries: new Map(source.entries), gaps: new Set(source.gaps), covered: new Set(source.entries.keys()), events: [...source.events] })
+        node: source.node, tree: source.tree, anchor: source.node, entries: new Map(source.entries), gaps: new Set(source.gaps), covered: new Set([...source.entries].filter(([, e]) => e.mode !== '160000').map(([p]) => p)), events: [...source.events] })
       if (!lead) {
         const ours = make(this.s.me.name, identity('lead'), this.s.dir, carry ? anchor : head, preparedHead, [])
         this.actors.set(ours.name, ours)
@@ -437,7 +492,11 @@ export class ConflictShadow {
       return
     }
     const lead = this.actors.get(this.s.me.name)
-    if (!lead) return
+    if (!lead) {
+      const names = event.kind === 'collection' ? event.workers.map(w => w.name) : [this.names.get(identity(event.id)) ?? this.s.me.name]
+      for (const name of new Set([this.s.me.name, ...names])) this.once(`unmodelled history: ${event.kind} without modelled lead (${name})`)
+      return
+    }
     if (lead.disabled) throw new Error('unmodelled lead history')
     if (event.generation !== this.applied || !this.anchors.has(event.generation)) throw new Error('unmodelled generation')
     if (event.kind === 'collection') {
@@ -449,7 +508,7 @@ export class ConflictShadow {
       const observed = await captureShadow(this.graph, lead.dir, lead.base, lead.carried)
       this.cover(lead, observed)
       const before = new Map(lead.entries)
-      for (const [p, text] of event.initial) if (!lead.gaps.has(p)) await this.patch(before, p, text)
+      for (const [p, text] of event.initial) if (!this.gap(lead, p)) await this.patch(before, p, text)
       await this.newEvent(lead, 'pre-collection', before)
       const parents = [lead.node], history = [...lead.events]
       for (const worker of event.workers) {
@@ -460,11 +519,11 @@ export class ConflictShadow {
         const coverage = await captureShadow(this.graph, a.dir, a.base, a.carried)
         if (coverage.head !== a.expected) throw new Error('unmodelled delivery HEAD')
         this.cover(a, coverage)
-        for (const p of worker.paths) if (a.gaps.has(p)) lead.gaps.add(p)
+        for (const p of worker.paths) if (this.gap(a, p)) lead.gaps.add(p)
         const source = worker.source ? await this.graph.entries(worker.source) : undefined
         const delivered = await this.graph.entries(a.anchor)
         for (const p of worker.paths) {
-          if (a.gaps.has(p) || lead.gaps.has(p)) continue
+          if (this.gap(a, p) || this.gap(lead, p)) continue
           const value = source?.get(p)
           if ((value?.size ?? 0) > 512 * 1024) { a.gaps.add(p); lead.gaps.add(p); continue }
           if (source) { if (value) delivered.set(p, value); else delivered.delete(p) }
@@ -474,7 +533,7 @@ export class ConflictShadow {
         a.anchor = a.node; parents.push(a.node); history.push(...a.events)
       }
       const merged = new Map(lead.entries)
-      for (const [p, text] of event.merged) if (!lead.gaps.has(p)) await this.patch(merged, p, text, event.modes.get(p))
+      for (const [p, text] of event.merged) if (!this.gap(lead, p)) await this.patch(merged, p, text, event.modes.get(p))
       if (ended.size && (laterLeadMutation() || !await observed.current())) throw new Error('lead moved after final collection')
       await this.newEvent(lead, ended.size === event.workers.length ? 'observation' : 'collection', ended.size ? observed.entries : merged, parents, history)
       lead.anchor = lead.node
@@ -483,7 +542,11 @@ export class ConflictShadow {
     const a = [...this.actors.values()].find(a => a.id === identity(event.id))
     const previous = (await this.graph.run(['log', '-1', '--format=%s', event.previous])) === 'room: kept collection baseline'
       ? await this.graph.run(['rev-parse', `${event.previous}^`]) : event.previous
-    if (!a || a.disabled || a.expected !== previous) { if (a) await this.unmodelled(a, 'refresh from unmodelled HEAD'); return }
+    if (!a || a.disabled || a.expected !== previous) {
+      if (a) await this.unmodelled(a, 'refresh from unmodelled HEAD')
+      else this.once(`unmodelled history: refresh participant no longer modelled (${this.names.get(identity(event.id)) ?? this.s.me.name})`)
+      return
+    }
     const target = await captureShadow(this.graph, this.s.dir, event.target, [], true)
     this.cover(lead, target)
     await this.newEvent(lead, 'refresh-target', target.entries)
@@ -560,7 +623,7 @@ export class ConflictShadow {
       || records.some(r => r.dir === this.s.dir && !['retired', 'abandoned'].includes(r.phase))) throw new Error('nested lead')
     if (r) {
       if (r.name !== a.name || r.lead.participant !== this.s.me.name || r.room !== this.s.roomName || r.outside) throw new Error('borrowed checkout')
-      verifyWorkerCheckout(common, r)
+      try { verifyWorkerCheckout(common, r) } catch { throw new Error('worker checkout identity unavailable') }
       if (r.sharedWith || records.some(other => other.id !== r.id && other.dir === r.dir && !['retired', 'abandoned'].includes(other.phase))) throw new Error('borrowed checkout')
       if ((await git(a.dir, ['rev-parse', 'HEAD'])).trim() !== a.expected) throw new Error('worker HEAD moved')
     }
@@ -577,7 +640,7 @@ export class ConflictShadow {
     const records = requireWorkerInventory(await registry.list())
     const lead = this.actors.get(this.s.me.name)
     if (!lead) {
-      if (this.now() - this.lastSummary >= 30_000) { this.lastSummary = this.now(); try { this.log('conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no modelled spawn anchor') } catch { /* swallowed */ } }
+      if (this.now() - this.lastSummary >= 30_000) { this.lastSummary = this.now(); try { this.log(`conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=${this.spawned ? 'workers exist but none could be followed' : 'no workers spawned in this session'}`) } catch { /* swallowed */ } }
       return
     }
     this.retire(records)
@@ -589,7 +652,7 @@ export class ConflictShadow {
       try {
         await this.validateHistory(a, records, registry.commonDir)
         const pub = await this.publication(a)
-        if (!pub) { this.forget(a.id); reasons.add('publication unavailable'); a.capture = undefined; continue }
+        if (!pub) { this.forget(a.id); this.once(`observation unavailable: publication unavailable (${a.name})`); reasons.add('publication unavailable'); a.capture = undefined; continue }
         if (a.scanned !== undefined && this.now() - a.scanned < INTERVAL) continue
         a.scanned = this.now()
         const publicationId = this.publicationIdentity(a.name)
@@ -602,10 +665,10 @@ export class ConflictShadow {
         const publishedBase = await this.graph.entries(pub.head.base)
         if (a !== lead) for (const e of a.carried) publishedBase.set(e.path, { mode: '100644', oid: e.sha })
         for (const p of new Set([...captured.entries.keys(), ...publishedBase.keys()]))
-          if (!a.gaps.has(p) && !pub.entries.has(p) && captured.entries.get(p)?.oid !== publishedBase.get(p)?.oid) throw new Error('publication moved')
+          if (!this.gap(a, p) && !pub.entries.has(p) && captured.entries.get(p)?.oid !== publishedBase.get(p)?.oid) throw new Error('publication moved')
         // Published changed versions must be byte-identical to the covered observation.
         for (const [p, entry] of pub.entries) {
-          if (a.gaps.has(p)) continue
+          if (this.gap(a, p)) continue
           const actual = captured.entries.get(p)
           if (entry.state !== 'shared' || (entry.change === 'D' ? !!actual : entry.hash !== actual?.oid)) throw new Error('publication moved')
         }
@@ -618,14 +681,16 @@ export class ConflictShadow {
       } catch (error) {
         if (this.closed) return
         a.capture = undefined; this.forget(a.id)
-        const reason = error instanceof Error && error.message.startsWith('over budget') ? 'over budget' : error instanceof Error && /^(nested lead|borrowed checkout|worker HEAD moved|unmodelled history:)/.test(error.message) ? error.message : 'snapshot unavailable or moving'
-        if (reason === 'snapshot unavailable or moving') this.once(`observation unavailable (${a.name})`)
-        if (reason === 'over budget') this.once('skipped: over budget (file count or snapshot)')
+        const reason = error instanceof Error && error.message.startsWith('over budget') ? 'over budget' : error instanceof Error && /^(nested lead|borrowed checkout|worker HEAD moved|unmodelled history:)/.test(error.message) ? this.reason(error, 'snapshot unavailable or moving') : 'snapshot unavailable or moving'
+        if (reason === 'snapshot unavailable or moving' || reason === 'over budget') this.once(`observation unavailable: ${this.reason(error, reason)} (${a.name})`)
         if (reason !== 'snapshot unavailable or moving' && reason !== 'over budget') await this.unmodelled(a, reason)
         reasons.add(reason)
       }
     }
     let pairs = 0, agreements = 0, disagreements = 0
+    if (![...this.actors.keys()].some(name => name !== this.s.me.name)
+      && records.some(r => r.lead.participant === this.s.me.name && !['discarding', 'retiring', 'retired', 'abandoned'].includes(r.phase)))
+      reasons.add('workers exist but none could be followed')
     const rows: string[] = [], recorded: { input: string; since: number; recorded?: boolean }[] = [], proofs: (() => boolean)[] = []
     let rowBytes = 0
     const actors = [...this.actors.values()]
@@ -636,17 +701,25 @@ export class ConflictShadow {
       if (performance.now() >= this.graph.deadline) throw new Error('over budget')
       const current = () => [a, b].every(x => x.publication && snapshotStillCurrent(this.s.room, x.publication,
         participantsView(this.s.room, this.s.awareness, this.now())))
-      if (!current()) { this.forget(a.id, b.id); reasons.add('publication moved'); continue }
+      if (!current()) {
+        this.forget(a.id, b.id); reasons.add('publication moved')
+        for (const actor of [a, b]) this.once(`observation unavailable: publication moved (${actor.name})`)
+        continue
+      }
       const slots = [...this.s.room.doc.getMap<ConflictSlot>('conflicts').values()].filter(s => s.kind === 'merge' && (s.owner === a.name && s.other === b.name || s.owner === b.name && s.other === a.name))
       let result: Awaited<ReturnType<ShadowGraph['compare']>>
       try { result = await this.graph.compare(a.node, b.node) }
-      catch (error) { if (this.closed) return; if (error instanceof Error && error.message.startsWith('over budget')) throw error; await this.unmodelled(a, 'graph unavailable'); if (this.actors.has(b.name)) await this.unmodelled(b, 'graph unavailable'); continue }
-      if (!current() || !await a.capture.current() || !await b.capture.current()) { this.forget(a.id, b.id); reasons.add('inputs moved'); continue }
+      catch (error) { if (this.closed) return; if (error instanceof Error && error.message.startsWith('over budget')) throw error; const reason = this.reason(error, 'graph unavailable'); await this.unmodelled(a, reason); if (this.actors.has(b.name)) await this.unmodelled(b, reason); continue }
+      if (!current() || !await a.capture.current() || !await b.capture.current()) {
+        this.forget(a.id, b.id); reasons.add('inputs moved')
+        for (const actor of [a, b]) this.once(`observation unavailable: inputs moved (${actor.name})`)
+        continue
+      }
       pairs++
       const paths = new Set([...result.paths, ...slots.map(s => s.path)])
       const input = identity(JSON.stringify([a.id, b.id, a.node, b.node, a.publicationId, b.publicationId, a.capture.fingerprint, b.capture.fingerprint]))
       for (const p of paths) {
-        if (p === '*' || a.gaps.has(p) || b.gaps.has(p)) { reasons.add('coverage gap'); continue }
+        if (p === '*' || this.gap(a, p) || this.gap(b, p)) { reasons.add('coverage gap'); continue }
         const shadow = result.paths.includes(p) ? 'conflict' : 'clean'
         if (!this.currentAnswer(a, b, p, slots)) { this.forget(a.id, b.id); reasons.add('publication or slot moved'); continue }
         const today = this.answer(a, b, p, slots)
@@ -685,7 +758,7 @@ export class ConflictShadow {
           recorded[i].recorded = true; disagreements++
         }
       } finally {
-        try { await handle.close() } catch { this.once('journal close failed (swallowed)'); this.stop() }
+        try { await handle.close() } catch { this.halt('journal close failed'); this.stop() }
         this.journal = undefined
       }
     }

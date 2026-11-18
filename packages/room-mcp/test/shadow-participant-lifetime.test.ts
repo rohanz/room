@@ -212,7 +212,7 @@ full('clears the family and logs its reason once when the lead becomes permanent
     await f.shadow.idle(); await f.shadow.idle()
     expect(state.halted).toBe(true)
     expect(log.mock.calls.filter(([line]) => line.includes('family stopped for this session'))).toEqual([
-      ['conflict shadow: family stopped for this session: unmodelled history: coverage changed; lead history lost (swallowed)'],
+      ['conflict shadow: family stopped for this session: unmodelled history: coverage changed; lead history lost (rohanz) (swallowed)'],
     ])
   } finally { f.shadow.stop() }
 })

@@ -183,7 +183,8 @@ full('stops at the private size ceiling, logs once and removes the family on lea
     const spy=vi.spyOn(f.shadow.graph,'compare')
     await f.shadow.idle();await f.shadow.idle()
     expect(spy).not.toHaveBeenCalled()
-    expect(f.logs.filter(l=>l.includes('session ceiling'))).toHaveLength(1)
+    expect(f.logs.filter(l=>l.includes('family stopped for this session')&&l.includes('session ceiling'))).toHaveLength(1)
+    for(const name of [f.s.me.name,f.d.name,f.u.name])expect(f.logs.filter(l=>l.includes('session ceiling')&&l.includes(`(${name})`))).toHaveLength(1)
     f.shadow.stop()
     await (f.shadow as unknown as {cleanup:Promise<void>}).cleanup
     expect(fs.existsSync(f.shadow.graph.root)).toBe(false)

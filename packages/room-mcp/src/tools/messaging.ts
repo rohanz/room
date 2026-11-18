@@ -245,7 +245,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             // Checked again under the lease: a dir= worker may have started in this checkout since the first check.
             const refusedNow = refreshRefusal(s.dir, record, requireWorkerEvidence(await registry.checkoutUsers(record)).map(user => user.record.tag))
             if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
-            const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'refresh', undefined, record.id) : undefined
+            const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'refresh', undefined, { id: record.id, name: record.name }) : undefined
             let outcome: RefreshOutcome
             try { outcome = await refreshWorkerBase(s.dir, record) }
             catch (error) { return `error: could not refresh ${tag}: ${error instanceof Error ? error.message : String(error)}; nothing sent. Check ${record.dir} with git status before collecting.` }

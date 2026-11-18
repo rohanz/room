@@ -295,7 +295,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           catch (e) { throw new Error(`could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`) }
         }
-        const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'spawn', preparing, id) : undefined
+        const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'spawn', preparing, { id, name: record.name }) : undefined
         await registry.command(id, { type: 'prepare-finish', created, branchCreated: prepared?.branchCreated, witness: prepared?.witness, branchOid: prepared?.branchOid,
           facts: !suppliedDir ? { base, carriedBase, carriedUntracked, skippedCarry } : {} })
         enqueueShadow(s, () => ({ kind: 'spawn', generation: shadowGeneration?.generation, supplied: !!suppliedDir, carry: a.carry !== false, carryFailed, preparedHead: prepared?.witness?.branchOid, record: { ...record, base, carriedBase, carriedUntracked, skippedCarry,

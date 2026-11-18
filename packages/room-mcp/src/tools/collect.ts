@@ -655,7 +655,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     if (!files.length) out.push('nothing copied (empty directories)')
     out.push(await collectedTreeEvidence(leadRoot))
 
-    enqueueShadow(s, () => ({ kind: 'unsupported', id: w.id, reason: 'partial collection' }), state.log, process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'unsupported') : undefined)
+    enqueueShadow(s, () => ({ kind: 'unsupported', id: w.id, reason: 'partial collection' }), state.log, process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(s, 'unsupported', undefined, { id: w.id, name: w.name }) : undefined)
     // Named artifacts are only a partial collection; keep the worker recoverable.
     return out.join('\n')
   }
@@ -757,7 +757,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     for (const { w } of selected) for (const { p, identity } of snapshots.get(w.id)?.sources ?? []) {
       if (!sameIdentity(identity, fileIdentity(safePath(workerRoots.get(w)!, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
     }
-    const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(lead, 'collection', undefined, () => selected.map(({ w }) => w.id)) : undefined
+    const shadowGeneration = process.env.ROOM_CONFLICT_SHADOW === '1' ? reserveShadow(lead, 'collection', undefined, () => selected.map(({ w }) => ({ id: w.id, name: w.name }))) : undefined
     const written: typeof changes = []
     try {
       for (const change of changes) {

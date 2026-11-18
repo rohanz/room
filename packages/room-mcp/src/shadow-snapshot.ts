@@ -38,14 +38,33 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
   dir = await fs.realpath(dir)
   const root = await fs.stat(dir), marker = await fs.lstat(path.join(dir, '.git'))
   const raw = await graph.entries(base)
-  for (const entry of carried) raw.set(entry.path, { mode: entry.mode && entry.mode & 0o111 ? '100755' : '100644', oid: entry.sha })
+  // Index metadata recognizes newly added gitlinks too; never inspect submodule HEAD,
+  // objects, worktree or attributes. A staged pointer change is outside coverage.
+  const stageArgs = ['ls-files', '--stage', '-z']
+  const stages = await git(dir, stageArgs)
+  const gitlinks = new Map([...raw].filter(([, e]) => e.mode === '160000'))
+  const baseGitlinks = [...gitlinks.keys()]
+  const indexedGitlinks = (text: string) => text.split('\0').flatMap(line => {
+    const m = /^160000 [a-f0-9]+ [0-3]\t([\s\S]+)$/.exec(line)
+    return m ? [m[1]] : []
+  })
+  const linkSignature = (text: string) => JSON.stringify([...new Set([...baseGitlinks, ...indexedGitlinks(text)])].sort())
+  for (const line of stages.split('\0').filter(Boolean)) {
+    const m = /^160000 ([a-f0-9]+) [0-3]\t([\s\S]+)$/.exec(line)
+    if (m && !gitlinks.has(m[2])) gitlinks.set(m[2], { mode: '160000', oid: m[1] })
+  }
+  const opaque = (p: string) => [...gitlinks.keys()].some(link => p === link || p.startsWith(link + '/'))
+  const comparableCarried = carried.filter(entry => !opaque(entry.path))
+  for (const entry of comparableCarried) raw.set(entry.path, { mode: entry.mode && entry.mode & 0o111 ? '100755' : '100644', oid: entry.sha })
   const inventoryArgs = ['ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard']
   const inventory = (await git(dir, inventoryArgs)).split('\0').filter(Boolean)
-  const paths = [...new Set([...raw.keys(), ...inventory.map(entry => entry.slice(2))])].sort()
+  const inventorySignature = (listed: string[]) => JSON.stringify(listed.filter(entry => !opaque(entry.slice(2))))
+  const allPaths = new Set([...raw.keys(), ...inventory.map(entry => entry.slice(2))])
+  if (allPaths.size > LIMIT) throw new Error('over budget: file count')
+  const paths = [...allPaths].filter(p => !opaque(p)).sort()
   // readDisk already hashes every path against its base. Treat every candidate as potentially
   // changed, preserving its policy/budget decisions without a diff that could execute filters.
   const scanInventory = { paths, changed: new Set(paths), indexed: new Set(inventory.filter(entry => entry[0] !== '?').map(entry => entry.slice(2))) }
-  if (paths.length > LIMIT) throw new Error('over budget: file count')
   // Ordinary unused drivers are harmless; state-word names are ambiguous in check-attr's output.
   const config = new Map((await gitStream(dir, ['config', '-z', '--get-regexp', '^((filter|merge)\\.(set|unset|unspecified)\\..*|merge\\.default|core\\.(autocrlf|sparsecheckout|sparsecheckoutcone)|remote\\..*\\.promisor|extensions\\.partialclone)$'], '',
     { timeoutMs: 3000, maxBytes: 65536, okCodes: [0, 1] })).toString().split('\0').filter(Boolean).map(record => {
@@ -75,23 +94,20 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
   const expectedHead = (await git(dir, ['rev-parse', 'HEAD'])).trim()
   const admin = worktreeGitDirFromDotGit(dir)
   if (['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some(p => fsSync.existsSync(path.join(admin, p)))) throw new Error('unmodelled history: Git operation')
-  const scan = () => readDisk(dir, inputs, paths, safe, new Map(), new Map(carried.map(e => [e.path, e])), () => performance.now() < graph.deadline, undefined, scanInventory)
+  const scan = () => readDisk(dir, inputs, paths, safe, new Map(), new Map(comparableCarried.map(e => [e.path, e])), () => performance.now() < graph.deadline, undefined, scanInventory)
   const facts = await scan()
-  const metadata = new Map((await graph.run(['ls-tree', '-r', '-l', '-z', base])).split('\0').filter(Boolean).map(line => {
-    const m = /^\d+ blob [a-f0-9]+ +([0-9]+)\t([\s\S]+)$/.exec(line)
-    return m ? [m[2], Number(m[1])] as const : ['', 0] as const
-  }))
-  if (carried.length) {
-    const sizes = await graph.run(['cat-file', '--batch-check=%(objectname) %(objectsize)'], carried.map(e => e.sha).join('\n') + '\n')
+  const metadata = new Map([...raw].map(([p, e]) => [p, e.size]))
+  if (comparableCarried.length) {
+    const sizes = await graph.run(['cat-file', '--batch-check=%(objectname) %(objectsize)'], comparableCarried.map(e => e.sha).join('\n') + '\n')
     const byHash = new Map(sizes.split('\n').map(line => { const [hash, size] = line.split(' '); return [hash, Number(size)] }))
-    for (const e of carried) { const size = byHash.get(e.sha); if (!Number.isFinite(size)) throw new Error('missing carried object'); raw.get(e.path)!.size = size }
+    for (const e of comparableCarried) { const size = byHash.get(e.sha); if (!Number.isFinite(size)) throw new Error('missing carried object'); raw.get(e.path)!.size = size }
   }
   for (const fact of facts) fact.baseSize = metadata.get(fact.path) ?? raw.get(fact.path)?.size
   const publication = plan(inputs, facts, '00'.repeat(32))
   if (publication.unsettled.length) throw new Error('moving snapshot')
   const ignored = await ignoredTrackedPaths(dir, paths)
-  const gaps = new Set([...publication.excludedPaths, ...paths.filter(p => ignored.has(p) || !safe(p) || inputs.rules.roomIgnore.ignores(p))])
-  const entries = new Map<string, ShadowEntry>()
+  const gaps = new Set([...gitlinks.keys(), ...publication.excludedPaths, ...paths.filter(p => ignored.has(p) || !safe(p) || inputs.rules.roomIgnore.ignores(p))])
+  const entries = new Map<string, ShadowEntry>(gitlinks)
   for (const fact of facts) {
     if (gaps.has(fact.path)) continue
     const entry = publication.entries.get(fact.path)
@@ -117,7 +133,10 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
     if (root.dev !== nextRoot.dev || root.ino !== nextRoot.ino || marker.dev !== nextMarker.dev || marker.ino !== nextMarker.ino) return false
     if (await controls() !== policyText || (await git(dir, ['rev-parse', 'HEAD'])).trim() !== expectedHead) return false
     const listed = (await git(dir, inventoryArgs)).split('\0').filter(Boolean)
-    if (JSON.stringify(listed) !== JSON.stringify(inventory)) return false
+    if (inventorySignature(listed) !== inventorySignature(inventory)) return false
+    // Opaque pointer movement cannot make an otherwise stable observation unavailable.
+    // Only a new gitlink boundary can change which ordinary paths were scanned.
+    if (linkSignature(await git(dir, stageArgs)) !== linkSignature(stages)) return false
     return signature(await scan()) === signature(facts)
   }
   if (!await current()) throw new Error('moving snapshot')
