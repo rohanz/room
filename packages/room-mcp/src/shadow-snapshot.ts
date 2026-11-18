@@ -11,12 +11,22 @@ import { ShadowGraph, type ShadowEntry } from './shadow-graph.js'
 const LIMIT = 2000, SIZE = 512 * 1024, BUDGET = 8 * 1024 * 1024
 // Byte conversions, the legacy spelling of text/eol, and file-level merge semantics.
 // Diff/linguist/export/whitespace/marker-size attributes do not change a path-level merge answer.
-const ATTRIBUTES = ['filter', 'merge', 'text', 'eol', 'crlf', 'working-tree-encoding', 'ident']
+const ATTRIBUTES = ['filter', 'merge', 'text', 'eol', 'crlf', 'working-tree-encoding', 'ident'] as const
+/** Diagnostics retain only a known attribute name and one covered path, never its value/config key. */
+export class ShadowAttributeError extends Error {
+  constructor(readonly attribute: typeof ATTRIBUTES[number] | undefined, readonly file: string) {
+    super(ShadowAttributeError.describe(attribute, file))
+  }
+  private static describe(attribute: typeof ATTRIBUTES[number] | undefined, file: string): string {
+    return `unmodelled history: attribute ${attribute ?? 'configuration'} on ${JSON.stringify(file)}`
+  }
+  diagnostic(): string { return ShadowAttributeError.describe(this.attribute, this.file) }
+}
 async function checkAttributes(dir: string, covered: string[], config: Map<string, string>): Promise<void> {
   if (!covered.length) return
   for (const [key, value] of config) {
     if (key === 'core.autocrlf' ? value !== 'false' : key === 'merge.default' || /^(filter|merge)\.(set|unset|unspecified)\./.test(key))
-      throw new Error(`unmodelled history: attribute configuration ${key} on ${JSON.stringify(covered[0])}`)
+      throw new ShadowAttributeError(undefined, covered[0])
   }
   const output = (await gitStream(dir, ['check-attr', '-z', '--stdin', ...ATTRIBUTES], covered.join('\0') + '\0',
     { timeoutMs: 3000, maxBytes: 4 * 1024 * 1024 })).toString().split('\0')
@@ -26,7 +36,7 @@ async function checkAttributes(dir: string, covered: string[], config: Map<strin
     const file = covered[Math.floor(i / (ATTRIBUTES.length * 3))], attribute = ATTRIBUTES[i / 3 % ATTRIBUTES.length]
     if (output[i] !== file || output[i + 1] !== attribute) throw new Error('invalid shadow attributes')
     if (output[i + 2] !== 'unspecified')
-      throw new Error(`unmodelled history: attribute ${attribute}=${output[i + 2]} on ${JSON.stringify(file)}`)
+      throw new ShadowAttributeError(attribute, file)
   }
 }
 export interface ShadowCapture {

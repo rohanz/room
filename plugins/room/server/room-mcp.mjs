@@ -34297,7 +34297,7 @@ async function checkAttributes(dir, covered, config2) {
   if (!covered.length) return;
   for (const [key3, value5] of config2) {
     if (key3 === "core.autocrlf" ? value5 !== "false" : key3 === "merge.default" || /^(filter|merge)\.(set|unset|unspecified)\./.test(key3))
-      throw new Error(`unmodelled history: attribute configuration ${key3} on ${JSON.stringify(covered[0])}`);
+      throw new ShadowAttributeError(void 0, covered[0]);
   }
   const output = (await gitStream(
     dir,
@@ -34310,7 +34310,7 @@ async function checkAttributes(dir, covered, config2) {
     const file2 = covered[Math.floor(i / (ATTRIBUTES.length * 3))], attribute = ATTRIBUTES[i / 3 % ATTRIBUTES.length];
     if (output[i] !== file2 || output[i + 1] !== attribute) throw new Error("invalid shadow attributes");
     if (output[i + 2] !== "unspecified")
-      throw new Error(`unmodelled history: attribute ${attribute}=${output[i + 2]} on ${JSON.stringify(file2)}`);
+      throw new ShadowAttributeError(attribute, file2);
   }
 }
 async function captureShadow(graph, dir, base, carried = [], initial = false) {
@@ -34433,7 +34433,7 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
   if (!await current3()) throw new Error("moving snapshot");
   return { entries, gaps, head: expectedHead, fingerprint, current: current3 };
 }
-var LIMIT, SIZE, BUDGET, ATTRIBUTES;
+var LIMIT, SIZE, BUDGET, ATTRIBUTES, ShadowAttributeError;
 var init_shadow_snapshot = __esm({
   "packages/room-mcp/src/shadow-snapshot.ts"() {
     "use strict";
@@ -34445,6 +34445,21 @@ var init_shadow_snapshot = __esm({
     SIZE = 512 * 1024;
     BUDGET = 8 * 1024 * 1024;
     ATTRIBUTES = ["filter", "merge", "text", "eol", "crlf", "working-tree-encoding", "ident"];
+    ShadowAttributeError = class _ShadowAttributeError extends Error {
+      constructor(attribute, file2) {
+        super(_ShadowAttributeError.describe(attribute, file2));
+        this.attribute = attribute;
+        this.file = file2;
+      }
+      attribute;
+      file;
+      static describe(attribute, file2) {
+        return `unmodelled history: attribute ${attribute ?? "configuration"} on ${JSON.stringify(file2)}`;
+      }
+      diagnostic() {
+        return _ShadowAttributeError.describe(this.attribute, this.file);
+      }
+    };
   }
 });
 
@@ -34512,7 +34527,7 @@ function stopShadow(s) {
   } catch {
   }
 }
-var CAP, INTERVAL, PASS_MS, identity2, hookFailures, families, fallbackLog, ConflictShadow;
+var CAP, INTERVAL, PASS_MS, failureReasons, ioReasons, identity2, hookFailures, families, fallbackLog, ConflictShadow;
 var init_conflict_shadow = __esm({
   "packages/room-mcp/src/conflict-shadow.ts"() {
     "use strict";
@@ -34530,6 +34545,83 @@ var init_conflict_shadow = __esm({
     CAP = 200 * 1024 * 1024;
     INTERVAL = 5e3;
     PASS_MS = 1e4;
+    failureReasons = new Map([
+      "shadow stopped",
+      "shadow source unavailable",
+      "unsupported object format",
+      "unsupported tree entry",
+      "unsafe shadow state",
+      "private Git still running or stopped",
+      "invalid shadow identity",
+      "invalid event commit",
+      "invalid shadow attributes",
+      "unreadable policy",
+      "missing carried object",
+      "moving snapshot",
+      "publication moved",
+      "family ownership moved",
+      "worker checkout identity unavailable",
+      "unmodelled lead history",
+      "unmodelled generation",
+      "unmodelled delivery",
+      "unmodelled delivery HEAD",
+      "unmodelled history after refresh",
+      "final collection generation unavailable",
+      "lead moved after final collection",
+      "delivery coverage gap",
+      "nested lead",
+      "borrowed checkout",
+      "worker HEAD moved",
+      "malformed merge result",
+      "malformed merge stages",
+      "malformed merge information",
+      "conflict without paths",
+      "unmodelled history: invalid tree entry kind or mode",
+      "unmodelled history: sparse checkout or partial clone",
+      "unmodelled history: Git operation",
+      "unmodelled history: HEAD ancestry",
+      "unmodelled history: coverage changed",
+      "over budget",
+      "over budget: storage",
+      "over budget: file count",
+      "over budget: private pass",
+      ...[
+        "init",
+        "rev-parse",
+        "ls-tree",
+        "read-tree",
+        "update-index",
+        "write-tree",
+        "hash-object",
+        "commit-tree",
+        "update-ref",
+        "rev-list",
+        "merge-tree",
+        "merge-base",
+        "cat-file",
+        "log"
+      ].map((step2) => `shadow Git step failed: ${step2}`)
+    ].map((reason) => [reason, reason]));
+    ioReasons = new Map([
+      "EACCES",
+      "EPERM",
+      "ENOENT",
+      "ENOTDIR",
+      "EISDIR",
+      "ELOOP",
+      "ENOSPC",
+      "EIO",
+      "EROFS",
+      "EMFILE",
+      "ENFILE",
+      "ETIMEDOUT",
+      "ENOMEM",
+      "EBUSY",
+      "EINVAL",
+      "ENAMETOOLONG",
+      "EPIPE",
+      "ECANCELED"
+    ].map((code) => [code, code]));
     identity2 = (name) => createHash12("sha256").update(name).digest("hex").slice(0, 24);
     hookFailures = /* @__PURE__ */ new WeakMap();
     families = /* @__PURE__ */ new WeakMap();
@@ -34626,13 +34718,15 @@ var init_conflict_shadow = __esm({
       }
       halt(reason, rejected) {
         if (this.halted) return;
-        const names = /* @__PURE__ */ new Set([...this.actors.keys(), ...[...this.queue.values(), ...rejected ? [rejected] : []].flatMap((t) => this.ownerNames(t))]);
+        const queue = this.queue;
         this.haltReason = reason;
         this.halted = true;
-        this.queue.clear();
+        this.queue = /* @__PURE__ */ new Map();
         this.mutating = 0;
-        this.pending.clear();
+        this.pending = /* @__PURE__ */ new Map();
         this.removal = Promise.resolve().then(async () => {
+          const names = /* @__PURE__ */ new Set([...this.actors.keys(), ...[...queue.values(), ...rejected ? [rejected] : []].flatMap((t) => this.ownerNames(t))]);
+          queue.clear();
           this.once(`family stopped for this session: ${reason} (${this.s.me.name}) (swallowed)`);
           for (const name of names) if (name !== this.s.me.name) this.once(`unmodelled history: family stopped: ${reason} (${name})`);
           this.graph.abort();
@@ -34640,6 +34734,7 @@ var init_conflict_shadow = __esm({
           this.anchors.clear();
           this.heads.clear();
           this.spawns.clear();
+          this.names.clear();
         });
       }
       ownerIds(ticket) {
@@ -34657,11 +34752,10 @@ var init_conflict_shadow = __esm({
       }
       /** Only shadow-defined reasons, never subprocess stderr, file contents or arbitrary exception text. */
       reason(error2, fallback2) {
+        if (error2 instanceof ShadowAttributeError) return error2.diagnostic();
         if (!(error2 instanceof Error)) return fallback2;
-        const code = error2.code;
-        if (code && /^E[A-Z0-9]+$/.test(code)) return `${fallback2}: ${code}`;
-        const message2 = error2.message.slice(0, 1e3);
-        return /^(unmodelled history:|over budget(?:$|:)|shadow Git step failed:|shadow source unavailable$|unsupported (?:object format|tree entry)$|unsafe shadow state$|invalid shadow attributes$|unreadable policy$|missing carried object$|moving snapshot$|publication moved$|family ownership moved$|worker checkout identity unavailable$|unmodelled (?:lead history|generation|delivery|delivery HEAD|history after refresh)$|final collection generation unavailable$|lead moved after final collection$|delivery coverage gap$|nested lead$|borrowed checkout$|worker HEAD moved$|malformed merge (?:result|stages|information)$|conflict without paths$)/.test(message2) ? message2 : fallback2;
+        const code = ioReasons.get(error2.code ?? "");
+        return code ? `${fallback2}: ${code}` : failureReasons.get(error2.message) ?? fallback2;
       }
       cancel(ticket) {
         if (!ticket.make && ticket.kind !== "spawn" && ticket.kind !== "remove") this.mutating--;
@@ -34903,10 +34997,12 @@ var init_conflict_shadow = __esm({
         this.mutating = 0;
         this.cancellation.abort();
         this.graph.abort();
-        for (const a of [...this.actors.values()]) void this.remove(a);
+        if (!this.halted) {
+          for (const a of [...this.actors.values()]) void this.remove(a);
+          this.names.clear();
+        }
         this.heads.clear();
         this.spawns.clear();
-        this.names.clear();
         const journal = this.journal;
         this.journal = void 0;
         try {
@@ -35281,7 +35377,7 @@ var init_conflict_shadow = __esm({
           if (this.now() - this.lastSummary >= 3e4) {
             this.lastSummary = this.now();
             try {
-              this.log(`conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=${this.spawned ? "workers exist but none could be followed" : "no workers spawned in this session"}`);
+              this.log(`conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=${this.spawned ? "workers exist but none could be followed" : "no workers spawned in this session"} participant=${JSON.stringify(this.s.me.name)}`);
             } catch {
             }
           }
@@ -35294,7 +35390,7 @@ var init_conflict_shadow = __esm({
         for (const a of [...this.actors.values()]) {
           if (a.disabled) {
             await this.unmodelled(a, a.disabled);
-            reasons.add(a.disabled);
+            reasons.add(a.disabled.startsWith("unmodelled history:") ? "unmodelled history" : a.disabled);
             continue;
           }
           try {
@@ -35341,7 +35437,7 @@ var init_conflict_shadow = __esm({
             const reason = error2 instanceof Error && error2.message.startsWith("over budget") ? "over budget" : error2 instanceof Error && /^(nested lead|borrowed checkout|worker HEAD moved|unmodelled history:)/.test(error2.message) ? this.reason(error2, "snapshot unavailable or moving") : "snapshot unavailable or moving";
             if (reason === "snapshot unavailable or moving" || reason === "over budget") this.once(`observation unavailable: ${this.reason(error2, reason)} (${a.name})`);
             if (reason !== "snapshot unavailable or moving" && reason !== "over budget") await this.unmodelled(a, reason);
-            reasons.add(reason);
+            reasons.add(reason.startsWith("unmodelled history:") ? "unmodelled history" : reason);
           }
         }
         let pairs = 0, agreements = 0, disagreements = 0;
@@ -35471,7 +35567,7 @@ var init_conflict_shadow = __esm({
         if (this.now() - this.lastSummary >= 3e4) {
           this.lastSummary = this.now();
           try {
-            this.log(`conflict shadow: pairs=${pairs} agreements=${agreements} disagreements=${disagreements} skipped=${[...reasons].join(",") || "none"} passMs=${Math.round(performance.now() - started)}`);
+            this.log(`conflict shadow: pairs=${pairs} agreements=${agreements} disagreements=${disagreements} skipped=${[...reasons].join(",") || "none"} passMs=${Math.round(performance.now() - started)} participant=${JSON.stringify(this.s.me.name)}`);
           } catch {
           }
         }

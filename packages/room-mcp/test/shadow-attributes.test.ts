@@ -33,7 +33,7 @@ it.each([
   globalLfs()
   put(repo, '.gitattributes', attributes)
   if (modelled) expect((await snapshot()).entries.has('shared.txt')).toBe(true)
-  else await expect(snapshot()).rejects.toThrow('unmodelled history: attribute filter=unset')
+  else await expect(snapshot()).rejects.toThrow('unmodelled history: attribute filter on')
 })
 it('ignores attributes on excluded, oversized and binary paths', async () => {
   globalLfs()
@@ -53,7 +53,7 @@ it('resolves info/attributes and a global attributes file by covered path', asyn
   fs.writeFileSync(path.join(repo, '.git/info/attributes'), 'outside/** ident\n')
   expect((await snapshot()).entries.has('shared.txt')).toBe(true)
   fs.appendFileSync(attrs, 'shared.txt ident\n')
-  await expect(snapshot()).rejects.toThrow('attribute ident=set on "shared.txt"')
+  await expect(snapshot()).rejects.toThrow('attribute ident on "shared.txt"')
 })
 it('queries all covered paths in one NUL-delimited check-attr batch', async () => {
   const calls: string[][] = []
@@ -67,36 +67,36 @@ it('queries all covered paths in one NUL-delimited check-attr batch', async () =
   } finally { setGitObserver(undefined) }
 })
 it.each([
-  ['filter=lfs', 'filter=lfs'], ['eol=crlf', 'eol=crlf'], ['merge=custom', 'merge=custom'],
-  ['text', 'text=set'], ['text=auto', 'text=auto'], ['text=input', 'text=input'],
-  ['crlf', 'crlf=set'], ['crlf=input', 'crlf=input'], ['crlf=auto', 'crlf=auto'],
-  ['working-tree-encoding=UTF-16', 'working-tree-encoding=UTF-16'], ['ident', 'ident=set'],
-  ['-merge', 'merge=unset'], ['merge=union', 'merge=union'],
-])('skips a covered path with %s and identifies the attribute and example path', async (setting, reason) => {
+  ['filter=lfs', 'filter'], ['eol=crlf', 'eol'], ['merge=custom', 'merge'],
+  ['text', 'text'], ['text=auto', 'text'], ['text=input', 'text'],
+  ['crlf', 'crlf'], ['crlf=input', 'crlf'], ['crlf=auto', 'crlf'],
+  ['working-tree-encoding=UTF-16', 'working-tree-encoding'], ['ident', 'ident'],
+  ['-merge', 'merge'], ['merge=union', 'merge'],
+])('skips a covered path with %s and identifies the attribute and example path', async (setting, attribute) => {
   put(repo, '.gitattributes', `shared.txt ${setting}\n`)
-  await expect(snapshot()).rejects.toThrow(`unmodelled history: attribute ${reason} on "shared.txt"`)
+  await expect(snapshot()).rejects.toThrow(`unmodelled history: attribute ${attribute} on "shared.txt"`)
 })
 it('skips an active globally configured LFS filter without invoking it', async () => {
   globalLfs()
   put(repo, '.gitattributes', 'shared.txt filter=lfs\n')
-  await expect(snapshot()).rejects.toThrow('attribute filter=lfs on "shared.txt"')
+  await expect(snapshot()).rejects.toThrow('attribute filter on "shared.txt"')
 })
 it('checks deleted covered paths too', async () => {
   fs.unlinkSync(path.join(repo, 'shared.txt'))
   put(repo, '.gitattributes', 'shared.txt filter=lfs\n')
-  await expect(snapshot()).rejects.toThrow('attribute filter=lfs on "shared.txt"')
+  await expect(snapshot()).rejects.toThrow('attribute filter on "shared.txt"')
 })
 it.each(['true', 'input'])('skips implicit core.autocrlf=%s conversion on covered paths', async value => {
   git(repo, 'config', 'core.autocrlf', value)
-  await expect(snapshot()).rejects.toThrow('configuration core.autocrlf on')
+  await expect(snapshot()).rejects.toThrow('configuration on')
   put(repo, '.gitattributes', '* -text\n')
-  await expect(snapshot()).rejects.toThrow('configuration core.autocrlf on')
+  await expect(snapshot()).rejects.toThrow('configuration on')
 })
 it('rejects merge.default even with explicit text merges', async () => {
   git(repo, 'config', 'merge.default', 'custom')
-  await expect(snapshot()).rejects.toThrow('configuration merge.default on')
+  await expect(snapshot()).rejects.toThrow('configuration on')
   put(repo, '.gitattributes', '* merge=text\n')
-  await expect(snapshot()).rejects.toThrow('configuration merge.default on')
+  await expect(snapshot()).rejects.toThrow('configuration on')
 })
 it('skips checkout attribute overrides and keeps private merges independent of global attributes', async () => {
   const config = path.join(process.env.XDG_CONFIG_HOME!, 'git')
@@ -106,7 +106,7 @@ it('skips checkout attribute overrides and keeps private merges independent of g
   const graph = new ShadowGraph(path.join(repo, '.git/room/shadow/global-attributes'), repo)
   await graph.init()
   const head = git(repo, 'rev-parse', 'HEAD')
-  await expect(captureShadow(graph, repo, head)).rejects.toThrow('attribute merge=text')
+  await expect(captureShadow(graph, repo, head)).rejects.toThrow('attribute merge on')
   const entries = await graph.entries(head)
   const anchor = await graph.event('spawn', await graph.tree(entries), [])
   const a = new Map(entries), b = new Map(entries)
@@ -126,7 +126,7 @@ it.each(['filter=lfs', 'eol=crlf', 'merge=custom'])('logs a covered worker %s on
     expect(f.internal.actors.has(f.d.name)).toBe(false)
     const diagnostics = log.mock.calls.filter(([line]) => String(line).startsWith('conflict shadow: unmodelled history:'))
     expect(diagnostics).toHaveLength(1)
-    expect(diagnostics[0][0]).toContain(`attribute ${setting} on "shared.txt"`)
+    expect(diagnostics[0][0]).toContain(`attribute ${setting.split('=')[0]} on "shared.txt"`)
     expect(diagnostics[0][0]).toContain(f.d.name)
   } finally { f.shadow.stop() }
 })
@@ -139,7 +139,7 @@ it.each(['filter=lfs', 'eol=crlf', 'merge=custom'])('preserves the %s diagnostic
     const ticket = shadow.reserve('spawn', shadow.preparation(), d.id)!
     shadow.enqueue(() => ({ kind: 'spawn', record, supplied: false }), ticket)
     await shadow.idle(); await shadow.idle()
-    expect(log.mock.calls.filter(([line]) => line.includes(`attribute ${setting} on "shared.txt"`))).toHaveLength(1)
+    expect(log.mock.calls.filter(([line]) => line.includes(`attribute ${setting.split('=')[0]} on "shared.txt"`))).toHaveLength(1)
     expect((shadow as any).actors.has(d.name)).toBe(false)
   } finally { shadow.stop() }
 })

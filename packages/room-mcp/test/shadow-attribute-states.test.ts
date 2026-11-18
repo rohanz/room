@@ -37,7 +37,7 @@ it.each(['filter', 'merge'])('rejects unused %s drivers with ambiguous state-wor
   for (const name of ['set', 'unset', 'unspecified']) {
     const key = `${kind}.${name}.${kind === 'filter' ? 'clean' : 'driver'}`
     git(repo, 'config', key, 'false')
-    await expect(captureShadow(g, repo, head)).rejects.toThrow(`attribute configuration ${key} on`)
+    await expect(captureShadow(g, repo, head)).rejects.toThrow(`attribute configuration on`)
     git(repo, 'config', '--unset', key)
   }
 })
@@ -45,7 +45,7 @@ it.each(['filter', 'merge'])('rejects unused %s drivers with ambiguous state-wor
 it.each(['no', 'off', '0', ''])('rejects core.autocrlf=%s without interpreting boolean spellings', async value => {
   git(repo, 'config', 'core.autocrlf', value)
   const g = await graph()
-  await expect(captureShadow(g, repo, git(repo, 'rev-parse', 'HEAD'))).rejects.toThrow('attribute configuration core.autocrlf on')
+  await expect(captureShadow(g, repo, git(repo, 'rev-parse', 'HEAD'))).rejects.toThrow('attribute configuration on')
 })
 
 it('allows explicit core.autocrlf=false but refuses any merge.default setting', async () => {
@@ -54,6 +54,6 @@ it('allows explicit core.autocrlf=false but refuses any merge.default setting', 
   expect((await captureShadow(g, repo, head)).entries.has('shared.txt')).toBe(true)
   for (const value of ['text', '']) {
     git(repo, 'config', 'merge.default', value)
-    await expect(captureShadow(g, repo, head)).rejects.toThrow('attribute configuration merge.default on')
+    await expect(captureShadow(g, repo, head)).rejects.toThrow('attribute configuration on')
   }
 })

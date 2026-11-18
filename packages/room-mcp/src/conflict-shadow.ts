@@ -16,9 +16,26 @@ import type { WorkerRecord } from './worker-status.js'
 import type { Session } from './session.js'
 import type { ConflictSlot } from './conflict-set.js'
 import { ShadowGraph, type ShadowEntry } from './shadow-graph.js'
-import { captureShadow, type ShadowCapture } from './shadow-snapshot.js'
+import { captureShadow, ShadowAttributeError, type ShadowCapture } from './shadow-snapshot.js'
 
 const CAP = 200 * 1024 * 1024, INTERVAL = 5000, PASS_MS = 10_000
+// Exact, finite vocabulary. Never treat an exception-message prefix or arbitrary errno as safe text.
+const failureReasons = new Map([
+  'shadow stopped', 'shadow source unavailable', 'unsupported object format', 'unsupported tree entry', 'unsafe shadow state',
+  'private Git still running or stopped', 'invalid shadow identity', 'invalid event commit', 'invalid shadow attributes',
+  'unreadable policy', 'missing carried object', 'moving snapshot', 'publication moved', 'family ownership moved',
+  'worker checkout identity unavailable', 'unmodelled lead history', 'unmodelled generation', 'unmodelled delivery',
+  'unmodelled delivery HEAD', 'unmodelled history after refresh', 'final collection generation unavailable',
+  'lead moved after final collection', 'delivery coverage gap', 'nested lead', 'borrowed checkout', 'worker HEAD moved',
+  'malformed merge result', 'malformed merge stages', 'malformed merge information', 'conflict without paths',
+  'unmodelled history: invalid tree entry kind or mode', 'unmodelled history: sparse checkout or partial clone',
+  'unmodelled history: Git operation', 'unmodelled history: HEAD ancestry', 'unmodelled history: coverage changed',
+  'over budget', 'over budget: storage', 'over budget: file count', 'over budget: private pass',
+  ...['init', 'rev-parse', 'ls-tree', 'read-tree', 'update-index', 'write-tree', 'hash-object', 'commit-tree',
+    'update-ref', 'rev-list', 'merge-tree', 'merge-base', 'cat-file', 'log'].map(step => `shadow Git step failed: ${step}`),
+].map(reason => [reason, reason]))
+const ioReasons = new Map(['EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ELOOP', 'ENOSPC', 'EIO', 'EROFS',
+  'EMFILE', 'ENFILE', 'ETIMEDOUT', 'ENOMEM', 'EBUSY', 'EINVAL', 'ENAMETOOLONG', 'EPIPE', 'ECANCELED'].map(code => [code, code]))
 const identity = (name: string) => createHash('sha256').update(name).digest('hex').slice(0, 24)
 type Actor = { name: string; id: string; dir: string; expected: string; base: string; carried: NonNullable<WorkerRecord['carriedUntracked']>;
   node: string; tree: string; anchor: string; entries: Map<string, ShadowEntry>; gaps: Set<string>; covered: Set<string>; events: string[]; scanned?: number; capture?: ShadowCapture; publication?: ParticipantSnapshot; publicationId?: string; disabled?: string; ending?: boolean }
@@ -142,15 +159,19 @@ export class ConflictShadow {
   }
   private halt(reason: string, rejected?: Pick<ShadowReservation, 'kind' | 'owners'>): void {
     if (this.halted) return
-    const names = new Set([...this.actors.keys(), ...[...this.queue.values(), ...(rejected ? [rejected] : [])].flatMap(t => this.ownerNames(t))])
+    // reserve() can call us on a lifecycle stack. Detach bounded facts in O(1);
+    // enumerating participants and invoking any deferred owner accessor belongs to the private job.
+    const queue = this.queue
     this.haltReason = reason
-    this.halted = true; this.queue.clear(); this.mutating = 0; this.pending.clear()
+    this.halted = true; this.queue = new Map(); this.mutating = 0; this.pending = new Map()
     this.removal = Promise.resolve().then(async () => {
+      const names = new Set([...this.actors.keys(), ...[...queue.values(), ...(rejected ? [rejected] : [])].flatMap(t => this.ownerNames(t))])
+      queue.clear()
       this.once(`family stopped for this session: ${reason} (${this.s.me.name}) (swallowed)`)
       for (const name of names) if (name !== this.s.me.name) this.once(`unmodelled history: family stopped: ${reason} (${name})`)
       this.graph.abort()
       await Promise.all([...this.actors.values()].map(a => this.remove(a)))
-      this.anchors.clear(); this.heads.clear(); this.spawns.clear()
+      this.anchors.clear(); this.heads.clear(); this.spawns.clear(); this.names.clear()
     })
   }
   private ownerIds(ticket: Pick<ShadowReservation, 'kind' | 'owners'>): readonly string[] {
@@ -165,11 +186,10 @@ export class ConflictShadow {
   }
   /** Only shadow-defined reasons, never subprocess stderr, file contents or arbitrary exception text. */
   private reason(error: unknown, fallback: string): string {
+    if (error instanceof ShadowAttributeError) return error.diagnostic()
     if (!(error instanceof Error)) return fallback
-    const code = (error as NodeJS.ErrnoException).code
-    if (code && /^E[A-Z0-9]+$/.test(code)) return `${fallback}: ${code}`
-    const message = error.message.slice(0, 1000)
-    return /^(unmodelled history:|over budget(?:$|:)|shadow Git step failed:|shadow source unavailable$|unsupported (?:object format|tree entry)$|unsafe shadow state$|invalid shadow attributes$|unreadable policy$|missing carried object$|moving snapshot$|publication moved$|family ownership moved$|worker checkout identity unavailable$|unmodelled (?:lead history|generation|delivery|delivery HEAD|history after refresh)$|final collection generation unavailable$|lead moved after final collection$|delivery coverage gap$|nested lead$|borrowed checkout$|worker HEAD moved$|malformed merge (?:result|stages|information)$|conflict without paths$)/.test(message) ? message : fallback
+    const code = ioReasons.get((error as NodeJS.ErrnoException).code ?? '')
+    return code ? `${fallback}: ${code}` : failureReasons.get(error.message) ?? fallback
   }
   private cancel(ticket: ShadowReservation): void {
     if (!ticket.make && ticket.kind !== 'spawn' && ticket.kind !== 'remove') this.mutating--
@@ -357,8 +377,13 @@ export class ConflictShadow {
     if (this.closed) return
     this.closed = true; this.queue.clear(); this.anchors.clear(); this.pending.clear(); this.mutating = 0
     this.cancellation.abort(); this.graph.abort()
-    for (const a of [...this.actors.values()]) void this.remove(a)
-    this.heads.clear(); this.spawns.clear(); this.names.clear()
+    // halt's queued job must still see participant names, even when deadline/journal shutdown
+    // calls stop immediately. It owns their removal; a normal leave keeps the existing path.
+    if (!this.halted) {
+      for (const a of [...this.actors.values()]) void this.remove(a)
+      this.names.clear()
+    }
+    this.heads.clear(); this.spawns.clear()
     const journal = this.journal; this.journal = undefined
     try { void journal?.close().catch(() => this.once('journal close failed (swallowed)')) } catch { this.once('journal close failed (swallowed)') }
     clearTimeout(this.timer)
@@ -640,7 +665,7 @@ export class ConflictShadow {
     const records = requireWorkerInventory(await registry.list())
     const lead = this.actors.get(this.s.me.name)
     if (!lead) {
-      if (this.now() - this.lastSummary >= 30_000) { this.lastSummary = this.now(); try { this.log(`conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=${this.spawned ? 'workers exist but none could be followed' : 'no workers spawned in this session'}`) } catch { /* swallowed */ } }
+      if (this.now() - this.lastSummary >= 30_000) { this.lastSummary = this.now(); try { this.log(`conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=${this.spawned ? 'workers exist but none could be followed' : 'no workers spawned in this session'} participant=${JSON.stringify(this.s.me.name)}`) } catch { /* swallowed */ } }
       return
     }
     this.retire(records)
@@ -648,7 +673,7 @@ export class ConflictShadow {
     this.observePublications()
     const reasons = new Set<string>()
     for (const a of [...this.actors.values()]) {
-      if (a.disabled) { await this.unmodelled(a, a.disabled); reasons.add(a.disabled); continue }
+      if (a.disabled) { await this.unmodelled(a, a.disabled); reasons.add(a.disabled.startsWith('unmodelled history:') ? 'unmodelled history' : a.disabled); continue }
       try {
         await this.validateHistory(a, records, registry.commonDir)
         const pub = await this.publication(a)
@@ -684,7 +709,9 @@ export class ConflictShadow {
         const reason = error instanceof Error && error.message.startsWith('over budget') ? 'over budget' : error instanceof Error && /^(nested lead|borrowed checkout|worker HEAD moved|unmodelled history:)/.test(error.message) ? this.reason(error, 'snapshot unavailable or moving') : 'snapshot unavailable or moving'
         if (reason === 'snapshot unavailable or moving' || reason === 'over budget') this.once(`observation unavailable: ${this.reason(error, reason)} (${a.name})`)
         if (reason !== 'snapshot unavailable or moving' && reason !== 'over budget') await this.unmodelled(a, reason)
-        reasons.add(reason)
+        // The named diagnostic carries the one allowed example path. Aggregate summaries
+        // keep only a fixed bucket so multiple participant failures cannot accumulate paths.
+        reasons.add(reason.startsWith('unmodelled history:') ? 'unmodelled history' : reason)
       }
     }
     let pairs = 0, agreements = 0, disagreements = 0
@@ -764,7 +791,7 @@ export class ConflictShadow {
     }
     if (this.now() - this.lastSummary >= 30_000) {
       this.lastSummary = this.now()
-      try { this.log(`conflict shadow: pairs=${pairs} agreements=${agreements} disagreements=${disagreements} skipped=${[...reasons].join(',') || 'none'} passMs=${Math.round(performance.now() - started)}`) } catch { /* swallowed */ }
+      try { this.log(`conflict shadow: pairs=${pairs} agreements=${agreements} disagreements=${disagreements} skipped=${[...reasons].join(',') || 'none'} passMs=${Math.round(performance.now() - started)} participant=${JSON.stringify(this.s.me.name)}`) } catch { /* swallowed */ }
     }
   }
 }
