@@ -1,6 +1,7 @@
 /** Disposable output belongs to the worker's own Room state, never to collection. */
 import fs from 'node:fs'
 import path from 'node:path'
+import { privateStateDirectory, verifyPrivatePath } from '@room/relay'
 import { git } from '@room/roomd/git'
 
 const IGNORE = '*\n'
@@ -15,11 +16,15 @@ export async function prepareWorkerBuildDir(dir: string, tag: string): Promise<s
     throw new Error('worker build directory conflicts with tracked .room/scratch files')
   const scratch = path.join(root, '.room', 'scratch')
   const build = path.join(scratch, tag)
+  // Leaf-only creation avoids interpreting an ancestor checkout named `room` as state.
+  // Existing worker state is verified, never repaired through checkout ancestors.
   for (const folder of [path.join(root, '.room'), scratch, build]) {
-    try { fs.mkdirSync(folder, { mode: 0o700 }) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
-    // lstat rejects symlinks and Windows junctions, including a planted ancestor.
-    if (!fs.lstatSync(folder).isDirectory()) throw new Error(`worker build directory parent is not a plain directory: ${folder}`)
+    const stat = fs.lstatSync(folder, { throwIfNoEntry: false })
+    if (!stat) privateStateDirectory(folder, { exclusive: true })
+    else {
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`worker build directory parent is not a plain directory: ${folder}`)
+      verifyPrivatePath(folder)
+    }
   }
   fs.accessSync(build, fs.constants.W_OK | fs.constants.X_OK)
   // Ignore the tag directory itself: files generated beneath it cannot unignore their way out.

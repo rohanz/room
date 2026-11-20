@@ -117,12 +117,12 @@ for (const host of ['claude', 'codex'] as const) for (const mode of ['fresh', 'r
     vi.stubEnv('WORKER_BUILD_DIR', '/outside/inherited-build')
     const { result, spec, root } = await launch(host, mode, false, { ownsBuildDir: true, setup: root => {
       const scratch = path.join(root, '.room/scratch')
-      fs.mkdirSync(path.dirname(scratch))
+      fs.mkdirSync(path.dirname(scratch), { mode: 0o700 })
       if (failure === 'tracked path' || failure === 'obstructing file') {
         fs.writeFileSync(scratch, 'project content')
         if (failure === 'tracked path') execFileSync('git', ['add', '--', '.room/scratch'], { cwd: root })
       } else if (failure === 'changed ignore file') {
-        fs.mkdirSync(scratch)
+        fs.mkdirSync(scratch, { mode: 0o700 })
         fs.writeFileSync(path.join(scratch, '.gitignore'), '!w/\n')
       } else if (failure === 'not writable') {
         const access = fs.accessSync

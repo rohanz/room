@@ -1404,7 +1404,9 @@ describe('worker follow-up sessions', () => {
     const resumeArgs = t.specs[1].args.slice(2) // Worker-specific --settings is asserted above.
     const resumePrompt = resumeArgs[3]
     expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
-    expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'fix the review finding', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
+    const [messages, setupContext] = resumePrompt.slice(resumePrompt.indexOf('\n') + 1).split('\n\n')
+    expect(messages.split('\n').map(line => JSON.parse(line))).toEqual([expect.objectContaining({ type: 'note', text: 'fix the review finding', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })])
+    expect(setupContext).toContain(`${t.specs[1].env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR)`)
     expect(resumeArgs).toEqual(['-p', '--resume', initial.hostSessionId, resumePrompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
     expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
   })
@@ -1456,7 +1458,9 @@ describe('worker follow-up sessions', () => {
     expect(sent).toContain("resumed money's retained conversation with your message")
     const resumePrompt = t.specs[1].args.at(-1)!
     expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
-    expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'repair the failure', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
+    const [messages, setupContext] = resumePrompt.slice(resumePrompt.indexOf('\n') + 1).split('\n\n')
+    expect(messages.split('\n').map(line => JSON.parse(line))).toEqual([expect.objectContaining({ type: 'note', text: 'repair the failure', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })])
+    expect(setupContext).toContain(`${t.specs[1].env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR)`)
     expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', resumePrompt])
     expect(t.specs[1].cwd).toBe(initial.dir)
     expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })

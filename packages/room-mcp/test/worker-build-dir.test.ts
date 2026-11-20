@@ -45,15 +45,15 @@ it.each(['.room', '.room/scratch', '.room/scratch/w', '.room/scratch/.gitignore'
   const root = repo(), outside = repo()
   const target = rel.endsWith('.gitignore') ? path.join(outside, 'target') : outside
   if (rel.endsWith('.gitignore')) fs.writeFileSync(target, '*\n')
-  fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true })
+  fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true, mode: 0o700 })
   fs.symlinkSync(target, path.join(root, rel), rel.endsWith('.gitignore') ? 'file' : process.platform === 'win32' ? 'junction' : 'dir')
-  await expect(prepareWorkerBuildDir(root, 'w')).rejects.toThrow(/plain directory|expected plain file/)
+  await expect(prepareWorkerBuildDir(root, 'w')).rejects.toThrow(/plain directory|directory.*symlink|expected plain file/)
   expect(fs.readdirSync(outside).sort()).toEqual(rel.endsWith('.gitignore') ? ['.git', 'target'] : ['.git'])
 })
 
 it('refuses changed ignore files, tracked scratch state and unsafe tags', async () => {
   const root = repo()
-  fs.mkdirSync(path.join(root, '.room/scratch'), { recursive: true })
+  fs.mkdirSync(path.join(root, '.room/scratch'), { recursive: true, mode: 0o700 })
   fs.writeFileSync(path.join(root, '.room/scratch/.gitignore'), '!keep\n')
   await expect(prepareWorkerBuildDir(root, 'w')).rejects.toThrow('expected plain file')
   fs.rmSync(path.join(root, '.room/scratch/.gitignore'))
@@ -72,4 +72,24 @@ it('exposes only the prepared path in the worker env/prompt and drops inherited 
   expect(workerEnv(inherited, workerProcessEnv(options, inherited))).not.toHaveProperty('WORKER_BUILD_DIR')
   expect(workerPrompt('lead', 'w', 'compile', { threads: 2, memGb: 1, nice: 10, buildDir: env.WORKER_BUILD_DIR })).toContain(workerBuildDirNote(env.WORKER_BUILD_DIR))
   expect(workerPrompt('lead', 'w', 'compile', { threads: 2, memGb: 1, nice: 10 })).toContain('No build directory is provided for a supplied dir= checkout')
+})
+
+
+it.skipIf(process.platform === 'win32')('uses shared private-state policy rather than publishing an existing broad directory', async () => {
+  const root = repo()
+  const room = path.join(root, '.room')
+  fs.mkdirSync(room, { mode: 0o755 })
+  fs.chmodSync(room, 0o755)
+  await expect(prepareWorkerBuildDir(root, 'w')).rejects.toThrow('private')
+  expect(fs.existsSync(path.join(room, 'scratch'))).toBe(false)
+})
+
+it.skipIf(process.platform === 'win32')('does not repair checkout ancestors named room while initializing worker-owned leaves', async () => {
+  const root = repo(), ancestor = path.join(root, 'room'), worker = path.join(ancestor, 'worker')
+  fs.mkdirSync(ancestor, { mode: 0o755 })
+  fs.chmodSync(ancestor, 0o755)
+  fs.mkdirSync(worker, { mode: 0o700 })
+  git(worker, 'init', '-q')
+  await prepareWorkerBuildDir(worker, 'w')
+  expect(fs.statSync(ancestor).mode & 0o777).toBe(0o755)
 })
