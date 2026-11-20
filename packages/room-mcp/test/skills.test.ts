@@ -52,7 +52,7 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
     // Each of these guards a miss seen in the 2026-10-18 benchmark trials (docs/host-snapshots/2026-10-16-delivery-audit.md).
     { sources: ['workers'], phrases: [
       'Every requirement has exactly one owner', 'the spec sections or rules that are its slice, not your summary of them',
-      'Never write "if relevant"', '"decided, not in spec"', "Leave out the implementers' file lists",
+      'Never write "if relevant"', '"decided, not in spec"', "Leave out the implementers' file lists", 'so it finds what the briefs missed',
     ] },
     // Command lifecycle is stated once in room-etiquette; room-workers links to it.
     { sources: ['etiquette', 'worker'], phrases: [

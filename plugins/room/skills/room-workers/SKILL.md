@@ -31,7 +31,8 @@ decide and report what it chose, asking only when blocked.
 - A reviewer or test worker gets what changed, what it must guarantee, the question you
   want answered, and the spec itself. Leave out the implementers' file lists, earlier
   rounds' findings and the author's account of the fix: they tell an independent reviewer
-  where to look and what to conclude.
+  where to look and what to conclude. Ask it to report any rule no brief covers, so it
+  finds what the briefs missed.
 
 A background lead is a worker like any other. Its brief says to collect its own workers
 before `room_done`.
