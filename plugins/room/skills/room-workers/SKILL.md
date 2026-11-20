@@ -23,9 +23,9 @@ decide and report what it chose, asking only when blocked.
   the spec sections or rules that are its slice, not your summary of them, and check before
   spawning that nothing observable in the spec (a state, field, counter, event or return
   value) is left without an owner.
-- Pass on a rule over a set as the rule ("every script that re-queues a job") with the
-  members you know. Its owner finds the rest and reports them. Never write "if relevant":
-  assign it or decide it.
+- When a rule covers many places ("every script that re-queues a job"), give the worker
+  the rule itself and the places you know of, not only your list. It finds the rest and
+  reports them. Never write "if relevant": assign it or decide it.
 - When you decide something the spec does not state, mark it "decided, not in spec" so
   it gets checked against the spec.
 - A reviewer or test worker gets what changed, what it must guarantee, the question you
@@ -42,10 +42,10 @@ before `room_done`.
   workers use the Room plugin installed for Codex, which must match your version.
 - Use the exact participant names from the `room_spawn` reply or `room_state`, and send
   them to workers that need to reach each other.
-- A worker starts with your eligible uncommitted work (`carry=false`: from HEAD). Tracked
-  changes ride a carry commit on the worker branch, which `git push --all` would publish;
-  untracked files that are not ignored are copied. The reply names skipped files. Carried
-  edits stay yours: workers ask before changing them.
+- A worker starts with a copy of your uncommitted work (`carry=false`: from HEAD only).
+  Changes to tracked files become a commit on the worker's branch, which `git push --all`
+  would publish. Untracked files that are not ignored are copied, and the reply names any
+  that were skipped. Those edits stay yours: workers ask before changing them.
 - `node_modules` links to your install, with workspace packages pointing at the worker's
   sources. If the reply warns that cross-package tests would run your code, trust a
   preview `run` over the worker's own result.
@@ -60,10 +60,10 @@ before `room_done`.
 
 - Keep handling your human's requests, and wait only on a result you need next. Progress
   notes from your workers do not wake you. Addressed questions, completion and interrupts
-  can. A wake is not proof that content was read or acted on.
+  can. Being woken means a message arrived; it is not proof that content was read or acted on.
 - A headless lead (`claude -p`, `codex exec`) must stay alive until supervision is complete:
-  ending the turn ends the session. Use short `room_wait` calls, as does any lead without a
-  wake path.
+  ending the turn ends the session. Use short `room_wait` calls instead. So does any lead
+  whose host cannot wake it.
 - A message from its lead to a finished worker resumes its retained session in its
   worktree. `refresh=true` first rebases a stopped worker onto your HEAD and lists what
   came in; a conflict changes nothing. For a dependency on a running worker, use a named
@@ -77,18 +77,20 @@ before `room_done`.
 
 ## Review holds
 
-Only when the human asks for a review checkpoint. `room_review(action="hold", reason=...)`
-from the destination checkout blocks new collection there until it is released; work
-continues meanwhile. A reviewer whose approval is required creates the hold itself, from
-that checkout and not its worktree, and keeps the private `reviewToken` from the collecting
-lead. A message does not create a hold. Release does not collect, and every reviewer must
-release.
+Use these only when the human asks for a review checkpoint.
+
+- `room_review(action="hold", reason=...)`, called from the checkout that will receive the
+  work, blocks new collection there until it is released. Workers keep working.
+- A reviewer whose approval is required creates the hold itself, from that checkout and
+  not from its own worktree. It keeps the private `reviewToken`, so the collecting lead
+  cannot release it.
+- A message does not create a hold. Releasing does not collect. Every reviewer must release.
 
 ## Previews
 
 Preview combined work by name while workers run. Include yourself when workers started
-from different kept or carried snapshots: Room anchors on your copy and applies worker
-changes in collection order. A clean text merge still needs a behavioural test.
+at different times or from different versions of your work: Room then starts from your
+copy and adds each worker's changes on top. A clean text merge still needs a behavioural test.
 
 ## Collecting
 
