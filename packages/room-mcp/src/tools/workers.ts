@@ -367,7 +367,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (wakeNote) out.unshift(wakeNote)
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'} · ${budget.reason}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
-        out.push(env.WORKER_BUILD_DIR ? `build/scratch: ${env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR; Git-ignored, never collected; deleted with worktree)` : 'build/scratch: none for a supplied dir= checkout; Room leaves its files alone')
+        out.push(env.WORKER_BUILD_DIR ? `build/scratch: ${env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR; Git-ignored, never collected; deleted with worktree)` : suppliedDir ? 'build/scratch: none for a supplied dir= checkout; Room leaves its files alone' : 'build/scratch: unavailable; WORKER_BUILD_DIR is unset (see warning below)')
         const stale = staleWorkersNote((await Promise.all((await myWorkers(s)).filter(w => w.id !== id).map(async w => (await localWorkerView(s, w.id)) ?? []))).flat(), now())
         if (stale) out.push('note: ' + stale)
         if (!spawnExplained.has(lead)) out.push(await browserViewLine(s))

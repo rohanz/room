@@ -3,10 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import childProcess from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { containedRepoPath, MATERIALIZED_PATH, validRepoPath } from '@room/roomd'
 
 const MAX_SUBMODULES = 64
-const SETUP_MS = 30_000
+const SETUP_MS = 8_000
+const RECEIPT = 'room-submodules.json'
+const MAX_CONFIG_BYTES = 64 * 1024
+const MAX_STATE_BYTES = 4 * 1024 * 1024
 const quote = (value: string) => "'" + value.replace(/'/g, process.platform === 'win32' ? "''" : "'\\''") + "'"
 
 // Discovery/status must not refresh the lead's index, invoke fsmonitor or lazily fetch objects.
@@ -18,9 +22,11 @@ function run(dir: string, args: string[], deadline: number): Promise<string> {
   const timeout = Math.floor(deadline - performance.now())
   if (timeout <= 0) return Promise.reject(new Error('submodule setup time limit reached'))
   return new Promise((resolve, reject) => childProcess.execFile('git', ['-c', `core.hooksPath=${os.devNull}`,
+    '-c', 'init.defaultBranch=room-submodule',
     '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', 'protocol.file.allow=always',
     ...args], { cwd: dir, env, timeout, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 },
-  (error, stdout) => error ? reject(new Error(error.killed ? 'submodule setup time limit reached' : 'local Git inspection or checkout failed')) : resolve(stdout)))
+  (error, stdout, stderr) => error || stderr.trim()
+    ? reject(new Error(error?.killed ? 'submodule setup time limit reached' : 'local Git inspection or checkout failed')) : resolve(stdout)))
 }
 
 interface Gitlink { path: string; oid: string }
@@ -30,10 +36,96 @@ function parseLinks(raw: string): Gitlink[] {
     return match ? [{ oid: match[1], path: match[2] }] : []
   })
 }
-async function links(dir: string, deadline: number): Promise<Gitlink[]> {
-  const raw = await run(dir, ['ls-files', '--stage', '-z'], deadline)
+/** .gitmodules is the fast gate: ordinary repositories never spawn Git for this feature. */
+async function configuredPaths(dir: string, deadline: number): Promise<string[]> {
+  const file = path.join(dir, '.gitmodules')
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false })
+  if (!stat) return []
+  if (!stat.isFile() || stat.size > MAX_CONFIG_BYTES) throw new Error('submodule configuration is not a small plain file')
+  if (!stat.size) return []
+  const raw = await run(dir, ['config', '--null', '--file', file, '--list'], deadline)
+  const paths = raw.split('\0').filter(line => /^submodule\..*\.path\n/.test(line)).map(line => line.slice(line.indexOf('\n') + 1))
+  if (paths.length > MAX_SUBMODULES || paths.some(p => !validRepoPath(p, MATERIALIZED_PATH))) throw new Error('unsupported submodule configuration or more than 64 submodules')
+  return [...new Set(paths)]
+}
+async function links(dir: string, paths: string[], deadline: number): Promise<Gitlink[]> {
+  if (!paths.length) return []
+  // Enumerate only configured gitlinks, never the ordinary repository's full index.
+  const raw = await run(dir, ['ls-files', '--stage', '-z', '--', ...paths.map(p => ':(literal)' + p)], deadline)
   if (raw.split('\0').some(line => /^160000 [a-f0-9]+ [123]\t/.test(line))) throw new Error('unmerged submodule gitlink')
   return parseLinks(raw)
+}
+
+interface Creation { refs: string; reflogs: string; dev: string; ino: string }
+interface Receipt { v: 1; modules: { path: string; creation?: Creation }[] }
+function smallPlainFile(file: string, limit: number): Buffer {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  try {
+    const before = fs.fstatSync(fd)
+    if (!before.isFile() || before.size > limit) throw new Error('submodule state exceeds inspection limit or is not a plain file')
+    const bytes = Buffer.alloc(before.size + 1)
+    let size = 0, n: number
+    while ((n = fs.readSync(fd, bytes, size, bytes.length - size, size)) > 0) {
+      size += n
+      if (size > before.size) throw new Error('submodule state changed during read')
+    }
+    const after = fs.fstatSync(fd)
+    if (size !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs) throw new Error('submodule state changed during read')
+    return bytes.subarray(0, size)
+  } finally { fs.closeSync(fd) }
+}
+function adminDirectory(root: string): string {
+  const dotGit = path.join(root, '.git'), stat = fs.lstatSync(dotGit)
+  if (stat.isDirectory()) return dotGit
+  if (!stat.isFile()) throw new Error('not a plain Git entry')
+  const marker = smallPlainFile(dotGit, 4096).toString().trim()
+  if (!marker.startsWith('gitdir: ')) throw new Error('not a worktree Git entry')
+  const admin = path.resolve(root, marker.slice(8))
+  if (!fs.lstatSync(admin).isDirectory()) throw new Error('not a plain Git admin directory')
+  return admin
+}
+function readReceipt(file: string): Receipt | undefined {
+  try {
+    const value = JSON.parse(smallPlainFile(file, MAX_STATE_BYTES).toString()) as Receipt
+    if (value.v !== 1 || !Array.isArray(value.modules) || value.modules.length > MAX_SUBMODULES
+      || value.modules.some(entry => !validRepoPath(entry.path, MATERIALIZED_PATH)
+        || entry.creation && (!/^[a-f0-9]{64}$/.test(entry.creation.refs) || !/^[a-f0-9]{64}$/.test(entry.creation.reflogs)
+          || typeof entry.creation.dev !== 'string' || typeof entry.creation.ino !== 'string'))) throw new Error('invalid submodule creation receipt')
+    return value
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+}
+function saveReceipt(file: string, value: Receipt): void {
+  const temp = file + '.tmp'
+  fs.writeFileSync(temp, JSON.stringify(value), { flag: 'wx', mode: 0o600 })
+  try { fs.renameSync(temp, file) } finally { fs.rmSync(temp, { force: true }) }
+}
+/** Ref tips and every reflog (including HEAD and deleted refs); never walk/hash the object store. */
+async function creationState(dir: string, deadline: number): Promise<Creation> {
+  const dotGit = path.join(dir, '.git'), stat = fs.lstatSync(dotGit, { bigint: true })
+  if (!stat.isDirectory()) throw new Error('submodule Git metadata is not private')
+  const refs = createHash('sha256').update(smallPlainFile(path.join(dotGit, 'HEAD'), 4096))
+    .update(await run(dir, ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(symref)'], deadline)).digest('hex')
+  const logs = createHash('sha256')
+  let entries = 0, bytes = 0
+  async function walk(at: string, rel: string): Promise<void> {
+    if (performance.now() >= deadline || ++entries > 4096) throw new Error('submodule reflog inspection limit reached')
+    const info = await fs.promises.lstat(at)
+    logs.update(JSON.stringify([rel, info.mode]))
+    if (info.isDirectory()) {
+      const names: string[] = []
+      for await (const child of await fs.promises.opendir(at)) {
+        if (names.length + entries >= 4096 || performance.now() >= deadline) throw new Error('submodule reflog inspection limit reached')
+        names.push(child.name)
+      }
+      for (const name of names.sort()) await walk(path.join(at, name), rel + '/' + name)
+    } else if (info.isFile()) {
+      const data = smallPlainFile(at, MAX_STATE_BYTES - bytes)
+      bytes += data.length; logs.update(JSON.stringify(data.length)); logs.update(data)
+    } else throw new Error('submodule reflog is not a plain file or directory')
+  }
+  const logDir = path.join(dotGit, 'logs')
+  if (fs.existsSync(logDir)) await walk(logDir, '')
+  return { refs, reflogs: logs.digest('hex'), dev: String(stat.dev), ino: String(stat.ino) }
 }
 function safe(root: string, rel: string): string {
   if (!validRepoPath(rel, MATERIALIZED_PATH) || rel.split('/')[0].toLowerCase() === '.room') throw new Error('unsafe submodule path')
@@ -52,13 +144,17 @@ async function repository(dir: string, deadline: number): Promise<void> {
 }
 
 /** The same notes go to the lead and worker, including exact pinned, local-only recovery commands. */
-export async function prepareWorkerSubmodules(leadDir: string, workerDir: string): Promise<{ reply: string[]; prompt?: string }> {
-  const lines: string[] = [], deadline = performance.now() + SETUP_MS
+export async function prepareWorkerSubmodules(leadDir: string, workerDir: string, options: { timeoutMs?: number } = {}): Promise<{ reply: string[]; prompt?: string }> {
+  if (!fs.existsSync(path.join(workerDir, '.gitmodules'))) return { reply: [] }
+  const lines: string[] = [], deadline = performance.now() + (options.timeoutMs ?? SETUP_MS)
   const lead = fs.realpathSync(leadDir), worker = fs.realpathSync(workerDir)
+  const receipt: Receipt = { v: 1, modules: [] }
+  let receiptFile: string | undefined
   let count = 0
   async function visit(sourceRoot: string, targetRoot: string, prefix = '', depth = 0): Promise<void> {
-    const entries = await links(targetRoot, deadline)
-    const recorded = new Map((await links(sourceRoot, deadline)).map(entry => [entry.path, entry.oid]))
+    const paths = await configuredPaths(targetRoot, deadline)
+    const entries = await links(targetRoot, paths, deadline)
+    const recorded = new Map((await links(sourceRoot, paths, deadline)).map(entry => [entry.path, entry.oid]))
     for (const entry of entries) {
       const rel = prefix + entry.path
       if (++count > MAX_SUBMODULES || depth >= 8) {
@@ -66,8 +162,12 @@ export async function prepareWorkerSubmodules(leadDir: string, workerDir: string
         return
       }
       let source: string | undefined, target: string | undefined
-      let started = false
+      let stage: string | undefined
+      const lineStart = lines.length
       try {
+        const record: Receipt['modules'][number] = { path: rel }
+        receipt.modules.push(record)
+        saveReceipt(receiptFile!, receipt)
         source = safe(sourceRoot, entry.path); target = safe(targetRoot, entry.path)
         if (!empty(target)) {
           lines.push(`Submodule ${JSON.stringify(rel)}: existing worker contents left untouched; inspect before building.`)
@@ -81,61 +181,71 @@ export async function prepareWorkerSubmodules(leadDir: string, workerDir: string
         if (dirty) throw new Error('lead submodule has local changes; those changes are not carried')
         const objects = (await run(source, ['rev-parse', '--git-path', 'objects'], deadline)).trim()
         const alternate = path.resolve(source, objects, 'info/alternates')
-        if (fs.existsSync(alternate) && fs.readFileSync(alternate, 'utf8').trim()) throw new Error('lead object store borrows alternates; automatic setup would depend on their lifetime')
+        if (fs.existsSync(alternate) && fs.statSync(alternate).size) throw new Error('lead object store borrows alternates; automatic setup would depend on their lifetime')
         // Explicit --local fails when hardlinks are unavailable instead of copying a large object store.
-        // Clone into the empty gitlink directory, with its own .git, without modifying shared superproject config.
-        started = true
-        await run(targetRoot, ['clone', '--quiet', '--local', '--no-checkout', '--template=', '--', source, target], deadline)
+        // Stage only Room-owned output before the worker starts. A failed/timed-out checkout never
+        // publishes partial dependency contents, and cleanup cannot destroy a worker's later edits.
+        // Keep staging on the destination filesystem: hardlink failure is cheap, and publication
+        // is a rename on that filesystem even when the Git common directory lives elsewhere.
+        stage = fs.mkdtempSync(path.join(path.dirname(target), '.room-submodule-'))
+        const checkout = path.join(stage, 'checkout')
+        await run(targetRoot, ['clone', '--quiet', '--local', '--no-checkout', '--template=', '--', source, checkout], deadline)
         // A normal push in the worker must not target the lead's submodule repository.
-        await run(target, ['remote', 'remove', 'origin'], deadline)
-        await run(target, ['checkout', '--quiet', '--detach', entry.oid], deadline)
+        await run(checkout, ['remote', 'remove', 'origin'], deadline)
+        await run(checkout, ['checkout', '--quiet', '--detach', entry.oid], deadline)
+        await visit(source, checkout, rel + '/', depth + 1)
+        record.creation = await creationState(checkout, deadline)
+        saveReceipt(receiptFile!, receipt)
+        if (performance.now() >= deadline) throw new Error('submodule setup time limit reached')
+        target = safe(targetRoot, entry.path)
+        if (!empty(target)) throw new Error('worker destination changed during setup')
+        if (fs.existsSync(target)) fs.rmdirSync(target)
+        fs.renameSync(checkout, target)
         lines.push(`Submodule ${JSON.stringify(rel)}: ready at ${entry.oid}; local object hardlinks, independent checkout and Git metadata; no network.`)
-        await visit(source, target, rel + '/', depth + 1)
       } catch (error) {
+        if (stage) lines.splice(lineStart) // Nested results in a discarded stage were never published.
         const reason = error instanceof Error ? error.message : String(error)
         const state = target && !empty(target) ? 'setup incomplete; inspect existing worker contents' : 'empty'
-        // Do not delete partial clone/checkouts: a timeout or concurrent writer can leave useful output.
         lines.push(`Submodule ${JSON.stringify(rel)}: ${state} (${reason}).`)
         if (source && target) {
-          lines.push(`Cheap local setup (${process.platform === 'win32' ? 'PowerShell' : 'POSIX shell'}; only when the destination is empty): git -c core.hooksPath=${quote(os.devNull)} clone --local --no-checkout --template= -- ${quote(source)} ${quote(target)}; then git -C ${quote(target)} remote remove origin; then git -C ${quote(target)} -c core.hooksPath=${quote(os.devNull)} -c submodule.recurse=false checkout --detach ${entry.oid}. This uses the recorded commit, not the lead's local changes. --local fails if hardlinks are unavailable; do not replace it with a full copy without choosing that cost.`)
+          const destination = path.join(worker, rel)
+          lines.push(`Cheap local setup (${process.platform === 'win32' ? 'PowerShell' : 'POSIX shell'}; only when the destination is empty): git -c core.hooksPath=${quote(os.devNull)} clone --local --no-checkout --template= -- ${quote(source)} ${quote(destination)}; then git -C ${quote(destination)} remote remove origin; then git -C ${quote(destination)} -c core.hooksPath=${quote(os.devNull)} -c submodule.recurse=false checkout --detach ${entry.oid}. This uses the recorded commit, not the lead's local changes. --local fails if hardlinks are unavailable; do not replace it with a full copy without choosing that cost.`)
         } else lines.push('Ask the lead for a usable local submodule checkout; do not follow linked paths or initialize submodules in the lead checkout.')
-        if (started) lines.push('Keep partial setup for inspection; do not overwrite it to retry.')
-      }
+      } finally { if (stage) await fs.promises.rm(stage, { recursive: true, force: true }) }
     }
   }
-  try { await visit(lead, worker) }
+  try {
+    receiptFile = path.join(adminDirectory(worker), RECEIPT)
+    if (fs.existsSync(receiptFile)) throw new Error('submodule setup already has a creation receipt; existing contents kept')
+    await visit(lead, worker)
+  }
   catch (error) { lines.push(`Submodules: could not inspect gitlinks (${error instanceof Error ? error.message : String(error)}); dependencies may be empty. Ask the lead for a local checkout before building.`) }
-  if (count || lines.length) lines.push('Submodules are build inputs: Room does not preview or collect their contents or gitlink changes. Export any submodule work separately; cleanup retains changed submodules because superproject recovery refs cannot save them. Never edit hardlinked Git object files.')
+  if (count || lines.length) lines.push('Submodules are build inputs: Room does not preview or collect their contents or gitlink changes. Export any submodule work separately; cleanup requires creation refs/reflogs to match and status (including untracked/ignored files) to be clean. Automatic setup has an 8-second total budget; slower attempts are removed from private staging and leave the dependency empty with local setup commands. Never edit hardlinked Git object files.')
   return lines.length ? { reply: lines, prompt: lines.join('\n') } : { reply: [] }
 }
 
 /** A superproject recovery commit cannot recover nested files/commits; retain them even on discard. */
 export function changedWorkerSubmodules(workerDir: string): Promise<string[]> {
-  return changedSubmodules(workerDir, performance.now() + SETUP_MS, 0)
+  return changedSubmodules(workerDir, performance.now() + SETUP_MS)
 }
-async function changedSubmodules(workerDir: string, deadline: number, depth: number): Promise<string[]> {
-  if (depth > 8) throw new Error('submodule inspection depth limit; checkout retained')
+async function changedSubmodules(workerDir: string, deadline: number): Promise<string[]> {
   const root = fs.realpathSync(workerDir)
-  const indexed = await links(root, deadline)
-  const tree = await run(root, ['ls-tree', '-r', '-z', 'HEAD'], deadline)
-  const committed = tree.split('\0').flatMap(line => {
-    const match = /^160000 commit ([a-f0-9]+)\t([\s\S]+)$/.exec(line)
-    return match ? [{ oid: match[1], path: match[2] }] : []
-  })
-  const expected = new Map(committed.map(entry => [entry.path, entry.oid]))
-  const entries = new Map([...committed, ...indexed].map(entry => [entry.path, entry]))
+  const file = path.join(adminDirectory(root), RECEIPT)
+  const receipt = readReceipt(file)
+  // Check a receipt even if a worker removed .gitmodules. Otherwise absence costs no Git/index scan.
+  if (!receipt && !fs.existsSync(path.join(root, '.gitmodules'))) return []
+  const records = new Map((receipt?.modules ?? []).map(entry => [entry.path, entry.creation]))
+  for (const rel of await configuredPaths(root, deadline)) if (!records.has(rel)) records.set(rel, undefined)
   const changed: string[] = []
-  for (const entry of entries.values()) {
-    const at = safe(root, entry.path)
+  for (const [rel, creation] of records) {
+    const at = safe(root, rel)
     if (empty(at)) continue
+    if (!creation) { changed.push(rel); continue }
     try {
-      await repository(at, deadline)
-      const head = (await run(at, ['rev-parse', 'HEAD'], deadline)).trim()
-      // Include ignored files: they are not in the superproject discard snapshot either.
+      const current = await creationState(at, deadline)
       const status = await run(at, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], deadline)
-      if (head !== expected.get(entry.path) || entry.oid !== expected.get(entry.path) || status
-        || (await changedSubmodules(at, deadline, depth + 1)).length) changed.push(entry.path)
-    } catch { changed.push(entry.path) }
+      if (JSON.stringify(current) !== JSON.stringify(creation) || status) changed.push(rel)
+    } catch { changed.push(rel) }
   }
   return changed
 }

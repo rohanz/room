@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { Session } from '../src/session.js'
 import type { SpawnSpec } from '../src/worker-process.js'
+import * as roomGit from '@room/roomd/git'
 import { workerEnv } from '../src/worker-config.js'
 
 vi.mock('../src/port-reservations.js', () => ({
@@ -21,9 +22,9 @@ vi.mock('../src/port-reservations.js', () => ({
 import { launchWorkerProcess } from '../src/worker-launch.js'
 
 const roots: string[] = []
-afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 
-async function launch(host: 'claude' | 'codex', mode: 'fresh' | 'resume', blockWrite = false, overrides: { effort?: string; sessionId?: string; ownsBuildDir?: boolean } = {}) {
+async function launch(host: 'claude' | 'codex', mode: 'fresh' | 'resume', blockWrite = false, overrides: { effort?: string; sessionId?: string; ownsBuildDir?: boolean; setup?: (root: string) => void } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-launch-shell-'))
   roots.push(root)
   execFileSync('git', ['init', '-q', root])
@@ -32,6 +33,7 @@ async function launch(host: 'claude' | 'codex', mode: 'fresh' | 'resume', blockW
   vi.stubEnv('CLAUDE_ENV_FILE', inherited)
   vi.stubEnv('ROOM_WORKER_NICE', '0')
   if (blockWrite) fs.writeFileSync(path.join(root, '.room'), 'blocked')
+  overrides.setup?.(root)
   let spec: SpawnSpec | undefined
   const proc = { pid: 4242, started: Promise.resolve(), onExit: () => {}, kill: () => true, isRunning: () => true }
   const result = await launchWorkerProcess({ session: { dir: root, roomName: 'local/repo' } as Session,
@@ -107,3 +109,43 @@ it.each(['fresh', 'resume'] as const)('%s owned launch prepares the advertised i
     expect(shellEnv.split('\n').filter(line => line.startsWith('ROOM_'))).toEqual([])
   }
 })
+
+
+const unavailableBuildCases = ['tracked path', 'obstructing file', 'changed ignore file', 'not writable', 'not ignored'] as const
+for (const host of ['claude', 'codex'] as const) for (const mode of ['fresh', 'resume'] as const) {
+  it.each(unavailableBuildCases)(`${host} ${mode} starts without a build directory when setup fails: %s`, async failure => {
+    vi.stubEnv('WORKER_BUILD_DIR', '/outside/inherited-build')
+    const { result, spec, root } = await launch(host, mode, false, { ownsBuildDir: true, setup: root => {
+      const scratch = path.join(root, '.room/scratch')
+      fs.mkdirSync(path.dirname(scratch))
+      if (failure === 'tracked path' || failure === 'obstructing file') {
+        fs.writeFileSync(scratch, 'project content')
+        if (failure === 'tracked path') execFileSync('git', ['add', '--', '.room/scratch'], { cwd: root })
+      } else if (failure === 'changed ignore file') {
+        fs.mkdirSync(scratch)
+        fs.writeFileSync(path.join(scratch, '.gitignore'), '!w/\n')
+      } else if (failure === 'not writable') {
+        const access = fs.accessSync
+        vi.spyOn(fs, 'accessSync').mockImplementation((file, mode) => {
+          if (String(file).endsWith(path.join('.room', 'scratch', 'w'))) throw Object.assign(new Error('build directory permission denied'), { code: 'EACCES' })
+          return access(file, mode)
+        })
+      } else {
+        const git = roomGit.git
+        vi.spyOn(roomGit, 'git').mockImplementation(async (dir, args, ...rest) => {
+          if (args[0] === 'check-ignore') throw new Error('build directory is not ignored')
+          return git(dir, args, ...rest)
+        })
+      }
+    } })
+    if (failure === 'tracked path' || failure === 'obstructing file') expect(fs.readFileSync(path.join(root, '.room/scratch'), 'utf8')).toBe('project content')
+    if (failure === 'changed ignore file') expect(fs.readFileSync(path.join(root, '.room/scratch/.gitignore'), 'utf8')).toBe('!w/\n')
+    expect(result.proc.pid).toBe(4242)
+    expect(workerEnv(process.env, spec.env)).not.toHaveProperty('WORKER_BUILD_DIR')
+    const warning = result.warnings.find(w => w.includes('No build directory is available'))
+    expect(warning).toBeDefined()
+    expect(warning).toContain('WORKER_BUILD_DIR is unset')
+    expect(warning).not.toContain('supplied dir=')
+    expect(spec.args.some(arg => arg.includes(warning!.replace(/^warning: /, '')))).toBe(true)
+  })
+}

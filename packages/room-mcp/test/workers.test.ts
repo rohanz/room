@@ -51,6 +51,28 @@ describe('room_spawn / room_done / room_collect discard', () => {
     return { a, b, leadTools, workerTools, workerSession: ws!, specs, exits, killed }
   }
 
+  it('starts without optional build output when the worker checkout tracks the scratch path', async () => {
+    const t = setup(async (repo, tag, owner, options) => {
+      const prepared = await prepareWorktree(repo, tag, owner, options)
+      fs.mkdirSync(join(prepared.dir, '.room'), { recursive: true })
+      fs.writeFileSync(join(prepared.dir, '.room/scratch'), 'project content')
+      execFileSync('git', ['add', '-f', '--', '.room/scratch'], { cwd: prepared.dir })
+      return prepared
+    })
+    try {
+      const reply = await t.leadTools.call('room_spawn', { tag: 'scratch-obstruction', task: 'work on source' })
+      expect(reply).toContain('spawned scratch-obstruction')
+      expect(reply).toContain('build/scratch: unavailable')
+      expect(reply).toContain('No build directory is available (worker build directory conflicts with tracked .room/scratch files)')
+      expect(reply).toContain('WORKER_BUILD_DIR is unset')
+      expect(reply).not.toContain('none for a supplied dir=')
+      expect(t.specs).toHaveLength(1)
+      expect(t.specs[0].env).not.toHaveProperty('WORKER_BUILD_DIR')
+      expect(t.specs[0].args.some(arg => arg.includes('No build directory is available'))).toBe(true)
+      expect(fs.readFileSync(join(t.specs[0].cwd, '.room/scratch'), 'utf8')).toBe('project content')
+    } finally { await t.leadTools.shutdown() }
+  })
+
   it.each([false, true])('persists adapter resume capability %s at spawn', async resume => {
     const original = hostRegistry.workerAdapter
     vi.spyOn(hostRegistry, 'workerAdapter').mockImplementation((...args) => ({

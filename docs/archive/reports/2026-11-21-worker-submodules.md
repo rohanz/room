@@ -13,14 +13,31 @@ corrupt alternate-backed borrowers.
 
 Dirty or mismatched checkouts, missing initialization, object alternates, linked paths,
 missing objects, unavailable hardlinks, and bounded setup failures get explicit
-spawn/prompt notes. Empty destinations get local clone commands pinned to the worker
-commit. Existing or partial output is preserved. Setup has a 30-second total budget,
-at most 64 submodules, and at most eight nested levels. It never switches to an
-unbounded copy or remote clone. Submodule contents/gitlink changes remain outside
-Room collection; cleanup retains submodule edits, commits and ignored files even on
-discard because a superproject recovery ref cannot recover nested repository work.
+spawn/prompt notes. There is no size cutoff: large submodules remain eligible. Setup
+runs asynchronous Git commands with an eight-second total command/inspection budget,
+at most 64 configured submodules, and at most eight nested levels. It stages its own
+clone beside the final destination, records creation refs and reflogs outside the
+worker tree in the worktree Git admin directory, and publishes only complete setup.
+Failed attempts are stopped and their staging removed before returning empty with
+local commands. Removing staged files can add filesystem cleanup time after the
+budget. Existing worker contents are not overwritten.
 
-## Real repository trial
+The preservation rule is creation refs (all refs plus symbolic HEAD), creation
+reflogs, and clean status including untracked and ignored files. Any mismatch or
+unverifiable state retains the clone, even on discard. This protects stashes, private
+branches and commits preserved only by reflogs, and avoids scanning/hashing the
+object store. Incidental index refreshes, `FETCH_HEAD` and `ORIG_HEAD` do not themselves
+retain a clean clone. The lead explicitly scoped objects reachable from no ref or
+reflog out of the preservation guarantee; that boundary is in the reference.
+
+With no `.gitmodules` and no existing receipt, setup/cleanup run no Git command for
+this feature. Configured paths alone are queried from the index. The ordinary
+40,000-entry regression produced more than 5 MiB of stage listing on the old code;
+now neither that listing nor any Git command is issued. Legacy or manually populated
+mapped submodules without creation evidence are retained. Nonstandard gitlinks with
+no `.gitmodules` entry keep previous handling, as agreed with the lead.
+
+## Initial real repository trial (before review)
 
 Host: macOS 26.5 / Darwin 25.5.0 arm64, Git 2.45.2, Node 22.23.4; other batch workers
 were active, so these are single observed timings, not a latency benchmark.
@@ -48,6 +65,51 @@ were active, so these are single observed timings, not a latency benchmark.
   the populated worker. SHA-256 hashes of the existing source's `HEAD`, index,
   configuration and packed refs were identical before/after. All throwaway output
   was removed. No command initialized, updated or checked out the existing source.
+
+## Review regressions and real repository rerun
+
+The added stash, reflog-only reset and ordinary 40,000-entry index assertions all
+failed against the initial implementation. The corrected implementation passed those
+cases, a real killed-child checkout timeout, private-branch retention, missing
+creation evidence, unchanged incidental Git metadata, and broken-ref warnings. The
+original lifecycle integration was split into collection and discard cases so each
+finishes within the focused test deadline under concurrent load.
+
+Repeated the same real bqst/JUCE fixture using throwaway clones. The source checkout
+and original Git metadata were read only; every hash checked above stayed unchanged.
+The fixture again required a one-time `--no-hardlinks` seed because of sandbox source
+link restrictions; the tested worker object pack was hardlinked. A 20 ms interval
+sampled the event loop during each setup. These are individual warm-filesystem runs,
+not a production latency guarantee; the APFS volume reported 98% used / about 20 GiB
+available, and concurrent validation load varied.
+
+| Attempt | Outcome | Setup + cleanup | Maximum timer gap |
+| --- | --- | ---: | ---: |
+| Early private-admin staging, default 8 s | Empty, guided; timeout, no staging left | 8,701 ms | 39 ms |
+| Early private-admin staging, candidate 15 s | Empty, guided; checkout timed out, no staging left | 20,936 ms | 28 ms |
+| Destination-side staging, 8 s default | Ready, pack hardlinked, real stash retained | 1,399 ms | 22 ms |
+| Same run, forced 1 s budget | Empty, guided; no staging left | 1,297 ms | 21 ms |
+| Final source, destination-side staging, 8 s default | Ready, pack hardlinked, real stash retained | 973 ms | 21 ms |
+| Final source, forced 1 s budget | Empty, guided; no staging left | 1,215 ms | 23 ms |
+
+The final ready run spent 28 ms cloning the objects and 800 ms checking out JUCE;
+its C++17 header syntax check passed in 473 ms. The earlier destination-side run's
+header check passed in 663 ms. Both normal and forced-budget trials removed all
+private staging, and explicit disposal of each throwaway worker succeeded after
+verifying stash preservation. The destination-side location also guarantees rename
+publication stays on the target filesystem; differences in load/cache conditions
+prevent attributing the timing improvement solely to that location.
+
+A stricter Git-stderr check briefly declined ordinary detached-source clone hints.
+That regression was caught in tests and a throwaway real run (199 ms and 213 ms
+empty outcomes); pinning the temporary default branch name suppresses those hints,
+while an actual unverifiable-ref warning still retains the clone. The final-source
+rows above include that correction.
+
+Thus usable local objects, hardlink support, checkout I/O and current machine load
+choose ready versus empty within the budget. Large size alone does not choose the
+empty path, and a slow attempt cannot publish partial contents. No parallel checkout
+policy was introduced. There was no rerun of a model-backed worker or full app build.
 
 ## Verification limits
 

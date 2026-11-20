@@ -21,6 +21,7 @@ export async function prepareWorkerBuildDir(dir: string, tag: string): Promise<s
     // lstat rejects symlinks and Windows junctions, including a planted ancestor.
     if (!fs.lstatSync(folder).isDirectory()) throw new Error(`worker build directory parent is not a plain directory: ${folder}`)
   }
+  fs.accessSync(build, fs.constants.W_OK | fs.constants.X_OK)
   // Ignore the tag directory itself: files generated beneath it cannot unignore their way out.
   // This is local to the worker, and never edits .gitignore or the clone's shared Git excludes.
   const ignore = path.join(scratch, '.gitignore')
@@ -34,8 +35,10 @@ export async function prepareWorkerBuildDir(dir: string, tag: string): Promise<s
   return build
 }
 
-export function workerBuildDirNote(buildDir?: string): string {
+export function workerBuildDirNote(buildDir?: string, unavailableReason?: string): string {
   return buildDir
     ? `Your build and scratch directory is ${buildDir} (WORKER_BUILD_DIR). Use it for disposable output. Room guarantees it is Git-ignored, never carried or collected, and deletes it with your worktree; put deliverables elsewhere in the worktree.`
-    : 'No build directory is provided for a supplied dir= checkout; Room leaves its files alone. Choose your own output location there.'
+    : unavailableReason
+      ? `No build directory is available (${unavailableReason}). WORKER_BUILD_DIR is unset; choose your own output location inside the worktree.`
+      : 'No build directory is provided for a supplied dir= checkout; Room leaves its files alone. Choose your own output location there.'
 }

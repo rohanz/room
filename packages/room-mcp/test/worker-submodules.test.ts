@@ -97,7 +97,7 @@ it('declines alternate-backed sources and missing recorded objects without a net
   // A sparse/missing local object must not trigger a network fallback.
   const tree = git(f.source, 'rev-parse', f.first + '^{tree}')
   fs.unlinkSync(path.join(f.sourceGit, 'objects', tree.slice(0, 2), tree.slice(2)))
-  const result = await prepareWorkerSubmodules(repo, dir)
+  const result = await prepareWorkerSubmodules(repo, f.worktree('missing-object'))
   expect(result.prompt).not.toContain('ready at')
   expect(result.prompt).toContain('local Git inspection or checkout failed')
 })
@@ -113,7 +113,7 @@ it('prepares nested submodules without using shared superproject module metadata
   expect(f.unchanged()).toEqual(before)
   expect(await changedWorkerSubmodules(dir)).toEqual([])
   put(path.join(dir, subpath, 'nested/lib'), 'build/precious', 'nested ignored work')
-  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
+  expect(await changedWorkerSubmodules(dir)).toEqual([subpath + '/nested/lib'])
 })
 
 it('leaves an empty dependency with local guidance when object hardlinks are unavailable', async () => {
@@ -140,7 +140,7 @@ it('leaves an empty dependency with local guidance when object hardlinks are una
   } finally { spy.mockRestore() }
 })
 
-it('real spawn and preview preserve opaque gitlinks; collection and discard remove clean populated worktrees', async () => {
+it('real spawn and preview preserve opaque gitlinks; collection removes clean populated worktrees', async () => {
   const f = fixture(), t = world({ repo, head: f.head }), before = f.unchanged()
   const reply = await t.call('room_spawn', { tag: 'collect', task: 'build library', host: 'claude' })
   expect(reply).toContain('ready at ' + f.first)
@@ -155,6 +155,11 @@ it('real spawn and preview preserve opaque gitlinks; collection and discard remo
   expect(read(repo, 'keep.txt')).toBe('worker edit\n')
   expect(fs.existsSync(dir), collected).toBe(false)
   expect(git(repo, 'ls-files', '--stage', '--', subpath)).toContain('160000 ' + f.first)
+  expect(f.unchanged()).toEqual(before)
+})
+
+it('discard removes a clean populated worktree without modifying the source', async () => {
+  const f = fixture(), t = world({ repo, head: f.head }), before = f.unchanged()
   const discard = await t.spawn('discard')
   await t.finish('discard')
   const discarded = await t.call('room_collect', { tag: 'discard', discard: true })
@@ -181,4 +186,98 @@ it('retains submodule edits, new commits and ignored output because collection/d
   git(at, 'checkout', '-q', f.first)
   put(at, 'build/precious', 'ignored child result')
   expect(await changedWorkerSubmodules(w.dir)).toEqual([subpath])
+})
+
+it('retains a stash in an otherwise clean populated submodule during discard', async () => {
+  const f = fixture(), t = world({ repo, head: f.head }), w = await t.spawn('stash')
+  const at = path.join(w.dir, subpath)
+  put(at, 'library.txt', 'recoverable stash\n')
+  git(at, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'stash', 'push', '-qm', 'save child work')
+  const stash = git(at, 'rev-parse', 'refs/stash')
+  expect(git(at, 'status', '--porcelain')).toBe('')
+  expect(await changedWorkerSubmodules(w.dir)).toEqual([subpath])
+  await t.finish('stash')
+  const reply = await t.call('room_collect', { tag: 'stash', discard: true })
+  expect(reply).toContain('submodule work is not collected')
+  expect(git(at, 'rev-parse', 'refs/stash')).toBe(stash)
+})
+
+it('retains commits reachable only from a submodule reflog after refs and working files return to creation', async () => {
+  const f = fixture(), dir = f.worktree()
+  await prepareWorkerSubmodules(repo, dir)
+  const at = path.join(dir, subpath)
+  put(at, 'library.txt', 'reflog-only work\n')
+  git(at, 'add', '-A')
+  git(at, '-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'reflog work')
+  const saved = git(at, 'rev-parse', 'HEAD')
+  git(at, 'reset', '--hard', '-q', f.first)
+  expect(git(at, 'status', '--porcelain')).toBe('')
+  expect(git(at, 'rev-parse', 'HEAD')).toBe(f.first)
+  expect(git(at, 'reflog')).toContain(saved.slice(0, 7))
+  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
+})
+
+it('does no Git work for setup or cleanup of a 40,000-entry ordinary index', async () => {
+  // An actual 5+ MiB index, made without creating 40,000 files or processes.
+  const blob = git(repo, 'hash-object', '-w', '--stdin')
+  const entries = Array.from({ length: 40_000 }, (_, n) => `100644 ${blob}\t${String(n).padStart(6, '0')}-${'x'.repeat(100)}\0`).join('')
+  const input = path.join(repo, '.room/index-entries')
+  fs.mkdirSync(path.dirname(input), { recursive: true }); fs.writeFileSync(input, entries)
+  childProcess.execFileSync('git', ['-C', repo, 'update-index', '-z', '--index-info'], { input: entries, stdio: ['pipe', 'pipe', 'pipe'] })
+  const spy = vi.spyOn(childProcess, 'execFile')
+  try {
+    expect(await changedWorkerSubmodules(repo)).toEqual([])
+    expect(await prepareWorkerSubmodules(repo, repo)).toEqual({ reply: [] })
+    expect(spy).not.toHaveBeenCalled()
+  } finally { spy.mockRestore() }
+})
+
+it('removes private staging after checkout times out and leaves an empty path with guidance', async () => {
+  const f = fixture(), dir = f.worktree(), before = f.unchanged()
+  const exec = childProcess.execFile
+  let checkout: string | undefined
+  const spy = vi.spyOn(childProcess, 'execFile').mockImplementation(((file: string, args: string[], options: any, callback: any) => {
+    if (args.includes('checkout')) {
+      checkout = options.cwd
+      // Real killed child exercises callback/cleanup ordering; it cannot write the destination.
+      return exec(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { ...options, timeout: 25 }, callback)
+    }
+    return (exec as any)(file, args, options, callback)
+  }) as typeof exec)
+  try {
+    const result = await prepareWorkerSubmodules(repo, dir)
+    expect(checkout).toBeDefined()
+    expect(result.prompt).toContain('empty (submodule setup time limit reached)')
+    expect(result.prompt).toContain('clone --local --no-checkout')
+    expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
+    expect(fs.existsSync(checkout!)).toBe(false)
+    expect(f.unchanged()).toEqual(before)
+  } finally { spy.mockRestore() }
+})
+
+it('ignores incidental Git metadata but retains new private branches and missing creation evidence', async () => {
+  const f = fixture(), dir = f.worktree()
+  const result = await prepareWorkerSubmodules(repo, dir)
+  expect(result.prompt).toContain('ready at ' + f.first)
+  const at = path.join(dir, subpath)
+  put(at, '.git/FETCH_HEAD', f.first + '\t\ttrial\n')
+  put(at, '.git/ORIG_HEAD', f.first + '\n')
+  git(at, 'status', '--porcelain') // A normal index refresh is allowed.
+  expect(await changedWorkerSubmodules(dir)).toEqual([])
+  git(at, 'branch', 'saved-child-work', f.first)
+  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
+  fs.unlinkSync(path.join(dir, '.gitmodules'))
+  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
+  git(at, 'branch', '-D', 'saved-child-work')
+  fs.writeFileSync(path.join(dir, '.gitmodules'), fs.readFileSync(path.join(repo, '.gitmodules')))
+  fs.unlinkSync(path.join(git(dir, 'rev-parse', '--absolute-git-dir'), 'room-submodules.json'))
+  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
+})
+
+it('retains unverifiable refs instead of treating a Git warning as an unchanged clone', async () => {
+  const f = fixture(), dir = f.worktree()
+  const result = await prepareWorkerSubmodules(repo, dir)
+  expect(result.prompt).toContain('ready at ' + f.first)
+  put(path.join(dir, subpath), '.git/refs/heads/broken', 'not-an-object-id\n')
+  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
 })

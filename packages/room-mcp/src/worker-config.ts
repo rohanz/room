@@ -124,7 +124,7 @@ export function validTag(tag: unknown): string | undefined {
 }
 
 /** The fixed preamble every worker gets, then the task. */
-export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[]; deps?: string; buildDir?: string }): string {
+export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[]; deps?: string; buildDir?: string; buildDirUnavailableReason?: string }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing. Ask the peer responsible for a dependency directly with room_send(type "question", to "<returned peer name>"); ask ${lead} for scope decisions or unresolved ownership.`,
@@ -136,7 +136,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     ...workerHostInstructions,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs. This budget stays fixed when peers finish.`,
-      workerBuildDirNote(context.buildDir),
+      workerBuildDirNote(context.buildDir, context.buildDirUnavailableReason),
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
       ...(context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
