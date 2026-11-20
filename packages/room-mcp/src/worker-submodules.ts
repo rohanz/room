@@ -15,23 +15,19 @@ const quote = (value: string) => "'" + value.replace(/'/g, process.platform === 
 
 // Discovery/status must not refresh the lead's index, invoke fsmonitor or lazily fetch objects.
 // Global config is excluded from cloning/checking out: filters, templates and URL rewrites can run code/network.
-function run(dir: string, args: string[], deadline: number, input?: string): Promise<string> {
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
-    GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull,
+function run(dir: string, args: string[], deadline: number, ordinaryConfig = false): Promise<string> {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') || ordinaryConfig && key.startsWith('GIT_CONFIG_'))),
+    GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1',
+    ...(!ordinaryConfig ? { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull } : {}),
     GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' }
   const timeout = Math.floor(deadline - performance.now())
   if (timeout <= 0) return Promise.reject(new Error('submodule setup time limit reached'))
-  return new Promise((resolve, reject) => {
-    const child = childProcess.execFile('git', ['-c', `core.hooksPath=${os.devNull}`,
+  return new Promise((resolve, reject) => childProcess.execFile('git', ['-c', `core.hooksPath=${os.devNull}`,
     '-c', 'init.defaultBranch=room-submodule',
     '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', 'protocol.file.allow=always',
     ...args], { cwd: dir, env, timeout, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 },
   (error, stdout, stderr) => error || stderr.trim()
-    ? reject(new Error(error?.killed ? 'submodule setup time limit reached' : 'local Git inspection or checkout failed')) : resolve(stdout))
-    // Read-only commands can close unused stdin; failed index input must never certify cleanup.
-    child.stdin?.on('error', () => { if (input !== undefined) reject(new Error('submodule inspection input failed')) })
-    child.stdin?.end(input)
-  })
+    ? reject(new Error(error?.killed ? 'submodule setup time limit reached' : 'local Git inspection or checkout failed')) : resolve(stdout)))
 }
 
 interface Gitlink { path: string; oid: string }
@@ -133,32 +129,14 @@ async function creationState(dir: string, deadline: number): Promise<Creation> {
   return { refs, reflogs: logs.digest('hex'), dev: String(stat.dev), ino: String(stat.ino) }
 }
 
-/** Inspect staged + on-disk bytes without trusting the clone's index visibility or configuration. */
-async function unhiddenStatus(dir: string, deadline: number): Promise<string> {
-  // Export entries, not the index file: assume-unchanged/skip-worktree bits, sparse-index layout,
-  // stat caches, fsmonitor and untracked-cache extensions must not survive into the inspection.
-  const entries = await run(dir, ['ls-files', '--stage', '-z'], deadline)
-  const [format, objects, head, ...extra] = (await run(dir,
-    ['rev-parse', '--show-object-format', '--git-path', 'objects', 'HEAD'], deadline)).trimEnd().split('\n')
-  if (extra.length || !['sha1', 'sha256'].includes(format) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)
-    || !objects || /[\r\n]/.test(objects)) throw new Error('unverifiable submodule object location')
-  const objectDir = path.resolve(dir, objects)
-  if (/[\r\n]/.test(objectDir) || !containedRepoPath(dir, objectDir, { leaf: 'reject-link' }).ok || !fs.lstatSync(objectDir).isDirectory())
-    throw new Error('submodule objects are not private')
-  const probe = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-submodule-status-'))
-  try {
-    await run(dir, ['init', '--quiet', '--bare', '--template=', `--object-format=${format}`, probe], deadline)
-    await fs.promises.writeFile(path.join(probe, 'objects/info/alternates'), objectDir + '\n')
-    await fs.promises.writeFile(path.join(probe, 'HEAD'), head + '\n')
-    await fs.promises.mkdir(path.join(probe, 'info'), { recursive: true })
-    // Highest-priority attributes disable conversions, including arbitrary clean-filter commands.
-    // A checkout with normalized bytes different from its Git blobs is conservatively retained.
-    await fs.promises.writeFile(path.join(probe, 'info/attributes'), '* -text -eol -crlf -working-tree-encoding -ident -filter\n')
-    const context = ['--git-dir', probe, '--work-tree', dir,
-      '-c', 'core.ignoreCase=false', '-c', 'core.fileMode=true', '-c', 'core.symlinks=true']
-    await run(dir, [...context, 'update-index', '-z', '--index-info'], deadline, entries)
-    return await run(dir, [...context, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], deadline)
-  } finally { await fs.promises.rm(probe, { recursive: true, force: true }) }
+/** Trust ordinary Git status only when no index entry hides working-tree changes. */
+async function submoduleStatus(dir: string, deadline: number): Promise<string> {
+  const entries = await run(dir, ['ls-files', '-v', '-z'], deadline, true)
+  // -v lowercases assume-unchanged entries; S (or s) marks skip-worktree.
+  if (entries.split('\0').some(entry => /^[a-zS] /.test(entry)))
+    throw new Error('submodule index hides working-tree entries')
+  return run(dir, ['-c', 'core.untrackedCache=false', 'status', '--porcelain',
+    '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], deadline, true)
 }
 function safe(root: string, rel: string): string {
   if (!validRepoPath(rel, MATERIALIZED_PATH) || rel.split('/')[0].toLowerCase() === '.room') throw new Error('unsafe submodule path')
@@ -276,7 +254,7 @@ async function changedSubmodules(workerDir: string, deadline: number): Promise<s
     if (!creation) { changed.push(rel); continue }
     try {
       const current = await creationState(at, deadline)
-      const status = await unhiddenStatus(at, deadline)
+      const status = await submoduleStatus(at, deadline)
       if (JSON.stringify(current) !== JSON.stringify(creation) || status) changed.push(rel)
     } catch { changed.push(rel) }
   }

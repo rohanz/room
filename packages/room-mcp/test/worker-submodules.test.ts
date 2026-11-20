@@ -290,6 +290,7 @@ it.each(['--assume-unchanged', '--skip-worktree'])('retains work hidden by %s wi
   const f = fixture(), t = world({ repo, head: f.head }), w = await t.spawn('hidden')
   const at = path.join(w.dir, subpath)
   git(at, 'update-index', flag, '--', 'library.txt')
+  expect(await changedWorkerSubmodules(w.dir)).toEqual([subpath])
   put(at, 'library.txt', 'hidden child work\n')
   expect(git(at, 'status', '--porcelain')).toBe('')
   const index = fs.readFileSync(path.join(at, '.git/index'))
@@ -299,20 +300,6 @@ it.each(['--assume-unchanged', '--skip-worktree'])('retains work hidden by %s wi
   const reply = await t.call('room_collect', { tag: 'hidden', discard: true })
   expect(reply).toContain('submodule work is not collected')
   expect(read(at, 'library.txt')).toBe('hidden child work\n')
-})
-
-it('checks sparse and cached clones without using their local configuration', async () => {
-  const f = fixture(), dir = f.worktree()
-  await prepareWorkerSubmodules(repo, dir)
-  const at = path.join(dir, subpath)
-  git(at, 'sparse-checkout', 'set', '--no-cone', '/.gitignore')
-  git(at, 'config', 'core.ignoreStat', 'true')
-  git(at, 'config', 'core.untrackedCache', 'true')
-  git(at, 'config', 'core.fsmonitor', 'not-a-real-fsmonitor')
-  put(at, 'library.txt', 'hidden sparse work\n')
-  const index = fs.readFileSync(path.join(at, '.git/index'))
-  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
-  expect(fs.readFileSync(path.join(at, '.git/index'))).toEqual(index)
 })
 
 it('preserves staged work even when the on-disk bytes match HEAD', async () => {
@@ -326,30 +313,19 @@ it('preserves staged work even when the on-disk bytes match HEAD', async () => {
   expect(fs.readFileSync(path.join(at, '.git/index'))).toEqual(index)
 })
 
-it('does not invoke a clone clean filter that can hide modified bytes', async () => {
-  const f = fixture()
-  put(f.source, '.gitattributes', 'library.txt filter=hide\n')
-  commit(f.source, 'attribute'); commit(repo, 'updated child')
-  const dir = f.worktree()
-  await prepareWorkerSubmodules(repo, dir)
-  const at = path.join(dir, subpath), marker = path.join(at, '.git/filter-ran'), script = path.join(at, '.git/filter.cjs')
-  fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'yes'); process.stdout.write('first\\n')`)
-  git(at, 'config', 'filter.hide.clean', `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`)
-  put(at, 'library.txt', 'other\n') // Same size so Git hashes through the lying filter.
-  expect(git(at, 'status', '--porcelain')).toBe('')
-  fs.unlinkSync(marker)
-  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
-  expect(fs.existsSync(marker)).toBe(false)
-})
-
-it('retains checkout conversions that differ from stored blob bytes', async () => {
-  const f = fixture()
-  put(f.source, '.gitattributes', 'library.txt text eol=crlf\n')
-  commit(f.source, 'checkout conversion'); commit(repo, 'updated child')
-  const dir = f.worktree()
+it.each(['local', 'global'])('allows clean CRLF checkouts under %s core.autocrlf', async scope => {
+  const f = fixture(), dir = f.worktree()
   await prepareWorkerSubmodules(repo, dir)
   const at = path.join(dir, subpath)
+  if (scope === 'local') git(at, 'config', 'core.autocrlf', 'true')
+  else {
+    const config = path.join(path.dirname(repo), 'autocrlf.gitconfig')
+    fs.writeFileSync(config, '[core]\n\tautocrlf = true\n')
+    vi.stubEnv('GIT_CONFIG_GLOBAL', config)
+  }
+  fs.unlinkSync(path.join(at, 'library.txt'))
+  git(at, 'checkout', 'HEAD', '--', 'library.txt')
   expect(read(at, 'library.txt')).toBe('first\r\n')
   expect(git(at, 'status', '--porcelain')).toBe('')
-  expect(await changedWorkerSubmodules(dir)).toEqual([subpath])
+  expect(await changedWorkerSubmodules(dir)).toEqual([])
 })

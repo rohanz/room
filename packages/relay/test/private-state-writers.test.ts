@@ -10,7 +10,6 @@ const packages = fileURLToPath(new URL('../../', import.meta.url))
 const nonState: Record<string, Record<string, number>> = {
   'room-mcp/src/prs.ts': { 'path.dirname(outputPath), { recursive: true }': 2 }, // user export destination
   'room-mcp/src/port-reservations.ts': { 'directory, { recursive: true, mode: 0o700 }': 1 }, // per-user config
-  'room-mcp/src/worker-submodules.ts': { "path.join(probe, 'info'), { recursive: true }": 1 }, // disposable Git inspection under mkdtemp; index/attributes only, no Room trusted state
   'room-mcp/src/worker-build-dir.ts': { 'folder, { mode: 0o700 }': 1 }, // disposable checkout output inherits the protected worktree; no credentials or registry state
   'room-mcp/src/worker-process.ts': { 'path.dirname(spec.logFile), { recursive: true }': 1 }, // checkout worker log
   'room-mcp/src/worker-artifacts.ts': { dir: 1 }, // worker shell-environment artifacts in the worktree's .room folder (moved from worker-shell-env.ts)
