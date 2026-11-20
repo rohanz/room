@@ -18,6 +18,7 @@ import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
 
 import { clearRetainedWorkerItem, retainWorkerItem, retainedWorkerLines } from './worker-retained.js'
+import { changedWorkerSubmodules } from './worker-submodules.js'
 import { writeWorkerRef, deleteWorkerRef, deleteWorkerRecordRef, restoreWorkerRef, preserveWorkerBranch, deletePreservedWorkerBranch, recoveryRefCovers, recoveryRefDescription, operationBranchReceipt } from './worker-refs.js'
 import { canonicalMissingWorkerPath, rootIdentity, verifyWorkerCheckout, retainCheckout, removeWorkerRegistration, PREPARATION_WITNESS_FILE, preparationIdentity, witnessPreparation, removePreparation, verifyPreparation, type PreparationIdentity, type PreparationWitness } from './worker-preparation.js'
 
@@ -690,6 +691,8 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
   if (!await available()) return false
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
+  const submoduleChanges = await changedWorkerSubmodules(w.dir)
+  if (submoduleChanges.length) throw new Error(`submodule work is not collected or saved by superproject recovery refs; retained ${w.dir}: ${submoduleChanges.join(', ')}. Export or remove that work explicitly before retrying cleanup`)
   try {
     // Remove the worker's reusable preview checkout while its own worktree still exists.
     const { removePreviewCache } = await import('./tools/files.js')
@@ -821,7 +824,7 @@ export async function saveDiscardRecovery(leadDir: string, w: LocalWorker): Prom
     const trackedIgnored = (await git(w.dir, ['ls-files', '--cached', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean)
     const candidates = new Set([...trackedIgnored, ...(w.carriedUntracked ?? []).map(p => p.path)])
     const explicit = [...candidates].filter(p => {
-      if (workerOwnedPaths(w).includes(p)) return false
+      if (p.toLowerCase() === '.room/scratch' || p.toLowerCase().startsWith('.room/scratch/') || workerOwnedPaths(w).includes(p)) return false
       try { const stat = fs.lstatSync(path.join(w.dir, p)); return stat.isFile() || stat.isSymbolicLink() }
       catch (error) { if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false; throw error }
     })
@@ -830,6 +833,7 @@ export async function saveDiscardRecovery(leadDir: string, w: LocalWorker): Prom
       fs.writeFileSync(paths, explicit.map(p => ':(literal)' + p + '\0').join(''), { mode: 0o600 })
       await run(['add', '-f', '--pathspec-from-file=' + paths, '--pathspec-file-nul'])
     }
+    await run(['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', ':(literal).room/scratch'])
     if (w.link?.length) await run(['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', ...w.link.map(p => ':(literal)' + p)])
     const tree = (await run(['write-tree'])).toString().trim()
     const unchanged = tree === (await run(['rev-parse', `${head}^{tree}`])).toString().trim()

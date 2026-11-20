@@ -135,6 +135,7 @@ async function copyFiles(root: string, paths: string[]): Promise<string[]> {
   const files = new Set<string>()
   let count = 0
   const visit = async (rel: string): Promise<void> => {
+    if (rel.toLowerCase() === '.room/scratch' || rel.toLowerCase().startsWith('.room/scratch/')) throw new Error('Room build/scratch state is never collected: ' + rel)
     if (count++ % COLLECT_YIELD_EVERY === 0) await setImmediate()
     const file = safePath(root, rel), stat = fs.statSync(file)
     if (stat.isDirectory()) for (const name of fs.readdirSync(file)) await visit(rel + '/' + name)

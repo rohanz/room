@@ -989,32 +989,53 @@ describe('worker compute budgets', () => {
   it('recounts concurrent spawns before budgeting and enforces capacity', async () => {
     vi.spyOn(os, 'availableParallelism').mockReturnValue(12)
     vi.spyOn(os, 'totalmem').mockReturnValue(24 * 1024 ** 3)
-    const t = setupLead() // maxWorkers = 2, so reserve six threads each
+    const t = setupLead()
     const replies = await Promise.all(['a', 'b', 'c'].map(tag => t.leadTools.call('room_spawn', { tag, task: 'train' })))
     expect(t.specs, replies.join('\n---\n')).toHaveLength(2)
-    expect(t.specs.map(s => s.env.ROOM_WORKER_THREADS)).toEqual(['6', '6'])
+    expect(t.specs.map(s => Number(s.env.ROOM_WORKER_THREADS)).sort((a, b) => b - a)).toEqual([6, 3])
     expect(t.specs.map(s => s.env.ROOM_WORKER_MEM_GB)).toEqual(['12', '12'])
     expect(replies.filter(r => r.includes('budget in prompt:'))).toHaveLength(2)
-    expect(t.specs.every(s => s.args.some(a => a.includes('Compute budget: 6 threads, ~12 GB')))).toBe(true)
+    expect(t.specs.every(spec => spec.args.some(a => a.includes(`Compute budget: ${spec.env.ROOM_WORKER_THREADS} threads, ~12 GB`)))).toBe(true)
+    expect(replies.join('\n')).toContain('half of 6 unreserved / 12 cores; 1 live workers')
     expect(replies.some(r => r.includes('worker capacity reached'))).toBe(true)
     await t.leadTools.shutdown()
   })
 
   it.each([
-    [12, 8, 0, 3], [12, 8, 1, 3], [12, 8, 3, 3], [12, 8, 4, 2],
-    [12, 8, 7, 1], [12, 2, 0, 6], [12, 1, 0, 12], [12, 2, 5, 2],
-    [2, 8, 0, 1], [1, 8, 4, 1],
-  ])('%i cores, max %i, running %i -> %i threads', (cores, maxWorkers, running, threads) => {
-    expect(workerBudget({ cores, maxWorkers, running, memBytes: 17.9 * 1024 ** 3 })).toEqual({
-      // Memory uses the same reservation as threads: at least four intended workers, bounded by maxWorkers.
+    [32, 8, 0, 0, 16], [32, 8, 1, 16, 8], [32, 8, 2, 24, 4],
+    [12, 8, 0, 0, 6], [12, 2, 0, 0, 6], [12, 1, 0, 0, 6], [12, 8, 1, 2, 5],
+    [2, 8, 0, 0, 1], [2, 8, 1, 1, 1], [2, 8, 2, 2, 1], [1, 8, 4, 4, 1],
+  ])('%i cores, max %i, running %i, reserved %i -> %i threads', (cores, maxWorkers, running, reservedThreads, threads) => {
+    expect(workerBudget({ cores, maxWorkers, running, reservedThreads, memBytes: 17.9 * 1024 ** 3 })).toMatchObject({
+      // Memory still reserves for at least four intended workers, bounded by maxWorkers.
       threads, memGb: Math.max(1, Math.floor(17.9 / Math.max(1, Math.min(maxWorkers, Math.max(running + 1, 4)), running + 1))),
     })
     expect(threads).toBeLessThanOrEqual(cores)
-    if (running + 1 <= cores) expect(threads * (running + 1)).toBeLessThanOrEqual(cores)
+    if (reservedThreads < cores) expect(reservedThreads + threads).toBeLessThanOrEqual(cores)
   })
 
   it('floors memory to one GB on a small machine', () => {
-    expect(workerBudget({ cores: 1, maxWorkers: 8, running: 12, memBytes: 512 * 1024 ** 2 }).memGb).toBe(1)
+    expect(workerBudget({ cores: 1, maxWorkers: 8, running: 12, reservedThreads: 12, memBytes: 512 * 1024 ** 2 }).memGb).toBe(1)
+  })
+
+  it('reserves across independent leads using the same capacity guard', async () => {
+    vi.spyOn(os, 'availableParallelism').mockReturnValue(32)
+    const first = setupLead(), second = setupLead()
+    try {
+      const replies = await Promise.all([
+        first.leadTools.call('room_spawn', { tag: 'one', task: 'build' }),
+        second.leadTools.call('room_spawn', { tag: 'two', task: 'build' }),
+      ])
+      expect(replies.every(reply => reply.includes('spawned'))).toBe(true)
+      expect([...first.specs, ...second.specs].map(spec => Number(spec.env.ROOM_WORKER_THREADS)).sort((a, b) => b - a)).toEqual([16, 8])
+    } finally { await first.leadTools.shutdown(); await second.leadTools.shutdown() }
+  })
+
+  it('keeps nested environment shares and argument ceilings', () => {
+    const input = { cores: 32, maxWorkers: 4, running: 2, reservedThreads: 12, memBytes: 32 * 1024 ** 3, isWorker: true, inheritedThreads: 12, inheritedMem: 16 }
+    expect(workerBudget(input)).toMatchObject({ threads: 3, memGb: 4, reason: expect.stringContaining('ROOM_WORKER_THREADS=12 / 4 nested share') })
+    expect(workerBudget({ ...input, requestedThreads: 2 })).toMatchObject({ threads: 2, memGb: 4 })
+    expect(workerBudget({ ...input, requestedThreads: 9 })).toMatchObject({ threads: 3, memGb: 4 })
   })
 
   it.each(['claude', 'codex'])('passes caps through the %s path while preserving explicit library settings', async host => {

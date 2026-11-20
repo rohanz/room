@@ -324,6 +324,7 @@ export class Rooms {
         lead: record.lead.participant, owner: s.me.owner ?? s.me.name, host: record.host, model: record.model,
         effort: record.effort, share: record.share, run: run.n, nonce: run.nonce, registry: registry.root,
         budget: record.budget, server, isWorker, token: s.local ? undefined : s.token,
+        ownsBuildDir: !!record.prep.created && !record.outside && !record.sharedWith,
         preferredPort: record.port, spawner, probe: this.o.probe, log, at },
       { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt : followUp, oldPort: record.port },
       { setHandle: (id, proc) => this.setHandle(s, id, proc),
