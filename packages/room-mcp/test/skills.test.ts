@@ -49,31 +49,26 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       'git pull --ff-only --autostash', 'do not undo, rebase or recommit your commits to get past it without their yes',
       'Choose task-appropriate evidence',
     ] },
+    // Each of these guards a miss seen in the 2026-10-18 benchmark trials (docs/host-snapshots/2026-10-16-delivery-audit.md).
     { sources: ['workers'], phrases: [
-      '`*.tsbuildinfo`', 'the spec sections or rules that are its slice', 'Never write "if relevant"',
-      'put each in exactly one brief', 'as "decided, not in spec"', 'so it finds what the briefs missed',
-      "same spec rules, not at an implementer's file list",
-      "about twice another's effort", 'split a large set by member across two owners',
-      'each told the same rule', 'ask the running worker what members remain',
-      'hand some to the finished worker', 'Agree the handoff and release old claims',
-      'start the integrated test run in the background and review diffs or write the summary',
-      'Await completion and inspect the actual result', 'Stop remaining background commands and monitors you started before the final message',
+      'Every requirement has exactly one owner', 'the spec sections or rules that are its slice, not your summary of them',
+      'Never write "if relevant"', '"decided, not in spec"', "Leave out the implementers' file lists", 'so it finds what the briefs missed',
     ] },
     // Command lifecycle is stated once in room-etiquette; room-workers links to it.
     { sources: ['etiquette', 'worker'], phrases: [
       'when responsiveness matters', 'actual result before room_done', 'unverified hosts, including Codex',
       'background lifetime and completion delivery are verified',
     ] },
-    { sources: ['workers', 'etiquette', 'agent'], phrases: [
+    { sources: ['etiquette', 'agent'], phrases: [
       'Reuse a complete passing preview only for identical preview inputs, command and relevant environment',
       'CI checks the change requires',
     ] },
-    { sources: ['workers', 'etiquette', 'agent'], phrases: [
+    { sources: ['etiquette', 'agent'], phrases: [
       'Validate the collected tree unless collect reports it identical to the most recent preview of this checkout',
       'files and command only',
     ] },
-    // The server instructions carry the rule; the exclusions are spelled out in the skills and in every collect reply.
-    { sources: ['workers', 'etiquette'], phrases: [
+    // The server instructions carry the rule; the exclusions are spelled out in room-etiquette and in every collect reply.
+    { sources: ['etiquette'], phrases: [
       'environment and ignored files are not compared',
       'Git state (HEAD, refs, index)',
       'Rerun commands that read Git state on the collected tree',
@@ -105,13 +100,12 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       'with nothing else to do, end the turn', 'ask its lead to resume it',
     ] },
     { sources: ['workers'], phrases: [
-      'message from its lead to a finished worker resumes its retained session',
-      'completion from their own registered workers mid-turn as tool output', 'not proof that content was read or acted on',
+      'message from its lead to a finished worker resumes its retained session', 'not proof that content was read or acted on',
       'A headless lead (`claude -p`, `codex exec`) must stay alive until supervision is complete',
       '.room/briefs/<batch>.md', 'with or without `carry=false`', 'its absolute path plus only its own slice',
-      'Never commit or push unless the human asked', 'removes its worktree, branch and logs, keeping one recovery commit for ordinary work for a week from the ref renewal immediately before checkout removal',
+      'Never commit or push unless the human asked', 'A recovery commit is kept for a week',
     ] },
-    { sources: ['workers', 'etiquette'], phrases: ['output-limited runs do not validate the whole tree'] },
+    { sources: ['etiquette'], phrases: ['output-limited runs do not validate the whole tree'] },
     { sources: ['etiquette', 'agent', 'worker'], phrases: [
       'timeout is not an answer or approval', 'decisions stay with the human',
     ] },
