@@ -16,14 +16,15 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
    function or area to change, ask it to claim its regions and let Room surface overlap.
    Sequence edits to the same lines or work that truly needs a result first. Workers implement against agreed interfaces concurrently and may finish at different times. For a few lines, do it yourself unless
    the human explicitly requested a Room worker.
-   - Keep briefs short. Brief a worker the way you would want to be briefed: what the outcome
-     is and why, what must not break, and how you will judge it done. Leave the method to the
+   - Keep briefs short: say only what the worker cannot find out for itself. Brief a worker
+     the way you would want to be briefed: what the outcome is and why, what must not break, and how you will judge it done. Leave the method to the
      worker. A brief that restates documents or dictates steps makes the worker slower and more
      hesitant, so point at the source and trust its judgment. Ask for evidence that fits the
      risk of the change and say which checks you will run yourself. Tell the worker to ask
      only when blocked, and otherwise to decide and report what it chose.
-   - Shared context once: write what every worker needs (setup, commands, repo rules, the
-     spec) to one file before the first spawn, `<lead checkout>/.room/briefs/<batch>.md`, and
+   - Say it once. Rules that always hold for the project belong in its own instructions
+     (`AGENTS.md`, `CLAUDE.md`), which workers read; a brief does not repeat them. Context for
+     this batch (setup, commands, the spec, agreed interfaces) goes in one file before the first spawn, `<lead checkout>/.room/briefs/<batch>.md`, and
      give each brief its absolute path plus only its own slice. `.room/` is Git-ignored and
      never carried or collected, so every worker, with or without `carry=false`, reads the same
      live file and it never reaches a commit. Claude and Codex workers can read it; Codex
@@ -42,7 +43,11 @@ finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the le
      who increments a counter) as "decided, not in spec".
    - Point the test or review worker at the same spec rules, not at an implementer's file
      list, with the whole rule list and the "decided, not in spec" items to check against the
-     spec's caller-visible text, so it finds what the briefs missed.
+     spec's caller-visible text, so it finds what the briefs missed. Keep that list in the
+     shared file and point at it.
+   - Brief a reviewer on what changed, what it must guarantee and the question you want
+     answered. Leave out earlier rounds' findings and the author's account of what was fixed:
+     they tell an independent reviewer where to look and what to conclude.
    Supervise directly or through a background lead, as the user prefers; ask only when a
    decision is needed. A background lead is one worker whose brief has the task, how to
    split it, validation, and "collect your workers before room_done"; steer it with
