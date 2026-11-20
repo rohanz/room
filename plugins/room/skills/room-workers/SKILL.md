@@ -3,160 +3,117 @@ name: room-workers
 description: Use only when the user explicitly requests Room workers or Room for delegation, or follows up with, interrupts, collects, or discards an existing Room worker. Generic requests for agents, parallel work or background work use the host’s normal delegation.
 ---
 
-Use this workflow only for explicit Room delegation or its continuation. Installing or joining Room does not authorize Room workers. Otherwise use the host’s normal delegation.
-Rules every participant follows (claims, questions, waiting, previews, evidence, commands,
-finishing) are in [room-etiquette](../room-etiquette/SKILL.md); this adds the lead's.
+Rules for everyone in a room (claims, questions, waiting, previews, evidence, commands,
+finishing) are in [room-etiquette](../room-etiquette/SKILL.md). This adds what a lead needs.
 
-1. Split and brief. Split substantial work by task and dispatch independent investigation
-   and implementation early with short briefs. Size slices so none takes more than about twice another's effort;
-   split a large set by member across two owners, each told the same rule and their members,
-   with one owner responsible for finding and assigning unnamed members. Workers agree the
-   names, inputs and outputs they need directly with the relevant peers; only dependent
-   implementation waits for that agreement. Parts may share files: give each worker a
-   function or area to change, ask it to claim its regions and let Room surface overlap.
-   Sequence edits to the same lines or work that truly needs a result first. Workers implement against agreed interfaces concurrently and may finish at different times. For a few lines, do it yourself unless
-   the human explicitly requested a Room worker.
-   - Keep briefs short: say only what the worker cannot find out for itself. Brief a worker
-     the way you would want to be briefed: what the outcome is and why, what must not break, and how you will judge it done. Leave the method to the
-     worker. A brief that restates documents or dictates steps makes the worker slower and more
-     hesitant, so point at the source and trust its judgment. Ask for evidence that fits the
-     risk of the change and say which checks you will run yourself. Tell the worker to ask
-     only when blocked, and otherwise to decide and report what it chose.
-   - Say it once. Rules that always hold for the project belong in its own instructions
-     (`AGENTS.md`, `CLAUDE.md`), which workers read; a brief does not repeat them. Context for
-     this batch (setup, commands, the spec, agreed interfaces) goes in one file before the first spawn, `<lead checkout>/.room/briefs/<batch>.md`, and
-     give each brief its absolute path plus only its own slice. `.room/` is Git-ignored and
-     never carried or collected, so every worker, with or without `carry=false`, reads the same
-     live file and it never reaches a commit. Claude and Codex workers can read it; Codex
-     cannot write it, so the lead owns edits and announces them with `room_send`. Not a
-     relative repo path: untracked files are copied only when carrying. Room does not check
-     absolute paths: get it right. A brief that limits reads to the worktree names this file.
-   - Keep each brief self-contained and short by pointing at the source, not paraphrasing it:
-     the interfaces it uses, owned area, the spec sections or rules that are its slice,
-     expected behavior and appropriate validation. Before spawning, list the spec's observable
-     rules (states, fields, counters, events, return values) and put each in exactly one brief.
-   - A rule over a set ("every script that re-queues a job", "all callers of X") has one
-     owner, or one owner per member set when partitioned: name the members you know and say
-     that anything else the rule reaches is theirs to find and report in room_done.
-     Never write "if relevant" for a member of a set: assign it or decide it now.
-   - Mark a contract decision the spec does not state (throw or return, a payload shape,
-     who increments a counter) as "decided, not in spec".
-   - Point the test or review worker at the same spec rules, not at an implementer's file
-     list, with the whole rule list and the "decided, not in spec" items to check against the
-     spec's caller-visible text, so it finds what the briefs missed. Keep that list in the
-     shared file and point at it.
-   - Brief a reviewer on what changed, what it must guarantee and the question you want
-     answered. Leave out earlier rounds' findings and the author's account of what was fixed:
-     they tell an independent reviewer where to look and what to conclude.
-   Supervise directly or through a background lead, as the user prefers; ask only when a
-   decision is needed. A background lead is one worker whose brief has the task, how to
-   split it, validation, and "collect your workers before room_done"; steer it with
-   `room_send` and collect it like any worker.
-2. Spawn. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own; override
-   it, or pass a model, only when requested. Copy exact participant names from `room_spawn`
-   replies or `room_state`; pre-spawn briefs say to use the names the lead sends after spawn,
-   and the lead sends those returned names. Codex workers use the installed Room plugin:
-   install the lead's Room version for Codex or use host claude. Each worker gets its own `PORT`.
-   - Workers start with your eligible uncommitted work (`carry=false`: from HEAD). Tracked
-     changes ride a carry commit on the worker branch (`git push --all` can publish it);
-     untracked non-ignored files are copied, never committed; the reply names skipped files.
-     Carried edits are the lead's: workers edit around them and ask before changing them.
-   - `node_modules` links to your install (workspace packages to the worker's sources). If
-     the reply warns that cross-package tests would run your code, trust a preview `run`
-     over the worker's own result; with no `node_modules`, `.bin` scripts fail there.
-   - Pass the spawn reply's thread budget to explicit parameters such as `n_jobs`,
-     `num_threads` and `num_workers` (Room caps math-library threads); stagger heavy jobs.
-   Respect `ROOM_MAX_WORKERS`. Do not join a team room just to dispatch workers;
-   `where="local"` keeps workers local (a team-room lead still shows their claims and changed paths there, without file
-   text, until each is collected or discarded). If another lead's local worker changes the same file you and your worker get a
-   possible-conflict notice; Room cannot read the other side, so ask that lead in the team room, or one of you collects and previews.
-3. Supervise. Briefly state what you dispatched. While workers run, keep handling new input
-   from your human or host as you would alone; wait only on a specific dependency (an
-   answer, the worker whose result you need next) and continue independent work otherwise.
-   - Progress notes from your own workers do not wake you; addressed questions, completion
-     (room_done) and eligible interrupts can. Codex leads on the shared app-server get pointers
-     for those, and completion from their own registered workers mid-turn as tool output.
-     A wake is not proof that content was read or acted on. An interactive lead with a wake
-     path does not poll (room-etiquette, Waiting).
-   - A headless lead (`claude -p`, `codex exec`) must stay alive until supervision is
-     complete: it must not end its turn with background commands, rescue jobs or host agents
-     pending, and uses short room_wait calls (at most 100 seconds) when blocked or ready for
-     results, as must any lead whose wakes are unavailable. A process-exit watcher cannot substitute for questions.
-   - Answer worker questions with `room_send(type="answer", inReplyTo=...)`; ask your human
-     only for a blocking decision.
-   - Give a new task to a worker whose context helps with it, and queue it there if that
-     worker is busy. Start a fresh worker when none has useful context, or when the work can
-     run at the same time. Do not pile unrelated tasks onto one long-running worker.
-   - Follow-ups: `room_send(to=...)`. A message from its lead to a finished worker resumes its
-     retained session in its worktree; other workers send it findings but ask its lead to
-     resume it. Add `refresh=true` when it needs a commit you made after spawning it: Room
-     rebases a stopped worker's branch onto your HEAD first (a conflict changes nothing) and
-     lists the commits that came in. Prefer named peer previews for live dependencies; do not
-     stop workers just to refresh them. To redirect a worker mid-edit, send the new task with
-     `priority="interrupt"`; discard only when the human wants its work thrown away.
-   - Rebalancing: if one worker finishes while another's slice is far from done, ask the running worker what members remain and
-     hand some to the finished worker. Agree the handoff and release old claims before the new owner edits.
-   - Restarting or reconnecting the lead's Room MCP stops its running workers; worktrees and
-     sessions remain, and the next reply carries a notice with resume commands. Room never
-     resumes them: for workers stopped because the previous session ended, ask the human
-     whether to restart or discard them; do not silently redo their work.
-4. Review checkpoint. Only if the human explicitly requests one, before dispatch or
-   collection call `room_review(action="hold", reason="<requested review>")` from the
-   destination checkout and wait for success. A reviewer whose approval is required owns
-   the hold from that checkout, not its worktree, and keeps the private `reviewToken` from
-   the collecting lead. Messages do not establish holds; work continues while held. After
-   review the creating session (or a replacement with `reviewToken`) calls
-   `room_review(action="release")`, which does not collect; `action="status"` checks it;
-   every reviewer must release. A hold blocks new collection for that destination only, not
-   a running collection, lifecycle recovery or explicit leave/ancestor discard.
-5. Preview. While workers run, preview combined work by returned names, including finished
-   workers (rules in room-etiquette). Include the lead when workers start from different
-   kept or carried snapshots: Room anchors on it and applies worker deltas in collection
-   order; a stale lead publication shows as a gap, retried by an addressed message without
-   refresh. Clean text merges still need behavioral tests. Resolve conflicts and failing
-   tests before collection. Start the final full check as a preview while the last workers finish,
-   if it can complete within the preview limit. A command that cannot finish within five
-   minutes must run on the collected tree; `allowSlow` only permits retrying timed-out inputs.
-6. Collect. Keep finished workers resumable until follow-ups and requirement revisions are
-   done: defer collection, or `room_collect(keep=true)` applies finished output while keeping
-   the worktree, branch, logs and session. `keep` is apply-only, incompatible with copy or
-   discard; later collection applies only changes since the last. Kept output counts as the lead's: before `refresh=true`, commit the output of all kept
-   rounds and any work carried in at spawn, or Room refuses (docs/reference.md); send
-   without refresh to resume on the worker's existing copy. Finish kept workers with plain `room_collect()` (no tag, no keep).
-   - Default collection ends resumption and brings every finished worker's changes into your
-     working tree, uncommitted and unstaged. Conflicts write nothing: resolve them or collect
-     one tag at a time. Running and failed workers are skipped.
-   - A collected worktree is removed once its process is gone; until then `room_state` says
-     why and a later collect or the sweep finishes. Build output (`dist/`, `*.tsbuildinfo`,
-     the rest in docs/reference.md) and Python environments do not keep it; unexpected files
-     do. Scratch (`*.log`, `*.tmp`) is saved to `.room/scratch/<tag>/`, not collected. Bring
-     named artifacts and files over 5 MB with `room_collect(tag, mode="copy", paths=[...])`.
-   - "Throw away the worker" means `room_collect(tag, discard=true)`: it stops the worker
-     and removes its worktree, branch and logs, keeping one recovery commit for
-     ordinary work for a week from the ref renewal immediately before checkout removal, including delayed recovery replay. Before removal,
-     Room confirms and renews the recovery ref; a failure keeps the checkout. Restore with
-     `git worktree add <dir> <ref>` or `git checkout <ref> -- <paths>`; an unchanged tree
-     uses HEAD without an extra commit. Ignored files are deleted without `force` and uncopied artifacts are
-     named in the reply; copy any you need first. `force` still covers nested workers and
-     orphan recovery. `discard`
-     abandons work; `reason` belongs to `room_review(action="hold")`. Collect, discard and
-     stop also stop processes running inside an owned worktree.
-   - A `dir=` retry in a failed worker's checkout previews and collects normally and detaches
-     without touching the owner; discard the owner after the retry and its other users finish.
-7. Validate and finish. Whoever integrates owns full relevant validation, including the CI checks the change requires.
-   Run the full suite once, after the final collect; between collects, run the focused checks the collected change needs.
-   Reuse a complete passing preview only for identical preview inputs, command and relevant environment.
-   Validate the collected tree unless collect reports it identical to the most recent preview of this checkout, which passed the same command you would run.
-   The report covers files and command only: Git state (HEAD, refs, index), environment and ignored files are not compared.
-   Rerun commands that read Git state on the collected tree, even when HEAD is unchanged.
-   Files written by another process during collect are outside the guarantee; stop concurrent writers.
-   Rerun when installed dependencies, ignored build output or services the command depends on differ.
-   Partial, timed-out or output-limited runs do not validate the whole tree. Where background commands are verified, start the integrated test run in the background and review diffs or write the summary
-   meanwhile. Await completion and inspect the actual result before reporting it.
-   Stop remaining background commands and monitors you started before the final message.
-   Workers are plain `codex exec` / `claude -p` processes (ROOM_WORKER_ID): stop your jobs
-   by pid, never by a pattern such as `pkill -f codex`. Report the work and evidence.
-   Never commit or push unless the human asked. If asked to commit, use plain git for one
-   task commit with a normal message; worker details do not belong in the history.
+## Briefs
 
-For a missing wake or worker problem, see `room_state(check=true)` and `<git common dir>/room-mcp.log`.
+Keep briefs short: say only what the worker cannot find out for itself. That is the
+outcome and why it matters, what must not break, and how you will judge it done. Leave
+the method to the worker, point at sources instead of restating them, and tell it to
+decide and report what it chose, asking only when blocked.
+
+- Say it once. Rules that always hold for the project belong in its own instructions
+  (`AGENTS.md`, `CLAUDE.md`), which workers read. Context for this batch goes in one file,
+  `<lead checkout>/.room/briefs/<batch>.md`: give each brief its absolute path plus only its
+  own slice. `.room/` is Git-ignored and never carried or collected, so every worker, with
+  or without `carry=false`, reads the same live file. Codex workers can read it but not
+  write it, so you own edits and announce them with `room_send`.
+- Every requirement has exactly one owner. When the work follows a spec, give each worker
+  the spec sections or rules that are its slice, not your summary of them, and check before
+  spawning that nothing observable in the spec (a state, field, counter, event or return
+  value) is left without an owner.
+- Pass on a rule over a set as the rule ("every script that re-queues a job") with the
+  members you know. Its owner finds the rest and reports them. Never write "if relevant":
+  assign it or decide it.
+- When you decide something the spec does not state, mark it "decided, not in spec" so
+  it gets checked against the spec.
+- A reviewer or test worker gets what changed, what it must guarantee, the question you
+  want answered, and the spec itself. Leave out the implementers' file lists, earlier
+  rounds' findings and the author's account of the fix: they tell an independent reviewer
+  where to look and what to conclude.
+
+A background lead is a worker like any other. Its brief says to collect its own workers
+before `room_done`.
+
+## Spawning
+
+- Host defaults to yours. Pass a host or model only when the human asked for one. Codex
+  workers use the Room plugin installed for Codex, which must match your version.
+- Use the exact participant names from the `room_spawn` reply or `room_state`, and send
+  them to workers that need to reach each other.
+- A worker starts with your eligible uncommitted work (`carry=false`: from HEAD). Tracked
+  changes ride a carry commit on the worker branch, which `git push --all` would publish;
+  untracked files that are not ignored are copied. The reply names skipped files. Carried
+  edits stay yours: workers ask before changing them.
+- `node_modules` links to your install, with workspace packages pointing at the worker's
+  sources. If the reply warns that cross-package tests would run your code, trust a
+  preview `run` over the worker's own result.
+- Each worker gets its own `PORT` and a thread budget. Pass the budget to explicit
+  parameters such as `n_jobs` or `num_workers`, and stagger heavy jobs.
+- In a team room, `where="local"` keeps workers local. The team room still shows their
+  claims and changed paths, without file text. If another lead's local worker changes the
+  same file, Room cannot read the other side: ask that lead, or one of you collects and
+  previews.
+
+## While workers run
+
+- Keep handling your human's requests, and wait only on a result you need next. Progress
+  notes from your workers do not wake you. Addressed questions, completion and interrupts
+  can. A wake is not proof that content was read or acted on.
+- A headless lead (`claude -p`, `codex exec`) must stay alive until supervision is complete:
+  ending the turn ends the session. Use short `room_wait` calls, as does any lead without a
+  wake path.
+- A message from its lead to a finished worker resumes its retained session in its
+  worktree. `refresh=true` first rebases a stopped worker onto your HEAD and lists what
+  came in; a conflict changes nothing. For a dependency on a running worker, use a named
+  preview. `priority="interrupt"` redirects a worker in the middle of an edit.
+- If one worker finishes while another is far from done, ask the running worker what
+  remains and hand some over. Agree the handoff before the new owner edits.
+- Restarting or reconnecting your Room MCP stops running workers. Worktrees and sessions
+  remain, and the next reply says how to resume. For workers stopped because an earlier
+  session ended, ask the human whether to restart or discard them; do not silently redo
+  their work.
+
+## Review holds
+
+Only when the human asks for a review checkpoint. `room_review(action="hold", reason=...)`
+from the destination checkout blocks new collection there until it is released; work
+continues meanwhile. A reviewer whose approval is required creates the hold itself, from
+that checkout and not its worktree, and keeps the private `reviewToken` from the collecting
+lead. A message does not create a hold. Release does not collect, and every reviewer must
+release.
+
+## Previews
+
+Preview combined work by name while workers run. Include yourself when workers started
+from different kept or carried snapshots: Room anchors on your copy and applies worker
+changes in collection order. A clean text merge still needs a behavioural test.
+
+## Collecting
+
+- `room_collect()` brings every finished worker's changes into your working tree,
+  uncommitted and unstaged, and ends resumption. Conflicts write nothing: resolve them or
+  collect one tag at a time. Running and failed workers are skipped.
+- `room_collect(keep=true)` applies finished output and keeps the worktree, branch, logs
+  and session, so follow-ups still work. Later collection applies only what changed since.
+  Kept output counts as yours: before `refresh=true`, commit it and anything carried at
+  spawn, or Room refuses. Finish kept workers with plain `room_collect()`.
+- `room_collect(tag, discard=true)` throws the work away: it stops the worker and removes
+  its worktree, branch and logs, ignored files included. A recovery commit is kept for a
+  week and the reply says how to restore it. Discard only when the human wants the work gone.
+- Ignored build output is left behind, and scratch (`*.log`, `*.tmp`) is saved to
+  `.room/scratch/<tag>/`. Bring named artifacts and files over 5 MB with
+  `room_collect(tag, mode="copy", paths=[...])`. A worktree holding unexpected files is
+  kept, and `room_state` says why.
+- Collect, discard and stop also stop processes running inside the worktree.
+
+## Finishing
+
+You own validation of the collected tree, including the CI checks the change requires.
+room-etiquette says when a passing preview can stand in for it. Workers are plain
+`codex exec` / `claude -p` processes: stop your jobs by pid, never by a pattern such as
+`pkill -f codex`. Never commit or push unless the human asked.
+
+For a missing wake or a worker problem, see `room_state(check=true)` and
+`<git common dir>/room-mcp.log`.
