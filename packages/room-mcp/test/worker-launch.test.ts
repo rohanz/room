@@ -125,8 +125,8 @@ for (const host of ['claude', 'codex'] as const) for (const mode of ['fresh', 'r
         fs.mkdirSync(scratch, { mode: 0o700 })
         fs.writeFileSync(path.join(scratch, '.gitignore'), '!w/\n')
       } else if (failure === 'not writable') {
-        const access = fs.accessSync
-        vi.spyOn(fs, 'accessSync').mockImplementation((file, mode) => {
+        const access = fs.promises.access
+        vi.spyOn(fs.promises, 'access').mockImplementation(async (file, mode) => {
           if (String(file).endsWith(path.join('.room', 'scratch', 'w'))) throw Object.assign(new Error('build directory permission denied'), { code: 'EACCES' })
           return access(file, mode)
         })

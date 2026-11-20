@@ -1,7 +1,6 @@
 /** Disposable output belongs to the worker's own Room state, never to collection. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { privateStateDirectory, verifyPrivatePath } from '@room/relay'
 import { git } from '@room/roomd/git'
 
 const IGNORE = '*\n'
@@ -9,32 +8,39 @@ const IGNORE = '*\n'
 /** Only called for a checkout Room created for this worker. No configurable path or inherited env. */
 export async function prepareWorkerBuildDir(dir: string, tag: string): Promise<string> {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(tag)) throw new Error('invalid worker build directory tag')
-  if (!fs.lstatSync(dir).isDirectory()) throw new Error('worker build checkout is not a plain directory')
-  const root = fs.realpathSync.native(dir)
+  if (!(await fs.promises.lstat(dir)).isDirectory()) throw new Error('worker build checkout is not a plain directory')
+  const root = await fs.promises.realpath(dir)
   // Refuse tracked state before writing anything, even in a project that tracks .room.
   if ((await git(root, ['ls-files', '-z', '--', '.room/scratch'])).length)
     throw new Error('worker build directory conflicts with tracked .room/scratch files')
   const scratch = path.join(root, '.room', 'scratch')
   const build = path.join(scratch, tag)
-  // Leaf-only creation avoids interpreting an ancestor checkout named `room` as state.
-  // Existing worker state is verified, never repaired through checkout ancestors.
+  // Ordinary checkout output inherits the already protected worker root. It stores no
+  // Room credentials/registry state and needs no additional private-state ACL queries.
   for (const folder of [path.join(root, '.room'), scratch, build]) {
-    const stat = fs.lstatSync(folder, { throwIfNoEntry: false })
-    if (!stat) privateStateDirectory(folder, { exclusive: true })
-    else {
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`worker build directory parent is not a plain directory: ${folder}`)
-      verifyPrivatePath(folder)
-    }
+    try { await fs.promises.mkdir(folder, { mode: 0o700 }) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    const stat = await fs.promises.lstat(folder)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`worker build directory parent is not a plain directory: ${folder}`)
   }
-  fs.accessSync(build, fs.constants.W_OK | fs.constants.X_OK)
+  await fs.promises.access(build, fs.constants.W_OK | fs.constants.X_OK)
   // Ignore the tag directory itself: files generated beneath it cannot unignore their way out.
   // This is local to the worker, and never edits .gitignore or the clone's shared Git excludes.
   const ignore = path.join(scratch, '.gitignore')
-  try { fs.writeFileSync(ignore, IGNORE, { flag: 'wx', mode: 0o600 }) }
+  try { await fs.promises.writeFile(ignore, IGNORE, { flag: 'wx', mode: 0o600 }) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
-  const stat = fs.lstatSync(ignore)
-  if (!stat.isFile() || stat.size !== Buffer.byteLength(IGNORE) || fs.readFileSync(ignore, 'utf8') !== IGNORE)
+  const stat = await fs.promises.lstat(ignore)
+  if (!stat.isFile() || stat.size !== Buffer.byteLength(IGNORE))
     throw new Error('worker build directory ignore file is not Room\'s expected plain file')
+  const handle = await fs.promises.open(ignore, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = await handle.stat(), content = Buffer.alloc(Buffer.byteLength(IGNORE) + 1)
+    if (!opened.isFile() || opened.size !== Buffer.byteLength(IGNORE) || opened.dev !== stat.dev || opened.ino !== stat.ino)
+      throw new Error('worker build directory ignore file changed')
+    const { bytesRead } = await handle.read(content, 0, content.length, 0)
+    if (content.subarray(0, bytesRead).toString() !== IGNORE)
+      throw new Error('worker build directory ignore file is not Room\'s expected plain file')
+  } finally { await handle.close() }
   // Check the actual repository's ignore policy, rather than assuming a project ignores .room.
   await git(root, ['check-ignore', '-q', '--', `.room/scratch/${tag}/`])
   return build

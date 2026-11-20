@@ -15,18 +15,23 @@ const quote = (value: string) => "'" + value.replace(/'/g, process.platform === 
 
 // Discovery/status must not refresh the lead's index, invoke fsmonitor or lazily fetch objects.
 // Global config is excluded from cloning/checking out: filters, templates and URL rewrites can run code/network.
-function run(dir: string, args: string[], deadline: number): Promise<string> {
+function run(dir: string, args: string[], deadline: number, input?: string): Promise<string> {
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
     GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull,
     GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' }
   const timeout = Math.floor(deadline - performance.now())
   if (timeout <= 0) return Promise.reject(new Error('submodule setup time limit reached'))
-  return new Promise((resolve, reject) => childProcess.execFile('git', ['-c', `core.hooksPath=${os.devNull}`,
+  return new Promise((resolve, reject) => {
+    const child = childProcess.execFile('git', ['-c', `core.hooksPath=${os.devNull}`,
     '-c', 'init.defaultBranch=room-submodule',
     '-c', 'core.fsmonitor=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', 'protocol.file.allow=always',
     ...args], { cwd: dir, env, timeout, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 },
   (error, stdout, stderr) => error || stderr.trim()
-    ? reject(new Error(error?.killed ? 'submodule setup time limit reached' : 'local Git inspection or checkout failed')) : resolve(stdout)))
+    ? reject(new Error(error?.killed ? 'submodule setup time limit reached' : 'local Git inspection or checkout failed')) : resolve(stdout))
+    // Read-only commands can close unused stdin; failed index input must never certify cleanup.
+    child.stdin?.on('error', () => { if (input !== undefined) reject(new Error('submodule inspection input failed')) })
+    child.stdin?.end(input)
+  })
 }
 
 interface Gitlink { path: string; oid: string }
@@ -127,6 +132,34 @@ async function creationState(dir: string, deadline: number): Promise<Creation> {
   if (fs.existsSync(logDir)) await walk(logDir, '')
   return { refs, reflogs: logs.digest('hex'), dev: String(stat.dev), ino: String(stat.ino) }
 }
+
+/** Inspect staged + on-disk bytes without trusting the clone's index visibility or configuration. */
+async function unhiddenStatus(dir: string, deadline: number): Promise<string> {
+  // Export entries, not the index file: assume-unchanged/skip-worktree bits, sparse-index layout,
+  // stat caches, fsmonitor and untracked-cache extensions must not survive into the inspection.
+  const entries = await run(dir, ['ls-files', '--stage', '-z'], deadline)
+  const [format, objects, head, ...extra] = (await run(dir,
+    ['rev-parse', '--show-object-format', '--git-path', 'objects', 'HEAD'], deadline)).trimEnd().split('\n')
+  if (extra.length || !['sha1', 'sha256'].includes(format) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)
+    || !objects || /[\r\n]/.test(objects)) throw new Error('unverifiable submodule object location')
+  const objectDir = path.resolve(dir, objects)
+  if (/[\r\n]/.test(objectDir) || !containedRepoPath(dir, objectDir, { leaf: 'reject-link' }).ok || !fs.lstatSync(objectDir).isDirectory())
+    throw new Error('submodule objects are not private')
+  const probe = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-submodule-status-'))
+  try {
+    await run(dir, ['init', '--quiet', '--bare', '--template=', `--object-format=${format}`, probe], deadline)
+    await fs.promises.writeFile(path.join(probe, 'objects/info/alternates'), objectDir + '\n')
+    await fs.promises.writeFile(path.join(probe, 'HEAD'), head + '\n')
+    await fs.promises.mkdir(path.join(probe, 'info'), { recursive: true })
+    // Highest-priority attributes disable conversions, including arbitrary clean-filter commands.
+    // A checkout with normalized bytes different from its Git blobs is conservatively retained.
+    await fs.promises.writeFile(path.join(probe, 'info/attributes'), '* -text -eol -crlf -working-tree-encoding -ident -filter\n')
+    const context = ['--git-dir', probe, '--work-tree', dir,
+      '-c', 'core.ignoreCase=false', '-c', 'core.fileMode=true', '-c', 'core.symlinks=true']
+    await run(dir, [...context, 'update-index', '-z', '--index-info'], deadline, entries)
+    return await run(dir, [...context, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], deadline)
+  } finally { await fs.promises.rm(probe, { recursive: true, force: true }) }
+}
 function safe(root: string, rel: string): string {
   if (!validRepoPath(rel, MATERIALIZED_PATH) || rel.split('/')[0].toLowerCase() === '.room') throw new Error('unsafe submodule path')
   const target = path.join(root, rel)
@@ -143,7 +176,7 @@ async function repository(dir: string, deadline: number): Promise<void> {
   if (fs.realpathSync(root) !== fs.realpathSync(dir)) throw new Error('not a submodule checkout')
 }
 
-/** The same notes go to the lead and worker, including exact pinned, local-only recovery commands. */
+/** Short outcomes for the lead and worker; detailed behavior belongs in the reference. */
 export async function prepareWorkerSubmodules(leadDir: string, workerDir: string, options: { timeoutMs?: number } = {}): Promise<{ reply: string[]; prompt?: string }> {
   if (!fs.existsSync(path.join(workerDir, '.gitmodules'))) return { reply: [] }
   const lines: string[] = [], deadline = performance.now() + (options.timeoutMs ?? SETUP_MS)
@@ -158,7 +191,7 @@ export async function prepareWorkerSubmodules(leadDir: string, workerDir: string
     for (const entry of entries) {
       const rel = prefix + entry.path
       if (++count > MAX_SUBMODULES || depth >= 8) {
-        lines.push(`Submodules: remaining directories were not prepared; automatic setup limit (${MAX_SUBMODULES} submodules / 8 levels) reached. Inspect and initialize only needed dependencies in this worker.`)
+        lines.push('Submodules: remaining paths not prepared (setup limit); initialize needed dependencies locally.')
         return
       }
       let source: string | undefined, target: string | undefined
@@ -201,16 +234,16 @@ export async function prepareWorkerSubmodules(leadDir: string, workerDir: string
         if (!empty(target)) throw new Error('worker destination changed during setup')
         if (fs.existsSync(target)) fs.rmdirSync(target)
         fs.renameSync(checkout, target)
-        lines.push(`Submodule ${JSON.stringify(rel)}: ready at ${entry.oid}; local object hardlinks, independent checkout and Git metadata; no network.`)
+        lines.push(`Submodule ${JSON.stringify(rel)}: ready at ${entry.oid.slice(0, 10)}.`)
       } catch (error) {
         if (stage) lines.splice(lineStart) // Nested results in a discarded stage were never published.
         const reason = error instanceof Error ? error.message : String(error)
-        const state = target && !empty(target) ? 'setup incomplete; inspect existing worker contents' : 'empty'
-        lines.push(`Submodule ${JSON.stringify(rel)}: ${state} (${reason}).`)
-        if (source && target) {
-          const destination = path.join(worker, rel)
-          lines.push(`Cheap local setup (${process.platform === 'win32' ? 'PowerShell' : 'POSIX shell'}; only when the destination is empty): git -c core.hooksPath=${quote(os.devNull)} clone --local --no-checkout --template= -- ${quote(source)} ${quote(destination)}; then git -C ${quote(destination)} remote remove origin; then git -C ${quote(destination)} -c core.hooksPath=${quote(os.devNull)} -c submodule.recurse=false checkout --detach ${entry.oid}. This uses the recorded commit, not the lead's local changes. --local fails if hardlinks are unavailable; do not replace it with a full copy without choosing that cost.`)
-        } else lines.push('Ask the lead for a usable local submodule checkout; do not follow linked paths or initialize submodules in the lead checkout.')
+        const hasContents = target && !empty(target)
+        const outcome = `Submodule ${JSON.stringify(rel)}: ${hasContents ? 'kept; inspect contents' : 'empty'} (${reason})`
+        if (!hasContents && source && target) {
+          const local = quote(path.relative(worker, source)), destination = quote(rel)
+          lines.push(`${outcome}; in worker run: git -c core.hooksPath=${quote(os.devNull)} clone --local --no-checkout --template= -- ${local} ${destination}; then git -C ${destination} remote remove origin; then git -C ${destination} -c core.hooksPath=${quote(os.devNull)} -c submodule.recurse=false checkout --detach ${entry.oid}.`)
+        } else lines.push(`${outcome}; ask the lead for a usable local checkout.`)
       } finally { if (stage) await fs.promises.rm(stage, { recursive: true, force: true }) }
     }
   }
@@ -219,8 +252,8 @@ export async function prepareWorkerSubmodules(leadDir: string, workerDir: string
     if (fs.existsSync(receiptFile)) throw new Error('submodule setup already has a creation receipt; existing contents kept')
     await visit(lead, worker)
   }
-  catch (error) { lines.push(`Submodules: could not inspect gitlinks (${error instanceof Error ? error.message : String(error)}); dependencies may be empty. Ask the lead for a local checkout before building.`) }
-  if (count || lines.length) lines.push('Submodules are build inputs: Room does not preview or collect their contents or gitlink changes. Export any submodule work separately; cleanup requires creation refs/reflogs to match and status (including untracked/ignored files) to be clean. Automatic setup has an 8-second total budget; slower attempts are removed from private staging and leave the dependency empty with local setup commands. Never edit hardlinked Git object files.')
+  catch (error) { lines.push(`Submodules: setup unavailable (${error instanceof Error ? error.message : String(error)}); inspect dependencies before building.`) }
+  if (count || lines.length) lines.push('Submodule cleanup keeps changed refs/reflogs, non-clean status, or unverifiable state.')
   return lines.length ? { reply: lines, prompt: lines.join('\n') } : { reply: [] }
 }
 
@@ -243,7 +276,7 @@ async function changedSubmodules(workerDir: string, deadline: number): Promise<s
     if (!creation) { changed.push(rel); continue }
     try {
       const current = await creationState(at, deadline)
-      const status = await run(at, ['status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none'], deadline)
+      const status = await unhiddenStatus(at, deadline)
       if (JSON.stringify(current) !== JSON.stringify(creation) || status) changed.push(rel)
     } catch { changed.push(rel) }
   }

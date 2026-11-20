@@ -1,4 +1,4 @@
-/** Directory creation is a single boundary: prevent a new writer bypassing native ACL initialization. */
+/** Sensitive Room state uses one privacy boundary; ordinary checkout output is audited separately. */
 import { expect, it } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -10,6 +10,8 @@ const packages = fileURLToPath(new URL('../../', import.meta.url))
 const nonState: Record<string, Record<string, number>> = {
   'room-mcp/src/prs.ts': { 'path.dirname(outputPath), { recursive: true }': 2 }, // user export destination
   'room-mcp/src/port-reservations.ts': { 'directory, { recursive: true, mode: 0o700 }': 1 }, // per-user config
+  'room-mcp/src/worker-submodules.ts': { "path.join(probe, 'info'), { recursive: true }": 1 }, // disposable Git inspection under mkdtemp; index/attributes only, no Room trusted state
+  'room-mcp/src/worker-build-dir.ts': { 'folder, { mode: 0o700 }': 1 }, // disposable checkout output inherits the protected worktree; no credentials or registry state
   'room-mcp/src/worker-process.ts': { 'path.dirname(spec.logFile), { recursive: true }': 1 }, // checkout worker log
   'room-mcp/src/worker-artifacts.ts': { dir: 1 }, // worker shell-environment artifacts in the worktree's .room folder (moved from worker-shell-env.ts)
   'room-mcp/src/worker-git.ts': { 'path.dirname(link.target), { recursive: true }': 1, 'path.dirname(dir), { recursive: true }': 1, 'path.dirname(target), { recursive: true }': 1, dir: 1, target: 1, 'path.dirname(destination), { recursive: true }': 1 }, // checkout/worktree files

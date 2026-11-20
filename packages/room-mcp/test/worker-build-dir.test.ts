@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { prepareWorkerBuildDir, workerBuildDirNote } from '../src/worker-build-dir.js'
 import { workerEnv, workerProcessEnv, workerPrompt } from '../src/worker-config.js'
 
@@ -75,13 +75,13 @@ it('exposes only the prepared path in the worker env/prompt and drops inherited 
 })
 
 
-it.skipIf(process.platform === 'win32')('uses shared private-state policy rather than publishing an existing broad directory', async () => {
+it.skipIf(process.platform === 'win32')('uses existing checkout directories without repairing their permissions', async () => {
   const root = repo()
   const room = path.join(root, '.room')
   fs.mkdirSync(room, { mode: 0o755 })
   fs.chmodSync(room, 0o755)
-  await expect(prepareWorkerBuildDir(root, 'w')).rejects.toThrow('private')
-  expect(fs.existsSync(path.join(room, 'scratch'))).toBe(false)
+  expect(await prepareWorkerBuildDir(root, 'w')).toBe(path.join(room, 'scratch/w'))
+  expect(fs.statSync(room).mode & 0o777).toBe(0o755)
 })
 
 it.skipIf(process.platform === 'win32')('does not repair checkout ancestors named room while initializing worker-owned leaves', async () => {
@@ -92,4 +92,33 @@ it.skipIf(process.platform === 'win32')('does not repair checkout ancestors name
   git(worker, 'init', '-q')
   await prepareWorkerBuildDir(worker, 'w')
   expect(fs.statSync(ancestor).mode & 0o777).toBe(0o755)
+})
+
+
+it('prepares build output without synchronous filesystem operations', async () => {
+  const root = repo()
+  const methods = ['lstatSync', 'realpathSync', 'mkdirSync', 'accessSync', 'writeFileSync', 'readFileSync', 'openSync', 'existsSync'] as const
+  const spies = methods.map(method => vi.spyOn(fs, method).mockImplementation((() => { throw new Error(`unexpected synchronous filesystem call: ${method}`) }) as never))
+  try {
+    expect(await prepareWorkerBuildDir(root, 'w')).toBe(path.join(root, '.room/scratch/w'))
+    expect(spies.map(spy => spy.mock.calls.length)).toEqual(methods.map(() => 0))
+  } finally { for (const spy of spies) spy.mockRestore() }
+})
+
+it('keeps the event loop available while output-directory I/O is pending', async () => {
+  const root = repo(), mkdir = fs.promises.mkdir
+  let enter!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const spy = vi.spyOn(fs.promises, 'mkdir').mockImplementation((async (...args: Parameters<typeof fs.promises.mkdir>) => {
+    if (String(args[0]) === path.join(root, '.room')) { enter(); await gate }
+    return mkdir(...args)
+  }) as typeof fs.promises.mkdir)
+  const setup = prepareWorkerBuildDir(root, 'w')
+  try {
+    await entered
+    expect(await new Promise(resolve => setImmediate(() => resolve('serviced')))).toBe('serviced')
+    release()
+    expect(await setup).toBe(path.join(root, '.room/scratch/w'))
+  } finally { release(); spy.mockRestore(); await setup.catch(() => {}) }
 })
