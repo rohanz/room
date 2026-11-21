@@ -18,7 +18,6 @@ import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
 
 import { clearRetainedWorkerItem, retainWorkerItem, retainedWorkerLines } from './worker-retained.js'
-import { changedWorkerSubmodules } from './worker-submodules.js'
 import { writeWorkerRef, deleteWorkerRef, deleteWorkerRecordRef, restoreWorkerRef, preserveWorkerBranch, deletePreservedWorkerBranch, recoveryRefCovers, recoveryRefDescription, operationBranchReceipt } from './worker-refs.js'
 import { canonicalMissingWorkerPath, rootIdentity, verifyWorkerCheckout, retainCheckout, removeWorkerRegistration, PREPARATION_WITNESS_FILE, preparationIdentity, witnessPreparation, removePreparation, verifyPreparation, type PreparationIdentity, type PreparationWitness } from './worker-preparation.js'
 
@@ -691,8 +690,6 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, options: Cl
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
   if (!await available()) return false
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
-  const submoduleChanges = await changedWorkerSubmodules(w.dir)
-  if (submoduleChanges.length) throw new Error(`submodule work is not collected or saved by superproject recovery refs; retained ${w.dir}: ${submoduleChanges.join(', ')}. Export or remove that work explicitly before retrying cleanup`)
   try {
     // Remove the worker's reusable preview checkout while its own worktree still exists.
     const { removePreviewCache } = await import('./tools/files.js')
