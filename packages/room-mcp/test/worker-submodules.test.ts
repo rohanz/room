@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
 import childProcess from 'node:child_process'
 import { expect, it, vi } from 'vitest'
@@ -53,8 +54,8 @@ it.each(['dirty', 'different commit'])('exports the recorded commit when the lea
   const recorded = commit(f.source, 'filter attribute'); commit(repo, 'record filtered child')
   const marker = path.join(f.source, 'lead-was-modified'), script = path.join(f.sourceGit, 'filter.cjs')
   fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad'); process.stdin.pipe(process.stdout)`)
-  git(f.source, 'config', 'filter.sideeffect.clean', `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`)
   if (state === 'different commit') git(f.source, 'checkout', '-q', f.second)
+  git(f.source, 'config', 'filter.sideeffect.clean', `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`)
   put(f.source, 'library.txt', 'other\n')
   const before = f.unchanged(), dir = f.worktree(), calls: { cwd: string; args: string[] }[] = []
   const exec = childProcess.execFile
@@ -91,6 +92,10 @@ it('leaves nested gitlinks empty and says so', async () => {
   commit(f.source, 'nested dependency'); commit(repo, 'updated library')
   const dir = f.worktree(), before = f.unchanged(), result = await prepareWorkerSubmodules(repo, dir)
   expect(result.prompt).toContain('1 nested submodule folder(s) empty')
+  expect(result.prompt).toContain('empty (nested submodule)')
+  expect(result.prompt).toContain('git -C')
+  expect(result.prompt).toContain(f.second)
+  expect(result.prompt).toContain(JSON.stringify(subpath + '/nested/lib'))
   expect(fs.readdirSync(path.join(dir, subpath, 'nested/lib'))).toEqual([])
   expect(f.unchanged()).toEqual(before)
 })
@@ -103,7 +108,7 @@ it('uses locally available alternates and leaves missing objects empty with comm
   const blob = git(f.source, 'rev-parse', f.first + ':library.txt')
   fs.unlinkSync(path.join(f.sourceGit, 'objects', blob.slice(0, 2), blob.slice(2)))
   const missing = f.worktree('missing'), result = await prepareWorkerSubmodules(repo, missing)
-  expect(result.prompt).toContain('empty (')
+  expect(result.prompt).toContain('otherwise empty')
   expect(result.prompt).toContain('git fetch <remote> ' + f.first)
   expect(fs.readdirSync(path.join(missing, subpath))).toEqual([])
   expect(fs.readdirSync(path.join(missing, 'vendor')).some(name => name.startsWith('.room-submodule-'))).toBe(false)
@@ -125,11 +130,14 @@ it('preserves existing destinations and refuses linked source/destination paths'
 it.skipIf(process.platform === 'win32')('preserves contained symlinks and declines symlink-chain escapes', async () => {
   const f = fixture()
   fs.symlinkSync('library.txt', path.join(f.source, 'alias'))
+  put(f.source, '\ufefftarget', 'BOM filename\n')
+  fs.symlinkSync('\ufefftarget', path.join(f.source, 'bom-alias'))
   commit(f.source, 'internal link'); commit(repo, 'child link')
   const dir = f.worktree()
   expect((await prepareWorkerSubmodules(repo, dir)).prompt).toContain('read-only copy')
   expect(fs.readlinkSync(path.join(dir, subpath, 'alias'))).toBe('library.txt')
   expect(read(path.join(dir, subpath), 'alias')).toBe('first\n')
+  expect(fs.readlinkSync(path.join(dir, subpath, 'bom-alias'))).toBe('\ufefftarget')
   fs.mkdirSync(path.join(f.source, 'deep'))
   fs.symlinkSync('..', path.join(f.source, 'deep/back'))
   fs.symlinkSync('deep/back/../outside', path.join(f.source, 'escape'))
@@ -147,7 +155,7 @@ it.skipIf(process.platform === 'win32')('does not block the event loop on FIFO m
   const timer = setInterval(() => ticks++, 10), started = performance.now()
   try {
     const result = await prepareWorkerSubmodules(repo, dir, { timeoutMs: 250 })
-    expect(result.prompt).toContain('empty (')
+    expect(result.prompt).toContain('otherwise empty')
     expect(performance.now() - started).toBeLessThan(2000)
     expect(ticks).toBeGreaterThan(0)
     expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
@@ -166,7 +174,7 @@ it('removes a partial readonly export after a killed object read', async () => {
     return (exec as any)(file, args, options, callback)
   }) as typeof exec)
   try {
-    expect((await prepareWorkerSubmodules(repo, dir)).prompt).toContain('empty (export time limit reached)')
+    expect((await prepareWorkerSubmodules(repo, dir)).prompt).toContain('export time limit reached')
     expect(batches).toBe(2)
     expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
     expect(fs.readdirSync(path.join(dir, 'vendor')).some(name => name.startsWith('.room-submodule-'))).toBe(false)
@@ -204,4 +212,99 @@ it('discard removes the export and in-tree build output without a submodule-stat
   const result = await t.call('room_collect', { tag: 'discard', discard: true })
   expect(fs.existsSync(worker.dir), result).toBe(false)
   expect(f.unchanged()).toEqual(before)
+})
+
+it('declines a blob above the memory ceiling before requesting its contents', async () => {
+  const f = fixture(), dir = f.worktree(), exec = childProcess.execFile
+  const spy = vi.spyOn(childProcess, 'execFile').mockImplementation(((file: string, args: string[], options: any, callback: any) => {
+    if (args.includes('ls-tree')) return exec(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(`100644 blob ${'a'.repeat(40)} 67108865\thuge.bin\0`)})`], options, callback)
+    return (exec as any)(file, args, options, callback)
+  }) as typeof exec)
+  try {
+    expect((await prepareWorkerSubmodules(repo, dir)).prompt).toContain('blob exceeds 64 MiB export limit')
+    expect(spy.mock.calls.some(call => (call[1] as string[]).includes('cat-file'))).toBe(false)
+    expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
+  } finally { spy.mockRestore() }
+})
+
+it('keeps optional setup non-fatal when initial filesystem inspection fails', async () => {
+  const spy = vi.spyOn(fsp, 'lstat').mockRejectedValueOnce(Object.assign(new Error('permission denied'), { code: 'EACCES' }))
+  try { expect((await prepareWorkerSubmodules(repo, repo)).prompt).toContain('export unavailable (permission denied)') }
+  finally { spy.mockRestore() }
+})
+
+it('a zero time budget leaves an empty folder with guidance and no Git command', async () => {
+  const f = fixture(), dir = f.worktree(), spy = vi.spyOn(childProcess, 'execFile')
+  try {
+    expect((await prepareWorkerSubmodules(repo, dir, { timeoutMs: 0 })).prompt).toContain('export time limit reached')
+    expect(spy).not.toHaveBeenCalled()
+    expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
+  } finally { spy.mockRestore() }
+})
+
+it('keep collection retains exports and later collection removes them without inspecting submodule Git state', async () => {
+  const f = fixture(), t = world({ repo, head: f.head }), worker = await t.spawn('kept')
+  put(worker.dir, 'keep.txt', 'first delivery\n')
+  await t.finish('kept')
+  expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('collected')
+  expect(read(path.join(worker.dir, subpath), 'library.txt')).toBe('first\n')
+  expect(await t.call('room_preview_merge', { people: ['rohanz+kept'] })).toContain('no conflicts')
+  expect(await t.call('room_collect', { tag: 'kept' })).toContain('collected')
+  expect(fs.existsSync(worker.dir)).toBe(false)
+})
+
+it('does not treat gitlinks beneath a mapped ordinary directory as configured modules', async () => {
+  const f = fixture()
+  put(repo, '.gitmodules', '[submodule "incorrect mapping"]\npath = vendor\n')
+  commit(repo, 'map an ordinary ancestor')
+  const dir = f.worktree(), spy = vi.spyOn(childProcess, 'execFile')
+  try {
+    expect(await prepareWorkerSubmodules(repo, dir)).toEqual({ reply: [] })
+    expect(spy.mock.calls.some(call => (call[1] as string[]).includes('ls-tree'))).toBe(false)
+    expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
+  } finally { spy.mockRestore() }
+})
+
+it('keeps optional setup non-fatal when canonical path resolution fails', async () => {
+  const f = fixture(), dir = f.worktree()
+  const spy = vi.spyOn(fsp, 'realpath').mockRejectedValueOnce(new Error('canonical path unavailable'))
+  try { expect((await prepareWorkerSubmodules(repo, dir)).prompt).toContain('export unavailable (canonical path unavailable)') }
+  finally { spy.mockRestore() }
+})
+
+it('reports failed temporary cleanup without rejecting optional setup', async () => {
+  const f = fixture(), dir = f.worktree()
+  const spy = vi.spyOn(fsp, 'rm').mockRejectedValueOnce(new Error('cleanup denied'))
+  try {
+    const result = await prepareWorkerSubmodules(repo, dir)
+    expect(result.prompt).toContain('read-only copy')
+    expect(result.prompt).toContain('temporary export could not be removed')
+    expect(read(path.join(dir, subpath), 'library.txt')).toBe('first\n')
+  } finally { spy.mockRestore() }
+})
+
+it('staged gitlink changes still require manual collection and can be discarded', async () => {
+  const f = fixture(), t = world({ repo, head: f.head }), worker = await t.spawn('pointer')
+  git(worker.dir, 'update-index', '--cacheinfo', '160000', f.second, subpath)
+  put(worker.dir, 'keep.txt', 'ordinary edit\n')
+  await t.finish('pointer')
+  expect(await t.call('room_preview_merge', { people: ['rohanz+pointer'] })).toContain('NOT previewed (directory or nested repository): ' + subpath)
+  const result = await t.call('room_collect', { tag: 'pointer' })
+  expect(result).toContain('files need manual collection')
+  expect(fs.existsSync(worker.dir)).toBe(true)
+  expect(read(repo, 'keep.txt')).toBe('k1\nk2\n')
+  expect(git(repo, 'ls-files', '--stage', '--', subpath)).toContain(f.first)
+  await t.call('room_collect', { tag: 'pointer', discard: true })
+  expect(fs.existsSync(worker.dir)).toBe(false)
+})
+
+it('bounds nested module outcomes before a large dependency can inflate the worker prompt', async () => {
+  const f = fixture()
+  for (let n = 0; n < 64; n++) git(f.source, 'update-index', '--add', '--cacheinfo', '160000', f.first, `nested/lib-${n}`)
+  git(f.source, 'commit', '-qm', 'many nested gitlinks'); commit(repo, 'record many nested dependencies')
+  const dir = f.worktree(), result = await prepareWorkerSubmodules(repo, dir)
+  expect(result.prompt).toContain('nested submodules exceed the 64-module export limit')
+  expect(result.reply).toHaveLength(1)
+  expect(fs.readdirSync(path.join(dir, subpath))).toEqual([])
+  expect(fs.readdirSync(path.join(dir, 'vendor')).some(name => name.startsWith('.room-submodule-'))).toBe(false)
 })

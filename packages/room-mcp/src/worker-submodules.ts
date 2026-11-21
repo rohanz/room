@@ -4,11 +4,15 @@ import { constants } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import childProcess from 'node:child_process'
+import { setImmediate } from 'node:timers/promises'
 import { MATERIALIZED_PATH, validRepoPath } from '@room/roomd'
 
 const SETUP_MS = 8_000, MAX_MODULES = 64, MAX_METADATA = 4 * 1024 * 1024
 const BATCH_BYTES = 8 * 1024 * 1024, MAX_BLOB = 64 * 1024 * 1024
 const quote = (value: string) => "'" + value.replace(/'/g, process.platform === 'win32' ? "''" : "'\\''") + "'"
+// Manual archive streams files but honors archive attributes, unlike the automatic raw export.
+const guidance = (oid: string, destination: string, repository?: string) =>
+  `mkdir -p ${quote(destination)}; ${repository ? `git --git-dir=${quote(repository)}` : `git -C ${quote('<dependency-repository>')}`} archive ${quote(oid)} | tar -x -C ${quote(destination)}`
 
 /** Only built-in object/config reads; never run from a lead working tree or inherit Git overrides. */
 function git(cwd: string, args: string[], deadline: number, input?: string, maxBuffer = MAX_METADATA): Promise<Buffer> {
@@ -18,13 +22,14 @@ function git(cwd: string, args: string[], deadline: number, input?: string, maxB
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull, GIT_OPTIONAL_LOCKS: '0',
     GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1', GIT_ALLOW_PROTOCOL: '', GIT_TERMINAL_PROMPT: '0' }
   return new Promise((resolve, reject) => {
+    let requestFailed = false
     const child = childProcess.execFile('git', ['-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false',
       '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args],
     { cwd, env, timeout, killSignal: 'SIGKILL', maxBuffer, encoding: 'buffer' }, (error, stdout, stderr) => {
-      if (error || stderr.length) reject(new Error(error?.killed ? 'export time limit reached' : 'local objects unavailable or unreadable'))
+      if (error || stderr.length) reject(new Error(requestFailed ? 'object request failed' : error?.killed ? 'export time limit reached' : 'local objects unavailable or unreadable'))
       else resolve(stdout)
     })
-    child.stdin?.on('error', () => { if (input !== undefined) reject(new Error('object request failed')) })
+    child.stdin?.on('error', () => { requestFailed = true; child.kill('SIGKILL') })
     child.stdin?.end(input)
   })
 }
@@ -83,6 +88,7 @@ async function tree(cwd: string, gitdir: string, commit: string, deadline: numbe
     if (!match || !validRepoPath(match[5], MATERIALIZED_PATH) || (match[1] === '160000') !== (match[2] === 'commit')) throw new Error('unsupported commit entry')
     const size = match[4] === '-' ? 0 : Number(match[4])
     if (!Number.isSafeInteger(size) || size > MAX_BLOB) throw new Error('blob exceeds 64 MiB export limit')
+    if (match[1] === '120000' && size > 4096) throw new Error('symlink target exceeds 4 KiB export limit')
     if (leaves.has(match[5])) throw new Error('duplicate export path')
     leaves.add(match[5])
     const parts = match[5].split('/')
@@ -112,6 +118,7 @@ async function exportFiles(cwd: string, gitdir: string, entries: Entry[], destin
       batch.map(entry => entry.oid + '\n').join(''), total + batch.length * 128)
     let offset = 0
     for (const entry of batch) {
+      if (performance.now() >= deadline) throw new Error('export time limit reached')
       const end = raw.indexOf(10, offset)
       if (end < 0 || raw.subarray(offset, end).toString() !== `${entry.oid} blob ${entry.size}`) throw new Error('local blob unavailable')
       offset = end + 1
@@ -121,7 +128,7 @@ async function exportFiles(cwd: string, gitdir: string, entries: Entry[], destin
       const file = path.join(destination, entry.path)
       await directory(path.dirname(file))
       if (entry.mode === '120000') {
-        const target = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+        const target = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
         const resolved = path.resolve(path.dirname(file), target), relative = path.relative(destination, resolved)
         if (path.isAbsolute(target) || /^[a-z]:/i.test(target) || /[\\\0]/.test(target) || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
           throw new Error('symlink leaves export')
@@ -135,6 +142,8 @@ async function exportFiles(cwd: string, gitdir: string, entries: Entry[], destin
   }
   const targets = new Map(links.map(({ entry, target }) => [entry.path, target]))
   for (const { entry, target } of links) {
+    await setImmediate()
+    if (performance.now() >= deadline) throw new Error('export time limit reached')
     let todo = [...entry.path.split('/').slice(0, -1), ...target.split('/')], parts: string[] = [], hops = 0
     while (todo.length) {
       const part = todo.shift()!
@@ -150,48 +159,70 @@ async function exportFiles(cwd: string, gitdir: string, entries: Entry[], destin
       }
     }
   }
-  for (const { entry, target } of links) await fs.symlink(target, path.join(destination, entry.path))
+  for (const { entry, target } of links) {
+    if (performance.now() >= deadline) throw new Error('export time limit reached')
+    await fs.symlink(target, path.join(destination, entry.path))
+  }
   const nested = entries.filter(entry => entry.mode === '160000')
-  for (const entry of nested) await directory(path.join(destination, entry.path))
+  for (const entry of nested) {
+    if (performance.now() >= deadline) throw new Error('export time limit reached')
+    await directory(path.join(destination, entry.path))
+  }
   return nested.length
 }
 
 /** One outcome per path, shared by the spawn reply and worker prompt. */
 export async function prepareWorkerSubmodules(leadDir: string, workerDir: string, options: { timeoutMs?: number } = {}): Promise<{ reply: string[]; prompt?: string }> {
-  const config = path.join(workerDir, '.gitmodules')
-  try { await fs.lstat(config) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { reply: [] }; throw error }
-  const deadline = performance.now() + (options.timeoutMs ?? SETUP_MS), lines: string[] = []
-  const lead = await fs.realpath(leadDir), worker = await fs.realpath(workerDir)
+  const config = path.join(workerDir, '.gitmodules'), lines: string[] = []
   try {
+    try { await fs.lstat(config) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { reply: [] }; throw error }
+    const deadline = performance.now() + (options.timeoutMs ?? SETUP_MS)
+    const lead = await fs.realpath(leadDir), worker = await fs.realpath(workerDir)
     await smallFile(config, 64 * 1024)
     const raw = (await git(worker, ['config', '--no-includes', '--null', '--file', config, '--list'], deadline)).toString()
     const paths = [...new Set(raw.split('\0').filter(line => /^submodule\..*\.path\n/.test(line)).map(line => line.slice(line.indexOf('\n') + 1)))]
     if (paths.length > MAX_MODULES || paths.some(p => !validRepoPath(p, MATERIALIZED_PATH))) throw new Error('unsupported submodule configuration')
     if (!paths.length) return { reply: [] }
+    let nestedBudget = MAX_MODULES - paths.length
     const index = (await git(worker, ['ls-files', '--stage', '-z', '--', ...paths.map(p => ':(literal)' + p)], deadline)).toString()
     for (const record of index.split('\0').filter(Boolean)) {
       const match = /^160000 ([a-f0-9]{40}|[a-f0-9]{64}) 0\t([\s\S]+)$/.exec(record)
-      if (!match) continue
+      if (!match || !paths.includes(match[2])) continue
       const [, commit, relative] = match
-      let stage: string | undefined
+      let stage: string | undefined, gitdir: string | undefined
       try {
+        if (performance.now() >= deadline) throw new Error('export time limit reached')
         const target = await safe(worker, relative), source = await safe(lead, relative)
         if (!await empty(target)) { lines.push(`Submodule ${JSON.stringify(relative)}: existing contents kept.`); continue }
-        const gitdir = await sourceGitDir(source)
+        gitdir = await sourceGitDir(source).catch(() => { throw new Error('local objects unavailable (submodule not initialized or Git directory unreadable)') })
         stage = await fs.mkdtemp(path.join(path.dirname(target), '.room-submodule-'))
         const output = path.join(stage, 'export')
         await fs.mkdir(output, { mode: 0o755 })
-        const nested = await exportFiles(stage, gitdir, await tree(stage, gitdir, commit, deadline), output, deadline)
+        const entries = await tree(stage, gitdir, commit, deadline)
+        const nestedCount = entries.filter(entry => entry.mode === '160000').length
+        if (nestedCount > nestedBudget) throw new Error('nested submodules exceed the 64-module export limit')
+        const nested = await exportFiles(stage, gitdir, entries, output, deadline)
         if (performance.now() >= deadline) throw new Error('export time limit reached')
         await safe(worker, relative)
         if (!await empty(target)) throw new Error('worker destination changed during export')
         await fs.rmdir(target).catch(error => { if (error.code !== 'ENOENT') throw error })
         await fs.rename(output, target)
+        nestedBudget -= nestedCount
         lines.push(`Submodule ${JSON.stringify(relative)}: read-only copy of ${commit.slice(0, 10)}, not a Git checkout (raw blobs; no filters/LFS/EOL conversion${nested ? `; ${nested} nested submodule folder(s) empty` : ''}).`)
+        for (const entry of entries.filter(entry => entry.mode === '160000')) {
+          const destination = path.join(target, entry.path)
+          lines.push(`Submodule ${JSON.stringify(relative + '/' + entry.path)}: empty (nested submodule); from its own local repository containing ${entry.oid}, run: ${guidance(entry.oid, destination)}.`)
+        }
       } catch (error) {
-        lines.push(`Submodule ${JSON.stringify(relative)}: empty (${error instanceof Error ? error.message : String(error)}); in its own repository run git fetch <remote> ${commit}, then git archive ${commit} | tar -x -C ${quote(path.join(worker, relative))}.`)
-      } finally { if (stage) await fs.rm(stage, { recursive: true, force: true }) }
+        lines.push(`Submodule ${JSON.stringify(relative)}: export unavailable (${error instanceof Error ? error.message : String(error)}); existing contents kept, otherwise empty. If objects are missing, in its own repository run git fetch <remote> ${commit}; to fill locally run: ${guidance(commit, path.join(worker, relative), gitdir)}.`)
+      } finally {
+        if (stage) await fs.rm(stage, { recursive: true, force: true }).catch(() => {
+          lines.push(`Submodules: temporary export could not be removed at ${JSON.stringify(stage)}; remove it before building.`)
+        })
+      }
     }
-  } catch (error) { lines.push(`Submodules: export unavailable (${error instanceof Error ? error.message : String(error)}); inspect dependencies before building.`) }
+  } catch (error) {
+    lines.push(`Submodules: export unavailable (${error instanceof Error ? error.message : String(error)}); folders left as found. To fill an empty folder locally, replace the placeholders and run: ${guidance('<recorded-commit>', '<worker-submodule-folder>')}.`)
+  }
   return lines.length ? { reply: lines, prompt: lines.join('\n') } : { reply: [] }
 }
