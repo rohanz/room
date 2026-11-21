@@ -61970,7 +61970,7 @@ async function workerSubmoduleNotes(leadDir, workerDir, options = {}) {
 ${clone2}
 ${checkout}`);
     }
-    if (lines2.some((line) => line.includes("clone --local"))) lines2.push("If the lead lacks that commit, ask for a local copy containing it, or permission to fetch it into your worker copy. Nested submodules remain empty.");
+    if (lines2.some((line) => line.includes("clone --local"))) lines2.push("If the lead lacks that commit, ask for a local copy containing it, or permission to fetch it into your worker copy. Nested submodules remain empty. A filled folder is a build input: Room collects nothing from inside it and deletes it with your worktree, so make a change to a submodule in its own repository.");
   } catch (error2) {
     lines2.push(`Submodule guidance unavailable (${error2 instanceof Error ? error2.message : String(error2)}); folders left untouched. Ask the lead for the dependency path, recorded commit and local copy if needed.`);
   }

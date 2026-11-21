@@ -88,7 +88,7 @@ export async function workerSubmoduleNotes(leadDir: string, workerDir: string, o
       const checkout = `git --git-dir=${quote(path.join(destination, '.git'))} --work-tree=${quote(destination)} -c protocol.allow=never -c core.hooksPath=${quote(os.devNull)} -c submodule.recurse=false -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false checkout --detach ${quote(commit)}`
       lines.push(`Submodule ${JSON.stringify(relative)}: empty; repository records ${commit}. If needed, fill from the lead's local copy (no network):\n${clone}\n${checkout}`)
     }
-    if (lines.some(line => line.includes('clone --local'))) lines.push('If the lead lacks that commit, ask for a local copy containing it, or permission to fetch it into your worker copy. Nested submodules remain empty.')
+    if (lines.some(line => line.includes('clone --local'))) lines.push('If the lead lacks that commit, ask for a local copy containing it, or permission to fetch it into your worker copy. Nested submodules remain empty. A filled folder is a build input: Room collects nothing from inside it and deletes it with your worktree, so make a change to a submodule in its own repository.')
   } catch (error) {
     lines.push(`Submodule guidance unavailable (${error instanceof Error ? error.message : String(error)}); folders left untouched. Ask the lead for the dependency path, recorded commit and local copy if needed.`)
   }
