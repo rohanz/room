@@ -12,7 +12,7 @@ import { workerPortsInUse } from '../worker-config.js'
 import { WORKER_EFFORTS } from '../hosts/types.js'
 import { assertNewWorkerWorktree, suppliedWorkerCheckout, prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
-import { prepareWorkerSubmodules } from '../worker-submodules.js'
+import { workerSubmoduleNotes } from '../worker-submodules.js'
 import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { publisherLine, retainedList } from './share.js'
@@ -307,7 +307,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { throw new Error(`could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const deps = created ? workspaceDepsNotes(await linkWorkspaceDeps(s.dir, dir)) : { reply: [] }
-        const submodules = created ? await prepareWorkerSubmodules(s.dir, dir) : { reply: [] }
+        const submodules = created ? await workerSubmoduleNotes(s.dir, dir) : { reply: [] }
         if (!outside && !sharedOwner) {
           const current = await registry.read(id)
           if (!current) throw new Error('worker record disappeared before launch')
