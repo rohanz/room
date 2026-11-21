@@ -1,3 +1,4 @@
+import { workerBuildDirNote } from './worker-build-dir.js'
 import { workerAdapter } from './hosts/index.js'
 import { workerHostInstructions, hostWorkerEnvironmentKeys } from './hosts/instructions.js'
 import fs from 'node:fs'
@@ -46,13 +47,25 @@ export function workerPriority(command: { cmd: string; args: string[] }, env: No
   return { ...command, nice: 0 }
 }
 
-/** Reserve for at least four intended workers (bounded by maxWorkers), even on the first spawn.
- * Also cap by actual concurrency when it exceeds that reservation; one thread is the floor.
+/** Fixed spawn budget: split unreserved CPU capacity with future workers and the lead.
+ * Explicit settings keep their precedence; memory retains its conservative reservation.
  */
-export function workerBudget({ cores, memBytes, maxWorkers, running }: { cores: number; memBytes: number; maxWorkers: number; running: number }): { threads: number; memGb: number } {
+export function workerBudget({ cores, memBytes, maxWorkers, running, reservedThreads, requestedThreads, inheritedThreads, inheritedMem, isWorker = false }: {
+  cores: number; memBytes: number; maxWorkers: number; running: number; reservedThreads: number
+  requestedThreads?: number; inheritedThreads?: number; inheritedMem?: number; isWorker?: boolean
+}): { threads: number; memGb: number; reason: string } {
   const workers = running + 1
   const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers)
-  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) }
+  const remaining = Math.max(0, cores - reservedThreads)
+  const nestedDivisor = isWorker ? Math.max(2, maxWorkers) : 1
+  const inherited = Number.isSafeInteger(inheritedThreads) && inheritedThreads! >= 1
+  const share = inherited ? Math.max(1, Math.floor(inheritedThreads! / nestedDivisor)) : Math.max(1, Math.ceil(remaining / 2))
+  const threads = requestedThreads === undefined ? share : Math.min(requestedThreads, share)
+  const reason = `${requestedThreads === undefined ? '' : `threads=${requestedThreads}, capped by `}${inherited
+    ? `ROOM_WORKER_THREADS=${inheritedThreads}${isWorker ? ` / ${nestedDivisor} nested share` : ''}`
+    : remaining ? `half of ${remaining} unreserved / ${cores} cores` : `1-thread floor; ${reservedThreads} reserved / ${cores} cores`}; ${running} live workers`
+  const memGb = Number.isFinite(inheritedMem) && inheritedMem! >= 1 ? Math.max(1, Math.floor(inheritedMem! / nestedDivisor)) : Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3))
+  return { threads, memGb, reason }
 }
 
 const WORKER_THREAD_CAPS = ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS'] as const
@@ -77,6 +90,8 @@ export function workerProcessEnv(options: {
   share: string; run: number; nonce: string; registry: string; id: string; token?: string; logDir: string; isWorker: boolean; port?: number; leadClone?: string
   /** The epoch of the lead's reservation of the worker's name, which the worker takes over (hub §2.3). */
   nameEpoch?: number
+  /** Validated worker-local disposable output directory; omitted for supplied checkouts. */
+  buildDir?: string
   /** A Claude worker's CLAUDE_ENV_FILE, which keeps the ROOM_ variables below from its shell commands (worker-shell-env.ts). */
   shellEnvFile?: string
 }, inherited: NodeJS.ProcessEnv = process.env): Record<string, string> {
@@ -90,6 +105,7 @@ export function workerProcessEnv(options: {
     ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
     ROOM_SERVER: options.server, ROOM_ROOM: options.server === 'local' ? options.room : normalizeExplicitRoomName(options.room), ROOM_DIR: options.dir, PWD: options.dir,
     ...(options.port ? { PORT: String(options.port) } : {}),
+    ...(options.buildDir ? { WORKER_BUILD_DIR: options.buildDir } : {}),
     ...workerAdapter(options.host, inherited).shellEnv(options.shellEnvFile),
     ROOM_TAG: options.tag, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_WORKER_ID: options.id, ROOM_WORKER_RUN: String(options.run), ROOM_LAUNCH_NONCE: options.nonce,
@@ -108,7 +124,7 @@ export function validTag(tag: unknown): string | undefined {
 }
 
 /** The fixed preamble every worker gets, then the task. */
-export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[]; deps?: string }): string {
+export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[]; deps?: string; buildDir?: string; buildDirUnavailableReason?: string }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing. Ask the peer responsible for a dependency directly with room_send(type "question", to "<returned peer name>"); ask ${lead} for scope decisions or unresolved ownership.`,
@@ -119,7 +135,8 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     `Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.`,
     ...workerHostInstructions,
     ...(context ? [
-      `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
+      `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs. This budget stays fixed when peers finish.`,
+      workerBuildDirNote(context.buildDir, context.buildDirUnavailableReason),
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
       ...(context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
@@ -144,7 +161,7 @@ export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | 
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG,
  * ROOM_OWNER, ROOM_SHARE, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-const LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, 'ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
+const LEAD_ONLY_ENV = [...hostWorkerEnvironmentKeys, 'ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT', 'WORKER_BUILD_DIR'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

@@ -821,7 +821,7 @@ export async function saveDiscardRecovery(leadDir: string, w: LocalWorker): Prom
     const trackedIgnored = (await git(w.dir, ['ls-files', '--cached', '--ignored', '--exclude-standard', '-z'])).split('\0').filter(Boolean)
     const candidates = new Set([...trackedIgnored, ...(w.carriedUntracked ?? []).map(p => p.path)])
     const explicit = [...candidates].filter(p => {
-      if (workerOwnedPaths(w).includes(p)) return false
+      if (p.toLowerCase() === '.room/scratch' || p.toLowerCase().startsWith('.room/scratch/') || workerOwnedPaths(w).includes(p)) return false
       try { const stat = fs.lstatSync(path.join(w.dir, p)); return stat.isFile() || stat.isSymbolicLink() }
       catch (error) { if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false; throw error }
     })
@@ -830,6 +830,7 @@ export async function saveDiscardRecovery(leadDir: string, w: LocalWorker): Prom
       fs.writeFileSync(paths, explicit.map(p => ':(literal)' + p + '\0').join(''), { mode: 0o600 })
       await run(['add', '-f', '--pathspec-from-file=' + paths, '--pathspec-file-nul'])
     }
+    await run(['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', ':(literal).room/scratch'])
     if (w.link?.length) await run(['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', ...w.link.map(p => ':(literal)' + p)])
     const tree = (await run(['write-tree'])).toString().trim()
     const unchanged = tree === (await run(['rev-parse', `${head}^{tree}`])).toString().trim()

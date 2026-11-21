@@ -1,3 +1,4 @@
+import { prepareWorkerBuildDir, workerBuildDirNote } from './worker-build-dir.js'
 import { fileURLToPath } from 'node:url'
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
@@ -31,6 +32,8 @@ interface Policy {
   host: WorkerHost; model?: string; effort?: string; share: string; run: number; nonce: string; registry: string
   budget: { threads: number; memGb: number; nice?: number }
   server: string; isWorker: boolean; token?: string
+  /** True only for the worker that owns this Room-created checkout, never a supplied dir=. */
+  ownsBuildDir?: boolean
   spawner?: Spawner; probe?: (pid: number) => ProcessInfo | undefined; log: (line: string) => void; at?: () => number
   usedPorts?: number[]; preferredPort?: number
   platform?: NodeJS.Platform
@@ -42,7 +45,7 @@ type Command =
 export interface WorkerLaunchResult {
   proc: SpawnedProcess; port: number; env: Record<string, string>; nice: number; logFile: string
   portChanged: boolean; startedAt: number
-  /** The worker's shell commands will still see Room's ROOM_ variables, and why. */
+  /** Non-fatal setup limitations, including shell isolation and unavailable build output. */
   warnings: string[]
   processStartTime?: string
   /** Read in the same probe as processStartTime: the registry records both from one snapshot. */
@@ -110,11 +113,20 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const portChanged = command.mode === 'resume' && port !== command.oldPort
     const launchOptions = workerLaunchOptions(policy.host)
     const worker = workerAdapter(policy.host)
+    let buildDir: string | undefined, buildDirUnavailableReason: string | undefined
+    if (policy.ownsBuildDir) {
+      try { buildDir = await prepareWorkerBuildDir(policy.dir, tag) }
+      catch (error) {
+        // Disposable output is optional. Preserve the helper's containment/ignore checks,
+        // but never let a failure to provide it prevent the worker from starting.
+        buildDirUnavailableReason = String(error instanceof Error ? error.message : error).replace(/\s+/g, ' ').slice(0, 500) || 'setup failed'
+      }
+    }
     const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, owner: policy.owner,
       share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
-      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, nameEpoch,
+      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, nameEpoch, buildDir,
       leadClone: await realGitCommonDir(s.dir) })
     const niceEnv = command.mode === 'resume'
       ? { ...process.env, ROOM_WORKER_NICE: String(policy.budget.nice) }
@@ -123,8 +135,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const prompt = command.mode === 'fresh'
       ? workerPrompt(policy.lead, tag, command.task, { threads: policy.budget.threads,
         memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort: policy.effort,
-        link: command.links, carriedPaths: command.carriedPaths, deps: command.deps, port })
-      : `${command.followUp}${portChanged ? `\n\nYour dev-server port is ${port} (PORT=${port}).` : ''}`
+        link: command.links, carriedPaths: command.carriedPaths, deps: command.deps, port, buildDir, buildDirUnavailableReason })
+      : `${command.followUp}\n\n${workerBuildDirNote(buildDir, buildDirUnavailableReason)}${portChanged ? `\n\nYour dev-server port is ${port} (PORT=${port}).` : ''}`
     let maxBudgetUsd: string | undefined
     try { maxBudgetUsd = workerMaxBudget() }
     catch (e) { throw new WorkerLaunchError('budget', String(e instanceof Error ? e.message : e)) }
@@ -161,7 +173,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     if ((policy.platform ?? process.platform) === 'win32' && !exited && !host.aborted() && proc.isRunning?.() !== false && !identity) {
       throw new WorkerLaunchError('start', 'could not verify the Windows worker process identity; stopping its retained child handle')
     }
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: [...plan.warnings, ...plan.artifactWarnings(written.outcomes), ...await workerAdapter(policy.host).shellWarnings({})],
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: [...(buildDirUnavailableReason ? [`warning: ${workerBuildDirNote(undefined, buildDirUnavailableReason)}`] : []), ...plan.warnings, ...plan.artifactWarnings(written.outcomes), ...await workerAdapter(policy.host).shellWarnings({})],
       startedAt: (policy.at ?? Date.now)(), processStartTime: identity?.startTime, processExecutable: identity?.executable }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)

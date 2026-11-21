@@ -455,7 +455,7 @@ export class FileWorkerStore {
       return next
     })
   }
-  #occupancy(): number {
+  #occupiedWorkers(): WorkerRecord[] {
     // Capacity and tag authority need a complete record/reservation inventory and quarantine
     // evidence. Only launched runs need reports/exits to decide occupancy; prepared, terminal
     // and ambiguous records have a complete answer already. Share the status reducer's rule.
@@ -463,10 +463,11 @@ export class FileWorkerStore {
       const status = recordStatus({ record, reports: [], exits: [], busy: true,
         liveness: this.#statusLiveness(record, true) }) ?? this.#status(record.id)
       if (!status) { this.invalid(this.workerFile(record.id), 'missing occupancy worker record'); return [] }
-      return [status]
+      return ['starting', 'running', 'unknown', 'ambiguous'].includes(status.status) ? [record] : []
     }))
-    return requireWorkerInventory(inventory).filter(status => ['starting', 'running', 'unknown', 'ambiguous'].includes(status.status)).length
+    return requireWorkerInventory(inventory)
   }
+  #occupancy(): number { return this.#occupiedWorkers().length }
   #reports(id: string): WorkerInventory<RunReport> { if (!safeId(id)) throw new Error('invalid worker id'); return this.#inventory(() => files(path.join(this.root, 'runs', id), '.report.json').flatMap(f => {
     const blocked = this.decodeBlockers!.size
     const report = this.#readFact(f, reportShape)
@@ -482,8 +483,9 @@ export class FileWorkerStore {
     return observation ? [observation] : []
   })) }
 
-  /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
-  async writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY): Promise<void> {
+  /** Reserve count and optional compute budget under one capacity guard; never spawns by itself. */
+  async writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY,
+    budget?: (live: readonly WorkerRecord[]) => WorkerRecord['budget']): Promise<void> {
     if (!safeId(record.id) || !recordShape(record, record.id) || record.runs[0].launch) throw new Error('invalid worker intent')
     // A borrower joins the owner's operation lane before it becomes visible.
     // Collection holds this lane through its final cleanup decision.
@@ -504,7 +506,10 @@ export class FileWorkerStore {
     for (;;) {
       try {
         await guarded(path.join(this.root, 'capacity'), () => {
-          if (this.#occupancy() >= capacity) throw new Error('worker capacity reached')
+          const live = this.#occupiedWorkers()
+          if (live.length >= capacity) throw new Error('worker capacity reached')
+          if (budget) record = { ...record, budget: budget(live) }
+          if (!recordShape(record, record.id)) throw new Error('invalid worker intent budget')
           withWorkerTag(this.root, record.tag, () => {
             const tagFile = this.tagFile(record.tag)
             if (fs.existsSync(tagFile)) {

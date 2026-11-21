@@ -1,0 +1,523 @@
+{
+  "date": "2026-11-21",
+  "source": {
+    "head": "2739b7adf7754887f8c3dce0626975f3dc221c13",
+    "preFeatureBaseline": "d0a901c4280af71cd7aca9b4a71308c653278348",
+    "runtimeDiffSha256": "230e644b9d6136b8c89441b0dddf2540959fcdc9de58230649b38a556895af73"
+  },
+  "fixDecisions": {
+    "carryAssertion": "Test fix: assert lead-only .room sentinels are absent and only fresh worker scratch is present; carried Git tree remains explicitly checked.",
+    "resumeJSONAssertions": "Test fixes: parse the JSONL message section separately from blank-line-delimited worker setup prose; assert message metadata and build context on both hosts. Production prompt format unchanged.",
+    "directoryCreation": "Code fix: shared privateStateDirectory exclusive leaf creation and verifyPrivatePath for existing leaves; no private initializer exemptions added.",
+    "ancestorSafety": "An intermediate direct shared-initializer adoption changed a synthetic ancestor named room from 0755 to 0700. New regression reproduced it; final leaf-only creation preserves checkout ancestor permissions.",
+    "processSafetyFixture": "Full run exposed a test assuming process.cwd() cannot be an owned worker. Replaced that input with the explicit nonworker test directory. Production process cleanup unchanged."
+  },
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v22.23.4",
+    "vitest": "5.0.0",
+    "logicalCPUs": 12,
+    "assignedTestConcurrency": 3,
+    "benchmarkConcurrency": 1,
+    "measuredBenchmarkNice": 15,
+    "nativeWindowsOrLinuxRun": false
+  },
+  "spawnBenchmark": {
+    "method": "Synthetic Codex process starter; real tool routing, Git worktrees and registry. One tracked file, no submodules/dependencies/WIP; carry=false. One warmup excluded from each block. Each checkout resolved its own workspace sources through linked dependencies; roomd/relay were unchanged between revisions, shared differed only in test-env. Model/API startup and compiled-project setup are not measured.",
+    "blocks": {
+      "baseline": {
+        "n": 8,
+        "medianMs": 500.271,
+        "minMs": 484.006,
+        "maxMs": 553.64,
+        "samplesMs": [
+          522.956,
+          553.64,
+          499.431,
+          504.485,
+          497.998,
+          501.111,
+          484.006,
+          494.033
+        ]
+      },
+      "current": {
+        "n": 8,
+        "medianMs": 494.637,
+        "minMs": 472.718,
+        "maxMs": 562.281,
+        "samplesMs": [
+          489.559,
+          495.686,
+          501.789,
+          521.132,
+          562.281,
+          493.587,
+          474.722,
+          472.718
+        ]
+      },
+      "final": {
+        "n": 8,
+        "medianMs": 552.022,
+        "minMs": 498.825,
+        "maxMs": 641.863,
+        "samplesMs": [
+          624.047,
+          641.863,
+          547.14,
+          585.598,
+          498.825,
+          543.404,
+          550.683,
+          553.361
+        ]
+      }
+    },
+    "blockLabels": {
+      "baseline": "Before worker-speed features",
+      "current": "Intermediate direct private initializer, before ancestor guard",
+      "final": "Final leaf-only private initializer"
+    },
+    "pairedMethod": "Final source, alternating build enabled then disabled; first pair excluded, eight observations per mode. Disabled mode mocks only prepareWorkerBuildDir to bypass optional setup.",
+    "paired": {
+      "False": {
+        "n": 8,
+        "medianMs": 542.741,
+        "minMs": 512.482,
+        "maxMs": 571.665,
+        "samplesMs": [
+          512.482,
+          527.056,
+          533.955,
+          564.019,
+          533.559,
+          551.528,
+          571.665,
+          558.264
+        ]
+      },
+      "True": {
+        "n": 8,
+        "medianMs": 556.861,
+        "minMs": 527.739,
+        "maxMs": 586.122,
+        "samplesMs": [
+          527.739,
+          538.532,
+          576.569,
+          558.089,
+          531.789,
+          555.632,
+          586.122,
+          573.025
+        ]
+      }
+    },
+    "limits": "Small sequential samples; ranges overlap and host load was not monitored. Separate final/baseline block delta is not wholly attributable to build setup. Paired on/off medians differ by about 14 ms. All retained warm samples were below 650 ms.",
+    "rawSamples": [
+      {
+        "label": "baseline",
+        "sample": 0,
+        "ms": 588.5409590000002,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 589ms: lease 105ms, prepare 205ms (git 24 calls 163ms, worktree add 23ms), launch 130ms, other 149ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 1,
+        "ms": 522.9560420000003,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 523ms: lease 98ms, prepare 193ms (git 24 calls 159ms, worktree add 25ms), launch 81ms, other 151ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 2,
+        "ms": 553.6404590000002,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 554ms: lease 137ms, prepare 199ms (git 24 calls 151ms, worktree add 23ms), launch 81ms, other 137ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 3,
+        "ms": 499.4314169999998,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 499ms: lease 113ms, prepare 183ms (git 24 calls 141ms, worktree add 21ms), launch 75ms, other 128ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 4,
+        "ms": 504.48466599999983,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 504ms: lease 112ms, prepare 187ms (git 24 calls 143ms, worktree add 22ms), launch 79ms, other 127ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 5,
+        "ms": 497.9977090000002,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 498ms: lease 99ms, prepare 204ms (git 24 calls 163ms, worktree add 27ms), launch 73ms, other 122ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 6,
+        "ms": 501.11075000000073,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 501ms: lease 107ms, prepare 191ms (git 24 calls 152ms, worktree add 22ms), launch 77ms, other 127ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 7,
+        "ms": 484.0055000000002,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 484ms: lease 107ms, prepare 182ms (git 24 calls 147ms, worktree add 22ms), launch 73ms, other 123ms"
+      },
+      {
+        "label": "baseline",
+        "sample": 8,
+        "ms": 494.0332499999995,
+        "gitCalls": 25,
+        "phases": "slow tool room_spawn 494ms: lease 95ms, prepare 186ms (git 24 calls 148ms, worktree add 23ms), launch 81ms, other 131ms"
+      },
+      {
+        "label": "current",
+        "sample": 0,
+        "ms": 540.8486250000001,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 541ms: lease 105ms, prepare 197ms (git 26 calls 173ms, worktree add 24ms), launch 100ms, other 139ms"
+      },
+      {
+        "label": "current",
+        "sample": 1,
+        "ms": 489.55858299999977,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 490ms: lease 94ms, prepare 199ms (git 26 calls 169ms, worktree add 25ms), launch 80ms, other 116ms"
+      },
+      {
+        "label": "current",
+        "sample": 2,
+        "ms": 495.6863750000002,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 496ms: lease 109ms, prepare 183ms (git 26 calls 162ms, worktree add 24ms), launch 83ms, other 121ms"
+      },
+      {
+        "label": "current",
+        "sample": 3,
+        "ms": 501.7888750000002,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 502ms: lease 106ms, prepare 191ms (git 26 calls 165ms, worktree add 24ms), launch 86ms, other 119ms"
+      },
+      {
+        "label": "current",
+        "sample": 4,
+        "ms": 521.1321669999998,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 521ms: lease 99ms, prepare 185ms (git 26 calls 158ms, worktree add 22ms), launch 110ms, other 127ms"
+      },
+      {
+        "label": "current",
+        "sample": 5,
+        "ms": 562.2813340000002,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 562ms: lease 105ms, prepare 240ms (git 26 calls 169ms, worktree add 25ms), launch 86ms, other 132ms"
+      },
+      {
+        "label": "current",
+        "sample": 6,
+        "ms": 493.58695799999987,
+        "gitCalls": 35,
+        "phases": "slow tool room_spawn 494ms: lease 99ms, prepare 191ms (git 26 calls 161ms, worktree add 24ms), launch 85ms, other 119ms"
+      },
+      {
+        "label": "current",
+        "sample": 7,
+        "ms": 474.7224580000002,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 475ms: lease 94ms, prepare 173ms (git 26 calls 151ms, worktree add 22ms), launch 82ms, other 126ms"
+      },
+      {
+        "label": "current",
+        "sample": 8,
+        "ms": 472.718167,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 473ms: lease 94ms, prepare 184ms (git 26 calls 157ms, worktree add 21ms), launch 79ms, other 117ms"
+      },
+      {
+        "label": "final",
+        "sample": 0,
+        "ms": 644.87275,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 645ms: lease 120ms, prepare 195ms (git 26 calls 163ms, worktree add 24ms), launch 126ms, other 204ms"
+      },
+      {
+        "label": "final",
+        "sample": 1,
+        "ms": 624.0467079999999,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 624ms: lease 108ms, prepare 241ms (git 26 calls 204ms, worktree add 26ms), launch 123ms, other 152ms"
+      },
+      {
+        "label": "final",
+        "sample": 2,
+        "ms": 641.863167,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 642ms: lease 127ms, prepare 215ms (git 26 calls 169ms, worktree add 23ms), launch 97ms, other 203ms"
+      },
+      {
+        "label": "final",
+        "sample": 3,
+        "ms": 547.140292,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 547ms: lease 126ms, prepare 190ms (git 26 calls 158ms, worktree add 23ms), launch 100ms, other 131ms"
+      },
+      {
+        "label": "final",
+        "sample": 4,
+        "ms": 585.5975829999998,
+        "gitCalls": 35,
+        "phases": "slow tool room_spawn 586ms: lease 105ms, prepare 194ms (git 26 calls 159ms, worktree add 23ms), launch 114ms, other 173ms"
+      },
+      {
+        "label": "final",
+        "sample": 5,
+        "ms": 498.8253329999998,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 499ms: lease 94ms, prepare 191ms (git 26 calls 160ms, worktree add 23ms), launch 87ms, other 127ms"
+      },
+      {
+        "label": "final",
+        "sample": 6,
+        "ms": 543.403875,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 543ms: lease 118ms, prepare 198ms (git 26 calls 163ms, worktree add 24ms), launch 88ms, other 139ms"
+      },
+      {
+        "label": "final",
+        "sample": 7,
+        "ms": 550.6825420000005,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 551ms: lease 107ms, prepare 188ms (git 26 calls 153ms, worktree add 23ms), launch 92ms, other 164ms"
+      },
+      {
+        "label": "final",
+        "sample": 8,
+        "ms": 553.3614159999997,
+        "gitCalls": 32,
+        "phases": "slow tool room_spawn 553ms: lease 127ms, prepare 191ms (git 26 calls 161ms, worktree add 23ms), launch 90ms, other 144ms"
+      },
+      {
+        "label": "final-paired",
+        "sample": 0,
+        "ms": 646.115,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 646ms: lease 126ms, prepare 206ms (git 26 calls 175ms, worktree add 23ms), launch 134ms, other 180ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 1,
+        "ms": 631.3798750000001,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 631ms: lease 118ms, prepare 222ms (git 24 calls 158ms, worktree add 24ms), launch 146ms, other 145ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 2,
+        "ms": 527.739333,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 528ms: lease 107ms, prepare 196ms (git 26 calls 164ms, worktree add 24ms), launch 90ms, other 135ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 3,
+        "ms": 512.4824580000004,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 512ms: lease 115ms, prepare 183ms (git 24 calls 143ms, worktree add 22ms), launch 87ms, other 128ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 4,
+        "ms": 538.5318749999997,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 539ms: lease 102ms, prepare 201ms (git 26 calls 165ms, worktree add 23ms), launch 92ms, other 144ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 5,
+        "ms": 527.0560420000002,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 527ms: lease 104ms, prepare 203ms (git 24 calls 150ms, worktree add 25ms), launch 80ms, other 141ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 6,
+        "ms": 576.5692079999999,
+        "gitCalls": 26,
+        "phases": "slow tool room_spawn 577ms: lease 118ms, prepare 188ms (git 26 calls 155ms, worktree add 22ms), launch 124ms, other 147ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 7,
+        "ms": 533.9546250000003,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 534ms: lease 103ms, prepare 189ms (git 24 calls 149ms, worktree add 21ms), launch 81ms, other 160ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 8,
+        "ms": 558.0887080000002,
+        "gitCalls": 30,
+        "phases": "slow tool room_spawn 558ms: lease 133ms, prepare 191ms (git 26 calls 157ms, worktree add 21ms), launch 87ms, other 147ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 9,
+        "ms": 564.0186670000003,
+        "gitCalls": 25,
+        "phases": "slow tool room_spawn 564ms: lease 111ms, prepare 213ms (git 24 calls 144ms, worktree add 23ms), launch 104ms, other 136ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 10,
+        "ms": 531.7894589999996,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 532ms: lease 123ms, prepare 195ms (git 26 calls 156ms, worktree add 23ms), launch 88ms, other 125ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 11,
+        "ms": 533.5592500000002,
+        "gitCalls": 27,
+        "phases": "slow tool room_spawn 534ms: lease 114ms, prepare 197ms (git 24 calls 146ms, worktree add 22ms), launch 79ms, other 144ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 12,
+        "ms": 555.6323749999992,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 556ms: lease 117ms, prepare 196ms (git 26 calls 157ms, worktree add 23ms), launch 98ms, other 145ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 13,
+        "ms": 551.5282500000012,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 552ms: lease 121ms, prepare 196ms (git 24 calls 146ms, worktree add 23ms), launch 89ms, other 145ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 14,
+        "ms": 586.1219170000004,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 586ms: lease 152ms, prepare 190ms (git 26 calls 148ms, worktree add 21ms), launch 116ms, other 128ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 15,
+        "ms": 571.6650000000009,
+        "gitCalls": 24,
+        "phases": "slow tool room_spawn 572ms: lease 103ms, prepare 220ms (git 24 calls 151ms, worktree add 23ms), launch 86ms, other 162ms",
+        "withBuildDir": false
+      },
+      {
+        "label": "final-paired",
+        "sample": 16,
+        "ms": 573.0253330000014,
+        "gitCalls": 32,
+        "phases": "slow tool room_spawn 573ms: lease 142ms, prepare 203ms (git 26 calls 156ms, worktree add 22ms), launch 100ms, other 129ms",
+        "withBuildDir": true
+      },
+      {
+        "label": "final-paired",
+        "sample": 17,
+        "ms": 558.2643750000007,
+        "gitCalls": 29,
+        "phases": "slow tool room_spawn 558ms: lease 121ms, prepare 184ms (git 24 calls 141ms, worktree add 21ms), launch 93ms, other 160ms",
+        "withBuildDir": false
+      }
+    ]
+  },
+  "keptTiming": {
+    "fixtureCallPath": "Creates worktrees with Git directly and registers synthetic workers; does not invoke room_spawn or prepareWorkerBuildDir. No kept-test deadlines were changed. Exact lead timeout conditions were not reproduced with concurrency 1 or 3.",
+    "serial": {
+      "combined-kept-collect.test.ts": {
+        "tests": 26,
+        "failures": 0,
+        "suiteDurationMs": 62268.961,
+        "longestCaseMs": 4344.616
+      },
+      "combined-kept-preview.test.ts": {
+        "tests": 96,
+        "failures": 0,
+        "suiteDurationMs": 68480.481,
+        "longestCaseMs": 3981.583
+      }
+    },
+    "fullConcurrency3": {
+      "combined-kept-collect.test.ts": {
+        "tests": 26,
+        "failures": 0,
+        "suiteDurationMs": 109404.31,
+        "longestCaseMs": 10040.321
+      },
+      "combined-kept-preview.test.ts": {
+        "tests": 96,
+        "failures": 0,
+        "suiteDurationMs": 84175.034,
+        "longestCaseMs": 6304.545
+      }
+    }
+  },
+  "validation": {
+    "fullCommand": "env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER node node_modules/vitest/vitest.mjs run packages/room-mcp packages/relay --maxWorkers=3 --silent=passed-only --reporter=default --reporter=json --outputFile.json=.room/scratch/build-dir/full-packages-final.json",
+    "fullResultBeforeFixtureCorrection": {
+      "exitCode": 1,
+      "files": 424,
+      "passedFiles": 412,
+      "skippedFiles": 11,
+      "failedFiles": 1,
+      "ordinaryPassedTests": 4816,
+      "expectedFailures": 8,
+      "failedTests": 1,
+      "skippedTests": 168,
+      "todoTests": 1,
+      "durationSeconds": 1489.07,
+      "soleFailure": "worker-process-safety.test.ts: process.cwd() is an actual verified Room worker, so expecting rejection is invalid"
+    },
+    "afterFullRun": "Only worker-process-safety.test.ts fixture and this report changed after full completion; runtime source unchanged. The entire 25-minute run was not repeated for this fixture-only correction.",
+    "focusedCorrection": {
+      "command": "node node_modules/vitest/vitest.mjs run packages/room-mcp/test/worker-process-safety.test.ts --maxWorkers=1",
+      "passed": 5
+    },
+    "finalNamedPreview": {
+      "people": [
+        "rohanz"
+      ],
+      "command": "node node_modules/vitest/vitest.mjs run packages/room-mcp/test/worker-process-safety.test.ts packages/room-mcp/test/worker-build-dir.test.ts packages/relay/test/private-state-writers.test.ts --maxWorkers=1",
+      "passed": 20,
+      "sha256": "4c49a4bc8b444b52e7c754d1f5594ff4dd7bf3cd955e9696d62907a8c4e649b5",
+      "merge": "clean; lead had no new source changes"
+    },
+    "typecheck": {
+      "command": "node node_modules/typescript/bin/tsc -b packages/room-mcp --pretty false",
+      "exitCode": 0
+    },
+    "earlierFullAttempt": "Interrupted with SIGINT/exit 130 to address the discovered ancestor-permission regression; not counted as complete validation.",
+    "suiteMode": "Normal package suite; standard platform/TEST_SCALE skips and one todo remain. Native Windows/Linux were not tested. Full suites ran with approved loopback/process-inspection access."
+  }
+}

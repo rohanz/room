@@ -51,6 +51,28 @@ describe('room_spawn / room_done / room_collect discard', () => {
     return { a, b, leadTools, workerTools, workerSession: ws!, specs, exits, killed }
   }
 
+  it('starts without optional build output when the worker checkout tracks the scratch path', async () => {
+    const t = setup(async (repo, tag, owner, options) => {
+      const prepared = await prepareWorktree(repo, tag, owner, options)
+      fs.mkdirSync(join(prepared.dir, '.room'), { recursive: true })
+      fs.writeFileSync(join(prepared.dir, '.room/scratch'), 'project content')
+      execFileSync('git', ['add', '-f', '--', '.room/scratch'], { cwd: prepared.dir })
+      return prepared
+    })
+    try {
+      const reply = await t.leadTools.call('room_spawn', { tag: 'scratch-obstruction', task: 'work on source' })
+      expect(reply).toContain('spawned scratch-obstruction')
+      expect(reply).toContain('build/scratch: unavailable')
+      expect(reply).toContain('No build directory is available (worker build directory conflicts with tracked .room/scratch files)')
+      expect(reply).toContain('WORKER_BUILD_DIR is unset')
+      expect(reply).not.toContain('none for a supplied dir=')
+      expect(t.specs).toHaveLength(1)
+      expect(t.specs[0].env).not.toHaveProperty('WORKER_BUILD_DIR')
+      expect(t.specs[0].args.some(arg => arg.includes('No build directory is available'))).toBe(true)
+      expect(fs.readFileSync(join(t.specs[0].cwd, '.room/scratch'), 'utf8')).toBe('project content')
+    } finally { await t.leadTools.shutdown() }
+  })
+
   it.each([false, true])('persists adapter resume capability %s at spawn', async resume => {
     const original = hostRegistry.workerAdapter
     vi.spyOn(hostRegistry, 'workerAdapter').mockImplementation((...args) => ({
@@ -989,32 +1011,53 @@ describe('worker compute budgets', () => {
   it('recounts concurrent spawns before budgeting and enforces capacity', async () => {
     vi.spyOn(os, 'availableParallelism').mockReturnValue(12)
     vi.spyOn(os, 'totalmem').mockReturnValue(24 * 1024 ** 3)
-    const t = setupLead() // maxWorkers = 2, so reserve six threads each
+    const t = setupLead()
     const replies = await Promise.all(['a', 'b', 'c'].map(tag => t.leadTools.call('room_spawn', { tag, task: 'train' })))
     expect(t.specs, replies.join('\n---\n')).toHaveLength(2)
-    expect(t.specs.map(s => s.env.ROOM_WORKER_THREADS)).toEqual(['6', '6'])
+    expect(t.specs.map(s => Number(s.env.ROOM_WORKER_THREADS)).sort((a, b) => b - a)).toEqual([6, 3])
     expect(t.specs.map(s => s.env.ROOM_WORKER_MEM_GB)).toEqual(['12', '12'])
     expect(replies.filter(r => r.includes('budget in prompt:'))).toHaveLength(2)
-    expect(t.specs.every(s => s.args.some(a => a.includes('Compute budget: 6 threads, ~12 GB')))).toBe(true)
+    expect(t.specs.every(spec => spec.args.some(a => a.includes(`Compute budget: ${spec.env.ROOM_WORKER_THREADS} threads, ~12 GB`)))).toBe(true)
+    expect(replies.join('\n')).toContain('half of 6 unreserved / 12 cores; 1 live workers')
     expect(replies.some(r => r.includes('worker capacity reached'))).toBe(true)
     await t.leadTools.shutdown()
   })
 
   it.each([
-    [12, 8, 0, 3], [12, 8, 1, 3], [12, 8, 3, 3], [12, 8, 4, 2],
-    [12, 8, 7, 1], [12, 2, 0, 6], [12, 1, 0, 12], [12, 2, 5, 2],
-    [2, 8, 0, 1], [1, 8, 4, 1],
-  ])('%i cores, max %i, running %i -> %i threads', (cores, maxWorkers, running, threads) => {
-    expect(workerBudget({ cores, maxWorkers, running, memBytes: 17.9 * 1024 ** 3 })).toEqual({
-      // Memory uses the same reservation as threads: at least four intended workers, bounded by maxWorkers.
+    [32, 8, 0, 0, 16], [32, 8, 1, 16, 8], [32, 8, 2, 24, 4],
+    [12, 8, 0, 0, 6], [12, 2, 0, 0, 6], [12, 1, 0, 0, 6], [12, 8, 1, 2, 5],
+    [2, 8, 0, 0, 1], [2, 8, 1, 1, 1], [2, 8, 2, 2, 1], [1, 8, 4, 4, 1],
+  ])('%i cores, max %i, running %i, reserved %i -> %i threads', (cores, maxWorkers, running, reservedThreads, threads) => {
+    expect(workerBudget({ cores, maxWorkers, running, reservedThreads, memBytes: 17.9 * 1024 ** 3 })).toMatchObject({
+      // Memory still reserves for at least four intended workers, bounded by maxWorkers.
       threads, memGb: Math.max(1, Math.floor(17.9 / Math.max(1, Math.min(maxWorkers, Math.max(running + 1, 4)), running + 1))),
     })
     expect(threads).toBeLessThanOrEqual(cores)
-    if (running + 1 <= cores) expect(threads * (running + 1)).toBeLessThanOrEqual(cores)
+    if (reservedThreads < cores) expect(reservedThreads + threads).toBeLessThanOrEqual(cores)
   })
 
   it('floors memory to one GB on a small machine', () => {
-    expect(workerBudget({ cores: 1, maxWorkers: 8, running: 12, memBytes: 512 * 1024 ** 2 }).memGb).toBe(1)
+    expect(workerBudget({ cores: 1, maxWorkers: 8, running: 12, reservedThreads: 12, memBytes: 512 * 1024 ** 2 }).memGb).toBe(1)
+  })
+
+  it('reserves across independent leads using the same capacity guard', async () => {
+    vi.spyOn(os, 'availableParallelism').mockReturnValue(32)
+    const first = setupLead(), second = setupLead()
+    try {
+      const replies = await Promise.all([
+        first.leadTools.call('room_spawn', { tag: 'one', task: 'build' }),
+        second.leadTools.call('room_spawn', { tag: 'two', task: 'build' }),
+      ])
+      expect(replies.every(reply => reply.includes('spawned'))).toBe(true)
+      expect([...first.specs, ...second.specs].map(spec => Number(spec.env.ROOM_WORKER_THREADS)).sort((a, b) => b - a)).toEqual([16, 8])
+    } finally { await first.leadTools.shutdown(); await second.leadTools.shutdown() }
+  })
+
+  it('keeps nested environment shares and argument ceilings', () => {
+    const input = { cores: 32, maxWorkers: 4, running: 2, reservedThreads: 12, memBytes: 32 * 1024 ** 3, isWorker: true, inheritedThreads: 12, inheritedMem: 16 }
+    expect(workerBudget(input)).toMatchObject({ threads: 3, memGb: 4, reason: expect.stringContaining('ROOM_WORKER_THREADS=12 / 4 nested share') })
+    expect(workerBudget({ ...input, requestedThreads: 2 })).toMatchObject({ threads: 2, memGb: 4 })
+    expect(workerBudget({ ...input, requestedThreads: 9 })).toMatchObject({ threads: 3, memGb: 4 })
   })
 
   it.each(['claude', 'codex'])('passes caps through the %s path while preserving explicit library settings', async host => {
@@ -1361,7 +1404,9 @@ describe('worker follow-up sessions', () => {
     const resumeArgs = t.specs[1].args.slice(2) // Worker-specific --settings is asserted above.
     const resumePrompt = resumeArgs[3]
     expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
-    expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'fix the review finding', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
+    const [messages, setupContext] = resumePrompt.slice(resumePrompt.indexOf('\n') + 1).split('\n\n')
+    expect(messages.split('\n').map(line => JSON.parse(line))).toEqual([expect.objectContaining({ type: 'note', text: 'fix the review finding', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })])
+    expect(setupContext).toContain(`${t.specs[1].env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR)`)
     expect(resumeArgs).toEqual(['-p', '--resume', initial.hostSessionId, resumePrompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
     expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
   })
@@ -1413,7 +1458,9 @@ describe('worker follow-up sessions', () => {
     expect(sent).toContain("resumed money's retained conversation with your message")
     const resumePrompt = t.specs[1].args.at(-1)!
     expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
-    expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'repair the failure', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
+    const [messages, setupContext] = resumePrompt.slice(resumePrompt.indexOf('\n') + 1).split('\n\n')
+    expect(messages.split('\n').map(line => JSON.parse(line))).toEqual([expect.objectContaining({ type: 'note', text: 'repair the failure', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })])
+    expect(setupContext).toContain(`${t.specs[1].env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR)`)
     expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', resumePrompt])
     expect(t.specs[1].cwd).toBe(initial.dir)
     expect((await workerByTag(dir, 'money'))).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })

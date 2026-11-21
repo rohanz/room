@@ -12,6 +12,7 @@ import { workerPortsInUse } from '../worker-config.js'
 import { WORKER_EFFORTS } from '../hosts/types.js'
 import { assertNewWorkerWorktree, suppliedWorkerCheckout, prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
+import { workerSubmoduleNotes } from '../worker-submodules.js'
 import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { publisherLine, retainedList } from './share.js'
@@ -203,14 +204,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const id = registry.newId(), nonce = randomUUID()
       const owner = s.me.owner ?? s.me.name, name = `${owner}+${tag}`
       const { server, isWorker } = workerOrigin(s)
-      const count = (await registry.occupancy())
       const cores = Math.max(1, os.availableParallelism?.() ?? os.cpus().length)
-      const budget = workerBudget({ cores, memBytes: os.totalmem(), maxWorkers: max, running: count })
       const inheritedThreads = Number(process.env.ROOM_WORKER_THREADS), inheritedMem = Number(process.env.ROOM_WORKER_MEM_GB)
-      const divisor = isWorker ? Math.max(2, max) : 1
-      const threadShare = Number.isSafeInteger(inheritedThreads) && inheritedThreads >= 1 ? Math.max(1, Math.floor(inheritedThreads / divisor)) : budget.threads
-      const threads = typeof a.threads === 'number' ? Math.min(a.threads, threadShare) : threadShare
-      const memGb = Number.isFinite(inheritedMem) && inheritedMem >= 1 ? Math.max(1, Math.floor(inheritedMem / divisor)) : budget.memGb
+      let budget = { threads: 1, memGb: 1, reason: '' }
       const effectiveShare = share ?? s.daemon.share ?? 'full'
       let linkPaths: string[]
       try { linkPaths = resolveWorkerLinks(lead.dir, a.link) }
@@ -267,14 +263,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const record: WorkerRecord = {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
-        host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
+        host, model, effort, budget: { threads: 1, memGb: 1, nice: 10 }, share: effectiveShare, task,
         dir, outside, branch, prep, hostSessionId, logFile: path.join(s.dir, '.room', 'workers', `${tag}.log`), ...(sharedOwner ? { sharedWith: sharedOwner.id } : {}),
         capabilities: { resume: worker.capabilities.resume, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
         runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
         createdAt: now(), seq: 1,
       }
-      try { await timed('lease', () => registry.writeIntent(record, max)) }
+      try { await timed('lease', () => registry.writeIntent(record, max, live => {
+        budget = workerBudget({ cores, memBytes: os.totalmem(), maxWorkers: max, running: live.length,
+          reservedThreads: live.reduce((sum, worker) => sum + worker.budget.threads, 0),
+          requestedThreads: a.threads as number | undefined, inheritedThreads, inheritedMem, isWorker })
+        return record.budget = { threads: budget.threads, memGb: budget.memGb, nice: 10 }
+      })) }
       catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+      const { threads, memGb } = budget
       let childOwned = false
       try {
         let base: string | undefined, created = false
@@ -305,6 +307,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { throw new Error(`could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         const deps = created ? workspaceDepsNotes(await linkWorkspaceDeps(s.dir, dir)) : { reply: [] }
+        const submodules = created ? await workerSubmoduleNotes(s.dir, dir) : { reply: [] }
         if (!outside && !sharedOwner) {
           const current = await registry.read(id)
           if (!current) throw new Error('worker record disappeared before launch')
@@ -315,9 +318,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try {
           launched = await timed('launch', () => launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, run: 1, nonce, registry: registry.root, budget: { threads, memGb }, server,
-            isWorker, token: s.local ? undefined : s.token,
+            isWorker, token: s.local ? undefined : s.token, ownsBuildDir: created && !suppliedDir,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
-          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, deps: deps.prompt, sessionId: hostSessionId },
+          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, deps: [deps.prompt, submodules.prompt].filter(Boolean).join('\n'), sessionId: hostSessionId },
           { setHandle: (workerId, proc) => rooms.setHandle(s, workerId, proc),
             watch: (_workerId, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
           { onLaunched: async pid => { await registry.command(id, { type: 'launch', run: 1, nonce, launch: { outcome: 'launched', pid } }) },
@@ -362,8 +365,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`model ${shownModel} · effort ${shownEffort}; name a model or effort in the request, or set ROOM_WORKER_MODEL / ROOM_WORKER_EFFORT.`)
         const wakeNote = sessionWakeNote(lead, 'spawn')
         if (wakeNote) out.unshift(wakeNote)
-        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
+        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'} · ${budget.reason}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
+        out.push(env.WORKER_BUILD_DIR ? `build/scratch: ${env.WORKER_BUILD_DIR} (WORKER_BUILD_DIR; Git-ignored, never collected; deleted with worktree)` : suppliedDir ? 'build/scratch: none for a supplied dir= checkout; Room leaves its files alone' : 'build/scratch: unavailable; WORKER_BUILD_DIR is unset (see warning below)')
         const stale = staleWorkersNote((await Promise.all((await myWorkers(s)).filter(w => w.id !== id).map(async w => (await localWorkerView(s, w.id)) ?? []))).flat(), now())
         if (stale) out.push('note: ' + stale)
         if (!spawnExplained.has(lead)) out.push(await browserViewLine(s))
@@ -393,6 +397,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (warning) out.push(warning)
         }
         out.push(...deps.reply, ...launched.warnings)
+        out.push(...submodules.reply)
         if (outside) out.push(`note: ${dir} is an existing user checkout; Room does not own or collect its files or change its Git state.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return [out.join('\n'), ...retainedWorkerLines(registry.commonDir)].join('\n')

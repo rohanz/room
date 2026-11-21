@@ -1,0 +1,72 @@
+{
+  "date": "2026-11-21",
+  "base": "633dd62e4cc35226389af73b68cc4630774363aa",
+  "finding": {
+    "newCost": true,
+    "preExistingWorktreeBoundary": "prepareWorktree calls privateStateDirectory(workerRoot, exclusive=true) before Git populates the worktree. That call already checks/protects the root on Windows.",
+    "additionalCallsBeforeFix": [
+      "<worker>/.room",
+      "<worker>/.room/scratch",
+      "<worker>/.room/scratch/<tag>"
+    ],
+    "cacheReason": "The existing root ACL receipt is keyed to the worker root identity. Child private initializers inspect distinct paths, and .room is not the cached sensitive room/ subtree. Thus these are three additional queries, not reuse of the existing call.",
+    "queryTimeoutMs": 20000,
+    "boundQualification": "Three sequential synchronous queries each have a 20-second configured timeout. This is a configured timeout budget, not measured native Windows latency or a hard wall-clock guarantee including cleanup.",
+    "configuredExtraBlockingBudgetMs": 60000
+  },
+  "measurement": {
+    "method": "Vitest runs the real Windows private-state dispatch with process.platform set to win32 and PowerShell execFileSync replaced by a valid ACL-report stub. Git and filesystem operations are real.",
+    "preExistingRootCalls": 1,
+    "additionalBuildCallsBeforeFix": 3,
+    "additionalBuildCallsAfterFix": 0,
+    "resumeAdditionalBuildCallsAfterFix": 0,
+    "nativeWindowsRun": false,
+    "regressions": "Windows dispatch counter failed before fix with all three child paths; synchronous-filesystem guard failed before fix at lstatSync. Both pass after fix. Event-loop marker is serviced while directory creation awaits a controlled I/O gate."
+  },
+  "decision": {
+    "buildOutput": "Ordinary disposable checkout output in an already owned/protected worker worktree. Contains no Room credentials, leases or registry control state. Uses normal inherited directory ACLs, like other project-generated files.",
+    "filesystem": "Use asynchronous filesystem operations for all metadata, creation, access and reads; retain asynchronous Git checks. Ignore-file reads are bounded and opened without following links where supported.",
+    "safety": "Continue rejecting linked components, tracked scratch paths, obstructing files, changed ignore files and unwritable output; unavailable output remains non-fatal. Never change checkout ancestor permissions.",
+    "audit": "Add one exact async mkdir allowance for worker-build-dir.ts in the existing non-state writer audit. Sensitive state still uses the shared private initializer, and duplicate/new writer calls remain rejected. Coordinated a second exact allowance for the submodule owner: temporary Git inspection probe info/attributes under mkdtemp, containing no Room trusted state.",
+    "supersedes": "Prior choice in 2026-11-21-worker-build-dir-validation.json to apply private-state ACL initialization to build output. Historical test/timing evidence in that report is unchanged."
+  },
+  "validation": {
+    "localFocused": {
+      "files": [
+        "worker-build-dir.test.ts",
+        "worker-build-windows-cost.test.ts",
+        "worker-launch.test.ts",
+        "private-state-writers.test.ts"
+      ],
+      "passedBeforeLastEventLoopCase": 47,
+      "helperAndWindowsRecheckPassed": 14
+    },
+    "lifecycleCarryFollowup": {
+      "passed": 13,
+      "command": "node node_modules/vitest/vitest.mjs run packages/room-mcp/test/worker-build-lifecycle.test.ts packages/room-mcp/test/carry-wip.test.ts packages/room-mcp/test/workers.test.ts --maxWorkers=1 -t 'build|scratch|spawn carries tracked|records a Claude UUID|captures the Codex thread'"
+    },
+    "typecheck": {
+      "command": "node node_modules/typescript/bin/tsc -b packages/room-mcp --pretty false",
+      "exitCode": 0
+    },
+    "combinedFocusedPreview": {
+      "people": [
+        "rohanz+submodules"
+      ],
+      "peerRevision": 30,
+      "passed": 69,
+      "files": 5,
+      "exitCode": 0,
+      "merge": "clean; complete coverage, current frozen code at completion",
+      "sha256": "cb4cccd97ea11adfed842155598df16910305290ee227ddd63dc00e44a59804c",
+      "checkDurationMs": 36022,
+      "command": "node node_modules/vitest/vitest.mjs run packages/room-mcp/test/worker-submodules.test.ts packages/room-mcp/test/worker-build-dir.test.ts packages/room-mcp/test/worker-build-windows-cost.test.ts packages/room-mcp/test/worker-launch.test.ts packages/relay/test/private-state-writers.test.ts --maxWorkers=1"
+    },
+    "fullPackageRun": {
+      "owner": "rohanz",
+      "status": "Pending integrated collection and full room-mcp + relay run. Lead explicitly directed both workers to skip separate full runs and room_done after focused checks and combined preview."
+    },
+    "limits": "Native Windows DACL inheritance, junction handling and wall-clock PowerShell latency were not executed on this macOS arm64 host. Counter simulation verifies dispatch behavior only; existing private worktree/root ACL logic is unchanged.",
+    "earlierCombinedAttempts": "Initial combined snapshot:67 passed,2 failed (peer filter-test setup assumption and unaudited temporary Git inspection mkdir); owner corrected fixture and confirmed probe is disposable, with one audited allowance added here. Next69-case snapshot passed but peer stdin-error handling moved; final current69-case preview above passed."
+  }
+}
