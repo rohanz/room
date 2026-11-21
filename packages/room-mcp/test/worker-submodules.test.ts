@@ -103,7 +103,9 @@ it.skipIf(process.platform === 'win32')('printed checkout suppresses configured 
   git(repo, 'config', '--file', global, 'filter.lfs.required', 'true')
   const dir = f.worktree(), result = await workerSubmoduleNotes(repo, dir)
   for (const command of commands(result.prompt!)) childProcess.execFileSync('/bin/sh', ['-ec', command], { cwd: dir, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: global } })
-  expect(read(path.join(dir, subpath), 'library.txt')).toBe('first\n')
+  // The bytes Git stores: a machine with Git LFS installed commits the fixture's file as a pointer.
+  const stored = childProcess.execFileSync('git', ['-C', f.source, 'cat-file', 'blob', 'HEAD:library.txt'], { encoding: 'utf8' })
+  expect(read(path.join(dir, subpath), 'library.txt')).toBe(stored)
   expect(fs.existsSync(marker)).toBe(false)
 })
 
