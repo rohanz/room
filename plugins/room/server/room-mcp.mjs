@@ -10973,7 +10973,7 @@ var init_messages = __esm({
     who = (m) => displayName({ name: m.from, kind: m.fromKind });
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
-    conflictLabel = (m) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? m.merges === "clean" ? "overlap cleared" : "CONFLICT cleared" : m.merges === "clean" ? "overlap" : m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
+    conflictLabel = (m, certified = false) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? m.merges === "clean" ? "overlap cleared" : "CONFLICT cleared" : m.merges === "clean" ? "overlap" : certified || m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
     PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /;
     PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/;
     priorityRank = (p) => p === "interrupt" ? 2 : p === "notify" ? 1 : 0;
@@ -10988,7 +10988,7 @@ var init_messages = __esm({
       answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && forWaiter(m, w), format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
       // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
       conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
-      "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
+      "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m, PEER_NOTICE_ID.test(m.id))} on ${m.path}: ${m.text}` },
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
       note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || !m.to && m.priority === "interrupt" && !!w.me && messageForMe({ name: w.me }, m)), format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
       done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
@@ -40544,7 +40544,7 @@ var init_notice_lifecycle2 = __esm({
           this.fallback(reply.fallback ?? "unconfirmed registration");
           return void 0;
         }
-        return { ...msg, at: Date.now() };
+        return { msg: { ...msg, at: Date.now() }, ...reply.duplicate ? { duplicate: true } : {} };
       }
       /** Keep baseline identity for every refused, failed or unconfirmed registration, including transport retries. */
       register(from2, body, baselineId, names, valid, baseline = this.s.post) {
@@ -40559,8 +40559,8 @@ var init_notice_lifecycle2 = __esm({
           });
           if (!valid() || !this.s.lease?.fence()) return refused("notice lease unavailable");
           try {
-            const msg = await this.registeredNotice(from2, body, baselineId, names);
-            if (msg !== void 0) return { ok: true, msg };
+            const registered = await this.registeredNotice(from2, body, baselineId, names);
+            if (registered !== void 0) return { ok: true, ...registered };
           } catch (error2) {
             if (!valid() || !this.s.lease?.fence()) return refused(`notice registration: ${String(error2)}`);
             this.fallback(error2 instanceof HubError ? error2.reason : "unavailable");
@@ -62057,6 +62057,8 @@ var ConflictSlots = class {
   captureEndpoints;
   map;
   registrations;
+  /** Local proof of an accepted notify, carried only through continuously open file slots. */
+  notifiedPeers = /* @__PURE__ */ new WeakMap();
   /** The lifecycle binds managed ids to exact workers; bodies/posting decisions stay baseline. It cannot end a notice. */
   postRegistered(body, id3, names, post = this.post, episode, leadPriority) {
     if (this.captureEndpoints && post === this.post) {
@@ -62142,6 +62144,11 @@ var ConflictSlots = class {
       if (peerEpisode !== void 0) slot.peerEpisode = peerEpisode;
       const turnedAt = peerTurn ? now : prev?.turnedAt;
       if (turnedAt !== void 0) slot.turnedAt = turnedAt;
+      if (settled === "conflict") {
+        const context2 = this.peerNoticeContext(slot);
+        const known = [prev, ...this.peerSlots(slot.owner, slot.other).map(([, s]) => s)].filter((s) => s?.settled === "conflict").map((s) => this.notifiedPeers.get(s)).find((proof) => proof?.context === context2);
+        if (known) this.notifiedPeers.set(slot, known);
+      }
     }
     this.room.doc.transact(() => this.map.set(key3, slot));
     const toldPerPeer = peerMerge(result2) && (settled === "conflict" || settled === "clean" && prev?.settled === "conflict" && slot.peerEpisode !== void 0);
@@ -62159,6 +62166,19 @@ var ConflictSlots = class {
   /** The file merge slots of this owner and peer that belong to an episode. */
   peerSlots(owner, other) {
     return this.owned(owner).filter(([, s]) => peerMerge(s) && s.other === other && s.peerEpisode !== void 0);
+  }
+  peerNoticeContext(slot) {
+    return JSON.stringify([
+      slot.owner,
+      slot.other,
+      slot.peerEpisode,
+      slot.fence,
+      slot.projectedEpisode,
+      [slot.owner, slot.other].map((name) => {
+        const holder = participantRecord(this.room, name)?.holder;
+        return [holder?.sessionId, holder?.epoch, holder?.workerId];
+      })
+    ]);
   }
   /** Join the peer's open episode, or open a new one; any other state keeps the episode it was in. */
   joinPeerEpisode(key3, result2, settled, prev) {
@@ -62185,9 +62205,11 @@ var ConflictSlots = class {
     const open3 = pair.filter((s) => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && openInEpisode(s)).sort(byPath);
     const cleared = pair.filter((s) => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && clearedInEpisode(s)).sort(byPath);
     if (!open3.length && !cleared.length) return;
-    const id3 = peerNoticeId(owner, other, episode, open3, cleared);
-    const latest = (slots) => Math.max(0, ...slots.map((s) => s.turnedAt ?? s.checkedAt));
-    const priority2 = open3.length && latest(open3) >= latest(cleared) ? "notify" : "fyi";
+    const baselineId = peerNoticeId(owner, other, episode, open3, cleared);
+    const context2 = this.peerNoticeContext(open3[0] ?? cleared[0]);
+    const alreadyOpen = open3.map((s) => this.notifiedPeers.get(s)).find((proof) => proof?.context === context2);
+    const priority2 = open3.length && (!alreadyOpen || alreadyOpen.id === baselineId) ? "notify" : "fyi";
+    const id3 = baselineId + (open3.length && priority2 === "fyi" ? ":quiet" : "");
     const clearedNote = cleared.length ? `; ${files3(cleared.length)} cleared: ${bounded3(cleared.map((s) => s.path), ", ")}` : "";
     const text2 = open3.length ? open3.length === 1 && !cleared.length ? `${open3[0].path} conflicts with ${other}'s version${atLines(open3[0].lines)}` : `${files3(open3.length)} conflict${open3.length === 1 ? "s" : ""} with ${other}'s version: ${bounded3(open3.map((s) => `${s.path}${atLines(s.lines)}`), "; ")}${clearedNote}` : cleared.length === 1 ? `the conflict with ${other} cleared` : `${files3(cleared.length)} no longer conflict with ${other}'s version: ${bounded3(cleared.map((s) => s.path), ", ")}`;
     const body = {
@@ -62201,6 +62223,9 @@ var ConflictSlots = class {
     try {
       const posted = await this.postRegistered(body, id3, [owner, other], this.post, binding);
       if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
+      if (posted.ok && (alreadyOpen || !posted.duplicate && posted.msg.priority === "notify")) {
+        for (const slot of open3) this.notifiedPeers.set(slot, alreadyOpen ?? { context: context2, id: baselineId });
+      }
     } catch (e) {
       this.log(`conflict notice ${id3}: ${String(e)}`);
     }
@@ -62481,7 +62506,9 @@ var ConflictSet = class _ConflictSet {
       },
       { ...rest, id: this.projectedNoticeId(opts?.id, this.notices.me.name, noticeSubjects) }
     );
-    return worker.ok ? lead.ok ? worker : lead : worker;
+    if (!worker.ok) return worker;
+    if (!lead.ok) return lead;
+    return lead.duplicate ? { ...worker, duplicate: true } : worker;
   }
   start() {
     this.started = true;

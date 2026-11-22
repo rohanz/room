@@ -2662,10 +2662,10 @@ describe('per-peer merge notices', () => {
     }
     let rev = 1
     /** Publish `name`'s version of each path: line two replaced by `text`. */
-    const edit = (name: string, files: string[], text: string) => {
+    const edit = (name: string, files: string[], text: string, tail = 'three') => {
       rev++
       for (const path of files) {
-        const content = `one\n${text}\nthree\n`
+        const content = `one\n${text}\n${tail}\n`
         room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(content), at: 1, fence: '1' })
         room.setOverlay(manifestKey(name, '1'), path, content)
       }
@@ -2706,9 +2706,10 @@ describe('per-peer merge notices', () => {
       f.edit('A', [paths[12]!], 'mine'); f.edit('B', [paths[12]!], 'theirs')
       const thirteenth = await f.pass()
       expect(thirteenth).toHaveLength(1)
-      expect(formatMsg(thirteenth[0])).toMatch(/^\[notify\] CONFLICT: 13 files conflict with B's version: /)
+      expect(formatMsg(thirteenth[0])).toMatch(/^\[fyi\] CONFLICT: 13 files conflict with B's version: /)
       expect(thirteenth[0].id.split(':peer:')[0]).toBe(burst[0].id.split(':peer:')[0])
-      expect(supersededConflictNotices(f.posted)).toEqual(new Set([burst[0].id]))
+      // The existing read rule retains an undelivered notify alongside a later fyi update.
+      expect(supersededConflictNotices(f.posted)).toEqual(new Set())
       expect(await f.pass()).toEqual([])
 
       // Clearing some files updates the notice without a new wake; clearing all removes it.
@@ -2745,6 +2746,28 @@ describe('per-peer merge notices', () => {
       f.edit('B', [paths[0]!], 'mine')
       const [cleared] = await f.pass()
       expect(formatMsg(cleared)).toBe(`[fyi] CONFLICT cleared on ${paths[0]}: the conflict with B cleared`)
+    } finally { f.cleanup() }
+  })
+
+  it('wakes once while one pair changes files and lines, then wakes after a full clear', async () => {
+    const f = fixture()
+    try {
+      f.edit('A', paths.slice(0, 3), 'mine'); f.edit('B', [paths[0]!], 'theirs')
+      expect((await f.pass()).map(m => m.priority)).toEqual(['notify'])
+      f.edit('B', [paths[1]!], 'theirs')
+      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      f.edit('A', [paths[0]!], 'mine', 'more mine')
+      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      f.edit('B', [paths[0]!], 'mine', 'more mine')
+      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      f.edit('B', [paths[2]!], 'theirs')
+      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      expect(f.posted.filter(m => m.priority === 'notify')).toHaveLength(1)
+      f.edit('B', paths.slice(1, 3), 'mine')
+      expect((await f.pass())[0]).toMatchObject({ priority: 'fyi', clearedFrom: 'conflict' })
+      f.edit('B', [paths[1]!], 'theirs again')
+      expect((await f.pass()).map(m => m.priority)).toEqual(['notify'])
+      expect(f.posted.filter(m => m.priority === 'notify')).toHaveLength(2)
     } finally { f.cleanup() }
   })
 })

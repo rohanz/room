@@ -107,6 +107,8 @@ type TrustedLandedWorker = { id: string; status: string; dir: string; run: strin
 export class ConflictSlots {
   private readonly map
   private readonly registrations?: NoticeLifecycle
+  /** Local proof of an accepted notify, carried only through continuously open file slots. */
+  private readonly notifiedPeers = new WeakMap<ConflictSlot, { context: string; id: string }>()
   constructor(
     private readonly room: RoomDoc,
     private readonly post: Post,
@@ -200,6 +202,15 @@ export class ConflictSlots {
       if (peerEpisode !== undefined) slot.peerEpisode = peerEpisode
       const turnedAt = peerTurn ? now : prev?.turnedAt
       if (turnedAt !== undefined) slot.turnedAt = turnedAt
+      if (settled === 'conflict') {
+        const context = this.peerNoticeContext(slot)
+        // A surviving open file witnesses continuity even when another file joins or changes lines.
+        // Clean/dropped/replaced slots cannot carry this proof into a later opening.
+        const known = [prev, ...this.peerSlots(slot.owner, slot.other).map(([, s]) => s)]
+          .filter((s): s is ConflictSlot => s?.settled === 'conflict')
+          .map(s => this.notifiedPeers.get(s)).find(proof => proof?.context === context)
+        if (known) this.notifiedPeers.set(slot, known)
+      }
     }
     this.room.doc.transact(() => this.map.set(key, slot))
     // A slot from before peer episodes clears with its own per-file notice.
@@ -220,6 +231,14 @@ export class ConflictSlots {
   /** The file merge slots of this owner and peer that belong to an episode. */
   private peerSlots(owner: string, other: string): [string, ConflictSlot][] {
     return this.owned(owner).filter(([, s]) => peerMerge(s) && s.other === other && s.peerEpisode !== undefined)
+  }
+
+  private peerNoticeContext(slot: ConflictSlot): string {
+    return JSON.stringify([slot.owner, slot.other, slot.peerEpisode, slot.fence, slot.projectedEpisode,
+      [slot.owner, slot.other].map(name => {
+        const holder = participantRecord(this.room, name)?.holder
+        return [holder?.sessionId, holder?.epoch, holder?.workerId]
+      })])
   }
 
   /** Join the peer's open episode, or open a new one; any other state keeps the episode it was in. */
@@ -250,10 +269,16 @@ export class ConflictSlots {
     const open = pair.filter(s => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && openInEpisode(s)).sort(byPath)
     const cleared = pair.filter(s => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && clearedInEpisode(s)).sort(byPath)
     if (!open.length && !cleared.length) return
-    const id = peerNoticeId(owner, other, episode, open, cleared)
-    const latest = (slots: ConflictSlot[]) => Math.max(0, ...slots.map(s => s.turnedAt ?? s.checkedAt))
-    // An update that only clears files is not a new reason to stop what you are doing.
-    const priority = open.length && latest(open) >= latest(cleared) ? 'notify' : 'fyi'
+    const baselineId = peerNoticeId(owner, other, episode, open, cleared)
+    const context = this.peerNoticeContext((open[0] ?? cleared[0])!)
+    // Shared slots alone prove no delivery: an interrupted pass or a refused post may have left them.
+    const alreadyOpen = open.map(s => this.notifiedPeers.get(s)).find(proof => proof?.context === context)
+    // An unchanged replay keeps the accepted waking presentation's id and body; the hub
+    // deduplicates it. Only a changed presentation needs a new, quiet update.
+    const priority = open.length && (!alreadyOpen || alreadyOpen.id === baselineId) ? 'notify' : 'fyi'
+    // One id must have one urgency: a successor/restart can need to wake for exactly the
+    // state an earlier producer posted quietly. Preserve waking and clearance ids on main.
+    const id = baselineId + (open.length && priority === 'fyi' ? ':quiet' : '')
     const clearedNote = cleared.length ? `; ${files(cleared.length)} cleared: ${bounded(cleared.map(s => s.path), ', ')}` : ''
     const text = open.length
       ? open.length === 1 && !cleared.length
@@ -267,6 +292,13 @@ export class ConflictSlots {
     try {
       const posted = await this.postRegistered(body, id, [owner, other], this.post, binding)
       if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
+      // A new acceptance can precede replication. A duplicate proves no wake for this
+      // opening: even a stored notify may be receipted or superseded from an earlier one.
+      if (posted.ok && (alreadyOpen || !posted.duplicate && posted.msg.priority === 'notify')) {
+        // postOwner succeeds only after both the worker and its lead's copy are accepted.
+        // Weak keys cannot remember a retired/dropped slot or survive a producer restart.
+        for (const slot of open) this.notifiedPeers.set(slot, alreadyOpen ?? { context, id: baselineId })
+      }
     } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
   }
 
@@ -534,7 +566,9 @@ export class ConflictSet {
     const lead = await this.notices.post(from, { ...body, to: this.notices.me.name, ...(leadPriority ? { priority: leadPriority } : {}),
       ...('text' in body ? { text: `${this.owner}: ${body.text}` } : {}), noticeSubjects },
       { ...rest, id: this.projectedNoticeId(opts?.id, this.notices.me.name, noticeSubjects) })
-    return worker.ok ? lead.ok ? worker : lead : worker
+    if (!worker.ok) return worker
+    if (!lead.ok) return lead
+    return lead.duplicate ? { ...worker, duplicate: true } : worker
   }
 
   start(): void {

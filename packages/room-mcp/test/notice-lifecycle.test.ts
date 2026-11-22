@@ -80,6 +80,21 @@ function registry(phase: string, id = 'w1', seq = 1) {
 const entries = (f: Awaited<ReturnType<typeof fixture>>) => [...f.room.doc.getMap<core.NoticeRecord>('noticeInventory').values()].flatMap(r => r.entries)
 
 describe('retirement-only same-room registration', () => {
+  it.each([false, true])('keeps accepted merge updates quiet with managed registration %s', async managed => {
+    const f = await fixture(managed)
+    worker(f)
+    const evaluation: Evaluation = { owner: 'A', other: 'B', path: 'x', kind: 'merge', status: 'conflict', inputs: 'first', factId: 'first' }
+    await f.slots.settle(slotKey('A', 'merge', 'B', 'x'), evaluation)
+    await f.slots.settle(slotKey('A', 'merge', 'B', 'y'), { ...evaluation, path: 'y' })
+    await f.slots.settle(slotKey('A', 'merge', 'B', 'x'), { ...evaluation, inputs: 'new lines', factId: 'new lines', lines: [12] })
+    const messages = f.room.messages().filter(m => m.type === 'merge-conflict')
+    expect(messages.map(m => m.priority)).toEqual(['notify', 'fyi', 'fyi'])
+    expect(new Set(messages.map(m => m.id)).size).toBe(3)
+    expect(messages.every(m => m.id.includes(':worker:'))).toBe(managed)
+    expect(f.room.outcomes.size).toBe(0)
+    expect(entries(f).every(e => e.ended === undefined)).toBe(true)
+  })
+
   it.each(['merge', 'edit-in-claim', 'claims', 'contract'] as const)('no live %s notice receives an ending from clean, unknown, drop, renewal or supersession', async kind => {
     const f = await fixture(); worker(f)
     f.add('old')

@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, owed, participantRecord, type ManifestEntry } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, outgoing, owed, participantRecord, type ManifestEntry } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import { ConflictSet, ConflictSlots, slotKey, type ConflictSlot, type Evaluation } from '../src/conflict-set.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import type { Session } from '../src/session.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
+import type { Post } from '../src/post.js'
 
 const cleanups: (() => Promise<void>)[] = []
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close() })
@@ -70,6 +71,51 @@ async function fixture() {
   const restartRemote = () => teamRoom.participants.set('R\0holder', { ...participantRecord(teamRoom, 'R')!.holder!, epoch: 2 })
   return { set, makeSet, record, remoteId, key, slots, copies, restartRemote, teamRoom, localRoom, workers, publish }
 }
+
+it.each(['accepted', 'refuse-lead', 'duplicate-worker', 'duplicate-lead'] as const)('quiets exact projected conflict updates only after fresh acceptance of both copies (%s)', async firstPost => {
+  const t = await fixture()
+  // A known Git blob lets this pair compare the remote worker's held text exactly.
+  execFileSync('git', ['-C', t.workers.dir, 'hash-object', '-w', '--stdin'], { input: 'beta\n' })
+  const post = t.workers.post
+  let intercepted = false
+  t.workers.post = ((from, body, opts) => {
+    if (!intercepted && firstPost === 'refuse-lead' && body.to === 'L') {
+      intercepted = true
+      return Object.assign(Promise.resolve({ ok: false as const, reason: 'unreachable' as const, text: 'lead post refused',
+        msg: { ...outgoing(from, body, opts!.id!), at: 1 } }), { id: opts!.id! })
+    }
+    if (!intercepted && (firstPost === 'duplicate-worker' && body.to === t.record.name || firstPost === 'duplicate-lead' && body.to === 'L')) {
+      intercepted = true
+      // Seed the hub's prior body before returning its real duplicate acknowledgement.
+      return Object.assign(post(from, body, opts).then(() => post(from, body, opts)), { id: opts!.id! })
+    }
+    return post(from, body, opts)
+  }) as Post
+  await t.set.reconcile('first exact conflict')
+  expect(t.slots.get(t.key)?.settled).toBe('conflict')
+  const addFile = (path: string) => {
+    for (const [room, name, text, held] of [
+      [t.teamRoom, t.record.name, 'alpha\n', true],
+      [t.localRoom, t.record.name, 'alpha\n', false],
+      [t.teamRoom, 'R+b', 'beta\n', true],
+    ] as const) {
+      room.manifest.get(manifestKey(name, '1'))!.set(path, { state: held ? 'held' : 'shared', change: 'A',
+        ...(held ? { held: 'worker' as const } : {}), hash: gitBlobHash(text), fence: '1', at: 1 })
+      if (!held) room.setOverlay(manifestKey(name, '1'), path, text)
+      const head = room.manifestHead.get(name)!
+      room.manifestHead.set(name, { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
+    }
+  }
+  addFile('y')
+  await t.set.reconcile('another exact file')
+  addFile('z')
+  await t.set.reconcile('third exact file')
+  const worker = t.copies().filter(m => m.to === t.record.name)
+  const lead = t.copies().filter(m => m.to === 'L')
+  expect(worker.map(m => m.priority)).toEqual(['notify', firstPost === 'accepted' ? 'fyi' : 'notify', 'fyi'])
+  expect(lead.map(m => m.priority)).toEqual(firstPost === 'refuse-lead' ? ['notify', 'fyi']
+    : ['notify', firstPost === 'accepted' ? 'fyi' : 'notify', 'fyi'])
+})
 
 it.each(['own', 'remote'])('retains both exact subjects across remote restart and ends every copy when the %s worker retires', async endpoint => {
   const t = await fixture()

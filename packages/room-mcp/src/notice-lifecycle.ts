@@ -70,7 +70,7 @@ export class NoticeLifecycle {
   }
 
   /** A proposed binding becomes an id only after this exact registration is accepted by the hub. */
-  private async registeredNotice(from: Identity, body: PostBody<Msg>, baselineId: string, names: string[]): Promise<Msg | undefined> {
+  private async registeredNotice(from: Identity, body: PostBody<Msg>, baselineId: string, names: string[]): Promise<{ msg: Msg; duplicate?: boolean } | undefined> {
     // Holder identity precedes the projected worker view. Missing holders mean unknown, never non-worker.
     // The hub independently checks the complete binding against its private leases.
     const holders = names.map(name => participantRecord(this.s.room, name)?.holder)
@@ -88,7 +88,7 @@ export class NoticeLifecycle {
       this.fallback(reply.fallback ?? 'unconfirmed registration')
       return undefined
     }
-    return { ...msg, at: Date.now() } as Msg
+    return { msg: { ...msg, at: Date.now() } as Msg, ...(reply.duplicate ? { duplicate: true } : {}) }
   }
 
   /** Keep baseline identity for every refused, failed or unconfirmed registration, including transport retries. */
@@ -100,8 +100,8 @@ export class NoticeLifecycle {
         msg: { ...outgoing(from, body, baselineId), at: Date.now() } as Msg, reason: 'unreachable', text })
       if (!valid() || !this.s.lease?.fence()) return refused('notice lease unavailable')
       try {
-        const msg = await this.registeredNotice(from, body, baselineId, names)
-        if (msg !== undefined) return { ok: true, msg }
+        const registered = await this.registeredNotice(from, body, baselineId, names)
+        if (registered !== undefined) return { ok: true, ...registered }
       } catch (error) {
         if (!valid() || !this.s.lease?.fence()) return refused(`notice registration: ${String(error)}`)
         this.fallback(error instanceof HubError ? error.reason : 'unavailable')

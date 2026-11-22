@@ -327,7 +327,7 @@ it('bound per-peer partial clear retains notify plus fyi and full clear supersed
   })
   await settle('x', 'conflict'); await settle('y', 'conflict')
   const notice = ledger.candidates(f.s)[0]!
-  expect(ledger.candidates(f.s)).toHaveLength(1)
+  expect(ledger.candidates(f.s).map(m => m.priority)).toEqual(['notify', 'fyi'])
   await settle('x', 'clean')
   expect(ledger.candidates(f.s).map(m => m.priority)).toEqual(['notify', 'fyi'])
   expect(ledger.candidates(f.s).map(m => m.id)).toContain(notice.id)

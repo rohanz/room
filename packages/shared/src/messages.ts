@@ -34,9 +34,9 @@ export interface MessageKind<M extends MsgBase = Msg> {
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
 const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
-const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | 'possible'; merges?: 'clean' }) => m.clearedFrom === 'possible'
+const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | 'possible'; merges?: 'clean' }, certified = false) => m.clearedFrom === 'possible'
   ? 'POSSIBLE conflict cleared' : m.clearedFrom === 'conflict' ? m.merges === 'clean' ? 'overlap cleared' : 'CONFLICT cleared'
-    : m.merges === 'clean' ? 'overlap' : m.priority !== 'fyi' ? 'CONFLICT' : 'POSSIBLE conflict'
+    : m.merges === 'clean' ? 'overlap' : certified || m.priority !== 'fyi' ? 'CONFLICT' : 'POSSIBLE conflict'
 /** A per-peer merge notice names its files in the text; its `path` is only the first of them. */
 const PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /
 const PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/
@@ -46,7 +46,7 @@ const forWaiter = (m: MsgBase, w: MessageWaiting): boolean => !!m.to && !!w.me &
 /**
  * Room's per-peer merge notices (`cf:<pair>:peer:…`) that a later notice for the same pair and reader replaces:
  * one that clears the peer's files, or one at least as urgent. An undelivered notice whose files changed is
- * therefore not delivered as well as its update. A later fyi update (files only cleared) keeps an earlier notify owed.
+ * therefore not delivered as well as its update. A later fyi update keeps an earlier notify owed.
  */
 export function supersededConflictNotices(messages: Iterable<Msg>): Set<string> {
   const groups = new Map<string, Msg[]>()
@@ -181,8 +181,8 @@ const builtins = {
   // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
   conflict: { priority: m => m.merges === 'clean' ? 'notify' : 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
   'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => PEER_NOTICE_TEXT.test(m.text)
-    // Certified either way: fyi only means its update cleared files.
-    ? `${priority(m)}${m.clearedFrom ? 'CONFLICT cleared' : 'CONFLICT'}: ${m.text}` : `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
+    // Certified either way: fyi controls urgency, not the certainty of a conflict.
+    ? `${priority(m)}${m.clearedFrom ? 'CONFLICT cleared' : 'CONFLICT'}: ${m.text}` : `${priority(m)}${conflictLabel(m, PEER_NOTICE_ID.test(m.id))} on ${m.path}: ${m.text}` },
   contract: { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'always', format: m => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
   note: { priority: m => m.to ? 'notify' : 'fyi', audience: 'everyone', inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || (!m.to && m.priority === 'interrupt' && !!w.me && messageForMe({ name: w.me }, m))), format: m => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },
