@@ -18,7 +18,7 @@ import * as decoding from 'lib0/decoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { DOC_SIZE_CAP_CODE, DocSizeMeter, HUB_ORIGIN, MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, sizeCapReason, sizeCapRefusal, startHub, type DocSizeMeterOptions, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
-import { historyOf, GENERATION_PARAM, docGeneration, generationGate, STALE_REPLICA_CODE, STALE_REPLICA_REASON, COMPACTED_UPDATE_REASON, ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
+import { historyOf, deletedByRoot, GENERATION_PARAM, docGeneration, generationGate, STALE_REPLICA_CODE, STALE_REPLICA_REASON, COMPACTED_UPDATE_REASON, ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
 import { ProofVerifier, localProofHeader, localViewKey, relayIdentity, relayIdentityProbe, relayProof, relayMetadataProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
 import { RelayAdmission, type RelayAdmissionLimits } from './limits.js'
@@ -632,7 +632,7 @@ export interface StartedRelay {
   readonly connections: { writers: number; viewers: number; pending: number }
   /** Synchronous fence, including already-upgraded handshakes. Reopen only after a failed drain. */
   setDraining(value: boolean): void
-  history(): { room: string; deleted: number }[]
+  history(): { room: string; deleted: number; byRoot(): [root: string, deleted: number][] }[]
   canCompact(): boolean
   initialize(room: string): Promise<void>
   /** Startup rollback only: rejects if any authenticated client was attached. */
@@ -854,7 +854,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         port: bound,
         get connections() { return { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size } },
         canCompact: () => [...docs.values()].every(d => !d.memory || d.memory.canCompact()),
-        history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted })),
+        history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted, byRoot: () => deletedByRoot(d.doc) })),
         setDraining(value) { draining = value; if (!value) for (const resume of [...acceptingWaiters]) resume() },
         async abortUnpublished() {
           if (writers.size || viewers.size) throw new Error('cannot discard a published relay replica')

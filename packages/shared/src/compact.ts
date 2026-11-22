@@ -169,6 +169,26 @@ export function historyOf(doc: Y.Doc): { structs: number; deleted: number } {
   return { structs, deleted }
 }
 
+/**
+ * Where the tombstones are: deleted structs (as historyOf counts them) per root, largest first. Per-participant roots
+ * (`seen:<name>`) are summed under `seen:*`; a struct whose parent was itself collected counts as `collected`.
+ */
+export function deletedByRoot(doc: Y.Doc): [root: string, deleted: number][] {
+  type Node = { _item?: { parent: unknown } | null }
+  const names = new Map<unknown, string>([...doc.share].map(([name, type]) => [type, name.replace(/:.*$/, ':*')]))
+  const counts = new Map<string, number>()
+  for (const list of (doc.store as unknown as { clients: Map<number, { deleted: boolean; parent?: unknown }[]> }).clients.values()) {
+    for (const struct of list) {
+      if (!struct.deleted) continue
+      let parent = struct.parent as Node | null | undefined
+      while (parent?._item) parent = parent._item.parent as Node | null
+      const root = names.get(parent) ?? 'collected'
+      counts.set(root, (counts.get(root) ?? 0) + 1)
+    }
+  }
+  return [...counts].sort((a, b) => b[1] - a[1])
+}
+
 /** Shared server/daemon tombstone threshold; zero or "off" disables compaction. */
 export function compactMinDeleted(raw: string | undefined): number {
   if (raw === undefined || raw === '') return 10_000

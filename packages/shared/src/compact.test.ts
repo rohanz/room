@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
-import { FRESH_GENERATION, compactDoc, docGeneration, generationGate, generationParams, historyOf, replicaGeneration, roomConnection } from './compact.js'
+import { FRESH_GENERATION, compactDoc, deletedByRoot, docGeneration, generationGate, generationParams, historyOf, replicaGeneration, roomConnection } from './compact.js'
 const structCount = (doc: Y.Doc) => historyOf(doc).structs
 
 const roots = (doc: Y.Doc) => Object.fromEntries([...doc.share.keys()].sort().map(name => {
@@ -157,5 +157,19 @@ describe('generationGate', () => {
     [null, undefined, 'accept'], [null, 'g1', 'update'],
   ] as const)('a replica stating %s in a room at %s: %s', (stated, current, verdict) => {
     expect(generationGate(stated, current)).toBe(verdict)
+  })
+})
+
+describe('deletedByRoot', () => {
+  it('counts tombstones per root, summing per-participant roots, largest first', () => {
+    const doc = new Y.Doc()
+    for (let i = 0; i < 5; i++) doc.getMap('expiry').set('ada', i) // four overwritten values
+    for (const name of ['ada', 'bob']) { doc.getMap(`seen:${name}`).set('m', 1); doc.getMap(`seen:${name}`).delete('m') }
+    doc.getArray('bus').push([1]); doc.getArray('bus').delete(0)
+    const counted = deletedByRoot(doc)
+    // Structs, as historyOf counts them: adjacent tombstones of one client merge into one.
+    expect(new Map(counted)).toEqual(new Map([['seen:*', 2], ['expiry', 1], ['bus', 1]]))
+    expect(counted[0]).toEqual(['seen:*', 2])
+    expect(deletedByRoot(doc).reduce((n, [, count]) => n + count, 0)).toBe(historyOf(doc).deleted)
   })
 })

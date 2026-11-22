@@ -14389,6 +14389,20 @@ function historyOf(doc) {
   }
   return { structs, deleted };
 }
+function deletedByRoot(doc) {
+  const names = new Map([...doc.share].map(([name, type]) => [type, name.replace(/:.*$/, ":*")]));
+  const counts = /* @__PURE__ */ new Map();
+  for (const list of doc.store.clients.values()) {
+    for (const struct of list) {
+      if (!struct.deleted) continue;
+      let parent = struct.parent;
+      while (parent?._item) parent = parent._item.parent;
+      const root = names.get(parent) ?? "collected";
+      counts.set(root, (counts.get(root) ?? 0) + 1);
+    }
+  }
+  return [...counts].sort((a, b) => b[1] - a[1]);
+}
 function compactMinDeleted(raw) {
   if (raw === void 0 || raw === "") return 1e4;
   const n = Number(raw);
@@ -18280,7 +18294,7 @@ Connection: close\r
           return { writers: writers.size, viewers: viewers.size, pending: wss.clients.size - writers.size - viewers.size };
         },
         canCompact: () => [...docs.values()].every((d) => !d.memory || d.memory.canCompact()),
-        history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted })),
+        history: () => [...docs].map(([name, d]) => ({ room: decodeURIComponent(name), deleted: historyOf(d.doc).deleted, byRoot: () => deletedByRoot(d.doc) })),
         setDraining(value2) {
           draining = value2;
           if (!value2) for (const resume of [...acceptingWaiters]) resume();
@@ -18464,7 +18478,7 @@ async function startLocalDaemon(opts) {
           compactionBlocked = true;
           log2("local daemon compaction disabled for this process: snapshot would shed content");
         } else if (over) {
-          log2(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted})`);
+          log2(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted}); by root: ${over.byRoot().slice(0, 6).map(([root, n]) => `${root} ${n}`).join(", ")}`);
           compactionGeneration = crypto5.randomUUID();
           stopRequested = true;
         }

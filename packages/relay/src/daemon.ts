@@ -173,7 +173,7 @@ export async function startLocalDaemon(opts: {
           compactionBlocked = true
           log('local daemon compaction disabled for this process: snapshot would shed content')
         } else if (over) {
-          log(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted})`)
+          log(`local daemon restarting for compaction: ${over.room} has ${over.deleted} deleted structs (threshold ${minDeleted}); by root: ${over.byRoot().slice(0, 6).map(([root, n]) => `${root} ${n}`).join(', ')}`)
           compactionGeneration = crypto.randomUUID()
           stopRequested = true
         }
