@@ -199,7 +199,7 @@ export class ConflictShadow {
   private async remove(a: Pick<Actor, 'name' | 'id'>): Promise<void> {
     if (this.actors.get(a.name)?.id === a.id) { this.actors.delete(a.name); this.identities.delete(a.name) }
     this.forget(a.id)
-    // A shared event stays whole. Its missing owner is handled by lost() before it can apply.
+    // Shared collections stay whole: event() still records lead edits and other deliveries.
     for (const ticket of this.queue.values()) {
       const ids = this.ownerIds(ticket)
       if (ids.length === 1 && ids[0] === a.id && ticket.kind !== 'collection' && ticket.kind !== 'unsupported') this.cancel(ticket)
@@ -326,8 +326,11 @@ export class ConflictShadow {
             stage = 'lifecycle'
             const ticket = this.queue.get(this.applied + 1)!
             const ids = this.ownerIds(ticket)
-            if (ids.length && ids.some(id => ![...this.actors.values()].some(a => a.id === id)
-              && (ticket.kind !== 'spawn' || !records.some(r => identity(r.id) === id && !['discarding', 'retiring', 'retired', 'abandoned'].includes(r.phase))))) {
+            // Spawn tickets may arrive after this pass read its inventory. event() validates
+            // their current registry record; absence from the earlier inventory proves nothing.
+            // A collection can also contain an ended or unmodelled worker. Its accepted
+            // output is still a lead edit; event() handles the available worker ancestry.
+            if (ticket.kind !== 'spawn' && ticket.kind !== 'collection' && ids.some(id => ![...this.actors.values()].some(a => a.id === id))) {
               if (ticket.kind === 'remove') this.cancel(ticket)
               else if (!await this.lost(ticket, 'participant no longer modelled')) return
             }
@@ -525,6 +528,7 @@ export class ConflictShadow {
     if (lead.disabled) throw new Error('unmodelled lead history')
     if (event.generation !== this.applied || !this.anchors.has(event.generation)) throw new Error('unmodelled generation')
     if (event.kind === 'collection') {
+      if (event.workers.some(w => !w.head)) throw new Error('unmodelled delivery HEAD')
       const records = await Promise.all(event.workers.map(w => this.registry!.read(w.id)))
       if (records.some(r => r?.phase === 'collecting')) return false
       const ended = new Set(event.workers.filter((_, i) => !records[i] || ['discarding', 'retiring', 'retired', 'abandoned'].includes(records[i]!.phase)).map(w => w.id))
@@ -537,25 +541,33 @@ export class ConflictShadow {
       await this.newEvent(lead, 'pre-collection', before)
       const parents = [lead.node], history = [...lead.events]
       for (const worker of event.workers) {
-        const a = this.actors.get(worker.name)
+        const candidate = this.actors.get(worker.name), a = candidate?.id === identity(worker.id) ? candidate : undefined
         // Final collection is the lead's own edit; an ended worker has no next observation.
         if (ended.has(worker.id)) { await this.remove(a ?? { name: worker.name, id: identity(worker.id) }); continue }
-        if (!a || a.disabled || a.expected !== worker.head) throw new Error('unmodelled delivery')
-        const coverage = await captureShadow(this.graph, a.dir, a.base, a.carried)
-        if (coverage.head !== a.expected) throw new Error('unmodelled delivery HEAD')
-        this.cover(a, coverage)
-        for (const p of worker.paths) if (this.gap(a, p)) lead.gaps.add(p)
-        const source = worker.source ? await this.graph.entries(worker.source) : undefined
-        const delivered = await this.graph.entries(a.anchor)
-        for (const p of worker.paths) {
-          if (this.gap(a, p) || this.gap(lead, p)) continue
-          const value = source?.get(p)
-          if ((value?.size ?? 0) > 512 * 1024) { a.gaps.add(p); lead.gaps.add(p); continue }
-          if (source) { if (value) delivered.set(p, value); else delivered.delete(p) }
-          else await this.patch(delivered, p, event.merged.get(p) ?? null, event.modes.get(p))
+        // A worker we could not follow contributes accepted bytes, but no invented ancestry.
+        // Preserve other deliveries and the lead's exact before/after collection footprint.
+        if (!a) { this.once(`unmodelled history: collection participant no longer modelled (${worker.name})`); continue }
+        try {
+          if (a.disabled || a.expected !== worker.head) throw new Error('unmodelled delivery')
+          const coverage = await captureShadow(this.graph, a.dir, a.base, a.carried)
+          if (coverage.head !== a.expected) throw new Error('unmodelled delivery HEAD')
+          this.cover(a, coverage)
+          for (const p of worker.paths) if (this.gap(a, p)) lead.gaps.add(p)
+          const source = worker.source ? await this.graph.entries(worker.source) : undefined
+          const delivered = await this.graph.entries(a.anchor)
+          for (const p of worker.paths) {
+            if (this.gap(a, p) || this.gap(lead, p)) continue
+            const value = source?.get(p)
+            if ((value?.size ?? 0) > 512 * 1024) { a.gaps.add(p); lead.gaps.add(p); continue }
+            if (source) { if (value) delivered.set(p, value); else delivered.delete(p) }
+            else await this.patch(delivered, p, event.merged.get(p) ?? null, event.modes.get(p))
+          }
+          await this.newEvent(a, 'delivery', delivered)
+          a.anchor = a.node; parents.push(a.node); history.push(...a.events)
+        } catch (error) {
+          if (this.closed) return
+          await this.unmodelled(a, this.reason(error, 'delivery unavailable'))
         }
-        await this.newEvent(a, 'delivery', delivered)
-        a.anchor = a.node; parents.push(a.node); history.push(...a.events)
       }
       const merged = new Map(lead.entries)
       for (const [p, text] of event.merged) if (!this.gap(lead, p)) await this.patch(merged, p, text, event.modes.get(p))

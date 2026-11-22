@@ -32,10 +32,11 @@ it('does not silently discard a sibling delivery when an earlier private refresh
     for (const enqueue of pending) enqueue()
     await f.shadow.idle()
     expect(state.actors.has(f.d.name)).toBe(false)
-    // Either preserve u's delivery or explicitly stop the family whose lead history was lost.
-    expect(state.halted || state.actors.get(f.u.name)?.events.some((e: string) => e.startsWith('delivery:'))).toBe(true)
-    expect(state.actors.has(f.u.name)).toBe(false)
-    expect(log.mock.calls.filter(([line]) => line.includes('unmodelled history: collection') && line.includes(f.u.name))).toHaveLength(1)
+    expect(state.halted).toBe(false)
+    expect(state.actors.get(f.u.name)?.events.some((e: string) => e.startsWith('delivery:'))).toBe(true)
+    expect(state.actors.has(f.s.me.name)).toBe(true)
+    expect(log.mock.calls.filter(([line]) => line.includes('unmodelled history: collection') && line.includes(f.d.name))).toHaveLength(1)
+    expect(log.mock.calls.some(([line]) => line.includes('family stopped'))).toBe(false)
   } finally { f.shadow.stop() }
 })
 
