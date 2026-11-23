@@ -131,7 +131,7 @@ it.each(['own', 'remote'])('retains both exact subjects across remote restart an
   // A new evaluator must recover the same identity from persisted slots, not its current snapshots.
   t.set.stop()
   await t.makeSet().reconcile('new evaluator in the same restart window')
-  expect(t.slots.get(t.key)).toMatchObject({ status: 'unknown', settled: 'possible', projectedEpisode: binding })
+  expect(t.slots.get(t.key)).toMatchObject({ status: 'possible', settled: 'possible', projectedEpisode: binding })
   expect(t.copies().map(m => m.id)).toEqual(before.map(m => m.id))
   const retired = endpoint === 'own' ? { id: t.record.id, name: t.record.name } : { id: t.remoteId, name: 'R+b' }
   t.localRoom.endWorkerNotices([retired], Date.now())

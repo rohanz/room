@@ -697,40 +697,45 @@ describe('derived pair slots', () => {
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('retries unchanged pair inputs after merge file creation throws', async () => {
+  it('retries unchanged pair inputs after a failed file check reaches its retry deadline', async () => {
     const f = fixture()
     f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
     const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
     const mkdir = vi.spyOn(fs, 'mkdtempSync').mockImplementationOnce(() => {
       throw Object.assign(new Error('temporary ENOSPC'), { code: 'ENOSPC' })
     })
+    let clock: ReturnType<typeof vi.spyOn> | undefined
     try {
-      await expect(set.reconcile('failed evaluation')).rejects.toThrow('temporary ENOSPC')
-      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'x'))).toBeUndefined()
+      await set.reconcile('failed file evaluation')
+      const failed = f.room.doc.getMap<import('../src/conflict-set.js').ConflictSlot>('conflicts').get(slotKey('A', 'merge', 'B', 'x'))!
+      expect(failed).toMatchObject({ status: 'unknown', settled: 'none', why: 'file comparison failed' })
       mkdir.mockRestore()
+      clock = vi.spyOn(Date, 'now').mockReturnValue(failed.retryAt! + 1)
       await set.reconcile('retry unchanged inputs')
       expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'x'))).toMatchObject({ status: 'conflict' })
-    } finally { mkdir.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
+    } finally { clock?.mockRestore(); mkdir.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('retries after a due check throws while withdrawing its unknown slot', async () => {
+  it('withdraws the pair diagnostic after a completed failed file check, then retries', async () => {
     const f = fixture()
     f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
     const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
     const slots = f.room.doc.getMap<import('../src/conflict-set.js').ConflictSlot>('conflicts')
     const key = slotKey('A', 'merge', 'B', 'x'), unknown = slotKey('A', 'merge', 'B', '*')
-    let mkdir: ReturnType<typeof vi.spyOn> | undefined
+    let mkdir: ReturnType<typeof vi.spyOn> | undefined, clock: ReturnType<typeof vi.spyOn> | undefined
     try {
       await set.reconcile('prior completed evaluation')
       slots.set(unknown, { ...slots.get(key)!, path: '*', status: 'unknown', settled: 'none', inputs: 'retry', retryAt: 0 })
       slots.delete(key)
       mkdir = vi.spyOn(fs, 'mkdtempSync').mockImplementationOnce(() => { throw new Error('temporary ENOSPC') })
-      await expect(set.reconcile('due retry')).rejects.toThrow('temporary ENOSPC')
+      await set.reconcile('due retry')
       expect(slots.get(unknown)).toBeUndefined()
+      expect(slots.get(key)).toMatchObject({ status: 'unknown', why: 'file comparison failed' })
       mkdir.mockRestore()
+      clock = vi.spyOn(Date, 'now').mockReturnValue(slots.get(key)!.retryAt! + 1)
       await set.reconcile('retry unchanged inputs again')
       expect(slots.get(key)).toMatchObject({ status: 'conflict' })
-    } finally { mkdir?.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
+    } finally { clock?.mockRestore(); mkdir?.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
   it('does not add reruns to a stable slow pass over ten simulated minutes', async () => {
@@ -904,12 +909,12 @@ describe('derived pair slots', () => {
       const set = new ConflictSet(f.session('A'))
       await set.reconcile('populate')
       let turnRan = false, sawLast = false
-      const slots = (set as unknown as { slots: ConflictSlots }).slots
-      const original = slots.settle.bind(slots)
-      const spy = vi.spyOn(slots, 'settle').mockImplementation((key, result) => {
-        if (key === slotKey('A', 'merge', 'B', 'file-000')) setImmediate(() => { turnRan = true })
-        if (key === slotKey('A', 'merge', 'B', 'file-095')) sawLast = turnRan
-        return original(key, result)
+      const reader = set as unknown as { read(snap: NonNullable<ReturnType<typeof snapshot>>, path: string): Promise<unknown> }
+      const original = reader.read.bind(reader)
+      const spy = vi.spyOn(reader, 'read').mockImplementation((snap, path) => {
+        if (path === 'file-000') setImmediate(() => { turnRan = true })
+        if (path === 'file-095') sawLast = turnRan
+        return original(snap, path)
       })
       await set.reconcile('unchanged')
       expect(spy).toHaveBeenCalled()
